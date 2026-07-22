@@ -582,6 +582,41 @@ body.thinking-hidden .msg.thinking { display: none; }
   .grokking-icon svg { animation: none; }
 }
 
+/* Waiting-for-response shimmer: while grok works, the indicator labels sweep a
+   brighter band left→right (gradient clipped to the glyphs), so the waiting
+   state reads as live motion even when nothing is streaming yet. Edges stay
+   descriptionForeground (today's static color); only the passing band lifts to
+   full foreground. Falls back to the plain static label under
+   prefers-reduced-motion. */
+.grokking-label,
+.thinking-indicator-label {
+  background: linear-gradient(90deg,
+    var(--vscode-descriptionForeground) 30%,
+    var(--vscode-foreground) 50%,
+    var(--vscode-descriptionForeground) 70%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: waiting-shimmer 2.2s linear infinite;
+}
+/* background-size 200%: position 150% parks the bright band off the LEFT edge,
+   -50% off the RIGHT — so the sweep travels in reading direction. */
+@keyframes waiting-shimmer {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .grokking-label,
+  .thinking-indicator-label {
+    animation: none;
+    background: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
 /* Three blinking dots — the tool rows' in-progress animation, reused by every
    progress indicator so they all pulse identically (replacing the morphing "…"
    ellipsis). Same `tool-dot-blink` keyframes the tool group uses. */
@@ -1868,6 +1903,44 @@ textarea#input {
 }
 .slash-name { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 600; }
 .slash-desc { font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+/* ---- "@" file-mention popover ---- */
+/* Container reuses .slash-popover (same anchor/box); rows are one-line
+   filename + dimmed directory, ellipsized at the row edge. */
+
+.mention-item {
+  padding: 5px 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+.mention-item:last-child { border-bottom: none; }
+.mention-item:hover, .mention-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+.mention-name {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.mention-dir {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.mention-item:hover .mention-dir, .mention-item.active .mention-dir {
+  color: inherit;
+  opacity: 0.75;
+}
 
 /* ---- drag target ---- */
 

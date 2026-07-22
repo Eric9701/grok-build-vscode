@@ -67,6 +67,10 @@ export type HostMsg =
   | { type: "voiceError" }
   | { type: "chips"; chips: FileChip[] }
   | { type: "commandsUpdate"; commands: unknown[] }
+  // Reply to the webview's `mentionQuery` (the composer's `@` file popover):
+  // workspace-relative paths (forward slashes), ranked by src/mention.ts. The
+  // echoed `query` lets the webview drop stale replies after further typing.
+  | { type: "mentionResults"; query: string; files: string[] }
   | { type: "userMessage"; text: string; chips?: FileChip[] }
   | { type: "agentStart" }
   | { type: "thoughtChunk"; text: string }
@@ -184,6 +188,13 @@ export type WebviewMsg =
   | { type: "deleteSession"; id: string; name?: string }
   | { type: "clearAllSessions" }
   | { type: "pickFile" }
+  // The composer's `@` file popover: the current token after `@`, posted on
+  // every keystroke; answered by `mentionResults`.
+  | { type: "mentionQuery"; query: string }
+  // A popover pick: attach this workspace-relative file as an explicit chip
+  // (same pipeline as drop / the + picker). The `@rel/path` text stays in the
+  // composer, so the prompt carries both the prose reference and the chip.
+  | { type: "addMentionFile"; relPath: string }
   | { type: "pasteImage"; mimeType: string; data: string }
   | { type: "voiceStart" }
   | { type: "voiceStop" }
@@ -208,7 +219,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   initialized: true, cliUpdating: true, session: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
-  chips: true, commandsUpdate: true, userMessage: true, agentStart: true,
+  chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
   planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true,
@@ -231,7 +242,8 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
   listSessions: true, resumeSession: true, renameSession: true, deleteSession: true,
-  clearAllSessions: true, pickFile: true, pasteImage: true, voiceStart: true,
+  clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
+  pasteImage: true, voiceStart: true,
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
   steerSend: true, forkSession: true,
 };

@@ -72,7 +72,7 @@ It works out of the box once you're signed in (your `grok login` token is reused
 <details>
 <summary><strong>File chips</strong> — your editor and selection as <code>@file</code> context</summary>
 
-The active editor rides along automatically; add more by dragging from the Explorer, right-click → **Grok: Send File**, **Alt+G**, or the **+** button. Chips send as `@/path` references, so content stays current and history stays small. **Shift-drag** embeds the file inline instead.
+The active editor rides along automatically; add more by **typing `@` in the composer** (a workspace file picker opens — arrow keys + Enter, fuzzy-matched), dragging from the Explorer, right-click → **Grok: Send File**, **Alt+G**, or the **+** button. Chips send as `@/path` references, so content stays current and history stays small. **Shift-drag** embeds the file inline instead.
 
 ![Composer with an image, a file, and a selection chip attached](docs/screenshots/file_chips.png)
 

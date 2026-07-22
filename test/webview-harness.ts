@@ -51,6 +51,7 @@ export const BODY = `
     <div id="add-popover" hidden></div>
     <div id="context-popover" hidden></div>
     <div id="slash-popover" hidden></div>
+    <div id="mention-popover" hidden></div>
   </footer>`;
 
 export interface Posted { type: string; [k: string]: unknown }

@@ -1,0 +1,93 @@
+// "@" file autocomplete — the pure host half. Typing `@` in the composer opens
+// a workspace-file picker: the webview detects the token (getMentionQuery in
+// media/webview-helpers.js) and posts it as `mentionQuery`; the host answers
+// `mentionResults` from a TTL-cached `workspace.findFiles` index filtered here.
+// Split from sidebar.ts so ranking/exclude behavior is unit-testable without
+// vscode (same reason slash-filter.ts exists for the `/` popover).
+
+/** Max rows a single mentionResults reply carries (the popover is ~6 rows tall
+ *  and scrolls; past ~50 the ranking, not the list, is what helps). */
+export const MENTION_RESULT_LIMIT = 50;
+
+/** findFiles cap for one index build. Big monorepos exceed it — acceptable: the
+ *  popover is a quick-add affordance, not a complete search surface, and the cap
+ *  keeps a cold build bounded. */
+export const MENTION_INDEX_LIMIT = 5000;
+
+/** How long one findFiles snapshot serves queries before a rebuild. Keystrokes
+ *  within a popover interaction hit the cache; newly created files appear on
+ *  the next interaction. */
+export const MENTION_INDEX_TTL_MS = 15_000;
+
+/** Workspace-relative paths always render/match with forward slashes (chips
+ *  elsewhere carry Windows backslashes from asRelativePath — see chat.js's
+ *  basename split note). */
+export function normalizeRelPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+/**
+ * Combine the user's `files.exclude` + `search.exclude` maps into one findFiles
+ * exclude glob. findFiles' default (undefined) applies only `files.exclude`,
+ * which does NOT contain node_modules — that lives in `search.exclude` — so
+ * without this a default workspace indexes its dependency tree. Only `true`
+ * values count (a `files.exclude` value can be a `{ when: … }` clause object);
+ * node_modules/.git are always excluded even if the user unset the defaults.
+ */
+export function buildExcludeGlob(configs: Array<Record<string, unknown> | undefined>): string {
+  const patterns = new Set<string>(["**/node_modules/**", "**/.git/**"]);
+  for (const cfg of configs) {
+    if (!cfg) continue;
+    for (const [glob, on] of Object.entries(cfg)) {
+      if (on === true) patterns.add(glob);
+    }
+  }
+  return `{${[...patterns].join(",")}}`;
+}
+
+/** Index order = what an empty `@` shows: shallow files first (root README above
+ *  a deep test fixture), alphabetical within a depth. findFiles order is
+ *  arbitrary, so this also makes results stable across rebuilds. */
+export function orderMentionIndex(paths: string[]): string[] {
+  const depth = (p: string) => p.split("/").length;
+  return [...paths].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b));
+}
+
+/** Chars of `q` appear in `s` in order (the classic fuzzy-finder fallback tier). */
+function isSubsequence(q: string, s: string): boolean {
+  let i = 0;
+  for (let j = 0; j < s.length && i < q.length; j++) {
+    if (s[j] === q[i]) i++;
+  }
+  return i === q.length;
+}
+
+/**
+ * Rank the index against the typed token. Tiers, best first: basename prefix →
+ * basename substring → full-path substring (covers `src/ch`-style dir queries)
+ * → in-order subsequence. Within a tier shorter paths win (the file you mean is
+ * rarely the deeply nested one), then alphabetical for stability. Empty query
+ * passes the index through in its own (depth-first) order.
+ */
+export function filterMentionFiles(
+  files: string[],
+  query: string,
+  limit: number = MENTION_RESULT_LIMIT,
+): string[] {
+  if (!query) return files.slice(0, limit);
+  const q = query.toLowerCase();
+  const scored: Array<{ path: string; tier: number }> = [];
+  for (const f of files) {
+    const lower = f.toLowerCase();
+    const base = lower.slice(lower.lastIndexOf("/") + 1);
+    let tier: number;
+    if (base.startsWith(q)) tier = 0;
+    else if (base.includes(q)) tier = 1;
+    else if (lower.includes(q)) tier = 2;
+    else if (isSubsequence(q, lower)) tier = 3;
+    else continue;
+    scored.push({ path: f, tier });
+  }
+  scored.sort((a, b) => a.tier - b.tier || a.path.length - b.path.length || a.path.localeCompare(b.path));
+  return scored.slice(0, limit).map((s) => s.path);
+}

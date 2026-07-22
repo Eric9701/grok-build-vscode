@@ -54,6 +54,7 @@ import {
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { matchSlashCommand } from "./slash-filter";
+import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
 import { configForcesAlwaysApprove } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
@@ -191,6 +192,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private chips: FileChip[] = [];
   /** Attachment-staging ops still in flight — see trackAttach. */
   private readonly pendingAttach = new Set<Promise<void>>();
+  /** The composer's `@` file popover index: workspace-relative paths (ranked by
+   *  src/mention.ts) + rel→abs map for the pick. One findFiles snapshot serves
+   *  {@link MENTION_INDEX_TTL_MS}; concurrent queries share one in-flight build. */
+  private mentionIndex: { at: number; rels: string[]; absByRel: Map<string, string> } | null = null;
+  private mentionIndexPromise: Promise<{ rels: string[]; absByRel: Map<string, string> }> | null = null;
   private editorWatcher?: vscode.Disposable;
   private terminalManager = new TerminalManager();
   private voiceRecorder = new VoiceRecorder();
@@ -2408,6 +2414,29 @@ See design doc for the full state machine diagram.`;
       case "pickFile":
         await this.trackAttach(this.pickFileFromComputer());
         break;
+      case "mentionQuery": {
+        // Answer from the TTL-cached index; a failed build degrades to an empty
+        // list (the popover just hides) rather than an error surface.
+        let files: string[] = [];
+        try {
+          files = filterMentionFiles((await this.mentionFileIndex()).rels, msg.query);
+        } catch (e) {
+          this.output.appendLine(`[mention] index failed: ${(e as Error).message}`);
+        }
+        this.post({ type: "mentionResults", query: msg.query, files });
+        break;
+      }
+      case "addMentionFile": {
+        // The pick came from a posted result, so the index (and its rel→abs map)
+        // exists; fall back to a workspace-root join if it somehow expired.
+        const abs = this.mentionIndex?.absByRel.get(msg.relPath)
+          ?? (vscode.workspace.workspaceFolders?.[0]
+            ? path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, msg.relPath)
+            : undefined);
+        // addDroppedFile re-checks existence, so a stale/garbage path is a no-op.
+        if (abs) await this.trackAttach(this.addDroppedFile(abs, false));
+        break;
+      }
       case "voiceStart":
         await this.handleVoiceStart();
         break;
@@ -2753,6 +2782,42 @@ See design doc for the full state machine diagram.`;
       }
     }
     this.revealAndFocusComposer();
+  }
+
+  /** The `@` popover's file index, rebuilt at most once per
+   *  {@link MENTION_INDEX_TTL_MS}. Keystrokes during a cold build all await the
+   *  same findFiles pass instead of stacking one per key. */
+  private async mentionFileIndex(): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
+    const cached = this.mentionIndex;
+    if (cached && Date.now() - cached.at < MENTION_INDEX_TTL_MS) return cached;
+    if (!this.mentionIndexPromise) {
+      this.mentionIndexPromise = this.buildMentionIndex()
+        .then((idx) => {
+          this.mentionIndex = { at: Date.now(), ...idx };
+          return idx;
+        })
+        .finally(() => { this.mentionIndexPromise = null; });
+    }
+    return this.mentionIndexPromise;
+  }
+
+  private async buildMentionIndex(): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
+    const cfg = vscode.workspace.getConfiguration();
+    // findFiles' default excludes are files.exclude ONLY — node_modules lives in
+    // search.exclude, so both must be merged in or the index is dependency soup.
+    const exclude = buildExcludeGlob([
+      cfg.get<Record<string, unknown>>("files.exclude"),
+      cfg.get<Record<string, unknown>>("search.exclude"),
+    ]);
+    const uris = await vscode.workspace.findFiles("**/*", exclude, MENTION_INDEX_LIMIT);
+    const absByRel = new Map<string, string>();
+    for (const uri of uris) {
+      // Default asRelativePath prefixes the folder name only in a multi-root
+      // workspace — exactly when the prefix is needed to disambiguate.
+      const rel = normalizeRelPath(vscode.workspace.asRelativePath(uri));
+      if (!absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
+    }
+    return { rels: orderMentionIndex([...absByRel.keys()]), absByRel };
   }
 
   /** Resolve the xAI key for Speech-to-Text: the `grok.voiceApiKey` setting,
@@ -4506,6 +4571,7 @@ See design doc for the full state machine diagram.`;
     <div id="add-popover" class="toolbar-popover" hidden></div>
     <div id="context-popover" class="toolbar-popover" hidden></div>
     <div id="slash-popover" class="slash-popover" hidden></div>
+    <div id="mention-popover" class="slash-popover mention-popover" hidden></div>
   </footer>
 
   <script nonce="${nonce}">

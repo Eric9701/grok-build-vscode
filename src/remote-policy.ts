@@ -38,6 +38,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   listSessions: "view",
   resumeSession: "view",
   renameSession: "view",
+  // read-only workspace file-name lookup (the composer's @ popover)
+  mentionQuery: "view",
   // input/turn control (propose+)
   send: "propose",
   newSession: "propose",
@@ -55,6 +57,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   pasteImage: "propose",
   removeChip: "propose",
   toggleChip: "propose",
+  // attaches a chip (host-validated against its own file index) — same class
+  // of composer-state mutation as removeChip/toggleChip
+  addMentionFile: "propose",
   // recheckConnection restarts the CLI session on the host — turn control, not handshake
   recheckConnection: "propose",
   // approvals + destructive + host-CLI mutations (full only)
@@ -138,6 +143,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   openModePopover: "mirror",
   chips: "mirror",
   commandsUpdate: "mirror",
+  mentionResults: "mirror",
   userMessage: "mirror",
   agentStart: "mirror",
   thoughtChunk: "mirror",

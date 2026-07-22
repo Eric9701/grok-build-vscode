@@ -19,6 +19,7 @@
   const donutLabel = $("donut-label");
   const contextPopover = $("context-popover");
   const slashPopover = $("slash-popover");
+  const mentionPopover = $("mention-popover");
   const modePopover = $("mode-popover");
   const gearPopover = $("gear-popover");
   const addPopover = $("add-popover");
@@ -91,6 +92,13 @@
     activeToolGroupEl: null,
     slashFiltered: [],
     slashActive: 0,
+    // "@" file popover: the rows the host sent for the current token
+    // (mentionResults), the highlighted row, and the token the rows answer —
+    // null while no token is under the caret (stale replies are dropped
+    // against it, so fast typing can't render an older query's rows).
+    mentionFiles: [],
+    mentionActive: 0,
+    mentionQuery: null,
     pendingDiffByToolCallId: new Map(),
     toolItemsByToolCallId: new Map(),
     toolFailuresById: new Map(), // toolCallId → error text, so a single-call group carries it onto the flat
@@ -359,7 +367,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -3550,6 +3558,7 @@
     // (Thinking / tools use the dots for discrete progress instead).
     el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">Grokking</span>`;
     el.setAttribute("aria-label", "Grok is working");
+    el.title = "Waiting for response";
     messagesEl.appendChild(el);
     state.grokkingEl = el;
     scrollToBottom();
@@ -4347,6 +4356,66 @@
     input.focus();
   }
 
+  // ---------- "@" file autocomplete ----------
+  // Typing `@` (at the start of a word) opens a workspace-file picker fed by the
+  // host: every keystroke posts the token (mentionQuery), the host answers from
+  // a TTL-cached findFiles index (mentionResults, ranked in src/mention.ts), and
+  // a pick rewrites the token to `@rel/path ` AND attaches the file as an
+  // explicit chip (addMentionFile) — the same pipeline as drop / the + picker,
+  // so the prompt carries both the prose reference and the attachment.
+
+  function hideMention() {
+    if (mentionPopover) mentionPopover.hidden = true;
+    state.mentionFiles = [];
+    state.mentionQuery = null;
+  }
+
+  function updateMention() {
+    if (!mentionPopover) return;
+    const q = getMentionQuery(input.value, input.selectionStart || 0);
+    if (q === null) { hideMention(); return; }
+    state.mentionQuery = q;
+    // No debounce: the host answers from an in-memory index (concurrent
+    // keystrokes during a cold build share one findFiles pass), so a reply per
+    // keystroke is cheap and keeps the popover snappy.
+    vscode.postMessage({ type: "mentionQuery", query: q });
+  }
+
+  function renderMention() {
+    mentionPopover.innerHTML = "";
+    let activeEl = null;
+    state.mentionFiles.forEach((rel, i) => {
+      const el = document.createElement("div");
+      el.className = `mention-item${i === state.mentionActive ? " active" : ""}`;
+      if (i === state.mentionActive) activeEl = el;
+      const cut = rel.lastIndexOf("/");
+      const name = document.createElement("span");
+      name.className = "mention-name";
+      name.textContent = cut >= 0 ? rel.slice(cut + 1) : rel;
+      el.appendChild(name);
+      if (cut >= 0) {
+        const dir = document.createElement("span");
+        dir.className = "mention-dir";
+        dir.textContent = rel.slice(0, cut);
+        el.appendChild(dir);
+      }
+      el.title = rel;
+      el.onclick = () => pickMention(rel);
+      mentionPopover.appendChild(el);
+    });
+    if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+  }
+
+  function pickMention(rel) {
+    const r = applyMentionPick(input.value, input.selectionStart || 0, rel);
+    input.value = r.text;
+    if (input.setSelectionRange) input.setSelectionRange(r.caret, r.caret);
+    hideMention();
+    vscode.postMessage({ type: "addMentionFile", relPath: rel });
+    input.focus();
+    renderInputHighlight();
+  }
+
   // ---------- send ----------
 
   function updateSendButton() {
@@ -4404,6 +4473,7 @@
     input.value = "";
     renderInputHighlight(); // also flips the busy button back to Stop (empty composer)
     updateSlash();
+    updateMention();
     return true;
   }
 
@@ -4452,6 +4522,7 @@
     input.value = "";
     renderInputHighlight();
     slashPopover.hidden = true;
+    hideMention();
   }
 
   // ---------- voice control ----------
@@ -4521,6 +4592,7 @@
     input.value = cur + sep + t;
     input.focus();
     updateSlash();
+    updateMention();
     renderInputHighlight();
   }
 
@@ -4858,6 +4930,7 @@
           input.value = composeVoiceTail(state.voiceBase, (msg.text || "").trim());
           input.focus();
           updateSlash();
+          updateMention();
           renderInputHighlight();
         } else {
           insertTranscript(msg.text);
@@ -4880,6 +4953,23 @@
       case "commandsUpdate":
         state.commands = msg.commands || [];
         break;
+      case "mentionResults": {
+        // Only render rows that answer the token still under the caret — the
+        // popover may have closed (query null) or the user typed further (query
+        // moved on) while this reply was in flight.
+        if (!mentionPopover || state.mentionQuery === null || msg.query !== state.mentionQuery) break;
+        state.mentionFiles = msg.files || [];
+        if (!state.mentionFiles.length) {
+          // Keep the query: the token is still active, so more typing (or a
+          // backspace) re-queries — only the empty row-list hides.
+          mentionPopover.hidden = true;
+          break;
+        }
+        state.mentionActive = 0;
+        renderMention();
+        mentionPopover.hidden = false;
+        break;
+      }
       case "userMessage":
         // Live send (or immediate verdict-feedback bubble): render and bump the
         // counter so any plan history queued for this position drains first.
@@ -5565,6 +5655,7 @@
       const end = input.selectionEnd ?? start;
       input.setRangeText(pastedText, start, end, "end");
       updateSlash();
+      updateMention();
       renderInputHighlight();
     }
     for (const blob of blobs) {
@@ -5582,7 +5673,7 @@
     }
   });
 
-  input.addEventListener("input", () => { updateSlash(); renderInputHighlight(); });
+  input.addEventListener("input", () => { updateSlash(); updateMention(); renderInputHighlight(); });
   input.addEventListener("scroll", () => {
     if (!inputHighlight) return;
     inputHighlight.scrollTop = input.scrollTop;
@@ -5613,6 +5704,25 @@
         pickSlash(state.slashFiltered[state.slashActive]); return;
       }
       if (e.key === "Escape") { slashPopover.hidden = true; return; }
+    }
+    // "@" popover nav — mutually exclusive with the slash popover (a slash token
+    // can't contain whitespace, so `/cmd @file` never matches both).
+    if (mentionPopover && !mentionPopover.hidden && state.mentionFiles.length) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        state.mentionActive = (state.mentionActive + 1) % state.mentionFiles.length;
+        renderMention(); return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        state.mentionActive = (state.mentionActive - 1 + state.mentionFiles.length) % state.mentionFiles.length;
+        renderMention(); return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickMention(state.mentionFiles[state.mentionActive]); return;
+      }
+      if (e.key === "Escape") { hideMention(); return; }
     }
     const sendKey = state.useCtrlEnter
       ? e.key === "Enter" && (e.metaKey || e.ctrlKey)

@@ -17,7 +17,7 @@
     "initialState", "showThinking", "fontScale", "grokUpdateStatus", "initialized",
     "cliUpdating", "session", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
-    "voiceError", "chips", "commandsUpdate", "userMessage", "agentStart", "thoughtChunk",
+    "voiceError", "chips", "commandsUpdate", "mentionResults", "userMessage", "agentStart", "thoughtChunk",
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
@@ -33,7 +33,7 @@
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
     "recheckConnection", "listSessions", "resumeSession", "renameSession", "deleteSession",
-    "clearAllSessions", "pickFile", "pasteImage", "voiceStart", "voiceStop",
+    "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);
@@ -42,6 +42,29 @@
    *  drift the sync test is designed to prevent, warned at runtime as a backstop. */
   function isKnownHostMessage(type) {
     return HOST_MESSAGE_TYPE_SET.has(type);
+  }
+
+  // ---- "@" file mention (composer autocomplete) ----
+
+  /** The `@token` under the caret, or null when no mention popover applies. `@`
+   *  must start the text or follow whitespace, so emails/handles mid-word
+   *  ("user@host") never trigger; the token can't contain whitespace or a second
+   *  `@` (a space closes the popover). Caret-anchored like getSlashQuery. */
+  function getMentionQuery(text, caret) {
+    const before = String(text || "").slice(0, caret);
+    const m = before.match(/(?:^|\s)@([^\s@]*)$/);
+    return m ? m[1] : null;
+  }
+
+  /** Replace the partial `@token` before the caret with `@relPath ` (a popover
+   *  pick) and return the new text + caret. Replacement is a function so `$`
+   *  sequences in a path can't be misread as replace directives. */
+  function applyMentionPick(text, caret, relPath) {
+    const t = String(text || "");
+    const before = t.slice(0, caret);
+    const after = t.slice(caret);
+    const newBefore = before.replace(/@[^\s@]*$/, () => "@" + relPath + " ");
+    return { text: newBefore + after, caret: newBefore.length };
   }
 
   function looksLikeFileRef(s) {
@@ -638,7 +661,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
