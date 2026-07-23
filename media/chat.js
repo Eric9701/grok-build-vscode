@@ -1297,6 +1297,20 @@
       vscode.postMessage({ type: "forkSession" });
       closePopovers();
     });
+    // Worktree UI (P2-8) — isolated git checkout for a session. Apply merges
+    // edits back into the main workspace; Remove deletes the checkout.
+    addGearItem(`<span>New worktree session</span>`, () => {
+      vscode.postMessage({ type: "newWorktreeSession" });
+      closePopovers();
+    });
+    addGearItem(`<span>Apply worktree</span>`, () => {
+      vscode.postMessage({ type: "applyWorktree" });
+      closePopovers();
+    });
+    addGearItem(`<span>Remove worktree</span>`, () => {
+      vscode.postMessage({ type: "removeWorktree" });
+      closePopovers();
+    });
 
     // ── Other ─────────────────────────────────────────────────────────────
     // Collapses the former Config / Account / Debug sections into sub-views
@@ -1748,6 +1762,7 @@
         const meta = document.createElement("div");
         meta.className = "history-row-meta";
         const parts = [];
+        if (s.worktreeLabel) parts.push("WT " + s.worktreeLabel);
         if (s.numMessages) parts.push(`${s.numMessages} msg`);
         parts.push(formatRelativeTime(s.updatedAt));
         meta.textContent = parts.join(" · ");
@@ -1757,7 +1772,7 @@
         // stopPropagation so they don't also trigger a resume.
         row.onclick = () => {
           if (active) { closePopovers(); return; }
-          vscode.postMessage({ type: "resumeSession", id: s.id });
+          vscode.postMessage({ type: "resumeSession", id: s.id, cwd: s.cwd });
           closePopovers();
         };
       }

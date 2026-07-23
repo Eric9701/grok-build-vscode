@@ -54,6 +54,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   clearQueuedSends: "propose",
   steerSend: "propose",
   forkSession: "propose",
+  // Worktree create/apply/remove mutate the host filesystem (git worktrees under
+  // ~/.grok/worktrees + the main checkout on apply) — full tier only.
+  newWorktreeSession: "full",
+  applyWorktree: "full",
+  removeWorktree: "full",
   pasteImage: "propose",
   removeChip: "propose",
   toggleChip: "propose",

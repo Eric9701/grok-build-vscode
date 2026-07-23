@@ -118,6 +118,13 @@ Gear → *Fork conversation* copies the conversation into a **new session** name
 </details>
 
 <details>
+<summary><strong>Worktree session</strong> — isolate code edits in a git worktree</summary>
+
+**Grok: New Worktree Session** (gear → *New worktree session*, or the Command Palette) creates an isolated git worktree under `~/.grok/worktrees/` and opens a fresh session whose cwd is that checkout — so agent edits don't touch your main tree until you **Apply worktree**. **Remove worktree** deletes the isolated checkout. History rows for worktree sessions show a `WT <label>` badge and reopen with the correct cwd.
+
+</details>
+
+<details>
 <summary><strong>Context & cost</strong> — what's in the window, and what the turns actually bill</summary>
 
 Click the **context donut** for the exact `used / window (%)`, plus what the conversation has **billed** — input, cache read, output — as a session total and a per-turn split with its model calls. **Compact conversation** lives here too, right next to the number that tells you when you need it.
@@ -305,7 +312,6 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 ## Known limits
 
 - **Diff preview semantics.** The diff editor compares the proposed old vs. new text against each other, not against the file on disk at preview time; the write happens only after approval.
-- **No worktree UI.** `Grok: New Worktree Session` is planned but not yet implemented.
 - **View placement.** The view defaults to the **Secondary Side Bar** (requires VS Code 1.106+, the extension's engine floor). Relocate it anytime via gear → **Config & debug** → **Move view** (one click: Panel / Primary Side Bar / Secondary Side Bar) — useful in Cursor, whose side-bar context menu hides the built-in "Move To" entry.
 
 ---

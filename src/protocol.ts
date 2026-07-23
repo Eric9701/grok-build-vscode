@@ -187,7 +187,9 @@ export type WebviewMsg =
   | { type: "updateGrok" }
   | { type: "recheckConnection" }
   | { type: "listSessions"; offset?: number; limit?: number; query?: string }
-  | { type: "resumeSession"; id: string }
+  // cwd is required to reopen a worktree-isolated session (sessions are keyed
+  // by cwd on disk). Omitted → host resolves from meta / workspace root.
+  | { type: "resumeSession"; id: string; cwd?: string }
   | { type: "renameSession"; id: string; name: string }
   | { type: "deleteSession"; id: string; name?: string }
   | { type: "clearAllSessions" }
@@ -212,7 +214,11 @@ export type WebviewMsg =
   // prompt itself, so a -32601 fallback can re-queue the text without losing it.
   | { type: "steerSend"; text: string }
   // Fork (#48): branch this session's conversation into a new one and focus it.
-  | { type: "forkSession" };
+  | { type: "forkSession" }
+  // Worktree UI (P2-8): new isolated session / merge back / remove worktree.
+  | { type: "newWorktreeSession" }
+  | { type: "applyWorktree" }
+  | { type: "removeWorktree" };
 
 // Exhaustive maps: `Record<Union["type"], true>` forces every discriminant to be
 // a key (missing -> tsc error) and forbids any extra (excess-property -> tsc
@@ -252,6 +258,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   pasteImage: true, voiceStart: true,
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
   steerSend: true, forkSession: true,
+  newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
 };
 
 export const HOST_MESSAGE_TYPES: readonly HostMsg["type"][] = Object.keys(HOST_MESSAGE_TYPE_MAP) as HostMsg["type"][];

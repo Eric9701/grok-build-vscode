@@ -23,11 +23,18 @@ export interface SessionListEntry {
    *  delegation persists its child as a top-level session dir with
    *  `session_kind: "subagent"`; the history list hides those. */
   kind?: "subagent";
+  /** Worktree label when this session's cwd is an isolated git worktree (P2-8). */
+  worktreeLabel?: string;
 }
 
 export interface SessionMetaOverride {
   customName?: string;
   pinnedAt?: number;
+  /** Isolated worktree this session is bound to (P2-8). Lets history reopen the
+   *  right cwd and show a worktree badge without re-querying the CLI. */
+  worktreePath?: string;
+  worktreeLabel?: string;
+  sourceGitRoot?: string;
   /** Session-cumulative billing (#53). Ours, not grok's: the CLI reports usage
    *  per prompt and persists only context size in `signals.json`, so this is the
    *  only thing that survives a reload. Absent = never measured (an old session,

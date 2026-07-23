@@ -152,6 +152,20 @@ export class Session {
   activeSessionId?: string;
 
   /**
+   * Effective working directory for this session's `grok agent stdio` process.
+   * Usually the workspace root; for a worktree-isolated session (P2-8) this is
+   * the worktree path under `~/.grok/worktrees/…`. Pinned at startSession —
+   * history reopen must reuse the same cwd so `session/load` finds the dir.
+   */
+  cwd?: string;
+
+  /**
+   * When this session runs inside an isolated git worktree, the worktree's
+   * path/label/source root. Drives Apply/Remove and the history badge.
+   */
+  worktree?: { path: string; label: string; sourceGitRoot: string; id?: string };
+
+  /**
    * Session-scoped `[Image #N]` counter — the highest index used so far.
    * Incremented per attached image and NEVER reset on send, so every image in
    * one conversation gets a distinct tag (per-composer numbering would restart
