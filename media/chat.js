@@ -138,6 +138,8 @@
     // tool_call_update finds its row (title refinement, duration, result)
     // instead of leaking into the generic tool group.
     subagentCards: new Map(),
+    // Deep Research / Workflow / Goal progress cards (P2-10) — keyed by run/goal id.
+    runProgressCards: new Map(),
     // The current turn's agent-message footer (copy + timestamp). Only the
     // turn's LAST narration segment keeps one — see addMessage.
     turnAgentActionsEl: null,
@@ -295,6 +297,8 @@
     mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
     cornerDownRight: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>`,
     gitBranch: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+    // Undo / rewind — used on user-bubble action row (P2-9).
+    undo: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>`,
     // Animated equalizer bars shown while listening (CSS drives the bounce).
     micWaves: `<span class="mic-waves" aria-hidden="true"><i></i><i></i><i></i><i></i></span>`,
   };
@@ -1297,6 +1301,10 @@
       vscode.postMessage({ type: "forkSession" });
       closePopovers();
     });
+    addGearItem(`<span>Rewind conversation</span>`, () => {
+      vscode.postMessage({ type: "rewindSession" });
+      closePopovers();
+    });
     // Worktree UI (P2-8) — isolated git checkout for a session. Apply merges
     // edits back into the main workspace; Remove deletes the checkout.
     addGearItem(`<span>New worktree session</span>`, () => {
@@ -1855,6 +1863,7 @@
     state.toolItemsByToolCallId.clear();
     state.toolFailuresById.clear();
     state.subagentCards.clear();
+    state.runProgressCards.clear();
     // Question/restored-card maps too, or a new session's tool updates could
     // attach to the previous session's (now-detached) cards by toolCallId.
     state.questionToolCalls.clear();
@@ -2002,6 +2011,11 @@
       bubble.className = "msg-bubble";
       el.appendChild(bubble);
       contentParent = bubble;
+      // 0-based index among visible user bubbles — host maps this to a rewind
+      // prompt_index (skipping the hidden primer). Set after userMsgCount bump.
+      if (state.userMsgCount > 0) {
+        el.dataset.userBubbleIndex = String(state.userMsgCount - 1);
+      }
     }
 
     const body = document.createElement("div");
@@ -2024,10 +2038,21 @@
       copyBtn.type = "button";
       copyBtn.title = "Copy message";
       copyBtn.innerHTML = `<span class="msg-action-glyph">${ICON.copy}</span>`;
+      actions.appendChild(copyBtn);
+      // Rewind sits next to Copy on user bubbles only (P2-9). Latest message
+      // has nothing after it to discard — hidden via refreshUserRewindButtons.
+      if (role === "user") {
+        const rewindBtn = document.createElement("button");
+        rewindBtn.className = "msg-action-btn msg-rewind-btn";
+        rewindBtn.type = "button";
+        rewindBtn.title = "Rewind to this message";
+        rewindBtn.setAttribute("aria-label", "Rewind to this message");
+        rewindBtn.innerHTML = `<span class="msg-action-glyph">${ICON.undo}</span>`;
+        actions.appendChild(rewindBtn);
+      }
       const ts = document.createElement("span");
       ts.className = "msg-timestamp";
       ts.textContent = formatTime(Date.now());
-      actions.appendChild(copyBtn);
       actions.appendChild(ts);
       el.appendChild(actions);
       if (role === "agent") {
@@ -2051,6 +2076,7 @@
     }
 
     messagesEl.appendChild(el);
+    if (role === "user") refreshUserRewindButtons();
     scrollToBottom();
     if (role === "user" && text) {
       requestAnimationFrame(() => {
@@ -2058,6 +2084,22 @@
       });
     }
     return body;
+  }
+
+  /**
+   * Keep each user bubble's Rewind button + data-user-bubble-index in sync.
+   * The latest user message can't be a rewind target (CLI tip); earlier ones can.
+   * Queued (not-yet-sent) blocks are excluded.
+   */
+  function refreshUserRewindButtons() {
+    const users = [...messagesEl.querySelectorAll(".msg.user:not(.queued)")];
+    users.forEach((el, i) => {
+      el.dataset.userBubbleIndex = String(i);
+      const btn = el.querySelector(".msg-rewind-btn");
+      if (!btn) return;
+      // Hide on the tip — rewinding there is a no-op / errors on the wire.
+      btn.hidden = users.length <= 1 || i === users.length - 1;
+    });
   }
 
   // Show the current turn's (single) agent footer — called at every turn-end
@@ -3318,6 +3360,119 @@
       cancelled: parsed.status === "cancelled",
     });
     return true;
+  }
+
+  // ---------- Workflow / Goal / Deep-research progress cards (P2-10) ----------
+  // Host normalizes `_x.ai/session_notification` workflow_updated / goal_updated
+  // into a stable shape; we upsert one card per id and stop the dots on done.
+
+  function applyRunProgress(update) {
+    if (!update || !update.id) return;
+    clearWelcome();
+    hideGrokking();
+    const id = String(update.id);
+    let el = state.runProgressCards.get(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "run-progress-card";
+      el.dataset.runId = id;
+      el.innerHTML =
+        `<div class="run-progress-row">` +
+          `<span class="run-progress-badge">${ICON.orbit || ""}</span>` +
+          `<span class="run-progress-kind"></span>` +
+          `<span class="run-progress-sep">·</span>` +
+          `<span class="run-progress-title"></span>` +
+          BLINK_DOTS +
+          `<span class="run-progress-phase"></span>` +
+        `</div>` +
+        `<div class="run-progress-sub" hidden></div>` +
+        `<div class="run-progress-detail" hidden></div>` +
+        `<div class="run-progress-actions" hidden></div>`;
+      state.runProgressCards.set(id, el);
+      messagesEl.appendChild(el);
+    }
+
+    const kindLabel = update.kind === "goal" ? "Goal" : "Workflow";
+    el.querySelector(".run-progress-kind").textContent = kindLabel;
+    const title = update.title || id;
+    el.querySelector(".run-progress-title").textContent = title;
+    el.querySelector(".run-progress-title").title = title;
+
+    const phase = String(update.phase || "running");
+    const pct =
+      typeof update.progress === "number" && Number.isFinite(update.progress)
+        ? ` ${Math.round(update.progress * 100)}%`
+        : "";
+    const phaseEl = el.querySelector(".run-progress-phase");
+    const statusWord = update.failed
+      ? "failed"
+      : update.cancelled
+        ? "cancelled"
+        : update.done
+          ? (phase === "completed" || phase === "success" ? "done" : phase)
+          : phase;
+    phaseEl.textContent = `· ${statusWord}${pct}`;
+
+    const sub = el.querySelector(".run-progress-sub");
+    if (update.subtitle) {
+      sub.hidden = false;
+      sub.textContent = update.subtitle;
+    } else {
+      sub.hidden = true;
+      sub.textContent = "";
+    }
+    const detail = el.querySelector(".run-progress-detail");
+    if (update.detail) {
+      detail.hidden = false;
+      detail.textContent = update.detail;
+    } else {
+      detail.hidden = true;
+      detail.textContent = "";
+    }
+
+    el.classList.toggle("run-progress-failed", !!update.failed);
+    el.classList.toggle("run-progress-cancelled", !!update.cancelled && !update.failed);
+    el.classList.toggle("run-progress-done", !!update.done);
+
+    const dots = el.querySelector(".blink-dots");
+    if (update.done) {
+      if (dots) dots.remove();
+    } else if (!dots) {
+      // Restarted (e.g. resume) — put dots back after the title.
+      const titleEl = el.querySelector(".run-progress-title");
+      if (titleEl) titleEl.insertAdjacentHTML("afterend", BLINK_DOTS);
+    }
+
+    // Workflow control buttons (pause/resume/stop) while running or paused.
+    const actions = el.querySelector(".run-progress-actions");
+    if (update.kind === "workflow" && update.displayName && !update.done) {
+      actions.hidden = false;
+      const paused = /paus/.test(phase);
+      actions.innerHTML = "";
+      const mk = (label, action) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "run-progress-btn";
+        b.textContent = label;
+        b.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({
+            type: "workflowControl",
+            action,
+            displayName: update.displayName,
+          });
+        };
+        return b;
+      };
+      if (paused) actions.appendChild(mk("Resume", "resume"));
+      else actions.appendChild(mk("Pause", "pause"));
+      actions.appendChild(mk("Stop", "stop"));
+    } else {
+      actions.hidden = true;
+      actions.innerHTML = "";
+    }
+
+    scrollToBottom();
   }
 
   function addPlanNotice(text) {
@@ -5307,6 +5462,9 @@
         }
         break;
       }
+      case "runProgress":
+        applyRunProgress(msg.update);
+        break;
       case "permissionRequest":
         addPermissionCard(msg.req);
         break;
@@ -5721,6 +5879,17 @@
           msgCopyBtn.classList.remove("copied");
         }, 1500);
       });
+      return;
+    }
+    const msgRewindBtn = e.target.closest(".msg-rewind-btn");
+    if (msgRewindBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (msgRewindBtn.hidden) return;
+      const msgEl = msgRewindBtn.closest(".msg.user");
+      const idx = msgEl ? Number(msgEl.dataset.userBubbleIndex) : NaN;
+      if (!Number.isInteger(idx) || idx < 0) return;
+      vscode.postMessage({ type: "rewindSession", userBubbleIndex: idx });
       return;
     }
     closePopovers();

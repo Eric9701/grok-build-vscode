@@ -59,6 +59,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   newWorktreeSession: "full",
   applyWorktree: "full",
   removeWorktree: "full",
+  // Rewind restores file snapshots on disk + truncates conversation — full only.
+  rewindSession: "full",
+  // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
+  workflowControl: "propose",
   pasteImage: "propose",
   removeChip: "propose",
   toggleChip: "propose",
@@ -183,6 +187,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   error: "mirror",
   xaiNotification: "mirror",
   subagentUpdate: "mirror",
+  runProgress: "mirror",
   commandOutput: "mirror",
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",

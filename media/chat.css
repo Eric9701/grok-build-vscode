@@ -504,6 +504,9 @@ body.turn-busy .queued-steer:hover {
 }
 .msg-action-btn.copied { color: var(--vscode-charts-green, #4ec9b0); }
 .msg-action-glyph { display: inline-flex; align-items: center; }
+/* Rewind on the latest tip is a no-op — hide rather than disable so the row
+   stays copy+timestamp only on the current message. */
+.msg-rewind-btn[hidden] { display: none; }
 .msg-timestamp { font-size: 11px; }
 .msg.thinking {
   background: transparent;
@@ -788,6 +791,71 @@ body.thinking-hidden .msg.thinking { display: none; }
 }
 .subagent-card .subagent-result > *:first-child { margin-top: 0; }
 .subagent-card .subagent-result > *:last-child { margin-bottom: 0; }
+
+/* Workflow / Goal / Deep-research progress (P2-10) — teal accent to distinguish
+   from purple subagent cards. Same density as subagent rows. */
+.run-progress-card {
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-descriptionForeground);
+  padding: 5px 10px;
+  margin: 4px var(--pad);
+  border-left: 2px solid var(--vscode-charts-blue, #3794ff);
+  background: var(--vscode-textBlockQuote-background, rgba(55, 148, 255, 0.08));
+  border-radius: 0 6px 6px 0;
+}
+.run-progress-card.run-progress-failed {
+  border-left-color: var(--vscode-errorForeground);
+}
+.run-progress-card.run-progress-failed .run-progress-kind,
+.run-progress-card.run-progress-failed .run-progress-phase {
+  color: var(--vscode-errorForeground);
+}
+.run-progress-card.run-progress-cancelled .run-progress-phase {
+  opacity: 0.7;
+}
+.run-progress-card .run-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.run-progress-card .run-progress-badge { display: inline-flex; flex: none; }
+.run-progress-card .run-progress-kind { font-weight: 600; flex: none; }
+.run-progress-card .run-progress-sep { flex: none; opacity: 0.7; }
+.run-progress-card .run-progress-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-progress-card .run-progress-phase { flex: none; opacity: 0.85; }
+.run-progress-card .run-progress-sub,
+.run-progress-card .run-progress-detail {
+  margin-top: 3px;
+  font-size: 0.92em;
+  opacity: 0.9;
+  overflow-wrap: anywhere;
+  color: var(--vscode-foreground);
+}
+.run-progress-card .run-progress-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.run-progress-card .run-progress-btn {
+  font: inherit;
+  font-size: 0.88em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-secondaryBackground, rgba(127, 127, 127, 0.2));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  cursor: pointer;
+}
+.run-progress-card .run-progress-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(127, 127, 127, 0.35));
+}
 
 .tool-group {
   font-size: var(--vscode-font-size);

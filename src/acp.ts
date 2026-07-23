@@ -40,6 +40,13 @@ import {
   type WorktreeRecord,
   type WorktreeRemoveResult,
 } from "./worktree";
+import {
+  parseRewindExecute,
+  parseRewindPoints,
+  type RewindExecuteResult,
+  type RewindMode,
+  type RewindPoint,
+} from "./rewind";
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -569,6 +576,56 @@ export class AcpClient extends EventEmitter {
     } catch (e: any) {
       if (isMethodNotFoundError(e)) {
         this.opts.log("[worktree] CLI does not support _x.ai/git/worktree/remove");
+        return "unsupported";
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * List rewind points for this session (P2-9). One point per user prompt;
+   * each carries a prompt preview + whether file snapshots exist.
+   * `"unsupported"` on older CLIs (-32601).
+   */
+  async listRewindPoints(): Promise<RewindPoint[] | "unsupported"> {
+    if (!this.sessionId) throw new Error("no session");
+    try {
+      const r = await this.request("_x.ai/rewind/points", { sessionId: this.sessionId });
+      return parseRewindPoints(r);
+    } catch (e: any) {
+      if (isMethodNotFoundError(e)) {
+        this.opts.log("[rewind] CLI does not support _x.ai/rewind/points");
+        return "unsupported";
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Rewind conversation (+ optional file snapshots) to `targetPromptIndex`.
+   * Always passes `force: true` — the extension's confirm dialog is the UX
+   * gate (without force the CLI returns success:false with no truncation).
+   * Default mode `"all"` matches the TUI `/rewind` (conversation + files).
+   * `"unsupported"` on older CLIs.
+   */
+  async executeRewind(opts: {
+    targetPromptIndex: number;
+    mode?: RewindMode;
+  }): Promise<RewindExecuteResult | "unsupported"> {
+    if (!this.sessionId) throw new Error("no session");
+    try {
+      const r = await this.request("_x.ai/rewind/execute", {
+        sessionId: this.sessionId,
+        targetPromptIndex: opts.targetPromptIndex,
+        mode: opts.mode ?? "all",
+        force: true,
+      });
+      const parsed = parseRewindExecute(r);
+      if (!parsed) throw new Error("rewind/execute returned an empty result");
+      return parsed;
+    } catch (e: any) {
+      if (isMethodNotFoundError(e)) {
+        this.opts.log("[rewind] CLI does not support _x.ai/rewind/execute");
         return "unsupported";
       }
       throw e;

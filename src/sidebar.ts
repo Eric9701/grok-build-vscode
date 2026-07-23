@@ -93,6 +93,18 @@ import {
   worktreesForRepo,
   type WorktreeRecord,
 } from "./worktree";
+import {
+  formatRewindPointDetail,
+  formatRewindPointLabel,
+  resolveUserBubbleRewind,
+  rewindConfirmMessage,
+  selectableRewindPoints,
+  userFacingRewindPoints,
+} from "./rewind";
+import {
+  parseRunProgressUpdate,
+  workflowControlCommand,
+} from "./run-progress";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -1061,6 +1073,132 @@ See design doc for the full state machine diagram.`;
     } catch (e: any) {
       void vscode.window.showErrorMessage(`Fork failed: ${e?.message ?? e}`);
     }
+  }
+
+  /**
+   * Rewind (P2-9) — roll the conversation (and file snapshots) back to an
+   * earlier user prompt. Primary UX: the Rewind button on a user bubble
+   * (`userBubbleIndex`). Fallback: gear / command palette opens a QuickPick.
+   * Execute always uses `force:true` + mode `all`; then reloads the same
+   * session so the chat matches the truncated history.
+   */
+  async rewindFocusedSession(userBubbleIndex?: number): Promise<void> {
+    const session = this.focused;
+    if (!session.client || !session.activeSessionId) {
+      return void vscode.window.showWarningMessage("Start a session before rewinding it.");
+    }
+    if (session.status === "working" || session.status === "needs-you") {
+      return void vscode.window.showWarningMessage(
+        "Wait for the current turn to finish (or Stop it) before rewinding.",
+      );
+    }
+    if (!session.hasHistory) {
+      return void vscode.window.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
+    }
+    try {
+      const points = await session.client.listRewindPoints();
+      if (points === "unsupported") {
+        return void vscode.window.showWarningMessage(
+          "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+        );
+      }
+
+      let target: ReturnType<typeof resolveUserBubbleRewind> = null;
+      if (typeof userBubbleIndex === "number") {
+        // Bubble button: map visible user bubble → wire prompt_index (skips primer).
+        target = resolveUserBubbleRewind(points, userBubbleIndex);
+        if (!target) {
+          return void vscode.window.showInformationMessage(
+            "Can't rewind to this message — it's the latest turn, or the checkpoint is unavailable.",
+          );
+        }
+      } else {
+        // Gear / command palette: pick among user-facing points that aren't the tip.
+        const facing = userFacingRewindPoints(points);
+        const selectable = selectableRewindPoints(facing.length ? facing : points);
+        if (selectable.length === 0) {
+          return void vscode.window.showInformationMessage(
+            facing.length <= 1
+              ? "Only one message so far — hover an earlier user message and click Rewind."
+              : "No rewind points available.",
+          );
+        }
+        const items = [...selectable]
+          .sort((a, b) => b.promptIndex - a.promptIndex)
+          .map((p) => ({
+            label: formatRewindPointLabel(p),
+            description: p.hasFileChanges ? "files" : undefined,
+            detail: formatRewindPointDetail(p),
+            point: p,
+          }));
+        const pick = await vscode.window.showQuickPick(items, {
+          placeHolder: "Rewind to which message? (discards everything after it)",
+          ignoreFocusOut: true,
+          matchOnDescription: true,
+          matchOnDetail: true,
+        });
+        if (!pick) return;
+        target = pick.point;
+      }
+
+      const ok = await vscode.window.showWarningMessage(
+        rewindConfirmMessage(target, "all"),
+        { modal: true },
+        "Rewind",
+      );
+      if (ok !== "Rewind") return;
+
+      const result = await session.client.executeRewind({
+        targetPromptIndex: target.promptIndex,
+        mode: "all",
+      });
+      if (result === "unsupported") {
+        return void vscode.window.showWarningMessage(
+          "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+        );
+      }
+      if (!result.success) {
+        const err = result.error || "Rewind did not apply (no changes).";
+        return void vscode.window.showErrorMessage(err);
+      }
+
+      const nFiles = result.revertedFiles.length;
+      this.output.appendLine(
+        `[rewind] → prompt #${result.targetPromptIndex} (mode=${result.mode}, files=${nFiles}` +
+          (typeof userBubbleIndex === "number" ? `, bubble=${userBubbleIndex}` : "") +
+          `)`,
+      );
+      const resumeId = session.activeSessionId;
+      this.emit(session, { type: "clearMessages" });
+      await this.startSession(resumeId);
+      const fileNote =
+        nFiles > 0
+          ? ` Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`
+          : result.mode === "conversation_only"
+            ? ""
+            : " (no file changes at that point)";
+      void vscode.window.showInformationMessage(
+        `Rewound to this message.${fileNote}`,
+      );
+    } catch (e: any) {
+      void vscode.window.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
+    }
+  }
+
+  /**
+   * Pause / resume / stop a background workflow by its display name (P2-10).
+   * Sends the matching `/workflow …` slash command as a real turn so the CLI
+   * dispatches it (same path as typing the command in the composer).
+   */
+  private async controlWorkflow(
+    action: "pause" | "resume" | "stop",
+    displayName: string,
+  ): Promise<void> {
+    const cmd = workflowControlCommand(action, displayName);
+    if (!cmd) {
+      return void vscode.window.showWarningMessage("Missing workflow display name.");
+    }
+    await this.handleSend(cmd, true);
   }
 
   /** Workspace folder root (the main checkout for worktree ops). */
@@ -2215,6 +2353,10 @@ See design doc for the full state machine diagram.`;
       // subagentLifecycle channel). Re-route to the same `subagentUpdate` the
       // webview cards already consume — subagent_finished fills duration/output.
       if (isSubagentLifecycleUpdate(u)) this.emit(session, { type: "subagentUpdate", update: u });
+      // Deep Research / Workflow / Goal progress (P2-10) — same live rail.
+      // Normalized once so the webview only sees a stable card shape.
+      const runProg = parseRunProgressUpdate(u);
+      if (runProg) this.emit(session, { type: "runProgress", update: runProg });
       // Automatic (context-full) compaction was previously silent — surface a
       // dedicated notice (auto-path only; manual /compact paints "Compacted."
       // from the slash path). Dedicated (not a messageChunk) so it finalizes any
@@ -2564,6 +2706,14 @@ See design doc for the full state machine diagram.`;
         break;
       case "removeWorktree":
         await this.removeFocusedWorktree();
+        break;
+      case "rewindSession":
+        await this.rewindFocusedSession(
+          typeof msg.userBubbleIndex === "number" ? msg.userBubbleIndex : undefined,
+        );
+        break;
+      case "workflowControl":
+        await this.controlWorkflow(msg.action, msg.displayName);
         break;
       case "clearQueuedSends": {
         // Posted by the webview's Stop flow BEFORE the cancel — a halt must not
@@ -4298,12 +4448,12 @@ See design doc for the full state machine diagram.`;
   // them out costs those flows nothing.
   private static readonly SUPPRESS_TYPES = new Set([
     "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate",
-    "promptComplete", "xaiNotification", "subagentUpdate", "commandOutput", "agentEnd",
+    "promptComplete", "xaiNotification", "subagentUpdate", "runProgress", "commandOutput", "agentEnd",
   ]);
   // Subset: content only, not lifecycle. Lets promptComplete/agentEnd through so
   // the webview's `busy` state clears when the false-approval turn ends.
   private static readonly PLAN_REJECT_SUPPRESS = new Set([
-    "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate", "xaiNotification", "subagentUpdate", "commandOutput",
+    "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate", "xaiNotification", "subagentUpdate", "runProgress", "commandOutput",
   ]);
 
   private post(message: HostMsg): void {

@@ -79,6 +79,16 @@ The wire format is the highest-value test surface: ACP changes break everything 
 - Path equality is separator- and case-normalized so a worktree cwd matches across slash styles
 - `worktreeDisplayName` derives the `WT <label>` badge; `mergeSessionIndexes` / `collectSessionCwds` fold the workspace cwd + known worktree paths into one newest-first history list without dupes
 
+### `test/rewind.test.ts` — rewind helpers, pure (P2-9)
+
+- `parseRewindPoints` / `parseRewindExecute` pull the selectable restore targets + execute result out of the `_x.ai/rewind/*` payload shapes (tolerating the unsupported/malformed forms)
+- Target selection, confirm-prompt and label formatters produce the QuickPick text the gate shows before reverting files
+
+### `test/run-progress.test.ts` — Deep Research / Workflow / Goal progress, pure (P2-10)
+
+- `isRunProgressUpdate` / `parseRunProgressUpdate` recognize + normalize `workflow_updated` / `goal_updated` off the live `_x.ai/session_notification` rail into the progress-card shape
+- `workflowControlCommand` maps a pause/resume/stop control to the CLI's control slash command
+
 ### `test/mention.dom.test.ts` — "@" popover + waiting indicator in a real DOM (12 tests)
 
 - Typing `@`/`@ch` posts `mentionQuery` per keystroke; a mid-word `@` (email) posts nothing

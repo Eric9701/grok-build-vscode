@@ -96,6 +96,10 @@
         "title": "Grok: Remove Worktree"
       },
       {
+        "command": "grok.rewind",
+        "title": "Grok: Rewind Conversation"
+      },
+      {
         "command": "grok.compact",
         "title": "Grok: Compact Conversation"
       },

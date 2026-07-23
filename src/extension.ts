@@ -18,6 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),
     vscode.commands.registerCommand("grok.applyWorktree", () => sidebar.applyFocusedWorktree()),
     vscode.commands.registerCommand("grok.removeWorktree", () => sidebar.removeFocusedWorktree()),
+    vscode.commands.registerCommand("grok.rewind", () => sidebar.rewindFocusedSession()),
     vscode.commands.registerCommand("grok.compact", () => {
       // emulated by sending the slash command as a prompt; CLI handles it
       vscode.window.showInformationMessage(
