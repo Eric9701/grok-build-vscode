@@ -26,8 +26,8 @@
   const historyPopover = $("history-popover");
   const scrollBottomBtn = $("scroll-bottom-btn");
 
-  // grok's accepted reasoning-effort values, lowest → highest (matches the CLI;
-  // `max` is not a real grok level and is intentionally excluded — see #3/#4).
+  // Canonical low→high ORDER for known effort ids, and the FALLBACK ladder when a
+  // model advertises no menu (`max` is not a real grok level — see #3/#4).
   const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
   const EFFORT_TOOLTIPS = {
     none: "None — no extra reasoning",
@@ -37,6 +37,25 @@
     high: "High — deeper reasoning",
     xhigh: "XHigh — deepest reasoning, slowest",
   };
+
+  // The effort levels the gear picker OFFERS: the ACTIVE model's advertised menu
+  // (`models[]._meta.reasoningEfforts`, already delivered to the webview on the
+  // `session` message), ordered low→high with any unknown advertised value
+  // appended. Falls back to the full ladder only when a model advertises none
+  // (older CLI / non-reasoning model). So the dots always match what the current
+  // model actually accepts — not a hardcoded set (grok-4.5 advertises just
+  // low/medium/high). The advertised list rides in state.availableModels, which
+  // is our per-session cache; the picker is locked until that's loaded anyway.
+  function effortLevelsForModel() {
+    const m = (state.availableModels || []).find((x) => x && x.modelId === state.currentModelId);
+    const adv = m && Array.isArray(m.reasoningEfforts)
+      ? m.reasoningEfforts.filter((v) => typeof v === "string" && v)
+      : [];
+    if (!adv.length) return EFFORT_LEVELS.slice();
+    const known = EFFORT_LEVELS.filter((id) => adv.includes(id));
+    const extra = adv.filter((id) => !EFFORT_LEVELS.includes(id)); // unknown advertised → keep as given
+    return [...known, ...extra];
+  }
 
   const state = {
     welcomeVisible: true,
@@ -1276,8 +1295,9 @@
 
     const dotsEl = document.createElement("span");
     dotsEl.className = "effort-dots" + (settingsLocked ? " disabled" : "");
-    const currentIdx = EFFORT_LEVELS.indexOf(state.effort);
-    EFFORT_LEVELS.forEach((id, i) => {
+    const effortLevels = effortLevelsForModel();
+    const currentIdx = effortLevels.indexOf(state.effort);
+    effortLevels.forEach((id, i) => {
       const dot = document.createElement("span");
       dot.className = "effort-dot" + (i <= currentIdx ? " active" : "") + (settingsLocked ? " disabled" : "");
       // Render the dot as a CSS-shaped span (see chat.css). Avoids the classic

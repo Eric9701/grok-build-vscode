@@ -569,6 +569,37 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
   });
 });
 
+describe("effort picker uses the model's advertised levels (not a hardcoded set)", () => {
+  const openEffortDots = (h: any) => {
+    click(h.window, $(h.doc, "gear-btn"));
+    return [...h.doc.querySelectorAll(".effort-dot")] as HTMLElement[];
+  };
+
+  it("shows exactly the current model's advertised efforts, ordered low→high", () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "session", sessionId: "s1", currentModelId: "grok-build",
+      models: [{ modelId: "grok-build", name: "Grok Build", reasoningEfforts: ["high", "medium", "low"] }],
+    });
+    const dots = openEffortDots(h);
+    expect(dots).toHaveLength(3); // low/medium/high — not the 6-level ladder
+    expect(dots.map((d) => d.title)).toEqual([
+      "Low — fast, lightweight reasoning",
+      "Medium — balanced",
+      "High — deeper reasoning",
+    ]);
+  });
+
+  it("falls back to the full ladder when the model advertises no efforts", () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "session", sessionId: "s1", currentModelId: "grok-build",
+      models: [{ modelId: "grok-build", name: "Grok Build" }], // no reasoningEfforts
+    });
+    expect(openEffortDots(h)).toHaveLength(6);
+  });
+});
+
 describe("reasoning trace (regression: thinking traces no longer expandable)", () => {
   it("renders a collapsed thinking block whose header toggles the body open/closed", () => {
     const { window, doc } = bootWebview();
