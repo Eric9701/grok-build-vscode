@@ -2451,6 +2451,22 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .history-row.active .history-row-name {
   color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
 }
+/* Worktree badge — a distinct tag (not a text prefix) marking an isolated
+   git-checkout session, so it's visually unlike a "(Fork)" conversation copy. */
+.history-row-wt {
+  display: inline-block;
+  vertical-align: baseline;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  line-height: 1.3;
+  padding: 0 4px;
+  margin-right: 5px;
+  border-radius: 4px;
+  color: var(--vscode-charts-blue, #3794ff);
+  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 40%, transparent);
+}
 .history-row-meta {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);

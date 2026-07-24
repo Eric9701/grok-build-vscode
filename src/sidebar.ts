@@ -4559,7 +4559,11 @@ See design doc for the full state machine diagram.`;
   private parkFocused(): void {
     const cur = this.focused;
     const busy = cur.status === "working" || cur.status === "needs-you";
-    if (cur.hasHistory || cur.afterTurn || busy) return; // real/active work — keep it parked & alive
+    // A worktree session backs a real git checkout the user explicitly created —
+    // never auto-delete it as an "empty primer session", even before the first
+    // message (that's what made creating/leaving a worktree replace the current
+    // one). It's removed only via Remove worktree.
+    if (cur.hasHistory || cur.afterTurn || busy || cur.worktree) return; // real/active work — keep it parked & alive
     // Empty (primer-only) session being left behind (New Session, or switching to
     // another): tear down its process AND delete its on-disk dir so it doesn't pile
     // up in history (#24). The next focused session becomes the single live "New

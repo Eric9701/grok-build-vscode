@@ -1312,9 +1312,12 @@
         closePopovers();
       });
     }
-    // Worktree UI (P2-8) — isolated git checkout for a session. New is always
-    // available (it validates the git repo on click); Apply merges edits back
-    // and Remove deletes the checkout, so both only apply to a worktree session.
+    // ── Worktree ──────────────────────────────────────────────────────────
+    // Isolated git checkout for a session — its own section since it's a distinct
+    // mode, not a conversation op. New is always available (it validates the git
+    // repo on click); Apply merges edits back and Remove deletes the checkout, so
+    // both only apply when the focused session IS a worktree.
+    addSection("Worktree");
     addGearItem(`<span>New worktree session</span>`, () => {
       vscode.postMessage({ type: "newWorktreeSession" });
       closePopovers();
@@ -1773,14 +1776,26 @@
       } else {
         const name = document.createElement("div");
         name.className = "history-row-name";
-        name.textContent = s.displayName || "Untitled";
         name.title = s.rawSummary || s.displayName || "";
+        // Worktree sessions get a distinct badge, not just a "(WT)" text prefix
+        // like a fork's "(Fork)" — a worktree is an isolated checkout with its own
+        // lifecycle (Apply/Remove), so it reads as a tagged item, not a renamed
+        // conversation. Strip the default "(WT)" prefix; the badge carries it.
+        let displayName = s.displayName || "Untitled";
+        if (s.worktreeLabel) {
+          if (displayName.startsWith("(WT)")) displayName = displayName.slice(4).trim() || "Worktree";
+          const badge = document.createElement("span");
+          badge.className = "history-row-wt";
+          badge.textContent = "WT";
+          badge.title = "Worktree: " + s.worktreeLabel;
+          name.appendChild(badge);
+        }
+        name.appendChild(document.createTextNode(displayName));
         main.appendChild(name);
 
         const meta = document.createElement("div");
         meta.className = "history-row-meta";
         const parts = [];
-        if (s.worktreeLabel) parts.push("WT " + s.worktreeLabel);
         if (s.numMessages) parts.push(`${s.numMessages} msg`);
         parts.push(formatRelativeTime(s.updatedAt));
         meta.textContent = parts.join(" · ");
