@@ -226,6 +226,12 @@
           "default": true,
           "description": "Auto-add the active editor file as a context chip."
         },
+        "grok.mentionIndexLimit": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "markdownDescription": "Max workspace files indexed for composer **@** file autocomplete. Default 5000 keeps a cold index build bounded; raise it (no upper limit) if files are missing from the `@` list in large repos. Applies on the next `@` after the setting changes. Very large values cost more time on the first rebuild."
+        },
         "grok.defaultEffort": {
           "type": "string",
           "enum": [

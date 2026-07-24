@@ -54,7 +54,7 @@ import {
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { matchSlashCommand } from "./slash-filter";
-import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
+import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, clampMentionIndexLimit, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
 import { configForcesAlwaysApprove } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
@@ -358,6 +358,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         // Apply the toggle immediately: disabling removes a visible context
         // chip right away (not on the next editor event), enabling shows it.
         this.refreshImplicitChip(true);
+      }
+      if (e.affectsConfiguration("grok.mentionIndexLimit")) {
+        // Drop the TTL-cached findFiles snapshot so the next `@` rebuilds with
+        // the new cap (otherwise a raise would wait up to MENTION_INDEX_TTL_MS).
+        this.mentionIndex = null;
       }
       if (e.affectsConfiguration("grok.terminalShell")) {
         this.applyTerminalShellPref();
@@ -3488,7 +3493,12 @@ See design doc for the full state machine diagram.`;
       cfg.get<Record<string, unknown>>("files.exclude"),
       cfg.get<Record<string, unknown>>("search.exclude"),
     ]);
-    const uris = await vscode.workspace.findFiles("**/*", exclude, MENTION_INDEX_LIMIT);
+    // Cap is user-tunable (`grok.mentionIndexLimit`) — large monorepos that hit
+    // the default 5000 can miss files from `@` autocomplete (#69).
+    const limit = clampMentionIndexLimit(
+      vscode.workspace.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
+    );
+    const uris = await vscode.workspace.findFiles("**/*", exclude, limit);
     const absByRel = new Map<string, string>();
     for (const uri of uris) {
       // Default asRelativePath prefixes the folder name only in a multi-root
