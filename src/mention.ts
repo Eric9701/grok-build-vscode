@@ -43,6 +43,25 @@ export function normalizeRelPath(p: string): string {
 }
 
 /**
+ * Union extra `{rel, abs}` paths into a findFiles snapshot. Paths already in the
+ * map are left alone (first wins). Returns the input map unchanged when nothing
+ * new is added; otherwise a new Map so the cached findFiles snapshot stays
+ * pure. Used to inject currently open editors that the 5k cap missed (#69).
+ */
+export function mergeMentionEntries(
+  absByRel: Map<string, string>,
+  extra: Iterable<{ rel: string; abs: string }>,
+): Map<string, string> {
+  let out: Map<string, string> | null = null;
+  for (const { rel, abs } of extra) {
+    if (!rel || !abs || (out ?? absByRel).has(rel)) continue;
+    if (!out) out = new Map(absByRel);
+    out.set(rel, abs);
+  }
+  return out ?? absByRel;
+}
+
+/**
  * Combine the user's `files.exclude` + `search.exclude` maps into one findFiles
  * exclude glob. findFiles' default (undefined) applies only `files.exclude`,
  * which does NOT contain node_modules — that lives in `search.exclude` — so

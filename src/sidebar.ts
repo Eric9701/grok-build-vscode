@@ -54,7 +54,7 @@ import {
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { matchSlashCommand } from "./slash-filter";
-import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, clampMentionIndexLimit, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
+import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, clampMentionIndexLimit, filterMentionFiles, mergeMentionEntries, normalizeRelPath, orderMentionIndex } from "./mention";
 import { configForcesAlwaysApprove } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
@@ -216,9 +216,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private chips: FileChip[] = [];
   /** Attachment-staging ops still in flight — see trackAttach. */
   private readonly pendingAttach = new Set<Promise<void>>();
-  /** The composer's `@` file popover index: workspace-relative paths (ranked by
-   *  src/mention.ts) + rel→abs map for the pick. One findFiles snapshot serves
-   *  {@link MENTION_INDEX_TTL_MS}; concurrent queries share one in-flight build. */
+  /** Cached findFiles snapshot for the `@` popover (no open-editor merge).
+   *  One snapshot serves {@link MENTION_INDEX_TTL_MS}; concurrent queries share
+   *  one in-flight build. Open tabs are layered on at read time. */
   private mentionIndex: { at: number; rels: string[]; absByRel: Map<string, string> } | null = null;
   private mentionIndexPromise: Promise<{ rels: string[]; absByRel: Map<string, string> }> | null = null;
   private editorWatcher?: vscode.Disposable;
@@ -3063,9 +3063,11 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "addMentionFile": {
-        // The pick came from a posted result, so the index (and its rel→abs map)
-        // exists; fall back to a workspace-root join if it somehow expired.
+        // Pick came from a posted result: prefer the findFiles map, then an open
+        // tab (open-only merge isn't written into the cached index, #69), then a
+        // workspace-root join if both somehow miss.
         const abs = this.mentionIndex?.absByRel.get(msg.relPath)
+          ?? this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs
           ?? (vscode.workspace.workspaceFolders?.[0]
             ? path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, msg.relPath)
             : undefined);
@@ -3470,8 +3472,18 @@ See design doc for the full state machine diagram.`;
 
   /** The `@` popover's file index, rebuilt at most once per
    *  {@link MENTION_INDEX_TTL_MS}. Keystrokes during a cold build all await the
-   *  same findFiles pass instead of stacking one per key. */
+   *  same findFiles pass instead of stacking one per key. Open editors that the
+   *  findFiles cap missed are merged in on every read (not cached) so a newly
+   *  opened tab is mentionable immediately, and closing it drops it again (#69). */
   private async mentionFileIndex(): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
+    const base = await this.mentionFindFilesIndex();
+    const merged = mergeMentionEntries(base.absByRel, this.openWorkspaceFileEntries());
+    if (merged === base.absByRel) return base;
+    return { rels: orderMentionIndex([...merged.keys()]), absByRel: merged };
+  }
+
+  /** TTL-cached `findFiles` snapshot only — no open-editor injection. */
+  private async mentionFindFilesIndex(): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
     const cached = this.mentionIndex;
     if (cached && Date.now() - cached.at < MENTION_INDEX_TTL_MS) return cached;
     if (!this.mentionIndexPromise) {
@@ -3507,6 +3519,30 @@ See design doc for the full state machine diagram.`;
       if (!absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
     }
     return { rels: orderMentionIndex([...absByRel.keys()]), absByRel };
+  }
+
+  /** Currently open workspace text tabs as `{rel, abs}` for mention merge.
+   *  Non-file schemes and paths outside the workspace are skipped. */
+  private openWorkspaceFileEntries(): Array<{ rel: string; abs: string }> {
+    const out: Array<{ rel: string; abs: string }> = [];
+    const seen = new Set<string>();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const input = tab.input;
+        if (!(input instanceof vscode.TabInputText)) continue;
+        const uri = input.uri;
+        if (uri.scheme !== "file") continue;
+        if (!vscode.workspace.getWorkspaceFolder(uri)) continue;
+        const abs = uri.fsPath;
+        if (seen.has(abs)) continue;
+        seen.add(abs);
+        out.push({
+          rel: normalizeRelPath(vscode.workspace.asRelativePath(uri)),
+          abs,
+        });
+      }
+    }
+    return out;
   }
 
   /** Resolve the xAI key for Speech-to-Text: the `grok.voiceApiKey` setting,
