@@ -49,8 +49,10 @@ export interface PlanHistoryItem {
 
 /** host -> webview */
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean }
   | { type: "showThinking"; value: boolean }
+  // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
+  | { type: "soundNotifications"; value: boolean }
   | { type: "fontScale"; value: number }
   | { type: "grokUpdateStatus"; current?: string | null; latest?: string | null; updateAvailable?: boolean; policy?: unknown; error?: string }
   | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; init: { protocolVersion?: unknown } } }
@@ -168,6 +170,8 @@ export type WebviewMsg =
   | { type: "showLogs" }
   | { type: "moveView"; location: "panel" | "sidebar" | "auxiliarybar" }
   | { type: "setShowThinking"; value: boolean }
+  // grok.soundNotifications gear switch (#59) — persisted globally by the host.
+  | { type: "setSoundNotifications"; value: boolean }
   | { type: "setExpandCommandOutputs"; value: boolean }
   | { type: "setSteerByDefault"; value: boolean }
   | { type: "dropFile"; path: string; shift: boolean }
@@ -228,6 +232,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
+  soundNotifications: true,
   setAllToolDetails: true, focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true,
 };
@@ -238,6 +243,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
   setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
+  setSoundNotifications: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,

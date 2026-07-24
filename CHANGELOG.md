@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.5 — 2026-07-24
+
+### Added
+
+- **`@` file autocomplete in the composer** — type `@` to fuzzy-search workspace files and attach one as a chip (keyboard-navigable; the pick keeps both the `@path` text and a real chip). Thanks to [@funkpopo](https://github.com/funkpopo) ([#63](https://github.com/phuryn/grok-build-vscode/pull/63); closes [#60](https://github.com/phuryn/grok-build-vscode/issues/60)).
+- **Sound notifications** — an optional short tone when Grok finishes a turn or hits an error, played *only when the Grok panel isn't focused* (a rising chime for done, a lower tone for errors). Off by default; toggle in gear → *Config & debug → Sound notifications* (`grok.soundNotifications`). ([#59](https://github.com/phuryn/grok-build-vscode/issues/59))
+
+### Changed
+
+- **Switch to Auto accept mid-turn** — the mode picker stays live during a running turn, so you can stop approving permission cards without stopping Grok; flipping to Auto accept also clears any card already on screen. Approving a plan now returns you to your pre-plan mode (Auto accept stays Auto accept). ([#64](https://github.com/phuryn/grok-build-vscode/issues/64))
+- The waiting indicator (*Grokking* / *Thinking…*) now shimmers while idle. Thanks to [@funkpopo](https://github.com/funkpopo) ([#63](https://github.com/phuryn/grok-build-vscode/pull/63)).
+
+### Fixed
+
+- **Plan mode no longer blocks Grok from writing its own `plan.md`.** On Windows, Grok sometimes persists its plan via a PowerShell `Set-Content` command instead of the file-write tool; the plan-gate was refusing it ("Plan mode blocked a command…") and Grok had to retry. That write lands outside your workspace, so it's now allowed — while any command that also reaches into the workspace stays blocked. ([src/plan-gate.ts](src/plan-gate.ts))
+
 ## 1.7.4 — 2026-07-19
 
 Eleven long-standing bugs found by running this extension through a multi-model bug-finding benchmark, then re-verified and fixed against the live tree — most of them Windows path handling. 42 new regression tests.

@@ -714,7 +714,11 @@ export class AcpClient extends EventEmitter {
       }
       if (method === "terminal/create") {
         if (!this.terminal) throw new Error("terminal handler not registered");
-        if (shouldBlockTerminal(params.command, { active: this.planActive, workspaceRoot: this.opts.cwd })) {
+        if (shouldBlockTerminal(params.command, {
+          active: this.planActive,
+          workspaceRoot: this.opts.cwd,
+          grokHome: resolveGrokHome(this.opts.env ?? process.env),
+        })) {
           this.emit("mutationBlocked", { kind: "terminal", target: params.command });
           this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_TERMINAL_MSG);
           return;

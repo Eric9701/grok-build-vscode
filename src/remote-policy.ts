@@ -92,6 +92,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setShowThinking: "host-local",
   setExpandCommandOutputs: "host-local",
   setSteerByDefault: "host-local",
+  setSoundNotifications: "host-local",
 };
 
 const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full: 2 };
@@ -180,6 +181,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   commandOutput: "mirror",
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
+  soundNotifications: "mirror",
   setAllToolDetails: "mirror",
   focusInput: "mirror",
   sessions: "mirror",

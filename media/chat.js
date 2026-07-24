@@ -224,6 +224,10 @@
     // grok is working SKIPS the queue and is interjected into the running turn.
     // False = today's behavior (queue, with an on-demand Steer button).
     steerByDefault: false,
+    // grok.soundNotifications (persisted, global): when true a short synth tone
+    // plays on turn completion / error, but only when the Grok panel isn't
+    // focused (#59). Off by default. Host posts the value on init + config change.
+    soundNotifications: false,
     // toolExpandOverride (per-session, in-memory): the Command Palette
     // Expand/Collapse All latch. null = follow the setting above; true/false =
     // force ALL groups + details open/closed for this session, and keep applying
@@ -325,6 +329,67 @@
     if (s === "xhigh") return "XHigh";
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
+
+  // ---------- sound notifications (#59) ----------
+  // Synth tones via Web Audio — no bundled assets, CSP-safe, offline. Two cues:
+  // a rising two-note chime for completion, a lower falling tone for errors. The
+  // AudioContext is created lazily and unlocked on the first user gesture (the
+  // autoplay policy starts it "suspended"); the send/keypress that starts a turn
+  // is that gesture, so a later completion beep is allowed.
+  let audioCtx = null;
+  function ensureAudioCtx() {
+    if (audioCtx) return audioCtx;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = AC ? new AC() : null;
+    } catch (_e) { audioCtx = null; }
+    return audioCtx;
+  }
+  function unlockAudio() {
+    const ctx = ensureAudioCtx();
+    if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+  }
+  function playNotificationTone(kind) {
+    const ctx = ensureAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    const t0 = ctx.currentTime;
+    // { frequency Hz, start-offset s, duration s }
+    const notes = kind === "error"
+      ? [{ f: 311, s: 0, d: 0.18 }, { f: 233, s: 0.15, d: 0.26 }]  // falling, darker
+      : [{ f: 587, s: 0, d: 0.14 }, { f: 880, s: 0.13, d: 0.20 }]; // rising, bright
+    const master = ctx.createGain();
+    master.gain.value = 0.08; // gentle — a cue, not an alarm
+    master.connect(ctx.destination);
+    for (const n of notes) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = n.f;
+      // Tiny attack + exponential decay so each note doesn't click.
+      g.gain.setValueAtTime(0.0001, t0 + n.s);
+      g.gain.exponentialRampToValueAtTime(1, t0 + n.s + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + n.s + n.d);
+      osc.connect(g);
+      g.connect(master);
+      osc.start(t0 + n.s);
+      osc.stop(t0 + n.s + n.d + 0.03);
+    }
+  }
+  // Play only when the user isn't looking at the Grok panel — the "notify me when
+  // I've stepped away" case (#59). A focused, visible panel means they'll see the
+  // result without a beep. hasFocus() is false when the editor/another app has
+  // focus; visibilityState covers a fully collapsed panel.
+  function maybeNotifySound(kind) {
+    if (!state.soundNotifications) return;
+    const away = document.visibilityState === "hidden" || !document.hasFocus();
+    if (!away) return;
+    playNotificationTone(kind);
+  }
+  // Unlock on the first user gesture anywhere in the webview (typing/clicking to
+  // send qualifies), so the first completion beep isn't blocked by autoplay.
+  document.addEventListener("pointerdown", unlockAudio, { passive: true });
+  document.addEventListener("keydown", unlockAudio, { passive: true });
 
   function toK(n) {
     return Math.round(n / 1000) + "K";
@@ -1376,6 +1441,19 @@
         },
       );
     }
+    // Sound notifications (#59) — a short tone on turn completion / error, played
+    // only when the Grok panel isn't focused (notify me when I've stepped away).
+    addGearItem(
+      `<span title="Play a short sound when Grok finishes or errors — only when the Grok panel isn't focused. A rising chime for done, a lower tone for errors.">Sound notifications</span><span class="popover-switch${state.soundNotifications ? " on" : ""}" role="switch" aria-checked="${state.soundNotifications}"><span class="popover-switch-knob"></span></span>`,
+      () => {
+        state.soundNotifications = !state.soundNotifications;
+        vscode.postMessage({ type: "setSoundNotifications", value: state.soundNotifications });
+        // Unlock the audio context on this user gesture so the first later beep
+        // is allowed (autoplay policy). A no-op when already running.
+        if (state.soundNotifications) unlockAudio();
+        renderConfigDebugPanel();
+      },
+    );
     addGearSep();
     addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
       vscode.postMessage({ type: "openGlobalConfig" });
@@ -4434,14 +4512,14 @@
     // keystroke, and rebuilding the block would churn its DOM (and fight the
     // Edit/Remove buttons) for what is a pure visibility flip.
     document.body.classList.toggle("turn-busy", !!state.busy);
-    // The mode switch (Agent/Plan/Auto-accept) restarts the gate and calls the CLI,
-    // so it's locked whenever busy — like the model/effort controls. Crucially this
-    // covers the session-start window (busy is true through spawn → session/new),
-    // where a setMode would otherwise throw "no session". Unlike a separate
-    // readiness flag, `busy` always clears, so the control can never get stuck.
-    modeBtn.disabled = state.busy;
-    modeBtn.classList.toggle("disabled", state.busy);
-    modeBtn.title = state.busy ? "Mode — available once the session is ready" : "Pick mode";
+    // The mode switch (Agent/Plan/Auto-accept) stays available DURING a running
+    // turn (#64): flipping to Auto-accept mid-run is the whole point, and the host
+    // setMode gate is client-side (autoApprove) so it takes effect immediately.
+    // Only the session-start window (busyLocked: spawn → session/new → priming) is
+    // locked, where a setMode would throw "no session"; that flag always clears.
+    modeBtn.disabled = state.busyLocked;
+    modeBtn.classList.toggle("disabled", state.busyLocked);
+    modeBtn.title = state.busyLocked ? "Mode — available once the session is ready" : "Pick mode";
     if (!state.busy) {
       sendBtn.innerHTML = ICON.arrowUp;
       sendBtn.title = "Send";
@@ -4798,12 +4876,19 @@
         if (typeof msg.showThinking === "boolean") state.showThinking = msg.showThinking;
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
+        if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
         applyThinkingVisibility();
         break;
       case "steerByDefault":
         // Live toggle (grok.steerByDefault). Pure policy for the next send —
         // nothing to re-render, the queued block's Steer button is unaffected.
         state.steerByDefault = !!msg.value;
+        break;
+      case "soundNotifications":
+        // Live toggle (grok.soundNotifications). Only affects future turn-end/
+        // error beeps; keep the gear switch in sync if it's open.
+        state.soundNotifications = !!msg.value;
+        if (state.gearView === "config") renderConfigDebugPanel();
         break;
       case "showThinking":
         // Live toggle (grok.showThinking). Initial value also arrives via
@@ -5351,6 +5436,7 @@
         state.busy = false;
         state.busyLocked = false; // an error ends any startup lock too
         updateSendButton();
+        maybeNotifySound("error"); // #59 — only when the panel isn't focused
         break;
       case "agentEnd":
         hideGrokking(); // turn ended (defensive — content normally clears it first)
@@ -5362,6 +5448,7 @@
         revealTurnFooter();
         state.busy = false;
         updateSendButton();
+        maybeNotifySound("done"); // #59 — only when the panel isn't focused
         break;
       case "exit":
         hideGrokking();
@@ -5526,7 +5613,7 @@
     resetForNewSession();
     vscode.postMessage({ type: "newSession" });
   };
-  modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busy) return; openModePopover(); };
+  modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busyLocked) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
 
   // Welcome screen's "about" link → open the gear popover's Version & about panel.

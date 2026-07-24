@@ -4,6 +4,7 @@ import {
   isMutatingKind,
   isReadOnlyCommand,
   isPlanFileWrite,
+  isGrokPlanWriteCommand,
   pickRejectOption,
   shouldBlockWrite,
   shouldBlockTerminal,
@@ -240,6 +241,43 @@ describe("shouldBlockTerminal", () => {
   });
   it("never blocks when the gate is off", () => {
     expect(shouldBlockTerminal("rm -rf /", off("/p"))).toBe(false);
+  });
+
+  // grok sometimes persists its OWN plan by shelling out to write plan.md
+  // (PowerShell here-string → Set-Content) instead of fs/write_text_file. That
+  // write is outside the workspace and must not be blocked (the notice + retry
+  // the user hit). The exemption below is what makes these pass.
+  it("ALLOWS grok writing its own plan.md via a Set-Content command while planning", () => {
+    const ws = "C:\\GitHub\\grok-build-vscode";
+    const home = "C:\\Users\\Dell\\.grok";
+    const plan = "C:\\Users\\Dell\\.grok\\sessions\\c%3A%5CGitHub%5Cgrok-build-vscode\\019f9240\\plan.md";
+    const cmd = `@'\n# No-op plan\n\n## Goal\nChange nothing.\n'@ | Set-Content -Encoding utf8 "${plan}"`;
+    expect(shouldBlockTerminal(cmd, active(ws, home))).toBe(false);
+    // Other plan-write shapes grok emits.
+    expect(shouldBlockTerminal(`"plan text" | Out-File "${plan}"`, active(ws, home))).toBe(false);
+    expect(shouldBlockTerminal(`Set-Content -Path "${plan}" -Value @'\nx\n'@`, active(ws, home))).toBe(false);
+  });
+
+  it("still BLOCKS a command that also reaches into the workspace, even if it names plan.md", () => {
+    const ws = "C:\\GitHub\\grok-build-vscode";
+    const home = "C:\\Users\\Dell\\.grok";
+    const plan = "C:\\Users\\Dell\\.grok\\sessions\\enc\\019f9240\\plan.md";
+    // Writes plan.md AND a workspace file (absolute) → the workspace reference blocks it.
+    const evil = `Set-Content "${plan}" x; Set-Content "C:\\GitHub\\grok-build-vscode\\src\\app.ts" y`;
+    expect(shouldBlockTerminal(evil, active(ws, home))).toBe(true);
+  });
+
+  it("does not exempt a non-plan file write, or a plan path that resolves inside the workspace", () => {
+    const ws = "C:\\GitHub\\grok-build-vscode";
+    const home = "C:\\Users\\Dell\\.grok";
+    // No plan.md target at all.
+    expect(isGrokPlanWriteCommand(`Set-Content "notes.txt" x`, active(ws, home))).toBe(false);
+    // A ".grok/sessions/.../plan.md" that actually lives inside the workspace is not grok's own home plan.
+    const wsPlan = "C:\\GitHub\\grok-build-vscode\\.grok\\sessions\\enc\\id\\plan.md";
+    expect(isGrokPlanWriteCommand(`Set-Content "${wsPlan}" x`, active(ws, home))).toBe(false);
+    // Right shape but grok home is elsewhere → not grok's own plan.
+    const foreignPlan = "D:\\other\\.grok\\sessions\\enc\\id\\plan.md";
+    expect(isGrokPlanWriteCommand(`Set-Content "${foreignPlan}" x`, active(ws, home))).toBe(false);
   });
 });
 

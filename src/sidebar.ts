@@ -220,6 +220,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     "initialState", "session", "modelChanged", "modeChanged", "chips",
     "contextUsage", "sessions", "queuedSends", "onboarding", "commandsUpdate",
     "grokUpdateStatus", "voiceConfigured", "fontScale", "showThinking", "expandCommandOutputs",
+    "soundNotifications",
   ]);
   private cliPath?: string;
   // Guards the silent grok-CLI auto-update so it runs at most once per activation.
@@ -317,6 +318,12 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.post({
           type: "steerByDefault",
           value: vscode.workspace.getConfiguration("grok").get<boolean>("steerByDefault", false),
+        });
+      }
+      if (e.affectsConfiguration("grok.soundNotifications")) {
+        this.post({
+          type: "soundNotifications",
+          value: vscode.workspace.getConfiguration("grok").get<boolean>("soundNotifications", false),
         });
       }
       if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
@@ -583,6 +590,9 @@ See design doc for the full state machine diagram.`;
     if (modeId === "yolo") {
       session.autoApprove = true;
       this.setPlanActive(session, false); // posts displayMode → "yolo"
+      // Flipping to Auto-accept mid-turn (#64) should unblock the CURRENT prompt,
+      // not just future requests: clear any permission card already on screen.
+      this.autoApprovePendingPermissions(session);
       if (session.client) {
         try { await session.client.setMode(ACT_MODE_ID); } catch { /* CLI stays put; gate is what matters */ }
       }
@@ -672,6 +682,13 @@ See design doc for the full state machine diagram.`;
       const promptToGrok = feedback ? `[Plan approved] ${feedback}` : "[Plan approved]";
       session.afterTurn = async () => {
         session.suppressPlanReject = false;
+        // Return to the mode the user was in BEFORE planning (#64): if that was
+        // Auto-accept, implementation runs without re-prompting; otherwise Agent.
+        // `defaultMode` is the last non-plan mode (Plan is never remembered), so
+        // it holds exactly the pre-plan choice. The gate was already dropped above.
+        const prePlanYolo = vscode.workspace.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
+        session.autoApprove = prePlanYolo;
+        this.emit(session, { type: "modeChanged", modeId: prePlanYolo ? "yolo" : "agent" });
         try { await client.setMode(ACT_MODE_ID); } catch { /* CLI usually auto-exits already */ }
         this.emit(session, { type: "agentStart" });
         this.setStatus(session, "working");
@@ -871,6 +888,29 @@ See design doc for the full state machine diagram.`;
       ...overrides,
       [sid]: { ...cur, permissions },
     });
+  }
+
+  /** Auto-approve every permission card currently awaiting the user (#64). Fired
+   *  when the user switches to Auto-accept mid-turn so on-screen cards resolve
+   *  immediately instead of only future requests. Mirrors the `permissionAnswer`
+   *  handler for each pending request; a card with no allow option is left for
+   *  the user to decide. */
+  private autoApprovePendingPermissions(session: Session): void {
+    const client = session.client;
+    if (!client || session.pendingPermissions.size === 0) return;
+    let resolved = 0;
+    // Snapshot first — persistPermissionAnswer mutates pendingPermissions.
+    for (const [requestId, pending] of [...session.pendingPermissions]) {
+      const opt = pending.options.find((o) => o.kind === "allow_always")
+                ?? pending.options.find((o) => o.kind === "allow_once");
+      if (!opt) continue;
+      client.respondPermission(requestId, opt.optionId);
+      this.emit(session, { type: "permissionResolved", requestId, optionId: opt.optionId });
+      this.persistPermissionAnswer(session, requestId, opt.optionId);
+      this.closeDiffForRequest(requestId);
+      resolved += 1;
+    }
+    if (resolved > 0) this.setStatus(session, "working"); // the turn resumes
   }
 
   /** Run and clear any deferred post-turn action set by `handleExitPlan`. */
@@ -2357,6 +2397,11 @@ See design doc for the full state machine diagram.`;
           .getConfiguration("grok")
           .update("steerByDefault", !!msg.value, vscode.ConfigurationTarget.Global);
         break;
+      case "setSoundNotifications":
+        await vscode.workspace
+          .getConfiguration("grok")
+          .update("soundNotifications", !!msg.value, vscode.ConfigurationTarget.Global);
+        break;
       case "runInstallCmd": {
         const term = vscode.window.createTerminal("Install Grok");
         term.show();
@@ -3788,6 +3833,7 @@ See design doc for the full state machine diagram.`;
       showThinking: cfg.get("showThinking", false),
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       steerByDefault: cfg.get("steerByDefault", false),
+      soundNotifications: cfg.get("soundNotifications", false),
     };
   }
 

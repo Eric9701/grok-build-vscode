@@ -375,9 +375,10 @@ describe("mode picker (the plan-gate entry path)", () => {
   });
 
   // Regression: switching mode during session start called setMode before the
-  // session existed → "Couldn't switch mode: no session". The button is now
-  // disabled while busy (like send), and busy always clears so it can't get stuck.
-  it("disables the mode button while starting/busy and won't open the picker or post setMode", () => {
+  // session existed → "Couldn't switch mode: no session". The button is disabled
+  // only during the startup window (busyLocked); it stays live during a running
+  // turn (#64), and busyLocked always clears so it can't get stuck.
+  it("disables the mode button while starting (busyLocked) and won't open the picker or post setMode", () => {
     const { window, posted, doc } = bootWebview({ ready: false }); // startup: busy + locked
     const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
     expect(modeBtn.disabled).toBe(true);
@@ -394,6 +395,22 @@ describe("mode picker (the plan-gate entry path)", () => {
     expect(modeBtn.disabled).toBe(false);
     click(window, modeBtn);
     expect(($(doc, "mode-popover") as any).hidden).toBe(false); // opens normally
+  });
+
+  // #64: switching to Auto-accept mid-run is the whole point — a running turn
+  // (busy, but NOT the locked startup window) must keep the picker usable.
+  it("keeps the mode button live during a running turn so Auto-accept can be picked mid-run (#64)", () => {
+    const { window, posted, doc } = bootWebview(); // ready
+    dispatch(window, { type: "setBusy", value: true }); // a normal running turn (locked defaults false)
+    const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
+    expect(modeBtn.disabled).toBe(false);
+    click(window, modeBtn);
+    const pop = $(doc, "mode-popover");
+    expect((pop as any).hidden).toBe(false); // picker opens mid-turn
+    const yolo = [...pop.querySelectorAll(".mode-popover-item")]
+      .find((el) => el.querySelector(".mode-item-label")!.textContent === "Auto accept") as HTMLElement;
+    click(window, yolo);
+    expect(posted).toContainEqual({ type: "setMode", modeId: "yolo" });
   });
 });
 
@@ -1038,6 +1055,27 @@ describe("thinking traces toggle (#26)", () => {
     click(window, toggle);
     expect(posted.some((p) => p.type === "setShowThinking" && p.value === true)).toBe(true);
     expect(doc.body.classList.contains("thinking-hidden")).toBe(false); // optimistic flip
+  });
+
+  it("exposes a Sound notifications switch in Config & debug that reflects the setting and posts setSoundNotifications (#59)", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "soundNotifications", value: true }); // host says it's on
+    const soundToggle = () => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Sound notifications"),
+    ) as HTMLElement;
+    click(window, $(doc, "gear-btn"));
+    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Config & debug"),
+    ) as HTMLElement;
+    click(window, cfg);
+    let toggle = soundToggle();
+    expect(toggle).toBeTruthy();
+    expect(toggle.querySelector(".popover-switch.on")).not.toBeNull(); // reflects value:true
+    click(window, toggle); // turn it off — the click handler re-renders the panel in place
+    expect(posted.some((p) => p.type === "setSoundNotifications" && p.value === false)).toBe(true);
+    // The re-rendered switch (still-open panel) now reflects the off state.
+    toggle = soundToggle();
+    expect(toggle.querySelector(".popover-switch.on")).toBeNull();
   });
 });
 

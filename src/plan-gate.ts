@@ -254,9 +254,48 @@ export function shouldBlockWrite(path: string, ctx: PlanGateContext): boolean {
   return ctx.active && !isOwnPlanFile && isInsideWorkspace(path, ctx.workspaceRoot);
 }
 
+/**
+ * True if the command's workspace root literally appears in it — a cheap "does
+ * this reach into the user's project?" check. Case-insensitive, both slash
+ * styles. Grok's plan-file path url-encodes the cwd (`c%3A%5C…`), so a real
+ * `C:\…` root string never accidentally matches inside a plan path.
+ */
+function referencesWorkspace(command: string, root: string): boolean {
+  if (!root) return false;
+  const c = command.toLowerCase();
+  const r = String(root).replace(/[\\/]+$/, "").toLowerCase();
+  return c.includes(r) || c.includes(r.replace(/\\/g, "/")) || c.includes(r.replace(/\//g, "\\"));
+}
+
+/**
+ * True if `command` is grok persisting its OWN plan by shelling out to write
+ * `~/.grok/sessions/<cwd>/<id>/plan.md` — sometimes done on Windows via a
+ * PowerShell here-string piped to `Set-Content`/`Out-File` instead of the
+ * `fs/write_text_file` tool. That write lands OUTSIDE the workspace, so it's the
+ * same mutation `shouldBlockWrite` already allows on the fs path (`isPlanFileWrite`)
+ * and must not be blocked here. Deliberately simple + conservative: it exempts a
+ * command only when (a) it targets grok's plan file, (b) that path resolves
+ * outside the workspace (and inside grok's home when we know it), and (c) the
+ * command doesn't also reference the workspace root. Anything unrecognized stays
+ * blocked, so grok simply falls back to the fs-write path as before.
+ */
+export function isGrokPlanWriteCommand(command: string, ctx: PlanGateContext): boolean {
+  const cmd = String(command || "");
+  const m = cmd.match(/[^\s"'|;&]*[\\/]\.grok[\\/]sessions[\\/][^\s"'|;&]*[\\/]plan\.md/i);
+  if (!m) return false;
+  const planPath = m[0];
+  if (isInsideWorkspace(planPath, ctx.workspaceRoot)) return false; // never a workspace write
+  if (ctx.grokHome && !isInsideWorkspace(planPath, ctx.grokHome)) return false; // must be grok's own
+  if (referencesWorkspace(cmd, ctx.workspaceRoot)) return false; // also reaches into the project
+  return true;
+}
+
 /** Should `terminal/create` of `command` be refused right now? */
 export function shouldBlockTerminal(command: string, ctx: PlanGateContext): boolean {
-  return ctx.active && !isReadOnlyCommand(command);
+  if (!ctx.active) return false;
+  if (isReadOnlyCommand(command)) return false;
+  if (isGrokPlanWriteCommand(command, ctx)) return false; // grok writing its own plan.md
+  return true;
 }
 
 /** Should a `session/request_permission` for `toolKind` be auto-rejected? */
