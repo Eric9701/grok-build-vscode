@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0 — 2026-07-24
+
+Two contributor features from [@funkpopo](https://github.com/funkpopo) ([#65](https://github.com/phuryn/grok-build-vscode/pull/65)), cherry-picked and verified end-to-end against real grok. Both need a recent Grok Build CLI (0.2.111+); older CLIs degrade gracefully.
+
+### Added
+
+- **Worktree sessions** — *Grok: New Worktree Session* (gear → *New worktree session*, or the Command Palette) runs a session in an **isolated git worktree** under `~/.grok/worktrees/`, so agent edits don't touch your main checkout until you **Apply worktree** (merge back); **Remove worktree** discards the isolated checkout. History rows show a `WT <label>` badge and reopen with the right cwd.
+- **Rewind** — hover a message you sent → **Rewind** (or *Grok: Rewind Conversation*) to roll the conversation back: it truncates the chat and, on confirm, restores the files Grok changed since that point (a safety prompt shows first, because it can revert code on disk).
+- **Deep Research / Workflow progress** — a live progress card with **Pause / Resume / Stop** for long autonomous runs, so they stay visible and interruptible.
+
 ## 1.7.5 — 2026-07-24
 
 ### Added
