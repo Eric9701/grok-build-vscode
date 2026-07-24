@@ -643,6 +643,61 @@ async function testRewind() {
   } finally { acp.kill(); }
 }
 
+// Rewind FILE RESTORE (P2-9) — the risky half: rewinding reverts code on disk.
+// Have grok actually edit a file (the harness performs fs/write_text_file for
+// real), then rewind with mode "all" + force and assert the file is restored to
+// its pre-edit contents. Disposable temp git repo. SKIPs if grok doesn't take the
+// file-edit path (non-deterministic) or the CLI lacks rewind (-32601).
+async function testRewindFiles() {
+  const rw = require(path.join(REPO, "out", "rewind.js"));
+  const execFileSync = require("node:child_process").execFileSync;
+  const cwd = mkTmp("rewindfiles");
+  const acp = new Acp(cwd);
+  try {
+    const git = (args) => execFileSync("git", args, { cwd, stdio: "pipe" });
+    git(["init", "-q"]); git(["config", "user.email", "t@t.t"]); git(["config", "user.name", "t"]);
+    const file = path.join(cwd, "foo.txt");
+    const ORIGINAL = "ORIGINAL LINE\n";
+    fs.writeFileSync(file, ORIGINAL);
+    git(["add", "-A"]); git(["commit", "-qm", "seed"]);
+
+    let r = await withTimeout(acp.send("initialize", INIT), 30000, "init");
+    assert(!r.error, "init errored");
+    r = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "session/new");
+    assert(!r.error && r.result && r.result.sessionId, "session/new failed: " + JSON.stringify(r.error));
+    const sessionId = r.result.sessionId;
+
+    // Ask grok to overwrite foo.txt. The harness writes it to disk for real, so
+    // the file actually changes and grok snapshots a rewind point for the turn.
+    const edit = await withTimeout(acp.send("session/prompt", {
+      sessionId,
+      prompt: [{ type: "text", text: "Use your file-editing tool to replace the ENTIRE contents of foo.txt with exactly this one line:\nMODIFIED LINE\nThen stop. Do not run any shell commands." }],
+    }), 180000, "edit prompt");
+    assert(!edit.error, "edit prompt errored: " + JSON.stringify(edit.error));
+
+    const afterEdit = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    if (!/MODIFIED/.test(afterEdit)) throw new Skip("grok did not edit foo.txt via the file tool (chose another path) — nothing to restore");
+
+    const pts = await withTimeout(acp.send("_x.ai/rewind/points", { sessionId }), 30000, "rewind points");
+    if (pts.error && pts.error.code === -32601) throw new Skip("CLI has no _x.ai/rewind/* (pre-rewind build)");
+    assert(!pts.error, "rewind points errored: " + JSON.stringify(pts.error));
+    const points = rw.parseRewindPoints(pts.result);
+    assert(points.length >= 1, `no rewind points (${JSON.stringify(pts.result).slice(0, 120)})`);
+    const target = points[points.length - 1].promptIndex; // the edit turn's point (snapshot is pre-edit)
+
+    // Rewind with file restore (mode "all" + force) → foo.txt must revert.
+    const ex = await withTimeout(acp.send("_x.ai/rewind/execute", { sessionId, targetPromptIndex: target, mode: "all", force: true }), 60000, "rewind execute");
+    assert(!ex.error, "rewind execute errored: " + JSON.stringify(ex.error));
+    const res = rw.parseRewindExecute(ex.result);
+    assert(res && res.success, "rewind execute not success: " + JSON.stringify(ex.result));
+
+    const restored = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    assert(restored === ORIGINAL, `file NOT restored to original — got ${JSON.stringify(restored.slice(0, 40))} (revertedFiles=${JSON.stringify(res.revertedFiles)})`);
+
+    return `grok edited foo.txt → rewind(mode=all,#${target}) restored it (revertedFiles=${res.revertedFiles.length})`;
+  } finally { acp.kill(); }
+}
+
 // The Agent Dashboard runs a pool of live sessions — one `grok agent stdio`
 // process each, same workspace (#37's reporter ran several concurrently). Two
 // processes serving overlapping prompts must complete independently: no
@@ -1192,6 +1247,7 @@ const TESTS = [
   { name: "session-fork", fn: testSessionFork, slow: false },
   { name: "worktree", fn: testWorktree, slow: false },
   { name: "rewind", fn: testRewind, slow: false },
+  { name: "rewind-files", fn: testRewindFiles, slow: true },
   { name: "parallel-sessions", fn: testParallelSessions, slow: false },
   { name: "vision-prompt", fn: testVisionPrompt, slow: false },
   { name: "session-restore", fn: testRestore, slow: false },

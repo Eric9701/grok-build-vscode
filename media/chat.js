@@ -230,6 +230,9 @@
     // plays on turn completion / error, but only when the Grok panel isn't
     // focused (#59). Off by default. Host posts the value on init + config change.
     soundNotifications: false,
+    // grok.worktree — true when the focused session runs in an isolated git
+    // worktree (from the `session` message). Gates the gear Apply/Remove items.
+    isWorktree: false,
     // toolExpandOverride (per-session, in-memory): the Command Palette
     // Expand/Collapse All latch. null = follow the setting above; true/false =
     // force ALL groups + details open/closed for this session, and keep applying
@@ -1301,24 +1304,31 @@
       vscode.postMessage({ type: "forkSession" });
       closePopovers();
     });
-    addGearItem(`<span>Rewind conversation</span>`, () => {
-      vscode.postMessage({ type: "rewindSession" });
-      closePopovers();
-    });
-    // Worktree UI (P2-8) — isolated git checkout for a session. Apply merges
-    // edits back into the main workspace; Remove deletes the checkout.
+    // Rewind needs a conversation to roll back — hide it on an empty session
+    // (nothing sent yet has no rewind point).
+    if (messagesEl.querySelector(".msg.user")) {
+      addGearItem(`<span>Rewind conversation</span>`, () => {
+        vscode.postMessage({ type: "rewindSession" });
+        closePopovers();
+      });
+    }
+    // Worktree UI (P2-8) — isolated git checkout for a session. New is always
+    // available (it validates the git repo on click); Apply merges edits back
+    // and Remove deletes the checkout, so both only apply to a worktree session.
     addGearItem(`<span>New worktree session</span>`, () => {
       vscode.postMessage({ type: "newWorktreeSession" });
       closePopovers();
     });
-    addGearItem(`<span>Apply worktree</span>`, () => {
-      vscode.postMessage({ type: "applyWorktree" });
-      closePopovers();
-    });
-    addGearItem(`<span>Remove worktree</span>`, () => {
-      vscode.postMessage({ type: "removeWorktree" });
-      closePopovers();
-    });
+    if (state.isWorktree) {
+      addGearItem(`<span>Apply worktree</span>`, () => {
+        vscode.postMessage({ type: "applyWorktree" });
+        closePopovers();
+      });
+      addGearItem(`<span>Remove worktree</span>`, () => {
+        vscode.postMessage({ type: "removeWorktree" });
+        closePopovers();
+      });
+    }
 
     // ── Other ─────────────────────────────────────────────────────────────
     // Collapses the former Config / Account / Debug sections into sub-views
@@ -1840,6 +1850,7 @@
   }
 
   function resetForNewSession() {
+    state.isWorktree = false; // re-set by the incoming session's `session` message
     // The caret belongs in the box after any session swap — new session, a
     // history-row re-focus, a disk restore (all funnel through here via the
     // host's clearMessages). Guarded on document.hasFocus(): user-initiated
@@ -5116,6 +5127,7 @@
       }
       case "session": {
         state.currentModelId = msg.currentModelId;
+        state.isWorktree = !!msg.worktree; // gates the gear Apply/Remove worktree items
         state.availableModels = msg.models || [];
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId);
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;

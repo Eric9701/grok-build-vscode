@@ -1276,6 +1276,17 @@ See design doc for the full state machine diagram.`;
             userProvidedLabel: !!label,
           });
 
+          // create is ASYNC — the RPC returns "creating" before git writes the
+          // checkout (its dir + `.git` pointer appear a beat later). Spawning a
+          // session in a not-yet-existing cwd hangs the whole flow, so wait for
+          // the checkout to land before starting the session.
+          const ready = await this.waitForWorktreeReady(wtPath, 30000);
+          if (!ready) {
+            return void vscode.window.showErrorMessage(
+              `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
+            );
+          }
+
           // Open a brand-new session whose process cwd is the worktree.
           this.parkFocused();
           this.focused = new Session();
@@ -1311,6 +1322,22 @@ See design doc for the full state machine diagram.`;
         }
       },
     );
+  }
+
+  /** Poll until a freshly-created worktree's checkout exists on disk (its `.git`
+   *  pointer file, which `git worktree add` writes). create is async — the RPC
+   *  returns "creating" before git finishes — so a session spawned in the cwd
+   *  before this would hang. Accepts a bare dir over hanging if `.git` never
+   *  shows. */
+  private async waitForWorktreeReady(worktreePath: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        if (fs.existsSync(path.join(worktreePath, ".git"))) return true;
+      } catch { /* keep polling */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    try { return fs.existsSync(worktreePath); } catch { return false; }
   }
 
   /**
@@ -2181,6 +2208,7 @@ See design doc for the full state machine diagram.`;
         sessionId: res.sessionId,
         models: client.availableModels,
         currentModelId: client.currentModelId,
+        worktree: !!session.worktree,
       });
     });
     client.on("modelChanged", (id) => {

@@ -1079,6 +1079,39 @@ describe("thinking traces toggle (#26)", () => {
   });
 });
 
+describe("gear menu — worktree/rewind gating (#65)", () => {
+  const gearItems = (doc: Document) =>
+    [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].map((el) => el.textContent || "");
+  const has = (doc: Document, label: string) => gearItems(doc).some((t) => t.includes(label));
+
+  it("hides Apply/Remove worktree on a non-worktree session, shows them on a worktree session", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
+    click(window, $(doc, "gear-btn"));
+    expect(has(doc, "New worktree session")).toBe(true); // always available
+    expect(has(doc, "Apply worktree")).toBe(false);
+    expect(has(doc, "Remove worktree")).toBe(false);
+    click(window, $(doc, "gear-btn")); // close
+
+    dispatch(window, { type: "session", sessionId: "s2", models: [], currentModelId: "grok-build", worktree: true });
+    click(window, $(doc, "gear-btn")); // re-open
+    expect(has(doc, "Apply worktree")).toBe(true);
+    expect(has(doc, "Remove worktree")).toBe(true);
+  });
+
+  it("hides Rewind conversation on an empty session, shows it once a user message exists", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
+    click(window, $(doc, "gear-btn"));
+    expect(has(doc, "Rewind conversation")).toBe(false);
+    click(window, $(doc, "gear-btn")); // close
+
+    dispatch(window, { type: "userMessage", text: "hello", chips: [] });
+    click(window, $(doc, "gear-btn")); // re-open
+    expect(has(doc, "Rewind conversation")).toBe(true);
+  });
+});
+
 describe("scroll-to-bottom button (#28)", () => {
   const setMetrics = (window: any, list: HTMLElement, top: number, height: number, client: number) => {
     Object.defineProperty(list, "scrollHeight", { value: height, configurable: true });

@@ -58,7 +58,8 @@ export type HostMsg =
   | { type: "grokUpdateStatus"; current?: string | null; latest?: string | null; updateAvailable?: boolean; policy?: unknown; error?: string }
   | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; init: { protocolVersion?: unknown } } }
   | { type: "cliUpdating" }
-  | { type: "session"; sessionId: string; models: ModelInfo[]; currentModelId: string | undefined }
+  // `worktree` gates the gear's Apply/Remove worktree items to worktree sessions.
+  | { type: "session"; sessionId: string; models: ModelInfo[]; currentModelId: string | undefined; worktree?: boolean }
   | { type: "modelChanged"; modelId: string }
   | { type: "modeChanged"; modeId: string }
   | { type: "openModePopover" }
