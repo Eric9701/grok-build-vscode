@@ -1282,38 +1282,53 @@
     // the same `busy` signal that disables send/submit.
     const settingsLocked = state.busy;
 
+    // Until the session's model info arrives (its name + advertised effort menu),
+    // don't show a guessed model or a stale effort ladder — show a Loading state.
+    const modelLoaded = state.availableModels.length > 0 && !!state.currentModelId;
+
     const nameBtn = document.createElement("button");
-    nameBtn.className = "toolbar-btn model-name-btn" + (settingsLocked ? " disabled" : "");
-    const modelName = modelDisplayName(state.currentModelId, state.availableModels) || "Grok Build";
+    nameBtn.className = "toolbar-btn model-name-btn" + (settingsLocked || !modelLoaded ? " disabled" : "");
+    const modelName = modelLoaded ? (modelDisplayName(state.currentModelId, state.availableModels) || "Grok Build") : "Loading…";
     nameBtn.innerHTML = `<span class="btn-label">${escapeHtml(truncate(modelName, 16))}</span>`;
-    nameBtn.disabled = settingsLocked;
-    nameBtn.title = settingsLocked
-      ? `${modelName} — available once the session is ready`
-      : `${modelName} — click to change`;
-    if (!settingsLocked) nameBtn.onclick = (e) => { e.stopPropagation(); renderModelPicker(); };
+    nameBtn.disabled = settingsLocked || !modelLoaded;
+    nameBtn.title = !modelLoaded
+      ? "Loading the session…"
+      : (settingsLocked ? `${modelName} — available once the session is ready` : `${modelName} — click to change`);
+    if (!settingsLocked && modelLoaded) nameBtn.onclick = (e) => { e.stopPropagation(); renderModelPicker(); };
     row.appendChild(nameBtn);
 
     const dotsEl = document.createElement("span");
-    dotsEl.className = "effort-dots" + (settingsLocked ? " disabled" : "");
-    const effortLevels = effortLevelsForModel();
-    const currentIdx = effortLevels.indexOf(state.effort);
-    effortLevels.forEach((id, i) => {
-      const dot = document.createElement("span");
-      dot.className = "effort-dot" + (i <= currentIdx ? " active" : "") + (settingsLocked ? " disabled" : "");
-      // Render the dot as a CSS-shaped span (see chat.css). Avoids the classic
-      // ● vs ○ Unicode size mismatch where the empty glyph is visibly larger.
-      dot.title = settingsLocked
-        ? "Available once the session is ready"
-        : (EFFORT_TOOLTIPS[id] || capitalize(id));
-      if (!settingsLocked) dot.onclick = (e) => {
-        e.stopPropagation();
-        state.effort = state.effort === id ? "" : id;
-        vscode.postMessage({ type: "setEffort", level: state.effort });
-        renderGearMain();
-        gearPopover.hidden = false;
-      };
-      dotsEl.appendChild(dot);
-    });
+    dotsEl.className = "effort-dots" + (settingsLocked || !modelLoaded ? " disabled" : "");
+    if (!modelLoaded) {
+      // Loading: neutral placeholder dots — we don't know the model's menu yet,
+      // so show a fixed skeleton rather than the (stale) fallback ladder.
+      for (let i = 0; i < 5; i++) {
+        const dot = document.createElement("span");
+        dot.className = "effort-dot loading disabled";
+        dot.title = "Loading the session…";
+        dotsEl.appendChild(dot);
+      }
+    } else {
+      const effortLevels = effortLevelsForModel();
+      const currentIdx = effortLevels.indexOf(state.effort);
+      effortLevels.forEach((id, i) => {
+        const dot = document.createElement("span");
+        dot.className = "effort-dot" + (i <= currentIdx ? " active" : "") + (settingsLocked ? " disabled" : "");
+        // Render the dot as a CSS-shaped span (see chat.css). Avoids the classic
+        // ● vs ○ Unicode size mismatch where the empty glyph is visibly larger.
+        dot.title = settingsLocked
+          ? "Available once the session is ready"
+          : (EFFORT_TOOLTIPS[id] || capitalize(id));
+        if (!settingsLocked) dot.onclick = (e) => {
+          e.stopPropagation();
+          state.effort = state.effort === id ? "" : id;
+          vscode.postMessage({ type: "setEffort", level: state.effort });
+          renderGearMain();
+          gearPopover.hidden = false;
+        };
+        dotsEl.appendChild(dot);
+      });
+    }
     row.appendChild(dotsEl);
     gearPopover.appendChild(row);
 

@@ -1693,6 +1693,11 @@ textarea#input {
   pointer-events: none;
 }
 .effort-dot.disabled:hover { background: transparent; }
+/* Loading placeholder dots — a gentle pulse while the session's model/effort
+   menu is still loading (so it reads as "not final yet", not a real ladder). */
+.effort-dot.loading { opacity: 0.3; animation: effort-dot-pulse 1.2s ease-in-out infinite; }
+@keyframes effort-dot-pulse { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .effort-dot.loading { animation: none; } }
 
 /* ---- mode / section popover extras ---- */
 

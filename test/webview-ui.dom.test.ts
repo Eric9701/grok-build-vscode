@@ -598,6 +598,16 @@ describe("effort picker uses the model's advertised levels (not a hardcoded set)
     });
     expect(openEffortDots(h)).toHaveLength(6);
   });
+
+  it("shows a Loading… model + 5 neutral placeholder dots before the session's model info arrives", () => {
+    const h = bootWebview();
+    // no `session` message yet → no model / effort menu known
+    const dots = openEffortDots(h);
+    const nameBtn = h.doc.querySelector("#gear-popover .model-name-btn") as HTMLElement;
+    expect(nameBtn.textContent).toContain("Loading");
+    expect(dots).toHaveLength(5);
+    expect(dots.every((d) => d.classList.contains("loading"))).toBe(true);
+  });
 });
 
 describe("reasoning trace (regression: thinking traces no longer expandable)", () => {
