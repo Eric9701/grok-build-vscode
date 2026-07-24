@@ -2444,6 +2444,12 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .history-row-name {
   font-size: 13px;
   color: var(--vscode-foreground);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.history-row-txt {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2451,22 +2457,22 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .history-row.active .history-row-name {
   color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
 }
-/* Worktree badge — a distinct tag (not a text prefix) marking an isolated
-   git-checkout session, so it's visually unlike a "(Fork)" conversation copy. */
-.history-row-wt {
-  display: inline-block;
-  vertical-align: baseline;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  line-height: 1.3;
-  padding: 0 4px;
-  margin-right: 5px;
-  border-radius: 4px;
-  color: var(--vscode-charts-blue, #3794ff);
-  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 40%, transparent);
+/* Worktree marker — a git-branch icon in muted gray (the same color as the
+   gear-menu worktree icons), vertically centered with the title. A TYPE marker,
+   kept off the status-dot palette so it can't be mistaken for a session state. */
+.history-row-branch {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--vscode-descriptionForeground);
 }
+.history-row-branch svg { width: 13px; height: 13px; display: block; }
+.history-row.active .history-row-branch { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); opacity: 0.85; }
+.history-action-btn.disabled, .history-action-btn:disabled { opacity: 0.3; cursor: default; }
+/* Gear-menu Session items: a muted leading icon (fork / rewind / branch) so the
+   whole section reads as one consistent group. Icon is a marker, not an accent. */
+.toolbar-popover-item .gear-lead { display: inline-flex; align-items: center; gap: 9px; }
+.toolbar-popover-item .gear-lead svg { width: 14px; height: 14px; flex: none; color: var(--vscode-descriptionForeground); }
 .history-row-meta {
   font-size: 11px;
   color: var(--vscode-descriptionForeground);

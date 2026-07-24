@@ -218,6 +218,33 @@ describe("session rows (regression: only the label was clickable)", () => {
   });
 });
 
+describe("worktree session rows (#65 — branch icon, rename disabled)", () => {
+  function open(entries: any[]) {
+    const h = bootWebview();
+    click(h.window, $(h.doc, "history-btn"));
+    h.posted.length = 0;
+    dispatch(h.window, { type: "sessions", entries, activeId: null });
+    return h;
+  }
+
+  it("marks a worktree row with a branch icon (not a WT text badge), strips the (WT) prefix, and disables Rename", () => {
+    const { doc } = open([
+      { id: "w1", displayName: "(WT) feat-payments", worktreeLabel: "feat-payments", numMessages: 3, updatedAt: Date.now() },
+      { id: "s1", displayName: "Normal session", numMessages: 5, updatedAt: Date.now() - 1000 },
+    ]);
+    const rows = doc.querySelectorAll(".history-row");
+    const wtRow = rows[0];
+    expect(wtRow.querySelector(".history-row-branch")).not.toBeNull(); // branch icon
+    expect(wtRow.querySelector(".history-row-wt")).toBeNull();          // legacy text badge gone
+    expect(wtRow.querySelector(".history-row-txt")!.textContent).toBe("feat-payments"); // (WT) stripped
+    expect((wtRow.querySelector(".history-action-btn") as HTMLButtonElement).disabled).toBe(true); // rename off
+
+    const normalRow = rows[1];
+    expect(normalRow.querySelector(".history-row-branch")).toBeNull();
+    expect((normalRow.querySelector(".history-action-btn") as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
 describe("session history pagination", () => {
   const page1 = [
     { id: "p0", displayName: "Session 0", numMessages: 1, updatedAt: Date.now() - 1000 },
@@ -1084,11 +1111,12 @@ describe("gear menu — worktree/rewind gating (#65)", () => {
     [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].map((el) => el.textContent || "");
   const has = (doc: Document, label: string) => gearItems(doc).some((t) => t.includes(label));
 
-  it("hides Apply/Remove worktree on a non-worktree session, shows them on a worktree session", () => {
+  it("non-worktree shows Fork + New worktree; worktree shows Fork + Apply/Remove and hides only New worktree", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
     click(window, $(doc, "gear-btn"));
-    expect(has(doc, "New worktree session")).toBe(true); // always available
+    expect(has(doc, "Fork conversation")).toBe(true);
+    expect(has(doc, "New worktree session")).toBe(true);
     expect(has(doc, "Apply worktree")).toBe(false);
     expect(has(doc, "Remove worktree")).toBe(false);
     click(window, $(doc, "gear-btn")); // close
@@ -1097,6 +1125,10 @@ describe("gear menu — worktree/rewind gating (#65)", () => {
     click(window, $(doc, "gear-btn")); // re-open
     expect(has(doc, "Apply worktree")).toBe(true);
     expect(has(doc, "Remove worktree")).toBe(true);
+    // Fork stays (a shared-checkout branch, like the Dashboard's parallel sessions);
+    // only New worktree is blocked (no nesting).
+    expect(has(doc, "Fork conversation")).toBe(true);
+    expect(has(doc, "New worktree session")).toBe(false);
   });
 
   it("hides Rewind conversation on an empty session, shows it once a user message exists", () => {

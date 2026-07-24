@@ -300,6 +300,7 @@
     mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
     cornerDownRight: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>`,
     gitBranch: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+    gitFork: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg>`,
     // Undo / rewind — used on user-bubble action row (P2-9).
     undo: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>`,
     // Animated equalizer bars shown while listening (CSS drives the bounce).
@@ -1300,34 +1301,35 @@
     // Session-LIFECYCLE actions live here; context actions (Compact) live on the
     // context donut, next to the number that motivates them.
     addSection("Session");
-    addGearItem(`<span>Fork conversation</span>`, () => {
+    // Fork copies the CONVERSATION (not files). It's fine on a worktree too — the
+    // fork shares that checkout, the same as the Agent Dashboard already running
+    // parallel sessions on one repo; Remove worktree disposes both.
+    addGearItem(`<span class="gear-lead">${ICON.gitFork}<span>Fork conversation</span></span>`, () => {
       vscode.postMessage({ type: "forkSession" });
       closePopovers();
     });
-    // Rewind needs a conversation to roll back — hide it on an empty session
-    // (nothing sent yet has no rewind point).
+    // Rewind needs a conversation to roll back — hide it on an empty session.
     if (messagesEl.querySelector(".msg.user")) {
-      addGearItem(`<span>Rewind conversation</span>`, () => {
+      addGearItem(`<span class="gear-lead">${ICON.undo}<span>Rewind conversation</span></span>`, () => {
         vscode.postMessage({ type: "rewindSession" });
         closePopovers();
       });
     }
-    // ── Worktree ──────────────────────────────────────────────────────────
-    // Isolated git checkout for a session — its own section since it's a distinct
-    // mode, not a conversation op. New is always available (it validates the git
-    // repo on click); Apply merges edits back and Remove deletes the checkout, so
-    // both only apply when the focused session IS a worktree.
-    addSection("Worktree");
-    addGearItem(`<span>New worktree session</span>`, () => {
-      vscode.postMessage({ type: "newWorktreeSession" });
-      closePopovers();
-    });
-    if (state.isWorktree) {
-      addGearItem(`<span>Apply worktree</span>`, () => {
+    // Worktree = an isolated git checkout, in the one Session menu. New is hidden
+    // INSIDE a worktree (no worktree-from-worktree — checkouts stay singular);
+    // Apply merges edits back and Remove deletes the checkout, so both apply only
+    // to a worktree session.
+    if (!state.isWorktree) {
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>New worktree session</span></span>`, () => {
+        vscode.postMessage({ type: "newWorktreeSession" });
+        closePopovers();
+      });
+    } else {
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
         vscode.postMessage({ type: "applyWorktree" });
         closePopovers();
       });
-      addGearItem(`<span>Remove worktree</span>`, () => {
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
         vscode.postMessage({ type: "removeWorktree" });
         closePopovers();
       });
@@ -1776,21 +1778,25 @@
       } else {
         const name = document.createElement("div");
         name.className = "history-row-name";
-        name.title = s.rawSummary || s.displayName || "";
-        // Worktree sessions get a distinct badge, not just a "(WT)" text prefix
-        // like a fork's "(Fork)" — a worktree is an isolated checkout with its own
-        // lifecycle (Apply/Remove), so it reads as a tagged item, not a renamed
-        // conversation. Strip the default "(WT)" prefix; the badge carries it.
+        // Tooltip is the name the USER sees/gave — never the primer-derived
+        // summary (rawSummary), which is an internal title on primed sessions.
+        name.title = s.displayName || "";
+        // A worktree session gets a branch icon (a TYPE marker in muted gray,
+        // off the status-dot palette), not a "(WT)" text prefix like a fork's
+        // "(Fork)" — it's an isolated checkout, not a renamed conversation.
         let displayName = s.displayName || "Untitled";
         if (s.worktreeLabel) {
           if (displayName.startsWith("(WT)")) displayName = displayName.slice(4).trim() || "Worktree";
-          const badge = document.createElement("span");
-          badge.className = "history-row-wt";
-          badge.textContent = "WT";
-          badge.title = "Worktree: " + s.worktreeLabel;
-          name.appendChild(badge);
+          const branch = document.createElement("span");
+          branch.className = "history-row-branch";
+          branch.innerHTML = ICON.gitBranch;
+          branch.title = "Worktree: " + s.worktreeLabel;
+          name.appendChild(branch);
         }
-        name.appendChild(document.createTextNode(displayName));
+        const txt = document.createElement("span");
+        txt.className = "history-row-txt";
+        txt.textContent = displayName;
+        name.appendChild(txt);
         main.appendChild(name);
 
         const meta = document.createElement("div");
@@ -1817,12 +1823,21 @@
       const renameBtn = document.createElement("button");
       renameBtn.className = "history-action-btn";
       renameBtn.innerHTML = ICON.pencil;
-      renameBtn.title = "Rename";
-      renameBtn.onclick = (e) => {
-        e.stopPropagation();
-        state.renamingSessionId = s.id;
-        renderSessionRows();
-      };
+      // A worktree session's name IS the worktree name (baked into the checkout
+      // path), so renaming it would decouple the display from the real checkout.
+      // Disable rename there; delete still works.
+      if (s.worktreeLabel) {
+        renameBtn.disabled = true;
+        renameBtn.classList.add("disabled");
+        renameBtn.title = "Worktree name is fixed to the checkout";
+      } else {
+        renameBtn.title = "Rename";
+        renameBtn.onclick = (e) => {
+          e.stopPropagation();
+          state.renamingSessionId = s.id;
+          renderSessionRows();
+        };
+      }
       actions.appendChild(renameBtn);
       // No delete for the active session: it's the live conversation and the CLI
       // re-persists it, so a delete wouldn't stick. Rename is still fine.

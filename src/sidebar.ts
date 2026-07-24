@@ -1033,7 +1033,7 @@ See design doc for the full state machine diagram.`;
     const parentName = this.sessionDisplayName(session);
     const forkName = forkDisplayName(parentName);
     try {
-      // Fork keeps the same cwd as the source (including worktree-isolated ones).
+      // Fork keeps the same cwd as the source, worktree-isolated ones included.
       const cwd = this.sessionCwd(session);
       const r = await session.client.forkSession(cwd);
       if (r === "unsupported") {
@@ -1051,6 +1051,8 @@ See design doc for the full state machine diagram.`;
         customName: forkName,
       };
       // A fork of a worktree session stays in that worktree — carry the binding.
+      // It's a second conversation branch sharing the checkout (like the Agent
+      // Dashboard's parallel sessions); Remove worktree disposes both.
       if (session.worktree) {
         carried.worktreePath = session.worktree.path;
         carried.worktreeLabel = session.worktree.label;
@@ -1217,6 +1219,13 @@ See design doc for the full state machine diagram.`;
    * checkout until the user runs Apply Worktree.
    */
   async newWorktreeSession(): Promise<void> {
+    // No worktree-from-worktree — checkouts stay singular. The gear hides this
+    // inside a worktree; guard the Command-Palette path too.
+    if (this.focused.worktree) {
+      return void vscode.window.showInformationMessage(
+        "You're already in a worktree. Start a new worktree from a normal session — worktrees don't nest.",
+      );
+    }
     const sourcePath = this.workspaceRoot();
     if (!isGitRepo(sourcePath, fs)) {
       return void vscode.window.showWarningMessage(
