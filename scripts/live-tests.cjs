@@ -527,6 +527,78 @@ async function testSessionFork() {
   } finally { acp.kill(); }
 }
 
+// Worktree lifecycle (P2-8): the sidebar's New/Apply/Remove flow, end-to-end
+// against real grok — create an isolated git worktree via the unadvertised
+// `_x.ai/git/worktree/create`, confirm it via `list`, merge it back via `apply`,
+// and clean it up via `remove` (then confirm it's gone). Reuses the SHIPPED pure
+// parsers (out/worktree.js), so it tests the wire→parser path the extension runs,
+// not a re-implementation. SKIPs on -32601 — a pre-worktree CLI, where the
+// extension degrades to "unsupported" rather than erroring.
+async function testWorktree() {
+  const wt = require(path.join(REPO, "out", "worktree.js"));
+  const execFileSync = require("node:child_process").execFileSync;
+  const cwd = mkTmp("wt");
+  const acp = new Acp(cwd);
+  try {
+    // A worktree source must be a git repo with at least one commit.
+    const git = (args) => execFileSync("git", args, { cwd, stdio: "pipe" });
+    git(["init", "-q"]);
+    git(["config", "user.email", "t@t.t"]);
+    git(["config", "user.name", "t"]);
+    fs.writeFileSync(path.join(cwd, "seed.txt"), "seed\n");
+    git(["add", "-A"]);
+    git(["commit", "-qm", "seed"]);
+
+    let r = await withTimeout(acp.send("initialize", INIT), 30000, "init");
+    assert(!r.error, "init errored");
+    r = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "session/new");
+    assert(!r.error && r.result && r.result.sessionId, "session/new failed: " + JSON.stringify(r.error));
+    const sessionId = r.result.sessionId;
+
+    const cr = await withTimeout(
+      acp.send("_x.ai/git/worktree/create", { sessionId, sourcePath: cwd, label: "livetest" }),
+      60000, "worktree create");
+    if (cr.error && cr.error.code === -32601) throw new Skip("CLI has no _x.ai/git/worktree/* (pre-worktree build) — extension degrades to unsupported");
+    assert(!cr.error, "worktree create errored: " + JSON.stringify(cr.error));
+    const created = wt.parseWorktreeCreate(cr.result);
+    assert(created && created.worktreePath, "create returned no worktreePath: " + JSON.stringify(cr.result));
+    const worktreePath = created.worktreePath;
+    // create is async: it returns status "creating" with the path, and the actual
+    // checkout appears once the `_x.ai/git/worktree/status` "created" work finishes.
+    await waitFor(() => fs.existsSync(worktreePath), 30000, `worktree checkout on disk (${worktreePath})`);
+
+    // Registration in the CLI's worktree db can lag the checkout dir, so poll.
+    let records = [];
+    const listDeadline = Date.now() + 20000;
+    while (Date.now() < listDeadline) {
+      const ls = await withTimeout(acp.send("_x.ai/git/worktree/list", {}), 30000, "worktree list");
+      assert(!ls.error, "worktree list errored: " + JSON.stringify(ls.error));
+      records = wt.parseWorktreeList(ls.result);
+      if (records.some((w) => wt.pathsEqual(w.path, worktreePath))) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    assert(records.some((w) => wt.pathsEqual(w.path, worktreePath)),
+      `created worktree not in list (${records.length} records: ${JSON.stringify(records.map((w) => w.path)).slice(0, 200)})`);
+
+    // Apply merges edits back; with no edits it still succeeds (empty file set).
+    const ap = await withTimeout(acp.send("_x.ai/git/worktree/apply", { sessionId, worktreePath }), 60000, "worktree apply");
+    assert(!ap.error, "worktree apply errored: " + JSON.stringify(ap.error));
+    assert(wt.parseWorktreeApply(ap.result), "apply returned no result: " + JSON.stringify(ap.result));
+
+    // No process holds the worktree as cwd here, so remove should clean up.
+    const rm = await withTimeout(acp.send("_x.ai/git/worktree/remove", { worktreePath }), 60000, "worktree remove");
+    assert(!rm.error, "worktree remove errored: " + JSON.stringify(rm.error));
+    const removed = wt.parseWorktreeRemove(rm.result);
+    assert(removed && removed.removed, "remove did not report removed: " + JSON.stringify(rm.result));
+
+    const ls2 = await withTimeout(acp.send("_x.ai/git/worktree/list", {}), 30000, "worktree list 2");
+    const after = wt.parseWorktreeList(ls2.result);
+    assert(!after.some((w) => wt.pathsEqual(w.path, worktreePath)), "worktree still listed after remove");
+
+    return `create→list→apply→remove OK (${path.basename(worktreePath)}; ${records.length}→${after.length} worktrees)`;
+  } finally { acp.kill(); }
+}
+
 // The Agent Dashboard runs a pool of live sessions — one `grok agent stdio`
 // process each, same workspace (#37's reporter ran several concurrently). Two
 // processes serving overlapping prompts must complete independently: no
@@ -1074,6 +1146,7 @@ const TESTS = [
   { name: "cancel-mid-turn", fn: testCancelMidTurn, slow: false },
   { name: "interject", fn: testInterject, slow: false },
   { name: "session-fork", fn: testSessionFork, slow: false },
+  { name: "worktree", fn: testWorktree, slow: false },
   { name: "parallel-sessions", fn: testParallelSessions, slow: false },
   { name: "vision-prompt", fn: testVisionPrompt, slow: false },
   { name: "session-restore", fn: testRestore, slow: false },
