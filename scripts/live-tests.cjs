@@ -599,6 +599,50 @@ async function testWorktree() {
   } finally { acp.kill(); }
 }
 
+// Rewind (P2-9): the gear/Rewind flow end-to-end against real grok — list the
+// rewind points, dry-run an execute (the CLI's confirmation gate: success:false,
+// no mutation), then a real `conversation_only` + force rewind (truncates chat,
+// touches NO files on disk). Reuses the SHIPPED parsers (out/rewind.js). SKIPs on
+// -32601 — a pre-rewind CLI, where the extension degrades to "unsupported".
+async function testRewind() {
+  const rw = require(path.join(REPO, "out", "rewind.js"));
+  const cwd = mkTmp("rewind");
+  const acp = new Acp(cwd);
+  try {
+    let r = await withTimeout(acp.send("initialize", INIT), 30000, "init");
+    assert(!r.error, "init errored");
+    r = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "session/new");
+    assert(!r.error && r.result && r.result.sessionId, "session/new failed: " + JSON.stringify(r.error));
+    const sessionId = r.result.sessionId;
+
+    // Seed two turns so there are rewind points (one per user prompt).
+    for (const t of ["Say only: one. No tools.", "Say only: two. No tools."]) {
+      const p = await withTimeout(acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: t }] }), 120000, "seed");
+      assert(!p.error, "seed prompt errored: " + JSON.stringify(p.error));
+    }
+
+    const pts = await withTimeout(acp.send("_x.ai/rewind/points", { sessionId }), 30000, "rewind points");
+    if (pts.error && pts.error.code === -32601) throw new Skip("CLI has no _x.ai/rewind/* (pre-rewind build) — extension degrades to unsupported");
+    assert(!pts.error, "rewind points errored: " + JSON.stringify(pts.error));
+    const points = rw.parseRewindPoints(pts.result);
+    assert(points.length >= 1, `no rewind points parsed (${JSON.stringify(pts.result).slice(0, 160)})`);
+    const target = points[0].promptIndex;
+
+    // Dry-run (no force): the CLI's confirmation gate — parses, mutates nothing.
+    const dry = await withTimeout(acp.send("_x.ai/rewind/execute", { sessionId, targetPromptIndex: target, mode: "conversation_only" }), 30000, "rewind dry-run");
+    assert(!dry.error, "rewind dry-run errored: " + JSON.stringify(dry.error));
+    assert(rw.parseRewindExecute(dry.result), "dry-run execute did not parse: " + JSON.stringify(dry.result));
+
+    // Real conversation-only rewind (force) — truncates chat, touches NO files.
+    const ex = await withTimeout(acp.send("_x.ai/rewind/execute", { sessionId, targetPromptIndex: target, mode: "conversation_only", force: true }), 30000, "rewind execute");
+    assert(!ex.error, "rewind execute errored: " + JSON.stringify(ex.error));
+    const res = rw.parseRewindExecute(ex.result);
+    assert(res && res.success, "rewind execute did not report success: " + JSON.stringify(ex.result));
+
+    return `points(${points.length}) → dry-run + conversation_only rewind to #${target} OK`;
+  } finally { acp.kill(); }
+}
+
 // The Agent Dashboard runs a pool of live sessions — one `grok agent stdio`
 // process each, same workspace (#37's reporter ran several concurrently). Two
 // processes serving overlapping prompts must complete independently: no
@@ -1147,6 +1191,7 @@ const TESTS = [
   { name: "interject", fn: testInterject, slow: false },
   { name: "session-fork", fn: testSessionFork, slow: false },
   { name: "worktree", fn: testWorktree, slow: false },
+  { name: "rewind", fn: testRewind, slow: false },
   { name: "parallel-sessions", fn: testParallelSessions, slow: false },
   { name: "vision-prompt", fn: testVisionPrompt, slow: false },
   { name: "session-restore", fn: testRestore, slow: false },

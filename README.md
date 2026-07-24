@@ -125,6 +125,20 @@ Gear → *Fork conversation* copies the conversation into a **new session** name
 </details>
 
 <details>
+<summary><strong>Rewind</strong> — roll the conversation (and files) back to an earlier point</summary>
+
+Hover a message you sent → **Rewind** (or **Grok: Rewind Conversation**), confirm, and Grok rolls back to that point — truncating the chat and, optionally, restoring the files it changed since then from its own snapshots. A safety prompt shows first, because rewinding can revert code on disk.
+
+</details>
+
+<details>
+<summary><strong>Deep Research / Workflow progress</strong> — a live progress card with Pause / Resume / Stop</summary>
+
+When Grok runs a Deep Research, Workflow, or Goal task, a progress card streams its steps live and gives you **Pause**, **Resume**, and **Stop** controls, so long autonomous runs stay visible and interruptible.
+
+</details>
+
+<details>
 <summary><strong>Context & cost</strong> — what's in the window, and what the turns actually bill</summary>
 
 Click the **context donut** for the exact `used / window (%)`, plus what the conversation has **billed** — input, cache read, output — as a session total and a per-turn split with its model calls. **Compact conversation** lives here too, right next to the number that tells you when you need it.
