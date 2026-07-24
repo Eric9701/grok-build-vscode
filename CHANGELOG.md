@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1 — 2026-07-24
+
+### Changed
+
+- **The reasoning-effort picker now matches the active model.** The gear's effort dots offer exactly the current model's advertised levels — grok-4.5 shows *low / medium / high* — instead of a fixed six-level ladder. A model that advertises no menu falls back to the full ladder, so nothing regresses.
+
 ## 1.8.0 — 2026-07-24
 
 Two contributor features from [@funkpopo](https://github.com/funkpopo) ([#65](https://github.com/phuryn/grok-build-vscode/pull/65)), cherry-picked and verified end-to-end against real grok. Both need a recent Grok Build CLI (0.2.111+); older CLIs degrade gracefully.
