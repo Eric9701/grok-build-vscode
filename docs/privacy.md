@@ -1,6 +1,6 @@
 # Privacy
 
-**Privacy by design.** The extension sends **no** background data about you or your code — the only thing it reports on its own is an anonymous usage count, with no content and no identity, and you can turn even that off. The one time data leaves your machine at your request is **voice input** (you send audio to xAI to transcribe it) — disclosed in full below, separate from telemetry.
+**Privacy by design.** The extension sends **no** background data about you or your code — the only thing it reports on its own is an anonymous usage count, with no content and no identity, and you can turn even that off. Data leaves your machine only at your request: **voice input** (you send audio to xAI to transcribe it) and **Remote Control** (you link this machine to [AFK Pilot](https://afkpilot.com) so your own devices can reach it) — both disclosed in full below, separate from telemetry.
 
 ## Telemetry — what is sent
 
@@ -56,3 +56,9 @@ Separate from telemetry: **voice input** sends data to xAI, but only when you us
 - an **STT credential** — the dedicated key you configured (`grok.voiceApiKey` / `GROK_VOICE_API_KEY` / `XAI_API_KEY`) if set, otherwise the token from your `grok login` (`~/.grok/auth.json`), reused so voice works without a separate key.
 
 This is core functionality you trigger deliberately, and it goes to xAI (the same provider behind the CLI) — never to us or any third party. If you never use voice, none of this happens. To avoid sending your login token specifically, set a dedicated `grok.voiceApiKey`. Setup + details: [docs/voice-setup.md](voice-setup.md).
+
+## Remote Control (AFK Pilot)
+
+Also separate from telemetry, and **entirely opt-in**: nothing runs until you explicitly link this machine (gear → *Remote Control* → **Sign in**). Once linked, the extension keeps an outbound connection to the [AFK Pilot](https://afkpilot.com) service so *your own* paired devices (your phone, another browser) can see and drive this workspace's chat. That means the **conversation you see in the sidebar** — messages, replies, tool activity, generated images — flows through the service while a device is linked; that's the feature. The machine introduces itself by **hostname + OS** (e.g. "Dell (Windows 11)") — your workspace path is deliberately not part of it.
+
+**Sign out** (gear → *Remote Control*, or `Grok: Unlink Remote Device`) removes the device token locally and revokes it on your account — after that, nothing connects. If you never link a device, none of this exists. AFK Pilot's own data handling is covered by its policies at [afkpilot.com](https://afkpilot.com).

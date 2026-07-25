@@ -54,6 +54,9 @@ export type HostMsg =
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
   | { type: "soundNotifications"; value: boolean }
+  // Whether this machine holds a relay device token (gear "AFK Pilot" section).
+  // Local-webview chrome — never mirrored to remotes.
+  | { type: "remoteStatus"; linked: boolean }
   | { type: "fontScale"; value: number }
   | { type: "grokUpdateStatus"; current?: string | null; latest?: string | null; updateAvailable?: boolean; policy?: unknown; error?: string }
   | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; init: { protocolVersion?: unknown } } }
@@ -230,7 +233,12 @@ export type WebviewMsg =
   // per-message Rewind button; omit it for the gear QuickPick path.
   | { type: "rewindSession"; userBubbleIndex?: number }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
-  | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string };
+  | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }
+  // Relay account (gear "AFK Pilot" section, local webview only): start the
+  // device-link flow / drop the device token / open the relay web portal.
+  | { type: "remoteSignIn" }
+  | { type: "remoteSignOut" }
+  | { type: "openRemotePortal" };
 
 // Exhaustive maps: `Record<Union["type"], true>` forces every discriminant to be
 // a key (missing -> tsc error) and forbids any extra (excess-property -> tsc
@@ -250,7 +258,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
-  soundNotifications: true,
+  soundNotifications: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true,
 };
@@ -272,6 +280,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
   rewindSession: true, workflowControl: true,
+  remoteSignIn: true, remoteSignOut: true, openRemotePortal: true,
 };
 
 export const HOST_MESSAGE_TYPES: readonly HostMsg["type"][] = Object.keys(HOST_MESSAGE_TYPE_MAP) as HostMsg["type"][];

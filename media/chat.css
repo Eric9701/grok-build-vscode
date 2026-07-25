@@ -1937,14 +1937,6 @@ textarea#input {
   padding: 0 6px;
 }
 .context-donut:hover { background: var(--vscode-toolbar-hoverBackground); }
-.context-donut::after {
-  content: '';
-  display: block;
-  width: 1px;
-  height: 12px;
-  background: var(--vscode-widget-border, rgba(128,128,128,0.3));
-  margin-left: 4px;
-}
 
 /* ---- slash popover ---- */
 
@@ -2035,7 +2027,9 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .card .card-title {
   font-weight: 600;
   font-size: var(--vscode-font-size, 13px);
-  font-family: var(--vscode-editor-font-family);
+  /* A card title ("Plan ready for review") is prose, not code — the UI font,
+     not the editor's monospace. Paths/commands elsewhere stay mono on purpose. */
+  font-family: var(--vscode-font-family);
 }
 .card .card-subtitle {
   color: var(--vscode-descriptionForeground);
@@ -2607,3 +2601,132 @@ mjx-container[display="true"] {
   color: var(--vscode-foreground);
 }
 .expr-btn.copied { color: var(--vscode-charts-green, #4ec9b0); }
+
+/* Touch devices have no hover to reveal these corner overlays, so the
+   copy/download actions on images, math, and mermaid diagrams were unreachable
+   by tap (remote phone clients especially). Show them persistently wherever a
+   pointer can't hover. */
+@media (hover: none) {
+  .generated-image .generated-media-actions,
+  .math-export .expr-actions,
+  .mermaid-block[data-mermaid-state="done"] .expr-actions {
+    opacity: 1;
+  }
+}
+
+/* ---------- in-page confirm dialog (uiConfirm) ---------- */
+/* Replaces native host modals for chat-triggered destructive actions so they
+   confirm identically in the VS Code webview and the browser client. */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.confirm-panel {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 16px;
+  width: min(340px, 100%);
+  font-size: 13px;
+}
+.confirm-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.confirm-body {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.45;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.confirm-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  background: var(--vscode-input-background);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-widget-border, transparent);
+}
+.confirm-btn:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.confirm-btn.confirm-primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border-color: transparent;
+}
+.confirm-btn.confirm-primary:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+.confirm-btn.confirm-danger {
+  background: var(--vscode-errorForeground, #f48771);
+  color: #1e1e1e;
+  border-color: transparent;
+}
+.confirm-btn.confirm-danger:hover {
+  filter: brightness(1.12);
+}
+
+/* Touch devices have no hover: keep the history-row actions visible. Besides
+   discoverability, iOS Safari treats a tap on an element whose :hover REVEALS
+   content as "apply hover" and swallows the click — the first tap on a session
+   row showed the rename/delete buttons instead of resuming the session. */
+@media (hover: none), (pointer: coarse) {
+  .history-row-actions { opacity: 1; }
+}
+
+/* Touch devices: the 28px control row was drawn for a mouse — give phones
+   real tap targets (36px, 19-20px glyphs). Scoped to hover-less/coarse
+   pointers, so desktop VS Code and desktop browsers keep the dense layout. */
+@media (hover: none), (pointer: coarse) {
+  .icon-btn { width: 36px; height: 36px; }
+  .icon-btn svg { width: 20px; height: 20px; }
+  .send { width: 36px; height: 36px; }
+  .send svg { width: 19px; height: 19px; }
+  .toolbar-btn { height: 36px; }
+  .mic-btn svg { width: 18px; height: 18px; }
+}
+
+/* Touch devices, continued: the composer's mode button glyph and the context
+   donut were sized for the desktop's 28px row — scale them with the 36px
+   targets, and drop the donut's % label (the arc alone reads fine at phone
+   sizes; the number is in the context popover). */
+@media (hover: none), (pointer: coarse) {
+  .toolbar-btn svg { width: 18px; height: 18px; }
+  .context-donut svg { width: 22px; height: 22px; }
+  #donut-label { display: none; }
+}
+
+/* Touch devices: the scroll-to-bottom pill matches the 36px control row. */
+@media (hover: none), (pointer: coarse) {
+  .scroll-bottom-btn { padding: 8px 16px 8px 13px; border-radius: 19px; font-size: 13px; }
+  .scroll-bottom-btn svg { width: 18px; height: 18px; }
+}
+
+/* Touch devices: question/permission cards are tap surfaces — roomier option
+   rows and action buttons, readable descriptions (11px is desktop-dense). */
+@media (hover: none), (pointer: coarse) {
+  .card button.question-option { padding: 12px 14px; }
+  .card .question-option-desc { font-size: 13px; }
+  .card-actions button { padding: 13px 14px; font-size: 14px; }
+}
+
+/* Phones: "Last turn" is billing diagnostics — hide it in the donut's context
+   popover (the Session total above it is the number that matters). */
+@media (hover: none), (pointer: coarse) {
+  #context-popover .popover-section-toggle,
+  #context-popover .popover-section-toggle + div { display: none; }
+}

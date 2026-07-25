@@ -41,6 +41,17 @@ describe("remote-policy classification tables", () => {
     // config writers mutate the HOST user's settings — blocked until a
     // per-connection view pref exists
     expect(INBOUND_DISPOSITION.setShowThinking).toBe("host-local");
+    // worktree/rewind flows run native host dialogs (input box / QuickPick) —
+    // desktop-only until they get remote-capable UI (2026-07-24)
+    expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
+    expect(INBOUND_DISPOSITION.applyWorktree).toBe("host-local");
+    expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");
+    expect(INBOUND_DISPOSITION.rewindSession).toBe("host-local");
+    // relay account actions manage THIS machine's device token
+    expect(INBOUND_DISPOSITION.remoteSignIn).toBe("host-local");
+    expect(INBOUND_DISPOSITION.remoteSignOut).toBe("host-local");
+    expect(INBOUND_DISPOSITION.openRemotePortal).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.remoteStatus).toBe("host-local");
     // voice is host-mic/ffmpeg-driven; media needs the base64 transform
     expect(OUTBOUND_DISPOSITION.voiceState).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.voiceConfigured).toBe("host-local");

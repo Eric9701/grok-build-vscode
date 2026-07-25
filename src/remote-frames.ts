@@ -62,6 +62,12 @@ export function parseRelayFrame(raw: string): RelayFrame | null {
   }
 }
 
+/** The relay the extension talks to. Fixed in code on purpose — the pairing
+ *  flow, the web portal, and the gear "AFK Pilot" section all assume this one
+ *  service, so there is no user setting; change it here (and rebuild) to point
+ *  a local build elsewhere (e.g. the staging relay for testing). */
+export const REMOTE_RELAY_URL = "wss://afkpilot.com";
+
 /** ws(s)://relay[/base] + device token -> the uplink endpoint URL. */
 export function buildUplinkUrl(relayUrl: string, token: string): string {
   return `${relayUrl.replace(/\/+$/, "")}/uplink?token=${encodeURIComponent(token)}`;
@@ -70,6 +76,25 @@ export function buildUplinkUrl(relayUrl: string, token: string): string {
 /** ws(s)://relay -> http(s)://relay, for the REST link endpoints + browser pages. */
 export function httpBaseFromRelayUrl(relayUrl: string): string {
   return relayUrl.replace(/^ws:/i, "http:").replace(/^wss:/i, "https:").replace(/\/+$/, "");
+}
+
+/** "Dell (Windows 11)" — how this machine introduces itself to the relay
+ *  (shown on the link-approval page and the portal's device list). Hostname +
+ *  a human OS label; the workspace path deliberately stays out of it. */
+export function deviceDisplayName(hostname: string, platform: string, release: string): string {
+  let os: string;
+  if (platform === "win32") {
+    // Windows 11 reports kernel 10.0.22000+; Windows 10 stays below.
+    const build = Number(release.split(".")[2] ?? "0");
+    os = build >= 22000 ? "Windows 11" : "Windows 10";
+  } else if (platform === "darwin") {
+    os = "macOS";
+  } else if (platform === "linux") {
+    os = "Linux";
+  } else {
+    os = platform;
+  }
+  return hostname ? `${hostname} (${os})` : os;
 }
 
 export const INITIAL_BACKOFF_MS = 1000;

@@ -1,21 +1,27 @@
 # Attribution
 
-This project is licensed under the **MIT License** — see [LICENSE](../LICENSE). MIT is permissive: you're free to **use, copy, modify, merge, publish, distribute, sublicense, and sell** it, including in closed-source or commercial products, for free.
+This project is licensed under the **Functional Source License, Version 1.1, MIT Future License (FSL-1.1-MIT)** — see [LICENSE](../LICENSE). Versions **up to and including 1.8.1** were published under plain MIT and remain MIT.
 
-**MIT is not public domain — it has one condition.** You must keep the copyright notice and the full license text **in all copies or substantial portions of the software**. "Copies" includes **compiled, bundled, or packaged builds** (a `.vsix`, an installed extension, a binary) — not just the source. Stripping the notice, or re-publishing this code as your own, is a license violation, not "open source freedom."
+**What FSL-1.1-MIT means in practice:**
+
+- You're free to **use, copy, modify, and redistribute** this software for any **Permitted Purpose** — your own use, non-commercial education and research, and professional services — for free, including at work.
+- The one thing you may **not** do is a **Competing Use**: making this software (or a product or service with substantially similar functionality) available to others commercially — e.g. re-publishing a fork to a marketplace as your own competing extension, or selling a hosted service built from it.
+- **Each release automatically becomes plain MIT two years after its publication** (the Future License grant in the LICENSE). From that date on, that version is ordinary MIT code.
+
+**The notice condition still applies.** If you redistribute copies, modifications, or derivatives, you must include the [LICENSE](../LICENSE) (or a link to it) and keep the copyright notices **in all copies** — including **compiled, bundled, or packaged builds** (a `.vsix`, an installed extension, a binary), not just the source. Stripping the notice, or re-publishing this code as your own, is a license violation, not "open source freedom."
 
 ## How to attribute this project properly
 
-If you reuse this code or a substantial part of it, keep credit to:
+If you reuse this code or a substantial part of it (for a Permitted Purpose), keep credit to:
 
 - **Author:** Paweł Huryn
 - **Original repository:** [phuryn/grok-build-vscode](https://github.com/phuryn/grok-build-vscode)
 
 Concretely:
 
-1. **Ship the [LICENSE](../LICENSE) file** (the copyright line + MIT text) with your distribution — source *and* compiled. This is the part MIT actually requires.
-2. **Credit the source in your README** — a line like *"Based on [phuryn/grok-build-vscode](https://github.com/phuryn/grok-build-vscode) by Paweł Huryn, MIT License."*
-3. **If you publish to a marketplace or store** (VS Code Marketplace, Open VSX, etc.), say it's derived from this project in the listing description, and don't present it as original work.
+1. **Ship the [LICENSE](../LICENSE) file** (the copyright notice + FSL-1.1-MIT text) with your distribution — source *and* compiled. This is the part the license actually requires.
+2. **Credit the source in your README** — a line like *"Based on [phuryn/grok-build-vscode](https://github.com/phuryn/grok-build-vscode) by Paweł Huryn, FSL-1.1-MIT."*
+3. **If you publish anywhere public** (a marketplace, a store, a hosted service), say it's derived from this project in the listing description, don't present it as original work — and make sure what you publish isn't a Competing Use (see above).
 4. **Surface it in-app** where practical — e.g. an About/Credits view.
 
-Items 2–4 are good-faith open-source etiquette built on top of the one hard MIT requirement in item 1. Do that and you're welcome to build on this freely.
+Items 2–4 are good-faith etiquette built on top of the hard requirements. Do that, stay out of Competing Use, and you're welcome to build on this freely.

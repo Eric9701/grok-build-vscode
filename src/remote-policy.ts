@@ -54,13 +54,15 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   clearQueuedSends: "propose",
   steerSend: "propose",
   forkSession: "propose",
-  // Worktree create/apply/remove mutate the host filesystem (git worktrees under
-  // ~/.grok/worktrees + the main checkout on apply) — full tier only.
-  newWorktreeSession: "full",
-  applyWorktree: "full",
-  removeWorktree: "full",
-  // Rewind restores file snapshots on disk + truncates conversation — full only.
-  rewindSession: "full",
+  // Worktree create/apply/remove and rewind are driven by native VS Code UI on
+  // the host (input box for the worktree label, confirms, QuickPick) — a remote
+  // tap would stall on a dialog nobody at the desk can see. Desktop-only until
+  // the flows get remote-capable UI (2026-07-24; the remote client also hides
+  // these gear items).
+  newWorktreeSession: "host-local",
+  applyWorktree: "host-local",
+  removeWorktree: "host-local",
+  rewindSession: "host-local",
   // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
   workflowControl: "propose",
   pasteImage: "propose",
@@ -102,6 +104,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setExpandCommandOutputs: "host-local",
   setSteerByDefault: "host-local",
   setSoundNotifications: "host-local",
+  // relay account actions (link/unlink/portal) manage THIS machine's device
+  // token — only the local webview may drive them
+  remoteSignIn: "host-local",
+  remoteSignOut: "host-local",
+  openRemotePortal: "host-local",
 };
 
 const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full: 2 };
@@ -192,6 +199,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
   soundNotifications: "mirror",
+  remoteStatus: "host-local",
   setAllToolDetails: "mirror",
   focusInput: "mirror",
   sessions: "mirror",

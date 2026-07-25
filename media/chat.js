@@ -1,5 +1,10 @@
 (function () {
   const vscode = acquireVsCodeApi();
+  // True in the relay's browser client (its chat.html shim sets the flag before
+  // loading this file); always false inside the VS Code webview. Gates the
+  // host-only affordances: worktree/rewind actions (their host flows run native
+  // VS Code UI a browser user can't see) and the AFK Pilot account section.
+  const IS_REMOTE = !!window.grokRemoteClient;
 
   const $ = (id) => document.getElementById(id);
   const messagesEl = $("messages");
@@ -252,6 +257,9 @@
     // grok.worktree — true when the focused session runs in an isolated git
     // worktree (from the `session` message). Gates the gear Apply/Remove items.
     isWorktree: false,
+    // Whether the host machine holds a relay device token (`remoteStatus`).
+    // Drives the gear AFK Pilot items; never sent to remote clients.
+    remoteLinked: false,
     // toolExpandOverride (per-session, in-memory): the Command Palette
     // Expand/Collapse All latch. null = follow the setting above; true/false =
     // force ALL groups + details open/closed for this session, and keep applying
@@ -322,6 +330,10 @@
     gitFork: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg>`,
     // Undo / rewind — used on user-bubble action row (P2-9).
     undo: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>`,
+    // Remote Control gear section (sign in / account / sign out / how it works).
+    user: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+    logOut: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>`,
+    info: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`,
     // Animated equalizer bars shown while listening (CSS drives the bounce).
     micWaves: `<span class="mic-waves" aria-hidden="true"><i></i><i></i><i></i><i></i></span>`,
   };
@@ -474,11 +486,15 @@
   // can be plain HTML re-created on every streaming frame without leaking handlers.
   function exprActionsHtml(kind) {
     const label = kind === "mermaid" ? "diagram" : "LaTeX";
+    // Remote clients download the PNG in-browser and have no host to "Open as
+    // PNG" on — drop that action there and label the download for what it does.
+    // Copy (the source) and Download work in both the webview and the browser.
+    const dlTitle = IS_REMOTE ? "Download PNG" : "Download as PNG / SVG";
     return (
       `<span class="expr-actions" contenteditable="false">` +
         `<button class="expr-btn" type="button" data-expr-act="copy" title="Copy ${label}">${ICON.copy}</button>` +
-        `<button class="expr-btn" type="button" data-expr-act="download" title="Download as PNG / SVG">${ICON.download}</button>` +
-        `<button class="expr-btn" type="button" data-expr-act="open" title="Open as PNG">${ICON.file}</button>` +
+        `<button class="expr-btn" type="button" data-expr-act="download" title="${dlTitle}">${ICON.download}</button>` +
+        (IS_REMOTE ? "" : `<button class="expr-btn" type="button" data-expr-act="open" title="Open as PNG">${ICON.file}</button>`) +
       `</span>`
     );
   }
@@ -780,6 +796,65 @@
     vscode.postMessage({ type: "exportExpr", action, kind, png, svgDark, svgLight, current });
   }
 
+  // Trigger the browser's own downloader for a data: URL. Remote clients only —
+  // the VS Code webview has no download surface, so it routes saves through the
+  // host (exportExpr) instead. Kept tiny and self-contained (no host round-trip).
+  async function remoteDownload(url, filename) {
+    if (!url) return;
+    // Multi-MB data: URLs (generated images, big diagram PNGs) download
+    // unreliably on mobile; a blob: URL is dependable. Fall back to the raw URL
+    // if the conversion fails (e.g. CSP blocks the data: fetch).
+    let href = url, objectUrl = null;
+    if (/^data:/i.test(url)) {
+      try {
+        const blob = await (await fetch(url)).blob();
+        href = objectUrl = URL.createObjectURL(blob);
+      } catch (_) { href = url; }
+    }
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = filename || "download";
+    a.rel = "noopener";
+    // chat.js installs a document-wide click handler that preventDefaults EVERY
+    // anchor click (it routes file/URL links to the host). Stop our synthetic
+    // click from bubbling into it, or the browser never runs the download.
+    a.addEventListener("click", (e) => e.stopPropagation());
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    if (objectUrl) setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+  }
+
+  // Brief green-check acknowledgement on an action button (mirrors the copy
+  // buttons' feedback) — on a phone the browser's own download chrome is easy
+  // to miss, so confirm the tap registered.
+  function ackBtn(btn) {
+    if (!btn) return;
+    const prev = btn.innerHTML;
+    btn.innerHTML = ICON.check;
+    btn.classList.add("copied");
+    setTimeout(() => { btn.innerHTML = prev; btn.classList.remove("copied"); }, 1500);
+  }
+
+  // Remote-client counterpart to exportExpr: there is no host to save through, so
+  // rasterize the on-screen SVG (math or mermaid) to a themed PNG right here and
+  // hand it to the browser. PNG only by product decision — one self-contained,
+  // universally-openable file, no format quick-pick to run on a touch screen.
+  async function exportExprBrowser(host, btn) {
+    const svgEl = host.querySelector("svg");
+    if (!svgEl || !canRasterize()) return;
+    const kind = host.getAttribute("data-export-kind") || "latex";
+    const colors = exportColors();
+    const rect = svgEl.getBoundingClientRect();
+    const w = rect.width || 320, h = rect.height || 100;
+    const wysiwyg = themedSvg(svgEl, colors.fg, colors.bg);
+    let png = null;
+    try { png = await svgToPng(wysiwyg, w, h, 3, colors.bg); } catch (_) { png = null; }
+    if (!png) return;
+    await remoteDownload(png, (kind === "mermaid" ? "diagram" : "equation") + ".png");
+    ackBtn(btn);
+  }
+
   function renderDiffCode(code) {
     const lines = code.replace(/\n+$/, "").split("\n");
     const body = lines.map((ln) => {
@@ -815,6 +890,18 @@
             `<pre class="mermaid-src"><code>${escapeHtml(code).trimEnd()}</code></pre>` +
           `</div>`
         );
+        return `\x00B${i}\x00`;
+      }
+      // A ```math / ```latex / ```tex fence is display math, not literal code —
+      // render it as a real equation (only ```mermaid was special-cased before;
+      // every other language stayed a code block). Peel one layer of display
+      // delimiters the model may have wrapped around it so tex2svg gets the bare
+      // expression; a malformed body just falls back to MathJax's own error node.
+      if (lang === "math" || lang === "latex" || lang === "tex") {
+        let tex = code.replace(/\n+$/, "").trim();
+        const wrap = tex.match(/^\\\[([\s\S]*)\\\]$/) || tex.match(/^\$\$([\s\S]*)\$\$$/);
+        if (wrap) tex = wrap[1].trim();
+        codeBlocks.push(renderMath(tex, true));
         return `\x00B${i}\x00`;
       }
       const isDiff = lang === "diff";
@@ -1263,6 +1350,58 @@
     gearPopover.appendChild(el);
   }
 
+  // Promise<boolean> confirm dialog rendered in-page (chat.css .confirm-*).
+  // Replaces the host's native modals for chat-triggered destructive actions,
+  // so they confirm identically on desktop and in the browser client — where a
+  // host-side modal would stall invisibly on the desk's screen.
+  function uiConfirm(opts) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "confirm-overlay";
+      const panel = document.createElement("div");
+      panel.className = "confirm-panel";
+      const title = document.createElement("div");
+      title.className = "confirm-title";
+      title.textContent = opts.title;
+      panel.appendChild(title);
+      if (opts.body) {
+        const body = document.createElement("div");
+        body.className = "confirm-body";
+        body.textContent = opts.body;
+        panel.appendChild(body);
+      }
+      const actions = document.createElement("div");
+      actions.className = "confirm-actions";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "confirm-btn";
+      cancelBtn.textContent = "Cancel";
+      const okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.className = "confirm-btn " + (opts.danger ? "confirm-danger" : "confirm-primary");
+      okBtn.textContent = opts.confirmLabel || "OK";
+      const done = (v) => {
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+        resolve(v);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") { e.stopPropagation(); done(false); }
+      };
+      document.addEventListener("keydown", onKey, true);
+      cancelBtn.onclick = (e) => { e.stopPropagation(); done(false); };
+      okBtn.onclick = (e) => { e.stopPropagation(); done(true); };
+      // A click on the backdrop (not the panel) cancels, same as Escape.
+      overlay.onclick = (e) => { if (e.target === overlay) { e.stopPropagation(); done(false); } };
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      panel.appendChild(actions);
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      okBtn.focus();
+    });
+  }
+
   function renderGearMain() {
     state.gearView = "main";
     gearPopover.innerHTML = "";
@@ -1332,6 +1471,38 @@
     row.appendChild(dotsEl);
     gearPopover.appendChild(row);
 
+    // ── Remote Control ────────────────────────────────────────────────────
+    // The hosted relay account, on the machine that links itself — above
+    // Session on purpose (it's about reaching this machine at all). Hidden in
+    // the browser client: a remote can't (un)link the desktop it's driving.
+    if (!IS_REMOTE) {
+      addSection("Remote Control");
+      if (state.remoteLinked) {
+        addGearItem(`<span class="gear-lead">${ICON.user}<span>Your AFK Pilot account</span></span>`, () => {
+          vscode.postMessage({ type: "openRemotePortal" });
+          closePopovers();
+        });
+        addGearItem(`<span class="gear-lead">${ICON.logOut}<span>Sign out (unlink this device)</span></span>`, () => {
+          closePopovers();
+          uiConfirm({
+            title: "Sign out and unlink this device?",
+            body: "This machine will no longer be reachable from your other devices. To use it again, link it from VS Code again.",
+            confirmLabel: "Sign out",
+            danger: true,
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "remoteSignOut" }); });
+        });
+      } else {
+        addGearItem(`<span class="gear-lead">${ICON.user}<span>Sign in (link this device)</span></span>`, () => {
+          vscode.postMessage({ type: "remoteSignIn" });
+          closePopovers();
+        });
+        addGearItem(`<span class="gear-lead">${ICON.info}<span>How it works</span></span>`, () => {
+          vscode.postMessage({ type: "openRemotePortal" });
+          closePopovers();
+        });
+      }
+    }
+
     // ── Session ───────────────────────────────────────────────────────────
     // Session-LIFECYCLE actions live here; context actions (Compact) live on the
     // context donut, next to the number that motivates them.
@@ -1344,7 +1515,9 @@
       closePopovers();
     });
     // Rewind needs a conversation to roll back — hide it on an empty session.
-    if (messagesEl.querySelector(".msg.user")) {
+    // Rewind + worktrees are desktop-only: their host flows still run native
+    // VS Code UI (QuickPick / input box / progress) a browser user can't see.
+    if (!IS_REMOTE && messagesEl.querySelector(".msg.user")) {
       addGearItem(`<span class="gear-lead">${ICON.undo}<span>Rewind conversation</span></span>`, () => {
         vscode.postMessage({ type: "rewindSession" });
         closePopovers();
@@ -1353,22 +1526,35 @@
     // Worktree = an isolated git checkout, in the one Session menu. New is hidden
     // INSIDE a worktree (no worktree-from-worktree — checkouts stay singular);
     // Apply merges edits back and Remove deletes the checkout, so both apply only
-    // to a worktree session.
-    if (!state.isWorktree) {
-      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>New worktree session</span></span>`, () => {
-        vscode.postMessage({ type: "newWorktreeSession" });
-        closePopovers();
-      });
-    } else {
-      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
-        vscode.postMessage({ type: "applyWorktree" });
-        closePopovers();
-      });
-      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
-        vscode.postMessage({ type: "removeWorktree" });
-        closePopovers();
-      });
+    // to a worktree session. Apply/Remove confirm here (uiConfirm) — the host
+    // skips its native modal for the webview path.
+    if (!IS_REMOTE) {
+      if (!state.isWorktree) {
+        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>New worktree session</span></span>`, () => {
+          vscode.postMessage({ type: "newWorktreeSession" });
+          closePopovers();
+        });
+      } else {
+        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
+          closePopovers();
+          uiConfirm({
+            title: "Apply worktree?",
+            body: "Merges this worktree's edits back into the main checkout.",
+            confirmLabel: "Apply",
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); });
+        });
+        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
+          closePopovers();
+          uiConfirm({
+            title: "Remove worktree?",
+            body: "This deletes the isolated checkout. Unapplied edits are lost.",
+            confirmLabel: "Remove",
+            danger: true,
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); });
+        });
+      }
     }
+
 
     // ── Other ─────────────────────────────────────────────────────────────
     // Collapses the former Config / Account / Debug sections into sub-views
@@ -1463,7 +1649,14 @@
     const ghIcon = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align:-2px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
     addGearItem(
       `<span class="popover-gh">${ghIcon} phuryn/grok-build-vscode</span><span class="popover-external">↗</span>`,
-      () => { vscode.postMessage({ type: "openUrl", url: "https://github.com/phuryn/grok-build-vscode" }); closePopovers(); },
+      () => {
+        const repoUrl = "https://github.com/phuryn/grok-build-vscode";
+        // openUrl is host-local (dropped on remotes) — open it in the browser
+        // directly there; the VS Code webview keeps routing through the host.
+        if (IS_REMOTE) window.open(repoUrl, "_blank", "noopener");
+        else vscode.postMessage({ type: "openUrl", url: repoUrl });
+        closePopovers();
+      },
     );
   }
 
@@ -1526,40 +1719,49 @@
         renderConfigDebugPanel();
       },
     );
-    addGearSep();
-    addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
-      vscode.postMessage({ type: "openGlobalConfig" });
-      closePopovers();
-    });
-    addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
-      vscode.postMessage({ type: "openProjectConfig" });
-      closePopovers();
-    });
-    addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
-      vscode.postMessage({ type: "runMcpList" });
-      closePopovers();
-    });
-    addGearItem("<span>Show extension logs</span>", () => {
-      vscode.postMessage({ type: "showLogs" });
-      closePopovers();
-    });
+    // Opening host config files, the MCP list, and the extension log channel are
+    // all host-local (the messages are policy-dropped on remotes) — hide the whole
+    // section in the browser client rather than show dead links.
+    if (!IS_REMOTE) {
+      addGearSep();
+      addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "openGlobalConfig" });
+        closePopovers();
+      });
+      addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "openProjectConfig" });
+        closePopovers();
+      });
+      addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "runMcpList" });
+        closePopovers();
+      });
+      addGearItem("<span>Show extension logs</span>", () => {
+        vscode.postMessage({ type: "showLogs" });
+        closePopovers();
+      });
+    }
     // One-click view relocation (each destination is a direct move into an
     // extension-owned container — see src/view-move.ts). Our own mover because
     // Cursor's primary-side-bar context menu hides the built-in "Move To".
-    addGearSep();
-    addSection("Move view");
-    addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
-      vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
-      closePopovers();
-    });
-    addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
-      vscode.postMessage({ type: "moveView", location: "sidebar" });
-      closePopovers();
-    });
-    addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} To Panel</span>`, () => {
-      vscode.postMessage({ type: "moveView", location: "panel" });
-      closePopovers();
-    });
+    // Relocating the VS Code view is host-local (the moveView messages are
+    // policy-dropped on remotes) — hide the whole section in the browser client.
+    if (!IS_REMOTE) {
+      addGearSep();
+      addSection("Move view");
+      addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
+        vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
+        closePopovers();
+      });
+      addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
+        vscode.postMessage({ type: "moveView", location: "sidebar" });
+        closePopovers();
+      });
+      addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} To Panel</span>`, () => {
+        vscode.postMessage({ type: "moveView", location: "panel" });
+        closePopovers();
+      });
+    }
   }
 
   function renderModelPicker() {
@@ -1721,8 +1923,8 @@
     historyListEl = list;
 
     // Footer "Clear all" — shown whenever a non-active session exists (loaded or on a
-    // later page). The active session can't be deleted (grok re-persists it); the host
-    // shows a modal confirm with the real count and handles the empty case.
+    // later page). The active session can't be deleted (grok re-persists it); the
+    // confirm is ours (uiConfirm), the host handles the empty case.
     const footer = document.createElement("div");
     footer.className = "history-footer";
     footer.hidden = true;
@@ -1732,8 +1934,13 @@
     clearBtn.title = "Delete all sessions in this workspace's history";
     clearBtn.onclick = (e) => {
       e.stopPropagation();
-      vscode.postMessage({ type: "clearAllSessions" });
       closePopovers();
+      uiConfirm({
+        title: "Clear all history?",
+        body: "Deletes every session in this workspace's history except the current one. This cannot be undone.",
+        confirmLabel: "Delete All",
+        danger: true,
+      }).then((ok) => { if (ok) vscode.postMessage({ type: "clearAllSessions" }); });
     };
     footer.appendChild(clearBtn);
     historyPopover.appendChild(footer);
@@ -1860,8 +2067,10 @@
       renameBtn.innerHTML = ICON.pencil;
       // A worktree session's name IS the worktree name (baked into the checkout
       // path), so renaming it would decouple the display from the real checkout.
-      // Disable rename there; delete still works.
-      if (s.worktreeLabel) {
+      // Disable rename there; delete still works. The browser client allows the
+      // rename (it only sets the display name; the branch icon keeps carrying
+      // the real checkout name).
+      if (s.worktreeLabel && !IS_REMOTE) {
         renameBtn.disabled = true;
         renameBtn.classList.add("disabled");
         renameBtn.title = "Worktree name is fixed to the checkout";
@@ -1883,7 +2092,12 @@
         delBtn.title = "Delete";
         delBtn.onclick = (e) => {
           e.stopPropagation();
-          vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName });
+          uiConfirm({
+            title: s.displayName ? `Delete "${s.displayName}"?` : "Delete this session?",
+            body: "This cannot be undone.",
+            confirmLabel: "Delete",
+            danger: true,
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName }); });
         };
         actions.appendChild(delBtn);
       }
@@ -2117,7 +2331,8 @@
       actions.appendChild(copyBtn);
       // Rewind sits next to Copy on user bubbles only (P2-9). Latest message
       // has nothing after it to discard — hidden via refreshUserRewindButtons.
-      if (role === "user") {
+      // Desktop-only: the host rewind flow runs native VS Code UI.
+      if (role === "user" && !IS_REMOTE) {
         const rewindBtn = document.createElement("button");
         rewindBtn.className = "msg-action-btn msg-rewind-btn";
         rewindBtn.type = "button";
@@ -3131,9 +3346,29 @@
   // code-block copy button: copy the on-disk path, or open it in VS Code. Both
   // are the only way to reach a *video's* file (its click drives playback
   // controls, so the click-to-open we give images can't apply there).
-  function buildMediaActions(path) {
+  function buildMediaActions(path, src) {
     const actions = document.createElement("div");
     actions.className = "generated-media-actions";
+
+    // Remote clients: there is no host to copy a path to or open a file in — the
+    // one action that means anything on a phone is saving the image, which
+    // arrives inlined as a self-contained data: URI. Show only Download; the
+    // copy-path / open-in-VS-Code buttons would post host-local messages the
+    // relay drops.
+    if (IS_REMOTE) {
+      const dlBtn = document.createElement("button");
+      dlBtn.type = "button";
+      dlBtn.className = "generated-media-btn";
+      dlBtn.title = "Download image";
+      dlBtn.innerHTML = ICON.download;
+      dlBtn.onclick = async (e) => {
+        e.stopPropagation();
+        await remoteDownload(src, (String(path || "").split(/[\\/]/).pop() || "image.png"));
+        ackBtn(dlBtn);
+      };
+      actions.appendChild(dlBtn);
+      return actions;
+    }
 
     const copyBtn = document.createElement("button");
     copyBtn.type = "button";
@@ -3191,14 +3426,17 @@
         img.src = msg.src;
         img.alt = "Generated image";
         img.loading = "lazy";
-        if (msg.path) {
+        // Click-to-open is a host action (opens the file in VS Code); on a remote
+        // client it's dead, so leave the image inert there and let the Download
+        // button below be the one affordance.
+        if (msg.path && !IS_REMOTE) {
           img.title = "Open " + msg.path;
           img.style.cursor = "pointer";
           img.onclick = () => vscode.postMessage({ type: "openFile", path: msg.path });
         }
         el.appendChild(img);
       }
-      if (msg.path) el.appendChild(buildMediaActions(msg.path));
+      if (msg.path) el.appendChild(buildMediaActions(msg.path, msg.src));
     } else if (msg.url) {
       const link = document.createElement("button");
       link.className = "preview-link";
@@ -3983,6 +4221,21 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
     updateScrollBtn();
   }
+
+  // Keep the reader's place when the scrollport HEIGHT changes — the mobile
+  // keyboard or URL bar collapsing (dvh), or the VS Code panel resizing.
+  // Pinned readers get re-pinned (growth otherwise leaves a blank strip
+  // below); scrolled-up readers keep their top line exactly where it was —
+  // the resize must never be the thing that yanks the view to the bottom
+  // (tapping a toolbar button on a phone collapses the keyboard, and that
+  // used to jump the whole message area).
+  let lastScrollportHeight = messagesEl.clientHeight;
+  new ResizeObserver(() => {
+    const h = messagesEl.clientHeight;
+    if (h === lastScrollportHeight) return;
+    lastScrollportHeight = h;
+    if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }).observe(messagesEl);
 
   // While a click-triggered smooth scroll is animating, the intermediate scroll
   // events would briefly re-show the button; suppress recompute until we land.
@@ -5125,6 +5378,9 @@
         if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
         applyThinkingVisibility();
         break;
+      case "remoteStatus":
+        state.remoteLinked = !!msg.linked;
+        break;
       case "steerByDefault":
         // Live toggle (grok.steerByDefault). Pure policy for the next send —
         // nothing to re-render, the queued block's Steer button is unaffected.
@@ -5890,6 +6146,7 @@
       if (host) {
         const act = exprBtn.getAttribute("data-expr-act");
         if (act === "copy") copyExprSource(host.getAttribute("data-export-src"), exprBtn);
+        else if (act === "download" && IS_REMOTE) void exportExprBrowser(host, exprBtn);
         else if (act === "download" || act === "open") void exportExpr(host, act);
       }
       return;

@@ -7,6 +7,7 @@ import {
   parseRelayFrame,
   buildUplinkUrl,
   httpBaseFromRelayUrl,
+  deviceDisplayName,
   nextBackoffMs,
   INITIAL_BACKOFF_MS,
   MAX_BACKOFF_MS,
@@ -57,6 +58,29 @@ describe("url helpers", () => {
     expect(httpBaseFromRelayUrl("ws://localhost:8787")).toBe("http://localhost:8787");
     expect(httpBaseFromRelayUrl("wss://relay.example/")).toBe("https://relay.example");
     expect(httpBaseFromRelayUrl("WSS://relay.example")).toBe("https://relay.example");
+  });
+});
+
+describe("deviceDisplayName", () => {
+  it("labels Windows 11 by kernel build >= 22000", () => {
+    expect(deviceDisplayName("Dell", "win32", "10.0.26200")).toBe("Dell (Windows 11)");
+  });
+
+  it("labels older Windows as Windows 10", () => {
+    expect(deviceDisplayName("PC", "win32", "10.0.19045")).toBe("PC (Windows 10)");
+  });
+
+  it("maps darwin to macOS and linux to Linux", () => {
+    expect(deviceDisplayName("Mac", "darwin", "23.5.0")).toBe("Mac (macOS)");
+    expect(deviceDisplayName("box", "linux", "6.1.0")).toBe("box (Linux)");
+  });
+
+  it("passes an unknown platform through as-is", () => {
+    expect(deviceDisplayName("host", "freebsd", "14.0")).toBe("host (freebsd)");
+  });
+
+  it("falls back to just the OS label when the hostname is empty", () => {
+    expect(deviceDisplayName("", "win32", "10.0.26200")).toBe("Windows 11");
   });
 });
 

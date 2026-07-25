@@ -64,7 +64,7 @@ import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
 import { allowFromRemote, transformHostMsgForRemote, type MediaInlineDeps, type RemoteTier } from "./remote-policy";
-import { httpBaseFromRelayUrl } from "./remote-frames";
+import { deviceDisplayName, httpBaseFromRelayUrl, REMOTE_RELAY_URL } from "./remote-frames";
 import {
   SessionListEntry,
   SessionMetaOverrides,
@@ -230,10 +230,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // message = one clean utterance) without re-resolving the mic device.
   private voiceStreamCtx?: { key: string; ffmpegPath: string; device?: string; phrase: string; keyterms: string[] };
   private configWatcher?: vscode.Disposable;
-  // Remote uplink — outbound wss to a relay, active only when
-  // grok.remoteControl.relayUrl is set AND a device token is stored (the
-  // "Grok: Link Remote Device" flow). The taps in post()/emit() are no-ops when
-  // it's off, so the shipping path is unaffected.
+  // Remote uplink — outbound wss to the relay (REMOTE_RELAY_URL), active only
+  // when a device token is stored (the "Grok: Link Remote Device" / gear
+  // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
+  // shipping path is unaffected.
   private uplink?: RemoteUplink;
   // Last-seen "chrome" messages (labels, donut, lists, config echoes) that live
   // OUTSIDE Session.buffer — the buffer replays the chat, this replays the shell.
@@ -356,12 +356,6 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       if (e.affectsConfiguration("grok.terminalShell")) {
         this.applyTerminalShellPref();
-      }
-      if (e.affectsConfiguration("grok.remoteControl")) {
-        // relayUrl can change, so tear down and re-create rather than no-op.
-        this.uplink?.dispose();
-        this.uplink = undefined;
-        void this.maybeStartUplink();
       }
     });
     this.applyTerminalShellPref();
@@ -1384,8 +1378,9 @@ See design doc for the full state machine diagram.`;
     return { client, disposeAfter: true };
   }
 
-  /** Merge the focused worktree's changes back into the main checkout. */
-  async applyFocusedWorktree(): Promise<void> {
+  /** Merge the focused worktree's changes back into the main checkout.
+   *  `skipConfirm` = the webview's custom confirm dialog already ran. */
+  async applyFocusedWorktree(skipConfirm = false): Promise<void> {
     const session = this.focused;
     const wt = session.worktree;
     if (!wt) {
@@ -1396,12 +1391,14 @@ See design doc for the full state machine diagram.`;
     if (!session.client?.sessionId) {
       return void vscode.window.showWarningMessage("Start the session before applying its worktree.");
     }
-    const ok = await vscode.window.showWarningMessage(
-      `Apply worktree "${wt.label}" into the main checkout?\n\n${wt.path}\n→ ${wt.sourceGitRoot || this.workspaceRoot()}`,
-      { modal: true },
-      "Apply",
-    );
-    if (ok !== "Apply") return;
+    if (!skipConfirm) {
+      const ok = await vscode.window.showWarningMessage(
+        `Apply worktree "${wt.label}" into the main checkout?\n\n${wt.path}\n→ ${wt.sourceGitRoot || this.workspaceRoot()}`,
+        { modal: true },
+        "Apply",
+      );
+      if (ok !== "Apply") return;
+    }
     try {
       const r = await session.client.applyWorktree(wt.path);
       if (r === "unsupported") {
@@ -1419,19 +1416,22 @@ See design doc for the full state machine diagram.`;
     }
   }
 
-  /** Remove the focused session's worktree (after disposing processes that use it). */
-  async removeFocusedWorktree(): Promise<void> {
+  /** Remove the focused session's worktree (after disposing processes that use it).
+   *  `skipConfirm` = the webview's custom confirm dialog already ran. */
+  async removeFocusedWorktree(skipConfirm = false): Promise<void> {
     const session = this.focused;
     const wt = session.worktree;
     if (!wt) {
       return void vscode.window.showInformationMessage("This session is not in a worktree.");
     }
-    const ok = await vscode.window.showWarningMessage(
-      `Remove worktree "${wt.label}"?\n\n${wt.path}\n\nThis deletes the isolated checkout. Unapplied edits are lost.`,
-      { modal: true },
-      "Remove",
-    );
-    if (ok !== "Remove") return;
+    if (!skipConfirm) {
+      const ok = await vscode.window.showWarningMessage(
+        `Remove worktree "${wt.label}"?\n\n${wt.path}\n\nThis deletes the isolated checkout. Unapplied edits are lost.`,
+        { modal: true },
+        "Remove",
+      );
+      if (ok !== "Remove") return;
+    }
     try {
       // Any live process still using the worktree as cwd locks remove on Windows.
       for (const s of [...this.pool]) {
@@ -2739,10 +2739,21 @@ See design doc for the full state machine diagram.`;
         await this.newWorktreeSession();
         break;
       case "applyWorktree":
-        await this.applyFocusedWorktree();
+        // The webview's custom confirm already ran (native modals stay only on
+        // the Command-Palette path).
+        await this.applyFocusedWorktree(true);
         break;
       case "removeWorktree":
-        await this.removeFocusedWorktree();
+        await this.removeFocusedWorktree(true);
+        break;
+      case "remoteSignIn":
+        await this.linkRemoteDevice();
+        break;
+      case "remoteSignOut":
+        await this.unlinkRemoteDevice();
+        break;
+      case "openRemotePortal":
+        void vscode.env.openExternal(vscode.Uri.parse(httpBaseFromRelayUrl(REMOTE_RELAY_URL)));
         break;
       case "rewindSession":
         await this.rewindFocusedSession(
@@ -3333,14 +3344,10 @@ See design doc for the full state machine diagram.`;
     this.postSessionsList();
   }
 
-  private async deleteSession(id: string, name?: string): Promise<void> {
-    const label = name ? `session "${name}"` : "this session";
-    const choice = await vscode.window.showWarningMessage(
-      `Delete ${label}? This cannot be undone.`,
-      { modal: true },
-      "Delete",
-    );
-    if (choice !== "Delete") return;
+  // No native confirm here: the webview shows its own confirm dialog before
+  // posting deleteSession (works in the browser client too, where a host-side
+  // modal would stall invisibly).
+  private async deleteSession(id: string, _name?: string): Promise<void> {
     const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const liveForCwd = [...this.pool].find((s) => s.activeSessionId === id);
     const cwd =
@@ -3380,8 +3387,8 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Delete every session in this workspace's history except the live/focused one (grok
-   *  re-persists that, so deleting it wouldn't stick). Behind a modal confirm showing the
-   *  count. Tears down any backgrounded live members it deletes and purges their overrides. */
+   *  re-persists that, so deleting it wouldn't stick). The webview confirms first (custom
+   *  dialog). Tears down any backgrounded live members it deletes and purges their overrides. */
   private async clearAllSessions(): Promise<void> {
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
     const grokHome = resolveGrokHome(process.env);
@@ -3394,12 +3401,7 @@ See design doc for the full state machine diagram.`;
       void vscode.window.showInformationMessage("No history to clear.");
       return;
     }
-    const choice = await vscode.window.showWarningMessage(
-      `Delete ${clearableCount} session${clearableCount === 1 ? "" : "s"} from this workspace's history? This cannot be undone.`,
-      { modal: true },
-      "Delete All",
-    );
-    if (choice !== "Delete All") return;
+    // Confirm lives in the webview (custom dialog) — see deleteSession.
 
     let removed: string[] = [];
     try {
@@ -4466,6 +4468,7 @@ See design doc for the full state machine diagram.`;
     // gate + no-editor case live inside refreshImplicitChip).
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
+    void this.postRemoteStatus();
     // Sweep stale empty primer sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep).
     void this.startSession().then(() => this.sweepEmptyPrimerSessions());
@@ -4555,6 +4558,22 @@ See design doc for the full state machine diagram.`;
     if (wv) {
       wv.postMessage({ type: "clearMessages" });
       for (const m of session.buffer) wv.postMessage(m);
+    }
+    // Remote clients don't share the webview, so replay the same clear + buffer
+    // to them over the uplink — otherwise re-focusing a session that's still
+    // live in the pool (this path) reloads only the local webview while the
+    // remote keeps showing the previous session (switching a session in history
+    // didn't always reload on the browser client). Cold loads go through
+    // emit()/post(), which already mirror; this path deliberately bypasses them.
+    // Transform by hand (image inlining, host-local/video drop) but skip
+    // mirrorToRemote's sticky-chrome recording — this is chat content, and
+    // postMode()/postSessionsList() below refresh the remote's chrome.
+    if (this.uplink) {
+      const replay: HostMsg[] = [{ type: "clearMessages" }, ...session.buffer];
+      for (const m of replay) {
+        const out = transformHostMsgForRemote(m, GrokSidebar.REMOTE_MEDIA_DEPS);
+        if (out) this.uplink.broadcast(out);
+      }
     }
     this.postMode();
     this.postSessionsList();
@@ -5099,18 +5118,16 @@ See design doc for the full state machine diagram.`;
 
   private static readonly DEVICE_TOKEN_SECRET = "grok.remoteControl.deviceToken";
 
-  /** Start the relay uplink when grok.remoteControl.relayUrl is set and a device
-   *  token is stored (from the link flow). Idempotent; disposed by the config
-   *  watcher on any remoteControl.* change. */
+  /** Start the relay uplink when a device token is stored (from the link flow).
+   *  Idempotent. */
   private async maybeStartUplink(): Promise<void> {
-    const relayUrl = vscode.workspace.getConfiguration("grok").get<string>("remoteControl.relayUrl", "").trim();
-    if (!relayUrl || this.uplink) return;
+    if (this.uplink) return;
     const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
     if (!token) return; // not linked yet — the link command starts the uplink itself
     this.uplink = new RemoteUplink({
-      relayUrl,
+      relayUrl: REMOTE_RELAY_URL,
       token,
-      deviceName: `${os.hostname()} — ${path.basename(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "no workspace")}`,
+      deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
       snapshot: () => this.buildRemoteSnapshot(),
       onClientMessage: (m) => this.handleRemoteMessage(m),
       log: (l) => this.output.appendLine(l),
@@ -5123,14 +5140,9 @@ See design doc for the full state machine diagram.`;
    *  until the relay hands back a long-lived device token, store it in secrets,
    *  connect. Mirrors how a CLI links to a web account. */
   async linkRemoteDevice(): Promise<void> {
-    const relayUrl = vscode.workspace.getConfiguration("grok").get<string>("remoteControl.relayUrl", "").trim();
-    if (!relayUrl) {
-      void vscode.window.showErrorMessage("Set grok.remoteControl.relayUrl first (e.g. ws://localhost:8787).");
-      return;
-    }
-    const base = httpBaseFromRelayUrl(relayUrl);
+    const base = httpBaseFromRelayUrl(REMOTE_RELAY_URL);
     try {
-      const name = `${os.hostname()} — ${path.basename(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "no workspace")}`;
+      const name = deviceDisplayName(os.hostname(), process.platform, os.release());
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -5148,6 +5160,7 @@ See design doc for the full state machine diagram.`;
       this.uplink?.dispose();
       this.uplink = undefined;
       await this.maybeStartUplink();
+      this.post({ type: "remoteStatus", linked: true });
       void vscode.window.showInformationMessage("Remote device linked — this workspace is now reachable from the web client.");
     } catch (e) {
       void vscode.window.showErrorMessage(`Remote link failed: ${(e as Error)?.message ?? String(e)}`);
@@ -5176,10 +5189,35 @@ See design doc for the full state machine diagram.`;
 
   /** "Grok: Unlink Remote Device" — drop the token + connection. */
   async unlinkRemoteDevice(): Promise<void> {
+    // Best-effort server-side revoke first: without it the device row lingers
+    // on the account and keeps counting against the relay's device cap (a
+    // locally-unlinked machine used to block relinking at the free tier's
+    // 1-device limit). Local unlink proceeds regardless — offline stays a
+    // working kill-switch.
+    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    if (token) {
+      try {
+        await fetch(`${httpBaseFromRelayUrl(REMOTE_RELAY_URL)}/api/device/unlink`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch (e) {
+        this.output.appendLine(`[remote] server-side unlink failed (local unlink continues): ${(e as Error)?.message ?? e}`);
+      }
+    }
     await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
     this.uplink?.dispose();
     this.uplink = undefined;
+    this.post({ type: "remoteStatus", linked: false });
     void vscode.window.showInformationMessage("Remote device unlinked.");
+  }
+
+  /** Tell the webview whether this machine holds a relay device token (drives
+   *  the gear "AFK Pilot" section's sign-in vs account/sign-out items). */
+  private async postRemoteStatus(): Promise<void> {
+    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    this.post({ type: "remoteStatus", linked: !!token });
   }
 
   /** Ordered catch-up for a newly-`ready` client: initialState first (so chat.js

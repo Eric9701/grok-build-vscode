@@ -214,6 +214,7 @@ The full pedagogical write-up lives in
 | [src/voice-recorder.ts](../src/voice-recorder.ts) | Batch capture (`ffmpeg` → WAV) + STT REST upload |
 | [src/voice-streamer.ts](../src/voice-streamer.ts) | Live capture (ffmpeg PCM → WebSocket STT) |
 | [src/telemetry.ts](../src/telemetry.ts) | Anonymous Aptabase telemetry — pure payload builders + a fire-and-forget `session_start` (opt-out via `grok.telemetry.enabled`; see [privacy.md](privacy.md)) |
+| [src/remote-policy.ts](../src/remote-policy.ts) / [src/remote-frames.ts](../src/remote-frames.ts) / [src/remote-uplink.ts](../src/remote-uplink.ts) | Remote Control client for [AFK Pilot](https://afkpilot.com) — `remote-policy` (pure) classifies every protocol message and gates what a linked remote may send; `remote-frames` (pure) is the wire contract; `remote-uplink` dials out over ws. Inert until a device is linked (gear → Remote Control). The companion service lives in its own repo; deeper detail is deliberately not documented here |
 | [media/chat.{js,css}](../media/) | Webview UI |
 | [media/webview-helpers.js](../media/webview-helpers.js) | Pure webview helpers (file-ref detection, relative-time, mic-button state machine, trailing send-phrase highlight, math extraction `splitMath`/`stripUnsupportedTex`, and the subagent classifier `isSubagentToolCall`/`subagentLabel`) — shared between webview and tests |
 

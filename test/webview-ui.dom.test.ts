@@ -156,13 +156,32 @@ describe("session rows (regression: only the label was clickable)", () => {
     expect(posted).toContainEqual({ type: "resumeSession", id: "s1" });
   });
 
-  it("delete button posts deleteSession and does NOT also resume (stopPropagation)", () => {
+  it("delete button opens the in-page confirm; confirming posts deleteSession, no resume", async () => {
     const { window, posted, doc } = openWithSessions();
     const delBtn = doc.querySelector(".history-row .history-action-danger") as HTMLElement;
     click(window, delBtn);
 
+    // No post yet — the uiConfirm dialog (not a native host modal) intervenes.
+    expect(types(posted)).not.toContain("deleteSession");
+    const okBtn = doc.querySelector(".confirm-overlay .confirm-danger") as HTMLElement;
+    expect(okBtn).not.toBeNull();
+    click(window, okBtn);
+    await Promise.resolve(); // let the uiConfirm promise chain post
+
     expect(posted).toContainEqual({ type: "deleteSession", id: "s1", name: "Add subtract fn" });
     expect(types(posted)).not.toContain("resumeSession");
+    expect(doc.querySelector(".confirm-overlay")).toBeNull(); // dialog closed itself
+  });
+
+  it("cancelling the delete confirm posts nothing", async () => {
+    const { window, posted, doc } = openWithSessions();
+    click(window, doc.querySelector(".history-row .history-action-danger") as HTMLElement);
+    const cancelBtn = doc.querySelector(".confirm-overlay .confirm-btn:not(.confirm-danger)") as HTMLElement;
+    click(window, cancelBtn);
+    await Promise.resolve();
+
+    expect(types(posted)).not.toContain("deleteSession");
+    expect(doc.querySelector(".confirm-overlay")).toBeNull();
   });
 
   it("hides the delete button for the active session, keeps it for others", () => {
@@ -188,14 +207,21 @@ describe("session rows (regression: only the label was clickable)", () => {
     expect(types(posted)).not.toContain("resumeSession");
   });
 
-  it("shows a Clear all footer that posts clearAllSessions and closes the popover", () => {
+  it("shows a Clear all footer that confirms in-page, then posts clearAllSessions", async () => {
     const { window, posted, doc } = openWithSessions();
     const clearBtn = doc.querySelector(".history-clear-all") as HTMLElement;
     expect(clearBtn).not.toBeNull();
     click(window, clearBtn);
 
-    expect(posted).toContainEqual({ type: "clearAllSessions" });
+    // The popover closes before the dialog shows; nothing posts until confirmed.
     expect(($(doc, "history-popover") as any).hidden).toBe(true);
+    expect(types(posted)).not.toContain("clearAllSessions");
+    const okBtn = doc.querySelector(".confirm-overlay .confirm-danger") as HTMLElement;
+    expect(okBtn).not.toBeNull();
+    click(window, okBtn);
+    await Promise.resolve();
+
+    expect(posted).toContainEqual({ type: "clearAllSessions" });
   });
 
   it("hides the Clear all footer when the only session is the active one", () => {
