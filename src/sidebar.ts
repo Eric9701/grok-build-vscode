@@ -65,6 +65,7 @@ import { HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
 import { allowFromRemote, transformHostMsgForRemote, type MediaInlineDeps, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, REMOTE_RELAY_URL } from "./remote-frames";
+import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import {
   SessionListEntry,
   SessionMetaOverrides,
@@ -235,6 +236,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
   // shipping path is unaffected.
   private uplink?: RemoteUplink;
+  // OS wake lock, held for exactly as long as the uplink is (linked device token
+  // + live extension host) so an AFK machine can't idle-suspend out from under a
+  // remote turn. `grok.remote.keepAwake` is the opt-out. See src/keep-awake.ts.
+  private readonly keepAwake = new KeepAwake((l) => this.output.appendLine(l), process.platform, process.pid, os.release());
   // Last-seen "chrome" messages (labels, donut, lists, config echoes) that live
   // OUTSIDE Session.buffer — the buffer replays the chat, this replays the shell.
   // A new remote client's snapshot = these + clearMessages + the focused buffer.
@@ -356,6 +361,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       if (e.affectsConfiguration("grok.terminalShell")) {
         this.applyTerminalShellPref();
+      }
+      if (e.affectsConfiguration("grok.remote.keepAwake")) {
+        this.refreshKeepAwake();
       }
     });
     this.applyTerminalShellPref();
@@ -1705,6 +1713,7 @@ See design doc for the full state machine diagram.`;
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
     this.uplink?.dispose();
     this.uplink = undefined;
+    try { this.keepAwake.stop(); } catch { /* the pid watcher reaps it anyway */ }
     void this.disposePool();
     this.editorWatcher?.dispose();
     this.configWatcher?.dispose();
@@ -5133,6 +5142,22 @@ See design doc for the full state machine diagram.`;
       log: (l) => this.output.appendLine(l),
     });
     this.uplink.start();
+    this.refreshKeepAwake();
+  }
+
+  /** Re-assert the wake lock against the current (setting, linked) state. Called
+   *  after every event that can change either; both start and stop are
+   *  idempotent, so callers never have to know the previous state. Wrapped
+   *  because keeping the machine awake is never worth failing a link/unlink or a
+   *  config change over. */
+  private refreshKeepAwake(): void {
+    try {
+      const enabled = vscode.workspace.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
+      if (shouldKeepAwake({ enabled, linked: !!this.uplink })) this.keepAwake.start();
+      else this.keepAwake.stop();
+    } catch (e) {
+      this.output.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
+    }
   }
 
   /** "Grok: Link Remote Device" — the device-code flow against the relay's REST
@@ -5209,6 +5234,7 @@ See design doc for the full state machine diagram.`;
     await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
     this.uplink?.dispose();
     this.uplink = undefined;
+    this.refreshKeepAwake();
     this.post({ type: "remoteStatus", linked: false });
     void vscode.window.showInformationMessage("Remote device unlinked.");
   }
