@@ -1,8 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  MENTION_INDEX_LIMIT,
+  MENTION_INDEX_LIMIT_MIN,
   MENTION_RESULT_LIMIT,
   buildExcludeGlob,
+  clampMentionIndexLimit,
   filterMentionFiles,
+  mergeMentionEntries,
   normalizeRelPath,
   orderMentionIndex,
 } from "../src/mention";
@@ -166,5 +170,83 @@ describe("orderMentionIndex / normalizeRelPath", () => {
   it("normalizeRelPath converts backslashes", () => {
     expect(normalizeRelPath("src\\a\\b.ts")).toBe("src/a/b.ts");
     expect(normalizeRelPath("src/a.ts")).toBe("src/a.ts");
+  });
+});
+
+describe("clampMentionIndexLimit (#69)", () => {
+  it("passes through a sane user value", () => {
+    expect(clampMentionIndexLimit(20000)).toBe(20000);
+    expect(clampMentionIndexLimit(MENTION_INDEX_LIMIT_MIN)).toBe(MENTION_INDEX_LIMIT_MIN);
+  });
+
+  it("has no upper bound — a monorepo may index everything", () => {
+    expect(clampMentionIndexLimit(5_000_000)).toBe(5_000_000);
+  });
+
+  it("floors below the minimum, so the popover can't be made useless", () => {
+    expect(clampMentionIndexLimit(1)).toBe(MENTION_INDEX_LIMIT_MIN);
+    expect(clampMentionIndexLimit(99)).toBe(MENTION_INDEX_LIMIT_MIN);
+  });
+
+  it("truncates a fractional value to an integer (findFiles wants a count)", () => {
+    expect(clampMentionIndexLimit(1234.9)).toBe(1234);
+  });
+
+  it("falls back to the default for junk, not to zero — zero would empty the index", () => {
+    for (const junk of [undefined, null, NaN, Infinity, -Infinity, 0, -5, "abc", {}, []]) {
+      expect(clampMentionIndexLimit(junk)).toBe(MENTION_INDEX_LIMIT);
+    }
+  });
+
+  it("accepts a numeric string (settings.json can hold one)", () => {
+    expect(clampMentionIndexLimit("8000")).toBe(8000);
+  });
+});
+
+describe("mergeMentionEntries (open editors layered onto the findFiles snapshot, #69)", () => {
+  const base = () => new Map([["src/a.ts", "/w/src/a.ts"]]);
+
+  it("returns the SAME map instance when nothing is new — the cached snapshot stays untouched", () => {
+    const m = base();
+    expect(mergeMentionEntries(m, [])).toBe(m);
+    expect(mergeMentionEntries(m, [{ rel: "src/a.ts", abs: "/w/src/a.ts" }])).toBe(m);
+  });
+
+  it("copies rather than mutates when something is added", () => {
+    const m = base();
+    const out = mergeMentionEntries(m, [{ rel: "src/b.ts", abs: "/w/src/b.ts" }]);
+    expect(out).not.toBe(m);
+    expect(m.size).toBe(1); // the cached snapshot must not grow
+    expect(out.get("src/b.ts")).toBe("/w/src/b.ts");
+  });
+
+  it("first wins — an open tab never overwrites the findFiles path for the same rel", () => {
+    const out = mergeMentionEntries(base(), [{ rel: "src/a.ts", abs: "/elsewhere/a.ts" }]);
+    expect(out.get("src/a.ts")).toBe("/w/src/a.ts");
+  });
+
+  it("dedupes within the extra entries themselves", () => {
+    const out = mergeMentionEntries(base(), [
+      { rel: "src/b.ts", abs: "/w/src/b.ts" },
+      { rel: "src/b.ts", abs: "/other/b.ts" },
+    ]);
+    expect(out.get("src/b.ts")).toBe("/w/src/b.ts");
+    expect(out.size).toBe(2);
+  });
+
+  it("skips entries missing either half instead of poisoning the index", () => {
+    const m = base();
+    expect(mergeMentionEntries(m, [{ rel: "", abs: "/w/x.ts" }, { rel: "x.ts", abs: "" }])).toBe(m);
+  });
+
+  it("adds the #69 case: a file past the findFiles cap but open as a tab", () => {
+    const snapshot = new Map<string, string>();
+    for (let i = 0; i < 10; i++) snapshot.set(`noise/${i}.ts`, `/w/noise/${i}.ts`);
+    const merged = mergeMentionEntries(snapshot, [
+      { rel: "src/AreaExtensions.cs", abs: "/w/src/AreaExtensions.cs" },
+    ]);
+    // The whole point: it must now be reachable by the `@` ranking.
+    const hits = filterMentionFiles(orderMentionIndex([...merged.keys()]), "AreaExt");
+    expect(hits).toContain("src/AreaExtensions.cs");
   });
 });
