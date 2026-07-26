@@ -4,6 +4,7 @@ import {
   OUTBOUND_DISPOSITION,
   allowFromRemote,
   allowRemoteRepoTarget,
+  repoScopeFor,
   inlineMediaForRemote,
   mediaMimeFromPath,
   transformHostMsgForRemote,
@@ -210,5 +211,30 @@ describe("mediaMimeFromPath", () => {
     expect(mediaMimeFromPath("/a/b.PNG")).toBe("image/png");
     expect(mediaMimeFromPath("clip.mp4")).toBe("video/mp4");
     expect(mediaMimeFromPath("noext")).toBe("application/octet-stream");
+  });
+});
+
+describe("repo scope — global for remote, workspace-local in VS Code", () => {
+  const WS = "/work/current";
+  const PICKED = "/work/other";
+
+  // The selection is global ON PURPOSE: that is the remote feature, one phone
+  // driving whichever project you pick, with every remote client agreeing.
+  it("gives every remote client the global selection", () => {
+    expect(repoScopeFor("remote", { selectedCwd: PICKED, workspaceRoot: WS })).toBe(PICKED);
+  });
+
+  // ...but VS Code hides the switcher, so following the selection there is
+  // strictly harmful: it would re-scope a history list the user cannot re-aim,
+  // and point New session at a checkout they are not looking at — where Grok
+  // would then write files.
+  it("keeps VS Code on its own workspace no matter what a phone picked", () => {
+    expect(repoScopeFor("local", { selectedCwd: PICKED, workspaceRoot: WS })).toBe(WS);
+  });
+
+  it("agrees on the workspace when nothing has been picked", () => {
+    for (const origin of ["local", "remote"] as const) {
+      expect(repoScopeFor(origin, { selectedCwd: "", workspaceRoot: WS })).toBe(WS);
+    }
   });
 });

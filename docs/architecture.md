@@ -251,6 +251,16 @@ repository. And because the relay serves a client that can be newer than the ins
 extension, the chip renders only once a `repos` frame has actually arrived — an older
 host that never sends one gets no chip rather than a dead control.
 
+The selection is **global across remote clients** (that is the feature) but the VS Code
+webview **ignores it**, because it is the one client that can neither see nor change it —
+following it would re-scope a history list the user cannot re-aim and point *New session*
+at a checkout they are not looking at. `repoScopeFor` ([src/remote-policy.ts](../src/remote-policy.ts),
+pure) is that rule; `onMessage` carries a `MsgOrigin` and `postSessionsList` /
+`postRepoCatalog` build one payload per audience (`postLocal` / `postRemote`), skipping the
+second disk scan whenever both scopes resolve to the same cwd. Sticky chrome records the
+*remote* variant so a late-joining client replays the right one. The split matches the
+affordance, not the transport: undo it if VS Code ever grows the switcher.
+
 The host (`postSessionsList` in [src/sidebar.ts](../src/sidebar.ts)) orders everything
 cheaply with `indexSessions`, then drives an **mtime-keyed read cache** so a re-open /
 load-more / search only re-reads entries whose `summary.json` actually changed —

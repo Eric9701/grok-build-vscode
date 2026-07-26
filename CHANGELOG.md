@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.7 — 2026-07-26
+
+### Fixed
+
+- **Switching repository from your phone no longer changes what VS Code shows.** The choice is shared across your remote devices on purpose — that's the point of it — but VS Code has no repository picker, so it now stays on the workspace you have open: its history list keeps showing that project's sessions, and *New session* starts there. Previously a phone switching projects silently re-scoped the list and pointed *New session* at a different checkout.
+
+---
+
 ## 2.0.6 — 2026-07-26
 
 ### Fixed

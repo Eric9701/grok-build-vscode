@@ -155,6 +155,32 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
   }
 }
 
+/** Which side a webview message came from. */
+export type MsgOrigin = "local" | "remote";
+
+/**
+ * Which repository a client's history list and *New session* target.
+ *
+ * The repo selection is **global**, and deliberately so — that IS the remote
+ * feature: one phone drives whichever project you pick, and every remote client
+ * agrees on it. But the VS Code webview hides the switcher, because that window
+ * already IS a repository. It can therefore neither show the selection nor
+ * change it, which makes following it strictly harmful: a phone that switched
+ * repos would silently re-scope the local history list, and point the local
+ * *New session* button at a different checkout — where Grok would then write
+ * files. So a local client reads its own workspace and ignores the selection.
+ *
+ * Restore this to a single global value only if/when VS Code grows the switcher
+ * too; the split exists to match the affordance, not the transport.
+ */
+export function repoScopeFor(
+  origin: MsgOrigin,
+  scopes: { selectedCwd: string; workspaceRoot: string },
+): string {
+  if (origin === "local") return scopes.workspaceRoot;
+  return scopes.selectedCwd || scopes.workspaceRoot;
+}
+
 // ---------- outbound: HostMsg to a remote client ----------
 
 export type OutboundDisposition =

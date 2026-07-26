@@ -65,7 +65,7 @@ import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
-import { allowFromRemote, allowRemoteRepoTarget, transformHostMsgForRemote, type MediaInlineDeps, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, allowRemoteRepoTarget, repoScopeFor, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import {
@@ -1846,7 +1846,18 @@ See design doc for the full state machine diagram.`;
       !!cwd && entries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
     if (selected) this.selectedRepoCwd = selected.cwd;
     else this.selectedRepoCwd = inCatalog(activeCwd) ? activeCwd : this.workspaceRoot();
-    this.post({
+    // Same split as the history list: remote clients see (and drive) the global
+    // selection, the VS Code webview always reads its own workspace. The chip is
+    // hidden locally, but this frame still feeds Clear-all's target and the name
+    // in its confirm dialog — so pointing it at a remotely-selected repo would
+    // aim a destructive action somewhere the user cannot see.
+    this.postLocal({
+      type: "repos",
+      entries,
+      selectedCwd: this.workspaceRoot(),
+      activeCwd,
+    });
+    this.postRemote({
       type: "repos",
       entries,
       selectedCwd: this.selectedHistoryCwd(),
@@ -3043,7 +3054,7 @@ See design doc for the full state machine diagram.`;
     return client;
   }
 
-  private async onMessage(msg: WebviewMsg): Promise<void> {
+  private async onMessage(msg: WebviewMsg, origin: MsgOrigin = "local"): Promise<void> {
     switch (msg.type) {
       case "ready":
         this.postInitialState();
@@ -3053,7 +3064,7 @@ See design doc for the full state machine diagram.`;
         await this.handleSend(msg.text, msg.bare === true);
         break;
       case "newSession":
-        await this.newFocusedSession();
+        await this.newFocusedSession(origin);
         break;
       case "cancel":
         await this.focused.client?.cancel("user Stop click");
@@ -3416,7 +3427,7 @@ See design doc for the full state machine diagram.`;
         this.renameSession(msg.id, msg.name);
         break;
       case "deleteSession":
-        await this.deleteSession(msg.id, msg.name);
+        await this.deleteSession(msg.id, msg.name, origin);
         break;
       case "clearAllSessions":
         await this.clearAllSessions(msg.cwd);
@@ -3470,11 +3481,41 @@ See design doc for the full state machine diagram.`;
    * webview appends). A non-empty `query` filters by display name across ALL sessions (it warms the
    * cache once so search stays complete, not just over what's already loaded).
    */
+  /**
+   * The repo selection is GLOBAL — that is the whole point of the remote
+   * switcher: one phone drives whichever project you pick. But VS Code hides
+   * that switcher (the window already IS a repository), so a window has no way
+   * to show the selection, no way to change it, and no business following it.
+   * A remote client tapping another repo must not silently re-scope the local
+   * history list or retarget the local *New session* button at a different
+   * checkout. So the local webview reads the workspace root and ignores the
+   * global selection entirely; only remote clients honour it.
+   */
+  private historyCwdFor(origin: MsgOrigin): string {
+    return repoScopeFor(origin, {
+      selectedCwd: this.selectedHistoryCwd(),
+      workspaceRoot: this.workspaceRoot(),
+    });
+  }
+
+  /** Refresh history for both audiences. Each sees its own scope (above), and
+   *  the second scan is skipped whenever the two resolve to the same cwd —
+   *  which is the normal case, until someone switches repos from a phone. */
   private postSessionsList(opts?: { offset?: number; limit?: number; query?: string }): void {
+    const localCwd = this.historyCwdFor("local");
+    const remoteCwd = this.historyCwdFor("remote");
+    const local = this.buildSessionsList(localCwd, opts);
+    this.postLocal(local);
+    this.postRemote(pathsEqual(localCwd, remoteCwd) ? local : this.buildSessionsList(remoteCwd, opts));
+  }
+
+  private buildSessionsList(
+    cwd: string,
+    opts?: { offset?: number; limit?: number; query?: string },
+  ): HostMsg {
     const offset = Math.max(0, opts?.offset ?? 0);
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const query = (opts?.query ?? "").trim().toLowerCase();
-    const cwd = this.selectedHistoryCwd();
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const log = (m: string) => this.output.appendLine(m);
@@ -3580,7 +3621,7 @@ See design doc for the full state machine diagram.`;
         dots[s.activeSessionId] = this.dotForId(s.activeSessionId);
       }
     }
-    this.post({
+    return {
       type: "sessions",
       entries: pageEntries,
       activeId: this.focused.activeSessionId,
@@ -3590,7 +3631,7 @@ See design doc for the full state machine diagram.`;
       hasMore,
       nextOffset,
       query: opts?.query ?? "",
-    });
+    };
   }
 
   /** Synthesize a list entry for a live session grok hasn't written a `summary.json` for yet (a
@@ -3737,14 +3778,17 @@ See design doc for the full state machine diagram.`;
   // No native confirm here: the webview shows its own confirm dialog before
   // posting deleteSession (works in the browser client too, where a host-side
   // modal would stall invisibly).
-  private async deleteSession(id: string, _name?: string): Promise<void> {
+  private async deleteSession(id: string, _name?: string, origin: MsgOrigin = "local"): Promise<void> {
     const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const liveForCwd = [...this.pool].find((s) => s.activeSessionId === id);
+    // Last-resort cwd — and this one deletes files, so it resolves in the
+    // ASKER's scope. A delete from VS Code must never fall back to a repo that
+    // some remote client happens to have selected.
     const cwd =
       liveForCwd?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
-      this.selectedHistoryCwd();
+      this.historyCwdFor(origin);
     try {
       deleteSessionDir({
         fs: defaultFs,
@@ -5046,6 +5090,20 @@ See design doc for the full state machine diagram.`;
     this.mirrorToRemote(message);
   }
 
+  /** Post to the VS Code webview only. Used where the two audiences must see
+   *  DIFFERENT payloads — repo-scoped chrome, where the local window ignores the
+   *  global selection (see `historyCwdFor`). Both are chrome, never content, so
+   *  the suppress gates in `post` don't apply. */
+  private postLocal(message: HostMsg): void {
+    this.view?.webview.postMessage(message);
+  }
+
+  /** Post to remote clients only. Also records sticky chrome, so a client that
+   *  connects later replays the REMOTE variant — never the local one. */
+  private postRemote(message: HostMsg): void {
+    this.mirrorToRemote(message);
+  }
+
   /**
    * Session-scoped post. Records the message in that session's view buffer (so a
    * focus switch can rebuild its chat losslessly — clearMessages + replay) and,
@@ -5451,15 +5509,16 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Start a brand-new session, keeping the current one alive in the background. */
-  private async newFocusedSession(): Promise<void> {
-    const targetCwd = this.selectedHistoryCwd();
+  private async newFocusedSession(origin: MsgOrigin = "local"): Promise<void> {
+    // Repo selection only changes history scope; New Session is the deliberate
+    // second action that starts Grok in the selected cwd — deliberate only for
+    // the client that can SEE the selection. From VS Code, where the switcher
+    // is hidden, this always means the open workspace: otherwise a phone that
+    // switched repos hours ago would silently point the local New-session
+    // button at another checkout, and Grok would write files there.
+    const targetCwd = this.historyCwdFor(origin);
     this.parkFocused();
     this.focused = new Session();
-    // Repo selection only changes history scope; New Session is the deliberate
-    // second action that starts Grok in the selected cwd. This intentionally
-    // includes a selected worktree: the old workspace-root fallback prevented
-    // accidental trapping before selection was explicit, but would now ignore
-    // the repo choice the user just made.
     this.focused.cwd = targetCwd;
     this.focused.worktree = undefined;
     const wt = matchWorktreeForCwd(
@@ -5701,7 +5760,7 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
       return;
     }
-    void this.onMessage(m).catch((e) =>
+    void this.onMessage(m, "remote").catch((e) =>
       this.output.appendLine(`[remote] ${m.type} failed: ${(e as Error)?.message ?? String(e)}`),
     );
   }
