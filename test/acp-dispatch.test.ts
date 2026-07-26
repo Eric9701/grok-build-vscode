@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   addUsage,
+  sumUsage,
   collectToolImages,
   contextUsedFromCompactNotification,
   autoCompactStartedNote,
@@ -1035,5 +1036,50 @@ describe("isMethodNotFoundError (#52, #48)", () => {
   it("is false for unrelated failures", () => {
     expect(isMethodNotFoundError({ code: -32000, message: "boom" })).toBe(false);
     expect(isMethodNotFoundError(undefined)).toBe(false);
+  });
+});
+
+// A rewind must be able to SUBTRACT the discarded turns from the session's
+// billing total. A single running total can't be undone, so usage is logged
+// per turn and the total recomputed from the survivors (#53 + P2-9).
+describe("sumUsage (session total is derived, not patched)", () => {
+  it("sums the surviving turns", () => {
+    const out = sumUsage([
+      { usage: { inputTokens: 100, outputTokens: 10, modelCalls: 1 } },
+      { usage: { inputTokens: 250, outputTokens: 40, modelCalls: 3 } },
+    ]);
+    expect(out).toEqual({ inputTokens: 350, outputTokens: 50, modelCalls: 4 });
+  });
+
+  it("is undefined for an empty log — a rewound-to-nothing session shows no breakdown", () => {
+    expect(sumUsage([])).toBeUndefined();
+  });
+
+  it("never invents a 0 for a field the CLI didn't report", () => {
+    // cache-creation has no field anywhere in the CLI; absent must stay absent.
+    const out = sumUsage([{ usage: { inputTokens: 5 } }, { usage: { inputTokens: 7 } }]);
+    expect(out).toEqual({ inputTokens: 12 });
+    expect("cachedReadTokens" in (out as object)).toBe(false);
+  });
+
+  it("keeps a field present on only one turn", () => {
+    const out = sumUsage([{ usage: { inputTokens: 5 } }, { usage: { inputTokens: 5, reasoningTokens: 9 } }]);
+    expect(out).toEqual({ inputTokens: 10, reasoningTokens: 9 });
+  });
+
+  it("skips entries with no usage rather than throwing", () => {
+    expect(sumUsage([{ usage: undefined }, { usage: { inputTokens: 3 } }])).toEqual({ inputTokens: 3 });
+  });
+
+  it("re-summing a truncated log yields the pre-turn total (the rewind contract)", () => {
+    const log = [
+      { afterUserMessage: 1, usage: { inputTokens: 100, outputTokens: 10 } },
+      { afterUserMessage: 2, usage: { inputTokens: 200, outputTokens: 20 } },
+      { afterUserMessage: 3, usage: { inputTokens: 400, outputTokens: 40 } },
+    ];
+    expect(sumUsage(log)).toEqual({ inputTokens: 700, outputTokens: 70 });
+    // Rewound so only 1 user message survives -> only its turn is billed.
+    const kept = log.filter((e) => e.afterUserMessage <= 1);
+    expect(sumUsage(kept)).toEqual({ inputTokens: 100, outputTokens: 10 });
   });
 });

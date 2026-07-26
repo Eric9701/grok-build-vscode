@@ -102,6 +102,7 @@ class Acp {
     this.waiters = new Map();
     this.updates = [];
     this.writes = [];        // every fs/write_text_file path grok asked for
+    this.exitPlans = [];     // every x.ai/exit_plan_mode request grok raised
     this.mediaGenIds = new Set();
     this.media = [];         // MediaRef[] from the real extractor
     this.subagentCalls = []; // tool calls the real isSubagentToolCall matched (genuine spawn_subagent shape)
@@ -206,7 +207,10 @@ class Acp {
     if (meth === "terminal/output") return this._respond(m.id, { output: "", exitStatus: { exitCode: 0 }, truncated: false });
     if (meth === "terminal/wait_for_exit") return this._respond(m.id, { exitCode: 0 });
     if (meth === "terminal/kill" || meth === "terminal/release") return this._respond(m.id, {});
-    if (meth.includes("exit_plan_mode")) return this._respond(m.id, { outcome: "approved" });
+    if (meth.includes("exit_plan_mode")) {
+      this.exitPlans.push(m.params || {});
+      return this._respond(m.id, { outcome: "approved" });
+    }
     if (meth === "session/request_permission") {
       const opts = (m.params && m.params.options) || [];
       const allow = opts.find((o) => /allow/.test(o.kind)) || opts[0];
@@ -889,6 +893,183 @@ async function testEditDiffRestore() {
 //   B. disk mutation despite ack-without-write = a CONTAINMENT failure (a write path
 //      not mediated by the client fs/write_text_file) — this is the hard assertion,
 //      caught by reading the seed file back and comparing bytes (the canary).
+// Rewind/Edit contract (#56 + P2-9), exercised over the shape that actually
+// broke in dogfooding: repeated no-op plans, each CANCELLED.
+//
+// Why plans specifically — a plan round adds TWO prompts that render NO user
+// bubble (the hidden primer once, then a marker-only "[Plan cancelled]" per
+// round), so the bubble -> rewind-point map has to skip them. When it doesn't,
+// Rewind targets the wrong turn and reverts the wrong files.
+//
+// Pins three things that were each wrong at some point:
+//   1. execute DISCARDS its target (Edit must target the message ITSELF —
+//      targeting the predecessor silently ate an extra turn);
+//   2. the tip is a legal target (so the newest message is editable at all);
+//   3. hidden plumbing points never consume a bubble slot.
+//
+// Runs against the SHIPPED out/rewind.js, so CLI drift fails the gate here.
+async function testPlanCancelRewind() {
+  const rw = require(path.join(REPO, "out", "rewind.js"));
+  const cwd = mkTmp("plancancel");
+  const acp = new Acp(cwd, { onWrite: () => "ack" }); // plan mode: never touch disk
+  const ROUNDS = 3;
+  try {
+    await withTimeout(acp.send("initialize", INIT), 30000, "init");
+    const ns = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "new");
+    assert(ns.result && ns.result.sessionId, "session/new failed");
+    const sessionId = ns.result.sessionId;
+
+    // The primer is a real prompt that renders no bubble — it must not take a slot.
+    try {
+      await withTimeout(
+        acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: GROK_PRIMER }] }),
+        90000, "primer");
+    } catch { /* advisory */ }
+    await withTimeout(acp.send("session/set_mode", { sessionId, modeId: "plan" }), 30000, "set_mode plan");
+
+    for (let i = 1; i <= ROUNDS; i++) {
+      await withTimeout(acp.send("session/prompt", {
+        sessionId,
+        prompt: [{ type: "text", text:
+          "No-op plan test " + i + ": present a trivial plan that changes nothing. Do not edit files." }],
+      }), 180000, "plan turn " + i);
+      // Exactly what the extension sends on Cancel: a prompt with no bubble.
+      await withTimeout(acp.send("session/prompt", {
+        sessionId, prompt: [{ type: "text", text: "[Plan cancelled]" }],
+      }), 120000, "cancel " + i);
+    }
+
+    const pts = await withTimeout(acp.send("_x.ai/rewind/points", { sessionId }), 30000, "points");
+    if (pts.error && pts.error.code === -32601) throw new Skip("CLI has no _x.ai/rewind/*");
+    assert(!pts.error, "rewind points errored: " + JSON.stringify(pts.error));
+    const points = rw.parseRewindPoints(pts.result);
+    const facing = rw.userFacingRewindPoints(points);
+
+    // ROUNDS real messages -> ROUNDS bubbles; primer + cancel markers filtered.
+    assert(facing.length === ROUNDS,
+      "bubble map wrong: " + facing.length + " user-facing of " + points.length +
+      " points, expected " + ROUNDS + " (previews: " +
+      facing.map((p) => JSON.stringify(String(p.promptPreview || "").slice(0, 24))).join(",") + ")");
+
+    // (2) the newest bubble is editable, and (1) it targets its OWN point.
+    const tipTarget = rw.resolveEditRewindTarget(points, ROUNDS - 1);
+    assert(tipTarget, "Edit unavailable on the newest message (tip not a legal target?)");
+    assert(tipTarget.promptIndex === facing[ROUNDS - 1].promptIndex,
+      "Edit target #" + tipTarget.promptIndex + " != its own point #" + facing[ROUNDS - 1].promptIndex);
+
+    // Editing the FIRST message targets its own point, leaving the primer alive.
+    const firstTarget = rw.resolveEditRewindTarget(points, 0);
+    assert(firstTarget && firstTarget.promptIndex === facing[0].promptIndex,
+      "Edit on the first message must target its own point");
+    assert(rw.survivingUserMessagesAfterRewind(points, facing[0]) === 0,
+      "rewinding the first message should leave 0 user messages");
+
+    // Execute against the MIDDLE bubble and prove the target itself is gone.
+    const target = facing[1];
+    const surviving = rw.survivingUserMessagesAfterRewind(points, target);
+    assert(surviving === 1, "surviving=" + surviving + ", expected 1");
+    const ex = await withTimeout(acp.send("_x.ai/rewind/execute", {
+      sessionId, targetPromptIndex: target.promptIndex, mode: "conversation_only", force: true,
+    }), 60000, "execute");
+    const res = rw.parseRewindExecute(ex.result);
+    assert(res && res.success, "rewind execute failed: " + JSON.stringify(ex.result || ex.error));
+    // The CLI hands back the DISCARDED message's text (why a client can restore it).
+    assert(typeof res.promptText === "string" && res.promptText.length > 0,
+      "execute returned no prompt_text to restore");
+
+    const after = rw.parseRewindPoints(
+      (await withTimeout(acp.send("_x.ai/rewind/points", { sessionId }), 30000, "points2")).result);
+    assert(!after.some((p) => p.promptIndex === target.promptIndex),
+      "target #" + target.promptIndex + " SURVIVED — execute switched to keep-semantics; " +
+      "Edit/Rewind are now off by one and will eat an extra turn");
+    const afterFacing = rw.userFacingRewindPoints(after);
+    assert(afterFacing.length === surviving,
+      "after rewind " + afterFacing.length + " bubbles remain, expected " + surviving);
+
+    return ROUNDS + " plan+cancel rounds -> " + points.length + " points/" + facing.length +
+      " bubbles (plumbing filtered); exit_plan_mode x" + acp.exitPlans.length +
+      "; execute DISCARDED #" + target.promptIndex + " (" + facing.length + " -> " +
+      afterFacing.length + " bubbles), prompt_text returned";
+  } finally { acp.kill(); }
+}
+
+// Per-turn billing is the extension's own bookkeeping: grok reports usage per
+// prompt and persists NONE of it, so a session total only exists because we log
+// each turn. A rewind then has to SUBTRACT the discarded turns — which is only
+// possible if every turn really carries its own distinct measurement.
+//
+// This is the drift canary for that assumption. If the CLI ever stops sending
+// `_meta.usage`, or starts sending a cumulative figure instead of a per-turn
+// one, summing the log would silently over-bill and rewind subtraction would go
+// negative-ish. Both failures are invisible in the UI, so they get asserted here.
+async function testUsagePerTurn() {
+  const cwd = mkTmp("usage");
+  const acp = new Acp(cwd);
+  try {
+    await withTimeout(acp.send("initialize", INIT), 30000, "init");
+    const ns = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "new");
+    const sessionId = ns.result.sessionId;
+
+    const turns = [];
+    for (const t of ["Say only: ONE. No tools.", "Say only: TWO. No tools."]) {
+      const r = await withTimeout(acp.send("session/prompt", {
+        sessionId, prompt: [{ type: "text", text: t }],
+      }), 120000, "prompt");
+      assert(!r.error, "prompt errored: " + JSON.stringify(r.error));
+      turns.push(dispatch.extractPromptMeta(r.result)); // the shipped extractor
+    }
+
+    for (let i = 0; i < turns.length; i++) {
+      assert(turns[i] && turns[i].usage,
+        "turn " + (i + 1) + " carried no _meta.usage — per-turn billing is gone, " +
+        "session totals and rewind subtraction both break");
+      assert(dispatch.usageIsRealMeasurement(turns[i]),
+        "turn " + (i + 1) + " usage is not a real measurement (totalTokens===0?)");
+    }
+
+    // Each turn must be its OWN measurement, not a running total: if turn 2
+    // already contained turn 1, summing the log would double-bill.
+    const t1 = turns[0].usage, t2 = turns[1].usage;
+    const total = dispatch.sumUsage(turns.map((m) => ({ usage: m.usage })));
+    assert(total && total.inputTokens === (t1.inputTokens || 0) + (t2.inputTokens || 0),
+      "sumUsage != turn1+turn2 — the log doesn't add up");
+    // The cumulative-drift canary. `t2 < total` would be a tautology (total is
+    // t1+t2), so it proves nothing — the tell is the RATIO. Both prompts are
+    // two words against the same system prompt, so per-turn reporting keeps
+    // turn 2 within a few percent of turn 1 (the conversation grew by ~2 short
+    // messages on ~15k tokens). If the CLI switched to a running total, turn 2
+    // would contain turn 1 as well and land near 2x. 1.6x sits far from both.
+    const t1In = t1.inputTokens || 0;
+    const t2In = t2.inputTokens || 0;
+    assert(t1In > 0 && t2In > 0, "a turn reported 0 input tokens — usage is not being measured");
+    // Normalize by modelCalls: a turn that needed two model calls re-sends the
+    // conversation twice, so raw input per TURN legitimately doubles (observed:
+    // 31669 for a 2-call turn vs 15979 for a 1-call turn). Comparing raw totals
+    // would fail whenever grok happened to take an extra call. Input per CALL is
+    // the stable quantity — both prompts are two words against the same system
+    // prompt, so it barely moves; under cumulative reporting turn 2 would carry
+    // turn 1 as well and jump.
+    const perCall = (u) => (u.inputTokens || 0) / Math.max(1, u.modelCalls || 1);
+    const ratio = perCall(t2) / perCall(t1);
+    assert(ratio < 1.6,
+      "turn 2 input/call is " + ratio.toFixed(2) + "x turn 1 (" +
+      Math.round(perCall(t2)) + " vs " + Math.round(perCall(t1)) + " per call; raw " +
+      t2In + " vs " + t1In + ", calls " + (t2.modelCalls || "?") + " vs " + (t1.modelCalls || "?") +
+      ") — usage looks CUMULATIVE, not per-turn. Summing our usageLog would over-bill, " +
+      "and a rewind could not subtract a discarded turn. Both are invisible in the UI.");
+
+    // The rewind contract, on real numbers: drop turn 2, get turn 1's total back.
+    const afterRewind = dispatch.sumUsage([{ usage: t1 }]);
+    assert(afterRewind.inputTokens === t1.inputTokens,
+      "re-summing a truncated log did not reproduce turn 1's billing");
+
+    return "per-turn usage distinct (t1 in=" + t1.inputTokens + "/" + (t1.modelCalls || "?") +
+      " calls, t2 in=" + t2.inputTokens + "/" + (t2.modelCalls || "?") + " calls, " +
+      "input-per-call ratio " + ratio.toFixed(2) + "x, total in=" + total.inputTokens +
+      "); truncating to turn 1 restores its own figure";
+  } finally { acp.kill(); }
+}
+
 async function testPlanMode() {
   const cwd = mkTmp("plan");
   const appPath = path.join(cwd, "app.js");
@@ -1258,6 +1439,10 @@ const TESTS = [
   // Now the full loop (primer -> plan -> reject -> approve, ~4 grok turns), so it's
   // slow enough to skip under --quick; the full release gate still runs it.
   { name: "plan-mode", fn: testPlanMode, slow: true },
+  // Rewind/Edit over repeated cancelled plans — the map + discard-semantics gate.
+  { name: "plan-cancel-rewind", fn: testPlanCancelRewind, slow: true },
+  // Per-turn billing must stay per-turn, or rewind can't subtract it (#53).
+  { name: "usage-per-turn", fn: testUsagePerTurn, slow: false },
   { name: "image-gen", fn: testImage, slow: true },
   // video-gen is opt-in only (run with --only=video-gen). In this headless harness
   // grok 0.2.x spins on /imagine-video instead of producing a clip, so it never

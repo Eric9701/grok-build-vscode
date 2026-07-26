@@ -11,7 +11,7 @@ import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PH
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
@@ -46,6 +46,7 @@ import {
   isVisionMime,
   makeExplicitChip,
   makeImageChip,
+  implicitChipStartsHidden,
   makeImplicitChip,
   mimeFromPath,
   removeChip,
@@ -58,8 +59,8 @@ import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, clampMenti
 import { configForcesAlwaysApprove } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
-import { appendPlanEntry, countsAsUserBubble, decideRestoreState } from "./plan-restore";
-import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-review";
+import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState } from "./plan-restore";
+import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
@@ -97,7 +98,13 @@ import {
 import {
   formatRewindPointDetail,
   formatRewindPointLabel,
+  anyFilesAfter,
+  bubbleMapIsConsistent,
+  editRewindConfirmMessage,
+  resolveEditRewindTarget,
   resolveUserBubbleRewind,
+  survivingUserMessagesAfterRewind,
+  truncateReplayBuffer,
   rewindConfirmMessage,
   selectableRewindPoints,
   userFacingRewindPoints,
@@ -114,6 +121,12 @@ import {
 const SESSION_META_KEY = "grok.sessionMeta";
 /** globalState key for the anonymous per-install telemetry GUID (survives updates). */
 const INSTALL_ID_KEY = "grok.installId";
+/** globalState key for the eye-off choice on the active-editor context chip.
+ *  The chip is rebuilt from scratch on every file switch, so the user's "don't
+ *  send this" has to live outside it or every switch silently re-enables the
+ *  file — the #67 complaint. Persisted (not per-session) because a preference
+ *  this deliberate should survive a reload, exactly like the setting would. */
+const IMPLICIT_CHIP_HIDDEN_KEY = "grok.implicitChipHidden";
 
 // History pagination: rows fetched per "page" (initial open + each load-more / search page).
 const SESSION_PAGE_SIZE = 100;
@@ -272,6 +285,9 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly diffProvider = new GrokDiffContentProvider();
   private diffSeq = 0;
   private readonly openDiffsByRequest = new Map<string, { left: vscode.Uri; right: vscode.Uri }>();
+  /** In-flight in-chat confirms, keyed by request id — see confirmInChat. */
+  private readonly pendingConfirms = new Map<string, (ok: boolean) => void>();
+  private confirmSeq = 0;
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -879,6 +895,60 @@ See design doc for the full state machine diagram.`;
   /** Persist this plan (text + verdict) so the resume view can replay every plan
    *  the user resolved in this session — grok's on-disk plan.md only retains the
    *  latest, so we'd otherwise lose plans the agent overwrote later. */
+  /**
+   * Drop our own persisted cards for turns a rewind just deleted.
+   *
+   * grok truncates its history; the plan and permission cards are the
+   * EXTENSION's records (the CLI replays neither on `session/load`), so without
+   * this they outlive their turns and the next restore dumps them at the bottom
+   * of the conversation — cards for messages the user just removed, sitting
+   * under the ones that survived. Applies to Rewind and Edit alike.
+   *
+   * `lastPlanVerdict` is recomputed from the survivors because it drives whether
+   * the plan gate goes back up on restore (`decideRestoreState`) — leaving a
+   * discarded verdict there would restore plan mode from a turn that no longer
+   * exists.
+   */
+  private truncateSessionCardsAfterRewind(sessionId: string, surviving: number): void {
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const cur = overrides[sessionId];
+    if (!cur) return;
+    const plans = truncateResolvedAfter(cur.plans, surviving);
+    const permissions = truncateResolvedAfter(cur.permissions, surviving);
+    const usageLog = truncateResolvedAfter(cur.usageLog, surviving);
+    const droppedPlans = (cur.plans?.length ?? 0) - plans.length;
+    const droppedPerms = (cur.permissions?.length ?? 0) - permissions.length;
+    const droppedTurns = (cur.usageLog?.length ?? 0) - usageLog.length;
+    if (!droppedPlans && !droppedPerms && !droppedTurns) return;
+    // The billing total is DERIVED from the surviving turns, never patched — so
+    // rewinding away a turn removes its tokens from the session total instead of
+    // leaving the user billed in the UI for a turn that no longer exists. A
+    // session with no `usageLog` (recorded before it existed) keeps its stored
+    // total rather than dropping to zero: uncorrectable, but not wrong-by-a-lot.
+    const usage = cur.usageLog ? sumUsage(usageLog) : cur.usage;
+    this.output.appendLine(
+      `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
+    );
+    void this.context.globalState.update(SESSION_META_KEY, {
+      ...overrides,
+      [sessionId]: {
+        ...cur,
+        plans,
+        permissions,
+        usageLog,
+        usage,
+        lastPlanVerdict: plans.length ? plans[plans.length - 1].verdict : undefined,
+      },
+    });
+    // Keep the live session + popover in step with what we just persisted.
+    const live = [...this.pool].find((s) => s.activeSessionId === sessionId);
+    if (live) {
+      live.sessionUsage = usage;
+      live.lastTurnUsage = undefined;
+      this.emit(live, { type: "usage", session: usage });
+    }
+  }
+
   private persistPlanVerdict(session: Session, verdict: "approved" | "abandoned" | "rejected"): void {
     const sid = session.activeSessionId ?? session.client?.sessionId;
     if (!sid) return;
@@ -991,7 +1061,7 @@ See design doc for the full state machine diagram.`;
       // No live turn to steer — fall back to the queue rather than drop it.
       return void this.onMessage({ type: "queueSend", text: body });
     }
-    this.emit(session, { type: "userMessage", text: body, chips: [] });
+    this.emit(session, { type: "userMessage", text: body, chips: [], steer: true });
     try {
       const r = await session.client.interject(body);
       if (r === "unsupported") {
@@ -1091,7 +1161,123 @@ See design doc for the full state machine diagram.`;
    * Execute always uses `force:true` + mode `all`; then reloads the same
    * session so the chat matches the truncated history.
    */
-  async rewindFocusedSession(userBubbleIndex?: number): Promise<void> {
+  /**
+   * Edit-and-resend the latest user message (#56).
+   *
+   * `execute` DISCARDS its target along with everything after it (probe-verified,
+   * research/rewind-semantics-probe.cjs), so removing this message means
+   * targeting its OWN point — see `resolveEditRewindTarget`. The tip is a legal
+   * target; nothing here needs the predecessor.
+   *
+   * The text handed back to the composer is the webview's own bubble text rather
+   * than the execute result's `prompt_text`. `prompt_text` IS this message (the
+   * CLI returns the discarded prompt precisely so a client can restore it), but
+   * it's the raw wire form — still carrying the `<vscode-context>` envelope,
+   * fenced selection blocks and `[Image #N]` tags. Only the bubble has those
+   * peeled off.
+   */
+  private async editLastMessage(userBubbleIndex: number, text: string, totalUserBubbles?: number): Promise<void> {
+    const session = this.focused;
+    if (!session.client || !session.activeSessionId) {
+      return void vscode.window.showWarningMessage("Start a session before editing a message.");
+    }
+    // The hidden primer is a real in-flight prompt that never sets `status`, and
+    // grok runs one turn at a time — so without this an Edit clicked just after
+    // a reload raced the primer. Await it rather than refusing: it's short, and
+    // the user's click was legitimate.
+    if (session.primingPromise) {
+      await session.primingPromise.catch(() => {});
+    }
+    if (session.status === "working" || session.status === "needs-you") {
+      // Name the state. "Wait for the current turn" is useless when the turn
+      // already finished and the status is merely stale — the user can't tell
+      // those apart, and neither could I without this line.
+      this.output.appendLine(
+        `[edit] refused: session.status=${session.status} bubble=${userBubbleIndex}`,
+      );
+      return void vscode.window.showWarningMessage(
+        session.status === "needs-you"
+          ? "Answer the pending permission or plan card first, then edit your last message."
+          : "Wait for the current turn to finish (or Stop it) before editing your last message.",
+      );
+    }
+    try {
+      const points = await session.client.listRewindPoints();
+      if (points === "unsupported") {
+        return void vscode.window.showWarningMessage(
+          "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+        );
+      }
+      // If the wire's user-facing list no longer matches what the user sees, the
+      // bubble->point map can't be trusted — refuse instead of reverting a turn
+      // we may have mis-identified. See bubbleMapIsConsistent.
+      if (!bubbleMapIsConsistent(points, totalUserBubbles)) {
+        this.output.appendLine(
+          `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
+        );
+        return void vscode.window.showWarningMessage(
+          "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
+        );
+      }
+      const target = resolveEditRewindTarget(points, userBubbleIndex);
+      if (!target) {
+        const copy = "Copy text to composer";
+        const pick = await vscode.window.showInformationMessage(
+          "Grok has no restore point for this message, so it can't be rolled back. You can still copy the text and send it again.",
+          copy,
+        );
+        if (pick === copy) this.emit(session, { type: "restoreComposer", text });
+        return;
+      }
+
+      // Confirm ONLY when the turn actually changed files on disk. Editing a
+      // chat-only turn is reversible in practice (the text comes straight back
+      // to the composer), so a modal there is pure friction. Reverting code is
+      // not reversible, so that one still asks.
+      if (anyFilesAfter(points, target)) {
+        const ok = await this.confirmInChat(session, {
+          title: "Edit this message?",
+          body: editRewindConfirmMessage(target, true),
+          confirmLabel: "Edit",
+          danger: true,
+        });
+        if (!ok) return;
+      }
+
+      const result = await session.client.executeRewind({
+        targetPromptIndex: target.promptIndex,
+        mode: "all",
+      });
+      if (result === "unsupported") {
+        return void vscode.window.showWarningMessage(
+          "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+        );
+      }
+      if (!result.success) {
+        // Surface the CLI's own words — e.g. rewinding past a compaction point.
+        return void vscode.window.showErrorMessage(result.error || "Couldn't roll back that message.");
+      }
+
+      const nFiles = result.revertedFiles.length;
+      this.output.appendLine(
+        `[edit] rewound to prompt #${result.targetPromptIndex} (files=${nFiles}, bubble=${userBubbleIndex})`,
+      );
+      const resumeId = session.activeSessionId;
+      const surviving = survivingUserMessagesAfterRewind(points, target);
+      this.truncateSessionCardsAfterRewind(resumeId, surviving);
+      this.applyRewindToView(session, surviving);
+      this.emit(session, { type: "restoreComposer", text });
+      if (nFiles > 0) {
+        void vscode.window.showInformationMessage(
+          `Message moved back to the composer. Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`,
+        );
+      }
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Couldn't edit that message: ${e?.message ?? e}`);
+    }
+  }
+
+  async rewindFocusedSession(userBubbleIndex?: number, bubbleText?: string, totalUserBubbles?: number): Promise<void> {
     const session = this.focused;
     if (!session.client || !session.activeSessionId) {
       return void vscode.window.showWarningMessage("Start a session before rewinding it.");
@@ -1104,6 +1290,9 @@ See design doc for the full state machine diagram.`;
     if (!session.hasHistory) {
       return void vscode.window.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
     }
+    // Same race Edit guards: the hidden primer is a real in-flight prompt that
+    // never sets `status`, and grok runs one turn at a time.
+    if (session.primingPromise) await session.primingPromise.catch(() => {});
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
@@ -1112,6 +1301,17 @@ See design doc for the full state machine diagram.`;
         );
       }
 
+      // If the wire's user-facing list no longer matches what the user sees, the
+      // bubble->point map can't be trusted — refuse instead of reverting a turn
+      // we may have mis-identified. See bubbleMapIsConsistent.
+      if (!bubbleMapIsConsistent(points, totalUserBubbles)) {
+        this.output.appendLine(
+          `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
+        );
+        return void vscode.window.showWarningMessage(
+          "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
+        );
+      }
       let target: ReturnType<typeof resolveUserBubbleRewind> = null;
       if (typeof userBubbleIndex === "number") {
         // Bubble button: map visible user bubble → wire prompt_index (skips primer).
@@ -1132,16 +1332,22 @@ See design doc for the full state machine diagram.`;
               : "No rewind points available.",
           );
         }
+        // Number each entry by its place among the user's VISIBLE messages, not
+        // by the wire prompt_index — that index counts the hidden primer and
+        // marker-only plan verdicts, so it renders as "#1 #2 … #6 #8": a
+        // sequence the user can't match to anything on screen.
+        const visiblePosition = new Map(facing.map((p, i) => [p.promptIndex, i + 1]));
         const items = [...selectable]
           .sort((a, b) => b.promptIndex - a.promptIndex)
           .map((p) => ({
-            label: formatRewindPointLabel(p),
+            label: formatRewindPointLabel(p, visiblePosition.get(p.promptIndex)),
             description: p.hasFileChanges ? "files" : undefined,
             detail: formatRewindPointDetail(p),
             point: p,
           }));
         const pick = await vscode.window.showQuickPick(items, {
-          placeHolder: "Rewind to which message? (discards everything after it)",
+          // Execute discards the chosen message too, not just what follows it.
+          placeHolder: "Rewind past which message? (it and everything after it are discarded)",
           ignoreFocusOut: true,
           matchOnDescription: true,
           matchOnDetail: true,
@@ -1150,12 +1356,19 @@ See design doc for the full state machine diagram.`;
         target = pick.point;
       }
 
-      const ok = await vscode.window.showWarningMessage(
-        rewindConfirmMessage(target, "all"),
-        { modal: true },
-        "Rewind",
-      );
-      if (ok !== "Rewind") return;
+      // Same rule as Edit: ask only when code on disk will be reverted. A
+      // conversation-only rewind hands the message back to the composer, so
+      // there is nothing unrecoverable to warn about.
+      const revertsFiles = anyFilesAfter(points, target);
+      if (revertsFiles) {
+        const ok = await this.confirmInChat(session, {
+          title: "Rewind past this message?",
+          body: rewindConfirmMessage(target, "all"),
+          confirmLabel: "Rewind",
+          danger: true,
+        });
+        if (!ok) return;
+      }
 
       const result = await session.client.executeRewind({
         targetPromptIndex: target.promptIndex,
@@ -1178,17 +1391,31 @@ See design doc for the full state machine diagram.`;
           `)`,
       );
       const resumeId = session.activeSessionId;
-      this.emit(session, { type: "clearMessages" });
-      await this.startSession(resumeId);
-      const fileNote =
-        nFiles > 0
-          ? ` Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`
-          : result.mode === "conversation_only"
-            ? ""
-            : " (no file changes at that point)";
-      void vscode.window.showInformationMessage(
-        `Rewound to this message.${fileNote}`,
-      );
+      // Same as Edit: our plan/permission cards are not grok's, so the rewind
+      // doesn't touch them and a replay would resurrect them at the bottom.
+      const surviving = survivingUserMessagesAfterRewind(points, target);
+      this.truncateSessionCardsAfterRewind(resumeId, surviving);
+      this.applyRewindToView(session, surviving);
+      // Rewind DISCARDS the message it targets, so hand its text back exactly
+      // as Edit does — otherwise the button silently destroys what the user
+      // wrote. After startSession, or the replay would clear it.
+      //
+      // Deliberately NOT `result.promptText`: the CLI returns the raw prompt,
+      // still carrying our <vscode-context> envelope, fenced selection blocks
+      // and [Image #N] tags. Only the webview's bubble text has those peeled
+      // off. So the QuickPick path (no bubble) restores nothing rather than
+      // pasting plumbing into the composer.
+      const restored = (bubbleText ?? "").trim();
+      if (restored) this.emit(session, { type: "restoreComposer", text: restored });
+      // Only speak up when something happened the chat itself doesn't show.
+      // The messages vanishing and the text landing in the composer are their
+      // own feedback; a toast restating them is noise. Reverted files are NOT
+      // visible in the chat, so those still get reported.
+      if (nFiles > 0) {
+        void vscode.window.showInformationMessage(
+          `Rewound. Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`,
+        );
+      }
     } catch (e: any) {
       void vscode.window.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
     }
@@ -2527,11 +2754,19 @@ See design doc for the full state machine diagram.`;
         if (savedPerms.length > 0) {
           this.emit(session, { type: "permissionHistoryQueue", permissions: savedPerms });
         }
-        const saved = overrides[resumeId]?.plans ?? [];
-        if (saved.length > 0) {
-          this.emit(session, { type: "planHistoryQueue", plans: await this.withPlanReviewPaths(saved, resumeId) });
-          session.lastPlanText = saved[saved.length - 1].text;
-        } else {
+        // `undefined` means we have NO record for this session (legacy, from
+        // before per-plan persistence) — only then is the on-disk fallback
+        // right. An EMPTY array is a record saying "no plans", which is exactly
+        // what a rewind leaves behind: treating that as legacy re-read grok's
+        // plan.md — which rewind doesn't truncate — and resurrected the very
+        // plan the user had just removed, labelled "Restored from the previous
+        // session".
+        const saved = overrides[resumeId]?.plans;
+        const planSource = planRestoreSource(saved);
+        if (planSource === "saved") {
+          this.emit(session, { type: "planHistoryQueue", plans: await this.withPlanReviewPaths(saved!, resumeId) });
+          session.lastPlanText = saved![saved!.length - 1].text;
+        } else if (planSource === "disk") {
           // Legacy session (no per-plan persistence): fall back to the on-disk
           // latest plan, which we'll render at the bottom after replay.
           const planPath = path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), resumeId, "plan.md");
@@ -2772,7 +3007,19 @@ See design doc for the full state machine diagram.`;
       case "rewindSession":
         await this.rewindFocusedSession(
           typeof msg.userBubbleIndex === "number" ? msg.userBubbleIndex : undefined,
+          msg.text,
         );
+        break;
+      case "uiConfirmAnswer": {
+        const resolve = this.pendingConfirms.get(msg.id);
+        if (resolve) {
+          this.pendingConfirms.delete(msg.id);
+          resolve(msg.ok === true);
+        }
+        break;
+      }
+      case "editLastMessage":
+        await this.editLastMessage(msg.userBubbleIndex, msg.text, msg.totalUserBubbles);
         break;
       case "workflowControl":
         await this.controlWorkflow(msg.action, msg.displayName);
@@ -2804,10 +3051,18 @@ See design doc for the full state machine diagram.`;
         this.postChips();
         break;
       }
-      case "toggleChip":
+      case "toggleChip": {
         this.chips = toggleChip(this.chips, msg.id);
+        // Eye-off on the active-editor chip is a standing "don't send what I'm
+        // looking at", not a one-file choice — remember it so the next file
+        // switch doesn't quietly re-enable the context (#67).
+        const toggled = this.chips.find((c) => c.id === msg.id);
+        if (toggled && isImplicitChip(toggled)) {
+          void this.context.globalState.update(IMPLICIT_CHIP_HIDDEN_KEY, toggled.hidden);
+        }
         this.postChips();
         break;
+      }
       case "openFile": {
         const ref = parseFileRef(msg.path);
         let p = ref.path;
@@ -3382,6 +3637,7 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
     }
     this.sessionCache.delete(id);
+    this.removePlanReviews(id); // snapshots live outside grok's session dir
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     if (overrides[id]) {
       const next = { ...overrides };
@@ -3432,6 +3688,7 @@ See design doc for the full state machine diagram.`;
       let changed = false;
       for (const id of removed) {
         this.sessionCache.delete(id);
+        this.removePlanReviews(id);
         if (next[id]) {
           delete next[id];
           changed = true;
@@ -4011,6 +4268,64 @@ See design doc for the full state machine diagram.`;
     return out;
   }
 
+  /** Delete a session's plan-review snapshots. They live under globalStorage,
+   *  outside grok's session dir, so `deleteSessionDir` never touched them and
+   *  every deleted session left its plan Markdown behind forever. Best-effort:
+   *  losing a scratch snapshot is never worth failing a delete over. */
+  private removePlanReviews(sessionId: string): void {
+    const dir = vscode.Uri.joinPath(
+      this.context.globalStorageUri,
+      "plan-reviews",
+      sanitizePlanReviewFilePart(sessionId).slice(0, 80),
+    );
+    void vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false }).then(
+      undefined,
+      () => { /* never existed, or already gone */ },
+    );
+  }
+
+  /**
+   * Apply a completed rewind to the live view WITHOUT reloading the session.
+   *
+   * The CLI has already truncated its own history, and the surviving messages
+   * are still correct on screen — so there is nothing to rebuild. The old path
+   * (`clearMessages` + `startSession`) blanked the panel to the welcome logo and
+   * re-rendered the entire conversation for what is a tail deletion.
+   *
+   * The replay buffer is cut to the same point, or a focus-swap would rebuild
+   * the chat from the pre-rewind history and resurrect every discarded turn.
+   */
+  private applyRewindToView(session: Session, surviving: number): void {
+    session.buffer = truncateReplayBuffer(session.buffer, surviving);
+    session.userMessageCount = surviving;
+    // Positions for anything persisted after this point are counted against the
+    // same number the webview now holds.
+    this.emit(session, { type: "truncateMessages", surviving });
+  }
+
+  /**
+   * Confirm via the webview's own in-chat dialog instead of a native modal.
+   *
+   * Every other destructive confirm moved in-chat in 2.0.0 so it behaves the
+   * same in the sidebar and the AFK Pilot browser client; rewind/edit were left
+   * on `showWarningMessage`. They can't simply call `uiConfirm` themselves,
+   * because only the HOST knows whether files are at stake — hence the
+   * round-trip.
+   *
+   * Resolves false if the webview goes away before answering (reload, session
+   * teardown): a lost confirm must fail closed, never silently revert files.
+   */
+  private confirmInChat(
+    session: Session,
+    opts: { title: string; body?: string; confirmLabel: string; danger?: boolean },
+  ): Promise<boolean> {
+    const id = `confirm-${++this.confirmSeq}`;
+    return new Promise<boolean>((resolve) => {
+      this.pendingConfirms.set(id, resolve);
+      this.emit(session, { type: "uiConfirmRequest", id, ...opts });
+    });
+  }
+
   private async createPlanReviewSnapshot(plan: string, sessionId?: string): Promise<{ path: string; name: string }> {
     const content = plan && plan.trim() ? plan : "(empty plan)\n";
     const sessionPart = sanitizePlanReviewFilePart(
@@ -4018,8 +4333,20 @@ See design doc for the full state machine diagram.`;
     ).slice(0, 80);
     const dir = vscode.Uri.joinPath(this.context.globalStorageUri, "plan-reviews", sessionPart);
     await vscode.workspace.fs.createDirectory(dir);
-    const uri = await this.uniquePlanReviewUri(dir, `${planReviewFileBaseName(content)}.md`);
-    await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+    // Content-addressed, so re-snapshotting the same plan on every restore
+    // reuses one file instead of writing a new one forever.
+    const uri = vscode.Uri.joinPath(dir, planReviewFileName(content));
+    let existing: string | undefined;
+    try {
+      existing = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+    } catch { /* first time for this plan */ }
+    if (existing !== content) {
+      // Different content under the same name means a hash collision — fall back
+      // to a unique name rather than overwriting someone else's plan.
+      const target = existing === undefined ? uri : await this.uniquePlanReviewUri(dir, planReviewFileName(content));
+      await vscode.workspace.fs.writeFile(target, Buffer.from(content, "utf8"));
+      return { path: target.fsPath, name: path.basename(target.fsPath) };
+    }
     return { path: uri.fsPath, name: path.basename(uri.fsPath) };
   }
 
@@ -4855,9 +5182,16 @@ See design doc for the full state machine diagram.`;
     const id = session.activeSessionId;
     if (!id || !session.sessionUsage) return;
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const cur = overrides[id] ?? {};
+    // Log the turn as well as the total: a rewind must be able to subtract the
+    // discarded turns, and a running total alone can't be undone.
+    const usageLog = [
+      ...(cur.usageLog ?? []),
+      { afterUserMessage: session.userMessageCount, usage: meta.usage! },
+    ];
     void this.context.globalState.update(SESSION_META_KEY, {
       ...overrides,
-      [id]: { ...(overrides[id] ?? {}), usage: session.sessionUsage },
+      [id]: { ...cur, usage: session.sessionUsage, usageLog },
     });
   }
 
@@ -5040,6 +5374,12 @@ See design doc for the full state machine diagram.`;
     );
   }
 
+  /** The remembered eye-off choice for the active-editor context chip (#67).
+   *  Defaults to visible — this only ever reflects an explicit click. */
+  private implicitChipHidden(): boolean {
+    return this.context.globalState.get<boolean>(IMPLICIT_CHIP_HIDDEN_KEY, false);
+  }
+
   /** Mirror the active editor (file + live selection line range) onto the
    *  implicit context chip. No-op diffing keeps this silent for plain cursor
    *  movement — selection events fire on every caret change, but an empty
@@ -5083,9 +5423,7 @@ See design doc for the full state machine diagram.`;
     }
 
     const next = makeImplicitChip(absPath, relPath, selStart, selEnd);
-    // A selection change on the SAME file keeps the user's eye-off choice;
-    // switching files resets it (new file, fresh default).
-    if (prev && prev.path === absPath) next.hidden = prev.hidden;
+    next.hidden = implicitChipStartsHidden(prev, this.implicitChipHidden());
     this.chips = clearImplicitChips(this.chips);
     this.chips.push(next);
     this.postChips();

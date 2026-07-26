@@ -4,6 +4,7 @@ import {
   clearImplicitChips,
   consumeChips,
   extFromMime,
+  implicitChipStartsHidden,
   isVisionImagePath,
   isVisionMime,
   makeExplicitChip,
@@ -155,5 +156,37 @@ describe("chips", () => {
     expect(c.originRelPath).toBe("assets/hero.png");
     const pasted = makeImageChip("/staging/y.png", 3, "image/png");
     expect(pasted.originRelPath).toBeUndefined();
+  });
+});
+
+// The chip is rebuilt from scratch on every active-editor change, so this is
+// the ONLY thing carrying the user's eye-off choice across a file switch.
+describe("implicitChipStartsHidden (#67)", () => {
+  const chip = (hidden: boolean) => ({ ...makeImplicitChip("/w/a.ts", "a.ts"), hidden });
+
+  it("carries an eye-off chip's state forward — the #67 regression", () => {
+    // Switching files rebuilds the chip; before the fix this reset to false and
+    // silently re-enabled the context the user had just turned off.
+    expect(implicitChipStartsHidden(chip(true), true)).toBe(true);
+  });
+
+  it("keeps a visible chip visible", () => {
+    expect(implicitChipStartsHidden(chip(false), false)).toBe(false);
+  });
+
+  it("prefers the live chip over the store, so an in-flight write can't flip it back", () => {
+    // globalState.update is fire-and-forget; the chip is the synchronous truth.
+    expect(implicitChipStartsHidden(chip(true), false)).toBe(true);
+    expect(implicitChipStartsHidden(chip(false), true)).toBe(false);
+  });
+
+  it("falls back to the remembered preference when there is no chip yet", () => {
+    // Fresh webview / extension restart / chip cleared by a non-file editor.
+    expect(implicitChipStartsHidden(undefined, true)).toBe(true);
+    expect(implicitChipStartsHidden(undefined, false)).toBe(false);
+  });
+
+  it("defaults to visible for a first-run install with nothing remembered", () => {
+    expect(implicitChipStartsHidden(undefined, false)).toBe(false);
   });
 });

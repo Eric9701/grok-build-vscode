@@ -457,6 +457,12 @@ body.turn-busy .queued-steer:hover {
   padding-right: 0;
 }
 
+/* An author `display` beats the UA's `[hidden] { display: none }`, so without
+   this rule the JS `actions.hidden = true` did nothing: the footer still took
+   layout space (the "temporary empty space" under a streaming message) and
+   :hover still revealed Copy on a turn that hadn't finished. */
+.msg-actions[hidden] { display: none; }
+
 .msg-actions {
   display: flex;
   align-items: center;
@@ -507,6 +513,8 @@ body.turn-busy .queued-steer:hover {
 /* Rewind on the latest tip is a no-op — hide rather than disable so the row
    stays copy+timestamp only on the current message. */
 .msg-rewind-btn[hidden] { display: none; }
+/* Edit is the complement: shown only on the tip, where Rewind is hidden (#56). */
+.msg-edit-btn[hidden] { display: none; }
 .msg-timestamp { font-size: 11px; }
 .msg.thinking {
   background: transparent;

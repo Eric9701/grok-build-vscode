@@ -27,6 +27,7 @@ was made against; a section without a date here predates this log and is covered
 
 | Date | grok CLI | What changed |
 |---|---|---|
+| **2026-07-26** | **0.2.111** | **§2.15 (new) — `_x.ai/rewind/*` semantics are undocumented and one of them is wrong on the wire.** `execute` **DISCARDS its target** prompt along with everything after it (measured: a 4-prompt session rewound to `#1` drops to 1 point; rewound to the tip `#3` drops to 3) — the opposite of what "rewind **to** N" reads like, and getting it backwards silently eats an extra turn *and* that turn's file changes. The **tip is a legal target**, contradicting an earlier "current prompt index is N" error we saw. `prompt_text` returns the *discarded* prompt (correct and useful — it's what a client puts back in the input box). **Bug:** `reverted_files` lists files that were **created** in the rewound turn even though they are left on disk — restore-previous-content has nothing to write back for a new file, so the array over-reports. Probes: `research/rewind-semantics-probe.cjs`, `research/rewind-newfile-probe.cjs`. |
 | **2026-07-24** | **0.2.103** | **Re-verification on the current shipped build, prompted by [#64](https://github.com/phuryn/grok-build-vscode/issues/64).** §2.1's terminal hole is **still open** — re-probed: during a plan turn the model issued `run_terminal_command` and the CLI passed `terminal/create` straight through to the client (edit tool correctly blocked, so only `plan.md` was writable). §2.13's quota gap **still holds and now has a second, independent user asking for it**: the account/plan quota the TUI's `/usage` shows is **not reachable over ACP** — no `usage_update`, no `grok usage` subcommand, and `/usage` is TUI-only (like `/context`, `ok_end_turn(0, None)` — streams nothing over `grok agent stdio`). #64 wants exactly §2.13 item 3 (queryable quota in the GUI). Also confirmed advertised effort is model-specific: grok-4.5's `models[]._meta` advertises only `[high (default), medium, low]` (§2.7). |
 | **2026-07-18** | **0.2.101** | **§2.13 (new) — rate-limit errors carry no reset time and no quota telemetry.** A weekly/usage limit surfaces as `-32003` with deliberately vague copy ("try again later"); no reset date exists anywhere on the wire, and there is no used/remaining signal a client could use to warn *before* the wall. User-reported ([#57](https://github.com/phuryn/grok-build-vscode/issues/57)) — the billing-flavored wording also misread as an auth failure in our client (fixed in extension v1.7.2 by classifying `-32003` first). |
 | **2026-07-17** | **0.2.101** | **§2.12 (new) — `session/fork`'s `targetPromptIndex` truncates `chat_history.jsonl` but NOT `updates.jsonl`**, so a fork-at-a-point replays a conversation the model has forgotten; we ship whole-session forking only as a result. Also **two unadvertised RPCs probe-confirmed WORKING and now shipped in the extension**: `x.ai/interject` (mid-turn steering — the model obeys mid-stream and the turn still ends `end_turn`, i.e. it is genuinely not a cancel) backs the new Steer button, and `x.ai/session/fork` backs Fork. Both are `_`-prefixed, unadvertised, and therefore feature-gated client-side on -32601. Separately, `_meta.usage` (per-prompt billing, incl. `modelUsage`) exists and we had been dropping it; **no cache-creation field exists anywhere**. |
@@ -711,6 +712,51 @@ instead… run `grok logout`"). The active auth method is otherwise unknowable t
 well-known code), and the active auth method (oauth vs api-key) surfaced somewhere queryable —
 `initialize`'s response or the `_x.ai/session/info` family — so a client can warn about the
 shadowing instead of parsing a hint out of an error message.
+
+### 2.15 Rewind: inverted-sounding semantics, and `reverted_files` over-reports
+
+`_x.ai/rewind/points` + `_x.ai/rewind/execute` are unadvertised and undocumented, and the
+extension now builds two user-facing actions on them (Rewind, and Edit-a-sent-message). Three
+findings, all measured on **0.2.111** — probes are checked in
+(`research/rewind-semantics-probe.cjs`, `research/rewind-newfile-probe.cjs`).
+
+**1. `execute` discards the target, inclusive.** Rewinding to prompt N removes N *and*
+everything after it:
+
+| target | points before → after | target survived? |
+|---|---|---|
+| `#1` of `0..3` | 4 → 1 | no |
+| `#3` (the tip) | 4 → 3 | no |
+
+The method name reads like "rewind **to** N, keeping N". It doesn't. This is the dangerous kind
+of ambiguity because **getting it wrong does not error** — it silently truncates one turn too far
+and, under `mode:"all"`, reverts that extra turn's file changes. We shipped it backwards for a
+day. A one-line doc note, or a name like `discardFrom`, would have prevented it.
+
+**2. The tip is a legal target.** We had previously recorded
+`Cannot rewind to prompt #N — current prompt index is N`; on a settled session, targeting the
+newest point succeeds and discards exactly that turn. That's what makes "edit my last message"
+implementable. Worth stating explicitly, since the error text implies otherwise.
+
+**3. `reverted_files` includes files that were never reverted.** A turn that *creates* a file
+reports it in `reverted_files`, but the file is left on disk:
+
+```jsonc
+// grok created created.txt and edited existing.txt, then rewind mode:"all"
+{ "reverted_files": ["existing.txt", "created.txt"] }
+// on disk afterwards: existing.txt restored to its old content;
+//                     created.txt STILL PRESENT
+```
+
+That is defensible *behavior* — a content-snapshot system has no previous content to write back
+for a new file, and deleting user files is a bigger hammer than restoring them. But the **report
+is wrong**, and a client that says "restored 2 files" is then lying on the CLI's behalf. Either
+omit created files from `reverted_files`, or split the array (`restored` vs `created_left_in_place`)
+so a client can tell the user the truth.
+
+**Ask:** document the discard-inclusive semantics and the tip's validity; fix or split
+`reverted_files`; and — since these RPCs are unadvertised — consider advertising them, as clients
+otherwise have to feature-gate on `-32601` and guess at the contract.
 
 ---
 

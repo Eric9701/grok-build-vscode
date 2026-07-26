@@ -19,6 +19,8 @@ import {
   appendPlanEntry,
   countsAsUserBubble,
   decideRestoreState,
+  planRestoreSource,
+  truncateResolvedAfter,
 } from "../src/plan-restore";
 
 describe("countsAsUserBubble (host↔webview replay-count parity)", () => {
@@ -157,5 +159,98 @@ describe("appendPlanEntry + decideRestoreState (full lifecycle scenarios)", () =
 
   it("scenario: legacy session (never persisted) → restore comes back in Agent mode, no surprise gate", () => {
     expect(decideRestoreState(undefined).planActive).toBe(false);
+  });
+});
+
+// Rewind (and Edit, which is a rewind underneath) truncates grok's history, but
+// plan and permission cards are the EXTENSION's own records — the CLI replays
+// neither on session/load. Without truncating them too, cards for deleted turns
+// come back at the BOTTOM of the restored conversation, under the messages that
+// survived. Reported after two Edits left two plan cards orphaned.
+describe("truncateResolvedAfter (rewind must drop our own cards too)", () => {
+  const plan = (afterUserMessage: number | undefined, text: string) => ({
+    text,
+    verdict: "rejected" as const,
+    afterUserMessage,
+  });
+
+  it("keeps cards from surviving turns and drops the rest", () => {
+    const plans = [plan(1, "a"), plan(3, "b"), plan(5, "c")];
+    // Rewound so 3 user messages remain: the card resolved during turn 5 goes.
+    expect(truncateResolvedAfter(plans, 3).map((p) => p.text)).toEqual(["a", "b"]);
+  });
+
+  it("keeps a card resolved during the LAST surviving turn (boundary)", () => {
+    // afterUserMessage === surviving means it belongs to the final kept turn.
+    expect(truncateResolvedAfter([plan(3, "edge")], 3)).toHaveLength(1);
+    expect(truncateResolvedAfter([plan(4, "past")], 3)).toHaveLength(0);
+  });
+
+  it("drops everything when the whole conversation is rewound away", () => {
+    expect(truncateResolvedAfter([plan(1, "a"), plan(2, "b")], 0)).toEqual([]);
+  });
+
+  it("KEEPS position-less legacy entries rather than guessing", () => {
+    // Deleting a user's plan record on a guess is worse than one stray card.
+    const out = truncateResolvedAfter([plan(undefined, "legacy"), plan(9, "new")], 2);
+    expect(out.map((p) => p.text)).toEqual(["legacy"]);
+  });
+
+  it("handles an absent collection", () => {
+    expect(truncateResolvedAfter(undefined, 3)).toEqual([]);
+  });
+
+  it("works for permission entries too (same positional shape)", () => {
+    const perms = [
+      { title: "Run npm test", outcome: "allowed" as const, afterUserMessage: 1 },
+      { title: "Delete src/", outcome: "rejected" as const, afterUserMessage: 4 },
+    ];
+    expect(truncateResolvedAfter(perms, 2).map((p) => p.title)).toEqual(["Run npm test"]);
+  });
+});
+
+// Regression: after a rewind removed every plan, the restored session showed
+// the deleted plan again, labelled "Restored from the previous session".
+//
+// Cause: the empty array a rewind leaves behind was treated the same as "no
+// record", which triggers the legacy fallback that reads grok's own plan.md —
+// and a rewind does NOT truncate plan.md. So dropping our record is precisely
+// what resurrected the plan.
+describe("planRestoreSource ([] is a record, not a gap)", () => {
+  const plan = (text: string) => ({ text, verdict: "rejected" as const, afterUserMessage: 1 });
+
+  it("renders our saved plans when we have some", () => {
+    expect(planRestoreSource([plan("a")])).toBe("saved");
+  });
+
+  it("falls back to grok's plan.md ONLY when we have no record at all", () => {
+    // A session from before per-plan persistence.
+    expect(planRestoreSource(undefined)).toBe("disk");
+  });
+
+  it("shows nothing when our record says there are no plans", () => {
+    // The rewind case. Reading plan.md here brings back the deleted plan.
+    expect(planRestoreSource([])).toBe("none");
+  });
+
+  it("never falls back to disk once a record exists", () => {
+    // The invariant that matters: [] must not degrade into "disk".
+    expect(planRestoreSource([])).not.toBe("disk");
+  });
+
+  it("survives a truncation that empties the list", () => {
+    // End-to-end of the two helpers: rewind past everything -> [] -> "none".
+    const truncated = truncateResolvedAfter([plan("a"), plan("b")], 0);
+    expect(truncated).toEqual([]);
+    expect(planRestoreSource(truncated)).toBe("none");
+  });
+
+  it("still renders survivors when a truncation leaves some", () => {
+    const kept = truncateResolvedAfter(
+      [{ ...plan("a"), afterUserMessage: 1 }, { ...plan("b"), afterUserMessage: 5 }],
+      2,
+    );
+    expect(kept.map((p) => p.text)).toEqual(["a"]);
+    expect(planRestoreSource(kept)).toBe("saved");
   });
 });

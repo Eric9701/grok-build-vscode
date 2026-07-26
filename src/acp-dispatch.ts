@@ -340,6 +340,14 @@ export function addUsage(a: PromptUsage | undefined, b: PromptUsage | undefined)
   return out;
 }
 
+/** Sum a per-turn usage log back into a session total. Used after a rewind
+ *  drops the discarded turns' entries — the total is derived, never patched. */
+export function sumUsage(entries: Array<{ usage?: PromptUsage }>): PromptUsage | undefined {
+  let out: PromptUsage | undefined;
+  for (const e of entries) out = addUsage(out, e.usage);
+  return out;
+}
+
 /**
  * Whether a turn's usage is a real measurement worth counting (#53).
  *

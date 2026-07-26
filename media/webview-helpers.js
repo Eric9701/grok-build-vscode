@@ -21,7 +21,7 @@
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
-    "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
+    "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "restoreComposer", "truncateMessages", "uiConfirmRequest", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault", "soundNotifications",
     "remoteStatus",
@@ -37,7 +37,7 @@
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
     "setSoundNotifications",
-    "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "workflowControl",
+    "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "editLastMessage", "uiConfirmAnswer", "workflowControl",
     "remoteSignIn", "remoteSignOut", "openRemotePortal",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);
@@ -615,6 +615,70 @@
   //     (oldText:"") reads as pure additions, not "−1".
   //   - Pathological huge regions skip the O(m·n) table and fall back to a flat
   //     replace (all-del then all-add), flagged `truncated`, so the UI never hangs.
+  // A mid-turn interjection (Steer, #52) as the CLI persists and REPLAYS it:
+  // it comes back on session/load as a user_message_chunk wrapped in this
+  // envelope. It is folded into the turn that was already running, so it is not
+  // its own prompt and gets NO rewind point — a bubble built from it must not
+  // consume a rewind index, or every later bubble maps to the wrong turn.
+  // Verified against a real session's chat_history/updates (synthetic_reason:
+  // "interjection"); see research/rewind.md.
+  const INTERJECTION_RE = /^\s*The user sent a message while you were working:\s*\r?\n/;
+
+  function isInterjectionText(text) {
+    return INTERJECTION_RE.test(String(text || ""));
+  }
+
+  // Permission-card option order (#68). The CLI sends `options` in its own
+  // order, so the approve action isn't reliably first and the keyboard default
+  // could land on a reject. Sort to a fixed, predictable order — approve first,
+  // destructive last — and keep it STABLE within a rank so two options of the
+  // same kind stay in the CLI's relative order. Unknown kinds sort between
+  // allow and reject: a card must never make an unrecognized action the default,
+  // and must never push it below the reject either.
+  const PERM_OPTION_RANK = { allow_once: 0, allow_always: 1, reject_once: 3, reject_always: 4 };
+
+  function orderPermissionOptions(options) {
+    if (!Array.isArray(options)) return [];
+    return options
+      .map((opt, i) => ({ opt, i }))
+      .sort((a, b) => {
+        const ra = PERM_OPTION_RANK[a.opt && a.opt.kind] ?? 2;
+        const rb = PERM_OPTION_RANK[b.opt && b.opt.kind] ?? 2;
+        return ra === rb ? a.i - b.i : ra - rb;
+      })
+      .map((x) => x.opt);
+  }
+
+  // Which button should hold the keyboard default? The first plain-approve
+  // option, never an "always" (a keystroke must not widen permission scope for
+  // the rest of the session) and never a reject. Returns -1 when there is no
+  // safe default, in which case the card takes no focus at all.
+  function defaultPermissionIndex(orderedOptions) {
+    if (!Array.isArray(orderedOptions)) return -1;
+    return orderedOptions.findIndex((o) => o && o.kind === "allow_once");
+  }
+
+  // Should an arriving permission card steal keyboard focus? Only when there is
+  // nothing to steal it FROM: a composer with text (or a live IME composition)
+  // means the user is mid-thought, and replay means this card is history being
+  // re-rendered, not a live ask.
+  function shouldFocusPermissionCard(state) {
+    const s = state || {};
+    if (s.replaying) return false;
+    if (s.composing) return false;
+    if ((s.composerText || "").trim().length > 0) return false;
+    return s.defaultIndex >= 0;
+  }
+
+  // A printable keystroke on a focused card button means the user wants to
+  // type, not to answer — redirect it to the composer instead of activating a
+  // button (or worse, silently swallowing the character). Modified keys and
+  // named keys (Tab/Enter/Escape/arrows) are navigation, not text.
+  function isTypeThroughKey(e) {
+    if (!e || e.ctrlKey || e.metaKey || e.altKey) return false;
+    return typeof e.key === "string" && e.key.length === 1;
+  }
+
   function computeLineDiff(oldText, newText, opts) {
     const maxProduct = (opts && opts.maxProduct) || 4000000; // ~2000×2000 line cap
     const norm = (t) => (t == null ? "" : String(t).replace(/\r\n?/g, "\n"));
@@ -665,7 +729,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

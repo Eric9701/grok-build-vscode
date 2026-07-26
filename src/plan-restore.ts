@@ -57,6 +57,52 @@ export interface RestoreDecision {
   cliMode: "plan" | "default";
 }
 
+/**
+ * Where a restored session's plan cards should come from.
+ *
+ * - `"saved"` — we have per-plan records; render those.
+ * - `"disk"`  — we have NO record at all (a session from before per-plan
+ *               persistence): fall back to grok's own `plan.md`.
+ * - `"none"`  — we have a record and it says there are no plans.
+ *
+ * The `[]` vs `undefined` distinction is the whole point. A rewind that removes
+ * every plan leaves an EMPTY array, and treating that as "legacy" re-read
+ * grok's `plan.md` — which a rewind does not truncate — and resurrected the
+ * exact plan the user had just deleted, labelled "Restored from the previous
+ * session". Empty means empty; only absent means unknown.
+ */
+export function planRestoreSource(saved: PlanEntry[] | undefined): "saved" | "disk" | "none" {
+  if (saved === undefined) return "disk";
+  return saved.length > 0 ? "saved" : "none";
+}
+
+/**
+ * Drop persisted cards whose turn no longer exists after a rewind.
+ *
+ * Plan and permission cards are the EXTENSION's own record — grok doesn't
+ * replay either on `session/load`, so rewinding the conversation leaves them
+ * behind. Their saved `afterUserMessage` then exceeds the (now shorter)
+ * conversation, so the replay can't place them inline and dumps them at the
+ * bottom: cards for turns the user just deleted, reappearing under the ones
+ * that survived.
+ *
+ * `surviving` is the number of user messages left after the rewind. An entry
+ * resolved during the Nth turn carries `afterUserMessage === N`, so entries
+ * with a position ABOVE `surviving` belong to discarded turns.
+ *
+ * Entries with no position (legacy, pre-`afterUserMessage`) are KEPT: we can't
+ * tell which turn they belong to, and silently deleting a user's plan record on
+ * a guess is worse than leaving one card at the bottom.
+ */
+export function truncateResolvedAfter<T extends { afterUserMessage?: number }>(
+  entries: T[] | undefined,
+  surviving: number,
+): T[] {
+  return (entries ?? []).filter(
+    (e) => e.afterUserMessage === undefined || e.afterUserMessage <= surviving,
+  );
+}
+
 /** Append a resolved plan to the per-session log. `current` may be undefined
  *  for sessions that haven't persisted any plans yet. */
 export function appendPlanEntry(current: PlanEntry[] | undefined, entry: PlanEntry): PlanEntry[] {

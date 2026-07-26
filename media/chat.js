@@ -471,7 +471,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1478,7 +1478,7 @@
     if (!IS_REMOTE) {
       addSection("Remote Control");
       if (state.remoteLinked) {
-        addGearItem(`<span class="gear-lead">${ICON.user}<span>Your AFK Pilot account</span></span>`, () => {
+        addGearItem(`<span class="gear-lead">${ICON.user}<span>Your account</span></span>`, () => {
           vscode.postMessage({ type: "openRemotePortal" });
           closePopovers();
         });
@@ -1747,7 +1747,8 @@
     // Relocating the VS Code view is host-local (the moveView messages are
     // policy-dropped on remotes) — hide the whole section in the browser client.
     if (!IS_REMOTE) {
-      addGearSep();
+      // No addGearSep() here: .popover-section draws its own border-top, so a
+      // separator in front of a section header renders two rules.
       addSection("Move view");
       addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
         vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
@@ -2289,11 +2290,15 @@
     return tag;
   }
 
-  function addMessage(role, text, chips) {
+  function addMessage(role, text, chips, opts) {
     clearWelcome();
     const el = document.createElement("div");
     el.className = `msg ${role}`;
     el._copyText = text || "";
+    // A steered (interjected) message rides inside the turn that was already
+    // running — it is not its own prompt and has no rewind point, so it must be
+    // excluded from the bubble→rewind-point mapping (see refreshUserRewindButtons).
+    if (opts && opts.steer) el.dataset.steer = "1";
 
     let contentParent = el;
     if (role === "user") {
@@ -2340,6 +2345,16 @@
         rewindBtn.setAttribute("aria-label", "Rewind to this message");
         rewindBtn.innerHTML = `<span class="msg-action-glyph">${ICON.undo}</span>`;
         actions.appendChild(rewindBtn);
+        // Edit lives only on the LATEST user message (#56) — the one Rewind
+        // can't target. Together they cover the whole conversation: Rewind for
+        // "go back to there", Edit for "that last one came out wrong".
+        const editBtn = document.createElement("button");
+        editBtn.className = "msg-action-btn msg-edit-btn";
+        editBtn.type = "button";
+        editBtn.title = "Edit and send again";
+        editBtn.setAttribute("aria-label", "Edit and send again");
+        editBtn.innerHTML = `<span class="msg-action-glyph">${ICON.pencil}</span>`;
+        actions.appendChild(editBtn);
       }
       const ts = document.createElement("span");
       ts.className = "msg-timestamp";
@@ -2382,14 +2397,42 @@
    * The latest user message can't be a rewind target (CLI tip); earlier ones can.
    * Queued (not-yet-sent) blocks are excluded.
    */
+  // How many user messages the user can actually SEE (steers excluded, exactly
+  // as the rewind map counts them). Sent with every rewind/edit so the host can
+  // verify its point list still lines up before acting — see bubbleMapIsConsistent.
+  function visibleUserBubbleCount() {
+    return [...messagesEl.querySelectorAll(".msg.user:not(.queued)")]
+      .filter((el) => el.dataset.steer !== "1").length;
+  }
+
   function refreshUserRewindButtons() {
-    const users = [...messagesEl.querySelectorAll(".msg.user:not(.queued)")];
+    // Steered messages are NOT prompts and have no rewind point, so they get no
+    // index — counting them shifted every later bubble by one, which pointed
+    // Rewind at the wrong turn (and reverted the wrong files) and made Edit
+    // fail outright. Both actions are hidden on a steer bubble for the same
+    // reason: there is nothing on the wire to roll back to.
+    const users = [...messagesEl.querySelectorAll(".msg.user:not(.queued)")]
+      .filter((el) => el.dataset.steer !== "1");
+    for (const el of messagesEl.querySelectorAll('.msg.user[data-steer="1"]')) {
+      delete el.dataset.userBubbleIndex;
+      const r = el.querySelector(".msg-rewind-btn");
+      const ed = el.querySelector(".msg-edit-btn");
+      if (r) r.hidden = true;
+      if (ed) ed.hidden = true;
+    }
     users.forEach((el, i) => {
       el.dataset.userBubbleIndex = String(i);
+      const isLast = i === users.length - 1;
       const btn = el.querySelector(".msg-rewind-btn");
-      if (!btn) return;
-      // Hide on the tip — rewinding there is a no-op / errors on the wire.
-      btn.hidden = users.length <= 1 || i === users.length - 1;
+      if (btn) {
+        // Hide on the tip: that message is Edit's, which does the same rewind
+        // and returns the text. Not a wire limitation — execute accepts the tip.
+        btn.hidden = users.length <= 1 || isLast;
+      }
+      // Edit is the exact complement: only the tip, which is the message a
+      // rewind can't remove and the one you most often want to retype (#56).
+      const edit = el.querySelector(".msg-edit-btn");
+      if (edit) edit.hidden = !isLast;
     });
   }
 
@@ -3997,6 +4040,16 @@
     const imageTags = parseImageTags(selBlocks.body);
     state.activeUserEl.innerHTML = renderMarkdown(imageTags.body);
     applyAutoDir(state.activeUserEl);
+    // On restore, a steered message comes back wrapped in the CLI's own
+    // interjection envelope. Mark it so it doesn't consume a rewind index — the
+    // live path gets the same mark from `steer` on the userMessage.
+    if (isInterjectionText(state.activeUserRaw)) {
+      const steerEl = state.activeUserEl.closest(".msg");
+      if (steerEl) {
+        steerEl.dataset.steer = "1";
+        refreshUserRewindButtons();
+      }
+    }
     const msgEl = state.activeUserEl.closest(".msg");
     if (msgEl) msgEl._copyText = imageTags.body;
     const chipTags = [
@@ -4340,11 +4393,21 @@
 
     const actions = document.createElement("div");
     actions.className = "card-actions";
-    for (const opt of req.options || []) {
+    // Approve first, reject last — the CLI's own order isn't guaranteed, and the
+    // keyboard default below must never land on a reject (#68).
+    const options = orderPermissionOptions(req.options);
+    const defaultIndex = defaultPermissionIndex(options);
+    const buttons = [];
+    options.forEach((opt, i) => {
       const btn = document.createElement("button");
       btn.textContent = opt.name;
+      btn.type = "button";
       if (opt.kind === "allow_once") btn.classList.add("primary");
       if (opt.kind === "reject_once") btn.classList.add("danger");
+      // Only the default button is in the tab order; the arrow keys move within
+      // the group. Standard toolbar/radiogroup roving-tabindex, so Tab escapes
+      // the card in one press instead of walking every option.
+      btn.tabIndex = i === (defaultIndex >= 0 ? defaultIndex : 0) ? 0 : -1;
       btn.onclick = () => {
         vscode.postMessage({
           type: "permissionAnswer",
@@ -4356,11 +4419,79 @@
         collapsePermissionCard(el, opt.kind, cardTitle);
         showGrokking();
       };
+      buttons.push(btn);
       actions.appendChild(btn);
-    }
+    });
+    wirePermissionKeys(actions, buttons);
     el.appendChild(actions);
     messagesEl.appendChild(el);
     forceScrollToBottom(); // a pending permission must be visible (#16)
+
+    // Take the keyboard ONLY when there's nothing to take it from — an empty,
+    // idle composer. With type-through (below) this costs the user nothing: if
+    // they'd rather type than answer, their first character still lands in the
+    // composer and focus follows it.
+    if (
+      defaultIndex >= 0 &&
+      shouldFocusPermissionCard({
+        replaying: state.replaying,
+        composing: state.composingIME,
+        composerText: input.value,
+        defaultIndex,
+      })
+    ) {
+      buttons[defaultIndex].focus();
+    }
+  }
+
+  /**
+   * Keyboard model for a permission card's action row (#68).
+   *
+   * Enter/Space activate the focused button (the browser already does this) —
+   * the value here is that focus is VISIBLE, so the same key always does the
+   * same thing. That's the whole reason this isn't a "did you type in the last
+   * second?" timer: the action a keystroke takes must never depend on state the
+   * user can't see, least of all when the action is approving a command.
+   */
+  function wirePermissionKeys(actions, buttons) {
+    actions.addEventListener("keydown", (e) => {
+      const current = buttons.indexOf(document.activeElement);
+      if (current < 0) return;
+
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        focusPermissionButton(buttons, (current + 1) % buttons.length);
+        return;
+      }
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        focusPermissionButton(buttons, (current - 1 + buttons.length) % buttons.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        // Hand the keyboard back without answering. The card stays pending —
+        // Escape is "not now", never an implicit reject.
+        e.preventDefault();
+        input.focus();
+        return;
+      }
+      if (isTypeThroughKey(e)) {
+        // The user started typing at a focused button. Don't swallow the
+        // character and don't let it activate anything — move to the composer
+        // and let the keystroke land there.
+        e.preventDefault();
+        input.focus();
+        const pos = input.selectionStart ?? input.value.length;
+        input.value = input.value.slice(0, pos) + e.key + input.value.slice(input.selectionEnd ?? pos);
+        input.selectionStart = input.selectionEnd = pos + 1;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+  }
+
+  function focusPermissionButton(buttons, index) {
+    buttons.forEach((b, i) => { b.tabIndex = i === index ? 0 : -1; });
+    buttons[index].focus();
   }
 
   // ---------- question card (ask_user_question) ----------
@@ -5362,6 +5493,15 @@
   // promptComplete is deliberately omitted — it's the turn-end boundary.
   const TURN_PROGRESS_MSGS = new Set([
     "agentStart", "thoughtChunk", "messageChunk", "toolCall", "toolCallUpdate", "media",
+    // A finishing subagent is the classic "nothing left on screen" moment: its
+    // dots stop, the card goes static, and if grok then works quietly the turn
+    // looked dead.
+    //
+    // promptComplete is deliberately NOT here: it lands immediately before
+    // agentEnd on an ordinary turn, so asserting an indicator there painted a
+    // Grokking row after the final message and scrolled the view, for the one
+    // frame before agentEnd removed it again.
+    "subagentUpdate",
   ]);
 
   window.addEventListener("message", (e) => {
@@ -5412,6 +5552,74 @@
         // type a prompt immediately.
         input.focus();
         break;
+      case "uiConfirmRequest":
+        // The host asks; the webview owns the dialog. Always answer, including
+        // on dismissal — the host is awaiting this id and a rewind must fail
+        // closed rather than hang.
+        uiConfirm({
+          title: msg.title,
+          body: msg.body,
+          confirmLabel: msg.confirmLabel,
+          danger: msg.danger,
+        }).then((ok) => {
+          vscode.postMessage({ type: "uiConfirmAnswer", id: msg.id, ok: !!ok });
+        });
+        break;
+      case "truncateMessages": {
+        // Rewind/edit: drop only the discarded turns instead of clearing the
+        // panel and replaying the whole conversation (which flashed the welcome
+        // logo and re-rendered everything). The surviving messages are already
+        // correct on screen — there is nothing to rebuild.
+        const users = [...messagesEl.querySelectorAll(".msg.user:not(.queued)")]
+          .filter((el) => el.dataset.steer !== "1");
+        const firstGone = users[msg.surviving];
+        if (firstGone) {
+          // Remove that message and every sibling after it — agent replies, tool
+          // groups, plan/permission cards, subagent rows all belong to the
+          // discarded turns.
+          while (messagesEl.lastElementChild && messagesEl.lastElementChild !== firstGone) {
+            messagesEl.removeChild(messagesEl.lastElementChild);
+          }
+          if (messagesEl.lastElementChild === firstGone) messagesEl.removeChild(firstGone);
+        }
+        // Nothing streaming survives a truncation — drop the per-turn handles so
+        // the next turn starts clean rather than appending into a removed node.
+        state.userMsgCount = msg.surviving;
+        state.activeAgentEl = null;
+        state.activeAgentRaw = "";
+        state.activeUserEl = null;
+        state.activeUserRaw = "";
+        state.activeThoughtEl = null;
+        state.activeToolGroupEl = null;
+        state.turnAgentActionsEl = null;
+        hideGrokking();
+        hideThinkingIndicator();
+        hidePlanProcessing();
+        // The newest surviving agent message ends a finished turn, so its
+        // copy/timestamp footer belongs visible.
+        const agents = messagesEl.querySelectorAll(".msg.agent .msg-actions");
+        const lastFooter = agents[agents.length - 1];
+        if (lastFooter) lastFooter.hidden = false;
+        refreshUserRewindButtons();
+        forceScrollToBottom();
+        break;
+      }
+      case "restoreComposer": {
+        // Edit-and-resend (#56): the rewound message comes back so it can be
+        // fixed and sent again. APPEND rather than overwrite — anything already
+        // typed is the user's, and silently destroying it would be the same
+        // class of bug as the one Edit exists to fix.
+        const existing = input.value.trim();
+        input.value = existing ? existing + "\n\n" + (msg.text || "") : (msg.text || "");
+        input.focus();
+        updateSlash();
+        updateMention();
+        renderInputHighlight();
+        updateSendButton();
+        // Caret to the end so typing continues the restored text.
+        input.selectionStart = input.selectionEnd = input.value.length;
+        break;
+      }
       case "grokUpdateStatus":
         // Reply to the About panel's checkGrokUpdate. The check also reports the
         // CLI's current version — adopt it, since the ACP handshake doesn't always
@@ -5564,7 +5772,7 @@
         drainPlanHistory(state.userMsgCount);
         drainPermissionHistory(state.userMsgCount);
         state.userMsgCount += 1;
-        addMessage("user", msg.text, msg.chips || []);
+        addMessage("user", msg.text, msg.chips || [], { steer: msg.steer });
         forceScrollToBottom(); // jump back to the bottom on the user's own send (#16)
         // If the indicator is showing and a NEW (live-send) user message comes
         // in, hide it. (When the host posts a userMessage as part of the verdict
@@ -5852,7 +6060,14 @@
         // turn ends emitting promptComplete; afterTurn's follow-up turn then
         // runs and emits its own agentEnd at the end, which clears busy).
         commitAgentTurn();
-        revealTurnFooter(); // the turn is over — show its copy/timestamp footer
+        // Deliberately NOT revealTurnFooter(): promptComplete ends one
+        // client.prompt(), not necessarily the TURN. More tool calls and text
+        // routinely follow (and a plan verdict runs a second prompt entirely),
+        // so revealing here put a copy/timestamp footer mid-conversation that
+        // then had content rendered below it — a footer that flickers in and
+        // leaves a gap. agentEnd/agentError are the authoritative turn end and
+        // already reveal it; the same signal that clears busy should be the one
+        // that finalizes the footer.
         // The host strips totalTokens:0 before it gets here — grok reports 0
         // for /session-info (context untouched) AND /compact (context shrunk,
         // not emptied), so 0 is never a real measurement (gateZeroTokenMeta,
@@ -6223,7 +6438,38 @@
       const msgEl = msgRewindBtn.closest(".msg.user");
       const idx = msgEl ? Number(msgEl.dataset.userBubbleIndex) : NaN;
       if (!Number.isInteger(idx) || idx < 0) return;
-      vscode.postMessage({ type: "rewindSession", userBubbleIndex: idx });
+      // Send the text too: rewind discards this message, so the host hands it
+      // back to the composer exactly like Edit does (#56).
+      vscode.postMessage({
+        type: "rewindSession",
+        userBubbleIndex: idx,
+        text: (msgEl && msgEl._copyText) || "",
+        totalUserBubbles: visibleUserBubbleCount(),
+      });
+      return;
+    }
+    const msgEditBtn = e.target.closest(".msg-edit-btn");
+    if (msgEditBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (msgEditBtn.hidden) return;
+      // Blocked mid-turn: the rewind underneath needs a settled session, and the
+      // host would only refuse. Say so here rather than round-trip for a warning.
+      if (state.busy) return;
+      const msgEl = msgEditBtn.closest(".msg.user");
+      const idx = msgEl ? Number(msgEl.dataset.userBubbleIndex) : NaN;
+      if (!Number.isInteger(idx) || idx < 0) return;
+      // `_copyText` is the bubble's own words with the context envelope,
+      // selection blocks and image tags already peeled off — the same text Copy
+      // yields, and exactly what belongs back in the composer. NOT the rewind
+      // result's `prompt_text` — that IS this message, but in raw wire form
+      // (envelope + tags still attached).
+      vscode.postMessage({
+        type: "editLastMessage",
+        userBubbleIndex: idx,
+        text: (msgEl && msgEl._copyText) || "",
+        totalUserBubbles: visibleUserBubbleCount(),
+      });
       return;
     }
     closePopovers();
@@ -6285,6 +6531,11 @@
     inputHighlight.scrollLeft = input.scrollLeft;
   });
   renderInputHighlight();
+  // A permission card must not steal focus mid-IME-composition (#68/#38): the
+  // preedit buffer holds text that `input.value` doesn't show yet, so an empty
+  // composer is NOT proof the user has nothing in flight.
+  input.addEventListener("compositionstart", () => { state.composingIME = true; });
+  input.addEventListener("compositionend", () => { state.composingIME = false; });
   input.addEventListener("keydown", (e) => {
     // IME composition (#38): while a CJK IME is composing (preedit underline /
     // candidate window open), Enter confirms the candidate and arrows navigate

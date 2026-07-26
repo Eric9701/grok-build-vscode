@@ -40,6 +40,13 @@ export interface SessionMetaOverride {
    *  only thing that survives a reload. Absent = never measured (an old session,
    *  or a pre-usage CLI) — the popover then shows no breakdown rather than 0s. */
   usage?: PromptUsage;
+  /** Per-turn billing, positioned like `plans`/`permissions`. `usage` above is
+   *  just the sum of these. Kept separately because a rewind has to be able to
+   *  SUBTRACT the discarded turns, and a single running total can't be undone —
+   *  the extension is the only place per-turn usage exists at all (grok reports
+   *  it per prompt and never persists it). Sessions predating this field keep
+   *  their total uncorrected rather than losing it. */
+  usageLog?: { afterUserMessage: number; usage: PromptUsage }[];
   /** Last verdict the user gave to an exit_plan_mode card in this session, for the restore-card label. */
   lastPlanVerdict?: "approved" | "rejected" | "abandoned";
   /** Every plan the user resolved in this session, in chronological order. grok's plan.md only

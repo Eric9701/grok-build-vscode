@@ -134,13 +134,24 @@ export function parseRewindExecute(payload: unknown): RewindExecuteResult | null
  * Format a rewind point for a QuickPick label.
  * Newest-first callers reverse the list themselves; this only formats one row.
  */
-export function formatRewindPointLabel(p: RewindPoint): string {
+/**
+ * QuickPick label for a rewind point.
+ *
+ * `position` is the message's 1-based place among the user's VISIBLE messages.
+ * Pass it — the wire `promptIndex` counts turns the user cannot see (the hidden
+ * primer, marker-only plan verdicts), so labelling with it produces a
+ * non-contiguous "#1 #2 … #6 #8" that refers to nothing on screen. Omitted only
+ * by callers that have no visible ordering, where the number is dropped rather
+ * than shown wrong.
+ */
+export function formatRewindPointLabel(p: RewindPoint, position?: number): string {
   const preview = (p.promptPreview || "(empty prompt)").replace(/\s+/g, " ").trim();
   const clipped = preview.length > 72 ? preview.slice(0, 69) + "…" : preview;
   const files = p.hasFileChanges
     ? ` · ${p.numFileSnapshots || "?"} file${p.numFileSnapshots === 1 ? "" : "s"}`
     : "";
-  return `#${p.promptIndex}  ${clipped}${files}`;
+  const prefix = typeof position === "number" && position > 0 ? `${position}. ` : "";
+  return `${prefix}${clipped}${files}`;
 }
 
 /** QuickPick detail line (timestamp). */
@@ -157,7 +168,9 @@ export function formatRewindPointDetail(p: RewindPoint): string | undefined {
 
 /**
  * Points that are valid rewind *targets* — every point except the latest one
- * (rewinding to the current tip is a no-op / errors "current prompt index is N").
+ * The tip is excluded as a PRODUCT choice, not a wire limitation: execute
+ * accepts it fine (probe-verified), but on a user bubble the tip belongs to
+ * Edit, which discards that turn AND hands its text back.
  * When only one point exists, returns [] (nothing to rewind to).
  *
  * Pass *all* points (including primer) so the tip is the true conversation tip;
@@ -210,21 +223,150 @@ export function resolveUserBubbleRewind(
   if (!point) return null;
   if (allPoints.length === 0) return null;
   const maxIdx = Math.max(...allPoints.map((p) => p.promptIndex));
-  // Tip of the whole conversation — execute would fail with "current is N".
+  // Tip belongs to Edit, not Rewind (a product split — the wire accepts it).
   if (point.promptIndex >= maxIdx) return null;
   return point;
+}
+
+/**
+ * Rewind target for "edit this message and send it again" (#56).
+ *
+ * `_x.ai/rewind/execute` **DISCARDS the target prompt** along with everything
+ * after it — probe-verified, `research/rewind-semantics-probe.cjs`: a 4-prompt
+ * session rewound to #1 dropped to 1 point, and rewound to the tip #3 dropped
+ * to 3. The tip is a legal target, so editing the newest message is just a
+ * rewind to its own point.
+ *
+ * The name reads like "rewind TO N, keeping N" — it doesn't, and building on
+ * that reading cost the user an extra turn every time. Hence the emphasis here
+ * rather than a bare index expression.
+ *
+ * Returns null only when the bubble maps to no point at all.
+ */
+export function resolveEditRewindTarget(
+  allPoints: RewindPoint[],
+  userBubbleIndex: number,
+): RewindPoint | null {
+  if (!Number.isInteger(userBubbleIndex) || userBubbleIndex < 0) return null;
+  // Sort first: bubble N is the Nth point in CONVERSATION order, and
+  // `userFacingRewindPoints` preserves input order, so deriving the bubble from
+  // an unsorted list picks the wrong turn.
+  const sorted = [...allPoints].sort((a, b) => a.promptIndex - b.promptIndex);
+  // The target is the message's OWN point — execute discards the target, so
+  // this removes exactly this turn. Targeting the predecessor (the natural
+  // reading of "rewind TO N keeps N") silently ate an extra turn.
+  return userFacingRewindPoints(sorted)[userBubbleIndex] ?? null;
+}
+
+/**
+ * How many visible user messages survive a rewind to `target`.
+ *
+ * Execute discards the target and everything after it, so the survivors are the
+ * user-facing points strictly BEFORE it. Callers use this to truncate the
+ * extension's own per-session history (persisted plan + permission cards), which
+ * grok knows nothing about — without it those cards outlive the turns that
+ * produced them and get dumped at the bottom of the restored conversation.
+ *
+ * Works for both entry points: the bubble button and the QuickPick, which picks
+ * a point directly and has no bubble index to hand back.
+ */
+export function survivingUserMessagesAfterRewind(
+  allPoints: RewindPoint[],
+  target: RewindPoint,
+): number {
+  return userFacingRewindPoints(allPoints).filter((p) => p.promptIndex < target.promptIndex).length;
+}
+
+/**
+ * Cut a session's replay buffer at the same point the DOM is cut.
+ *
+ * `Session.buffer` is what a focus-swap replays to rebuild the chat, so a
+ * rewind that only truncates the visible DOM would resurrect the discarded
+ * turns the moment the user switched sessions and back.
+ *
+ * Counts `userMessage` entries, skipping steered ones — they render a bubble
+ * but aren't prompts and have no rewind point, exactly as in the DOM. Keeps
+ * everything up to (not including) the message that starts the first discarded
+ * turn. A buffer with fewer user messages than `surviving` is returned intact.
+ */
+export function truncateReplayBuffer<T extends { type: string; steer?: boolean }>(
+  buffer: T[],
+  surviving: number,
+): T[] {
+  if (surviving < 0) return [];
+  let seen = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    const m = buffer[i];
+    if (m.type !== "userMessage" || m.steer) continue;
+    if (seen === surviving) return buffer.slice(0, i);
+    seen++;
+  }
+  return buffer;
+}
+
+/**
+ * Does the wire's user-facing point list still line up with what the user sees?
+ *
+ * The bubble→point map rests on two heuristics that can drift out from under
+ * us: `isHiddenRewindPoint` recognizes plumbing turns by their preview text
+ * (primer / system-reminder / bare plan markers), and the webview recognizes
+ * steered messages by the CLI's interjection wording. If the CLI adds a new
+ * silent turn shape, or rewords an envelope, the lists silently diverge — and a
+ * divergence does not error, it targets the WRONG turn and reverts the wrong
+ * files.
+ *
+ * So the counts are compared before executing anything. A mismatch means the
+ * map can no longer be trusted, and the honest response is to refuse rather
+ * than act on a guess. This turns a future CLI change from a silent data-loss
+ * bug into a visible "can't do this" — the failure mode we can live with.
+ */
+export function bubbleMapIsConsistent(
+  allPoints: RewindPoint[],
+  totalUserBubbles: number | undefined,
+): boolean {
+  if (typeof totalUserBubbles !== "number") return true; // older webview: nothing to check
+  return userFacingRewindPoints(allPoints).length === totalUserBubbles;
+}
+
+/**
+ * Will this rewind revert code on disk?
+ *
+ * `mode: "all"` restores files snapshotted for the target AND every turn after
+ * it — so checking the target alone under-reports. Drives whether a confirm is
+ * shown at all: a conversation-only rewind hands the message straight back to
+ * the composer and needs no dialog, while reverting files is not recoverable
+ * from inside the extension and always asks.
+ */
+export function anyFilesAfter(allPoints: RewindPoint[], target: RewindPoint): boolean {
+  return allPoints.some((p) => p.promptIndex >= target.promptIndex && p.hasFileChanges);
+}
+
+/** Confirm for the Edit flow — different stakes from a plain rewind, so it says
+ *  what comes back rather than only what is lost. */
+export function editRewindConfirmMessage(target: RewindPoint, hasFileChanges: boolean): string {
+  return (
+    `Edit your last message?\n\n` +
+    `It will be removed from the conversation and put back in the composer so you can change it and send again.\n\n` +
+    (hasFileChanges
+      ? "Grok's reply to it will be discarded and any files it changed in that turn will be restored.\n"
+      : "Grok's reply to it will be discarded. Earlier messages are untouched.\n") +
+    `This cannot be undone (unless you have the changes in git).`
+  );
 }
 
 /** Confirm dialog body for a chosen target. */
 export function rewindConfirmMessage(p: RewindPoint, mode: RewindMode = "all"): string {
   const preview = (p.promptPreview || "(empty)").replace(/\s+/g, " ").trim();
   const clipped = preview.length > 120 ? preview.slice(0, 117) + "…" : preview;
+  // Execute DISCARDS the target turn as well as everything after it — the old
+  // wording ("after this turn") promised the opposite and was wrong on the
+  // wire. See resolveEditRewindTarget + research/rewind-semantics-probe.cjs.
   const scope =
     mode === "conversation_only"
-      ? "Conversation history after this turn will be discarded."
+      ? "This message and everything after it will be discarded from the conversation."
       : mode === "files_only" || mode === "code_only"
-        ? "Files will be restored to their snapshot at this turn; conversation stays."
-        : "Conversation after this turn will be discarded, and files restored to their snapshot then.";
+        ? "Files will be restored to the snapshot taken before this turn; conversation stays."
+        : "This message and everything after it will be discarded, and files restored to the snapshot taken before it.";
   return (
     `Rewind to this message?\n\n` +
     `"${clipped}"\n\n` +

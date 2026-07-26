@@ -132,6 +132,24 @@ export function makeImageChip(
   };
 }
 
+/**
+ * Should a freshly rebuilt implicit chip start eye-off?
+ *
+ * The active-editor chip is destroyed and rebuilt on every file switch, so the
+ * user's "don't send this" has to be re-derived each time — reading it off the
+ * old chip alone made dismissing the context futile, since switching files
+ * silently re-enabled it (#67). The live chip wins when there is one: it is
+ * already in sync with the persisted value and needs no await. Otherwise
+ * (fresh webview, extension restart, chip cleared by a non-file editor) the
+ * remembered preference seeds it.
+ */
+export function implicitChipStartsHidden(
+  prev: FileChip | undefined,
+  remembered: boolean,
+): boolean {
+  return prev ? prev.hidden : remembered;
+}
+
 export function removeChip(chips: FileChip[], id: string): FileChip[] {
   return chips.filter((c) => c.id !== id);
 }

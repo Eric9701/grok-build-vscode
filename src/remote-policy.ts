@@ -63,6 +63,12 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   applyWorktree: "host-local",
   removeWorktree: "host-local",
   rewindSession: "host-local",
+  // Edit-and-resend is a rewind underneath (native modal confirm), so it carries
+  // the same desktop-only restriction — and it discards code, which a remote tap
+  // must not trigger against a desk nobody is watching.
+  editLastMessage: "host-local",
+  // The last gate before a rewind reverts files — only the local webview answers.
+  uiConfirmAnswer: "host-local",
   // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
   workflowControl: "propose",
   pasteImage: "propose",
@@ -202,6 +208,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",
   focusInput: "mirror",
+  restoreComposer: "mirror",
+  truncateMessages: "mirror",
+  uiConfirmRequest: "mirror",
   sessions: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",
