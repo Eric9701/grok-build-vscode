@@ -239,8 +239,13 @@ newest-first), built from two pure primitives in
 
 History is scoped to the **selected repo**. `discoverRepos` enumerates cwd catalogs from
 `<grokHome>/sessions` (rejecting temp roots and `<grokHome>/worktrees` — a worktree is
-not a checkout you choose between), and `postSessionsList` indexes that repo *plus* the
-worktrees belonging to it, so a worktree session stays reachable after you leave it. The
+not a checkout you choose between; the one carve-out is `trustedCwds`, the folder VS Code
+actually has open, because the selection must always name a catalog row or `clearAllSessions`
+silently no-ops). `postSessionsList` indexes that repo *plus* the worktrees belonging to it
+(`worktreeCwdsForRepo`, pure), so a worktree session stays reachable after you leave it —
+and the **primary workspace lists every worktree unconditionally**, since `sourceGitRoot`
+holds the CLI's *git root* rather than the workspace folder and a failed match must never
+be why a session disappears. The
 picker itself is a remote-only affordance: in VS Code the window already *is* the
 repository. And because the relay serves a client that can be newer than the installed
 extension, the chip renders only once a `repos` frame has actually arrived — an older

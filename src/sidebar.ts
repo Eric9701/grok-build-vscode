@@ -92,6 +92,8 @@ import {
   isGitRepo,
   matchWorktreeForCwd,
   mergeSessionIndexes,
+  worktreeCwdsForRepo,
+  type WorktreeParentRef,
   normalizeFsPath,
   pathsEqual,
   sanitizeWorktreeLabel,
@@ -1799,16 +1801,17 @@ See design doc for the full state machine diagram.`;
       cwds.push(p);
     };
     add(repoCwd);
-    // Overrides written before `sourceGitRoot` existed can't name their parent;
-    // attribute those to the primary workspace, which is where they came from.
-    const isPrimary = pathsEqual(repoCwd, this.workspaceRoot());
-    for (const o of Object.values(overrides)) {
-      if (!o.worktreePath) continue;
-      if (o.sourceGitRoot ? pathsEqual(o.sourceGitRoot, repoCwd) : isPrimary) add(o.worktreePath);
-    }
-    for (const wt of worktreesForRepo(this.worktreeCache, repoCwd)) add(wt.path);
-    for (const s of this.pool) {
-      if (s.worktree && pathsEqual(s.worktree.sourceGitRoot, repoCwd)) add(s.worktree.path);
+    const known: WorktreeParentRef[] = [
+      ...Object.values(overrides)
+        .filter((o) => o.worktreePath)
+        .map((o) => ({ path: o.worktreePath!, sourceGitRoot: o.sourceGitRoot })),
+      ...this.worktreeCache.map((wt) => ({ path: wt.path, sourceGitRoot: wt.sourceRepo })),
+      ...[...this.pool]
+        .filter((s) => s.worktree)
+        .map((s) => ({ path: s.worktree!.path, sourceGitRoot: s.worktree!.sourceGitRoot })),
+    ];
+    for (const p of worktreeCwdsForRepo({ repoCwd, workspaceRoot: this.workspaceRoot(), worktrees: known })) {
+      add(p);
     }
     return cwds;
   }
@@ -1834,8 +1837,15 @@ See design doc for the full state machine diagram.`;
     const activeCwd = this.sessionCwd(this.focused);
     const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
     const selected = entries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
+    // The selection MUST name a row in the catalog. `clearAllSessions` and
+    // `selectRepo` both resolve through it and bail when the lookup misses, so
+    // a selection that isn't there turns a confirmed "Delete All" into a silent
+    // no-op. Falling back to the workspace root is always valid — it's a
+    // trusted cwd, so it is always a row.
+    const inCatalog = (cwd: string) =>
+      !!cwd && entries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
     if (selected) this.selectedRepoCwd = selected.cwd;
-    else if (!this.selectedRepoCwd) this.selectedRepoCwd = activeCwd;
+    else this.selectedRepoCwd = inCatalog(activeCwd) ? activeCwd : this.workspaceRoot();
     this.post({
       type: "repos",
       entries,

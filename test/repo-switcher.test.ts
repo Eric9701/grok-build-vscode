@@ -7,6 +7,7 @@ import {
   type FsLike,
   type RepoPins,
 } from "../src/sessions";
+import { worktreeCwdsForRepo } from "../src/worktree";
 
 function fakeFs(entries: Record<string, { dir: boolean; mtime?: number }>): FsLike {
   return {
@@ -77,12 +78,16 @@ describe("repo switcher discovery", () => {
       [pinned]: { dir: true },
     });
     const labels = new Map([[normalizeRepoPath(labelled), "known"]]);
+    // Session catalogs and pins never promote a worktree to a row — that is the
+    // rule being pinned: a worktree belongs to a parent checkout, it isn't a
+    // repo you choose between. `trustedCwds` is the single carve-out, covered
+    // separately below; the folder the user actually opened is not clutter, and
+    // excluding it leaves the selection naming a row that doesn't exist.
     expect(discoverRepos({
       fs,
       grokHome,
       pins,
       tmpDir: tmp,
-      trustedCwds: [unknown],
       worktreeLabels: labels,
     })).toEqual([]);
   });
@@ -129,5 +134,120 @@ describe("repo switcher discovery", () => {
 
   it("preserves filesystem roots while normalizing repo identity", () => {
     expect(normalizeRepoPath(path.parse(path.resolve(path.sep)).root)).toBe(path.parse(path.resolve(path.sep)).root.toLowerCase());
+  });
+});
+
+describe("worktree cwds that ride along with a repo's history", () => {
+  const WS = path.resolve("/repo/packages/app");
+  const GIT_ROOT = path.resolve("/repo");
+  const WT_A = path.resolve("/home/.grok/worktrees/repo/feature-a");
+  const WT_B = path.resolve("/home/.grok/worktrees/repo/feature-b");
+
+  // The invariant: worktree sessions have lived in the parent repo's HISTORY
+  // list since worktrees shipped. They are not rows in the project selector,
+  // and whether they have their own cwd is irrelevant to that.
+  it("lists every worktree for the primary workspace, even when the git root differs", () => {
+    // The regression this pins: `sourceGitRoot` is the CLI's GIT root, so
+    // opening a SUBDIRECTORY of a repo in VS Code makes it != workspaceRoot.
+    // Matching on equality dropped these from the list they had always been in.
+    expect(
+      worktreeCwdsForRepo({
+        repoCwd: WS,
+        workspaceRoot: WS,
+        worktrees: [
+          { path: WT_A, sourceGitRoot: GIT_ROOT },
+          { path: WT_B, sourceGitRoot: GIT_ROOT },
+        ],
+      }),
+    ).toEqual([WT_A, WT_B]);
+  });
+
+  it("still lists worktrees whose parent was never recorded", () => {
+    expect(
+      worktreeCwdsForRepo({ repoCwd: WS, workspaceRoot: WS, worktrees: [{ path: WT_A }] }),
+    ).toEqual([WT_A]);
+  });
+
+  it("scopes to the matching repo once a NON-primary one is selected", () => {
+    const other = path.resolve("/work/other");
+    const otherWt = path.resolve("/home/.grok/worktrees/other/wt");
+    const picked = worktreeCwdsForRepo({
+      repoCwd: other,
+      workspaceRoot: WS,
+      worktrees: [
+        { path: WT_A, sourceGitRoot: GIT_ROOT },
+        { path: otherWt, sourceGitRoot: other },
+      ],
+    });
+    expect(picked).toEqual([otherWt]);
+  });
+
+  it("matches a selected repo that sits under its own git root", () => {
+    const sub = path.resolve("/work/other/pkg");
+    const wt = path.resolve("/home/.grok/worktrees/other/wt");
+    expect(
+      worktreeCwdsForRepo({
+        repoCwd: sub,
+        workspaceRoot: WS,
+        worktrees: [{ path: wt, sourceGitRoot: path.resolve("/work/other") }],
+      }),
+    ).toEqual([wt]);
+  });
+
+  it("drops an unparented worktree from a non-primary repo rather than guessing", () => {
+    expect(
+      worktreeCwdsForRepo({
+        repoCwd: path.resolve("/work/other"),
+        workspaceRoot: WS,
+        worktrees: [{ path: WT_A }],
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("the workspace you opened is always a row", () => {
+  const grokHome = path.join(path.sep, "home", "p", ".grok");
+  const root = path.join(grokHome, "sessions");
+  const wtRoot = path.join(grokHome, "worktrees");
+  const tmp = path.join(path.sep, "tmp");
+  const mainRepo = path.join(path.sep, "work", "repo");
+  const wtA = path.join(wtRoot, "repo", "feature-a");
+  const wtB = path.join(wtRoot, "repo", "feature-b");
+
+  // Worktrees are excluded as ROWS so they don't clutter the picker — but that
+  // rule must not swallow the folder the user deliberately opened. When it did,
+  // the selection named a cwd absent from the catalog, and since both
+  // clearAllSessions and selectRepo resolve through the catalog and bail on a
+  // miss, a confirmed "Delete All" silently did nothing.
+  it("keeps a worktree out of the list when it is merely a session catalog", () => {
+    const fs = fakeFs({
+      [root]: { dir: true },
+      [path.join(root, encodeURIComponent(mainRepo))]: { dir: true, mtime: 10 },
+      [path.join(root, encodeURIComponent(wtA))]: { dir: true, mtime: 20 },
+      [mainRepo]: { dir: true },
+      [wtA]: { dir: true },
+    });
+    const repos = discoverRepos({
+      fs, grokHome, pins: {}, tmpDir: tmp, platform: process.platform,
+      trustedCwds: [mainRepo],
+    });
+    expect(repos.map((r) => r.cwd)).toEqual([mainRepo]);
+  });
+
+  it("lists a worktree that IS the open workspace, so the selection can resolve", () => {
+    const fs = fakeFs({
+      [root]: { dir: true },
+      [path.join(root, encodeURIComponent(wtA))]: { dir: true, mtime: 20 },
+      [path.join(root, encodeURIComponent(wtB))]: { dir: true, mtime: 30 },
+      [wtA]: { dir: true },
+      [wtB]: { dir: true },
+    });
+    const repos = discoverRepos({
+      fs, grokHome, pins: {}, tmpDir: tmp, platform: process.platform,
+      trustedCwds: [wtA],
+    });
+    // Exactly the one you opened — not every worktree on disk.
+    expect(repos.map((r) => r.cwd)).toEqual([wtA]);
+    expect(repos[0].available).toBe(true);
   });
 });

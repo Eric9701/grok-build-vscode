@@ -255,6 +255,47 @@ export function matchWorktreeForCwd(
   return records.find((r) => pathsEqual(r.path, cwd));
 }
 
+/** A worktree as history knows it: where it lives, and its recorded parent. */
+export interface WorktreeParentRef {
+  path: string;
+  /** The CLI's GIT root — NOT the VS Code workspace folder. May be absent on
+   *  records written before the field existed. */
+  sourceGitRoot?: string;
+}
+
+/**
+ * Which worktree cwds ride along with a repo's session history.
+ *
+ * **The primary workspace lists every known worktree, unconditionally** — that
+ * is how history has always behaved, and it is the invariant to protect. Tying
+ * a worktree to a parent is best-effort at most: `sourceGitRoot` holds the
+ * CLI's *git root*, which is NOT the workspace folder whenever a subdirectory
+ * of a repo is the thing opened in VS Code (`isGitRepo` walks upward for
+ * exactly that reason). A failed match must never be why a session vanishes
+ * from the list it has lived in since worktrees shipped.
+ *
+ * Only a *non-primary* repo — one picked in the remote switcher, where "every
+ * worktree" would be plainly wrong — filters, and even then by containment in
+ * either direction rather than string equality.
+ */
+export function worktreeCwdsForRepo(opts: {
+  repoCwd: string;
+  workspaceRoot: string;
+  worktrees: WorktreeParentRef[];
+}): string[] {
+  const primary = pathsEqual(opts.repoCwd, opts.workspaceRoot);
+  return opts.worktrees
+    .filter((w) => w.path && (primary || belongsToRepo(w.sourceGitRoot, opts.repoCwd)))
+    .map((w) => w.path);
+}
+
+function belongsToRepo(sourceGitRoot: string | undefined, repoCwd: string): boolean {
+  if (!sourceGitRoot) return false;
+  // Either direction: the repo can sit under its git root (a subdirectory is
+  // open) or, for a nested checkout, the other way round.
+  return pathIsInside(repoCwd, sourceGitRoot) || pathIsInside(sourceGitRoot, repoCwd);
+}
+
 /**
  * Merge session index entries from several cwds, de-duping by id
  * (first wins — caller should put the preferred catalog first).

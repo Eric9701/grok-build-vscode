@@ -199,7 +199,12 @@ export interface DiscoverReposDeps {
   pins: RepoPins;
   tmpDir: string;
   platform?: NodeJS.Platform;
-  /** Host-known roots that remain selectable before Grok creates a catalog. */
+  /** Host-known roots that remain selectable before Grok creates a catalog.
+   *  These BYPASS the managed-worktree exclusion: that rule exists to keep
+   *  worktrees from cluttering the list as rows, but the folder the user
+   *  deliberately opened is not clutter — if VS Code is open on a worktree,
+   *  that worktree IS the project, and dropping it leaves the selection naming
+   *  a row that doesn't exist (which silently no-ops clear-all and selectRepo). */
   trustedCwds?: string[];
   worktreeLabels?: Map<string, string>;
   log?: (msg: string) => void;
@@ -251,7 +256,7 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
   }
 
   for (const cwd of deps.trustedCwds ?? []) {
-    if (!cwd || !path.isAbsolute(cwd) || isManagedWorktree(cwd)) continue;
+    if (!cwd || !path.isAbsolute(cwd)) continue;
     const key = normalizeRepoPath(cwd, platform);
     if (!key || byKey.has(key)) continue;
     let available = false;
