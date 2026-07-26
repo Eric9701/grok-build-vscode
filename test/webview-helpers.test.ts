@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -966,6 +966,35 @@ describe("commandProgramLabel", () => {
     expect(commandProgramLabel("   ")).toBe("command");
     expect(commandProgramLabel(null as unknown as string)).toBe("command");
     expect(commandProgramLabel("FOO=bar")).toBe("command"); // only an env assignment, no program
+  });
+});
+
+describe("commandTextPreview", () => {
+  it("shows up to the requested number of logical lines", () => {
+    expect(commandTextPreview("1\n2\n3\n4\n5", 6)).toEqual({
+      text: "1\n2\n3\n4\n5",
+      lineCount: 5,
+      truncated: false,
+    });
+    expect(commandTextPreview("1\n2\n3\n4\n5\n6", 6)).toEqual({
+      text: "1\n2\n3\n4\n5\n6",
+      lineCount: 6,
+      truncated: false,
+    });
+    expect(commandTextPreview("1\n2\n3\n4\n5\n6\n7", 6)).toEqual({
+      text: "1\n2\n3\n4\n5\n6",
+      lineCount: 7,
+      truncated: true,
+    });
+  });
+
+  it("treats one very long line as one line", () => {
+    const oneLiner = `python -c "${"x".repeat(2000)}"`;
+    expect(commandTextPreview(oneLiner, 6)).toEqual({
+      text: oneLiner,
+      lineCount: 1,
+      truncated: false,
+    });
   });
 });
 

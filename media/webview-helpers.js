@@ -28,7 +28,7 @@
   ];
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
-    "toggleChip", "openFile", "openUrl", "openDiff", "exportExpr", "setEffort",
+    "toggleChip", "openFile", "openUrl", "openText", "openDiff", "exportExpr", "setEffort",
     "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "moveView",
     "setShowThinking", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
@@ -439,6 +439,18 @@
     return label.length > 30 ? label.slice(0, 29) + "…" : label;
   }
 
+  function commandTextPreview(text, maxLines) {
+    const fullText = text == null ? "" : String(text);
+    const lines = fullText.split("\n");
+    const lineCount = lines.length;
+    const shown = Math.max(0, Math.floor(maxLines));
+    return {
+      text: lines.slice(0, shown).join("\n"),
+      lineCount,
+      truncated: lineCount > shown,
+    };
+  }
+
   // Pull a self-executed shell command's result off a completed `tool_call_update`.
   // The cursor/Composer agent runs commands in its OWN CLI-side persistent shell
   // and reports the result on the completed update (keyed by `toolCallId`) instead
@@ -729,7 +741,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -3207,6 +3207,14 @@ See design doc for the full state machine diagram.`;
       case "openUrl":
         void vscode.env.openExternal(vscode.Uri.parse(msg.url));
         break;
+      case "openText": {
+        const doc = await vscode.workspace.openTextDocument({
+          content: msg.content,
+          language: msg.language,
+        });
+        await vscode.window.showTextDocument(doc);
+        break;
+      }
       case "openDiff":
         await this.openDiffEditor(
           msg.path,
@@ -5095,13 +5103,42 @@ See design doc for the full state machine diagram.`;
    *  global selection (see `historyCwdFor`). Both are chrome, never content, so
    *  the suppress gates in `post` don't apply. */
   private postLocal(message: HostMsg): void {
+    this.postTap?.("local", message);
     this.view?.webview.postMessage(message);
   }
 
   /** Post to remote clients only. Also records sticky chrome, so a client that
    *  connects later replays the REMOTE variant — never the local one. */
   private postRemote(message: HostMsg): void {
+    this.postTap?.("remote", message);
     this.mirrorToRemote(message);
+  }
+
+  /** Test-only tap on the split posts. Never assigned in a released build:
+   *  `extension.ts` hands out `installTestHooks` only under
+   *  `ExtensionMode.Test`, which VS Code sets exclusively for a test runner. */
+  private postTap?: (dest: MsgOrigin, message: HostMsg) => void;
+
+  /**
+   * Test-only seam for the integration suite. It exists because one property of
+   * the local/remote split is unreachable from any pure unit test: that the
+   * LOCAL payload reaches the webview and the REMOTE payload the uplink.
+   * `repoScopeFor` proves WHICH cwd each audience should get; only this proves
+   * the two are not wired to the wrong destinations — a swap that all 1386 unit
+   * tests still pass (verified by performing it).
+   */
+  installTestHooks(): {
+    onPost(fn: (dest: MsgOrigin, message: HostMsg) => void): void;
+    fromRemote(message: WebviewMsg): void;
+    workspaceRoot(): string;
+  } {
+    return {
+      onPost: (fn) => {
+        this.postTap = fn;
+      },
+      fromRemote: (message) => this.handleRemoteMessage(message),
+      workspaceRoot: () => this.workspaceRoot(),
+    };
   }
 
   /**

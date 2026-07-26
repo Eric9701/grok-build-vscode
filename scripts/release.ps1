@@ -10,6 +10,7 @@
 
     1. assert on `main`
     2. tsc --noEmit + npm test       (skip all gating with -NoTest)
+       + npm run test:integration    (real Extension Host; skip with -SkipIntegration)
        + npm run test:live           (real grok — mandatory gate; skip with -SkipLive)
     3. assert tag vX.Y.Z is free     (bump the version if it isn't)
     4. npm run package               -> grok-vscode-phuryn-X.Y.Z.vsix
@@ -35,6 +36,7 @@ param(
   [string]$MessageFile,
   [switch]$NoTest,
   [switch]$SkipLive,
+  [switch]$SkipIntegration,
   [switch]$DryRun
 )
 
@@ -70,6 +72,18 @@ if ($branch -ne "main") { throw "Not on main (on '$branch'). Releases are direct
 if (-not $NoTest) {
   Run "tsc --noEmit"  { npx tsc -p . --noEmit }
   Run "npm test"      { npm test }
+  # `npm test` is only CI's `test` job. CI runs a SECOND required job — the
+  # @vscode/test-electron smoke — which this gate used to skip entirely, so a release
+  # could be tagged, pushed, and published to Open VSX before CI ever ran it, and a red
+  # result would arrive after the release was public. It boots a real VS Code (~6s once
+  # .vscode-test/ is warm), which is nothing next to the live suite.
+  # Known limit: CI runs it on Ubuntu under xvfb, so a Linux-only quirk can still
+  # surface there after a green local run. This narrows the window; it doesn't close it.
+  if (-not $SkipIntegration) {
+    Run "npm run test:integration (real Extension Host)" { npm run test:integration }
+  } else {
+    Step "SKIPPING the Extension Host smoke (-SkipIntegration) - CI still runs it, but only AFTER the release is public"
+  }
   # The real-grok suite is a mandatory part of the release gate (CLAUDE.md § Publishing).
   # It spawns the actual CLI, so it can only run where grok is logged in — hence the
   # explicit -SkipLive escape hatch, but the DEFAULT is to run it so it can't be

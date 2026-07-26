@@ -1,7 +1,14 @@
 import * as vscode from "vscode";
 import { GrokSidebar } from "./sidebar";
 
-export function activate(context: vscode.ExtensionContext): void {
+/** What `activate` hands back through `extension.exports`. Empty in every
+ *  released build — the test seam below is populated only under
+ *  `ExtensionMode.Test`. */
+export interface GrokExtensionApi {
+  __test?: ReturnType<GrokSidebar["installTestHooks"]>;
+}
+
+export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
   const output = vscode.window.createOutputChannel("Grok");
   const sidebar = new GrokSidebar(context, output);
 
@@ -47,6 +54,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // (Approve / Reject / Cancel flows) without a live CLI session.
     vscode.commands.registerCommand("grok._debugDummyPlan", () => sidebar.debugShowDummyPlan()),
   );
+
+  // VS Code sets ExtensionMode.Test ONLY when the extension host was launched by
+  // a test runner, so an installed build can never reach this branch and the
+  // seam is genuinely absent there rather than merely undocumented.
+  return context.extensionMode === vscode.ExtensionMode.Test
+    ? { __test: sidebar.installTestHooks() }
+    : {};
 }
 
 export function deactivate(): void {

@@ -39,6 +39,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.toggleRepoPin).toBe("full");
     // native pickers/editors/mic act on the LOCAL VS Code — never remote-drivable
     expect(INBOUND_DISPOSITION.openFile).toBe("host-local");
+    expect(INBOUND_DISPOSITION.openText).toBe("host-local");
     expect(INBOUND_DISPOSITION.pickFile).toBe("host-local");
     expect(INBOUND_DISPOSITION.voiceStart).toBe("host-local");
     expect(INBOUND_DISPOSITION.moveView).toBe("host-local");

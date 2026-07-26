@@ -8,6 +8,7 @@
 #   ./scripts/release.sh                 # full release (incl. real-grok test:live)
 #   ./scripts/release.sh --no-test       # skip ALL gating (tsc + npm test + test:live)
 #   ./scripts/release.sh --skip-live     # keep tsc + npm test, skip only real-grok test:live
+#   ./scripts/release.sh --skip-integration  # skip only the real-VS-Code Extension Host smoke
 #   ./scripts/release.sh --dry-run       # print what it would do
 #   ./scripts/release.sh -F .git/MSG     # commit with a message file
 #
@@ -19,11 +20,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-NO_TEST=0; SKIP_LIVE=0; DRY_RUN=0; MSG=""; MSG_FILE=""
+NO_TEST=0; SKIP_LIVE=0; SKIP_INTEGRATION=0; DRY_RUN=0; MSG=""; MSG_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-test) NO_TEST=1 ;;
     --skip-live) SKIP_LIVE=1 ;;
+    --skip-integration) SKIP_INTEGRATION=1 ;;
     --dry-run) DRY_RUN=1 ;;
     -m|--message) MSG="$2"; shift ;;
     -F|--message-file) MSG_FILE="$2"; shift ;;
@@ -46,6 +48,16 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$NO_TEST" -eq 0 ]; then
   step "tsc --noEmit"; npx tsc -p . --noEmit
   step "npm test";     npm test
+  # npm test is only CI's `test` job. CI runs a SECOND required job — the
+  # @vscode/test-electron smoke — which this gate used to skip, so a release could be
+  # tagged and published before CI ever ran it. Boots a real VS Code (~6s warm).
+  # Known limit: CI runs it on Ubuntu under xvfb, so a Linux-only quirk can still
+  # surface after a green local run — this narrows the window, it does not close it.
+  if [ "$SKIP_INTEGRATION" -eq 0 ]; then
+    step "npm run test:integration (real Extension Host)"; npm run test:integration
+  else
+    step "SKIPPING the Extension Host smoke (--skip-integration) - CI still runs it, but only AFTER the release is public"
+  fi
   # The real-grok suite is a mandatory part of the release gate (CLAUDE.md § Publishing).
   # It spawns the actual CLI, so it only runs where grok is logged in — hence --skip-live,
   # but the DEFAULT runs it so it can't be silently forgotten under release pressure. A live

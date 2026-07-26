@@ -132,6 +132,7 @@ describe("permission card keyboard (real chat.js in a DOM)", () => {
     card(window, [REJECT, ALLOW]);
     expect(doc.activeElement).toBe(buttons(doc)[0]);
     expect(buttons(doc)[0].textContent).toBe("Allow once");
+    expect(buttons(doc).map((b) => b.classList.contains("chosen"))).toEqual([true, false]);
   });
 
   it("leaves focus in the composer when the user is mid-message", () => {
@@ -159,17 +160,20 @@ describe("permission card keyboard (real chat.js in a DOM)", () => {
       requestId: 5,
       optionId: "a",
     });
+    expect(doc.activeElement).toBe(doc.querySelector("#input"));
   });
 
-  it("arrow keys move between options and carry the tab stop along", () => {
+  it("arrow keys move focus, the tab stop, and the visible chosen marker together", () => {
     const { window, doc } = bootWebview();
     card(window, [REJECT, ALLOW]);
     key(window, doc.activeElement!, { key: "ArrowRight" });
     expect(doc.activeElement).toBe(buttons(doc)[1]);
     expect(buttons(doc).map((b) => b.tabIndex)).toEqual([-1, 0]);
+    expect(buttons(doc).map((b) => b.classList.contains("chosen"))).toEqual([false, true]);
     // Wraps back around rather than dead-ending.
     key(window, doc.activeElement!, { key: "ArrowRight" });
     expect(doc.activeElement).toBe(buttons(doc)[0]);
+    expect(buttons(doc).map((b) => b.classList.contains("chosen"))).toEqual([true, false]);
   });
 
   it("Escape hands the keyboard back WITHOUT answering — never an implicit reject", () => {

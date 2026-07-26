@@ -186,6 +186,7 @@ export type WebviewMsg =
   | { type: "toggleChip"; id: string }
   | { type: "openFile"; path: string }
   | { type: "openUrl"; url: string }
+  | { type: "openText"; content: string; language: string }
   | {
       type: "openDiff";
       path: string;
@@ -303,7 +304,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
-  openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
+  openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
   setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true,

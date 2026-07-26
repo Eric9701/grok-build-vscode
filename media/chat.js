@@ -482,7 +482,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -3025,6 +3025,50 @@
     });
   }
 
+  const MAX_COMMAND_PREVIEW_LINES = 6;
+
+  function makeInlineExpandToggle(collapsedText, className, onToggle) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = className;
+    toggle.textContent = collapsedText;
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      const expanding = toggle.getAttribute("aria-expanded") !== "true";
+      onToggle(expanding);
+      toggle.textContent = expanding ? "Show less" : collapsedText;
+      toggle.setAttribute("aria-expanded", String(expanding));
+    };
+    return toggle;
+  }
+
+  function appendCommandPreview(container, text, className, language) {
+    const fullText = text == null ? "" : String(text);
+    const preview = commandTextPreview(fullText, MAX_COMMAND_PREVIEW_LINES);
+    const pre = document.createElement("pre");
+    pre.className = className;
+    pre.textContent = preview.text;
+    container.appendChild(pre);
+    if (!preview.truncated) return;
+    const label = `View all (${preview.lineCount} lines) →`;
+    const viewAll = IS_REMOTE
+      ? makeInlineExpandToggle(label, "msg-collapse-btn command-view-all", (expanding) => {
+          pre.textContent = expanding ? fullText : preview.text;
+        })
+      : document.createElement("button");
+    if (!IS_REMOTE) {
+      viewAll.type = "button";
+      viewAll.className = "preview-link command-view-all";
+      viewAll.textContent = label;
+      viewAll.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "openText", content: fullText, language });
+      };
+    }
+    container.appendChild(viewAll);
+  }
+
   function attachCommandDetails(item, command, toolCallId) {
     // Chevron at the END of the (possibly ellipsized) command line: › when
     // collapsed, rotated to v while expanded.
@@ -3045,10 +3089,10 @@
     inTag.className = "cmd-io-tag";
     inTag.textContent = "IN";
     inRow.appendChild(inTag);
-    const cmd = document.createElement("pre");
-    cmd.className = "tool-cmd";
-    cmd.textContent = command;
-    inRow.appendChild(cmd);
+    const body = document.createElement("div");
+    body.className = "cmd-in-body";
+    appendCommandPreview(body, command, "tool-cmd", "shellscript");
+    inRow.appendChild(body);
     block.appendChild(inRow);
     details.appendChild(block);
     item.appendChild(details);
@@ -3108,10 +3152,7 @@
     // Only render the output <pre> when there's actually output — a marker alone
     // carries the empty cases (success/error/cancel).
     if (hasOutput) {
-      const out = document.createElement("pre");
-      out.className = "tool-cmd-output";
-      out.textContent = output;
-      body.appendChild(out);
+      appendCommandPreview(body, output, "tool-cmd-output", "plaintext");
     }
     if (msg.truncated) {
       const note = document.createElement("div");
@@ -3151,8 +3192,9 @@
   // message fences use). grok only sends the replaced region (old/new strings),
   // so computeLineDiff produces the +/-/context lines; a "+"/"-"/" " gutter goes
   // in front of each so the diff reads (and copies) as a real unified diff even
-  // for colorblind users. Long regions cap the rendered rows (the full change is
-  // one "open diff →" click away in the native editor).
+  // for colorblind users. Long regions start as a short preview and can grow
+  // inline; the native editor remains one "open diff →" click away.
+  const DIFF_PREVIEW_LINES = 12;
   const MAX_INLINE_DIFF_LINES = 400;
   // A wire line number is only usable if it's a real 1-based file line; anything
   // else (absent, 0, negative, non-integer) falls back to the old region-relative 1.
@@ -3170,10 +3212,9 @@
     return sep;
   }
 
-  // Render ONE diff block as a single scrollable region containing one hunk per
-  // replaced SITE (`hunks` = [{site, result}] — see extractDiffSites). One region
-  // per BLOCK, never per site: `.tool-diff-region` scrolls at 320px, so a
-  // 148-occurrence replace would otherwise stack 148 nested scroll boxes.
+  // Render ONE diff block as a single region containing one hunk per replaced
+  // SITE (`hunks` = [{site, result}] — see extractDiffSites). One region per
+  // BLOCK, never per site.
   //
   // Codex-style rows: a line-number gutter + a colored left-border stripe + a subtle
   // per-line background (green add / red del). A small +/- glyph sits right by the
@@ -3190,10 +3231,9 @@
     let widest = 0;
     let rendered = 0;
     let total = 0;
-    let truncated = false;
+    const previewOverflow = [];
     for (const h of hunks) {
       total += h.result.lines.length;
-      if (h.result.truncated) truncated = true;
     }
     // MAX_INLINE_DIFF_LINES is a budget ACROSS the block's hunks, not per hunk —
     // 1000 sites must not paint 2000 rows. The +N −M stat is summed over EVERY
@@ -3206,7 +3246,14 @@
       let oldNo = fileLineOr1(site && site.oldLine);
       let newNo = fileLineOr1(site && site.newLine);
       // Only between hunks, and only when the new side actually skipped lines.
-      if (prevNewEnd !== null && newNo !== prevNewEnd) wrap.appendChild(makeHunkSeparator());
+      if (prevNewEnd !== null && newNo !== prevNewEnd) {
+        const sep = makeHunkSeparator();
+        if (rendered >= DIFF_PREVIEW_LINES) {
+          sep.hidden = true;
+          previewOverflow.push(sep);
+        }
+        wrap.appendChild(sep);
+      }
       const shown = Math.min(rows.length, MAX_INLINE_DIFF_LINES - rendered);
       for (let i = 0; i < shown; i++) {
         const ln = rows[i];
@@ -3231,6 +3278,10 @@
         row.appendChild(sign);
         row.appendChild(num);
         row.appendChild(code);
+        if (rendered + i >= DIFF_PREVIEW_LINES) {
+          row.hidden = true;
+          previewOverflow.push(row);
+        }
         wrap.appendChild(row);
       }
       rendered += shown;
@@ -3242,11 +3293,23 @@
     // fixed track would instead overflow — 5 digits would collide with the +/- glyph.
     wrap.style.setProperty("--tdl-num-w", Math.max(4, String(widest).length + 1) + "ch");
     const remaining = total - rendered;
-    if (remaining > 0 || truncated) {
+    if (remaining > 0) {
       const more = document.createElement("div");
       more.className = "tool-diff-more";
       more.textContent = "... " + remaining + " more line(s) - open diff for the full change";
+      more.hidden = true;
+      previewOverflow.push(more);
       wrap.appendChild(more);
+    }
+    if (rendered > DIFF_PREVIEW_LINES) {
+      const toggle = makeInlineExpandToggle(
+        "Show more",
+        "msg-collapse-btn tool-diff-toggle",
+        (expanding) => {
+          for (const el of previewOverflow) el.hidden = !expanding;
+        },
+      );
+      wrap.appendChild(toggle);
     }
     return wrap;
   }
@@ -4567,6 +4630,11 @@
         // resumes the turn after the answer.
         collapsePermissionCard(el, opt.kind, cardTitle);
         showGrokking();
+        // Return the caret to the composer so the next message can be typed
+        // immediately — answering must not orphan focus on the collapsed card
+        // (#68). Composer, not the editor: the webview iframe can only move
+        // focus within itself, and the composer is where you continue anyway.
+        input.focus();
       };
       buttons.push(btn);
       actions.appendChild(btn);
@@ -4589,7 +4657,7 @@
         defaultIndex,
       })
     ) {
-      buttons[defaultIndex].focus();
+      focusPermissionButton(buttons, defaultIndex);
     }
   }
 
@@ -4639,7 +4707,16 @@
   }
 
   function focusPermissionButton(buttons, index) {
-    buttons.forEach((b, i) => { b.tabIndex = i === index ? 0 : -1; });
+    // `.chosen` is the VISIBLE armed marker (outline via .card-actions button.chosen).
+    // It rides the roving button rather than :focus-visible, which browsers do NOT
+    // paint on programmatic .focus() — that gap is why the default sometimes showed
+    // no selected border (#68). Tie it to the roving focus so the border is
+    // deterministic however focus arrived (default steal, arrow nav, or click).
+    buttons.forEach((b, i) => {
+      const on = i === index;
+      b.tabIndex = on ? 0 : -1;
+      b.classList.toggle("chosen", on);
+    });
     buttons[index].focus();
   }
 

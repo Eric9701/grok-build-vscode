@@ -1022,6 +1022,8 @@ body.thinking-hidden .msg.thinking { display: none; }
   padding-top: 2px;
   user-select: none;
 }
+.cmd-in-body,
+.cmd-out-body { min-width: 0; }
 .cmd-io pre {
   margin: 0;
   padding: 0;
@@ -1031,17 +1033,13 @@ body.thinking-hidden .msg.thinking { display: none; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* Long commands and outputs scroll inside the block instead of growing it. */
 .tool-cmd {
-  max-height: 140px;
-  overflow-y: auto;
   color: var(--vscode-editor-foreground, var(--vscode-foreground));
 }
 .tool-cmd-output {
-  max-height: 260px;
-  overflow-y: auto;
   color: var(--vscode-foreground);
 }
+.command-view-all { margin-top: 3px; }
 .cmd-out-marker {
   font-size: 0.88em;
   color: var(--vscode-errorForeground);
@@ -1080,12 +1078,9 @@ body.vscode-light {
 
 /* Codex-style inline diff inside the edit row's expandable detail: a line-number
    gutter, a colored left-border stripe, a subtle per-line tint, and a small +/-
-   glyph by the border for color-blind readability. Rows scroll rather than growing
-   the row unbounded. */
+   glyph by the border for color-blind readability. */
 .tool-diff-region {
   margin: 0 0 6px;
-  max-height: 320px;
-  overflow: auto;
   border-radius: var(--chat-radius-code, 8px);
   background: var(--chat-surface-code);
   padding: 4px 0;
@@ -1107,6 +1102,12 @@ body.vscode-light {
   overflow-wrap: anywhere;
   color: var(--vscode-editor-foreground, var(--vscode-foreground));
 }
+/* `.tdl` sets an explicit `display: grid`, which ties with the UA's
+   [hidden]{display:none} on specificity and beats it on source order — so an
+   overflow row the 12-line collapse marks `hidden` (buildInlineDiffRegion)
+   could never hide, and the diff rendered fully expanded. Same guard as
+   .welcome / .msg-actions / .repo-chip above. */
+.tdl[hidden] { display: none; }
 .tdl-sign {
   text-align: center;
   user-select: none;
@@ -1139,6 +1140,7 @@ body.vscode-light {
   color: var(--vscode-descriptionForeground);
   font-size: 0.92em;
 }
+.tool-diff-toggle { margin: 9px 10px 2px; }
 .tool-item-diff .preview-link { display: inline-block; margin: 0 0 4px; }
 
 /* The line-count + "open diff" sit inline after the label on one row (they used

@@ -691,16 +691,43 @@ describe("a replace_all renders one hunk per replaced site (_meta.details[])", (
     expect(doc.querySelector(".tool-item")!.querySelectorAll(".diff-stat")).toHaveLength(1);
   });
 
+  it("shows 12 rows by default, expands inline, then collapses back", () => {
+    const sixteenRows = Array.from({ length: 8 }, (_, i) => site(3 + i, i + 1));
+    const { window, doc } = boot(sixteenRows);
+    const region = doc.querySelector(".tool-diff-region") as HTMLElement;
+    const rows = [...region.querySelectorAll(".tdl")] as HTMLElement[];
+    const visibleRows = () => rows.filter((row) => !row.hidden);
+    const toggle = region.querySelector(".tool-diff-toggle") as HTMLButtonElement;
+
+    expect(rows).toHaveLength(16);
+    expect(visibleRows()).toHaveLength(12);
+    expect(toggle.textContent).toBe("Show more");
+    expect(region.querySelector(".tool-diff-more")).toBeNull(); // 12→16 is inline, not native-diff truncation
+
+    click(window, toggle);
+    expect(visibleRows()).toHaveLength(16);
+    expect(toggle.textContent).toBe("Show less");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    click(window, toggle);
+    expect(visibleRows()).toHaveLength(12);
+    expect(toggle.textContent).toBe("Show more");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  });
+
   // MAX_INLINE_DIFF_LINES (400) is a budget ACROSS the block's hunks — 250 sites must
   // not paint 500 rows. The counts are computed over every site regardless, so a
   // capped render still reports the true magnitude.
   it("caps the rendered rows but still reports the true +N −M", () => {
     const many = Array.from({ length: 250 }, (_, i) => site(3 + i * 2, i + 1));
-    const { doc } = boot(many);
+    const { window, doc } = boot(many);
     expect(doc.querySelectorAll(".tdl")).toHaveLength(400); // 500 rows' worth, capped
-    const more = doc.querySelector(".tool-diff-more")!;
+    const more = doc.querySelector(".tool-diff-more") as HTMLElement;
     expect(more.textContent).toContain("100 more line(s)");
     expect(more.textContent).toContain("open diff");
+    expect(more.hidden).toBe(true); // the 12-line preview only advertises inline expansion
+    click(window, doc.querySelector(".tool-diff-toggle")!);
+    expect(more.hidden).toBe(false); // >400 is the only native-diff truncation note
     // The stat is NOT capped — that's the whole point.
     const item = doc.querySelector(".tool-item") as HTMLElement;
     expect(item.querySelector(".diff-stat-add")!.textContent).toBe("+250");

@@ -95,6 +95,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   pickModel: "host-local",
   openFile: "host-local",
   openUrl: "host-local",
+  openText: "host-local",
   openDiff: "host-local",
   exportExpr: "host-local",
   openGlobalConfig: "host-local",

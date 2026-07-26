@@ -141,6 +141,85 @@ describe("command details (#41)", () => {
     expect(details.querySelector(".tool-cmd-output")!.textContent).toBe("orphan output");
   });
 
+  it("caps long IN/OUT previews at six lines and opens the full text in untitled editors", () => {
+    const { window, doc, posted } = bootWebview();
+    const command = Array.from({ length: 8 }, (_, i) => `command ${i + 1}`).join("\n");
+    const output = Array.from({ length: 9 }, (_, i) => `output ${i + 1}`).join("\n");
+    dispatch(window, exec("long", command));
+    close(window);
+    dispatch(window, out(command, output, 0));
+
+    const flat = doc.querySelector(".tool-flat.has-details") as HTMLElement;
+    click(window, flat);
+    const details = flat.querySelector(".tool-item-details") as HTMLElement;
+    expect(details.querySelector(".tool-cmd")!.textContent).toBe(
+      Array.from({ length: 6 }, (_, i) => `command ${i + 1}`).join("\n"),
+    );
+    expect(details.querySelector(".tool-cmd-output")!.textContent).toBe(
+      Array.from({ length: 6 }, (_, i) => `output ${i + 1}`).join("\n"),
+    );
+
+    const viewAll = [...details.querySelectorAll(".command-view-all")] as HTMLButtonElement[];
+    expect(viewAll.map((b) => b.textContent)).toEqual([
+      "View all (8 lines) →",
+      "View all (9 lines) →",
+    ]);
+    click(window, viewAll[0]);
+    click(window, viewAll[1]);
+    expect(details.hidden).toBe(false); // editor links do not toggle the tool row
+    expect(details.querySelector(".tool-cmd")!.textContent).not.toBe(command);
+    expect(details.querySelector(".tool-cmd-output")!.textContent).not.toBe(output);
+    expect(posted.filter((m: any) => m.type === "openText")).toEqual([
+      { type: "openText", content: command, language: "shellscript" },
+      { type: "openText", content: output, language: "plaintext" },
+    ]);
+  });
+
+  it("expands long IN/OUT inline on remote clients without posting a host-local message", () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+    const command = Array.from({ length: 8 }, (_, i) => `command ${i + 1}`).join("\n");
+    const output = Array.from({ length: 9 }, (_, i) => `output ${i + 1}`).join("\n");
+    dispatch(window, exec("remote-long", command));
+    close(window);
+    dispatch(window, out(command, output, 0));
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    const commandPre = details.querySelector(".tool-cmd") as HTMLElement;
+    const outputPre = details.querySelector(".tool-cmd-output") as HTMLElement;
+    const viewAll = [...details.querySelectorAll(".command-view-all")] as HTMLButtonElement[];
+    expect(viewAll.map((b) => b.textContent)).toEqual([
+      "View all (8 lines) →",
+      "View all (9 lines) →",
+    ]);
+
+    click(window, viewAll[0]);
+    expect(commandPre.textContent).toBe(command);
+    expect(outputPre.textContent).not.toBe(output); // each preview expands independently
+    expect(viewAll[0].textContent).toBe("Show less");
+    click(window, viewAll[1]);
+    expect(outputPre.textContent).toBe(output);
+    expect(posted.filter((m: any) => m.type === "openText")).toHaveLength(0);
+
+    click(window, viewAll[0]);
+    expect(commandPre.textContent).toBe(
+      Array.from({ length: 6 }, (_, i) => `command ${i + 1}`).join("\n"),
+    );
+    expect(viewAll[0].textContent).toBe("View all (8 lines) →");
+  });
+
+  it("renders six-line IN/OUT text in full with no View all control", () => {
+    const { window, doc } = bootWebview();
+    const command = Array.from({ length: 6 }, (_, i) => `command ${i + 1}`).join("\n");
+    const output = Array.from({ length: 6 }, (_, i) => `output ${i + 1}`).join("\n");
+    dispatch(window, exec("short", command));
+    close(window);
+    dispatch(window, out(command, output, 0));
+
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe(command);
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe(output);
+    expect(doc.querySelector(".command-view-all")).toBeNull();
+  });
+
   // The cursor/Composer agent runs commands in its OWN CLI-side shell (no
   // terminal/create), so `commandOutput` never fires for it — its output rides
   // the completed tool_call_update (rawOutput/content), keyed by toolCallId. The
