@@ -549,11 +549,21 @@ describe("a replace_all renders one hunk per replaced site (_meta.details[])", (
     const h = bootWebview();
     dispatch(h.window, {
       type: "toolCall",
-      call: { toolCallId: "ra", kind: "edit", title: "Edit placeholders.txt", rawInput: { file_path: "placeholders.txt" } },
+      call: {
+        toolCallId: "ra",
+        kind: "edit",
+        title: "Edit placeholders.txt",
+        rawInput: { file_path: "placeholders.txt", replace_all: true },
+      },
     });
     dispatch(h.window, {
       type: "toolCallUpdate",
-      call: { toolCallId: "ra", status: "completed", content: [replaceAll(sites)] },
+      call: {
+        toolCallId: "ra",
+        status: "completed",
+        rawInput: { variant: "SearchReplace", file_path: "placeholders.txt", replace_all: true },
+        content: [replaceAll(sites)],
+      },
     });
     return h;
   };
@@ -613,6 +623,12 @@ describe("a replace_all renders one hunk per replaced site (_meta.details[])", (
       path: "placeholders.txt",
       oldText: "PLACEHOLDER",
       newText: "REPLACED",
+      replaceAll: true,
+      sites: [
+        { oldText: "item 1: the token is PLACEHOLDER", newText: "item 1: the token is REPLACED", newLine: 3 },
+        { oldText: "item 2: the token is PLACEHOLDER", newText: "item 2: the token is REPLACED", newLine: 5 },
+        { oldText: "item 3: the token is PLACEHOLDER", newText: "item 3: the token is REPLACED", newLine: 7 },
+      ],
     });
   });
 

@@ -38,7 +38,7 @@ While a device is linked, the extension also **keeps the machine awake** (`caffe
 <details>
 <summary><strong>Permission cards with diff preview</strong> — see every edit in VS Code's native diff before you approve</summary>
 
-When Grok proposes an edit, hit **open diff →** to review it in VS Code's native diff editor, then *Allow once / always* or *Reject*. The file is written only **after** you approve.
+When Grok proposes an edit, hit **open diff →** to review the whole file in VS Code's native diff editor, focused on the first changed line, then *Allow once / always* or *Reject*. The file is written only **after** you approve.
 
 ![Permission card with a native VS Code diff preview before approval](docs/screenshots/permission_diff.png)
 
@@ -237,7 +237,7 @@ Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). P
 
 1. **Open** the Grok view (`Ctrl/Cmd+;`, or **Grok: Open** from the command palette) — it lives in the Secondary Side Bar by default.
 2. **Type a prompt** and press **Enter**. Grok streams its answer, showing a *Thinking…* line while it reasons. Want the full reasoning inline? Turn on **Show thinking traces** in the gear menu → *Config & debug*.
-3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit in the native **diff editor**, then *Allow once / always / Reject*.
+3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit in the native **diff editor**, with full-file context focused on the first changed line, then *Allow once / always / Reject*.
 4. **Pick your mode** (Agent / Plan / Auto accept), **model**, and **reasoning effort** from the bottom toolbar and gear menu.
 5. **Resume anytime** — the clock icon lists past sessions for this project.
 
@@ -329,7 +329,7 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 `npm test` is grok-free, so **local ≡ CI** — it never spawns the real binary. A separate, on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, plan-mode, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy and what's deferred to a future `@vscode/test-electron` suite: **[TESTS.md](TESTS.md)**. Architecture and module map: **[docs/architecture.md](docs/architecture.md)**.
 
-**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the grok-free suite is the floor — every change keeps it green.
+**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1360-test grok-free suite is the floor — every change keeps it green.
 
 </details>
 
@@ -337,7 +337,7 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 ## Known limits
 
-- **Diff preview semantics.** The diff editor compares the proposed old vs. new text against each other, not against the file on disk at preview time; the write happens only after approval.
+- **Diff preview semantics.** The native editor reconstructs both full-file sides from Grok's replaced-region metadata and the current file on disk, then opens on the first changed line. If the file is unreadable, oversized, or has moved on so the region cannot be located, it safely falls back to the region-only diff. The write happens only after approval.
 - **View placement.** The view defaults to the **Secondary Side Bar** (requires VS Code 1.106+, the extension's engine floor). Relocate it anytime via gear → **Config & debug** → **Move view** (one click: Panel / Primary Side Bar / Secondary Side Bar) — useful in Cursor, whose side-bar context menu hides the built-in "Move To" entry.
 
 ---

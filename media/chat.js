@@ -3180,8 +3180,9 @@
       details.hidden = !detailShouldExpand();
     }
     while (details.firstChild) details.removeChild(details.firstChild);
-    // One region + ONE "open diff →" per BLOCK (not per site) — the link's payload
-    // stays the block's own oldText/newText, which is what the native diff editor wants.
+    // One region + ONE "open diff →" per BLOCK (not per site). The message keeps
+    // the block's oldText/newText and adds positioned sites for whole-file
+    // reconstruction in the native editor.
     for (const { diff, hunks } of blocks) {
       details.appendChild(buildInlineDiffRegion(hunks));
       const preview = document.createElement("button");
@@ -3189,7 +3190,7 @@
       preview.textContent = "open diff →";
       preview.onclick = (e) => {
         e.stopPropagation(); // don't toggle the row/group expand
-        vscode.postMessage({ type: "openDiff", path: diff.path, oldText: diff.oldText, newText: diff.newText });
+        vscode.postMessage(openDiffMessage(diff));
       };
       details.appendChild(preview);
     }
@@ -3321,6 +3322,21 @@
     return [{ oldText, newText, oldLine: meta && meta.old_line, newLine: meta && meta.new_line }];
   }
 
+  function openDiffMessage(diff, requestId) {
+    const positionedSites = diff.sites.filter(
+      (site) => Number.isInteger(site.oldLine) || Number.isInteger(site.newLine),
+    );
+    return {
+      type: "openDiff",
+      path: diff.path,
+      oldText: diff.oldText,
+      newText: diff.newText,
+      ...(requestId !== undefined ? { requestId } : {}),
+      ...(diff.replaceAll ? { replaceAll: true } : {}),
+      ...(positionedSites.length ? { sites: positionedSites } : {}),
+    };
+  }
+
   function applyToolDiffs(call) {
     const c = call?.content;
     if (!Array.isArray(c)) return;
@@ -3334,6 +3350,7 @@
           oldText, // block-level: the "open diff →" payload + the permission card's line count
           newText,
           sites: extractDiffSites(item._meta, oldText, newText),
+          replaceAll: call?.rawInput?.replace_all === true,
         });
       }
     }
@@ -4372,14 +4389,7 @@
       subtitle.textContent = `${diff.path} — ${oldLines} → ${newLines} lines`;
       el.appendChild(subtitle);
 
-      const openDiff = () =>
-        vscode.postMessage({
-          type: "openDiff",
-          path: diff.path,
-          oldText: diff.oldText,
-          newText: diff.newText,
-          requestId: req.id,
-        });
+      const openDiff = () => vscode.postMessage(openDiffMessage(diff, req.id));
       const preview = document.createElement("button");
       preview.className = "preview-link";
       // Auto-opens below; the button stays so you can re-open if you closed it.

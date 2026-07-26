@@ -185,7 +185,15 @@ export type WebviewMsg =
   | { type: "toggleChip"; id: string }
   | { type: "openFile"; path: string }
   | { type: "openUrl"; url: string }
-  | { type: "openDiff"; path: string; oldText: string; newText: string; requestId?: number | string }
+  | {
+      type: "openDiff";
+      path: string;
+      oldText: string;
+      newText: string;
+      requestId?: number | string;
+      replaceAll?: boolean;
+      sites?: { oldText: string; newText: string; oldLine?: number; newLine?: number }[];
+    }
   | { type: "exportExpr"; action: string; kind: string; current?: string; svg?: string; png?: string; svgDark?: string; svgLight?: string }
   | { type: "setEffort"; level: string }
   | { type: "openGlobalConfig" }

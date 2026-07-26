@@ -188,7 +188,8 @@ The full pedagogical write-up lives in
 | File | Role |
 |---|---|
 | [src/extension.ts](../src/extension.ts) | Entry point — registers commands, keybindings, output channel |
-| [src/sidebar.ts](../src/sidebar.ts) | Webview provider, message routing, fs handlers, diff preview, logout, generated-media serving (`postGeneratedMedia` → `asWebviewUri`, base64 fallback) |
+| [src/sidebar.ts](../src/sidebar.ts) | Webview provider, message routing, fs handlers, native diff opening, logout, generated-media serving (`postGeneratedMedia` → `asWebviewUri`, base64 fallback) |
+| [src/diff-view.ts](../src/diff-view.ts) | Pure whole-file native-diff reconstruction (#66) — combines Grok's replaced regions + positioned sites with disk content, bounds expansion size, and finds the first changed line |
 | [src/acp.ts](../src/acp.ts) | ACP client — spawns CLI, manages session lifecycle, emits events. `interject` (#52 Steer), `forkSession` (#48), and worktree RPCs (P2-8) call the unadvertised `_x.ai/*` methods, returning `"unsupported"` on -32601 rather than throwing |
 | [src/worktree.ts](../src/worktree.ts) | Pure worktree helpers (P2-8) — parse create/list/apply/remove/status, multi-cwd history merge; wire notes in [research/worktree.md](../research/worktree.md) |
 | [src/session.ts](../src/session.ts) | Per-session state bag — one `Session` per live `grok agent stdio` process (the sidebar holds a *pool* of these + one focused); carries the send queue (#37), billing (#53), and optional worktree binding (`cwd` / `worktree`) |

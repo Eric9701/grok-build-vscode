@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.4 — 2026-07-26
+
+### Fixed
+
+- **The native diff editor shows the whole file**, opened on the first changed line, instead of a context-free preview of only the replaced lines ([#66](https://github.com/phuryn/grok-build-vscode/issues/66)). Grok never sends the file itself, so both sides are reconstructed from the copy on disk plus its per-site line metadata — anchored per site, so a repeated token can't become a phantom change. An unreadable, oversized, or since-modified file falls back to the previous region-only diff. Thanks to [@padixa](https://github.com/padixa) for the report and the follow-up that scoped it.
+
+---
+
 ## 2.0.3 — 2026-07-26
 
 ### Added

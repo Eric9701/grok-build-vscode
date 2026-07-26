@@ -58,6 +58,7 @@ import { matchSlashCommand } from "./slash-filter";
 import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, clampMentionIndexLimit, filterMentionFiles, mergeMentionEntries, normalizeRelPath, orderMentionIndex } from "./mention";
 import { configForcesAlwaysApprove } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
+import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
@@ -3091,7 +3092,14 @@ See design doc for the full state machine diagram.`;
         void vscode.env.openExternal(vscode.Uri.parse(msg.url));
         break;
       case "openDiff":
-        await this.openDiffEditor(msg.path, msg.oldText, msg.newText, msg.requestId);
+        await this.openDiffEditor(
+          msg.path,
+          msg.oldText,
+          msg.newText,
+          msg.requestId,
+          msg.replaceAll,
+          msg.sites,
+        );
         break;
       case "exportExpr":
         await this.exportExpr(msg);
@@ -4182,15 +4190,29 @@ See design doc for the full state machine diagram.`;
     oldText: string,
     newText: string,
     requestId?: number | string,
+    replaceAll?: boolean,
+    sites?: { oldText: string; newText: string; oldLine?: number; newLine?: number }[],
   ): Promise<void> {
     const base = path.basename(filePath);
+    // grok's diff block carries only the replaced region, which opens as a
+    // context-free two-line tab. Expand it against the file on disk so the tab
+    // shows the whole file and lands on the change (#66); a pending permission
+    // hasn't been written yet, so there the file on disk is the "before".
+    const sides = expandDiffToWholeFile({
+      diskText: this.readFileForDiff(filePath),
+      oldRegion: oldText,
+      newRegion: newText,
+      diskIsBefore: requestId !== undefined,
+      replaceAll,
+      sites,
+    });
     // Unique key per diff so sequential edits to the same file don't collide on
     // the content map. The trailing real filename gives VS Code the language.
     const key = String(this.diffSeq++);
     const left = vscode.Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/before/${base}` });
     const right = vscode.Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/after/${base}` });
-    this.diffProvider.set(left, oldText);
-    this.diffProvider.set(right, newText);
+    this.diffProvider.set(left, sides.oldText);
+    this.diffProvider.set(right, sides.newText);
     if (requestId !== undefined) {
       // Auto-open is per pending permission; remember the URIs so the matching
       // tab can be closed (and its content dropped) once the user decides (#21).
@@ -4199,14 +4221,37 @@ See design doc for the full state machine diagram.`;
     }
     // preview:true reuses a single preview tab across grok's many small sequential
     // edits; preserveFocus:true keeps focus on the chat so the permission card is
-    // immediately clickable.
+    // immediately clickable. `selection` opens a whole-file diff on the edit
+    // instead of at line 1 (#66) — harmless at 0 when expansion fell back.
+    const at = sides.firstChangedLine;
     await vscode.commands.executeCommand(
       "vscode.diff",
       left,
       right,
       `Grok proposed: ${base}`,
-      { preview: true, preserveFocus: true } as vscode.TextDocumentShowOptions,
+      {
+        preview: true,
+        preserveFocus: true,
+        selection: new vscode.Range(at, 0, at, 0),
+      } as vscode.TextDocumentShowOptions,
     );
+  }
+
+  /**
+   * The file's current content, for whole-file diff expansion (#66). Undefined
+   * when it can't be read — a create whose file doesn't exist yet, a file
+   * deleted since, or one too big to hold twice — which leaves the diff at the
+   * region-only fallback rather than failing the open.
+   */
+  private readFileForDiff(filePath: string): string | undefined {
+    try {
+      const abs = path.isAbsolute(filePath) ? filePath : path.join(this.sessionCwd(), filePath);
+      const stat = fs.statSync(abs);
+      if (!stat.isFile() || stat.size > MAX_DIFF_EXPAND_BYTES) return undefined;
+      return fs.readFileSync(abs, "utf8");
+    } catch {
+      return undefined;
+    }
   }
 
   /** Close the diff tab opened for a pending permission request and free its

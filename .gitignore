@@ -8,5 +8,8 @@ out-integration/
 .env
 docs/codex-style-analysis.md
 
+# Local agent working practice — depends on Pawel's own tooling, not the project
+CLAUDE.local.md
+
 # Runtime artifacts written by agent commands during dev/testing
 terminals/
