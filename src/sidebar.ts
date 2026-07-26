@@ -65,21 +65,24 @@ import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
-import { allowFromRemote, transformHostMsgForRemote, type MediaInlineDeps, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, allowRemoteRepoTarget, transformHostMsgForRemote, type MediaInlineDeps, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import {
   SessionListEntry,
   SessionMetaOverrides,
+  RepoPins,
   carrySessionName,
   clearSessions,
   defaultFs,
   deleteSessionDir,
+  discoverRepos,
   fallbackName,
   forkDisplayName,
   indexSessions,
   isEmptyPrimerSession,
   isPathInside,
+  normalizeRepoPath,
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
@@ -120,6 +123,7 @@ import {
 // imported above. See that file for why.
 
 const SESSION_META_KEY = "grok.sessionMeta";
+const REPO_PINS_KEY = "grok.repoPins";
 /** globalState key for the anonymous per-install telemetry GUID (survives updates). */
 const INSTALL_ID_KEY = "grok.installId";
 /** globalState key for the eye-off choice on the active-editor context chip.
@@ -260,11 +264,13 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private stickyChrome = new Map<HostMsg["type"], HostMsg>();
   private static readonly STICKY_CHROME_TYPES = new Set<HostMsg["type"]>([
     "initialState", "session", "modelChanged", "modeChanged", "chips",
-    "contextUsage", "sessions", "queuedSends", "onboarding", "commandsUpdate",
+    "contextUsage", "sessions", "repos", "queuedSends", "onboarding", "commandsUpdate",
     "grokUpdateStatus", "voiceConfigured", "fontScale", "showThinking", "expandCommandOutputs",
     "soundNotifications",
   ]);
   private cliPath?: string;
+  /** History browsing scope. Deliberately independent of the live session cwd. */
+  private selectedRepoCwd?: string;
   // Guards the silent grok-CLI auto-update so it runs at most once per activation.
   private cliUpdateChecked = false;
   // Guards the broken-CLI pin (issue #22) so the version probe + downgrade runs
@@ -1749,8 +1755,40 @@ See design doc for the full state machine diagram.`;
     }
   }
 
-  /** Cwd catalogs to scan for history: workspace + known worktrees for this repo. */
-  private collectSessionCwds(workspaceCwd: string, overrides: SessionMetaOverrides): string[] {
+  private repoCatalog() {
+    const pins = this.context.globalState.get<RepoPins>(REPO_PINS_KEY, {});
+    const worktreeLabels = new Map<string, string>();
+    for (const o of Object.values(this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {}))) {
+      if (o.worktreePath && o.worktreeLabel) {
+        worktreeLabels.set(normalizeRepoPath(o.worktreePath), o.worktreeLabel);
+      }
+    }
+    for (const wt of this.worktreeCache) {
+      worktreeLabels.set(normalizeRepoPath(wt.path), wt.label);
+    }
+    return discoverRepos({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      pins,
+      tmpDir: os.tmpdir(),
+      // The primary workspace is already the extension's local execution scope;
+      // keep it as the one trusted return target before its first catalog lands.
+      trustedCwds: [this.workspaceRoot()],
+      worktreeLabels,
+      log: (m) => this.output.appendLine(m),
+    });
+  }
+
+  private selectedHistoryCwd(): string {
+    return this.selectedRepoCwd || this.sessionCwd(this.focused);
+  }
+
+  /** Session catalogs to index for a repo row: the checkout itself plus the
+   *  isolated worktrees that belong to it. Worktrees are deliberately NOT repo
+   *  rows (a worktree is not a checkout you choose between, and `discoverRepos`
+   *  excludes `<grokHome>/worktrees` by path), so their sessions have to surface
+   *  under the parent — otherwise leaving a worktree session strands it. */
+  private sessionCwdsForRepo(repoCwd: string, overrides: SessionMetaOverrides): string[] {
     const cwds: string[] = [];
     const seen = new Set<string>();
     const add = (p?: string) => {
@@ -1760,14 +1798,70 @@ See design doc for the full state machine diagram.`;
       seen.add(key);
       cwds.push(p);
     };
-    add(workspaceCwd);
-    for (const o of Object.values(overrides)) add(o.worktreePath);
-    for (const wt of worktreesForRepo(this.worktreeCache, workspaceCwd)) add(wt.path);
+    add(repoCwd);
+    // Overrides written before `sourceGitRoot` existed can't name their parent;
+    // attribute those to the primary workspace, which is where they came from.
+    const isPrimary = pathsEqual(repoCwd, this.workspaceRoot());
+    for (const o of Object.values(overrides)) {
+      if (!o.worktreePath) continue;
+      if (o.sourceGitRoot ? pathsEqual(o.sourceGitRoot, repoCwd) : isPrimary) add(o.worktreePath);
+    }
+    for (const wt of worktreesForRepo(this.worktreeCache, repoCwd)) add(wt.path);
     for (const s of this.pool) {
-      add(s.cwd);
-      add(s.worktree?.path);
+      if (s.worktree && pathsEqual(s.worktree.sourceGitRoot, repoCwd)) add(s.worktree.path);
     }
     return cwds;
+  }
+
+  /** Every cwd a remote client may legitimately name: the discovered repos plus
+   *  their worktree catalogs (a worktree session is listed, so it must open).
+   *  Built on demand — `repoCatalog()` walks `<grokHome>/sessions` on disk, and
+   *  the remote gate consults this for `mentionQuery`-rate traffic. */
+  private remoteTargetableCwd(cwd: string): boolean {
+    const wanted = normalizeRepoPath(cwd);
+    if (!wanted) return false;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    for (const repo of this.repoCatalog()) {
+      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) {
+        if (normalizeRepoPath(c) === wanted) return true;
+      }
+    }
+    return false;
+  }
+
+  private postRepoCatalog(): void {
+    const entries = this.repoCatalog();
+    const activeCwd = this.sessionCwd(this.focused);
+    const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
+    const selected = entries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
+    if (selected) this.selectedRepoCwd = selected.cwd;
+    else if (!this.selectedRepoCwd) this.selectedRepoCwd = activeCwd;
+    this.post({
+      type: "repos",
+      entries,
+      selectedCwd: this.selectedHistoryCwd(),
+      activeCwd,
+    });
+  }
+
+  private selectRepo(cwd: string): void {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit || !hit.available) return;
+    this.selectedRepoCwd = hit.cwd;
+    this.postRepoCatalog();
+    this.postSessionsList();
+  }
+
+  private async toggleRepoPin(cwd: string, pinned: boolean): Promise<void> {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit) return;
+    const pins = this.context.globalState.get<RepoPins>(REPO_PINS_KEY, {});
+    const key = normalizeRepoPath(hit.cwd);
+    const next = { ...pins };
+    if (pinned) next[key] = { cwd: hit.cwd, pinnedAt: Date.now() };
+    else delete next[key];
+    await this.context.globalState.update(REPO_PINS_KEY, next);
+    this.postRepoCatalog();
   }
 
   private annotateWorktreeLabels(
@@ -2943,6 +3037,7 @@ See design doc for the full state machine diagram.`;
     switch (msg.type) {
       case "ready":
         this.postInitialState();
+        this.postRepoCatalog();
         break;
       case "send":
         await this.handleSend(msg.text, msg.bare === true);
@@ -3298,6 +3393,12 @@ See design doc for the full state machine diagram.`;
       case "listSessions":
         this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query });
         break;
+      case "selectRepo":
+        this.selectRepo(msg.cwd);
+        break;
+      case "toggleRepoPin":
+        await this.toggleRepoPin(msg.cwd, msg.pinned);
+        break;
       case "resumeSession":
         await this.openSession(msg.id, msg.cwd);
         break;
@@ -3308,7 +3409,7 @@ See design doc for the full state machine diagram.`;
         await this.deleteSession(msg.id, msg.name);
         break;
       case "clearAllSessions":
-        await this.clearAllSessions();
+        await this.clearAllSessions(msg.cwd);
         break;
       case "pickFile":
         await this.trackAttach(this.pickFileFromComputer());
@@ -3363,7 +3464,7 @@ See design doc for the full state machine diagram.`;
     const offset = Math.max(0, opts?.offset ?? 0);
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const query = (opts?.query ?? "").trim().toLowerCase();
-    const cwd = this.workspaceRoot();
+    const cwd = this.selectedHistoryCwd();
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const log = (m: string) => this.output.appendLine(m);
@@ -3372,15 +3473,15 @@ See design doc for the full state machine diagram.`;
     // Fire-and-forget: a late refresh just needs another list open to show up.
     void this.refreshWorktreeCache();
 
-    // History spans the workspace cwd PLUS any worktree checkouts for this repo
-    // (P2-8). Sessions are stored under encodeURIComponent(cwd), so a worktree
-    // session is invisible unless we scan its path too.
-    const cwds = this.collectSessionCwds(cwd, overrides);
-    const perCwd = cwds.map((c) => ({
-      cwd: c,
-      entries: indexSessions({ fs: defaultFs, grokHome, cwd: c, log }),
-    }));
-    const index = mergeSessionIndexes(perCwd);
+    // Scoped to the SELECTED repo — that is what makes picking a repo define the
+    // history scope. Its worktrees ride along (they are not repo rows of their
+    // own), so a worktree session stays reachable after you leave it.
+    const index = mergeSessionIndexes(
+      this.sessionCwdsForRepo(cwd, overrides).map((c) => ({
+        cwd: c,
+        entries: indexSessions({ fs: defaultFs, grokHome, cwd: c, log }),
+      })),
+    );
     const mtimeById = new Map(index.map((e) => [e.id, e.mtimeMs]));
     const cwdById = new Map(index.map((e) => [e.id, e.cwd]));
 
@@ -3633,7 +3734,7 @@ See design doc for the full state machine diagram.`;
       liveForCwd?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
-      this.workspaceRoot();
+      this.selectedHistoryCwd();
     try {
       deleteSessionDir({
         fs: defaultFs,
@@ -3669,8 +3770,10 @@ See design doc for the full state machine diagram.`;
   /** Delete every session in this workspace's history except the live/focused one (grok
    *  re-persists that, so deleting it wouldn't stick). The webview confirms first (custom
    *  dialog). Tears down any backgrounded live members it deletes and purges their overrides. */
-  private async clearAllSessions(): Promise<void> {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  private async clearAllSessions(requestedCwd: string): Promise<void> {
+    const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, requestedCwd));
+    if (!repo) return;
+    const cwd = repo.cwd;
     const grokHome = resolveGrokHome(process.env);
     const exceptId = this.focused?.activeSessionId;
     // Count via the cheap stat-only index — no need to parse every summary just to confirm.
@@ -4898,7 +5001,10 @@ See design doc for the full state machine diagram.`;
     void this.postRemoteStatus();
     // Sweep stale empty primer sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep).
-    void this.startSession().then(() => this.sweepEmptyPrimerSessions());
+    void this.startSession().then(() => {
+      this.postRepoCatalog();
+      this.sweepEmptyPrimerSessions();
+    });
   }
 
   private postChips(): void {
@@ -5003,6 +5109,7 @@ See design doc for the full state machine diagram.`;
       }
     }
     this.postMode();
+    this.postRepoCatalog();
     this.postSessionsList();
   }
 
@@ -5335,18 +5442,48 @@ See design doc for the full state machine diagram.`;
 
   /** Start a brand-new session, keeping the current one alive in the background. */
   private async newFocusedSession(): Promise<void> {
+    const targetCwd = this.selectedHistoryCwd();
     this.parkFocused();
     this.focused = new Session();
-    // Always open "New session" in the workspace root — leave worktree sessions
-    // parked in the pool (or reaped) rather than trapping the user in a wt cwd.
-    this.focused.cwd = this.workspaceRoot();
+    // Repo selection only changes history scope; New Session is the deliberate
+    // second action that starts Grok in the selected cwd. This intentionally
+    // includes a selected worktree: the old workspace-root fallback prevented
+    // accidental trapping before selection was explicit, but would now ignore
+    // the repo choice the user just made.
+    this.focused.cwd = targetCwd;
     this.focused.worktree = undefined;
+    const wt = matchWorktreeForCwd(
+      this.focused.cwd,
+      worktreesForRepo(this.worktreeCache, this.workspaceRoot(), { includeDead: true }),
+    );
+    if (wt) {
+      this.focused.worktree = {
+        path: wt.path,
+        label: wt.label,
+        sourceGitRoot: wt.sourceRepo || this.workspaceRoot(),
+        id: wt.id,
+      };
+    }
     // The webview toolbar button clears its own DOM before posting newSession,
     // but the Command Palette command lands here directly — without this clear
     // the old transcript stayed onscreen under the fresh session. (The toolbar
     // path just clears twice, a no-op.)
     this.emit(this.focused, { type: "clearMessages" });
     await this.startSession();
+    if (this.focused.activeSessionId && this.focused.worktree) {
+      const id = this.focused.activeSessionId;
+      const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      await this.context.globalState.update(SESSION_META_KEY, {
+        ...overrides,
+        [id]: {
+          ...(overrides[id] ?? {}),
+          worktreePath: this.focused.worktree.path,
+          worktreeLabel: this.focused.worktree.label,
+          sourceGitRoot: this.focused.worktree.sourceGitRoot,
+        },
+      });
+    }
+    this.postRepoCatalog();
   }
 
   /**
@@ -5392,6 +5529,7 @@ See design doc for the full state machine diagram.`;
     }
     await this.startSession(id);
     this.markRead(this.focused); // opening a cold session clears its unread badge
+    this.postRepoCatalog();
   }
 
   /** Reveal the panel AND move keyboard focus into the composer, so every flow
@@ -5549,6 +5687,10 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
       return;
     }
+    if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
+      this.output.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
+      return;
+    }
     void this.onMessage(m).catch((e) =>
       this.output.appendLine(`[remote] ${m.type} failed: ${(e as Error)?.message ?? String(e)}`),
     );
@@ -5597,10 +5739,16 @@ See design doc for the full state machine diagram.`;
     const base = httpBaseFromRelayUrl(REMOTE_RELAY_URL);
     try {
       const name = deviceDisplayName(os.hostname(), process.platform, os.release());
+      const installId = this.installId();
+      // installId() keeps telemetry's synchronous call site; explicitly await
+      // the same value here so a first-ever link cannot outrun persistence.
+      await this.context.globalState.update(INSTALL_ID_KEY, installId);
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name }),
+        // Stable per install so the relay can relink this machine instead of
+        // minting duplicate device rows for the same hostname.
+        body: JSON.stringify({ name, installId }),
       });
       if (!startRes.ok) throw new Error(`link/start ${startRes.status}`);
       const { code } = (await startRes.json()) as { code: string };
@@ -5724,8 +5872,10 @@ See design doc for the full state machine diagram.`;
 <body class="${this.showThinking() ? "" : "thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
 
   <header class="top-bar">
+    <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>
     <button id="history-btn" class="icon-btn" title="Session history"></button>
     <button id="new-btn" class="icon-btn" title="New session"></button>
+    <div id="repo-popover" class="toolbar-popover repo-popover" hidden></div>
     <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
   </header>
 

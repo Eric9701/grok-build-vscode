@@ -22,7 +22,7 @@
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "restoreComposer", "truncateMessages", "uiConfirmRequest", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
-    "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions",
+    "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions", "repos",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault", "soundNotifications",
     "remoteStatus",
   ];
@@ -33,7 +33,7 @@
     "setShowThinking", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
-    "recheckConnection", "listSessions", "resumeSession", "renameSession", "deleteSession",
+    "recheckConnection", "listSessions", "selectRepo", "toggleRepoPin", "resumeSession", "renameSession", "deleteSession",
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
     "setSoundNotifications",

@@ -134,6 +134,12 @@ describe("session rows (regression: only the label was clickable)", () => {
 
   function openWithSessions() {
     const h = bootWebview();
+    dispatch(h.window, {
+      type: "repos",
+      entries: [{ cwd: "/work/project", label: "project", available: true, pinned: false, updatedAt: 0 }],
+      selectedCwd: "/work/project",
+      activeCwd: "/work/project",
+    });
     click(h.window, $(h.doc, "history-btn")); // open the popover so the list renders
     h.posted.length = 0; // forget the listSessions request; keep only row interactions
     dispatch(h.window, { type: "sessions", entries, activeId: null });
@@ -218,10 +224,12 @@ describe("session rows (regression: only the label was clickable)", () => {
     expect(types(posted)).not.toContain("clearAllSessions");
     const okBtn = doc.querySelector(".confirm-overlay .confirm-danger") as HTMLElement;
     expect(okBtn).not.toBeNull();
+    expect(doc.querySelector(".confirm-title")?.textContent).toContain("project");
+    expect(doc.querySelector(".confirm-body")?.textContent).toContain("/work/project");
     click(window, okBtn);
     await Promise.resolve();
 
-    expect(posted).toContainEqual({ type: "clearAllSessions" });
+    expect(posted).toContainEqual({ type: "clearAllSessions", cwd: "/work/project" });
   });
 
   it("hides the Clear all footer when the only session is the active one", () => {
@@ -1786,7 +1794,7 @@ describe("context popover — usage breakdown (#53)", () => {
     // Session total is the number you act on, so it leads; Last turn is detail.
     expect(txt.indexOf("Session total")).toBeGreaterThan(-1);
     expect(txt.indexOf("Session total")).toBeLessThan(txt.indexOf("Last turn"));
-    expect(txt).toContain("32,722");
+    expect(txt.replace(/[,\s\u00a0\u202f]/g, "")).toContain("32722");
     expect(txt).toContain("cache read");
     // No cache-CREATION field exists anywhere in the CLI — it must not be faked.
     expect(txt.toLowerCase()).not.toContain("cache creation");

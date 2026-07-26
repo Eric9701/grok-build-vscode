@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.5 — 2026-07-26
+
+### Added
+
+- **Switch repositories from a linked AFK Pilot device.** The chat header on the web client gains a repo chip listing every project Grok has sessions for — pick one to browse its history, pin the ones you reach for, then *New session* to start Grok there. A project's worktrees come with it instead of appearing as separate entries. The chip is remote-only: in VS Code the window already *is* the repository.
+
+### Fixed
+
+- **Re-linking a machine no longer costs you a device slot.** Linking was tracked per link rather than per machine, so re-pairing after a reinstall or a failed connection added a *second* device and could push you past your device limit — for hardware you already had. A re-link now supersedes that machine's previous entry.
+
+---
+
 ## 2.0.4 — 2026-07-26
 
 ### Fixed

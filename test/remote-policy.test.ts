@@ -3,6 +3,7 @@ import {
   INBOUND_DISPOSITION,
   OUTBOUND_DISPOSITION,
   allowFromRemote,
+  allowRemoteRepoTarget,
   inlineMediaForRemote,
   mediaMimeFromPath,
   transformHostMsgForRemote,
@@ -33,6 +34,8 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.logout).toBe("full");
     expect(INBOUND_DISPOSITION.clearAllSessions).toBe("full");
     expect(INBOUND_DISPOSITION.listSessions).toBe("view");
+    expect(INBOUND_DISPOSITION.selectRepo).toBe("view");
+    expect(INBOUND_DISPOSITION.toggleRepoPin).toBe("full");
     // native pickers/editors/mic act on the LOCAL VS Code — never remote-drivable
     expect(INBOUND_DISPOSITION.openFile).toBe("host-local");
     expect(INBOUND_DISPOSITION.pickFile).toBe("host-local");
@@ -58,6 +61,38 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.media).toBe("media");
     expect(OUTBOUND_DISPOSITION.messageChunk).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.permissionRequest).toBe("mirror");
+  });
+});
+
+describe("remote repo target gate", () => {
+  // A predicate, not a set: the host resolves the catalog from disk, and this
+  // gate runs on every inbound message including per-keystroke mentionQuery.
+  const known = new Set(["/work/a", "/work/b"]);
+  const discovered = (cwd: string) => known.has(cwd);
+
+  it("is consulted lazily — a message with no cwd never resolves the catalog", () => {
+    let calls = 0;
+    const counting = (cwd: string) => { calls++; return known.has(cwd); };
+    expect(allowRemoteRepoTarget({ type: "send", text: "hi" }, counting)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "mentionQuery", query: "a" }, counting)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s" }, counting)).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  it("accepts only discovered cwd values for switching, pinning, and explicit resume", () => {
+    expect(allowRemoteRepoTarget({ type: "selectRepo", cwd: "/work/a" }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/work/b", pinned: true }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s", cwd: "/work/a" }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "clearAllSessions", cwd: "/work/a" }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "selectRepo", cwd: "/etc" }, discovered)).toBe(false);
+    expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/etc", pinned: true }, discovered)).toBe(false);
+    expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s", cwd: "/etc" }, discovered)).toBe(false);
+    expect(allowRemoteRepoTarget({ type: "clearAllSessions", cwd: "/etc" }, discovered)).toBe(false);
+  });
+
+  it("allows cwd-less resume to use the host's already-bounded resolution", () => {
+    expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s" }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "send", text: "hi" }, discovered)).toBe(true);
   });
 });
 

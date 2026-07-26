@@ -208,7 +208,7 @@ The full pedagogical write-up lives in
 | [src/grok-config.ts](../src/grok-config.ts) | Reads grok's `config.toml` to detect `permission_mode = "always-approve"` so the mode button shows Auto accept (pure) |
 | [src/mode-prefs.ts](../src/mode-prefs.ts) | Remembered-mode policy (pure) — persist Agent/Auto-accept (never Plan), apply on new sessions only |
 | [src/view-move.ts](../src/view-move.ts) | View placement (pure) — maps the gear-menu "Move view" destinations to the extension-owned per-location view containers targeted via `vscode.moveViews` (view default-homes in the Secondary Side Bar) |
-| [src/sessions.ts](../src/sessions.ts) | Disk-driven session listing/delete + name overrides (pure) — `indexSessions` (stat-only ordering), `readSessionEntries` (windowed read), `listSessions` (whole-list), `clearSessions` |
+| [src/sessions.ts](../src/sessions.ts) | Disk-driven session listing/delete + name overrides (pure) — `indexSessions` (stat-only ordering), `readSessionEntries` (windowed read), `listSessions` (whole-list), `clearSessions`, `discoverRepos` (the repo catalog behind the remote switcher) |
 | [src/file-ref.ts](../src/file-ref.ts) | Open-file ref parsing + large-file inline-read guard (pure) |
 | [src/plan-review.ts](../src/plan-review.ts) | Plan-snapshot Markdown filename generation (pure) |
 | [src/voice.ts](../src/voice.ts) | Voice-input pure helpers — STT request/response, ffmpeg args, device parsing, key resolution |
@@ -236,6 +236,15 @@ newest-first), built from two pure primitives in
   id-sort would order by when the session was first opened, which is wrong.
 - `readSessionEntries` reads + parses `summary.json` for **exactly the visible page's
   ids** and applies name overrides.
+
+History is scoped to the **selected repo**. `discoverRepos` enumerates cwd catalogs from
+`<grokHome>/sessions` (rejecting temp roots and `<grokHome>/worktrees` — a worktree is
+not a checkout you choose between), and `postSessionsList` indexes that repo *plus* the
+worktrees belonging to it, so a worktree session stays reachable after you leave it. The
+picker itself is a remote-only affordance: in VS Code the window already *is* the
+repository. And because the relay serves a client that can be newer than the installed
+extension, the chip renders only once a `repos` frame has actually arrived — an older
+host that never sends one gets no chip rather than a dead control.
 
 The host (`postSessionsList` in [src/sidebar.ts](../src/sidebar.ts)) orders everything
 cheaply with `indexSessions`, then drives an **mtime-keyed read cache** so a re-open /

@@ -329,7 +329,7 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 `npm test` is grok-free, so **local ≡ CI** — it never spawns the real binary. A separate, on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, plan-mode, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy and what's deferred to a future `@vscode/test-electron` suite: **[TESTS.md](TESTS.md)**. Architecture and module map: **[docs/architecture.md](docs/architecture.md)**.
 
-**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1360-test grok-free suite is the floor — every change keeps it green.
+**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1376-test grok-free suite is the floor — every change keeps it green.
 
 </details>
 

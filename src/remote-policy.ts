@@ -36,6 +36,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   ready: "control",
   // view (read-only+)
   listSessions: "view",
+  selectRepo: "view",
+  toggleRepoPin: "full",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
@@ -136,6 +138,23 @@ export function allowFromRemote(type: WebviewMsg["type"], tier: RemoteTier): boo
   }
 }
 
+/** Cwd-bearing remote messages may only name a catalog the host discovered.
+ *  `isKnownCwd` is a predicate rather than a prebuilt set so the host can answer
+ *  it lazily: resolving the catalog walks the session store on disk, and this
+ *  gate sees every inbound message — including per-keystroke `mentionQuery`. */
+export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string) => boolean): boolean {
+  switch (msg.type) {
+    case "selectRepo":
+    case "toggleRepoPin":
+    case "clearAllSessions":
+      return isKnownCwd(msg.cwd);
+    case "resumeSession":
+      return !msg.cwd || isKnownCwd(msg.cwd);
+    default:
+      return true;
+  }
+}
+
 // ---------- outbound: HostMsg to a remote client ----------
 
 export type OutboundDisposition =
@@ -212,6 +231,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   truncateMessages: "mirror",
   uiConfirmRequest: "mirror",
   sessions: "mirror",
+  repos: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",
   steerUnavailable: "mirror",

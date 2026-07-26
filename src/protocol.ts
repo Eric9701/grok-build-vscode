@@ -23,7 +23,7 @@
 
 import type { ModelInfo, PromptResultMeta, PromptUsage, PermissionRequest, ExitPlanRequest, QuestionRequest } from "./acp";
 import type { FileChip } from "./chips";
-import type { SessionListEntry } from "./sessions";
+import type { RepoListEntry, SessionListEntry } from "./sessions";
 import type { Dot } from "./session-pool";
 import type { RunProgressUpdate } from "./run-progress";
 
@@ -161,6 +161,7 @@ export type HostMsg =
   // from the on-disk index, not entries shown (hidden subagent sessions occupy
   // slots without producing rows).
   | { type: "sessions"; entries: SessionListEntry[]; activeId?: string; dots: Record<string, Dot>; offset: number; total: number; hasMore: boolean; nextOffset: number; query: string }
+  | { type: "repos"; entries: RepoListEntry[]; selectedCwd: string; activeCwd: string }
   | { type: "sessionDot"; id: string; dot: Dot }
   // Full snapshot of the focused session's host-owned send queue (#37) — the
   // webview renders pending user blocks from this; replay rebuilds them.
@@ -219,12 +220,14 @@ export type WebviewMsg =
   | { type: "updateGrok" }
   | { type: "recheckConnection" }
   | { type: "listSessions"; offset?: number; limit?: number; query?: string }
+  | { type: "selectRepo"; cwd: string }
+  | { type: "toggleRepoPin"; cwd: string; pinned: boolean }
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
   // by cwd on disk). Omitted → host resolves from meta / workspace root.
   | { type: "resumeSession"; id: string; cwd?: string }
   | { type: "renameSession"; id: string; name: string }
   | { type: "deleteSession"; id: string; name?: string }
-  | { type: "clearAllSessions" }
+  | { type: "clearAllSessions"; cwd: string }
   | { type: "pickFile" }
   // The composer's `@` file popover: the current token after `@`, posted on
   // every keystroke; answered by `mentionResults`.
@@ -293,7 +296,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   soundNotifications: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
-  sessions: true, sessionDot: true, queuedSends: true,
+  sessions: true, repos: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true,
 };
 
@@ -307,7 +310,8 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
-  listSessions: true, resumeSession: true, renameSession: true, deleteSession: true,
+  listSessions: true, selectRepo: true, toggleRepoPin: true,
+  resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
   pasteImage: true, voiceStart: true,
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,

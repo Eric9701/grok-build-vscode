@@ -71,6 +71,22 @@ export interface SessionMetaOverride {
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 
+export interface RepoPin {
+  cwd: string;
+  pinnedAt: number;
+}
+export type RepoPins = Record<string, RepoPin>;
+
+export interface RepoListEntry {
+  cwd: string;
+  label: string;
+  available: boolean;
+  pinned: boolean;
+  pinnedAt?: number;
+  updatedAt: number;
+  worktreeLabel?: string;
+}
+
 /** Move a renamed session's `customName` from one id to another and drop the source entry. Used when
  *  a primer-only session is discarded and restarted under a new grok id (a model/effort switch on an
  *  empty session): the user's rename should follow to the new session, and the abandoned id's
@@ -137,6 +153,153 @@ export interface DeleteDeps {
 /** Build the directory grok uses for sessions rooted at `cwd`. Mirrors grok's URL-encoded layout. */
 export function sessionsDirFor(grokHome: string, cwd: string): string {
   return path.join(grokHome, "sessions", encodeURIComponent(cwd));
+}
+
+/** Stable repo identity for globalState and remote-policy comparisons. */
+export function normalizeRepoPath(cwd: string, platform = process.platform): string {
+  let normalized = path.normalize((cwd || "").trim());
+  if (normalized !== path.parse(normalized).root) normalized = normalized.replace(/[\\/]+$/, "");
+  if (platform === "win32") normalized = normalized.toLowerCase();
+  return normalized;
+}
+
+function pathSegments(cwd: string): string[] {
+  return (cwd || "").replace(/[\\/]+$/, "").split(/[\\/]+/).filter(Boolean);
+}
+
+/** Leaf labels by default; parent/leaf only for duplicate leaves. */
+export function repoLabels(cwds: string[]): Map<string, string> {
+  const leaves = new Map<string, number>();
+  for (const cwd of cwds) {
+    const parts = pathSegments(cwd);
+    const leaf = parts.at(-1) || cwd;
+    leaves.set(leaf.toLowerCase(), (leaves.get(leaf.toLowerCase()) ?? 0) + 1);
+  }
+  const out = new Map<string, string>();
+  for (const cwd of cwds) {
+    const parts = pathSegments(cwd);
+    const leaf = parts.at(-1) || cwd;
+    const duplicate = (leaves.get(leaf.toLowerCase()) ?? 0) > 1;
+    out.set(cwd, duplicate && parts.length > 1 ? `${parts.at(-2)}/${leaf}` : leaf);
+  }
+  return out;
+}
+
+function isInsideOrEqual(candidate: string, root: string, platform: NodeJS.Platform): boolean {
+  const a = normalizeRepoPath(candidate, platform);
+  const b = normalizeRepoPath(root, platform);
+  if (!a || !b) return false;
+  const rel = path.relative(b, a);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+export interface DiscoverReposDeps {
+  fs: FsLike;
+  grokHome: string;
+  pins: RepoPins;
+  tmpDir: string;
+  platform?: NodeJS.Platform;
+  /** Host-known roots that remain selectable before Grok creates a catalog. */
+  trustedCwds?: string[];
+  worktreeLabels?: Map<string, string>;
+  log?: (msg: string) => void;
+}
+
+/**
+ * Enumerate cwd catalogs from `<grokHome>/sessions` without reading session
+ * summaries. Temp-root catalogs and Grok-managed worktrees are rejected before
+ * any cwd stat; only the surviving candidates are checked for availability.
+ */
+export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
+  const platform = deps.platform ?? process.platform;
+  const sessionsRoot = path.join(deps.grokHome, "sessions");
+  const worktreesRoot = path.join(deps.grokHome, "worktrees");
+  const isManagedWorktree = (cwd: string) => isInsideOrEqual(cwd, worktreesRoot, platform);
+  let encoded: string[] = [];
+  try {
+    if (deps.fs.existsSync(sessionsRoot)) encoded = deps.fs.readdirSync(sessionsRoot);
+  } catch (e) {
+    deps.log?.(`[sessions] failed to discover repos: ${(e as Error).message}`);
+  }
+
+  const byKey = new Map<string, Omit<RepoListEntry, "label">>();
+  for (const name of encoded) {
+    let cwd = "";
+    try { cwd = decodeURIComponent(name).trim(); } catch { continue; }
+    if (
+      !cwd ||
+      !path.isAbsolute(cwd) ||
+      isInsideOrEqual(cwd, deps.tmpDir, platform) ||
+      isManagedWorktree(cwd)
+    ) continue;
+    const key = normalizeRepoPath(cwd, platform);
+    if (!key || byKey.has(key)) continue;
+    let available = false;
+    try { available = deps.fs.statSync(cwd).isDirectory(); } catch { /* unavailable */ }
+    if (!available) continue;
+    let updatedAt = 0;
+    try { updatedAt = deps.fs.statSync(path.join(sessionsRoot, name)).mtimeMs; } catch { /* best effort */ }
+    const pin = deps.pins[key];
+    byKey.set(key, {
+      cwd,
+      available: true,
+      pinned: !!pin,
+      pinnedAt: pin?.pinnedAt,
+      updatedAt,
+      worktreeLabel: deps.worktreeLabels?.get(key),
+    });
+  }
+
+  for (const cwd of deps.trustedCwds ?? []) {
+    if (!cwd || !path.isAbsolute(cwd) || isManagedWorktree(cwd)) continue;
+    const key = normalizeRepoPath(cwd, platform);
+    if (!key || byKey.has(key)) continue;
+    let available = false;
+    try { available = deps.fs.statSync(cwd).isDirectory(); } catch { /* unavailable */ }
+    if (!available) continue;
+    const pin = deps.pins[key];
+    byKey.set(key, {
+      cwd,
+      available: true,
+      pinned: !!pin,
+      pinnedAt: pin?.pinnedAt,
+      updatedAt: 0,
+      worktreeLabel: deps.worktreeLabels?.get(key),
+    });
+  }
+
+  // A pin is durable intent: keep it visible even when the checkout or its
+  // session catalog is temporarily unavailable.
+  for (const [key, pin] of Object.entries(deps.pins)) {
+    if (
+      !key ||
+      byKey.has(key) ||
+      !pin?.cwd ||
+      !path.isAbsolute(pin.cwd) ||
+      isManagedWorktree(pin.cwd)
+    ) continue;
+    let available = false;
+    try { available = deps.fs.statSync(pin.cwd).isDirectory(); } catch { /* unavailable */ }
+    byKey.set(key, {
+      cwd: pin.cwd,
+      available,
+      pinned: true,
+      pinnedAt: pin.pinnedAt,
+      updatedAt: 0,
+      worktreeLabel: deps.worktreeLabels?.get(key),
+    });
+  }
+
+  const values = [...byKey.values()];
+  const labels = repoLabels(values.map((r) => r.cwd));
+  return values
+    .map((r) => ({ ...r, label: labels.get(r.cwd) || r.cwd }))
+    .sort((a, b) =>
+      Number(b.pinned) - Number(a.pinned) ||
+      (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0) ||
+      b.updatedAt - a.updatedAt ||
+      a.label.localeCompare(b.label),
+    );
 }
 
 /** Default friendly name when no `customName` or `session_summary` is available. */

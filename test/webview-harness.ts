@@ -20,8 +20,10 @@ const chatSrc = read("../media/chat.js");
 // Mirror of getHtml()'s <body> — only the ids chat.js queries at startup matter.
 export const BODY = `
   <header class="top-bar">
+    <button id="repo-btn"></button>
     <button id="history-btn"></button>
     <button id="new-btn"></button>
+    <div id="repo-popover" hidden></div>
     <div id="history-popover" hidden></div>
   </header>
   <main id="messages" class="messages">
@@ -62,7 +64,7 @@ export interface Harness {
   doc: Document;
 }
 
-export function bootWebview(opts: { ready?: boolean } = {}): Harness {
+export function bootWebview(opts: { ready?: boolean; remote?: boolean } = {}): Harness {
   const window = new Window({ url: "https://localhost/" });
   const posted: Posted[] = [];
   (window as any).acquireVsCodeApi = () => ({
@@ -72,6 +74,9 @@ export function bootWebview(opts: { ready?: boolean } = {}): Harness {
   });
   const doc = (window as any).document as Document;
   doc.body.innerHTML = BODY;
+  // What the relay's chat.html sets before loading chat.js. Gates the remote-only
+  // affordances (repo switcher) and suppresses the host-only ones.
+  if (opts.remote) (window as any).grokRemoteClient = true;
   (window as any).eval(helperSrc);
   (window as any).eval(chatSrc);
   // The webview now boots busy+locked (startup spinner) and only goes idle once
