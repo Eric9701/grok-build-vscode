@@ -151,6 +151,12 @@ export class Session {
   /** grok's id for this session (set on session/new or session/load). */
   activeSessionId?: string;
 
+  /** Last browser-reported AFK Pilot preferences, in displayed percent + boolean.
+   * Undefined until a remote client reports them for this focused session. */
+  remoteFontScale?: number;
+  remoteReadRepliesAloud?: boolean;
+  remoteUsesTouch?: boolean;
+
   /**
    * Effective working directory for this session's `grok agent stdio` process.
    * Usually the workspace root; for a worktree-isolated session (P2-8) this is

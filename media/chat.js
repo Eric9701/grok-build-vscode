@@ -5,6 +5,36 @@
   // host-only affordances: worktree/rewind actions (their host flows run native
   // VS Code UI a browser user can't see) and the AFK Pilot account section.
   const IS_REMOTE = !!window.grokRemoteClient;
+  const REMOTE_FONT_SCALE_KEY = "grok.remote.fontScale";
+  const REMOTE_TTS_KEY = "grok.remote.tts";
+  const ttsAvailable = !!window.speechSynthesis && typeof window.SpeechSynthesisUtterance === "function";
+
+  function storedNumber(key, fallback) {
+    try {
+      const value = Number(window.localStorage.getItem(key));
+      return Number.isFinite(value) && value > 0 ? value : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function storedBool(key, fallback) {
+    try {
+      const value = window.localStorage.getItem(key);
+      return value === null ? fallback : value === "true";
+    } catch {
+      return fallback;
+    }
+  }
+
+  function storeRemotePref(key, value) {
+    try { window.localStorage.setItem(key, String(value)); } catch { /* unavailable */ }
+  }
+
+  function remoteUsesTouchComposer() {
+    return IS_REMOTE && typeof window.matchMedia === "function" &&
+      window.matchMedia("(hover: none), (pointer: coarse)").matches;
+  }
 
   const $ = (id) => document.getElementById(id);
   const messagesEl = $("messages");
@@ -91,6 +121,12 @@
     voiceLive: false,
     // The configured send phrase (for highlighting it in the composer).
     voiceSendPhrase: "grok send",
+    remoteFontScale: IS_REMOTE ? storedNumber(REMOTE_FONT_SCALE_KEY, 1) : 1,
+    hostFontScale: Number(document.body.style.getPropertyValue("--chat-zoom")) || 1,
+    remoteTts: IS_REMOTE && storedBool(REMOTE_TTS_KEY, false),
+    readRepliesAloud: false,
+    remotePreferencesSupported: false,
+    ttsTurnText: "",
     // Render MIRROR of the focused session's host-owned send queue (#37) —
     // messages typed/dictated while Grok was busy. All mutations route through
     // the host (queueSend/dequeueSend/clearQueuedSends) and come back as a
@@ -161,6 +197,7 @@
     // consumed, not entries shown; hidden subagent sessions occupy slots).
     sessionNextOffset: null,
     replaying: false,
+    replayDepth: 0,
     // Live ask_user_question tool calls (toolCallId → {questions, fromReplay}).
     // grok emits a tool_call alongside the live x.ai/ask_user_question request; we
     // stash it to suppress the generic tool chip (the interactive card from
@@ -482,7 +519,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1699,7 +1736,7 @@
     // Show thinking traces (#26) — a switcher; off by default keeps grok's
     // reasoning out of the way, on reveals it (incl. on already-loaded sessions).
     addGearItem(
-      `<span>Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
+      `<span title="Show Grok's reasoning (thinking) traces in chat, including on already-loaded sessions. Off by default — a lightweight &quot;Thinking…&quot; indicator stands in while Grok reasons.">Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.showThinking = !state.showThinking;
         applyThinkingVisibility();
@@ -1707,6 +1744,26 @@
         renderConfigDebugPanel(); // re-render so the switch reflects the new state
       },
     );
+    if (IS_REMOTE) {
+      const fontRow = document.createElement("div");
+      fontRow.className = "toolbar-popover-item remote-font-row";
+      fontRow.innerHTML =
+        `<label for="remote-font-scale" title="Chat text size on this device only. Independent of VS Code's own zoom — the desktop's setting never affects AFK Pilot.">Text size</label>` +
+        `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="AFK Pilot text size">` +
+        `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
+      const slider = fontRow.querySelector("input");
+      const output = fontRow.querySelector("output");
+      slider.oninput = () => {
+        output.textContent = `${slider.value}%`;
+      };
+      slider.onchange = () => {
+        state.remoteFontScale = Number(slider.value) / 100;
+        storeRemotePref(REMOTE_FONT_SCALE_KEY, state.remoteFontScale);
+        applyChatZoom();
+        reportRemotePreferences();
+      };
+      gearPopover.appendChild(fontRow);
+    }
     // Expand tool details (#41/#45) — the persisted default: pre-open every tool
     // detail surface (a command's IN/OUT block, an edit's inline diff) + the
     // groups that hold one. Named to match the "Expand/Collapse All Tool Details"
@@ -1714,7 +1771,7 @@
     // setting takes over (last action wins). Persisted via grok.expandCommandOutputs
     // (the key is unchanged — only the user-facing label widened).
     addGearItem(
-      `<span>Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
+      `<span title="Pre-open each command's IN/OUT block and each edit's inline diff by default, instead of clicking a row (›) to expand it. Edit rows always show a +N −M change count either way.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.expandCommandOutputs = !state.expandCommandOutputs;
         state.toolExpandOverride = null;
@@ -1750,6 +1807,24 @@
         renderConfigDebugPanel();
       },
     );
+    if (ttsAvailable) {
+      const enabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
+      addGearItem(
+        `<span title="Read completed Grok replies aloud. Code blocks are skipped.">Read replies aloud</span><span class="popover-switch${enabled ? " on" : ""}" role="switch" aria-checked="${enabled}"><span class="popover-switch-knob"></span></span>`,
+        () => {
+          if (IS_REMOTE) {
+            setRemoteTtsEnabled(!state.remoteTts);
+          } else {
+            state.readRepliesAloud = !state.readRepliesAloud;
+            vscode.postMessage({ type: "setReadRepliesAloud", value: state.readRepliesAloud });
+            if (!state.readRepliesAloud && window.speechSynthesis) window.speechSynthesis.cancel();
+          }
+          renderConfigDebugPanel();
+        },
+      );
+    } else {
+      addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
+    }
     // Opening host config files, the MCP list, and the extension log channel are
     // all host-local (the messages are policy-dropped on remotes) — hide the whole
     // section in the browser client rather than show dead links.
@@ -2310,6 +2385,7 @@
     state.thoughtBuffer = "";
     state.activeToolGroupEl = null;
     state.replaying = false;
+    state.replayDepth = 0;
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
@@ -2982,6 +3058,19 @@
     body.hidden = !open;
     el.classList.toggle("expanded", open);
   }
+
+  function revealToolDiff(toolCallId) {
+    const item = state.toolItemsByToolCallId.get(toolCallId);
+    if (!item) return false;
+    const details = item.querySelector(".tool-item-diff");
+    if (!details) return false;
+    const group = item.closest(".tool-group");
+    if (group) setGroupExpanded(group, true);
+    setDetailExpanded(item, true);
+    item.scrollIntoView({ block: "nearest" });
+    return true;
+  }
+
   function setDetailExpanded(row, open) {
     const d = row.querySelector(".tool-item-details");
     if (!d) return;
@@ -4140,6 +4229,7 @@
       state.activeAgentRaw = "";
     }
     state.activeAgentRaw += text;
+    if (!state.replaying) state.ttsTurnText += text;
     if (!state.agentRenderScheduled) {
       state.agentRenderScheduled = true;
       requestAnimationFrame(flushAgent);
@@ -4155,6 +4245,47 @@
     const wrapper = state.activeAgentEl.parentElement;
     if (wrapper) wrapper._copyText = state.activeAgentRaw;
     scrollToBottom();
+  }
+
+  function applyChatZoom() {
+    const zoom = IS_REMOTE ? state.remoteFontScale : state.hostFontScale;
+    document.body.style.setProperty("--chat-zoom", String(zoom));
+  }
+
+  function setRemoteTtsEnabled(enabled) {
+    const next = !!enabled;
+    if (state.remoteTts === next) return next;
+    state.remoteTts = next;
+    storeRemotePref(REMOTE_TTS_KEY, state.remoteTts);
+    if (!state.remoteTts && window.speechSynthesis) window.speechSynthesis.cancel();
+    window.dispatchEvent(new CustomEvent("grokRemoteTtsChange", {
+      detail: { available: ttsAvailable, enabled: state.remoteTts },
+    }));
+    reportRemotePreferences();
+    return state.remoteTts;
+  }
+
+  function reportRemotePreferences() {
+    if (!IS_REMOTE || !state.remotePreferencesSupported) return;
+    vscode.postMessage({
+      type: "remotePreferences",
+      fontScale: Math.round(state.remoteFontScale * 100),
+      readRepliesAloud: state.remoteTts,
+      usesTouch: remoteUsesTouchComposer(),
+    });
+  }
+
+  function speakCompletedTurn() {
+    const enabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
+    if (!enabled || !ttsAvailable || !state.ttsTurnText) {
+      state.ttsTurnText = "";
+      return;
+    }
+    const text = spokenTextFromMarkdown(state.ttsTurnText);
+    state.ttsTurnText = "";
+    if (!text) return;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(text));
   }
 
   // Finalize the current agent turn (flush buffers, stamp the "Thought for Ns"
@@ -4591,16 +4722,20 @@
       subtitle.textContent = `${diff.path} — ${oldLines} → ${newLines} lines`;
       el.appendChild(subtitle);
 
-      const openDiff = () => vscode.postMessage(openDiffMessage(diff, req.id));
+      const openDiff = () => {
+        if (IS_REMOTE) revealToolDiff(req.toolCall?.toolCallId);
+        else vscode.postMessage(openDiffMessage(diff, req.id));
+      };
       const preview = document.createElement("button");
       preview.className = "preview-link";
-      // Auto-opens below; the button stays so you can re-open if you closed it.
+      // VS Code keeps a re-open action for its native preview; AFK Pilot uses
+      // the same control to reveal the inline diff in the tool row above.
       preview.textContent = "open diff →";
       preview.onclick = openDiff;
       el.appendChild(preview);
-      // Open the diff automatically when the card appears, so reviewing an edit
-      // is one glance + one click on the decision — no "open diff" step (#21).
-      openDiff();
+      // Auto-open only where a native editor exists. Moving a remote transcript
+      // on card arrival is disorienting; its explicit tap expands inline.
+      if (!IS_REMOTE) openDiff();
     }
 
     const actions = document.createElement("div");
@@ -5470,9 +5605,13 @@
     micBtn.classList.toggle("listening", state.mic === "listening");
     micBtn.classList.toggle("transcribing", state.mic === "transcribing");
     micBtn.classList.toggle("connecting", state.mic === "connecting");
-    if (state.mic === "listening") {
+    if (IS_REMOTE && !browserRecognitionCtor()) {
+      micBtn.innerHTML = ICON.mic;
+      micBtn.title = "Dictation is not supported by this browser";
+      micBtn.disabled = true;
+    } else if (state.mic === "listening") {
       micBtn.innerHTML = ICON.micWaves;
-      micBtn.title = "Listening — say 'grok send' to submit, or click to stop";
+      micBtn.title = IS_REMOTE ? "Listening — click to stop dictating" : "Listening — say 'grok send' to submit, or click to stop";
       micBtn.disabled = false;
     } else if (state.mic === "connecting") {
       micBtn.innerHTML = ICON.spinner;
@@ -5490,7 +5629,7 @@
       micBtn.disabled = false;
     }
     // "needs setup" dot only when idle and no key is configured.
-    micBtn.classList.toggle("needs-setup", state.mic === "idle" && !state.voiceConfigured);
+    micBtn.classList.toggle("needs-setup", !IS_REMOTE && state.mic === "idle" && !state.voiceConfigured);
   }
 
   function setMic(event) {
@@ -5499,6 +5638,10 @@
   }
 
   function toggleMic() {
+    if (IS_REMOTE) {
+      toggleBrowserMic();
+      return;
+    }
     if (state.mic === "idle") {
       // Skip the optimistic "listening" flash when we know no key is set — the
       // host will pop the setup guidance instead of recording. Still send
@@ -5515,6 +5658,62 @@
       vscode.postMessage({ type: "voiceStop" });
     }
     // "transcribing": ignore clicks until the transcript or an error arrives.
+  }
+
+  let browserRecognition = null;
+  let browserTranscript = "";
+
+  function browserRecognitionCtor() {
+    return window.SpeechRecognition || window.webkitSpeechRecognition;
+  }
+
+  function toggleBrowserMic() {
+    const Recognition = browserRecognitionCtor();
+    if (!Recognition) return;
+    if (state.mic === "listening") {
+      if (browserRecognition) browserRecognition.stop();
+      return;
+    }
+    if (state.mic !== "idle") return;
+
+    state.voiceBase = input.value;
+    browserTranscript = "";
+    const recognition = new Recognition();
+    browserRecognition = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event) => {
+      let finalText = "";
+      let interimText = "";
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result && result[0] && result[0].transcript ? result[0].transcript : "";
+        if (result.isFinal) finalText += text;
+        else interimText += text;
+      }
+      browserTranscript = finalText;
+      input.value = composeVoiceTail(state.voiceBase, finalText + interimText);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    recognition.onerror = () => {
+      browserRecognition = null;
+      setMic("error");
+    };
+    recognition.onend = () => {
+      browserRecognition = null;
+      if (browserTranscript) input.value = composeVoiceTail(state.voiceBase, browserTranscript);
+      setMic("error");
+      input.focus();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    state.mic = "listening";
+    renderMic();
+    try {
+      recognition.start();
+    } catch {
+      browserRecognition = null;
+      setMic("error");
+    }
   }
 
   // Append a transcript to whatever's typed (batch mode — one-shot result).
@@ -5742,6 +5941,13 @@
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
         if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
+        if (typeof msg.readRepliesAloud === "boolean") {
+          state.readRepliesAloud = msg.readRepliesAloud;
+          if (IS_REMOTE && !state.remotePreferencesSupported) {
+            state.remotePreferencesSupported = true;
+            reportRemotePreferences();
+          }
+        }
         applyThinkingVisibility();
         break;
       case "remoteStatus":
@@ -5758,6 +5964,15 @@
         state.soundNotifications = !!msg.value;
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
+      case "readRepliesAloud": {
+        const wasEnabled = state.readRepliesAloud;
+        state.readRepliesAloud = !!msg.value;
+        if (wasEnabled && !state.readRepliesAloud && !IS_REMOTE && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+        if (state.gearView === "config") renderConfigDebugPanel();
+        break;
+      }
       case "showThinking":
         // Live toggle (grok.showThinking). Initial value also arrives via
         // initialState + is baked into the <body class> by the host to avoid a flash.
@@ -5770,7 +5985,8 @@
         // <body style="--chat-zoom:…"> by the host; this just applies later edits.
         // The CSS derives both `zoom` and the viewport-height compensation from
         // this one variable, so the composer stays pinned to the bottom.
-        document.body.style.setProperty("--chat-zoom", String(msg.value || 1));
+        state.hostFontScale = Number(msg.value) || 1;
+        applyChatZoom();
         break;
       case "focusInput":
         // Send Selection / Send File / @-mention (#43): the host revealed the
@@ -5887,6 +6103,7 @@
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId);
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
         updateDonut(0);
+        reportRemotePreferences();
         break;
       }
       case "modelChanged": {
@@ -6011,6 +6228,7 @@
         // follow-up). Show "Grokking…" until the first real content replaces it.
         // The silent primer never emits agentStart, so it never shows here.
         state.turnAgentActionsEl = null; // new turn → previous turn keeps its footer
+        state.ttsTurnText = "";
         showGrokking();
         // Busy is event-sourced through the session buffer so a re-focus lands
         // on the true state: agentStart marks a turn in flight (a live send
@@ -6034,11 +6252,23 @@
         break;
       case "historyReplay":
         if (msg.active) {
+          if (state.replayDepth === 0) {
+            state.suppressReplayTurn = false; // fresh outer replay starts unsuppressed
+          }
+          state.replayDepth += 1;
           state.replaying = true;
-          state.suppressReplayTurn = false; // fresh replay starts unsuppressed
         } else {
+          if (state.replayDepth === 0) break;
+          const inFlightSpeech = state.busy ? state.activeAgentRaw : "";
           commitAgentTurn(); // finalize the last turn while still flagged as replay
+          state.replayDepth -= 1;
+          if (state.replayDepth > 0) break;
           state.replaying = false;
+          // A remote snapshot can end while its latest turn is still running.
+          // Seed the already-rendered prefix only in that case, so the eventual
+          // live agentEnd speaks the complete reply. Finished buffered turns
+          // remain empty and can never be re-spoken on reconnect.
+          state.ttsTurnText = inFlightSpeech;
           state.suppressReplayTurn = false; // replay over → no longer suppressing
           // Anything left in the queue is either legacy (no afterUserMessage)
           // or was resolved after the final user message of the session. Render
@@ -6383,7 +6613,8 @@
         state.busy = false;
         state.busyLocked = false; // an error ends any startup lock too
         updateSendButton();
-        maybeNotifySound("error"); // #59 — only when the panel isn't focused
+        if (!state.replaying) maybeNotifySound("error"); // #59 — live turns only, and only when away
+        state.ttsTurnText = "";
         break;
       case "agentEnd":
         hideGrokking(); // turn ended (defensive — content normally clears it first)
@@ -6395,7 +6626,8 @@
         revealTurnFooter();
         state.busy = false;
         updateSendButton();
-        maybeNotifySound("done"); // #59 — only when the panel isn't focused
+        if (!state.replaying) maybeNotifySound("done"); // #59 — live turns only, and only when away
+        speakCompletedTurn();
         break;
       case "exit":
         hideGrokking();
@@ -6821,7 +7053,7 @@
     }
     const sendKey = state.useCtrlEnter
       ? e.key === "Enter" && (e.metaKey || e.ctrlKey)
-      : e.key === "Enter" && !e.shiftKey;
+      : !remoteUsesTouchComposer() && e.key === "Enter" && !e.shiftKey;
     if (sendKey) {
       e.preventDefault();
       if (state.busy) {
@@ -6886,7 +7118,18 @@
   });
   input.focus();
 
+  if (IS_REMOTE) {
+    // Host-page TTS seam; changes also emit `grokRemoteTtsChange` with { available, enabled }.
+    window.grokRemoteTts = Object.freeze({
+      get available() { return ttsAvailable; },
+      get enabled() { return state.remoteTts; },
+      setEnabled: setRemoteTtsEnabled,
+      toggle: () => setRemoteTtsEnabled(!state.remoteTts),
+    });
+  }
+  applyChatZoom();
   initMermaid();
   initMathJax();
   vscode.postMessage({ type: "ready" });
+  reportRemotePreferences();
 })();

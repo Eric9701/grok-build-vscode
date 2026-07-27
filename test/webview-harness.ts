@@ -64,7 +64,11 @@ export interface Harness {
   doc: Document;
 }
 
-export function bootWebview(opts: { ready?: boolean; remote?: boolean } = {}): Harness {
+export function bootWebview(opts: {
+  ready?: boolean;
+  remote?: boolean;
+  beforeScripts?: (window: Window) => void;
+} = {}): Harness {
   const window = new Window({ url: "https://localhost/" });
   const posted: Posted[] = [];
   (window as any).acquireVsCodeApi = () => ({
@@ -77,6 +81,7 @@ export function bootWebview(opts: { ready?: boolean; remote?: boolean } = {}): H
   // What the relay's chat.html sets before loading chat.js. Gates the remote-only
   // affordances (repo switcher) and suppresses the host-only ones.
   if (opts.remote) (window as any).grokRemoteClient = true;
+  if (opts.beforeScripts) opts.beforeScripts(window);
   (window as any).eval(helperSrc);
   (window as any).eval(chatSrc);
   // The webview now boots busy+locked (startup spinner) and only goes idle once

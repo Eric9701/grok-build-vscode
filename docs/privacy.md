@@ -12,7 +12,9 @@ The event carries:
 |---|---|---|
 | Anonymous **install id** | a random GUID generated once on your machine | count distinct installs — **not** your account, email, or grok login |
 | **mode / model / effort** | `agent` / `grok-build` / `high` | which features are used |
-| **Feature flags** | `showThinking: false`, `expandToolDetails: false`, `steerByDefault: true` | whether the defaults we picked are the ones people keep — three on/off settings, nothing more |
+| **Local UI preferences** | `showThinking: false`, `expandToolDetails: false`, `steerByDefault: true`, `chatFontScale: 100`, `readRepliesAloud: false`, `soundNotifications: false` | whether the webview defaults we picked are the ones people keep |
+| **AFK Pilot UI preferences** (when reported by a connected browser) | `remoteFontScale: 140`, `remoteReadRepliesAloud: true` | whether remote users adjust text size or enable spoken replies; omitted when no browser reports them |
+| **Session origin / client device** | `sessionOrigin: remote`, `clientDevice: mobile` | whether the first message came from VS Code or AFK Pilot, and whether that client was a desktop browser or looked touch/mobile; local VS Code sessions are always desktop |
 | **Host app** | `Visual Studio Code`, `Cursor` | the extension runs in several VS Code forks that behave differently; this shows which ones actually need supporting |
 | **OS** + extension **version** | `Windows` / `1.6.1` | platform/version split |
 | **Country** | derived by Aptabase from your IP | rough geography |

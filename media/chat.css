@@ -2108,7 +2108,11 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .card-actions button:last-child { border-bottom: none; }
 .card-actions button:hover { background: var(--vscode-list-hoverBackground); }
 .card-actions button.primary { font-weight: 600; }
-.card-actions button.danger { color: var(--vscode-errorForeground); }
+.card-actions button.danger {
+  color: var(--vscode-errorForeground);
+  margin-top: 10px;
+  border-top: 1px solid var(--vscode-editorWidget-border);
+}
 .card-actions button:disabled { opacity: 0.4; cursor: default; }
 .card.resolved { opacity: 0.5; border-left-color: var(--vscode-editorWidget-border); }
 
@@ -2415,7 +2419,8 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   align-items: center;
   border-radius: 4px;
 }
-.repo-row:hover, .repo-row.selected { background: var(--vscode-list-hoverBackground); }
+.repo-row:hover { background: var(--vscode-list-hoverBackground); }
+.repo-row.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); }
 .repo-row.unavailable { opacity: 0.62; }
 .repo-row-main {
   flex: 1;
@@ -2840,6 +2845,20 @@ mjx-container[display="true"] {
   .card button.question-option { padding: 12px 14px; }
   .card .question-option-desc { font-size: 13px; }
   .card-actions button { padding: 13px 14px; font-size: 14px; }
+  .card-actions button.danger { margin-top: 16px; }
+}
+
+.remote-font-row {
+  cursor: default;
+  gap: 8px;
+}
+.remote-font-row label { flex: none; }
+.remote-font-row input { min-width: 80px; flex: 1; }
+.remote-font-row output {
+  min-width: 38px;
+  color: var(--vscode-descriptionForeground);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Phones: "Last turn" is billing diagnostics — hide it in the donut's context

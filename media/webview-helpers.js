@@ -23,11 +23,11 @@
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "restoreComposer", "truncateMessages", "uiConfirmRequest", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions", "repos",
-    "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault", "soundNotifications",
+    "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault", "soundNotifications", "readRepliesAloud",
     "remoteStatus",
   ];
   const WEBVIEW_MESSAGE_TYPES = [
-    "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
+    "ready", "remotePreferences", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
     "toggleChip", "openFile", "openUrl", "openText", "openDiff", "exportExpr", "setEffort",
     "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "moveView",
     "setShowThinking", "setExpandCommandOutputs",
@@ -36,7 +36,7 @@
     "recheckConnection", "listSessions", "selectRepo", "toggleRepoPin", "resumeSession", "renameSession", "deleteSession",
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
-    "setSoundNotifications",
+    "setSoundNotifications", "setReadRepliesAloud",
     "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "editLastMessage", "uiConfirmAnswer", "workflowControl",
     "remoteSignIn", "remoteSignOut", "openRemotePortal",
   ];
@@ -691,6 +691,21 @@
     return typeof e.key === "string" && e.key.length === 1;
   }
 
+  // Browser TTS receives raw Markdown, not the rendered DOM. Omit fenced code
+  // entirely, then flatten the remaining lightweight Markdown into speech.
+  function spokenTextFromMarkdown(markdown) {
+    return String(markdown || "")
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/~~~[\s\S]*?~~~/g, " ")
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s+/gm, "")
+      .replace(/[*_~`]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function computeLineDiff(oldText, newText, opts) {
     const maxProduct = (opts && opts.maxProduct) || 4000000; // ~2000×2000 line cap
     const norm = (t) => (t == null ? "" : String(t).replace(/\r\n?/g, "\n"));
@@ -741,7 +756,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

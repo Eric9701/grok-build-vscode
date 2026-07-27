@@ -1,8 +1,9 @@
 // Privacy-first, cookieless usage telemetry via Aptabase. We send exactly ONE
 // event — `session_start`, on the first real user message of a session (never
 // the primer / empty sessions) — carrying only an anonymous install id + the
-// chosen mode/model/effort. No content (prompts, code, paths) is ever sent, and
-// the IP is used by Aptabase only to derive country, then discarded. The whole
+// chosen mode/model/effort + UI configuration. No content (prompts, code, paths)
+// is ever sent, and the IP is used by Aptabase only to derive country, then
+// discarded. The whole
 // thing is gated on VS Code's global telemetry setting + `grok.telemetry.enabled`.
 //
 // This module is pure + fire-and-forget: the builders have no I/O (unit-tested),
@@ -41,11 +42,20 @@ export interface SessionStartProps {
   mode: string;
   model: string;
   effort: string;
-  /** The three webview-only feature flags, so we can see which defaults people
-   *  actually keep. Booleans, no content. Disclosed in docs/privacy.md. */
+  /** Webview-only configuration, so we can see which defaults people keep.
+   *  Values only, no content. Disclosed in docs/privacy.md. */
   showThinking: boolean;
   expandToolDetails: boolean;
   steerByDefault: boolean;
+  /** Effective local VS Code chat zoom, as a displayed percentage. */
+  chatFontScale: number;
+  readRepliesAloud: boolean;
+  soundNotifications: boolean;
+  sessionOrigin: "local" | "remote";
+  clientDevice: "desktop" | "mobile";
+  /** Browser-owned AFK Pilot preferences. Omitted until a remote reports them. */
+  remoteFontScale?: number;
+  remoteReadRepliesAloud?: boolean;
   /** Host application name (`vscode.env.appName`) — "Visual Studio Code",
    *  "Cursor", "Antigravity", … The extension runs in several forks whose
    *  behavior differs (see § Known limits: Cursor's Move-view gap, Antigravity's
@@ -94,6 +104,18 @@ export function shouldSendTelemetry(
   return globalEnabled && settingEnabled && isOfficialBuild;
 }
 
+/** Classify the surface that sent a session's first message. Local VS Code is
+ * always desktop; AFK Pilot uses its coarse-pointer/hover touch signal. */
+export function sessionStartSurface(
+  origin: "local" | "remote",
+  remoteUsesTouch?: boolean,
+): Pick<SessionStartProps, "sessionOrigin" | "clientDevice"> {
+  return {
+    sessionOrigin: origin,
+    clientDevice: origin === "remote" && remoteUsesTouch ? "mobile" : "desktop",
+  };
+}
+
 /** Build the Aptabase `session_start` event body. Pure — no clock, no network;
  *  the caller supplies `sessionId` + `timestamp` so it's deterministic in tests. */
 export function buildSessionStartEvent(
@@ -122,6 +144,15 @@ export function buildSessionStartEvent(
       showThinking: props.showThinking,
       expandToolDetails: props.expandToolDetails,
       steerByDefault: props.steerByDefault,
+      chatFontScale: props.chatFontScale,
+      readRepliesAloud: props.readRepliesAloud,
+      soundNotifications: props.soundNotifications,
+      sessionOrigin: props.sessionOrigin,
+      clientDevice: props.clientDevice,
+      ...(props.remoteFontScale !== undefined ? { remoteFontScale: props.remoteFontScale } : {}),
+      ...(props.remoteReadRepliesAloud !== undefined
+        ? { remoteReadRepliesAloud: props.remoteReadRepliesAloud }
+        : {}),
       // Omitted, never sent as "" — an absent host is unknown, not blank.
       ...(props.host ? { host: props.host } : {}),
     },

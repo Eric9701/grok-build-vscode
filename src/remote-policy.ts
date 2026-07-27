@@ -12,6 +12,16 @@
 
 import type { HostMsg, WebviewMsg } from "./protocol";
 
+/** Mark a reconnect snapshot as replayed UI state. Buffers may already contain
+ * their own load-session replay brackets, so the webview treats these as nested. */
+export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
+  return [
+    { type: "historyReplay", active: true },
+    ...buffer,
+    { type: "historyReplay", active: false },
+  ];
+}
+
 // ---------- inbound: WebviewMsg from a remote client ----------
 
 /** Capability tier of a remote connection (design doc § Trust model). v1 ships
@@ -35,6 +45,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // transport
   ready: "control",
   // view (read-only+)
+  remotePreferences: "view",
   listSessions: "view",
   selectRepo: "view",
   toggleRepoPin: "full",
@@ -116,6 +127,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setExpandCommandOutputs: "host-local",
   setSteerByDefault: "host-local",
   setSoundNotifications: "host-local",
+  setReadRepliesAloud: "host-local",
   // relay account actions (link/unlink/portal) manage THIS machine's device
   // token — only the local webview may drive them
   remoteSignIn: "host-local",
@@ -254,6 +266,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
   soundNotifications: "mirror",
+  readRepliesAloud: "host-local",
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",
   focusInput: "mirror",

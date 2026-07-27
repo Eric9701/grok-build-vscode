@@ -7,10 +7,17 @@ import { HOST_MESSAGE_TYPES as JS_HOST, WEBVIEW_MESSAGE_TYPES as JS_WEBVIEW } fr
 // chat.js is loaded as a raw <script> in the webview, so there's nothing to import
 // — we assert against its source text instead.
 const chatSrc = readFileSync(new URL("../media/chat.js", import.meta.url), "utf8");
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 const sorted = (a: readonly string[]) => [...a].sort();
 
 describe("host <-> webview message contract (src/protocol.ts is the source of truth)", () => {
+  it("keeps the fresh local read-aloud configuration default off", () => {
+    expect(
+      packageJson.contributes.configuration.properties["grok.readRepliesAloud"].default,
+    ).toBe(false);
+  });
+
   it("the webview's host-message list matches the TS union exactly", () => {
     // Guards the "post one shape, handle another" class: if the two copies drift,
     // the host could post a type the webview silently drops (or vice versa).

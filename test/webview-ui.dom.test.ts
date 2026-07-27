@@ -1179,6 +1179,52 @@ describe("thinking traces toggle (#26)", () => {
     toggle = soundToggle();
     expect(toggle.querySelector(".popover-switch.on")).toBeNull();
   });
+
+  it("defaults local read-aloud off, then speaks completed replies and posts its VS Code setting", () => {
+    const spoken: string[] = [];
+    let cancellations = 0;
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window, posted, doc } = bootWebview({
+      beforeScripts: (w) => {
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = {
+          cancel() { cancellations += 1; },
+          speak(value: Utterance) { spoken.push(value.text); },
+        };
+      },
+    });
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      effort: "",
+      cwd: "/x",
+      extVersion: "2.0.9",
+      readRepliesAloud: false,
+    });
+    click(window, $(doc, "gear-btn"));
+    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Config & debug"),
+    ) as HTMLElement;
+    click(window, cfg);
+    const readAloudToggle = () => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Read replies aloud"),
+    ) as HTMLElement;
+
+    expect(readAloudToggle().querySelector(".popover-switch.on")).toBeNull();
+    dispatch(window, { type: "readRepliesAloud", value: true });
+    expect(readAloudToggle().querySelector(".popover-switch.on")).not.toBeNull();
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "Finished.\n```js\nhidden();\n```" });
+    dispatch(window, { type: "agentEnd" });
+    expect(spoken).toEqual(["Finished."]);
+
+    click(window, readAloudToggle());
+    expect(posted.some((p) => p.type === "setReadRepliesAloud" && p.value === false)).toBe(true);
+    expect(cancellations).toBe(2); // once before speaking, once when toggled off
+    expect(readAloudToggle().querySelector(".popover-switch.on")).toBeNull();
+  });
 });
 
 describe("gear menu — worktree/rewind gating (#65)", () => {

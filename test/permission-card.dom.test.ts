@@ -62,6 +62,26 @@ describe("permission card diff preview (real chat.js in a DOM)", () => {
     expect(openDiffs[1].requestId).toBe(9);
   });
 
+  it("expands the existing inline tool diff instead of posting a native editor action remotely", () => {
+    const { window, posted, doc } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "tc1", kind: "edit", title: "Edit src/foo.ts" },
+    });
+    seedDiffAndCard(window, 10);
+
+    const details = doc.querySelector(".tool-item-diff") as HTMLElement;
+    expect(details).not.toBeNull();
+    expect(details.hidden).toBe(true);
+    expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(0);
+
+    click(window, doc.querySelector(".card.permission .preview-link")!);
+
+    expect(details.hidden).toBe(false);
+    expect(doc.querySelector(".tool-group-body")!.hasAttribute("hidden")).toBe(false);
+    expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(0);
+  });
+
   it("answering carries the same requestId so the host can close the auto-opened tab", () => {
     const { window, posted, doc } = bootWebview();
     seedDiffAndCard(window, 11);

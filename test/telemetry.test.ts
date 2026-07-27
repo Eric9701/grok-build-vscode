@@ -4,6 +4,7 @@ import {
   osNameFromPlatform,
   shouldSendTelemetry,
   buildSessionStartEvent,
+  sessionStartSurface,
   postEvent,
   APTABASE_APP_KEY_PROD,
   APTABASE_APP_KEY_DEV,
@@ -31,7 +32,12 @@ describe("postEvent never throws (telemetry can't impact the user)", () => {
   });
   it("is a no-op for an app key with no resolvable region (no network, no throw)", () => {
     const ev = buildSessionStartEvent(
-      { installId: "i", mode: "agent", model: "m", effort: "", showThinking: false, expandToolDetails: false, steerByDefault: false },
+      {
+        installId: "i", mode: "agent", model: "m", effort: "",
+        showThinking: false, expandToolDetails: false, steerByDefault: false,
+        chatFontScale: 100, readRepliesAloud: false,
+        soundNotifications: false, sessionOrigin: "local", clientDevice: "desktop",
+      },
       { appVersion: "1", osName: "macOS", osVersion: "1", locale: "en", isDebug: true },
       "s",
       "2026-06-29T00:00:00.000Z",
@@ -67,6 +73,23 @@ describe("shouldSendTelemetry — all gates must allow", () => {
   });
 });
 
+describe("sessionStartSurface", () => {
+  it("classifies local as desktop and splits remote touch from desktop browsers", () => {
+    expect(sessionStartSurface("local", true)).toEqual({
+      sessionOrigin: "local",
+      clientDevice: "desktop",
+    });
+    expect(sessionStartSurface("remote", false)).toEqual({
+      sessionOrigin: "remote",
+      clientDevice: "desktop",
+    });
+    expect(sessionStartSurface("remote", true)).toEqual({
+      sessionOrigin: "remote",
+      clientDevice: "mobile",
+    });
+  });
+});
+
 describe("buildSessionStartEvent", () => {
   const sys = {
     appVersion: "1.4.24",
@@ -75,7 +98,20 @@ describe("buildSessionStartEvent", () => {
     locale: "en",
     isDebug: false,
   };
-  const props = { installId: "abc-123", mode: "yolo", model: "grok-build", effort: "high" };
+  const props = {
+    installId: "abc-123",
+    mode: "yolo",
+    model: "grok-build",
+    effort: "high",
+    showThinking: false,
+    expandToolDetails: false,
+    steerByDefault: false,
+    chatFontScale: 100,
+    readRepliesAloud: false,
+    soundNotifications: false,
+    sessionOrigin: "local" as const,
+    clientDevice: "desktop" as const,
+  };
   const ev = buildSessionStartEvent(props, sys, "sess-1", "2026-06-29T00:00:00.000Z");
 
   it("emits a single session_start with the supplied id + timestamp", () => {
@@ -90,6 +126,14 @@ describe("buildSessionStartEvent", () => {
       mode: "yolo",
       model: "grok-build",
       effort: "high",
+      showThinking: false,
+      expandToolDetails: false,
+      steerByDefault: false,
+      chatFontScale: 100,
+      readRepliesAloud: false,
+      soundNotifications: false,
+      sessionOrigin: "local",
+      clientDevice: "desktop",
     });
   });
 
@@ -101,13 +145,23 @@ describe("buildSessionStartEvent", () => {
   });
 });
 
-// The three webview feature flags + the host app ride session_start so we can see
+// Webview configuration + the host app ride session_start so we can see
 // which defaults people keep and which VS Code fork they're on (the extension
 // behaves differently across Cursor / Antigravity). Config values and an app
 // name — the same class of anonymous property as mode/model/effort, never content.
 describe("session_start — feature flags + host (analytics)", () => {
   const sys = { appVersion: "1", osName: "Windows", osVersion: "10", locale: "en", isDebug: false };
-  const base = { installId: "i", mode: "agent", model: "grok-4.5", effort: "high" };
+  const base = {
+    installId: "i",
+    mode: "agent",
+    model: "grok-4.5",
+    effort: "high",
+    chatFontScale: 125,
+    readRepliesAloud: true,
+    soundNotifications: true,
+    sessionOrigin: "local" as const,
+    clientDevice: "desktop" as const,
+  };
 
   it("carries the three flags and the host name", () => {
     const ev = buildSessionStartEvent(
@@ -118,7 +172,37 @@ describe("session_start — feature flags + host (analytics)", () => {
       showThinking: true,
       expandToolDetails: false,
       steerByDefault: true,
+      chatFontScale: 125,
+      readRepliesAloud: true,
+      soundNotifications: true,
+      sessionOrigin: "local",
+      clientDevice: "desktop",
       host: "Cursor",
+    });
+  });
+
+  it("includes reported AFK Pilot preferences without replacing the local values", () => {
+    const ev = buildSessionStartEvent(
+      {
+        ...base,
+        showThinking: false,
+        expandToolDetails: true,
+        steerByDefault: false,
+        remoteFontScale: 140,
+        remoteReadRepliesAloud: false,
+        sessionOrigin: "remote",
+        clientDevice: "mobile",
+      },
+      sys, "s", "2026-07-17T00:00:00.000Z",
+    );
+    expect(ev.props).toMatchObject({
+      chatFontScale: 125,
+      readRepliesAloud: true,
+      remoteFontScale: 140,
+      remoteReadRepliesAloud: false,
+      sessionOrigin: "remote",
+      clientDevice: "mobile",
+      expandToolDetails: true,
     });
   });
 
@@ -137,9 +221,15 @@ describe("session_start — feature flags + host (analytics)", () => {
     );
     expect(ev.props.showThinking).toBe(false);
     expect(ev.props.steerByDefault).toBe(false);
+    expect("remoteFontScale" in ev.props).toBe(false);
+    expect("remoteReadRepliesAloud" in ev.props).toBe(false);
     // Still no content, ever — only the anonymous install id and config values.
     expect(Object.keys(ev.props).sort()).toEqual(
-      ["effort", "expandToolDetails", "host", "installId", "mode", "model", "showThinking", "steerByDefault"],
+      [
+        "chatFontScale", "clientDevice", "effort", "expandToolDetails", "host",
+        "installId", "mode", "model", "readRepliesAloud", "sessionOrigin",
+        "showThinking", "soundNotifications", "steerByDefault",
+      ],
     );
   });
 });

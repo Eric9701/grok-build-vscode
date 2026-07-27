@@ -19,6 +19,7 @@ import {
   buildSessionStartEvent,
   osNameFromPlatform,
   postEvent,
+  sessionStartSurface,
   shouldSendTelemetry,
   OFFICIAL_EXTENSION_ID,
 } from "./telemetry";
@@ -82,7 +83,7 @@ import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
 import { HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
-import { allowFromRemote, allowRemoteRepoTarget, repoScopeFor, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import {
@@ -286,7 +287,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     "initialState", "session", "modelChanged", "modeChanged", "chips",
     "contextUsage", "sessions", "repos", "queuedSends", "onboarding", "commandsUpdate",
     "grokUpdateStatus", "voiceConfigured", "fontScale", "showThinking", "expandCommandOutputs",
-    "soundNotifications",
+    "soundNotifications", "readRepliesAloud",
   ]);
   private cliPath?: string;
   /** History browsing scope. Deliberately independent of the live session cwd. */
@@ -396,6 +397,12 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.post({
           type: "soundNotifications",
           value: vscode.workspace.getConfiguration("grok").get<boolean>("soundNotifications", false),
+        });
+      }
+      if (e.affectsConfiguration("grok.readRepliesAloud")) {
+        this.post({
+          type: "readRepliesAloud",
+          value: vscode.workspace.getConfiguration("grok").get<boolean>("readRepliesAloud", false),
         });
       }
       if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
@@ -3081,8 +3088,25 @@ See design doc for the full state machine diagram.`;
         this.postInitialState();
         this.postRepoCatalog();
         break;
+      case "remotePreferences":
+        if (origin === "remote") {
+          if (
+            Number.isFinite(msg.fontScale) &&
+            msg.fontScale >= 80 &&
+            msg.fontScale <= 160
+          ) {
+            this.focused.remoteFontScale = msg.fontScale;
+          }
+          if (typeof msg.readRepliesAloud === "boolean") {
+            this.focused.remoteReadRepliesAloud = msg.readRepliesAloud;
+          }
+          if (typeof msg.usesTouch === "boolean") {
+            this.focused.remoteUsesTouch = msg.usesTouch;
+          }
+        }
+        break;
       case "send":
-        await this.handleSend(msg.text, msg.bare === true);
+        await this.handleSend(msg.text, msg.bare === true, undefined, origin);
         break;
       case "newSession":
         await this.newFocusedSession(origin);
@@ -3407,6 +3431,11 @@ See design doc for the full state machine diagram.`;
           .getConfiguration("grok")
           .update("soundNotifications", !!msg.value, vscode.ConfigurationTarget.Global);
         break;
+      case "setReadRepliesAloud":
+        await vscode.workspace
+          .getConfiguration("grok")
+          .update("readRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
+        break;
       case "runInstallCmd": {
         const term = vscode.window.createTerminal("Install Grok");
         term.show();
@@ -3593,8 +3622,10 @@ See design doc for the full state machine diagram.`;
     // Scoped to the SELECTED repo — that is what makes picking a repo define the
     // history scope. Its worktrees ride along (they are not repo rows of their
     // own), so a worktree session stays reachable after you leave it.
+    const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
+    const repoCwdKeys = new Set(repoCwds.map(normalizeFsPath));
     const index = mergeSessionIndexes(
-      this.sessionCwdsForRepo(cwd, overrides).map((c) => ({
+      repoCwds.map((c) => ({
         cwd: c,
         entries: indexSessions({ fs: defaultFs, grokHome, cwd: c, log }),
       })),
@@ -3646,6 +3677,11 @@ See design doc for the full state machine diagram.`;
     // yet on disk, pinned newest-first. Only on the first, unfiltered page: later pages are
     // disk-only, and a nameless not-yet-persisted session can't be matched by a search query.
     // These ids are never on disk, so they can't duplicate onto a later page when the user scrolls.
+    // Scoped to repoCwdKeys (same set `index` was built from) — a live pool session from a
+    // DIFFERENT repo (e.g. the still-focused session right after a remote repo switch) must
+    // not leak into this repo's list, or it masquerades as this repo's newest/active row and
+    // the remote auto-open shim mistakes it for an already-open match, never resuming/starting
+    // the session that actually belongs here.
     if (!query && offset === 0) {
       const onDisk = new Set(index.map((e) => e.id));
       const seen = new Set(pageEntries.map((e) => e.id));
@@ -3653,7 +3689,9 @@ See design doc for the full state machine diagram.`;
       for (const s of this.pool) {
         const id = s.activeSessionId;
         if (!id || onDisk.has(id) || seen.has(id)) continue;
-        const entry = this.liveSessionEntry(s, id, this.sessionCwd(s), overrides);
+        const sCwd = this.sessionCwd(s);
+        if (!repoCwdKeys.has(normalizeFsPath(sCwd))) continue;
+        const entry = this.liveSessionEntry(s, id, sCwd, overrides);
         if (s.worktree) entry.worktreeLabel = s.worktree.label;
         synthetic.push(entry);
         seen.add(id);
@@ -4104,7 +4142,7 @@ See design doc for the full state machine diagram.`;
    *  message of `session` (callers gate on isFirstSend, so primers/empty sessions
    *  never reach here). Respects VS Code's global telemetry setting + our own
    *  `grok.telemetry.enabled`; fully fire-and-forget. */
-  private reportSessionStart(session: Session): void {
+  private reportSessionStart(session: Session, origin: MsgOrigin): void {
     // Telemetry must NEVER affect the user's turn. Build the event synchronously
     // (so it captures THIS session's mode/model/effort — focus could move during
     // the turn's awaits), then fire it asynchronously off the send path and
@@ -4130,6 +4168,12 @@ See design doc for the full state machine diagram.`;
           showThinking: cfg.get<boolean>("showThinking", false),
           expandToolDetails: cfg.get<boolean>("expandCommandOutputs", false),
           steerByDefault: cfg.get<boolean>("steerByDefault", false),
+          chatFontScale: Math.round(this.chatFontScale() * 100),
+          readRepliesAloud: cfg.get<boolean>("readRepliesAloud", false),
+          soundNotifications: cfg.get<boolean>("soundNotifications", false),
+          remoteFontScale: session.remoteFontScale,
+          remoteReadRepliesAloud: session.remoteReadRepliesAloud,
+          ...sessionStartSurface(origin, session.remoteUsesTouch),
           host: vscode.env.appName || undefined,
         },
         {
@@ -4878,7 +4922,12 @@ See design doc for the full state machine diagram.`;
     this.postChips();
   }
 
-  private async handleSend(text: string, bare = false, target?: Session): Promise<void> {
+  private async handleSend(
+    text: string,
+    bare = false,
+    target?: Session,
+    origin: MsgOrigin = "local",
+  ): Promise<void> {
     // `target` lets a queued-send flush fire into a BACKGROUNDED session (its
     // turn ended while another was focused). Only the focused session may spawn
     // a client on demand; a background target without one has nothing to talk to.
@@ -4986,7 +5035,7 @@ See design doc for the full state machine diagram.`;
       session.firstUserMessageForTitle = text;
       // One `session_start` per session, on the first real user message — never
       // the primer (that takes a separate prompt path that doesn't set hasHistory).
-      this.reportSessionStart(session);
+      this.reportSessionStart(session, origin);
     }
     const sentChips = chips.filter((c) => !c.hidden);
     session.userMessageCount += 1;
@@ -5214,6 +5263,7 @@ See design doc for the full state machine diagram.`;
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       steerByDefault: cfg.get("steerByDefault", false),
       soundNotifications: cfg.get("soundNotifications", false),
+      readRepliesAloud: cfg.get("readRepliesAloud", false),
       capabilities: { uploadFile: true },
     };
   }
@@ -6103,7 +6153,7 @@ See design doc for the full state machine diagram.`;
     const snap: HostMsg[] = [];
     snap.push(this.stickyChrome.get("initialState") ?? this.buildInitialStateMsg());
     snap.push({ type: "clearMessages" });
-    for (const m of this.focused.buffer) snap.push(m);
+    snap.push(...bracketRemoteSnapshot(this.focused.buffer));
     for (const [type, m] of this.stickyChrome) {
       if (type === "initialState") continue;
       snap.push(m);

@@ -270,8 +270,12 @@ warms the whole catalog once (cache-backed) and filters by display name across *
 sessions, not just the loaded page. One wrinkle the disk scan can't cover on its own:
 a *brand-new* session has no `summary.json` yet, so opening history the instant a
 session goes live would drop the active row until grok flushes the file. The host fixes
-that by synthesizing a top-pinned row from in-memory state for any live session not yet
-on disk (first, unfiltered page only — those ids can't appear on a later page). The
+that by synthesizing a top-pinned row from in-memory state for any live pool session not
+yet on disk **and scoped to the requested repo's cwds** (first, unfiltered page only —
+those ids can't appear on a later page) — a still-focused session from a *different*
+repo must not leak into the list being built for the one just selected, or it masquerades
+as that repo's newest/active row and the remote auto-open shim mistakes it for an
+already-open match instead of resuming or starting the right session. The
 webview appends pages on scroll-near-bottom (de-duped by id, one request per boundary)
 and debounces the search box. An opt-in
 perf simulation ([test/sessions.perf.ts](../test/sessions.perf.ts) via
