@@ -11,6 +11,7 @@ import {
   isMethodNotFoundError,
   type PromptResultMeta,
   type PromptUsage,
+  type SessionInfoContext,
   makeAckResponse,
   makeExitPlanResponse,
   makeExitPlanUnavailableResponse,
@@ -20,6 +21,7 @@ import {
   makeQuestionResponse,
   makeRequest,
   parseAcpLine,
+  parseSessionInfoRpcResult,
   resolveModelId,
   routeSessionUpdate,
   isForeignSessionUpdate,
@@ -778,6 +780,30 @@ export class AcpClient extends EventEmitter {
     } catch (e: any) {
       if (isMethodNotFoundError(e)) {
         this.opts.log("[worktree] CLI does not support _x.ai/git/worktree/remove");
+        return "unsupported";
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Structured session context size (`_x.ai/session/info`) — control-plane only.
+   * Does **not** send a model turn or inflate the context window (probe-verified
+   * 0.2.112). Used to seed/refresh the context donut when turn meta / compact
+   * notifications / signals.json are missing or stale. `"unsupported"` on
+   * older CLIs (-32601); callers fall back to disk or the hidden `/session-info`
+   * prompt scrape.
+   */
+  async getSessionInfo(): Promise<SessionInfoContext | "unsupported"> {
+    if (!this.sessionId) throw new Error("no session");
+    try {
+      const r = await this.request("_x.ai/session/info", { sessionId: this.sessionId });
+      const parsed = parseSessionInfoRpcResult(r);
+      if (!parsed) throw new Error("session/info returned no usable context");
+      return parsed;
+    } catch (e: any) {
+      if (isMethodNotFoundError(e)) {
+        this.opts.log("[session/info] CLI does not support _x.ai/session/info");
         return "unsupported";
       }
       throw e;
