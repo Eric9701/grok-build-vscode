@@ -1907,6 +1907,16 @@ textarea#input {
   white-space: nowrap;
   min-width: 0;
 }
+/* The label ellipsizes and .attachment-remove is flex:0 0 auto, but the leading
+   icon had neither — so in a chip too narrow for its filename (a long name in
+   the phone client, or a narrow sidebar) the SVG was the only child left able
+   to absorb the squeeze, and it rendered ~6px wide instead of 11. Sizing it
+   explicitly keeps the icon a constant while the text does the shrinking. */
+.attachment > svg {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+}
 .attachment-remove {
   display: inline-flex;
   align-items: center;
@@ -2443,7 +2453,14 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .repo-row-actions .history-action-btn.active,
 .repo-row:hover .repo-row-actions .history-action-btn,
 .repo-row-actions .history-action-btn:focus-visible { opacity: 1; }
-.repo-row-actions .history-action-btn.active { color: var(--vscode-button-background); }
+/* Pinned reads as emphasis, not as an accent link. --vscode-button-background
+   made a pin look like a control you press rather than a state it is already
+   in, and it is the one colour here that does NOT invert with the theme the way
+   a foreground does. Full foreground for pinned, muted for unpinned: near-white
+   on dark, near-black on light, and the pair stays legible on touch where both
+   pins are always present. */
+.repo-row-actions .history-action-btn { color: var(--vscode-descriptionForeground); }
+.repo-row-actions .history-action-btn.active { color: var(--vscode-foreground); }
 /* Touch: every pin stays visible. Tap-to-reveal is wrong HERE specifically —
    the row's primary action is selecting the repo, and iOS treats a tap on an
    element whose :hover reveals content as "apply hover" and swallows the

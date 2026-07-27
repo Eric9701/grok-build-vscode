@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import * as path from "node:path";
 import {
   MENTION_INDEX_LIMIT,
   MENTION_INDEX_LIMIT_MIN,
@@ -9,10 +10,53 @@ import {
   mergeMentionEntries,
   normalizeRelPath,
   orderMentionIndex,
+  resolveMentionFallback,
+  resolveMentionAttachmentPath,
+  isMentionPathInsideWorkspace,
 } from "../src/mention";
 // The webview half of the feature (token detection + pick rewrite) lives in the
 // shared plain-JS helpers so chat.js and the tests exercise the same code.
 import { getMentionQuery, applyMentionPick } from "../media/webview-helpers.js";
+
+describe("mention attachment workspace boundary", () => {
+  it("resolves an ordinary workspace-relative fallback", () => {
+    expect(resolveMentionFallback("/work/repo", "docs/notes.md", "linux"))
+      .toBe("/work/repo/docs/notes.md");
+  });
+
+  it("rejects parent traversal and absolute fallback paths", () => {
+    expect(resolveMentionFallback("/work/repo", "../../secret.png", "linux")).toBeUndefined();
+    expect(resolveMentionFallback("/work/repo", "/etc/passwd", "linux")).toBeUndefined();
+  });
+
+  it("uses segment boundaries rather than string prefixes", () => {
+    expect(isMentionPathInsideWorkspace("/work/repo", "/work/repo-file/x.png", "linux")).toBe(false);
+    expect(isMentionPathInsideWorkspace("/work/repo", "/work/repo/.cache/x.png", "linux")).toBe(true);
+  });
+
+  it("uses case-insensitive Windows path semantics", () => {
+    expect(isMentionPathInsideWorkspace("C:\\Work\\Repo", "c:\\work\\repo\\docs\\a.md", "win32")).toBe(true);
+    expect(isMentionPathInsideWorkspace("C:\\Work\\Repo", "C:\\Work\\Repo2\\a.md", "win32")).toBe(false);
+    expect(resolveMentionFallback("C:\\Work\\Repo", "..\\..\\secret.png", "win32")).toBeUndefined();
+  });
+
+  it("can validate canonical paths after realpath resolves symlinks", () => {
+    const root = path.posix.resolve("/work/repo");
+    expect(isMentionPathInsideWorkspace(root, "/work/repo/real/file.md", "linux")).toBe(true);
+    // A lexical `/work/repo/link.png` may resolve here; canonical comparison rejects it.
+    expect(isMentionPathInsideWorkspace(root, "/outside/secret.png", "linux")).toBe(false);
+  });
+
+  it("requires remote picks to match the host catalog while preserving the local fallback", () => {
+    expect(resolveMentionAttachmentPath("remote", "/work/repo", "docs/a.md", undefined, undefined, "linux"))
+      .toBeUndefined();
+    expect(resolveMentionAttachmentPath(
+      "remote", "/work/repo", "docs/a.md", "/work/repo/docs/a.md", undefined, "linux",
+    )).toBe("/work/repo/docs/a.md");
+    expect(resolveMentionAttachmentPath("local", "/work/repo", "docs/a.md", undefined, undefined, "linux"))
+      .toBe("/work/repo/docs/a.md");
+  });
+});
 
 describe("getMentionQuery (webview token detection)", () => {
   it("triggers on @ at the start of the text", () => {

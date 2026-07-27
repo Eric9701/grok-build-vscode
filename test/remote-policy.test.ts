@@ -30,6 +30,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.ready).toBe("control");
     expect(INBOUND_DISPOSITION.send).toBe("propose");
     expect(INBOUND_DISPOSITION.steerSend).toBe("propose");
+    expect(INBOUND_DISPOSITION.uploadFile).toBe("propose");
     expect(INBOUND_DISPOSITION.permissionAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.exitPlanAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.logout).toBe("full");

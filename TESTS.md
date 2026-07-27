@@ -72,6 +72,13 @@ The wire format is the highest-value test surface: ACP changes break everything 
 - `filterMentionFiles` ranks basename-prefix → basename-substring → path-substring → subsequence, case-insensitive, shorter-path-first within a tier, capped at the limit
 - `buildExcludeGlob` merges only `true`-valued patterns from files.exclude/search.exclude and always excludes node_modules/.git
 - `orderMentionIndex` sorts shallow-first then alphabetical without mutating its input
+- Mention attachment containment rejects parent/absolute escapes, path-prefix siblings, and canonical paths outside the workspace; Windows checks are case-insensitive
+
+### `test/file-upload.test.ts` — remote document upload boundary, pure
+
+- Accepts only `.md`, `.txt`, `.pdf`, `.csv`, `.xlsx`, `.docx`; strips both path separator styles, sanitizes Windows-reserved basenames, and strictly validates base64/empty/20 MiB cases
+- Owned staging paths must have exactly `<root>/<uuid>/<filename>` shape
+- Session deletion preserves paths still referenced by another session/fork and identifies files safe to remove after the last reference
 
 ### `test/worktree.test.ts` — worktree helpers, pure (P2-8, 23 tests)
 

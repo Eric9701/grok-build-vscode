@@ -68,6 +68,9 @@ export interface SessionMetaOverride {
   unread?: boolean;
   /** The unread turn ended in an error (red dot instead of green). */
   unreadError?: boolean;
+  /** Documents uploaded from a remote browser and staged in extension storage.
+   *  Retained until the last session/fork referencing each path is deleted. */
+  uploadedFiles?: string[];
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 

@@ -74,10 +74,13 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
   workflowControl: "propose",
   pasteImage: "propose",
+  // Host validates the extension/name/bytes before staging under globalStorage.
+  uploadFile: "propose",
   removeChip: "propose",
   toggleChip: "propose",
-  // attaches a chip (host-validated against its own file index) — same class
-  // of composer-state mutation as removeChip/toggleChip
+  // attaches a chip only after an exact host mention-catalog lookup plus
+  // lexical + canonical workspace containment — same composer-state class
+  // as removeChip/toggleChip
   addMentionFile: "propose",
   // recheckConnection restarts the CLI session on the host — turn control, not handshake
   recheckConnection: "propose",

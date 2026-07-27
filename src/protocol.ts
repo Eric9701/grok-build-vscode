@@ -50,7 +50,7 @@ export interface PlanHistoryItem {
 
 /** host -> webview */
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; capabilities: { uploadFile: boolean } }
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
   | { type: "soundNotifications"; value: boolean }
@@ -238,6 +238,9 @@ export type WebviewMsg =
   // composer, so the prompt carries both the prose reference and the chip.
   | { type: "addMentionFile"; relPath: string }
   | { type: "pasteImage"; mimeType: string; data: string }
+  // Remote browser upload: an untrusted basename plus base64 bytes. The host
+  // allowlists/sanitizes/stages it, then routes it through addDroppedFile.
+  | { type: "uploadFile"; name: string; data: string }
   | { type: "voiceStart" }
   | { type: "voiceStop" }
   // Host-owned send queue mutations (#37): the webview never mutates its local
@@ -314,7 +317,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   listSessions: true, selectRepo: true, toggleRepoPin: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
-  pasteImage: true, voiceStart: true,
+  pasteImage: true, uploadFile: true, voiceStart: true,
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,

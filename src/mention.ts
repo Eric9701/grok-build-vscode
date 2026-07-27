@@ -5,6 +5,8 @@
 // Split from sidebar.ts so ranking/exclude behavior is unit-testable without
 // vscode (same reason slash-filter.ts exists for the `/` popover).
 
+import * as path from "node:path";
+
 /** Max rows a single mentionResults reply carries (the popover is ~6 rows tall
  *  and scrolls; past ~50 the ranking, not the list, is what helps). */
 export const MENTION_RESULT_LIMIT = 50;
@@ -40,6 +42,60 @@ export const MENTION_INDEX_TTL_MS = 15_000;
  *  basename split note). */
 export function normalizeRelPath(p: string): string {
   return p.replace(/\\/g, "/");
+}
+
+function pathApi(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+/** True when `candidate` is strictly below `workspaceRoot`. Call this on both
+ * lexical paths and their realpath results: the former rejects `..`/absolute
+ * escapes, while the latter rejects an in-workspace symlink targeting outside.
+ * Windows comparisons are case-insensitive, matching the host filesystem. */
+export function isMentionPathInsideWorkspace(
+  workspaceRoot: string,
+  candidate: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const api = pathApi(platform);
+  const normalize = (p: string) => {
+    const resolved = api.resolve(p);
+    return platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const rel = api.relative(normalize(workspaceRoot), normalize(candidate));
+  return !!rel && rel !== ".." && !rel.startsWith(".." + api.sep) && !api.isAbsolute(rel);
+}
+
+/** Resolve the local-only #69 fallback without allowing a supplied absolute
+ * path or a normalized result outside the first workspace root. */
+export function resolveMentionFallback(
+  workspaceRoot: string,
+  relPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const api = pathApi(platform);
+  if (!relPath || api.isAbsolute(relPath)) return undefined;
+  const candidate = api.resolve(workspaceRoot, relPath);
+  return isMentionPathInsideWorkspace(workspaceRoot, candidate, platform)
+    ? candidate
+    : undefined;
+}
+
+/** Select an attachment candidate without letting a remote fall through to a
+ * workspace join. `catalogMatch` is the host's current merged index result for
+ * remote calls; local calls may also use an open-tab match and the #69 fallback. */
+export function resolveMentionAttachmentPath(
+  origin: "local" | "remote",
+  workspaceRoot: string,
+  relPath: string,
+  catalogMatch: string | undefined,
+  openTabMatch: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (origin === "remote") return catalogMatch;
+  return catalogMatch
+    ?? openTabMatch
+    ?? resolveMentionFallback(workspaceRoot, relPath, platform);
 }
 
 /**

@@ -55,9 +55,26 @@ import {
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { matchSlashCommand } from "./slash-filter";
-import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, clampMentionIndexLimit, filterMentionFiles, mergeMentionEntries, normalizeRelPath, orderMentionIndex } from "./mention";
+import {
+  MENTION_INDEX_LIMIT,
+  MENTION_INDEX_TTL_MS,
+  buildExcludeGlob,
+  clampMentionIndexLimit,
+  filterMentionFiles,
+  isMentionPathInsideWorkspace,
+  mergeMentionEntries,
+  normalizeRelPath,
+  orderMentionIndex,
+  resolveMentionAttachmentPath,
+} from "./mention";
 import { configForcesAlwaysApprove } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
+import {
+  prepareFileUpload,
+  retainedUploadDirectories,
+  stagedUploadDirectory,
+  unreferencedUploadsForRemovedSessions,
+} from "./file-upload";
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState } from "./plan-restore";
@@ -225,6 +242,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly MAX_LIVE_SESSIONS = 8;
   private static readonly IDLE_TTL_MS = 60 * 60 * 1000; // 1h
   private static readonly REAP_INTERVAL_MS = 5 * 60 * 1000; // sweep every 5 min
+  private static readonly STAGING_ORPHAN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   // The empty-session sweep only scans the newest N by mtime — empty primer
   // sessions accumulate at the top (a fresh one each open), so this catches them
   // while keeping the one-shot scan bounded on a large store.
@@ -312,6 +330,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // default "auto" resolution and diverge from a configured `cmd` pref.
     this.applyTerminalShellPref();
     void this.sweepImageStaging();
+    void this.sweepFileStaging();
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -332,7 +351,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // in an image-attach path) becomes a silent unhandled rejection and the
     // user's action just... does nothing.
     view.webview.onDidReceiveMessage((m: WebviewMsg) => {
-      void this.onMessage(m).catch((e) => {
+      void this.onMessage(m, "local").catch((e) => {
         const msg = (e as Error)?.message ?? String(e);
         this.output.appendLine(`[webview] ${m.type} failed: ${msg}`);
         void vscode.window.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
@@ -439,7 +458,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   }
 
   newSession(): void {
-    void this.newFocusedSession();
+    void this.newFocusedSession("local");
   }
 
   async pickModel(): Promise<void> {
@@ -1068,7 +1087,7 @@ See design doc for the full state machine diagram.`;
     if (!body) return;
     if (!session.client || !session.activeSessionId) {
       // No live turn to steer — fall back to the queue rather than drop it.
-      return void this.onMessage({ type: "queueSend", text: body });
+      return void this.onMessage({ type: "queueSend", text: body }, "local");
     }
     this.emit(session, { type: "userMessage", text: body, chips: [], steer: true });
     try {
@@ -1132,9 +1151,11 @@ See design doc for the full state machine diagram.`;
       // toolbar ever flashes grok's own generated title for the fork.
       const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const prev = overrides[r.newSessionId] ?? {};
+      const parentUploads = overrides[session.activeSessionId]?.uploadedFiles ?? [];
       const carried: SessionMetaOverrides[string] = {
         ...prev,
         customName: forkName,
+        uploadedFiles: [...new Set([...(prev.uploadedFiles ?? []), ...parentUploads])],
       };
       // A fork of a worktree session stays in that worktree — carry the binding.
       // It's a second conversation branch sharing the checkout (like the Agent
@@ -3054,7 +3075,7 @@ See design doc for the full state machine diagram.`;
     return client;
   }
 
-  private async onMessage(msg: WebviewMsg, origin: MsgOrigin = "local"): Promise<void> {
+  private async onMessage(msg: WebviewMsg, origin: MsgOrigin): Promise<void> {
     switch (msg.type) {
       case "ready":
         this.postInitialState();
@@ -3163,6 +3184,9 @@ See design doc for the full state machine diagram.`;
         const removed = this.chips.find((c) => c.id === msg.id);
         if (removed && isImageChip(removed)) {
           void fs.promises.unlink(removed.path).catch(() => {});
+        } else if (removed) {
+          const uploadDir = stagedUploadDirectory(this.fileStagingDir(), removed.path);
+          if (uploadDir) void fs.promises.rm(uploadDir, { recursive: true, force: true }).catch(() => {});
         }
         this.chips = removeChip(this.chips, msg.id);
         this.postChips();
@@ -3233,6 +3257,9 @@ See design doc for the full state machine diagram.`;
         break;
       case "pasteImage":
         await this.trackAttach(this.addPastedImage(msg.data, msg.mimeType));
+        break;
+      case "uploadFile":
+        await this.trackAttach(this.addUploadedFile(msg.name, msg.data));
         break;
       case "permissionAnswer":
         this.focused.client?.respondPermission(msg.requestId, msg.optionId);
@@ -3456,16 +3483,47 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "addMentionFile": {
-        // Pick came from a posted result: prefer the findFiles map, then an open
-        // tab (open-only merge isn't written into the cached index, #69), then a
-        // workspace-root join if both somehow miss.
-        const abs = this.mentionIndex?.absByRel.get(msg.relPath)
-          ?? this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs
-          ?? (vscode.workspace.workspaceFolders?.[0]
-            ? path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, msg.relPath)
-            : undefined);
-        // addDroppedFile re-checks existence, so a stale/garbage path is a no-op.
-        if (abs) await this.trackAttach(this.addDroppedFile(abs, false));
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) break;
+
+        let catalogMatch: string | undefined;
+        let openTabMatch: string | undefined;
+        if (origin === "remote") {
+          // A remote can only echo a path the host currently exposes through
+          // its merged mention catalog. It never gets the local #69 fallback.
+          try {
+            catalogMatch = (await this.mentionFileIndex()).absByRel.get(msg.relPath);
+          } catch (e) {
+            this.output.appendLine(`[mention] index failed while validating remote pick: ${(e as Error).message}`);
+          }
+        } else {
+          // Local picks preserve the #69 fallback for a result whose cached/open
+          // entry disappeared between rendering and selection.
+          catalogMatch = this.mentionIndex?.absByRel.get(msg.relPath);
+          openTabMatch = this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs;
+        }
+        const abs = resolveMentionAttachmentPath(
+          origin,
+          workspaceRoot,
+          msg.relPath,
+          catalogMatch,
+          openTabMatch,
+        );
+        if (!abs || !isMentionPathInsideWorkspace(workspaceRoot, abs)) break;
+
+        // Lexical containment above handles `..`; canonical containment also
+        // rejects an in-workspace symlink whose target is outside the workspace.
+        try {
+          const [realRoot, realFile] = await Promise.all([
+            fs.promises.realpath(workspaceRoot),
+            fs.promises.realpath(abs),
+          ]);
+          if (!isMentionPathInsideWorkspace(realRoot, realFile)) break;
+        } catch {
+          // Stale/garbage catalog entries remain a no-op, as before.
+          break;
+        }
+        await this.trackAttach(this.addDroppedFile(abs, false));
         break;
       }
       case "voiceStart":
@@ -3786,7 +3844,7 @@ See design doc for the full state machine diagram.`;
   // No native confirm here: the webview shows its own confirm dialog before
   // posting deleteSession (works in the browser client too, where a host-side
   // modal would stall invisibly).
-  private async deleteSession(id: string, _name?: string, origin: MsgOrigin = "local"): Promise<void> {
+  private async deleteSession(id: string, _name: string | undefined, origin: MsgOrigin): Promise<void> {
     const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const liveForCwd = [...this.pool].find((s) => s.activeSessionId === id);
     // Last-resort cwd — and this one deletes files, so it resolves in the
@@ -3810,6 +3868,7 @@ See design doc for the full state machine diagram.`;
     this.sessionCache.delete(id);
     this.removePlanReviews(id); // snapshots live outside grok's session dir
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    await this.removeUploadsForSessions([id], overrides);
     if (overrides[id]) {
       const next = { ...overrides };
       delete next[id];
@@ -3857,7 +3916,9 @@ See design doc for the full state machine diagram.`;
 
     // Purge our meta overrides + read cache for every removed id.
     if (removed.length) {
-      const next = { ...this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {}) };
+      const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      await this.removeUploadsForSessions(removed, overrides);
+      const next = { ...overrides };
       let changed = false;
       for (const id of removed) {
         this.sessionCache.delete(id);
@@ -4600,6 +4661,10 @@ See design doc for the full state machine diagram.`;
     return path.join(this.context.globalStorageUri.fsPath, "image-staging");
   }
 
+  private fileStagingDir(): string {
+    return path.join(this.context.globalStorageUri.fsPath, "file-staging");
+  }
+
   /** Delete staged images older than 7 days. A pending attachment lives for
    *  minutes; anything week-old is an orphan (pasted, never sent, window
    *  closed). The age gate keeps a second VS Code window's fresh staging
@@ -4607,7 +4672,7 @@ See design doc for the full state machine diagram.`;
   private async sweepImageStaging(): Promise<void> {
     const dir = this.imageStagingDir();
     try {
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - GrokSidebar.STAGING_ORPHAN_TTL_MS;
       for (const name of await fs.promises.readdir(dir)) {
         const p = path.join(dir, name);
         try {
@@ -4615,6 +4680,99 @@ See design doc for the full state machine diagram.`;
         } catch { /* raced or locked — next sweep gets it */ }
       }
     } catch { /* staging dir doesn't exist yet */ }
+  }
+
+  /** Keep sent documents for their session's lifetime; only abandoned staging
+   * directories use the seven-day orphan policy shared with images. */
+  private async sweepFileStaging(): Promise<void> {
+    const root = this.fileStagingDir();
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const retained = retainedUploadDirectories(root, overrides);
+    try {
+      const cutoff = Date.now() - GrokSidebar.STAGING_ORPHAN_TTL_MS;
+      for (const name of await fs.promises.readdir(root)) {
+        const dir = path.join(root, name);
+        // Reuse the owned-path validator with a synthetic leaf: unknown entries
+        // in globalStorage are not ours to remove.
+        const owned = stagedUploadDirectory(root, path.join(dir, "_"));
+        if (!owned) continue;
+        const key = process.platform === "win32" ? path.resolve(owned).toLowerCase() : path.resolve(owned);
+        if (retained.has(key)) continue;
+        try {
+          if ((await fs.promises.stat(owned)).mtimeMs < cutoff) {
+            await fs.promises.rm(owned, { recursive: true, force: true });
+          }
+        } catch { /* raced or locked — next activation gets it */ }
+      }
+    } catch { /* staging dir doesn't exist yet */ }
+  }
+
+  /** Validate and stage one remote browser document, then mint the exact same
+   * explicit path chip as a local drag-and-drop. */
+  private async addUploadedFile(suppliedName: string, data: string): Promise<void> {
+    const prepared = prepareFileUpload(suppliedName, data, MAX_VISION_IMAGE_BYTES);
+    if (!prepared.ok) {
+      const detail = prepared.reason === "unsupported-extension"
+        ? "supported types are .md, .txt, .pdf, .csv, .xlsx, and .docx"
+        : prepared.reason === "too-large"
+          ? "the file exceeds the 20 MiB attachment limit"
+          : prepared.reason === "empty"
+            ? "the file is empty"
+            : "the file data is invalid";
+      this.output.appendLine(`[upload] rejected ${suppliedName}: ${detail}`);
+      this.post({ type: "error", text: `Could not attach document — ${detail}.` });
+      return;
+    }
+
+    const dir = path.join(this.fileStagingDir(), randomUUID());
+    const absPath = path.join(dir, prepared.name);
+    try {
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(absPath, prepared.bytes, { flag: "wx" });
+      await this.addDroppedFile(absPath, false);
+      this.revealAndFocusComposer();
+    } catch (e) {
+      void fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+      this.output.appendLine(`[upload] staging failed for ${prepared.name}: ${(e as Error).message}`);
+      this.post({ type: "error", text: `Could not attach document — ${(e as Error).message}` });
+    }
+  }
+
+  private async retainUploadedFilesForSession(session: Session, chips: FileChip[]): Promise<void> {
+    const sid = session.activeSessionId ?? session.client?.sessionId;
+    if (!sid) return;
+    const uploaded = chips
+      .filter((chip) => !chip.hidden && !!stagedUploadDirectory(this.fileStagingDir(), chip.path))
+      .map((chip) => chip.path);
+    if (!uploaded.length) return;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const cur = overrides[sid] ?? {};
+    const files = [...new Set([...(cur.uploadedFiles ?? []), ...uploaded])];
+    await this.context.globalState.update(SESSION_META_KEY, {
+      ...overrides,
+      [sid]: { ...cur, uploadedFiles: files },
+    });
+  }
+
+  /** Remove UUID upload directories owned only by the sessions being deleted.
+   * Shared source/fork references keep the file alive. */
+  private async removeUploadsForSessions(
+    ids: Iterable<string>,
+    overrides: SessionMetaOverrides,
+  ): Promise<void> {
+    const files = unreferencedUploadsForRemovedSessions(overrides, ids);
+    const dirs = new Set(
+      files
+        .map((file) => stagedUploadDirectory(this.fileStagingDir(), file))
+        .filter((dir): dir is string => !!dir),
+    );
+    for (const dir of dirs) {
+      try {
+        await fs.promises.rm(dir, { recursive: true, force: true });
+      } catch (e) {
+        this.output.appendLine(`[upload] could not remove staged document directory: ${(e as Error).message}`);
+      }
+    }
   }
 
   /** Write image bytes into staging and attach the chip. The `[Image #N]`
@@ -4796,6 +4954,11 @@ See design doc for the full state machine diagram.`;
       },
       slashCommand != null,
     );
+
+    // Unlike images, document bytes are read lazily by Grok from the path in
+    // the prompt. Persist ownership before consuming the chip or sending.
+    await this.retainUploadedFilesForSession(session, chips);
+    if (gen !== session.gen) return;
 
     if (bare || session !== this.focused) {
       if (bare) this.postChips();
@@ -5051,6 +5214,7 @@ See design doc for the full state machine diagram.`;
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       steerByDefault: cfg.get("steerByDefault", false),
       soundNotifications: cfg.get("soundNotifications", false),
+      capabilities: { uploadFile: true },
     };
   }
 
@@ -5258,6 +5422,7 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[sessions] could not remove empty session ${id}: ${(e as Error).message}`);
     }
     if (overrides[id]) {
+      void this.removeUploadsForSessions([id], overrides);
       const next = { ...overrides };
       delete next[id];
       void this.context.globalState.update(SESSION_META_KEY, next);
@@ -5319,6 +5484,7 @@ See design doc for the full state machine diagram.`;
     }
     if (removed.length) {
       const next = { ...overrides };
+      void this.removeUploadsForSessions(removed, overrides);
       for (const id of removed) {
         delete next[id];
         this.sessionCache.delete(id);
@@ -5546,7 +5712,7 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Start a brand-new session, keeping the current one alive in the background. */
-  private async newFocusedSession(origin: MsgOrigin = "local"): Promise<void> {
+  private async newFocusedSession(origin: MsgOrigin): Promise<void> {
     // Repo selection only changes history scope; New Session is the deliberate
     // second action that starts Grok in the selected cwd — deliberate only for
     // the client that can SEE the selection. From VS Code, where the switcher
