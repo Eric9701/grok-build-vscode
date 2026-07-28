@@ -27,6 +27,7 @@ was made against; a section without a date here predates this log and is covered
 
 | Date | grok CLI | What changed |
 |---|---|---|
+| **2026-07-28** | **0.2.112** | **§2.5 — re-confirmed outside the paste-image path, sharpened the ask.** [#79](https://github.com/phuryn/grok-build-vscode/issues/79): a subagent's own generated `.jpg` files sitting in its `grok-goal-.../implementer/` scratch dir hit the identical `Cannot read binary file` wall when the model tries `Read` on them mid-task. We audited this repo for host-specific code and found none — no Antigravity-conditional branching anywhere outside analytics (`telemetry.ts`) — so there is **no client-side workaround for this one**; it's upstream-only. Sharpened the ask accordingly: since inline image blocks already work (§2.5's `image:false` is confirmed false), `read_file` should route a binary/image path through that same working vision pipeline instead of hard-failing — that gets the model what it wanted, not just a quieter failure. |
 | **2026-07-26** | **0.2.111** | **§2.15 (new) — `_x.ai/rewind/*` semantics are undocumented and one of them is wrong on the wire.** `execute` **DISCARDS its target** prompt along with everything after it (measured: a 4-prompt session rewound to `#1` drops to 1 point; rewound to the tip `#3` drops to 3) — the opposite of what "rewind **to** N" reads like, and getting it backwards silently eats an extra turn *and* that turn's file changes. The **tip is a legal target**, contradicting an earlier "current prompt index is N" error we saw. `prompt_text` returns the *discarded* prompt (correct and useful — it's what a client puts back in the input box). **Bug:** `reverted_files` lists files that were **created** in the rewound turn even though they are left on disk — restore-previous-content has nothing to write back for a new file, so the array over-reports. Probes: `research/rewind-semantics-probe.cjs`, `research/rewind-newfile-probe.cjs`. |
 | **2026-07-24** | **0.2.103** | **Re-verification on the current shipped build, prompted by [#64](https://github.com/phuryn/grok-build-vscode/issues/64).** §2.1's terminal hole is **still open** — re-probed: during a plan turn the model issued `run_terminal_command` and the CLI passed `terminal/create` straight through to the client (edit tool correctly blocked, so only `plan.md` was writable). §2.13's quota gap **still holds and now has a second, independent user asking for it**: the account/plan quota the TUI's `/usage` shows is **not reachable over ACP** — no `usage_update`, no `grok usage` subcommand, and `/usage` is TUI-only (like `/context`, `ok_end_turn(0, None)` — streams nothing over `grok agent stdio`). #64 wants exactly §2.13 item 3 (queryable quota in the GUI). Also confirmed advertised effort is model-specific: grok-4.5's `models[]._meta` advertises only `[high (default), medium, low]` (§2.7). |
 | **2026-07-18** | **0.2.101** | **§2.13 (new) — rate-limit errors carry no reset time and no quota telemetry.** A weekly/usage limit surfaces as `-32003` with deliberately vague copy ("try again later"); no reset date exists anywhere on the wire, and there is no used/remaining signal a client could use to warn *before* the wall. User-reported ([#57](https://github.com/phuryn/grok-build-vscode/issues/57)) — the billing-flavored wording also misread as an auth failure in our client (fixed in extension v1.7.2 by classifying `-32003` first). |
@@ -266,11 +267,26 @@ wire names — uninitialized MCP and backend-hosted tools (`normalization.rs:27-
 - A pasted image is copied into `~/.grok/sessions/<…>/assets/` and that internal path is
   surfaced to the model — which then tries to `Read` the binary and fails, polluting the
   transcript. We bake a "do not Read" hint into every image tag.
+- **Re-confirmed outside the paste-image path, and it points at the real fix** ([#79](https://github.com/phuryn/grok-build-vscode/issues/79),
+  grok 0.2.112, Antigravity IDE): a subagent's own generated `.jpg` files in its
+  `grok-goal-.../implementer/` scratch dir hit the same `Cannot read binary file` wall the
+  moment the model tries `Read` on them mid-task — same gap as the pasted-image case, just
+  reached without our client surfacing anything. No host-conditional code exists anywhere in
+  this repo, so an Antigravity-vs-VS Code split (if it's even real) can't be produced by a
+  client fix; there is no client-side workaround for this one. The two fixes are not
+  equivalent: teaching the model to never *call* `read_file` on a binary path only quiets the
+  noise, but this repo already proved (above) that inline image blocks work despite the
+  advertised `image:false` — so `read_file` hitting a `.jpg`/`.png`/etc. should satisfy the
+  request through that same working vision path instead of hard-failing. That gets the model
+  what it was actually trying to do; suppressing the call just makes the failure quieter.
 - An image the CLI judges too small is silently dropped, leaving the model hunting the
   workspace for an attachment it never received. No error reaches the client.
 
 **Ask:** truthful capability flags; media as structured content blocks; don't surface internal
-asset paths to the model; error on dropped attachments.
+asset paths to the model; error on dropped attachments; **and make `read_file` image-aware —
+route a binary/image path through the same vision pipeline that already works, rather than a
+hardcoded decode failure** (closes both the pasted-image case above and #79's task-generated
+case in one fix).
 
 **Source-verified (2026-07-16, OSS tree).** `image: false` is a hardcoded omission — `initialize`
 builds `PromptCapabilities::new().embedded_context(true)` and never calls `.image(...)`
