@@ -125,6 +125,7 @@
     hostFontScale: Number(document.body.style.getPropertyValue("--chat-zoom")) || 1,
     remoteTts: IS_REMOTE && storedBool(REMOTE_TTS_KEY, false),
     readRepliesAloud: false,
+    summarizeRepliesAloud: false,
     remotePreferencesSupported: false,
     ttsTurnText: "",
     // Render MIRROR of the focused session's host-owned send queue (#37) —
@@ -299,6 +300,9 @@
     // plays on turn completion / error, but only when the Grok panel isn't
     // focused (#59). Off by default. Host posts the value on init + config change.
     soundNotifications: false,
+    // grok.processingSound: a quiet repeating cue while a live turn is still
+    // running. Separate from the completion/error notification and off by default.
+    processingSound: false,
     // grok.worktree — true when the focused session runs in an isolated git
     // worktree (from the `session` message). Gates the gear Apply/Remove items.
     isWorktree: false,
@@ -408,6 +412,8 @@
   // progress indicator (Grokking / Thinking) so they all pulse the same way
   // instead of the old morphing "…" ellipsis (#26 follow-up).
   const BLINK_DOTS = `<span class="blink-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>`;
+  let composerPreferredColumn = null;
+  let speechRequestId = 0;
 
   // ---------- helpers ----------
 
@@ -418,8 +424,8 @@
   }
 
   // ---------- sound notifications (#59) ----------
-  // Synth tones via Web Audio — no bundled assets, CSP-safe, offline. Two cues:
-  // a rising two-note chime for completion, a lower falling tone for errors. The
+  // Synth tones via Web Audio — no bundled assets, CSP-safe, offline. Completion
+  // rises, errors fall, and the in-flight reminder is a single soft pulse. The
   // AudioContext is created lazily and unlocked on the first user gesture (the
   // autoplay policy starts it "suspended"); the send/keypress that starts a turn
   // is that gesture, so a later completion beep is allowed.
@@ -443,10 +449,12 @@
     const t0 = ctx.currentTime;
     // { frequency Hz, start-offset s, duration s }
     const notes = kind === "error"
-      ? [{ f: 311, s: 0, d: 0.18 }, { f: 233, s: 0.15, d: 0.26 }]  // falling, darker
-      : [{ f: 587, s: 0, d: 0.14 }, { f: 880, s: 0.13, d: 0.20 }]; // rising, bright
+      ? [{ f: 311, s: 0, d: 0.18 }, { f: 233, s: 0.15, d: 0.26 }]
+      : kind === "processing"
+        ? [{ f: 440, s: 0, d: 0.16 }]
+        : [{ f: 587, s: 0, d: 0.14 }, { f: 880, s: 0.13, d: 0.20 }];
     const master = ctx.createGain();
-    master.gain.value = 0.08; // gentle — a cue, not an alarm
+    master.gain.value = kind === "processing" ? 0.035 : 0.08;
     master.connect(ctx.destination);
     for (const n of notes) {
       const osc = ctx.createOscillator();
@@ -472,6 +480,50 @@
     const away = document.visibilityState === "hidden" || !document.hasFocus();
     if (!away) return;
     playNotificationTone(kind);
+  }
+
+  function moveComposerCaret(direction) {
+    if (document.activeElement !== input) return;
+    const start = input.selectionStart ?? 0;
+    const end = input.selectionEnd ?? start;
+    const caret = input.selectionDirection === "backward" ? start : end;
+    if (direction === "forward") {
+      composerPreferredColumn = null;
+      const next = Math.min(input.value.length, caret + 1);
+      input.setSelectionRange(next, next);
+      return;
+    }
+    const lineStart = input.value.lastIndexOf("\n", Math.max(0, caret - 1)) + 1;
+    if (composerPreferredColumn == null) composerPreferredColumn = caret - lineStart;
+    if (lineStart === 0) {
+      input.setSelectionRange(0, 0);
+      return;
+    }
+    const previousEnd = lineStart - 1;
+    const previousStart = input.value.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
+    const previousLength = previousEnd - previousStart;
+    const next = previousStart + Math.min(composerPreferredColumn, previousLength);
+    input.setSelectionRange(next, next);
+  }
+  let processingCueTimer = null;
+  let liveTurnInFlight = false;
+  function stopProcessingCue() {
+    liveTurnInFlight = false;
+    if (processingCueTimer != null) {
+      clearTimeout(processingCueTimer);
+      processingCueTimer = null;
+    }
+  }
+  function scheduleProcessingCue(delay = 7000) {
+    if (processingCueTimer != null) clearTimeout(processingCueTimer);
+    processingCueTimer = null;
+    if (!state.processingSound || !liveTurnInFlight) return;
+    processingCueTimer = setTimeout(() => {
+      processingCueTimer = null;
+      if (!state.processingSound || !liveTurnInFlight) return;
+      playNotificationTone("processing");
+      scheduleProcessingCue(8000);
+    }, delay);
   }
   // Unlock on the first user gesture anywhere in the webview (typing/clicking to
   // send qualifies), so the first completion beep isn't blocked by autoplay.
@@ -1807,6 +1859,21 @@
         renderConfigDebugPanel();
       },
     );
+    addGearItem(
+      `<span title="Play a quiet reminder while Grok is still working. Starts after seven seconds and repeats every eight seconds until the turn ends.">Still-processing sound</span><span class="popover-switch${state.processingSound ? " on" : ""}" role="switch" aria-checked="${state.processingSound}"><span class="popover-switch-knob"></span></span>`,
+      () => {
+        state.processingSound = !state.processingSound;
+        vscode.postMessage({ type: "setProcessingSound", value: state.processingSound });
+        if (state.processingSound) {
+          unlockAudio();
+          if (liveTurnInFlight) scheduleProcessingCue();
+        } else {
+          if (processingCueTimer != null) clearTimeout(processingCueTimer);
+          processingCueTimer = null;
+        }
+        renderConfigDebugPanel();
+      },
+    );
     if (ttsAvailable) {
       const enabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
       addGearItem(
@@ -1817,11 +1884,25 @@
           } else {
             state.readRepliesAloud = !state.readRepliesAloud;
             vscode.postMessage({ type: "setReadRepliesAloud", value: state.readRepliesAloud });
-            if (!state.readRepliesAloud && window.speechSynthesis) window.speechSynthesis.cancel();
+            if (!state.readRepliesAloud) cancelPendingSpeech();
           }
           renderConfigDebugPanel();
         },
       );
+      if (!IS_REMOTE) {
+        addGearItem(
+          `<span title="Use xAI to make each spoken message brief and speech-friendly before reading it. Adds a billed API call and network delay; falls back to the full text on any failure.">Summarize before speaking <span class="popover-ver">(uses your xAI API key)</span></span><span class="popover-switch${state.summarizeRepliesAloud ? " on" : ""}" role="switch" aria-checked="${state.summarizeRepliesAloud}"><span class="popover-switch-knob"></span></span>`,
+          () => {
+            state.summarizeRepliesAloud = !state.summarizeRepliesAloud;
+            speechRequestId += 1;
+            vscode.postMessage({
+              type: "setSummarizeRepliesAloud",
+              value: state.summarizeRepliesAloud,
+            });
+            renderConfigDebugPanel();
+          },
+        );
+      }
     } else {
       addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
     }
@@ -2344,6 +2425,8 @@
   }
 
   function resetForNewSession() {
+    stopProcessingCue();
+    cancelPendingSpeech();
     state.isWorktree = false; // re-set by the incoming session's `session` message
     // The caret belongs in the box after any session swap — new session, a
     // history-row re-focus, a disk restore (all funnel through here via the
@@ -4275,17 +4358,42 @@
     });
   }
 
-  function speakCompletedTurn() {
+  function cancelPendingSpeech() {
+    speechRequestId += 1;
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  }
+
+  function requestSpeech(markdownText) {
     const enabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
-    if (!enabled || !ttsAvailable || !state.ttsTurnText) {
-      state.ttsTurnText = "";
+    if (!enabled || !ttsAvailable || state.replaying) return;
+    const text = spokenTextFromMarkdown(markdownText);
+    if (!text) return;
+    const requestId = ++speechRequestId;
+    window.speechSynthesis.cancel();
+    if (!IS_REMOTE && state.summarizeRepliesAloud) {
+      vscode.postMessage({ type: "summarizeSpeech", requestId, text });
       return;
     }
-    const text = spokenTextFromMarkdown(state.ttsTurnText);
-    state.ttsTurnText = "";
-    if (!text) return;
-    window.speechSynthesis.cancel();
     window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(text));
+  }
+
+  function speakCompletedTurn() {
+    const text = state.ttsTurnText;
+    state.ttsTurnText = "";
+    // The agent copy affordance identifies the newest narration segment for the
+    // current turn. Use that same pointer so neither plain nor summarized speech
+    // can target an older rendered message.
+    const agentActions = messagesEl.querySelectorAll(".msg.agent .msg-actions");
+    if (
+      !state.turnAgentActionsEl ||
+      agentActions[agentActions.length - 1] !== state.turnAgentActionsEl
+    ) return;
+    requestSpeech(text);
+  }
+
+  function speakWaitingPrompt(markdownText) {
+    state.ttsTurnText = "";
+    requestSpeech(markdownText);
   }
 
   // Finalize the current agent turn (flush buffers, stamp the "Thought for Ns"
@@ -4750,7 +4858,13 @@
       btn.textContent = opt.name;
       btn.type = "button";
       if (opt.kind === "allow_once") btn.classList.add("primary");
-      if (opt.kind === "reject_once") btn.classList.add("danger");
+      if (opt.kind === "reject_once") {
+        btn.classList.add("danger", "arming");
+        // A permission arrival force-scrolls the transcript. Ignore pointer
+        // targeting during that layout transition so a click intended for the
+        // adjacent Thinking disclosure cannot land on Reject (#76).
+        setTimeout(() => btn.classList.remove("arming"), 450);
+      }
       // Only the default button is in the tab order; the arrow keys move within
       // the group. Standard toolbar/radiogroup roving-tabindex, so Tab escapes
       // the card in one press instead of walking every option.
@@ -4894,9 +5008,23 @@
     // selections[i] = array of chosen labels for question i.
     const selections = questions.map(() => []);
     const oneClick = questions.length === 1 && !questions[0].multiSelect;
+    const otherSelected = questions.map(() => false);
+    const otherText = questions.map(() => "");
+    const hasOther = questions.some((q) =>
+      (q.options || []).some((opt) => String(opt.label || "").trim().toLowerCase() === "other"));
+    const effectiveSelections = () => selections.map((picked, qi) => {
+      const custom = otherSelected[qi] ? otherText[qi].trim() : "";
+      return custom ? [...picked, custom] : [...picked];
+    });
 
     let submitBtn;
     let skip;
+    const updateSubmit = () => {
+      if (!submitBtn) return;
+      const built = buildQuestionAnswers(questions, effectiveSelections());
+      const otherComplete = otherSelected.every((selected, qi) => !selected || !!otherText[qi].trim());
+      submitBtn.disabled = !built.allAnswered || !otherComplete;
+    };
     // Collapse the card to its answered/skipped representation: drop the option
     // buttons + Submit + Skip, retitle, and append the chosen answer per block.
     const collapse = (skipped) => {
@@ -4908,11 +5036,12 @@
       [...el.querySelectorAll(".question-block")].forEach((block, qi) => {
         const opts = block.querySelector(".question-options");
         if (opts) opts.remove();
-        block.appendChild(answerLineEl(skipped ? "" : (selections[qi] || []).join(", ")));
+        block.appendChild(answerLineEl(skipped ? "" : (effectiveSelections()[qi] || []).join(", ")));
       });
     };
     const submit = () => {
-      const { answers } = buildQuestionAnswers(questions, selections);
+      const { answers, allAnswered } = buildQuestionAnswers(questions, effectiveSelections());
+      if (!allAnswered || otherSelected.some((selected, qi) => selected && !otherText[qi].trim())) return;
       vscode.postMessage({ type: "questionAnswer", requestId: req.id, answers, annotations: {} });
       collapse(false);
     };
@@ -4928,6 +5057,7 @@
       const opts = document.createElement("div");
       opts.className = "question-options";
       for (const opt of q.options || []) {
+        const isOther = String(opt.label || "").trim().toLowerCase() === "other";
         const btn = document.createElement("button");
         btn.className = "question-option";
         const lbl = document.createElement("span");
@@ -4941,8 +5071,27 @@
           btn.appendChild(desc);
         }
         btn.onclick = () => {
+          if (isOther) {
+            if (q.multiSelect) {
+              otherSelected[qi] = !otherSelected[qi];
+              btn.classList.toggle("selected", otherSelected[qi]);
+            } else {
+              selections[qi] = [];
+              otherSelected[qi] = true;
+              for (const sib of opts.querySelectorAll(".question-option")) sib.classList.remove("selected");
+              btn.classList.add("selected");
+            }
+            const custom = opts.querySelector(".question-other-input");
+            if (custom) {
+              custom.hidden = !otherSelected[qi];
+              if (otherSelected[qi]) custom.focus();
+            }
+            updateSubmit();
+            return;
+          }
           if (oneClick) {
             selections[qi] = [opt.label];
+            otherSelected[qi] = false;
             submit();
             return;
           }
@@ -4952,20 +5101,40 @@
             else { selections[qi].push(opt.label); btn.classList.add("selected"); }
           } else {
             selections[qi] = [opt.label];
+            otherSelected[qi] = false;
             for (const sib of opts.querySelectorAll(".question-option")) sib.classList.remove("selected");
             btn.classList.add("selected");
+            const custom = opts.querySelector(".question-other-input");
+            if (custom) custom.hidden = true;
           }
-          if (submitBtn) {
-            submitBtn.disabled = !buildQuestionAnswers(questions, selections).allAnswered;
-          }
+          updateSubmit();
         };
         opts.appendChild(btn);
+        if (isOther) {
+          const custom = document.createElement("input");
+          custom.type = "text";
+          custom.className = "question-other-input";
+          custom.placeholder = "Type your answer";
+          custom.setAttribute("aria-label", `${questionText(q)} — Other answer`);
+          custom.hidden = true;
+          custom.oninput = () => {
+            otherText[qi] = custom.value;
+            updateSubmit();
+          };
+          custom.onkeydown = (e) => {
+            if (e.key === "Enter" && submitBtn && !submitBtn.disabled) {
+              e.preventDefault();
+              submit();
+            }
+          };
+          opts.appendChild(custom);
+        }
       }
       block.appendChild(opts);
       el.appendChild(block);
     });
 
-    if (!oneClick) {
+    if (!oneClick || hasOther) {
       const actions = document.createElement("div");
       actions.className = "card-actions";
       submitBtn = document.createElement("button");
@@ -5941,6 +6110,7 @@
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
         if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
+        if (typeof msg.processingSound === "boolean") state.processingSound = msg.processingSound;
         if (typeof msg.readRepliesAloud === "boolean") {
           state.readRepliesAloud = msg.readRepliesAloud;
           if (IS_REMOTE && !state.remotePreferencesSupported) {
@@ -5964,15 +6134,39 @@
         state.soundNotifications = !!msg.value;
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
-      case "readRepliesAloud": {
-        const wasEnabled = state.readRepliesAloud;
-        state.readRepliesAloud = !!msg.value;
-        if (wasEnabled && !state.readRepliesAloud && !IS_REMOTE && window.speechSynthesis) {
-          window.speechSynthesis.cancel();
+      case "processingSound":
+        state.processingSound = !!msg.value;
+        if (state.processingSound && liveTurnInFlight) {
+          scheduleProcessingCue();
+        } else if (!state.processingSound && processingCueTimer != null) {
+          clearTimeout(processingCueTimer);
+          processingCueTimer = null;
         }
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
+      case "readRepliesAloud": {
+        const wasEnabled = state.readRepliesAloud;
+        state.readRepliesAloud = !!msg.value;
+        if (wasEnabled && !state.readRepliesAloud && !IS_REMOTE) cancelPendingSpeech();
+        if (state.gearView === "config") renderConfigDebugPanel();
+        break;
       }
+      case "summarizeRepliesAloud":
+        state.summarizeRepliesAloud = !!msg.value;
+        speechRequestId += 1;
+        if (state.gearView === "config") renderConfigDebugPanel();
+        break;
+      case "speechSummary":
+        if (
+          !IS_REMOTE &&
+          msg.requestId === speechRequestId &&
+          state.readRepliesAloud &&
+          ttsAvailable &&
+          msg.text
+        ) {
+          window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(msg.text));
+        }
+        break;
       case "showThinking":
         // Live toggle (grok.showThinking). Initial value also arrives via
         // initialState + is baked into the <body class> by the host to avoid a flash.
@@ -5993,6 +6187,9 @@
         // panel taking focus; land the caret in the composer so the user can
         // type a prompt immediately.
         input.focus();
+        break;
+      case "moveComposerCaret":
+        moveComposerCaret(msg.direction);
         break;
       case "uiConfirmRequest":
         // The host asks; the webview owns the dialog. Always answer, including
@@ -6236,6 +6433,10 @@
         // session relies on this), agentEnd/agentError clear it.
         state.busy = true;
         state.busyLocked = false;
+        if (!state.replaying) {
+          liveTurnInFlight = true;
+          scheduleProcessingCue();
+        }
         updateSendButton();
         break;
       case "thoughtChunk":
@@ -6464,6 +6665,11 @@
         break;
       case "permissionRequest":
         addPermissionCard(msg.req);
+        if (!state.replaying) {
+          // Tool titles can expose commands or file operations. The accessibility
+          // cue says what the user must do without reading tool details aloud.
+          speakWaitingPrompt("Grok is waiting for your permission. Review the request and choose an option.");
+        }
         break;
       case "permissionResolved": {
         // Replayed (on re-focus) right after the buffered permissionRequest, or
@@ -6491,6 +6697,13 @@
       }
       case "questionRequest":
         addQuestionCard(msg.req);
+        if (!state.replaying) {
+          const questions = (msg.req?.questions || [])
+            .map((question) => questionText(question))
+            .filter(Boolean)
+            .join(" ");
+          speakWaitingPrompt(questions || "Grok is waiting for your answer.");
+        }
         break;
       case "planHistory":
         addPlanHistoryCard(msg.text, msg.verdict, msg.planPath, msg.planName);
@@ -6583,6 +6796,7 @@
         break;
       }
       case "agentReset": {
+        stopProcessingCue();
         hidePlanProcessing(); // turn is being reset, indicator no longer applies
         hideGrokking();
         hideThinkingIndicator();
@@ -6605,6 +6819,7 @@
         break;
       }
       case "agentError":
+        stopProcessingCue();
         hideGrokking(); // turn ended (possibly before any content)
         hideThinkingIndicator();
         hidePlanProcessing();
@@ -6617,6 +6832,7 @@
         state.ttsTurnText = "";
         break;
       case "agentEnd":
+        stopProcessingCue();
         hideGrokking(); // turn ended (defensive — content normally clears it first)
         hideThinkingIndicator();
         // A turn that ends with NO content (grok's [Plan cancelled] ack can be
@@ -6630,6 +6846,7 @@
         speakCompletedTurn();
         break;
       case "exit":
+        stopProcessingCue();
         hideGrokking();
         hidePlanProcessing();
         addError(`Grok exited (code ${msg.code}). Send a message to restart this session, or start a new one.`);
@@ -6995,7 +7212,20 @@
     }
   });
 
-  input.addEventListener("input", () => { updateSlash(); updateMention(); renderInputHighlight(); });
+  input.addEventListener("focus", () => {
+    if (!IS_REMOTE) vscode.postMessage({ type: "composerFocus", focused: true });
+  });
+  input.addEventListener("blur", () => {
+    composerPreferredColumn = null;
+    if (!IS_REMOTE) vscode.postMessage({ type: "composerFocus", focused: false });
+  });
+  input.addEventListener("pointerdown", () => { composerPreferredColumn = null; });
+  input.addEventListener("input", () => {
+    composerPreferredColumn = null;
+    updateSlash();
+    updateMention();
+    renderInputHighlight();
+  });
   input.addEventListener("scroll", () => {
     if (!inputHighlight) return;
     inputHighlight.scrollTop = input.scrollTop;
@@ -7015,6 +7245,7 @@
     // signal; keyCode 229 is the legacy "IME processing" code some engines
     // still report on the confirming keydown itself.
     if (e.isComposing || e.keyCode === 229) return;
+    if (!(e.ctrlKey && String(e.key).toLowerCase() === "p")) composerPreferredColumn = null;
     if (!slashPopover.hidden && state.slashFiltered.length) {
       if (e.key === "ArrowDown") {
         e.preventDefault();

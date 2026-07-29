@@ -50,6 +50,8 @@ describe("remote-policy classification tables", () => {
     // per-connection view pref exists
     expect(INBOUND_DISPOSITION.setShowThinking).toBe("host-local");
     expect(INBOUND_DISPOSITION.setReadRepliesAloud).toBe("host-local");
+    expect(INBOUND_DISPOSITION.setSummarizeRepliesAloud).toBe("host-local");
+    expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("host-local");
     // worktree/rewind flows run native host dialogs (input box / QuickPick) —
     // desktop-only until they get remote-capable UI (2026-07-24)
     expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
@@ -62,6 +64,8 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.openRemotePortal).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.remoteStatus).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.readRepliesAloud).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.summarizeRepliesAloud).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.speechSummary).toBe("host-local");
     // voice is host-mic/ffmpeg-driven; media needs the base64 transform
     expect(OUTBOUND_DISPOSITION.voiceState).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.voiceConfigured).toBe("host-local");

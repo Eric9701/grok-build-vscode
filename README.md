@@ -329,7 +329,7 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 `npm test` is grok-free, so **local ≡ CI** — it never spawns the real binary. A separate, on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, plan-mode, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy and what's deferred to a future `@vscode/test-electron` suite: **[TESTS.md](TESTS.md)**. Architecture and module map: **[docs/architecture.md](docs/architecture.md)**.
 
-**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1386-test grok-free suite is the floor — every change keeps it green.
+**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1450-test grok-free suite is the floor — every change keeps it green.
 
 </details>
 
@@ -344,7 +344,7 @@ npm run package  # → grok-vscode-phuryn-<version>.vsix
 
 ## Privacy
 
-**Privacy by design** — no message content, no code, and no file paths ever leave your machine. The only thing sent automatically is an anonymous, opt-out usage count (turn it off with `grok.telemetry.enabled: false` or VS Code's global `telemetry.telemetryLevel`). The one exception is **voice input**, which you trigger deliberately: your audio + your STT credential go to xAI to transcribe it — disclosed in full, separate from telemetry.
+**Privacy by design** — no message content, code, or file paths leave your machine automatically. The only automatic report is an anonymous, opt-out usage count (turn it off with `grok.telemetry.enabled: false` or VS Code's global `telemetry.telemetryLevel`). Data leaves only through features you explicitly enable or invoke: Voice input sends audio to xAI for transcription; the optional VS Code-only **Summarize before speaking** switch sends the cleaned spoken reply to xAI for a brief version; Remote Control relays the chat to your linked devices. Each is disclosed separately from telemetry.
 
 More: [docs/privacy.md](docs/privacy.md).
 

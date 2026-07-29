@@ -150,6 +150,14 @@
       {
         "command": "grok._debugDummyPlan",
         "title": "Grok: Debug — Show dummy plan card (for testing Approve/Reject/Cancel)"
+      },
+      {
+        "command": "grok.composerForward",
+        "title": "Grok: Composer — Move Forward"
+      },
+      {
+        "command": "grok.composerPreviousLine",
+        "title": "Grok: Composer — Move to Previous Line"
       }
     ],
     "keybindings": [
@@ -162,12 +170,30 @@
         "command": "grok.insertAtMention",
         "key": "alt+g",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "grok.composerForward",
+        "key": "ctrl+f",
+        "when": "isMac && grok.composerFocus"
+      },
+      {
+        "command": "grok.composerPreviousLine",
+        "key": "ctrl+p",
+        "when": "isMac && grok.composerFocus"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "grok._debugDummyPlan",
+          "when": "false"
+        },
+        {
+          "command": "grok.composerForward",
+          "when": "false"
+        },
+        {
+          "command": "grok.composerPreviousLine",
           "when": "false"
         }
       ],
@@ -293,10 +319,20 @@
           "default": false,
           "markdownDescription": "Play a short sound when Grok finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the Grok panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from the gear menu → **Config & debug → Sound notifications**."
         },
+        "grok.processingSound": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Play a quiet repeating sound while Grok is still working. The first cue waits seven seconds, then repeats every eight seconds until the turn ends. Off by default and separate from the completion/error sound. Also toggleable live from the gear menu → **Config & debug → Still-processing sound**."
+        },
         "grok.readRepliesAloud": {
           "type": "boolean",
           "default": false,
           "description": "Read completed Grok replies aloud in the VS Code chat. Code blocks are skipped."
+        },
+        "grok.summarizeRepliesAloud": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Summarize text with xAI before reading it aloud. Off by default because each spoken message adds a billed API request and a network delay. Uses the same credential resolution as Voice input and falls back to the full reply if summarization fails. VS Code sidebar only."
         },
         "grok.remote.keepAwake": {
           "type": "boolean",

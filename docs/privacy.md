@@ -1,6 +1,6 @@
 # Privacy
 
-**Privacy by design.** The extension sends **no** background data about you or your code — the only thing it reports on its own is an anonymous usage count, with no content and no identity, and you can turn even that off. Data leaves your machine only at your request: **voice input** (you send audio to xAI to transcribe it) and **Remote Control** (you link this machine to [AFK Pilot](https://afkpilot.com) so your own devices can reach it) — both disclosed in full below, separate from telemetry.
+**Privacy by design.** The extension sends **no** background data about you or your code — the only thing it reports on its own is an anonymous usage count, with no content and no identity, and you can turn even that off. Data leaves your machine only at your request: **voice input** (you send audio to xAI to transcribe it), optional **spoken-reply summarization** (you send one reply to xAI to shorten what is spoken), and **Remote Control** (you link this machine to [AFK Pilot](https://afkpilot.com) so your own devices can reach it) — all disclosed in full below, separate from telemetry.
 
 ## Telemetry — what is sent
 
@@ -58,6 +58,12 @@ Separate from telemetry: **voice input** sends data to xAI, but only when you us
 - an **STT credential** — the dedicated key you configured (`grok.voiceApiKey` / `GROK_VOICE_API_KEY` / `XAI_API_KEY`) if set, otherwise the token from your `grok login` (`~/.grok/auth.json`), reused so voice works without a separate key.
 
 This is core functionality you trigger deliberately, and it goes to xAI (the same provider behind the CLI) — never to us or any third party. If you never use voice, none of this happens. To avoid sending your login token specifically, set a dedicated `grok.voiceApiKey`. Setup + details: [docs/voice-setup.md](voice-setup.md).
+
+## Summarize before speaking
+
+Separate from both telemetry and Voice input: the VS Code-only **Summarize before speaking** switch is off by default. When both it and **Read replies aloud** are enabled, the extension sends only the already-cleaned spoken text (after thinking and fenced code have been removed) to xAI's Responses API. xAI returns a short, speech-friendly version; the visible chat reply is never changed.
+
+Each spoken message adds a billed API request and network delay. The request uses `grok-4.3` with reasoning disabled and server-side response storage disabled (`store: false`). It reuses the Voice credential order (`grok.voiceApiKey` → `GROK_VOICE_API_KEY` → `XAI_API_KEY` → the token from `grok login`); the key remains in the extension host and is never sent to the webview. With no usable key, or on timeout, network, rate-limit, or response failure, the original cleaned text is spoken instead. AFK Pilot does not use or receive this feature.
 
 ## Remote Control (AFK Pilot)
 

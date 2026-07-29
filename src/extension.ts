@@ -50,6 +50,8 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
     vscode.commands.registerCommand("grok.logout", () => sidebar.logout()),
     vscode.commands.registerCommand("grok.linkRemote", () => sidebar.linkRemoteDevice()),
     vscode.commands.registerCommand("grok.unlinkRemote", () => sidebar.unlinkRemoteDevice()),
+    vscode.commands.registerCommand("grok.composerForward", () => sidebar.moveComposerCaret("forward")),
+    vscode.commands.registerCommand("grok.composerPreviousLine", () => sidebar.moveComposerCaret("previousLine")),
     // Internal debug helper for manually exercising the plan-review card UI
     // (Approve / Reject / Cancel flows) without a live CLI session.
     vscode.commands.registerCommand("grok._debugDummyPlan", () => sidebar.debugShowDummyPlan()),

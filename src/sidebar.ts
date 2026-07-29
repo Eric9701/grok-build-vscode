@@ -10,6 +10,7 @@ import { selectReapable, computeDot, Dot } from "./session-pool";
 import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PHRASE } from "./voice";
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
+import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta } from "./acp-dispatch";
 import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
@@ -287,7 +288,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     "initialState", "session", "modelChanged", "modeChanged", "chips",
     "contextUsage", "sessions", "repos", "queuedSends", "onboarding", "commandsUpdate",
     "grokUpdateStatus", "voiceConfigured", "fontScale", "showThinking", "expandCommandOutputs",
-    "soundNotifications", "readRepliesAloud",
+    "soundNotifications", "processingSound", "readRepliesAloud", "summarizeRepliesAloud",
   ]);
   private cliPath?: string;
   /** History browsing scope. Deliberately independent of the live session cwd. */
@@ -399,10 +400,22 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
           value: vscode.workspace.getConfiguration("grok").get<boolean>("soundNotifications", false),
         });
       }
+      if (e.affectsConfiguration("grok.processingSound")) {
+        this.post({
+          type: "processingSound",
+          value: vscode.workspace.getConfiguration("grok").get<boolean>("processingSound", false),
+        });
+      }
       if (e.affectsConfiguration("grok.readRepliesAloud")) {
         this.post({
           type: "readRepliesAloud",
           value: vscode.workspace.getConfiguration("grok").get<boolean>("readRepliesAloud", false),
+        });
+      }
+      if (e.affectsConfiguration("grok.summarizeRepliesAloud")) {
+        this.post({
+          type: "summarizeRepliesAloud",
+          value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", false),
         });
       }
       if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
@@ -2086,6 +2099,7 @@ See design doc for the full state machine diagram.`;
   }
 
   dispose(): void {
+    void vscode.commands.executeCommand("setContext", "grok.composerFocus", false);
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
     this.uplink?.dispose();
     this.uplink = undefined;
@@ -2097,6 +2111,10 @@ See design doc for the full state machine diagram.`;
     this.voiceRecorder.cancel();
     this.voiceStreamer?.cancel();
     try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
+  }
+
+  moveComposerCaret(direction: "forward" | "previousLine"): void {
+    this.post({ type: "moveComposerCaret", direction });
   }
 
   // ---------- internals ----------
@@ -3105,6 +3123,21 @@ See design doc for the full state machine diagram.`;
           }
         }
         break;
+      case "composerFocus":
+        if (origin === "local") {
+          await vscode.commands.executeCommand("setContext", "grok.composerFocus", !!msg.focused);
+        }
+        break;
+      case "summarizeSpeech": {
+        if (origin !== "local") break;
+        const text = await summarizeForSpeech(
+          msg.text,
+          this.resolveVoiceApiKey(this.focused.cwd || this.workspaceRoot()),
+          (line) => this.output.appendLine(line),
+        );
+        this.post({ type: "speechSummary", requestId: msg.requestId, text });
+        break;
+      }
       case "send":
         await this.handleSend(msg.text, msg.bare === true, undefined, origin);
         break;
@@ -3431,10 +3464,20 @@ See design doc for the full state machine diagram.`;
           .getConfiguration("grok")
           .update("soundNotifications", !!msg.value, vscode.ConfigurationTarget.Global);
         break;
+      case "setProcessingSound":
+        await vscode.workspace
+          .getConfiguration("grok")
+          .update("processingSound", !!msg.value, vscode.ConfigurationTarget.Global);
+        break;
       case "setReadRepliesAloud":
         await vscode.workspace
           .getConfiguration("grok")
           .update("readRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
+        break;
+      case "setSummarizeRepliesAloud":
+        await vscode.workspace
+          .getConfiguration("grok")
+          .update("summarizeRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
         break;
       case "runInstallCmd": {
         const term = vscode.window.createTerminal("Install Grok");
@@ -4992,7 +5035,6 @@ See design doc for the full state machine diagram.`;
       text,
       client.availableCommands.map((c) => c.name),
     );
-
     const { blocks: promptBlocks } = buildPromptWithImages(
       text,
       chips,
@@ -5263,6 +5305,7 @@ See design doc for the full state machine diagram.`;
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       steerByDefault: cfg.get("steerByDefault", false),
       soundNotifications: cfg.get("soundNotifications", false),
+      processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
       capabilities: { uploadFile: true },
     };
@@ -5270,6 +5313,10 @@ See design doc for the full state machine diagram.`;
 
   private postInitialState(): void {
     this.post(this.buildInitialStateMsg());
+    this.post({
+      type: "summarizeRepliesAloud",
+      value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", false),
+    });
     // Sync the active-editor context chip into the fresh webview (the config
     // gate + no-editor case live inside refreshImplicitChip).
     this.refreshImplicitChip(true);
@@ -5409,7 +5456,7 @@ See design doc for the full state machine diagram.`;
     const wv = this.view?.webview;
     if (wv) {
       wv.postMessage({ type: "clearMessages" });
-      for (const m of session.buffer) wv.postMessage(m);
+      for (const m of bracketRemoteSnapshot(session.buffer)) wv.postMessage(m);
     }
     // Remote clients don't share the webview, so replay the same clear + buffer
     // to them over the uplink — otherwise re-focusing a session that's still
@@ -5421,7 +5468,10 @@ See design doc for the full state machine diagram.`;
     // mirrorToRemote's sticky-chrome recording — this is chat content, and
     // postMode()/postSessionsList() below refresh the remote's chrome.
     if (this.uplink) {
-      const replay: HostMsg[] = [{ type: "clearMessages" }, ...session.buffer];
+      const replay: HostMsg[] = [
+        { type: "clearMessages" },
+        ...bracketRemoteSnapshot(session.buffer),
+      ];
       for (const m of replay) {
         const out = transformHostMsgForRemote(m, GrokSidebar.REMOTE_MEDIA_DEPS);
         if (out) this.uplink.broadcast(out);

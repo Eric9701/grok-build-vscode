@@ -125,6 +125,7 @@ describe("permission card keyboard (real chat.js in a DOM)", () => {
     const { window, doc } = bootWebview();
     card(window, [REJECT, ALLOW]);
     expect(buttons(doc).map((b) => b.textContent)).toEqual(["Allow once", "Reject"]);
+    expect(buttons(doc)[1].classList.contains("arming")).toBe(true);
   });
 
   it("focuses approve when the card arrives at an empty composer", () => {

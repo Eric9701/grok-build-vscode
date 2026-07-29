@@ -50,12 +50,16 @@ export interface PlanHistoryItem {
 
 /** host -> webview */
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean } }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean } }
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
   | { type: "soundNotifications"; value: boolean }
+  | { type: "processingSound"; value: boolean }
   // grok.readRepliesAloud — local VS Code speech-synthesis preference.
   | { type: "readRepliesAloud"; value: boolean }
+  | { type: "summarizeRepliesAloud"; value: boolean }
+  | { type: "speechSummary"; requestId: number; text: string }
+  | { type: "moveComposerCaret"; direction: "forward" | "previousLine" }
   // Whether this machine holds a relay device token (gear "AFK Pilot" section).
   // Local-webview chrome — never mirrored to remotes.
   | { type: "remoteStatus"; linked: boolean }
@@ -210,7 +214,11 @@ export type WebviewMsg =
   | { type: "setShowThinking"; value: boolean }
   // grok.soundNotifications gear switch (#59) — persisted globally by the host.
   | { type: "setSoundNotifications"; value: boolean }
+  | { type: "setProcessingSound"; value: boolean }
   | { type: "setReadRepliesAloud"; value: boolean }
+  | { type: "setSummarizeRepliesAloud"; value: boolean }
+  | { type: "summarizeSpeech"; requestId: number; text: string }
+  | { type: "composerFocus"; focused: boolean }
   | { type: "setExpandCommandOutputs"; value: boolean }
   | { type: "setSteerByDefault"; value: boolean }
   | { type: "dropFile"; path: string; shift: boolean }
@@ -303,7 +311,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
-  soundNotifications: true, readRepliesAloud: true, remoteStatus: true,
+  soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
   sessions: true, repos: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true,
@@ -315,7 +323,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
   setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
-  setSoundNotifications: true, setReadRepliesAloud: true,
+  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,

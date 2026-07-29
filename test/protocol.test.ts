@@ -16,6 +16,26 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     expect(
       packageJson.contributes.configuration.properties["grok.readRepliesAloud"].default,
     ).toBe(false);
+    expect(
+      packageJson.contributes.configuration.properties["grok.processingSound"].default,
+    ).toBe(false);
+    expect(
+      packageJson.contributes.configuration.properties["grok.summarizeRepliesAloud"].default,
+    ).toBe(false);
+  });
+
+  it("scopes the macOS Emacs composer bindings to composer focus", () => {
+    const bindings = packageJson.contributes.keybindings;
+    expect(bindings).toContainEqual({
+      command: "grok.composerForward",
+      key: "ctrl+f",
+      when: "isMac && grok.composerFocus",
+    });
+    expect(bindings).toContainEqual({
+      command: "grok.composerPreviousLine",
+      key: "ctrl+p",
+      when: "isMac && grok.composerFocus",
+    });
   });
 
   it("the webview's host-message list matches the TS union exactly", () => {

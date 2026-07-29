@@ -579,6 +579,9 @@ body.turn-busy .queued-steer:hover {
 }
 .thinking-header:hover .thinking-chevron { opacity: 0.8; }
 .msg.thinking.expanded .thinking-chevron { opacity: 0.8; transform: rotate(90deg); }
+.msg.thinking + .card.permission {
+  margin-top: 12px;
+}
 .thinking-body {
   margin-top: 2px;
   padding: 2px 0 2px 15px;
@@ -2113,6 +2116,7 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   margin-top: 10px;
   border-top: 1px solid var(--vscode-editorWidget-border);
 }
+.card-actions button.danger.arming { pointer-events: none; }
 .card-actions button:disabled { opacity: 0.4; cursor: default; }
 .card.resolved { opacity: 0.5; border-left-color: var(--vscode-editorWidget-border); }
 
@@ -2204,6 +2208,21 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 .card button.question-option:disabled { opacity: 0.4; cursor: default; }
 .card .question-option-label { font-weight: 600; }
 .card .question-option-desc { color: var(--vscode-descriptionForeground); font-size: 11px; }
+.card .question-other-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 7px 8px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: var(--radius);
+  font: inherit;
+}
+.card .question-other-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
 .card button.question-skip {
   align-self: flex-start;
   background: transparent;

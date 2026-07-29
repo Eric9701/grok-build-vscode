@@ -127,7 +127,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setExpandCommandOutputs: "host-local",
   setSteerByDefault: "host-local",
   setSoundNotifications: "host-local",
+  setProcessingSound: "host-local",
   setReadRepliesAloud: "host-local",
+  setSummarizeRepliesAloud: "host-local",
+  summarizeSpeech: "host-local",
+  composerFocus: "host-local",
   // relay account actions (link/unlink/portal) manage THIS machine's device
   // token — only the local webview may drive them
   remoteSignIn: "host-local",
@@ -266,7 +270,11 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
   soundNotifications: "mirror",
+  processingSound: "host-local",
   readRepliesAloud: "host-local",
+  summarizeRepliesAloud: "host-local",
+  speechSummary: "host-local",
+  moveComposerCaret: "host-local",
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",
   focusInput: "mirror",

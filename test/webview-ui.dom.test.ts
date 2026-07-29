@@ -1225,6 +1225,98 @@ describe("thinking traces toggle (#26)", () => {
     expect(cancellations).toBe(2); // once before speaking, once when toggled off
     expect(readAloudToggle().querySelector(".popover-switch.on")).toBeNull();
   });
+
+  it("summarizes only the spoken text and ignores stale summary results", () => {
+    const spoken: string[] = [];
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window, posted } = bootWebview({
+      beforeScripts: (w) => {
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = {
+          cancel() {},
+          speak(value: Utterance) { spoken.push(value.text); },
+        };
+      },
+    });
+    dispatch(window, { type: "readRepliesAloud", value: true });
+    dispatch(window, { type: "summarizeRepliesAloud", value: true });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "Full reply.\n```ts\nhidden();\n```" });
+    dispatch(window, { type: "agentEnd" });
+
+    const request = posted.find((p) => p.type === "summarizeSpeech") as any;
+    expect(request.text).toBe("Full reply.");
+    expect(spoken).toEqual([]);
+
+    dispatch(window, { type: "questionRequest", req: {
+      id: 7,
+      questions: [{ question: "Which option should I use?", options: [], multiSelect: false }],
+    } });
+    const latest = posted.filter((p) => p.type === "summarizeSpeech").at(-1) as any;
+    dispatch(window, { type: "speechSummary", requestId: request.requestId, text: "Stale." });
+    dispatch(window, { type: "speechSummary", requestId: latest.requestId, text: "Choose an option." });
+    expect(spoken).toEqual(["Choose an option."]);
+  });
+
+  it("speaks live question text and a tool-detail-free permission cue while waiting", () => {
+    const spoken: string[] = [];
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window } = bootWebview({
+      beforeScripts: (w) => {
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = {
+          cancel() {},
+          speak(value: Utterance) { spoken.push(value.text); },
+        };
+      },
+    });
+    dispatch(window, { type: "readRepliesAloud", value: true });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "I need your input." });
+    dispatch(window, { type: "questionRequest", req: {
+      id: 8,
+      questions: [{ question: "Which database should I use?", options: [], multiSelect: false }],
+    } });
+    dispatch(window, { type: "agentEnd" });
+    dispatch(window, { type: "permissionRequest", req: {
+      id: 9,
+      toolCall: { toolCallId: "secret", kind: "execute", title: "Delete private-file.txt" },
+      options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
+    } });
+
+    expect(spoken).toEqual([
+      "Which database should I use?",
+      "Grok is waiting for your permission. Review the request and choose an option.",
+    ]);
+    expect(spoken.join(" ")).not.toContain("private-file.txt");
+  });
+
+  it("never speaks a completed local reply inside a history replay bracket", () => {
+    const spoken: string[] = [];
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window } = bootWebview({
+      beforeScripts: (w) => {
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = {
+          cancel() {},
+          speak(value: Utterance) { spoken.push(value.text); },
+        };
+      },
+    });
+    dispatch(window, { type: "readRepliesAloud", value: true });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "Already heard." });
+    dispatch(window, { type: "agentEnd" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(spoken).toEqual([]);
+  });
 });
 
 describe("gear menu — worktree/rewind gating (#65)", () => {
