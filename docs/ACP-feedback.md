@@ -7,26 +7,42 @@ standalone probes (`research/*.cjs`), and a pre-release live suite (`scripts/liv
 that re-verifies the load-bearing shapes against the real binary. Deep-dives live in
 `research/*.md`; this document is the summary an upstream engineer can act on.
 
-**Basis:** grok CLI **0.2.93** (native Windows, stable channel), extension **v1.5.6**, 2026-07-11.
-The grok-build-family findings were re-verified against **Grok 4.5** (`grok-4.5`) — now the
-default model of that family. **Grok Build** (`grok-build`) is still present for some
-accounts/builds, so its observations below remain valid; where the two differ (context window,
-`set_model` echo) both are called out. See **§5** for the Grok 4.5 verification run (full live
-suite + probes; Composer 2.5 re-verified alongside).
+**Current live basis (2026-07-29):** grok CLI **0.2.112**
+(`9bbd559437`, native Windows, stable channel). `grok update --check` reports **0.2.114**, but it
+was deliberately not installed while other grok processes were using the binary. Claims about
+shipped behavior are therefore capped at 0.2.112 unless a section names an older measured build.
+The original full Grok 4.5 verification remains in **§5**.
 
-**Source (2026-07-16):** the CLI is now **open source** — [github.com/xai-org/grok-build](https://github.com/xai-org/grok-build).
-The repo accepts no external PRs and has issues/discussions disabled, so the sections below now
-carry **exact file:line citations into that tree** (paths relative to `crates/codegen/`) and, where
-the fix is small, a sketch of it — the goal is that each remaining ask can be applied internally in
-minutes. The published tree is a single squashed sync that can't be pinned to a shipped build, but
-it postdates 0.2.101 by behavior; blocks labeled *Source-verified* describe that tree, and shipped
-builds may lag it. Our fuller internal notes: `research/grok-build-oss-findings.md`.
+That basis is a full live re-verification, not a spot check: the pre-release suite
+(`npm run test:live` — **21 passed · 1 skipped · 0 failed**) plus targeted probes for every claim
+the suite can't reach. New this pass: `research/acp-surface-audit-probe.cjs`, which asks the
+complementary question to every other probe here — *what is on the wire that we have never looked
+at?* It dumps whole payloads for every inbound rail and sweeps method existence by error code
+(`-32601` absent vs `-32602`/success present, with known-present and known-absent controls). That
+sweep is what produced **§2.16**, and it is the reason this pass found more than it set out to
+check.
+
+**Current source basis (2026-07-29):** [xai-org/grok-build](https://github.com/xai-org/grok-build)
+now publishes a daily `grokkybara[bot]` sync. This pass compares the first public snapshot
+(`c68e39f`, 2026-07-16) with the latest available snapshot
+([`5da6962`](https://github.com/xai-org/grok-build/commit/5da6962e4adb9c857f3def762542b52b4ec3e522),
+2026-07-28; `Source-Revision: 2a818575…`). The snapshots form a 13-commit chain, so source changes
+can now be dated and diffed. They still cannot be mapped silently to a released CLI build.
+
+Evidence labels therefore have three meanings: **Live-verified** means observed on the named
+binary; **Source-verified** means the named source snapshot implements or still contains the
+behavior; **Source-only** means source has changed but that change has not been observed in a
+shipped build. When live and source disagree, both are stated. Paths remain relative to
+`crates/codegen/`. Our fuller internal notes: `research/grok-build-oss-findings.md`.
 
 **Revision history** — newest first. Each observation is dated and carries the grok CLI build it
 was made against; a section without a date here predates this log and is covered by **Basis**.
 
 | Date | grok CLI | What changed |
 |---|---|---|
+| **2026-07-29** | **0.2.112** | **§2.16 (new) — the wire has outgrown its documentation, and two long-standing asks are quietly answerable.** A method-existence sweep found **six unadvertised RPCs already routed on the shipped build** (`_x.ai/session/usage`, `/state`, `/import`, `/updates`, `_x.ai/compact_conversation`, `_x.ai/hooks/list`) and **five push rails we had never seen** (`_x.ai/sessions/changed`, `queue/changed`, `settings/update`, `models/update`, `session/prompt_complete`). Three consequences: §2.7/§2.14 — `settings/update` carries `permission_mode`, `auto_permission_mode_enabled` and `subscription_tier_display`, and `initialize._meta.defaultAuthMethodId` is live, so the "effective policy / active auth is invisible" asks are now *partly self-served*. §2.3 — every `session/update` envelope carries a truthful live `_meta.totalTokens`, so the prose-regex workaround is retirable even though the prompt *result*'s zero stands. §2.13 — `_x.ai/session/usage` exists and carries **`costUsdTicks`**, but it is **per-process, not per-session** (measured: 31673 tokens before resume, **0** immediately after `session/load` in a fresh process), so it is not the quota RPC and cannot back a session total. **Also live-confirmed as still broken:** the §2.1 terminal hole (4 `terminal/create` calls passed through during a plan turn), §2.5's binary-`read_file` wall, and §2.15's `reverted_files` over-report — all three despite fixes existing in published source. Probe: `research/acp-surface-audit-probe.cjs`. |
+| **2026-07-29** | **0.2.112** | **§2.1 — the native plan-mode verdict contract is live-verified.** Replying to `_x.ai/exit_plan_mode` with a JSON-RPC **success** `{outcome:"cancelled"}` (rather than the error we send today) behaves exactly as the source promised: the plan turn ends `end_turn` (not `cancelled`), `current_mode_update` stays `["plan"]`, and the model's own account is *"You asked me to **revise** the plan (not approve or reject), and **yes — I am still in plan mode.**"* That is precisely what our hidden primer exists to fake, which retires the primer's last remaining job. The client-side gate stays regardless — see the terminal hole above. Probe: `research/oss-surfaces-probe.cjs --scenario=planoutcome`. |
+| **2026-07-29** | **0.2.112 live + OSS `5da6962`** | **Full source re-verification with shipped/source states separated.** The OSS repo now has 13 daily commits after its first public snapshot, replacing the obsolete “single squashed sync” basis. Latest source still has §2.1’s non-edit-tool plan hole and §2.3’s hardcoded compact zeros. §2.5 splits: `image:false` remains, while source has an image-aware `read_file` path that conflicts with the 0.2.112 generated-JPEG failure. New unadvertised methods are `_x.ai/session/state`, `/import`, and `/usage`; usage is cumulative session token/cost, **not account quota**. §2.12’s two-log fork truncation and §2.15’s created-file rewind are implemented correctly in source but need shipped-build confirmation. §2.14’s active-auth ask is partly implemented through `initialize._meta.defaultAuthMethodId`; structured 403 codes remain absent. |
 | **2026-07-28** | **0.2.112** | **§2.5 — re-confirmed outside the paste-image path, sharpened the ask.** [#79](https://github.com/phuryn/grok-build-vscode/issues/79): a subagent's own generated `.jpg` files sitting in its `grok-goal-.../implementer/` scratch dir hit the identical `Cannot read binary file` wall when the model tries `Read` on them mid-task. We audited this repo for host-specific code and found none — no Antigravity-conditional branching anywhere outside analytics (`telemetry.ts`) — so there is **no client-side workaround for this one**; it's upstream-only. Sharpened the ask accordingly: since inline image blocks already work (§2.5's `image:false` is confirmed false), `read_file` should route a binary/image path through that same working vision pipeline instead of hard-failing — that gets the model what it wanted, not just a quieter failure. |
 | **2026-07-26** | **0.2.111** | **§2.15 (new) — `_x.ai/rewind/*` semantics are undocumented and one of them is wrong on the wire.** `execute` **DISCARDS its target** prompt along with everything after it (measured: a 4-prompt session rewound to `#1` drops to 1 point; rewound to the tip `#3` drops to 3) — the opposite of what "rewind **to** N" reads like, and getting it backwards silently eats an extra turn *and* that turn's file changes. The **tip is a legal target**, contradicting an earlier "current prompt index is N" error we saw. `prompt_text` returns the *discarded* prompt (correct and useful — it's what a client puts back in the input box). **Bug:** `reverted_files` lists files that were **created** in the rewound turn even though they are left on disk — restore-previous-content has nothing to write back for a new file, so the array over-reports. Probes: `research/rewind-semantics-probe.cjs`, `research/rewind-newfile-probe.cjs`. |
 | **2026-07-24** | **0.2.103** | **Re-verification on the current shipped build, prompted by [#64](https://github.com/phuryn/grok-build-vscode/issues/64).** §2.1's terminal hole is **still open** — re-probed: during a plan turn the model issued `run_terminal_command` and the CLI passed `terminal/create` straight through to the client (edit tool correctly blocked, so only `plan.md` was writable). §2.13's quota gap **still holds and now has a second, independent user asking for it**: the account/plan quota the TUI's `/usage` shows is **not reachable over ACP** — no `usage_update`, no `grok usage` subcommand, and `/usage` is TUI-only (like `/context`, `ok_end_turn(0, None)` — streams nothing over `grok agent stdio`). #64 wants exactly §2.13 item 3 (queryable quota in the GUI). Also confirmed advertised effort is model-specific: grok-4.5's `models[]._meta` advertises only `[high (default), medium, low]` (§2.7). |
@@ -61,6 +77,16 @@ the Composer models. A client that only tested one family breaks on the other:
 **Ask:** treat the wire contract as one product across agents — same tool naming, same
 completion shape (structured `rawOutput` with duration), same id style — or document the
 differences per agent type.
+
+**Update (2026-07-29, 0.2.112): the Composer half of this table is currently unreachable for us.**
+`availableModels` now advertises **only `grok-4.5`** on this account/build — no
+`grok-composer-2.5-fast` — and the live suite's `subagent-composer` test consequently SKIPs ("no
+Composer model available on this account/build"). The Composer observations above are left in
+place because they were measured, and because a client that ever sees the `cursor` agent still
+needs them; but we can no longer re-verify them, so treat this table's right-hand column as dated
+to 0.2.93–0.2.101 rather than current. If the two-family split is being retired, saying so would
+let clients drop a meaningful amount of dual-path code (ours is in `webview-helpers.js`'s subagent
+classifier and the `toolCallId`-keyed output attach in `chat.js`).
 
 ---
 
@@ -145,6 +171,32 @@ or unreadable at intercept time (`tool_calls.rs:106-113`, `:1204-1227`) — so t
 populated reduces to "the model called `exit_plan_mode` without drafting a plan", a model behavior,
 not a wire defect.
 
+**Source re-verification (2026-07-29, `5da6962`): unchanged.** `plan_mode_edit_gate` still
+matches only `AccessKind::Edit` and its own contract explicitly says bash, MCP, and web are never
+gated (`xai-grok-shell/src/session/acp_session_impl/tool_calls.rs:163-211`). The terminal/MCP/web
+policy ask therefore remains open in latest source.
+
+**Live re-verification (2026-07-29, 0.2.112) — the hole is still open, and the native verdict
+contract now works.** Two measurements from one probe run
+(`research/oss-surfaces-probe.cjs --scenario=planoutcome`):
+
+- **The terminal hole reproduces.** During a single plan turn the CLI passed **4 `terminal/create`
+  calls** straight through to the client while correctly refusing the edit tool. Third consecutive
+  build (0.2.101 → 0.2.103 → 0.2.112) with the same result. Our client-side gate remains the only
+  barrier, so **the ask in this section is the one item here we cannot design around** — everything
+  else in this document has a client-side workaround; this one does not.
+- **A success-response verdict behaves exactly as the source promised.** Replying to
+  `_x.ai/exit_plan_mode` with `{outcome:"cancelled"}` — instead of the JSON-RPC error we ship today
+  — left the plan turn at `stopReason: end_turn` (not `cancelled`), kept `current_mode_update` at
+  `["plan"]`, and produced this from the model unprompted:
+  > *"You asked me to **revise** the plan (not approve or reject), and **yes — I am still in plan
+  > mode**."*
+
+  That is the entire job our hidden primer still performs, done natively and without a synthetic
+  turn. The primer's original premise died in 0.2.101; this kills its replacement premise too. We
+  are migrating off it — which retires most of what §2.6 and §3 complain about, since nearly all of
+  it is primer-downstream.
+
 ### 2.2 Slash commands: dispatch requires position 0, and TUI-only commands are advertised
 - A slash command dispatches **only** when it starts the prompt's text block. Editor-injected
   context in front silently degrades `/compact` into a plain LLM turn — in our probe the
@@ -171,6 +223,14 @@ we blamed on it is the TUI's own prompt effect (`permission/prompter.rs:40-44`).
 `x.ai/compact_conversation` exists in the ext-method router (`agent/mvp_agent/acp_agent.rs:3438`)
 and may already be the position-independent compact this section asks for — undocumented, so we
 will probe it.
+
+**Probed 2026-07-29 (0.2.112): it ships.** `_x.ai/compact_conversation` returns `{}` rather than
+`-32601`, so the position-independent compact this section asks for **already exists** — we just
+had to guess its name. That retires our send-reordering workaround for the one command where
+re-ordering was most fragile. The two halves of the ask that remain are unchanged and still worth
+doing: `/context` and `/always-approve` are both **still advertised** over ACP on this build
+(re-confirmed in `availableCommands`), and there is still no hidden/TUI-only flag for a client to
+respect, so every client must maintain its own denylist of commands that misbehave over stdio.
 
 ### 2.3 Context accounting: the client can't know the truth when it matters
 - The prompt result's `_meta.totalTokens` is **0** for both `/session-info` (context untouched)
@@ -202,6 +262,21 @@ the proprietary `AutoCompactCompleted { tokens_before, tokens_after }` notificat
 (`compaction.rs:629-639`, on the `x.ai/session_notification` rail — see §2.4) — it just never
 reaches `_meta.totalTokens`. The minimal fix is ~2 lines: pass that value to `ok_end_turn` instead
 of `0`.
+
+**Source re-verification (2026-07-29, `5da6962`): unchanged.** `/compact` still calls
+`ok_end_turn(0, None)` immediately after `run_compact`, and `/context` still returns the same zero
+shape (`xai-grok-shell/src/session/acp_session_impl/slash_exec.rs:16-20,76`). No standard
+`usage_update` path has appeared. `_x.ai/session/usage` is billing/session accounting, not current
+context size; it does not close this section.
+
+**Live re-verification (2026-07-29, 0.2.112): the defect stands, but our worst workaround is
+retirable.** The prompt **result**'s `_meta.totalTokens` is still `0` on `/session-info` — unchanged.
+However every `session/update` **notification envelope** carries a truthful, live-updating
+`_meta.totalTokens` (observed 5487 → 15781 → 16015 within a single turn, and exactly matching the
+`Context: N / M tokens` prose we scrape). So the fourth bullet's regex — "as fragile as it sounds" —
+has a structured replacement that has apparently been there all along on a different envelope than
+the one we read. That is a client-side fix, and we are taking it; the ask (don't report placeholder
+zeros on the surface that documents itself as the token count) is unaffected. See §2.16.
 
 ### 2.4 Subagents: three completion dialects, lifecycle events that never ship, titles that lie
 - The `subagent_spawned`/`subagent_finished` lifecycle events (method `_x.ai/session/update`)
@@ -312,6 +387,28 @@ The internal-asset-path surfacing is `render_image_files_block`
 (`session/image_describe.rs:329-341`) — the `<image_files>` block hands the model the absolute
 `~/.grok/sessions/<…>/assets/…` path, which is what provokes its failing `Read`.
 
+**Source/live split (2026-07-29).** Latest source still advertises image support as false:
+`PromptCapabilities::new().embedded_context(true)` has no `.image(true)` call
+(`xai-grok-shell/src/agent/mvp_agent/acp_agent.rs:507-509`). But `read_file` source already checks
+decoded metadata and routes images to `image_read_output` *before* the generic binary rejection
+(`xai-grok-tools/src/implementations/grok_build/read_file/mod.rs:416-427,450-461`). That image
+branch is present as far back as the first public source snapshot, while the generated JPEG still
+failed live on 0.2.112. Therefore the capability-flag ask remains open, and the image-aware
+`read_file` ask is **implemented in published source but not verified in stable** — not withdrawn.
+
+**Live re-verification (2026-07-29, 0.2.112) — it is not just generated JPEGs.** Reduced to the
+smallest possible case: a 109-byte 32×32 PNG written to the session cwd, with the model asked to
+`Read` it and report verbatim what the tool returned. Result — `status:"failed"`, and:
+```json
+{"type":"ReadFile","FileReadError":"Cannot read binary file: …\\square.png"}
+```
+So the wall is the plain `read_file`-on-an-image path, reproducible in one turn with no subagent,
+no `/imagine`, and no host specifics — which removes the last doubt that #79 was somehow
+Antigravity- or workflow-specific. `promptCapabilities.image:false` was re-confirmed in the same
+pass while the vision test again proved inline image blocks work. **Both halves of this section
+therefore stand on the shipped build**, and the ask is unchanged: route a binary/image path
+through the vision pipeline that already works.
+
 ### 2.6 Session catalog and restore: private storage becomes a client API
 - Grok's ACP surface exposes `session/new` and `session/load`, but no list, search, rename,
   or delete operations. We enumerate private session directories, parse `summary.json`, infer
@@ -376,6 +473,27 @@ adopting them directly. Related root causes, now pinned:
   (`agent/mvp_agent/mod.rs:1036-1058`; also `systemPromptOverride`, `agentProfile` — documented in
   the agent-mode guide). That is the sanctioned home for what our hidden primer does today; moving
   to it dissolves most of this section's primer-downstream complaints, and we are migrating.
+
+**Source additions since the first public snapshot.** The 2026-07-19 sync added
+`_x.ai/session/state` and `_x.ai/session/import`: state returns the transcript-adjacent `plan`,
+`planMode`, `signals`, `goal`, `announcement`, and `summary` columns; import recreates those plus
+`updates.jsonl` on another host (`xai-grok-shell/src/extensions/session_state.rs`). The 2026-07-21
+sync added `_x.ai/session/usage` (`extensions/usage.rs`; routed at
+`agent/mvp_agent/acp_agent.rs:3440`). All remain unadvertised. These additions sharpen the ask:
+advertise a discoverable session-management capability set, including which methods are safe for
+cross-host portability.
+
+**Live re-verification (2026-07-29, 0.2.112): all three are routed on the shipped build, and the
+headline ask is already implemented as a push rail.** `_x.ai/session/state`, `/import` and
+`/updates` all answer `-32602` (routed, parameter shape wrong) rather than `-32601` — so they are
+shipping, not source-only. More importantly, **`_x.ai/sessions/changed`** pushes exactly the
+catalog this section asks for, incrementally, with `title`, `cwd`, `modelId`, `reasoningEffort`,
+`yolo`, `isWorktree` and a live `activity` field. That is better than what we asked for; we simply
+had no way to discover it. The private-directory scraping described in the first bullet is
+therefore our own remaining problem, not yours — **the ask that survives is purely discoverability**
+(§2.16). The rest of this section — versioned `set_model` echo, agent lock, `<system-reminder>`
+replay, primer-derived titles — is unchanged on 0.2.112, though the primer half is going away on
+our side (§2.1).
 
 ### 2.7 Session configuration is partly out of band
 - Effective permission mode is invisible over ACP. A global or project
@@ -635,6 +753,15 @@ config resolution to explain the CLI's behavior.
 
 **Build:** 0.2.101. **Method:** `_x.ai/session/fork` (unadvertised).
 
+**Source-only correction (2026-07-29): implemented upstream; shipped status pending.** Published
+source truncates `updates_to_copy` with `updates_truncate_for_prompt` at the same target used for
+`chat_to_copy` (`xai-grok-shell/src/session/storage/jsonl/mod.rs:1063-1074`). That implementation
+is present in the first public snapshot; the 2026-07-24 sync additionally filters dead rewind
+branches before applying the cut, matching its commit note “Fix session fork truncating at the
+wrong prompt in rewound sessions.” The 0.2.101 observation remains valid history, but the ask
+should be marked **fixed in source, awaiting a live stable-build recheck**, rather than open
+without qualification.
+
 Forking at a point is exactly the primitive a "branch from this message" UI needs, and the field is
 there: `ForkSessionRequest.target_prompt_index` (`session/fork.rs:30`) reaches
 `CopySessionOptions` (`:99`). It **works** — forking a 14-message session at index 1 returns
@@ -700,6 +827,24 @@ client can honestly render is "usage limit reached, try again later."
 **Ask:** announce dates and limits — a reset timestamp in the rate-limit error, and quota
 used/limit (or %) both as a turn-level signal and queryable on demand, rather than a post-mortem.
 
+**Source re-verification (2026-07-29, `5da6962`): the quota ask still stands.** The new
+`_x.ai/session/usage` RPC returns a cumulative `PromptUsage` ledger for the current process,
+including folded subagent spend and model-level token/cost totals
+(`xai-grok-shell/src/extensions/usage.rs`). It explicitly resets when a session is resumed in a
+new agent process, and it contains no account used/limit or reset window. Separately,
+`SamplingError::Api` can carry `retry_after_secs`, but the 429 arm destructures it away and emits
+only `-32003` plus the message (`sampling/error.rs:119-142`; the source test at `:510-519` proves
+the value existed before mapping). So this is useful session accounting, not the quota RPC in
+item 3, and the reset-time loss is now source-pinned rather than hypothetical.
+
+**Live re-verification (2026-07-29, 0.2.112): `_x.ai/session/usage` ships, and the per-process reset
+is real.** Measured, not inferred — `totalTokens: 31673 / numTurns: 2 / costUsdTicks: 178580000`
+after two turns, then **all zeros** on the very next call following a `session/load` in a fresh
+agent process (`research/acp-surface-audit-probe.cjs --scenario=usageresume`). It is a genuinely
+useful per-run ledger and the only source of `costUsdTicks`, but it is not the queryable quota of
+item 3 and cannot be shown as a session total. Full detail and the naming ask in **§2.16**. Items
+1–3 of this section all remain open.
+
 ### 2.14 Entitlement errors are prose-only, and a cached OAuth session silently shadows `XAI_API_KEY`
 
 **Build:** 0.2.101. **Source:** `xai-grok-shell/src/sampling/error.rs:54-85`,
@@ -729,12 +874,37 @@ well-known code), and the active auth method (oauth vs api-key) surfaced somewhe
 `initialize`'s response or the `_x.ai/session/info` family — so a client can warn about the
 shadowing instead of parsing a hint out of an error message.
 
+**Source-verified partial fix (2026-07-29, `5da6962`).** `initialize._meta` now includes
+`defaultAuthMethodId`, explicitly so clients consume the agent's resolved precedence instead of
+re-deriving it (`xai-grok-shell/src/agent/mvp_agent/acp_agent.rs:515-527`). That satisfies the
+queryable-auth-method half once confirmed in a shipped build. The 403 arm still emits
+`internal_error` with prose and no structured entitlement discriminator
+(`sampling/error.rs:119-137`), so the first half remains open.
+
+**Live confirmation (2026-07-29, 0.2.112).** `initialize._meta.defaultAuthMethodId` is present and
+populated (`"cached_token"` on this box, alongside an `authMethods` list describing it as *"Cached
+token from ~/.grok/auth.json"*) — so the auth-method half of this ask **is answered on the shipped
+build**, and a client can now warn about the OAuth-shadows-`XAI_API_KEY` trap instead of parsing a
+hint out of an error string. Related: `_x.ai/settings/update` carries `subscription_tier_display`
+(`"X Premium+"`), `allow_access`, and `gate_message`/`gate_url`/`gate_label` (§2.16) — entitlement
+*state* now rides a rail even though entitlement *errors* remain prose-only. The structured 403
+discriminator is still the open half, and it is the half that matters for #58.
+
 ### 2.15 Rewind: inverted-sounding semantics, and `reverted_files` over-reports
 
 `_x.ai/rewind/points` + `_x.ai/rewind/execute` are unadvertised and undocumented, and the
 extension now builds two user-facing actions on them (Rewind, and Edit-a-sent-message). Three
 findings, all measured on **0.2.111** — probes are checked in
 (`research/rewind-semantics-probe.cjs`, `research/rewind-newfile-probe.cjs`).
+
+**Source-only correction (2026-07-29): the created-file report is fixed by different behavior.**
+Latest source treats a missing before-snapshot as “delete the file,” calls `delete_file`, and only
+then appends the path to `reverted_files`
+(`xai-grok-shell/src/session/acp_session_impl/rewind.rs:236-266`). Thus its response is truthful:
+the created file is actually removed. That behavior is also present in the first public snapshot,
+so 0.2.111 demonstrably lagged published source. Keep the measured bug in the history, but mark
+item 3 **fixed in source, awaiting a 0.2.112/0.2.114 live recheck**. The documentation/advertising
+asks and discard-inclusive semantics remain unchanged.
 
 **1. `execute` discards the target, inclusive.** Rewinding to prompt N removes N *and*
 everything after it:
@@ -774,6 +944,77 @@ so a client can tell the user the truth.
 `reverted_files`; and — since these RPCs are unadvertised — consider advertising them, as clients
 otherwise have to feature-gate on `-32601` and guess at the contract.
 
+**Live re-verification (2026-07-29, 0.2.112): item 3 still reproduces on the shipped build.** A turn
+that created `created.txt` and edited `existing.txt`, rewound with `mode:"all"`, returned
+`reverted_files: ["existing.txt","created.txt"]` — and `created.txt` was **still on disk**
+afterwards. Published source now deletes the created file before reporting it (so its response is
+truthful), but that has not reached stable: this is a *source-only* fix. Items 1 and 2
+(discard-inclusive semantics, tip is a legal target) also re-confirmed unchanged.
+
+---
+
+### 2.16 The wire has outgrown its documentation
+
+(measured 2026-07-29 on **0.2.112**; probe: `research/acp-surface-audit-probe.cjs`)
+
+Every other section here starts from a behavior we noticed and asks whether it is right. This one
+starts from the opposite question — *what ships that no client has been told about?* — and the
+answer turned out to be large enough to change what several earlier asks should say.
+
+**Six unadvertised RPCs are already routed on the shipped build.** Existence was established by
+error code (`-32601` = absent; `-32602` = routed, parameter shape wrong), with a known-present
+control (`_x.ai/session/list`), a known-absent control, and a bare-prefix control (`x.ai/session/list`
+→ `-32601`, confirming the decoder rule from §2.8):
+
+| Method | Status on 0.2.112 | Why it matters |
+|---|---|---|
+| `_x.ai/session/usage` | returns data | Cumulative token **and cost** ledger — see below |
+| `_x.ai/session/state` | `-32602` (routed) | Transcript-adjacent state for cross-host move |
+| `_x.ai/session/import` | `-32602` (routed) | Recreates that state on another host |
+| `_x.ai/session/updates` | `-32602` (routed) | The update log behind both |
+| `_x.ai/compact_conversation` | returns `{}` | A compact that needs no slash at position 0 (§2.2) |
+| `_x.ai/hooks/list` | `-32602` (routed) | Hooks, now also advertised in `initialize` |
+
+**Five push rails exist that nothing announces.** Full payloads captured:
+
+- **`_x.ai/sessions/changed`** — `{upserted:[{sessionId,title,cwd,isWorktree,modelId,reasoningEffort,yolo,activity:"working",resident,lastChangeUnixMs,origin}],removed:[]}`. This is, essentially, §2.6's headline ask already implemented and pushed. It is strictly better than the paginated list we asked for, because it is incremental.
+- **`_x.ai/queue/changed`** — `{sessionId, entries:[{id,version,kind:"prompt",text,position}]}`. The CLI now owns a prompt queue; the settings rail's own tip says *"Use Ctrl+Enter to interject messages. Or just Enter to queue messages."*
+- **`_x.ai/settings/update`** — carries `permission_mode`, `auto_permission_mode_enabled`, `subscription_tier_display` (`"X Premium+"` on this account), `allow_access`, and `gate_message`/`gate_url`/`gate_label`.
+- **`_x.ai/models/update`** and **`_x.ai/session/prompt_complete`** — model-catalog and turn-settlement rails paralleling data already available elsewhere.
+
+**`initialize` now advertises more than it used to**, which is genuinely the right direction:
+`agentCapabilities._meta` carries `x.ai/hooks` (`blockingEvents: [pre_tool_use, stop,
+subagent_stop]`, `decisions: [deny, block]`) and `x.ai/fs_notify`; `initialize._meta` carries
+`defaultAuthMethodId`, a full `modelState` (so the model catalog is known *before* `session/new`),
+`availableCommands`, and the feature flags `cancelRewind` / `sessionRecap` / `voiceMode`.
+
+**What this changes in the asks above:**
+
+- **§2.7 / §2.14 are partly self-served now.** `permission_mode` and `auto_permission_mode_enabled`
+  ride `settings/update`, and `defaultAuthMethodId` rides `initialize._meta`. Caveat: both
+  permission fields were `null` in our capture on a default config, so the *encoding* is unknown —
+  a client can't tell "not set" from "not reported". **Ask:** document the null semantics and
+  include the policy's **source file**, which is what §2.11 showed is the actually-load-bearing part.
+- **§2.3's workaround is retirable, but the defect stands.** Every `session/update` envelope carries
+  a live, truthful `_meta.totalTokens` (observed climbing 5487 → 15781 → 16015 *within* one turn,
+  and matching `/session-info`'s prose exactly). So the fragile prose-regex has a clean replacement.
+  The reported defect is unchanged: the prompt **result**'s `_meta.totalTokens` is still `0` on
+  no-inference slash turns.
+- **§2.13 is NOT closed.** `_x.ai/session/usage` returns a real cumulative ledger including
+  `costUsdTicks` — the first dollar figure anywhere on the wire. But it is scoped to the **agent
+  process, not the session**: measured `totalTokens: 31673, numTurns: 2` before resume, and
+  **`0` immediately after `session/load` in a fresh process**. So it cannot back a session-lifetime
+  total, and it still carries no account quota, limit, or reset window. **Ask:** either make it
+  session-scoped (rehydrating from the persisted log on load) or name it for what it is
+  (`process/usage`), because a cumulative-looking counter that silently resets is worse for a client
+  than no counter — the number keeps looking authoritative while under-reporting.
+
+**Ask, overall:** this is a lot of good, shipped capability that no client can discover without
+guessing method names. Advertise it — an `initialize` capability set naming the extension methods
+and rails that are safe to use would let clients adopt them deliberately instead of by probe, and
+would let you deprecate one without breaking the clients that reverse-engineered it. Several of
+these directly implement asks we filed months ago; we simply had no way to know.
+
 ---
 
 ## 3. What the extension silently hides from users today
@@ -793,6 +1034,15 @@ protocol shows users something it shouldn't:
 - Subagent child sessions in the history list (`session_kind:"subagent"`)
 - Empty primer-only sessions on disk (swept) and primer-derived session titles (renamed)
 
+**Most of this list is primer-downstream and is now on its way out** (2026-07-29). With the native
+`{outcome:"cancelled"}` verdict contract live-verified (§2.1), the hidden primer, its "ok" ack, its
+replayed copy, the marker-only `[Plan approved/rejected/cancelled]` turns, the primer-derived title
+repair and the empty-primer sweep all lose their reason to exist. The hidden `/session-info` turn
+goes too, replaced by the envelope `_meta.totalTokens` (§2.3/§2.16). What is left afterwards is the
+genuinely upstream-owned set: `<system-reminder>` replay, the subagent result envelope, the
+background-spawn "started" ack, `session_kind:"subagent"` rows, `totalTokens: 0`, and the two
+advertised-but-broken slash commands.
+
 ---
 
 ## 4. What works well (credit where due)
@@ -811,6 +1061,16 @@ protocol shows users something it shouldn't:
 - **Concurrent sessions** — multiple `stdio` processes on one workspace with no cross-talk.
 - **Vision** actually works; **`ask_user_question`** is a good structured surface once its
   response shape is known; **`spawn_subagent` (0.2.93)** is well-structured on grok-build.
+- **The plan-mode verdict contract** (`{outcome:"approved"|"cancelled"|"abandoned"}`) is a genuinely
+  good design — `cancelled` keeps plan mode up *and* tells the model to revise, which is exactly the
+  three-way choice a UI needs, with no client-side protocol invention. Verified live on 0.2.112
+  (§2.1). Our only complaint is that we had to read the source to discover it.
+- **`_x.ai/sessions/changed`** (§2.16) is better than the paginated `session/list` we asked for in
+  §2.6: it is incremental, carries `activity`/`yolo`/`reasoningEffort`/`isWorktree` per row, and
+  makes a client's session catalog push-driven instead of a disk poll. Same for
+  `initialize._meta.modelState`, which means the model catalog no longer requires a session.
+- **`costUsdTicks`** on `_meta.usage` is the first actual money figure on the wire, and it is the
+  one number users ask us for that we have never been able to show. (Scope caveat in §2.16.)
 
 ---
 
@@ -829,9 +1089,12 @@ Windows; Composer 2.5 was independently re-verified in the same run (`subagent-c
   agent). Corroborated by `/session-info` prose (`Context: N / 500000 tokens`).
 - `_meta.supportsReasoningEffort: true` with `reasoningEfforts` [high (default) / medium / low]
   now advertised **in the model list itself** — previously reasoning effort was visible only as
-  a process-start flag (§2.7). It is still not settable per-turn over ACP; changing it still
-  restarts the process.
+  a process-start flag (§2.7). ~~It is still not settable per-turn over ACP; changing it still
+  restarts the process.~~ **Superseded 2026-07-16:** `session/set_model._meta.reasoningEffort`
+  changes and persists it per session; see §2.7.
 - Only two models advertised: `grok-4.5` and `grok-composer-2.5-fast` (Composer 2.5).
+  **Superseded 2026-07-29 (0.2.112):** only `grok-4.5` is advertised now; Composer is no longer
+  reachable on this account/build (see §1).
 
 **`session/set_model` is clean on Grok 4.5.** `set_model("grok-4.5")` returns
 `{"_meta":{"model":{"Ok":"grok-4.5"}}}` — the requested id verbatim, resolvable in
@@ -843,8 +1106,10 @@ stays necessary for the Grok Build model.
 `spawn_subagent` calls with kebab-case `subagent_type` values (`explore`, `general-purpose`),
 the completion arriving as a **same-id `tool_call_update`, `status:"completed"`** — exactly the
 §1 grok-build shape. The `get_command_or_subagent_output` poller was correctly **not** carded.
-The `subagent_spawned`/`subagent_finished` lifecycle events are **still not transmitted over
-ACP** (`finished=0` observed while `updates.jsonl` filled) — §2.4 holds unchanged.
+~~The `subagent_spawned`/`subagent_finished` lifecycle events are still not transmitted over
+ACP (`finished=0` observed while `updates.jsonl` filled).~~ **Superseded 2026-07-16:** they do
+transmit live on `_x.ai/session_notification`; the earlier probe watched the persisted
+`_x.ai/session/update` rail. See §2.4.
 
 **The rest of §1–§4 reproduces on Grok 4.5:**
 - Tool-call ids are `call-<uuid>-<n>`; `_meta["x.ai/tool"]` carries
