@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { bootWebview, click, dispatch } from "./webview-harness";
+import { readFileSync } from "node:fs";
+import { bootWebview, click, dispatch, press } from "./webview-harness";
+
+const sidebarSrc = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
 
 function key(window: any, el: Element, init: Record<string, unknown>) {
   const event = new window.KeyboardEvent("keydown", {
@@ -12,6 +15,26 @@ function key(window: any, el: Element, init: Record<string, unknown>) {
 }
 
 describe("AFK Pilot shared webview controls", () => {
+  it("keeps remote voice completion out of the host prompt path", () => {
+    const continuous = sidebarSrc.slice(
+      sidebarSrc.indexOf("private async commitRemoteVoice"),
+      sidebarSrc.indexOf("private async handleRemoteVoiceStop"),
+    );
+    const stopped = sidebarSrc.slice(
+      sidebarSrc.indexOf("private async handleRemoteVoiceStop"),
+      sidebarSrc.indexOf("private dropRemoteVoice"),
+    );
+
+    expect(continuous).toContain('type: "voiceSubmit"');
+    expect(stopped).toContain('type: "voiceSubmit"');
+    expect(continuous).toContain('text: text.trim()');
+    expect(stopped).toContain('text: text.trim()');
+    expect(continuous).not.toContain("if (trimmed)");
+    expect(stopped).not.toContain("if (text.trim())");
+    expect(continuous).not.toContain("handleSend");
+    expect(stopped).not.toContain("handleSend");
+  });
+
   it("leaves Enter to a touch-device textarea and keeps the Send button as the submit path", () => {
     const { window, posted, doc } = bootWebview({
       remote: true,
@@ -46,36 +69,479 @@ describe("AFK Pilot shared webview controls", () => {
     expect(posted.find((m) => m.type === "send")).toMatchObject({ text: "send from desktop" });
   });
 
-  it("uses browser speech recognition for remote dictation without posting host voice messages", () => {
-    let recognition: any;
-    class FakeRecognition {
-      continuous = false;
-      interimResults = false;
-      onresult?: (event: any) => void;
-      onerror?: () => void;
-      onend?: () => void;
-      constructor() { recognition = this; }
-      start() {}
-      stop() { this.onend?.(); }
-    }
+  it("waits for a delayed worklet flush before posting the final chunk and stop", async () => {
+    let node: any;
+    let stopped = false;
+    let resumeCalls = 0;
     const { window, posted, doc } = bootWebview({
       remote: true,
-      beforeScripts: (w) => { (w as any).webkitSpeechRecognition = FakeRecognition; },
+      beforeScripts: (w) => {
+        const track = { stop: () => { stopped = true; }, addEventListener: () => {} };
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+        });
+        class FakeNode {
+          port: any;
+          constructor() {
+            node = this;
+            this.port = {
+              onmessage: undefined,
+              postMessage: (message: unknown) => {
+                if (message !== "flush") return;
+                setTimeout(() => {
+                  this.port.onmessage({ data: new Uint8Array([3, 0]).buffer });
+                  this.port.onmessage({ data: { type: "flushed" } });
+                }, 80);
+              },
+            };
+          }
+          connect() {}
+          disconnect() {}
+        }
+        class FakeAudioContext {
+          state = "suspended";
+          audioWorklet = { addModule: async () => {} };
+          destination = {};
+          async resume() {
+            resumeCalls++;
+            this.state = "running";
+          }
+          createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+          createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
+          close() { return Promise.resolve(); }
+        }
+        (w as any).AudioWorkletNode = FakeNode;
+        (w as any).AudioContext = FakeAudioContext;
+      },
     });
     const input = doc.getElementById("input") as HTMLTextAreaElement;
     input.value = "Please";
 
     click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(resumeCalls).toBe(1);
+    expect(posted).toContainEqual({ type: "remoteVoiceStart" });
+
+    dispatch(window, { type: "voiceState", status: "listening" });
     expect(doc.getElementById("mic-btn")!.classList.contains("listening")).toBe(true);
     expect(posted.filter((m) => m.type === "voiceStart")).toHaveLength(0);
 
-    const result: any = [{ transcript: "fix the tests" }];
-    result.isFinal = true;
-    recognition.onresult({ results: [result] });
-    expect(input.value).toBe("Please fix the tests");
+    node.port.onmessage({ data: new Uint8Array([1, 0, 2, 0]).buffer });
+    expect(posted).toContainEqual({ type: "remoteVoiceChunk", data: "AQACAA==" });
 
     click(window, doc.getElementById("mic-btn")!);
-    expect(doc.getElementById("mic-btn")!.classList.contains("listening")).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(posted).toContainEqual({ type: "remoteVoiceChunk", data: "AwA=" });
+    expect(posted).toContainEqual({ type: "remoteVoiceStop" });
+    expect(posted.findIndex((message) => message.type === "remoteVoiceChunk" && message.data === "AwA="))
+      .toBeLessThan(posted.findIndex((message) => message.type === "remoteVoiceStop"));
+    expect(stopped).toBe(true);
+  });
+
+  it("retains more than 16 PCM chunks while delayed STT setup becomes ready", async () => {
+    let node: any;
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        const track = { stop: () => {}, addEventListener: () => {} };
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+        });
+        class FakeNode {
+          port = { onmessage: undefined as any, postMessage: () => {} };
+          constructor() { node = this; }
+          connect() {}
+          disconnect() {}
+        }
+        class FakeAudioContext {
+          audioWorklet = { addModule: async () => {} };
+          destination = {};
+          createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+          createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
+          close() { return Promise.resolve(); }
+        }
+        (w as any).AudioWorkletNode = FakeNode;
+        (w as any).AudioContext = FakeAudioContext;
+      },
+    });
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let i = 0; i < 24; i++) {
+      node.port.onmessage({ data: new Uint8Array([i, 0]).buffer });
+    }
+    expect(posted.filter((m) => m.type === "remoteVoiceChunk")).toHaveLength(0);
+
+    dispatch(window, { type: "voiceState", status: "listening" });
+
+    const chunks = posted.filter((m) => m.type === "remoteVoiceChunk");
+    expect(chunks).toHaveLength(24);
+    expect(chunks[0]).toEqual({ type: "remoteVoiceChunk", data: "AAA=" });
+    expect(chunks[23]).toEqual({ type: "remoteVoiceChunk", data: "FwA=" });
+  });
+
+  it("cancels visibly instead of truncating when the bounded pre-ready budget is exhausted", async () => {
+    let node: any;
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        const track = { stop: () => {}, addEventListener: () => {} };
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+        });
+        class FakeNode {
+          port = { onmessage: undefined as any, postMessage: () => {} };
+          constructor() { node = this; }
+          connect() {}
+          disconnect() {}
+        }
+        class FakeAudioContext {
+          audioWorklet = { addModule: async () => {} };
+          destination = {};
+          createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+          createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
+          close() { return Promise.resolve(); }
+        }
+        (w as any).AudioWorkletNode = FakeNode;
+        (w as any).AudioContext = FakeAudioContext;
+      },
+    });
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let i = 0; i < 129; i++) {
+      node.port.onmessage({ data: new ArrayBuffer(4096) });
+    }
+
+    expect(posted).toContainEqual({ type: "remoteVoiceStop", cancel: true });
+    expect(posted.filter((m) => m.type === "remoteVoiceChunk")).toHaveLength(0);
+    expect(doc.querySelector(".msg.error")?.textContent).toMatch(/no audio was sent.*try dictating again/i);
+    expect(doc.getElementById("mic-btn")!.classList.contains("connecting")).toBe(false);
+  });
+
+  it("keeps the browser microphone closed when the host reports voice unavailable", async () => {
+    let getUserMediaCalls = 0;
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: {
+            getUserMedia: async () => {
+              getUserMediaCalls++;
+              return { getTracks: () => [] };
+            },
+          },
+        });
+        (w as any).AudioWorkletNode = class {};
+      },
+    });
+    const mic = doc.getElementById("mic-btn") as HTMLButtonElement;
+
+    dispatch(window, { type: "voiceConfigured", value: false });
+    click(window, mic);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mic.disabled).toBe(true);
+    expect(mic.title).toMatch(/unavailable.*host/i);
+    expect(mic.title).not.toMatch(/set up/i);
+    expect(getUserMediaCalls).toBe(0);
+    expect(posted.filter((m) => m.type === "remoteVoiceStart")).toEqual([]);
+  });
+
+  it("surfaces a denied browser microphone permission and resets the button", async () => {
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: {
+            getUserMedia: async () => {
+              throw new (w as any).DOMException("Permission denied", "NotAllowedError");
+            },
+          },
+        });
+        (w as any).AudioWorkletNode = class {};
+      },
+    });
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(doc.querySelector(".msg.error")?.textContent).toMatch(/access was denied/i);
+    expect(doc.querySelector(".msg.error")?.textContent).toMatch(/browser settings/i);
+    expect(doc.getElementById("mic-btn")!.classList.contains("connecting")).toBe(false);
+    expect((doc.getElementById("mic-btn") as HTMLButtonElement).disabled).toBe(false);
+    expect(posted.filter((m) => m.type === "remoteVoiceStart")).toEqual([]);
+  });
+
+  it("distinguishes a device with no microphone from a permission denial", async () => {
+    const { window, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: {
+            getUserMedia: async () => {
+              throw new (w as any).DOMException("No device", "NotFoundError");
+            },
+          },
+        });
+        (w as any).AudioWorkletNode = class {};
+      },
+    });
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(doc.querySelector(".msg.error")?.textContent).toBe("No microphone was found on this device.");
+  });
+
+  it("releases an opened stream when worklet setup fails", async () => {
+    let stopped = false;
+    let closed = false;
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        const track = { stop: () => { stopped = true; } };
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+        });
+        class FakeAudioContext {
+          audioWorklet = { addModule: async () => { throw new Error("worklet failed"); } };
+          close() { closed = true; return Promise.resolve(); }
+        }
+        (w as any).AudioWorkletNode = class {};
+        (w as any).AudioContext = FakeAudioContext;
+      },
+    });
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(stopped).toBe(true);
+    expect(closed).toBe(true);
+    expect(doc.querySelector(".msg.error")?.textContent).toMatch(/could not start/i);
+    expect(doc.getElementById("mic-btn")!.classList.contains("connecting")).toBe(false);
+    expect(posted.filter((m) => m.type === "remoteVoiceStart")).toEqual([]);
+  });
+
+  it("cancels a pending microphone start and discards a late stream", async () => {
+    let resolveStream!: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void;
+    let stopped = false;
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: {
+            getUserMedia: () => new Promise((resolve) => { resolveStream = resolve; }),
+          },
+        });
+        (w as any).AudioWorkletNode = class {};
+      },
+    });
+    const mic = doc.getElementById("mic-btn")!;
+
+    click(window, mic);
+    expect(mic.classList.contains("connecting")).toBe(true);
+    click(window, mic);
+    expect(mic.classList.contains("connecting")).toBe(false);
+
+    resolveStream({ getTracks: () => [{ stop: () => { stopped = true; } }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(stopped).toBe(true);
+    expect(posted.filter((m) => m.type === "remoteVoiceStart")).toEqual([]);
+    expect(doc.querySelector(".msg.error")).toBeNull();
+  });
+
+  it("does not overwrite a passive same-repo tab's composer with another tab's partial", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "my independent draft";
+
+    dispatch(window, { type: "voiceState", status: "listening" });
+    dispatch(window, { type: "voicePartial", text: "someone else's dictation" });
+
+    expect(input.value).toBe("my independent draft");
+  });
+
+  it("sends a spoken prompt through the relay in the same metered frame as typed input", () => {
+    const typed = bootWebview({ remote: true });
+    const typedInput = typed.doc.getElementById("input") as HTMLTextAreaElement;
+    typedInput.value = "charge this prompt";
+    click(typed.window, typed.doc.getElementById("send-btn")!);
+    const typedSend = typed.posted.find((message) => message.type === "send");
+
+    const spoken = bootWebview({ remote: true });
+    const spokenInput = spoken.doc.getElementById("input") as HTMLTextAreaElement;
+    spokenInput.value = "live transcript";
+    dispatch(spoken.window, { type: "voiceSubmit", text: "charge this prompt" });
+    const spokenSend = spoken.posted.find((message) => message.type === "send");
+
+    expect(spokenSend).toEqual(typedSend);
+    expect(spokenInput.value).toBe("");
+  });
+
+  it("queues a spoken prompt during a busy remote turn instead of starting a concurrent prompt", () => {
+    const { window, posted } = bootWebview({ remote: true });
+    dispatch(window, { type: "agentStart" });
+
+    dispatch(window, { type: "voiceSubmit", text: "wait for the current turn" });
+
+    expect(posted.filter((message) => message.type === "send")).toEqual([]);
+    expect(posted.find((message) => message.type === "queueSend")).toEqual({
+      type: "queueSend",
+      text: "wait for the current turn",
+    });
+  });
+
+  it("recovers a typed prompt and unlocks the composer when the relay rejects it", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "do not lose this typed prompt";
+    click(window, doc.getElementById("send-btn")!);
+
+    dispatch(window, {
+      type: "error",
+      text: "Slow down — at most 5 messages per minute.",
+    });
+
+    expect(doc.querySelector(".msg.error")?.textContent)
+      .toBe("Slow down — at most 5 messages per minute.");
+    expect(doc.querySelector(".msg.queued .queued-text")?.textContent)
+      .toBe("do not lose this typed prompt");
+    expect(doc.querySelector(".msg.queued .queued-tag")?.textContent).toBe("Not sent");
+    expect(doc.getElementById("send-btn")!.classList.contains("stop")).toBe(false);
+
+    press(window, doc.querySelector('.msg.queued .queued-action[title^="Edit"]')!);
+    expect(input.value).toBe("do not lose this typed prompt");
+    expect(doc.querySelector(".msg.queued")).toBeNull();
+  });
+
+  it("recovers a spoken prompt and unlocks the composer when the relay rejects it", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "voiceSubmit", text: "do not lose this dictated prompt" });
+
+    dispatch(window, {
+      type: "error",
+      text: "Free plan limit reached (25 messages this week). Resets in 2 days. Upgrade to Remote Max for unlimited use.",
+    });
+
+    expect(doc.querySelector(".msg.error")?.textContent)
+      .toMatch(/^Free plan limit reached/);
+    expect(doc.querySelector(".msg.queued .queued-text")?.textContent)
+      .toBe("do not lose this dictated prompt");
+    expect(doc.querySelector(".msg.queued .queued-tag")?.textContent).toBe("Not sent");
+    expect(doc.getElementById("send-btn")!.classList.contains("stop")).toBe(false);
+  });
+
+  it("does not treat an unrelated host error as rejection of an in-flight send", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "still in flight";
+    click(window, doc.getElementById("send-btn")!);
+
+    dispatch(window, { type: "error", text: "Could not rename this conversation." });
+
+    expect(doc.querySelector(".msg.queued")).toBeNull();
+    expect(doc.getElementById("send-btn")!.classList.contains("stop")).toBe(true);
+  });
+
+  it("meters a dequeued prompt as a send frame carrying its submission identity", () => {
+    const typed = bootWebview({ remote: true });
+    const typedInput = typed.doc.getElementById("input") as HTMLTextAreaElement;
+    typedInput.value = "charge this queued prompt";
+    click(typed.window, typed.doc.getElementById("send-btn")!);
+    const typedSend = typed.posted.find((message) => message.type === "send");
+
+    const queued = bootWebview({ remote: true });
+    dispatch(queued.window, { type: "queuedSends", items: ["charge this queued prompt"] });
+    dispatch(queued.window, { type: "submitQueuedSend", id: "queued-send-id-0001", text: "charge this queued prompt" });
+    const dequeuedSend = queued.posted.find((message) => message.type === "send");
+
+    expect(dequeuedSend).toEqual({ ...typedSend, queuedSendId: "queued-send-id-0001" });
+  });
+
+  it("converts a repeated dequeue instruction only once in one page", () => {
+    const { window, posted } = bootWebview({ remote: true });
+    const instruction = {
+      type: "submitQueuedSend",
+      id: "queued-send-id-0002",
+      text: "do this once",
+    };
+
+    dispatch(window, instruction);
+    dispatch(window, instruction);
+
+    expect(posted.filter((message) => message.type === "send")).toEqual([
+      { type: "send", text: "do this once", queuedSendId: instruction.id },
+    ]);
+  });
+
+  it("keeps an over-quota dequeued prompt visible and editable", () => {
+    const { window, posted, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "queuedSends", items: ["do not lose this"] });
+    dispatch(window, { type: "submitQueuedSend", id: "queued-send-id-0003", text: "do not lose this" });
+    expect(posted).toContainEqual({
+      type: "send",
+      text: "do not lose this",
+      queuedSendId: "queued-send-id-0003",
+    });
+
+    dispatch(window, {
+      type: "error",
+      text: "Free plan limit reached (25 messages this week). Resets in 2 days. Upgrade to Remote Max for unlimited use.",
+    });
+
+    expect(doc.querySelector(".msg.error")?.textContent)
+      .toBe("Free plan limit reached (25 messages this week). Resets in 2 days. Upgrade to Remote Max for unlimited use.");
+    expect(doc.querySelector(".msg.queued .queued-text")?.textContent).toBe("do not lose this");
+    expect(doc.querySelector(".msg.queued .queued-tag")?.textContent).toBe("Not sent");
+    expect(doc.querySelector(".msg.queued .queued-tag")?.getAttribute("title"))
+      .toMatch(/rejected.*edit.*retry/i);
+    expect(doc.querySelectorAll(".msg.queued .queued-action")).toHaveLength(3);
+    expect(doc.getElementById("send-btn")!.classList.contains("stop")).toBe(false);
+  });
+
+  it("cancels host-side remote voice when the page is torn down", async () => {
+    let stopped = false;
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        const track = { stop: () => { stopped = true; }, addEventListener: () => {} };
+        Object.defineProperty((w as any).navigator, "mediaDevices", {
+          configurable: true,
+          value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+        });
+        class FakeNode {
+          port = { onmessage: undefined as any, postMessage: () => {} };
+          connect() {}
+          disconnect() {}
+        }
+        class FakeAudioContext {
+          audioWorklet = { addModule: async () => {} };
+          destination = {};
+          createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+          createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
+          close() { return Promise.resolve(); }
+        }
+        (w as any).AudioWorkletNode = FakeNode;
+        (w as any).AudioContext = FakeAudioContext;
+      },
+    });
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.dispatchEvent(new window.Event("pagehide"));
+
+    expect(posted).toContainEqual({ type: "remoteVoiceStop", cancel: true });
+    expect(stopped).toBe(true);
   });
 
   it("previews remote text size while dragging, then persists and applies it on release", () => {

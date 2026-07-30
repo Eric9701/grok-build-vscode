@@ -8,7 +8,7 @@
 // speak raw HostMsg/WebviewMsg JSON (the Phase-0 shim unchanged); only the
 // extension<->relay leg wraps them in frames so the relay can route per client.
 
-import type { HostMsg, WebviewMsg } from "./protocol";
+import { WEBVIEW_MESSAGE_TYPES, type HostMsg, type WebviewMsg } from "./protocol";
 
 /** Bump when a frame shape changes incompatibly. The relay refuses a mismatched
  *  hello rather than mis-parsing — clients and extensions update independently. */
@@ -18,11 +18,13 @@ export const REMOTE_PROTO_VERSION = 1;
 export type UplinkFrame =
   | { t: "hello"; proto: number; device?: { name?: string } }
   | { t: "host"; msg: HostMsg }
+  | { t: "host-to"; clientIds: string[]; msg: HostMsg }
   | { t: "snapshot"; clientId: string; msgs: HostMsg[] };
 
 /** relay -> extension */
 export type RelayFrame =
-  | { t: "client-ready"; clientId: string }
+  | { t: "client-ready"; clientId: string; tabToken?: string }
+  | { t: "client-left"; clientId: string }
   | { t: "msg"; clientId: string; msg: WebviewMsg }
   | { t: "clients"; count: number };
 
@@ -32,6 +34,10 @@ export function helloFrame(deviceName?: string): UplinkFrame {
 
 export function hostFrame(msg: HostMsg): UplinkFrame {
   return { t: "host", msg };
+}
+
+export function hostToFrame(clientIds: string[], msg: HostMsg): UplinkFrame {
+  return { t: "host-to", clientIds, msg };
 }
 
 export function snapshotFrame(clientId: string, msgs: HostMsg[]): UplinkFrame {
@@ -50,15 +56,112 @@ export function parseRelayFrame(raw: string): RelayFrame | null {
   const f = obj as Record<string, unknown>;
   switch (f.t) {
     case "client-ready":
-      return typeof f.clientId === "string" ? { t: "client-ready", clientId: f.clientId } : null;
+      if (typeof f.clientId !== "string") return null;
+      if (
+        f.tabToken !== undefined &&
+        (typeof f.tabToken !== "string" || !/^[A-Za-z0-9_-]{20,128}$/.test(f.tabToken))
+      ) return null;
+      return {
+        t: "client-ready",
+        clientId: f.clientId,
+        ...(f.tabToken !== undefined ? { tabToken: f.tabToken } : {}),
+      };
+    case "client-left":
+      return typeof f.clientId === "string" ? { t: "client-left", clientId: f.clientId } : null;
     case "msg":
       if (typeof f.clientId !== "string") return null;
-      if (typeof f.msg !== "object" || f.msg === null || typeof (f.msg as { type?: unknown }).type !== "string") return null;
+      if (!isRemoteWebviewMsg(f.msg)) return null;
       return { t: "msg", clientId: f.clientId, msg: f.msg as WebviewMsg };
     case "clients":
       return typeof f.count === "number" ? { t: "clients", count: f.count } : null;
     default:
       return null;
+  }
+}
+
+const WEBVIEW_TYPE_SET = new Set<string>(WEBVIEW_MESSAGE_TYPES);
+const REMOTE_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const REMOTE_UPLOAD_NAME_RE = /^[^/\\\0-\x1f\x7f]{1,240}$/;
+const REMOTE_UPLOAD_EXTENSION_RE = /\.(?:md|txt|pdf|csv|xlsx|docx)$/i;
+
+function pathSegments(value: string): string[] {
+  return value.split(/[\\/]/);
+}
+
+function hasOnlyConcretePathSegments(value: string): boolean {
+  return pathSegments(value).every((part) => part !== "." && part !== "..");
+}
+
+function isRemoteCwd(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 32_767 ||
+    /[\0-\x1f\x7f]/.test(value) ||
+    !hasOnlyConcretePathSegments(value)
+  ) return false;
+  return value.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(value) ||
+    /^\\\\[^\\]+\\[^\\]+/.test(value);
+}
+
+function isRemoteSessionId(value: unknown): value is string {
+  return typeof value === "string" &&
+    REMOTE_SESSION_ID_RE.test(value) &&
+    value !== "__proto__" &&
+    value !== "prototype" &&
+    value !== "constructor";
+}
+
+function isRemoteMentionPath(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 4096 &&
+    !value.startsWith("/") &&
+    !value.startsWith("\\") &&
+    !/^[A-Za-z]:/.test(value) &&
+    !/[\0-\x1f\x7f]/.test(value) &&
+    pathSegments(value).every((part) => !!part && part !== "." && part !== "..");
+}
+
+function isRemoteUploadName(value: unknown): value is string {
+  return typeof value === "string" &&
+    REMOTE_UPLOAD_NAME_RE.test(value) &&
+    REMOTE_UPLOAD_EXTENSION_RE.test(value);
+}
+
+function isRemoteWebviewMsg(msg: unknown): msg is WebviewMsg {
+  if (typeof msg !== "object" || msg === null) return false;
+  const value = msg as Record<string, unknown>;
+  if (typeof value.type !== "string" || !WEBVIEW_TYPE_SET.has(value.type)) return false;
+  switch (value.type) {
+    case "ready":
+      return value.tabToken === undefined || (
+        typeof value.tabToken === "string" &&
+        /^[A-Za-z0-9_-]{20,128}$/.test(value.tabToken)
+      );
+    case "send":
+      return value.queuedSendId === undefined || (
+        typeof value.queuedSendId === "string" &&
+        /^[A-Za-z0-9_-]{16,128}$/.test(value.queuedSendId)
+      );
+    case "selectRepo":
+    case "clearAllSessions":
+      return isRemoteCwd(value.cwd);
+    case "toggleRepoPin":
+      return isRemoteCwd(value.cwd) && typeof value.pinned === "boolean";
+    case "resumeSession":
+      return isRemoteSessionId(value.id) &&
+        (value.cwd === undefined || isRemoteCwd(value.cwd));
+    case "renameSession":
+    case "deleteSession":
+      return isRemoteSessionId(value.id);
+    case "addMentionFile":
+      return isRemoteMentionPath(value.relPath);
+    case "uploadFile":
+      return isRemoteUploadName(value.name);
+    default:
+      return true;
   }
 }
 

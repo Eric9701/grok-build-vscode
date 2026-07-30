@@ -52,12 +52,12 @@ Either change takes effect immediately — no reload needed.
 
 ## Voice input (Speech-to-Text)
 
-Separate from telemetry: **voice input** sends data to xAI, but only when you use it. It is **opt-in per use** — nothing is captured until you click the microphone button. While you dictate, two things go to **xAI's Speech-to-Text endpoint** (`api.x.ai/v1/stt`) to produce the transcript:
+Separate from telemetry: **voice input** sends data to xAI, but only when you use it. It is **opt-in per use** — nothing is captured until you click the microphone button. In VS Code, ffmpeg captures locally in the extension host. In AFK Pilot, the browser sends ephemeral raw PCM through the linked relay connection to that same host; it is never persisted or content-logged. The host then sends two things to **xAI's Speech-to-Text endpoint** (`api.x.ai/v1/stt`) to produce the transcript:
 
 - your **audio** (the recording, streamed live or as a clip), and
 - an **STT credential** — the dedicated key you configured (`grok.voiceApiKey` / `GROK_VOICE_API_KEY` / `XAI_API_KEY`) if set, otherwise the token from your `grok login` (`~/.grok/auth.json`), reused so voice works without a separate key.
 
-This is core functionality you trigger deliberately, and it goes to xAI (the same provider behind the CLI) — never to us or any third party. If you never use voice, none of this happens. To avoid sending your login token specifically, set a dedicated `grok.voiceApiKey`. Setup + details: [docs/voice-setup.md](voice-setup.md).
+The STT credential stays in the extension host and is never sent to AFK Pilot or the browser. Remote microphone audio necessarily crosses AFK Pilot on its way back to your linked host; the host-to-xAI STT request is otherwise the same as local voice. If you never use voice, none of this happens. To avoid sending your login token to xAI specifically, set a dedicated `grok.voiceApiKey`. Setup + details: [docs/voice-setup.md](voice-setup.md).
 
 ## Summarize before speaking
 

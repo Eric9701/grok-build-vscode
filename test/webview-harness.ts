@@ -21,6 +21,7 @@ const chatSrc = read("../media/chat.js");
 export const BODY = `
   <header class="top-bar">
     <button id="repo-btn"></button>
+    <button id="remote-btn" hidden></button>
     <button id="history-btn"></button>
     <button id="new-btn"></button>
     <div id="repo-popover" hidden></div>

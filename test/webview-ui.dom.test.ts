@@ -403,8 +403,10 @@ describe("session status dots (Agent Dashboard)", () => {
   });
 
   it("keeps the dot's tooltip in sync with its state", () => {
-    const { doc } = openWithDots({ s1: "working" });
+    const { doc } = openWithDots({ s1: "working", s2: "unread", s3: "error" });
     expect(dotOf(doc, "s1").title).toBe("Working");
+    expect(dotOf(doc, "s2").title).toBe("Finished while no view was watching");
+    expect(dotOf(doc, "s3").title).toBe("Errored while no view was watching");
   });
 });
 
@@ -600,6 +602,139 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
 
     expect(($(doc, "gear-popover") as any).hidden).toBe(false); // popover stays open
     expect(modelBtn(doc).disabled).toBe(false); // now unlocked
+  });
+});
+
+describe("gear menu — AFK Pilot onboarding", () => {
+  const gearItem = (doc: Document, label: string) =>
+    [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes(label),
+    ) as HTMLElement | undefined;
+  const button = (doc: Document, label: string) =>
+    [...doc.querySelectorAll(".confirm-panel button")].find(
+      (el) => el.textContent?.trim() === label,
+    ) as HTMLButtonElement | undefined;
+
+  it("offers linked devices an immediate hinted Continue remotely action with a phone icon", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "remoteStatus", linked: true });
+    click(window, $(doc, "gear-btn"));
+
+    const item = gearItem(doc, "Continue remotely");
+    expect(item).toBeTruthy();
+    expect(item!.querySelector("svg rect")).not.toBeNull();
+
+    click(window, item!);
+    expect(posted).toContainEqual({ type: "openRemotePortal", withHint: true });
+    expect(($(doc, "gear-popover") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("offers no link/account action until the host has answered with the link status", () => {
+    // The host reads the device token from secret storage asynchronously, so
+    // there is a real window with no answer. Defaulting to "not linked" told
+    // an already-linked machine to "Sign in (link this device)" — the owner
+    // started re-linking a device that was working (2026-07-30). Unknown must
+    // show nothing, and the section must appear when the answer lands, even
+    // while the popover is open.
+    const { window, doc } = bootWebview();
+    click(window, $(doc, "gear-btn"));
+
+    const labels = () => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .map((el) => el.textContent || "");
+    expect(labels().some((l) => /link this device|Your account|Continue remotely/i.test(l))).toBe(false);
+
+    dispatch(window, { type: "remoteStatus", linked: false });
+    expect(labels().some((l) => /Sign in \(link this device\)/i.test(l))).toBe(true);
+  });
+
+  it("sends linked devices to the portal for account management, never a one-tap unlink", () => {
+    // Unlinking strands every other device the user works from, so it must not
+    // sit one slip away from "Continue remotely" (owner, 2026-07-30). The
+    // portal owns account + device management; `Grok: Unlink Remote Device`
+    // remains for the deliberate case.
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "remoteStatus", linked: true });
+    click(window, $(doc, "gear-btn"));
+
+    const labels = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .map((el) => el.textContent || "");
+    expect(labels.some((l) => /unlink this device/i.test(l))).toBe(false);
+
+    const account = gearItem(doc, "Your account");
+    expect(account).toBeTruthy();
+    click(window, account!);
+    expect(posted).toContainEqual({ type: "openRemotePortal" });
+    expect(posted.some((m) => m.type === "remoteSignOut")).toBe(false);
+  });
+
+  it("offers a top-bar Continue remotely button only in a linked local client", () => {
+    // The desk is where someone decides to get up and keep going on a phone —
+    // one tap, not buried in the gear menu. Hidden until this machine links.
+    const { window, posted, doc } = bootWebview();
+    const remoteBtn = $(doc, "remote-btn") as HTMLButtonElement;
+    expect(remoteBtn.hidden).toBe(true);
+
+    dispatch(window, { type: "remoteStatus", linked: true });
+    expect(remoteBtn.hidden).toBe(false);
+
+    click(window, remoteBtn);
+    expect(posted).toContainEqual({ type: "openRemotePortal", withHint: true });
+
+    dispatch(window, { type: "remoteStatus", linked: false });
+    expect(remoteBtn.hidden).toBe(true);
+  });
+
+  it("opens the How it works explainer locally without navigating", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "remoteStatus", linked: false });
+    click(window, $(doc, "gear-btn"));
+    click(window, gearItem(doc, "How it works")!);
+
+    expect(posted.filter((msg) => msg.type === "openRemotePortal")).toEqual([]);
+    const panel = doc.querySelector(".remote-explainer-panel");
+    expect(panel).not.toBeNull();
+    expect(panel!.textContent).toContain("Link this device. Sign in with your account.");
+    expect(panel!.textContent).toContain("Keep VS Code, Cursor, or Antigravity open.");
+    expect(panel!.textContent).toContain("Open afkpilot.com on your phone and sign in.");
+    expect(panel!.textContent).toContain(
+      "You can then work 100% remotely — it keeps this device awake, and never stores your prompts or code.",
+    );
+    expect(button(doc, "More & FAQ")).toBeTruthy();
+  });
+
+  it("copies afkpilot.com with success feedback and keeps More & FAQ unhinted", async () => {
+    const copied: string[] = [];
+    const { window, posted, doc } = bootWebview({
+      beforeScripts: (w) => {
+        Object.defineProperty((w as any).navigator, "clipboard", {
+          configurable: true,
+          value: { writeText: async (value: string) => { copied.push(value); } },
+        });
+      },
+    });
+    dispatch(window, { type: "remoteStatus", linked: false }); // an unlinked machine, stated not assumed
+    click(window, $(doc, "gear-btn"));
+    click(window, gearItem(doc, "How it works")!);
+
+    click(window, doc.querySelector(".remote-url-copy")!);
+    await Promise.resolve();
+    expect(copied).toEqual(["https://afkpilot.com"]);
+    expect(doc.querySelector(".remote-url-copied")!.textContent).toBe("Copied");
+
+    click(window, button(doc, "More & FAQ")!);
+    expect(posted).toContainEqual({ type: "openRemotePortal" });
+    expect(doc.querySelector(".remote-explainer-panel")).toBeNull();
+  });
+
+  it("closes the explainer without navigating", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "remoteStatus", linked: false }); // an unlinked machine, stated not assumed
+    click(window, $(doc, "gear-btn"));
+    click(window, gearItem(doc, "How it works")!);
+    click(window, doc.querySelector(".remote-explainer-close")!);
+
+    expect(doc.querySelector(".remote-explainer-panel")).toBeNull();
+    expect(posted.filter((msg) => msg.type === "openRemotePortal")).toEqual([]);
   });
 });
 
@@ -2056,5 +2191,311 @@ describe("welcome screen visibility (logo/byline hides once real content exists)
     dispatch(window, { type: "historyReplay", active: false });
 
     expect(($(doc, "welcome") as any).hidden).toBe(false);
+  });
+});
+describe("remote tab session reconnect", () => {
+  function broadcastChannelFixture() {
+    const channels: Array<{
+      name: string;
+      closed: boolean;
+      onmessage?: (event: { data: unknown }) => void;
+    }> = [];
+    return class FakeBroadcastChannel {
+      closed = false;
+      onmessage?: (event: { data: unknown }) => void;
+
+      constructor(readonly name: string) {
+        channels.push(this);
+      }
+
+      postMessage(data: unknown) {
+        for (const peer of channels) {
+          if (peer !== this && !peer.closed && peer.name === this.name) {
+            setTimeout(() => peer.onmessage?.({ data }), 0);
+          }
+        }
+      }
+
+      close() {
+        this.closed = true;
+      }
+    };
+  }
+
+  it("regenerates copied tab state before a duplicated page identifies or resumes", async () => {
+    const FakeBroadcastChannel = broadcastChannelFixture();
+    const remembered = {
+      id: "copied-session",
+      repoCwd: "/work/repo-b",
+      cwd: "/work/repo-b",
+    };
+    const original = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = FakeBroadcastChannel;
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const originalToken = original.window.sessionStorage.getItem("grok.remote.tabToken:default");
+    const originalOwner = original.window.sessionStorage.getItem("grok.remote.tabOwner:default");
+
+    const duplicate = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = FakeBroadcastChannel;
+        w.sessionStorage.setItem("grok.remote.tabToken:default", originalToken!);
+        w.sessionStorage.setItem("grok.remote.tabOwner:default", originalOwner!);
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
+      },
+    });
+    const tokenReady = (duplicate.window as any).__grokTabTokenReady as Promise<string | undefined>;
+    expect(typeof tokenReady?.then).toBe("function");
+    expect(duplicate.posted.find((message) => message.type === "ready")).toBeUndefined();
+    const settledToken = await tokenReady;
+    await Promise.resolve();
+
+    const duplicateToken = duplicate.window.sessionStorage.getItem("grok.remote.tabToken:default");
+    expect(duplicateToken).not.toBe(originalToken);
+    expect(settledToken).toBe(duplicateToken);
+    expect(duplicate.window.sessionStorage.getItem("grok.remote.tabSession:default")).toBeNull();
+    expect(duplicate.posted.find((message) => message.type === "ready")).toEqual({
+      type: "ready",
+      tabToken: duplicateToken,
+    });
+
+    duplicate.posted.length = 0;
+    dispatch(duplicate.window, { type: "initialState", cwd: "/work/repo-a" });
+    expect(duplicate.posted.filter((message) =>
+      message.type === "selectRepo" || message.type === "resumeSession"
+    )).toEqual([]);
+  });
+
+  it("resolves tab-token readiness promptly when BroadcastChannel is unavailable", async () => {
+    const { window } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = undefined;
+      },
+    });
+    const stored = window.sessionStorage.getItem("grok.remote.tabToken:default");
+
+    await expect((window as any).__grokTabTokenReady).resolves.toBe(stored);
+  });
+
+  it("starts fresh from copied state when BroadcastChannel is unavailable", async () => {
+    const oldToken = "copied-token";
+    const { window } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = undefined;
+        w.sessionStorage.setItem("grok.remote.tabToken:default", oldToken);
+        w.sessionStorage.setItem("grok.remote.tabOwner:default", "other-page");
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify({
+          id: "copied-session",
+          repoCwd: "/work/repo-b",
+        }));
+      },
+    });
+
+    const token = await (window as any).__grokTabTokenReady;
+    expect(token).not.toBe(oldToken);
+    expect(window.sessionStorage.getItem("grok.remote.tabSession:default")).toBeNull();
+  });
+
+  it("starts fresh from copied state when BroadcastChannel construction throws", async () => {
+    const oldToken = "copied-token";
+    const { window } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = class {
+          constructor() { throw new Error("disabled"); }
+        };
+        w.sessionStorage.setItem("grok.remote.tabToken:default", oldToken);
+        w.sessionStorage.setItem("grok.remote.tabOwner:default", "other-page");
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify({
+          id: "copied-session",
+          repoCwd: "/work/repo-b",
+        }));
+      },
+    });
+
+    const token = await (window as any).__grokTabTokenReady;
+    expect(token).not.toBe(oldToken);
+    expect(window.sessionStorage.getItem("grok.remote.tabSession:default")).toBeNull();
+  });
+
+  it("retains identity and conversation when a stale owner marker has no live channel participant", async () => {
+    const oldToken = "discarded-tab-token";
+    const remembered = {
+      id: "discarded-session",
+      repoCwd: "/work/repo-b",
+      cwd: "/work/repo-b",
+    };
+    const { window, posted } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = class {
+          onmessage?: (event: { data: unknown }) => void;
+          postMessage() {}
+          close() {}
+        };
+        w.sessionStorage.setItem("grok.remote.tabToken:default", oldToken);
+        w.sessionStorage.setItem("grok.remote.tabOwner:default", "dead-renderer");
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
+      },
+    });
+
+    await expect((window as any).__grokTabTokenReady).resolves.toBe(oldToken);
+    expect(window.sessionStorage.getItem("grok.remote.tabToken:default")).toBe(oldToken);
+    expect(window.sessionStorage.getItem("grok.remote.tabSession:default")).toBe(JSON.stringify(remembered));
+
+    dispatch(window, { type: "initialState", cwd: "/work/repo-a" });
+    expect(posted).toContainEqual({ type: "selectRepo", cwd: "/work/repo-b" });
+    expect(posted).toContainEqual({
+      type: "resumeSession",
+      id: "discarded-session",
+      cwd: "/work/repo-b",
+    });
+  });
+
+  it("keeps tab identity and remembered conversation across an ordinary reload", async () => {
+    const FakeBroadcastChannel = broadcastChannelFixture();
+    const remembered = {
+      id: "reload-session",
+      repoCwd: "/work/repo-b",
+      cwd: "/work/repo-b",
+    };
+    const priorPage = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = FakeBroadcastChannel;
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const token = priorPage.window.sessionStorage.getItem("grok.remote.tabToken:default");
+    priorPage.window.dispatchEvent(new priorPage.window.Event("pagehide"));
+
+    const reloaded = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).BroadcastChannel = FakeBroadcastChannel;
+        w.sessionStorage.setItem("grok.remote.tabToken:default", token!);
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(reloaded.window.sessionStorage.getItem("grok.remote.tabToken:default")).toBe(token);
+    dispatch(reloaded.window, { type: "initialState", cwd: "/work/repo-a" });
+    expect(reloaded.posted).toContainEqual({ type: "selectRepo", cwd: "/work/repo-b" });
+    expect(reloaded.posted).toContainEqual({
+      type: "resumeSession",
+      id: "reload-session",
+      cwd: "/work/repo-b",
+    });
+  });
+
+  it("reasserts the tab's remembered repository and session on a fresh host snapshot", () => {
+    const remembered = {
+      id: "session-tab-a",
+      repoCwd: "/work/repo-b",
+      cwd: "/work/repo-b",
+    };
+    const { window, posted } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
+      },
+    });
+
+    dispatch(window, { type: "initialState", cwd: "/work/repo-a" });
+
+    expect(posted).toEqual([
+      { type: "selectRepo", cwd: "/work/repo-b" },
+      { type: "resumeSession", id: "session-tab-a", cwd: "/work/repo-b" },
+    ]);
+  });
+
+  it("stores the active session in tab-scoped storage and clears it only on explicit New", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "repos",
+      entries: [{ cwd: "/work/repo-b", label: "repo-b", available: true }],
+      selectedCwd: "/work/repo-b",
+      activeCwd: "/work/repo-b",
+    });
+    dispatch(window, {
+      type: "sessions",
+      entries: [{ id: "session-tab-b", cwd: "/work/repo-b" }],
+      activeId: "session-tab-b",
+    });
+
+    expect(JSON.parse(window.sessionStorage.getItem("grok.remote.tabSession:default")!)).toEqual({
+      id: "session-tab-b",
+      repoCwd: "/work/repo-b",
+      cwd: "/work/repo-b",
+    });
+
+    click(window, $(doc, "new-btn"));
+    expect(window.sessionStorage.getItem("grok.remote.tabSession:default")).toBeNull();
+  });
+
+  it("does not replace reconnect identity until the host accepts a history selection", () => {
+    const { window, posted, doc } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "repos",
+      entries: [{ cwd: "/work/repo-b", label: "repo-b", available: true }],
+      selectedCwd: "/work/repo-b",
+      activeCwd: "/work/repo-b",
+    });
+    dispatch(window, {
+      type: "sessions",
+      entries: [
+        { id: "current", cwd: "/work/repo-b", displayName: "Current" },
+        { id: "rejected", cwd: "/work/repo-b", displayName: "Rejected" },
+      ],
+      activeId: "current",
+    });
+    click(window, $(doc, "history-btn"));
+    posted.length = 0;
+
+    const rejected = [...doc.querySelectorAll(".history-row")]
+      .find((row) => row.textContent?.includes("Rejected")) as HTMLElement;
+    click(window, rejected);
+
+    expect(posted).toContainEqual({
+      type: "resumeSession",
+      id: "rejected",
+      cwd: "/work/repo-b",
+    });
+    expect(JSON.parse(window.sessionStorage.getItem("grok.remote.tabSession:default")!))
+      .toMatchObject({ id: "current", repoCwd: "/work/repo-b" });
+
+    dispatch(window, {
+      type: "sessions",
+      entries: [{ id: "current", cwd: "/work/repo-b", displayName: "Current" }],
+      activeId: "current",
+    });
+    expect(JSON.parse(window.sessionStorage.getItem("grok.remote.tabSession:default")!))
+      .toMatchObject({ id: "current", repoCwd: "/work/repo-b" });
+  });
+
+  it("clears a stale reconnect identity when the host authoritatively reports no active session", () => {
+    const { window } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify({
+          id: "stale",
+          repoCwd: "/work/repo-b",
+          cwd: "/work/repo-b",
+        }));
+      },
+    });
+
+    dispatch(window, { type: "sessions", entries: [], activeId: null });
+
+    expect(window.sessionStorage.getItem("grok.remote.tabSession:default")).toBeNull();
   });
 });

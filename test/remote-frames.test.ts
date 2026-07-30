@@ -3,6 +3,7 @@ import {
   REMOTE_PROTO_VERSION,
   helloFrame,
   hostFrame,
+  hostToFrame,
   snapshotFrame,
   parseRelayFrame,
   buildUplinkUrl,
@@ -23,12 +24,23 @@ describe("uplink frame builders", () => {
     const msg = { type: "messageChunk", text: "hi" } as const;
     expect(hostFrame(msg)).toEqual({ t: "host", msg });
     expect(snapshotFrame("c1", [msg])).toEqual({ t: "snapshot", clientId: "c1", msgs: [msg] });
+    expect(hostToFrame(["c1", "c2"], msg)).toEqual({ t: "host-to", clientIds: ["c1", "c2"], msg });
   });
 });
 
 describe("parseRelayFrame", () => {
-  it("round-trips the three relay frames", () => {
+  it("round-trips the relay frames", () => {
     expect(parseRelayFrame(JSON.stringify({ t: "client-ready", clientId: "c1" }))).toEqual({ t: "client-ready", clientId: "c1" });
+    expect(parseRelayFrame(JSON.stringify({
+      t: "client-ready",
+      clientId: "c2",
+      tabToken: "0123456789abcdef01234567",
+    }))).toEqual({
+      t: "client-ready",
+      clientId: "c2",
+      tabToken: "0123456789abcdef01234567",
+    });
+    expect(parseRelayFrame(JSON.stringify({ t: "client-left", clientId: "c1" }))).toEqual({ t: "client-left", clientId: "c1" });
     expect(parseRelayFrame(JSON.stringify({ t: "msg", clientId: "c1", msg: { type: "send", text: "x" } }))).toEqual({
       t: "msg",
       clientId: "c1",
@@ -37,14 +49,92 @@ describe("parseRelayFrame", () => {
     expect(parseRelayFrame(JSON.stringify({ t: "clients", count: 2 }))).toEqual({ t: "clients", count: 2 });
   });
 
+  it("accepts an absent legacy token but drops malformed client-ready tokens", () => {
+    expect(parseRelayFrame(JSON.stringify({
+      t: "client-ready",
+      clientId: "c1",
+    }))).toEqual({ t: "client-ready", clientId: "c1" });
+    for (const tabToken of [null, 42, {}, [], "short", "x".repeat(129), "not/url/safe".repeat(2)]) {
+      expect(parseRelayFrame(JSON.stringify({
+        t: "client-ready",
+        clientId: "c1",
+        tabToken,
+      }))).toBeNull();
+    }
+  });
+
   it("drops malformed input instead of throwing", () => {
     expect(parseRelayFrame("not json")).toBeNull();
     expect(parseRelayFrame("42")).toBeNull();
     expect(parseRelayFrame(JSON.stringify({ t: "nope" }))).toBeNull();
     expect(parseRelayFrame(JSON.stringify({ t: "client-ready" }))).toBeNull(); // no clientId
+    expect(parseRelayFrame(JSON.stringify({ t: "client-left" }))).toBeNull(); // no clientId
     expect(parseRelayFrame(JSON.stringify({ t: "msg", clientId: "c1" }))).toBeNull(); // no msg
     expect(parseRelayFrame(JSON.stringify({ t: "msg", clientId: "c1", msg: { text: "x" } }))).toBeNull(); // msg w/o type
     expect(parseRelayFrame(JSON.stringify({ t: "clients", count: "2" }))).toBeNull();
+  });
+
+  const traversalMessages = [
+    ["selectRepo cwd", { type: "selectRepo", cwd: "../.." }],
+    ["toggleRepoPin cwd", { type: "toggleRepoPin", cwd: "..\\..", pinned: true }],
+    ["resumeSession id", { type: "resumeSession", id: "../.." }],
+    ["resumeSession cwd", { type: "resumeSession", id: "safe-session", cwd: "/work/../escape" }],
+    ["renameSession id", { type: "renameSession", id: "..\\..", name: "renamed" }],
+    ["deleteSession id", { type: "deleteSession", id: "../.." }],
+    ["clearAllSessions cwd", { type: "clearAllSessions", cwd: "../.." }],
+    ["addMentionFile relPath", { type: "addMentionFile", relPath: "../../secret.txt" }],
+    ["uploadFile name", { type: "uploadFile", name: "../../secret.md", data: "YQ==" }],
+  ] as const;
+
+  it.each(traversalMessages)(
+    "drops traversal in remote-reachable %s at the wire boundary",
+    (_name, msg) => {
+      const wrap = (value: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg: value });
+      expect(parseRelayFrame(wrap(msg))).toBeNull();
+    },
+  );
+
+  it("drops unknown message types", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({ type: "notAWebviewMessage" }))).toBeNull();
+  });
+
+  it("validates queued-send identity on remote send frames", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({
+      type: "send",
+      text: "queued",
+      queuedSendId: "01234567-89ab-cdef-0123-456789abcdef",
+    }))).not.toBeNull();
+    for (const queuedSendId of [null, 42, "short", "not/a/submission/id"]) {
+      expect(parseRelayFrame(wrap({ type: "send", text: "queued", queuedSendId }))).toBeNull();
+    }
+  });
+
+  it("accepts canonical filesystem-bearing remote payloads", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    for (const msg of [
+      { type: "selectRepo", cwd: "/work/repo" },
+      { type: "toggleRepoPin", cwd: "C:\\work\\repo", pinned: true },
+      { type: "resumeSession", id: "019f-session_1", cwd: "\\\\server\\share\\repo" },
+      { type: "renameSession", id: "019f-session_1", name: "renamed" },
+      { type: "deleteSession", id: "019f-session_1" },
+      { type: "clearAllSessions", cwd: "/work/repo" },
+      { type: "addMentionFile", relPath: "src/file.ts" },
+      { type: "uploadFile", name: "Quarterly Notes.pdf", data: "YQ==" },
+    ]) {
+      expect(parseRelayFrame(wrap(msg)), JSON.stringify(msg)).not.toBeNull();
+    }
+  });
+
+  it("drops malformed filesystem selectors and accepts a valid ready token", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({ type: "selectRepo", cwd: {} }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "toggleRepoPin", cwd: "/a", pinned: "yes" }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "resumeSession", id: "s", cwd: [] }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "clearAllSessions", cwd: 42 }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "ready", tabToken: "short" }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "ready", tabToken: "0123456789abcdef01234567" }))).not.toBeNull();
   });
 });
 

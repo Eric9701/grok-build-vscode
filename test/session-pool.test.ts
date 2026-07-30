@@ -9,7 +9,8 @@
 //   - LRU cap: over the cap, the *least-recently-used* eligible ones go first
 //   - the cap may be exceeded when every spare session is busy (busy holds the line)
 import { describe, it, expect } from "vitest";
-import { selectReapable, computeDot, ReapCandidate } from "../src/session-pool";
+import { buildReapCandidates, selectReapable, computeDot, ReapCandidate } from "../src/session-pool";
+import { RemoteClientState } from "../src/remote-client-state";
 
 type C = ReapCandidate & { id: string };
 const c = (id: string, status: C["status"], lastActiveAt: number, focused = false): C => ({
@@ -45,6 +46,31 @@ describe("selectReapable — TTL", () => {
     const now = 100 * HOUR;
     const pool = [c("focused", "idle", 0, true)];
     expect(selectReapable(pool, { maxLive: 8, idleTtlMs: HOUR, now })).toEqual([]);
+  });
+
+  it("never TTL-reaps an idle session currently visible to a remote client", () => {
+    const now = 100 * HOUR;
+    const visible = { ...c("remote", "idle", 0), remoteVisible: true };
+    expect(selectReapable([visible], { maxLive: 8, idleTtlMs: HOUR, now })).toEqual([]);
+  });
+
+  it("derives remote visibility from the active tab view used by the host reaper", () => {
+    const now = 100 * HOUR;
+    const focused = c("focused", "idle", now, true);
+    const remote = c("remote", "idle", 0);
+    const state = new RemoteClientState<C>("/work/local");
+    state.ready("phone");
+    state.select("phone", "/work/remote");
+    state.setActive("phone", remote);
+
+    const candidates = buildReapCandidates(
+      [focused, remote],
+      focused,
+      (session) => state.isActiveValueVisible(session),
+    );
+
+    expect(candidates.find((candidate) => candidate.session === remote)?.remoteVisible).toBe(true);
+    expect(selectReapable(candidates, { maxLive: 8, idleTtlMs: HOUR, now })).toEqual([]);
   });
 });
 
@@ -94,6 +120,22 @@ describe("selectReapable — LRU cap", () => {
     ];
     // stale goes on TTL → live=3. cap=2 → drop one more LRU (a, the oldest fresh).
     expect(ids(selectReapable(pool, { maxLive: 2, idleTtlMs: HOUR, now }))).toEqual(["a", "stale"]);
+  });
+
+  it("reaps ordinary background sessions before remote-visible ones, then uses visible sessions as cap victims", () => {
+    const now = HOUR;
+    const remote = { ...c("remote", "idle", now - 5000), remoteVisible: true };
+    const background = c("background", "idle", now - 1000);
+    expect(ids(selectReapable([remote, background], {
+      maxLive: 1,
+      idleTtlMs: 10 * HOUR,
+      now,
+    }))).toEqual(["background"]);
+    expect(ids(selectReapable([remote], {
+      maxLive: 0,
+      idleTtlMs: 10 * HOUR,
+      now,
+    }))).toEqual(["remote"]);
   });
 });
 

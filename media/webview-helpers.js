@@ -22,8 +22,8 @@
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "restoreComposer", "truncateMessages", "uiConfirmRequest", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
-    "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions", "repos",
-    "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault", "soundNotifications", "processingSound", "readRepliesAloud", "summarizeRepliesAloud", "speechSummary", "moveComposerCaret",
+    "sessionContext", "clearMessages", "onboarding", "error", "hostNotice", "xaiNotification", "subagentUpdate", "runProgress", "sessions", "repos",
+    "sessionDot", "queuedSends", "submitQueuedSend", "steerUnavailable", "usage", "steerByDefault", "soundNotifications", "processingSound", "readRepliesAloud", "summarizeRepliesAloud", "speechSummary", "moveComposerCaret",
     "remoteStatus",
   ];
   const WEBVIEW_MESSAGE_TYPES = [
@@ -34,7 +34,8 @@
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
     "recheckConnection", "listSessions", "selectRepo", "toggleRepoPin", "resumeSession", "renameSession", "deleteSession",
-    "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
+      "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
+      "remoteVoiceStart", "remoteVoiceChunk", "remoteVoiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
     "setSoundNotifications", "setProcessingSound", "setReadRepliesAloud", "setSummarizeRepliesAloud", "summarizeSpeech", "composerFocus",
     "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "editLastMessage", "uiConfirmAnswer", "workflowControl",
@@ -451,6 +452,14 @@
     };
   }
 
+  /** Resolve a sibling asset while preserving the deploy-version query carried
+   * by the parent script URL. URL resolution drops that query by default. */
+  function versionedSiblingUrl(relativePath, baseUrl) {
+    const sibling = new URL(relativePath, baseUrl);
+    sibling.search = new URL(baseUrl).search;
+    return sibling.href;
+  }
+
   // Pull a self-executed shell command's result off a completed `tool_call_update`.
   // The cursor/Composer agent runs commands in its OWN CLI-side persistent shell
   // and reports the result on the completed update (keyed by `toolCallId`) instead
@@ -706,6 +715,13 @@
       .trim();
   }
 
+  // The relay currently returns plain HostMsg-shaped errors without a request
+  // id. Only these canonical texts are attributable to a refused browser send.
+  function isRelaySendRejection(text) {
+    return /^(?:Slow down \u2014 at most \d+ messages per minute\.|Free plan limit reached \(\d+ messages this week\)\. Resets in .+ Upgrade to Remote Max for unlimited use\.)$/
+      .test(String(text || ""));
+  }
+
   function computeLineDiff(oldText, newText, opts) {
     const maxProduct = (opts && opts.maxProduct) || 4000000; // ~2000×2000 line cap
     const norm = (t) => (t == null ? "" : String(t).replace(/\r\n?/g, "\n"));
@@ -756,7 +772,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown, isRelaySendRejection };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

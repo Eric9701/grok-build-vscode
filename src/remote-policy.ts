@@ -121,6 +121,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   pickFile: "host-local",
   voiceStart: "host-local",
   voiceStop: "host-local",
+  remoteVoiceStart: "propose",
+  remoteVoiceChunk: "propose",
+  remoteVoiceStop: "propose",
   // these write the HOST user's global config — a remote should get a
   // per-connection view pref instead (not built yet), so they stay host-local
   setShowThinking: "host-local",
@@ -175,23 +178,31 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
   }
 }
 
+export function sessionForRequest<T>(
+  origin: MsgOrigin,
+  local: T,
+  remote: T | undefined,
+): T | undefined {
+  return origin === "remote" ? remote : local;
+}
+
+export function sessionCwdBelongsToRepo(
+  actualCwd: string,
+  repoCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean,
+): boolean {
+  return repoCwds.some((cwd) => sameCwd(actualCwd, cwd));
+}
+
 /** Which side a webview message came from. */
 export type MsgOrigin = "local" | "remote";
 
 /**
  * Which repository a client's history list and *New session* target.
  *
- * The repo selection is **global**, and deliberately so — that IS the remote
- * feature: one phone drives whichever project you pick, and every remote client
- * agrees on it. But the VS Code webview hides the switcher, because that window
- * already IS a repository. It can therefore neither show the selection nor
- * change it, which makes following it strictly harmful: a phone that switched
- * repos would silently re-scope the local history list, and point the local
- * *New session* button at a different checkout — where Grok would then write
- * files. So a local client reads its own workspace and ignores the selection.
- *
- * Restore this to a single global value only if/when VS Code grows the switcher
- * too; the split exists to match the affordance, not the transport.
+ * `selectedCwd` belongs to one remote client (tracked by RemoteClientState).
+ * The local VS Code webview always uses its workspace because it has no repo
+ * switcher and owns a separate focused session.
  */
 export function repoScopeFor(
   origin: MsgOrigin,
@@ -213,12 +224,12 @@ export type OutboundDisposition =
 
 export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> = {
   media: "media",
-  voiceState: "host-local",
-  voiceConfigured: "host-local",
-  voicePartial: "host-local",
-  voiceSubmit: "host-local",
-  voiceTranscript: "host-local",
-  voiceError: "host-local",
+  voiceState: "mirror",
+  voiceConfigured: "mirror",
+  voicePartial: "mirror",
+  voiceSubmit: "mirror",
+  voiceTranscript: "mirror",
+  voiceError: "mirror",
   initialState: "mirror",
   showThinking: "mirror",
   fontScale: "mirror",
@@ -263,6 +274,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   clearMessages: "mirror",
   onboarding: "mirror",
   error: "mirror",
+  hostNotice: "mirror",
   xaiNotification: "mirror",
   subagentUpdate: "mirror",
   runProgress: "mirror",
@@ -285,6 +297,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   repos: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",
+  submitQueuedSend: "mirror",
   steerUnavailable: "mirror",
   usage: "mirror",
 };

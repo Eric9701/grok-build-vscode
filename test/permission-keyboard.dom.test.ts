@@ -9,7 +9,7 @@
 //   - approve is ordered first and is the only button in the tab order,
 //   - a card takes focus only when the composer is genuinely idle,
 //   - typing at a focused button goes to the composer instead of activating it.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { bootWebview, dispatch, click } from "./webview-harness";
 import {
   orderPermissionOptions,
@@ -125,7 +125,41 @@ describe("permission card keyboard (real chat.js in a DOM)", () => {
     const { window, doc } = bootWebview();
     card(window, [REJECT, ALLOW]);
     expect(buttons(doc).map((b) => b.textContent)).toEqual(["Allow once", "Reject"]);
-    expect(buttons(doc)[1].classList.contains("arming")).toBe(true);
+  });
+
+  it("guards reject for 1000ms when thinking traces are visible (#76)", () => {
+    const { window, doc } = bootWebview();
+    const scheduled: Array<{ handler: TimerHandler; timeout?: number }> = [];
+    const timer = vi.spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, timeout?: number) => {
+      scheduled.push({ handler, timeout });
+      return scheduled.length;
+    }) as typeof window.setTimeout);
+    try {
+      dispatch(window, { type: "showThinking", value: true });
+      card(window, [REJECT, ALLOW]);
+      const reject = buttons(doc)[1];
+      expect(reject.classList.contains("arming")).toBe(true);
+      const guard = scheduled.find(({ timeout }) => timeout === 1000);
+      expect(guard).toBeDefined();
+      if (typeof guard!.handler === "function") guard!.handler();
+      expect(reject.classList.contains("arming")).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it("leaves reject immediately clickable when thinking traces are hidden (#76)", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "showThinking", value: false });
+    card(window, [REJECT, ALLOW], 6);
+    const reject = buttons(doc)[1];
+    expect(reject.classList.contains("arming")).toBe(false);
+    click(window, reject);
+    expect(posted.find((m: any) => m.type === "permissionAnswer")).toEqual({
+      type: "permissionAnswer",
+      requestId: 6,
+      optionId: "r",
+    });
   });
 
   it("focuses approve when the card arrives at an empty composer", () => {

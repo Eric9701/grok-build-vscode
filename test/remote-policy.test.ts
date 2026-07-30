@@ -6,6 +6,8 @@ import {
   allowRemoteRepoTarget,
   bracketRemoteSnapshot,
   repoScopeFor,
+  sessionForRequest,
+  sessionCwdBelongsToRepo,
   inlineMediaForRemote,
   mediaMimeFromPath,
   transformHostMsgForRemote,
@@ -45,6 +47,9 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.openText).toBe("host-local");
     expect(INBOUND_DISPOSITION.pickFile).toBe("host-local");
     expect(INBOUND_DISPOSITION.voiceStart).toBe("host-local");
+    expect(INBOUND_DISPOSITION.remoteVoiceStart).toBe("propose");
+    expect(INBOUND_DISPOSITION.remoteVoiceChunk).toBe("propose");
+    expect(INBOUND_DISPOSITION.remoteVoiceStop).toBe("propose");
     expect(INBOUND_DISPOSITION.moveView).toBe("host-local");
     // config writers mutate the HOST user's settings — blocked until a
     // per-connection view pref exists
@@ -66,9 +71,9 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.readRepliesAloud).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.summarizeRepliesAloud).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.speechSummary).toBe("host-local");
-    // voice is host-mic/ffmpeg-driven; media needs the base64 transform
-    expect(OUTBOUND_DISPOSITION.voiceState).toBe("host-local");
-    expect(OUTBOUND_DISPOSITION.voiceConfigured).toBe("host-local");
+    // Local call sites stay local-only; the same output shapes carry remote STT.
+    expect(OUTBOUND_DISPOSITION.voiceState).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.voiceConfigured).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.media).toBe("media");
     expect(OUTBOUND_DISPOSITION.messageChunk).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.permissionRequest).toBe("mirror");
@@ -206,9 +211,11 @@ describe("transformHostMsgForRemote", () => {
     expect(transformHostMsgForRemote(msg, deps(null))).toBe(msg);
   });
 
-  it("host-local (voice) types are suppressed", () => {
-    expect(transformHostMsgForRemote({ type: "voiceState", status: "idle" }, deps(null))).toBeNull();
-    expect(transformHostMsgForRemote({ type: "voiceConfigured", value: true }, deps(null))).toBeNull();
+  it("reused remote voice output types are mirrored", () => {
+    expect(transformHostMsgForRemote({ type: "voiceState", status: "idle" }, deps(null)))
+      .toEqual({ type: "voiceState", status: "idle" });
+    expect(transformHostMsgForRemote({ type: "voiceConfigured", value: true }, deps(null)))
+      .toEqual({ type: "voiceConfigured", value: true });
   });
 
   it("media is inlined via the injected reader", () => {
@@ -247,6 +254,22 @@ describe("repo scope — global for remote, workspace-local in VS Code", () => {
     for (const origin of ["local", "remote"] as const) {
       expect(repoScopeFor(origin, { selectedCwd: "", workspaceRoot: WS })).toBe(WS);
     }
+  });
+});
+
+describe("requesting session and repo boundary", () => {
+  it("uses the remote group's active session for a remote destructive action", () => {
+    const local = { id: "local" };
+    const remote = { id: "remote" };
+    expect(sessionForRequest("local", local, remote)).toBe(local);
+    expect(sessionForRequest("remote", local, remote)).toBe(remote);
+    expect(sessionForRequest("remote", local, undefined)).toBeUndefined();
+  });
+
+  it("accepts only session cwds owned by the selected repo group", () => {
+    const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+    expect(sessionCwdBelongsToRepo("C:/Repo/B", ["c:/repo/b", "c:/repo/b-worktree"], same)).toBe(true);
+    expect(sessionCwdBelongsToRepo("C:/Repo/A", ["c:/repo/b", "c:/repo/b-worktree"], same)).toBe(false);
   });
 });
 

@@ -101,17 +101,18 @@ rest — and "at rest" is deliberately one bucket: idle, already-read, cold, or
 loaded-from-disk all look the same, because the warm-process-vs-cold distinction is
 an implementation detail no user should have to reason about. It lights up only
 when there's something to know: **blue** working, **yellow** needs-you (a pending
-permission / question / plan review), **green** *finished with output you haven't
-opened yet*, **red** *finished with an error you haven't opened*.
+permission / question / plan review), **green** *finished while no view was
+watching*, **red** *errored while no view was watching*.
 
-The green/red dot is an **unread badge**, not a live state. When a session's turn
-ends while you're looking at a *different* session, a persisted `unread` flag is set
-(in the same `globalState` session-meta that holds rename overrides); opening that
-session clears it. Because the flag lives in metadata rather than the live process,
-the badge **survives both the idle reaping below and a full VS Code restart** — so
-you can fire off several agents, walk away, and come back to find the green dots are
-exactly the sessions with results waiting. There's no timer: a session you never
-open stays green, because it genuinely *is* still unread. The actual color is a pure
+The green/red dot is a **globally unseen-completion badge**, not a per-tab read
+receipt or a live state. The persisted schema has one `unread` flag per conversation,
+so it cannot represent “read in tab B but unread in tab A.” The deliberate rule is:
+set the flag only when a turn ends while neither the local VS Code view nor any
+remote tab owns that session. Focusing it in either surface clears the flag. Because
+the flag lives in metadata rather than the live process, the badge **survives both
+the idle reaping below and a full VS Code restart** — so unattended results remain
+visible when you return, without marking a result unread in the tab that watched it.
+There's no timer. The actual color is a pure
 function ([`computeDot`](../src/session-pool.ts)) of `(live status, unread,
 unreadError)`, so the policy is unit-tested without a process pool. The host pushes
 one changed dot at a time (cheap, no disk read) and the full map on each list
@@ -214,9 +215,10 @@ The full pedagogical write-up lives in
 | [src/plan-review.ts](../src/plan-review.ts) | Plan-snapshot Markdown filename generation (pure) |
 | [src/voice.ts](../src/voice.ts) | Voice-input pure helpers — STT request/response, ffmpeg args, device parsing, key resolution |
 | [src/voice-recorder.ts](../src/voice-recorder.ts) | Batch capture (`ffmpeg` → WAV) + STT REST upload |
-| [src/voice-streamer.ts](../src/voice-streamer.ts) | Live capture (ffmpeg PCM → WebSocket STT) |
+| [src/voice-streamer.ts](../src/voice-streamer.ts) | Shared live STT transport: `PcmVoiceStreamer` accepts raw PCM from any producer; `VoiceStreamer` composes it with local ffmpeg capture |
 | [src/telemetry.ts](../src/telemetry.ts) | Anonymous Aptabase telemetry — pure payload builders + a fire-and-forget `session_start` (opt-out via `grok.telemetry.enabled`; see [privacy.md](privacy.md)) |
-| [src/remote-policy.ts](../src/remote-policy.ts) / [src/remote-frames.ts](../src/remote-frames.ts) / [src/remote-uplink.ts](../src/remote-uplink.ts) | Remote Control client for [AFK Pilot](https://afkpilot.com) — `remote-policy` (pure) classifies every protocol message and gates what a linked remote may send; `remote-frames` (pure) is the wire contract; `remote-uplink` dials out over ws. Inert until a device is linked (gear → Remote Control). The companion service lives in its own repo; deeper detail is deliberately not documented here |
+| [src/remote-policy.ts](../src/remote-policy.ts) / [src/remote-frames.ts](../src/remote-frames.ts) / [src/remote-uplink.ts](../src/remote-uplink.ts) / [src/remote-client-state.ts](../src/remote-client-state.ts) | AFK Pilot client — exhaustive protocol policy, relay frames/transport, and host-owned `clientId → {cwd, active Session}` tab state. Chat/session UI/voice traffic uses targeted `host-to` frames; `client-left` removes ephemeral ownership while the live pool member remains reclaimable; only device-global state uses relay broadcast |
+| [src/remote-voice.ts](../src/remote-voice.ts) / [media/pcm-worklet.js](../media/pcm-worklet.js) | Remote microphone boundary — one independent producer/stream per browser client, strict PCM chunk/duration/cumulative-byte caps, bounded buffering while that client's hands-free STT reconnects, targeted partial/state messages, and browser AudioWorklet downsampling to signed PCM16 LE / 16 kHz / mono. Send-phrase completion returns `voiceSubmit` to the owning browser, which submits through the ordinary relay-metered `send` or busy-turn queue path; STT never prompts ACP directly |
 | [src/keep-awake.ts](../src/keep-awake.ts) | OS wake lock held for exactly the uplink's lifetime, so an AFK machine can't idle-suspend mid-turn. Pure plan builders per platform (`buildKeepAwakePlan`) + the `KeepAwake` runner; `grok.remote.keepAwake` is the opt-out. See [research/keep-awake.md](../research/keep-awake.md) |
 | [media/chat.{js,css}](../media/) | Webview UI |
 | [media/webview-helpers.js](../media/webview-helpers.js) | Pure webview helpers (file-ref detection, relative-time, mic-button state machine, trailing send-phrase highlight, math extraction `splitMath`/`stripUnsupportedTex`, and the subagent classifier `isSubagentToolCall`/`subagentLabel`) — shared between webview and tests |
@@ -243,24 +245,69 @@ History is scoped to the **selected repo**. `discoverRepos` enumerates cwd catal
 not a checkout you choose between; the one carve-out is `trustedCwds`, the folder VS Code
 actually has open, because the selection must always name a catalog row or `clearAllSessions`
 silently no-ops). `postSessionsList` indexes that repo *plus* the worktrees belonging to it
-(`worktreeCwdsForRepo`, pure), so a worktree session stays reachable after you leave it —
-and the **primary workspace lists every worktree unconditionally**, since `sourceGitRoot`
-holds the CLI's *git root* rather than the workspace folder and a failed match must never
-be why a session disappears. The
+(`worktreeCwdsForRepo`, pure), so a worktree session stays reachable after you leave it.
+The primary workspace and remote-selected repos use the same parent match:
+`sourceGitRoot` holds the CLI's *git root* rather than necessarily the opened folder, so
+an opened subdirectory may sit inside that root. The reverse does not match because it
+can be an independent nested checkout; missing parent metadata is also excluded rather
+than granting destructive access to an ambiguous worktree catalog. The
 picker itself is a remote-only affordance: in VS Code the window already *is* the
 repository. And because the relay serves a client that can be newer than the installed
 extension, the chip renders only once a `repos` frame has actually arrived — an older
 host that never sends one gets no chip rather than a dead control.
 
-The selection is **global across remote clients** (that is the feature) but the VS Code
-webview **ignores it**, because it is the one client that can neither see nor change it —
-following it would re-scope a history list the user cannot re-aim and point *New session*
-at a checkout they are not looking at. `repoScopeFor` ([src/remote-policy.ts](../src/remote-policy.ts),
-pure) is that rule; `onMessage` carries a `MsgOrigin` and `postSessionsList` /
-`postRepoCatalog` build one payload per audience (`postLocal` / `postRemote`), skipping the
-second disk scan whenever both scopes resolve to the same cwd. Sticky chrome records the
-*remote* variant so a late-joining client replays the right one. The split matches the
-affordance, not the transport: undo it if VS Code ever grows the switcher.
+Selection and conversation ownership are **per remote browser tab**.
+`RemoteClientState` maps the current opaque relay `clientId` to its normalized cwd and
+active remote `Session`, while a high-entropy logical-tab token in `sessionStorage`
+survives replacement relay connections. Presenting the same token atomically transfers
+the mapping and marks the old socket stale; a different token cannot take it. Selecting
+in tab A targets only A with a cwd-specific
+snapshot; tab B can select the same cwd while retaining a different process, transcript,
+session-list `activeId`, mode/chips/queue state, and voice stream. Repo history/dot
+metadata can still refresh all clients viewing that cwd, but session output never fans
+out by cwd. The local VS Code webview remains bound to its workspace, and every
+live session created or adopted by its dashboard stays locally owned even while
+backgrounded. A departed remote client's live session normally becomes ownerless and can
+be reclaimed by either surface. During startup, priming or host-owned queued work keeps
+the logical-tab binding across a pre-handshake `client-left`, so the same-token replacement
+inherits the session and its queued prompt.
+
+Queued remote text is metered at dequeue, not enqueue: `maybeFlushQueuedSends`
+claims it with a host-issued submission id and sends `submitQueuedSend` to that browser
+only after the active turn settles. The browser echoes the text and id on the ordinary
+`send` path, so both relay limiters run before ACP is prompted. Reconnect snapshots
+reuse the claim, and both the browser and host deduplicate its id; duplicate persisted
+outbox frames therefore execute one prompt. The host clears the queue only when that
+identified frame returns; a quota rejection leaves a visible **Not sent** block that
+can be edited or removed.
+
+Destructive history actions follow the same ownership boundary. A delete is refused
+while the target session is owned by any browser tab or by the local VS Code view, and
+Clear all preserves every such session rather than only the requester's active row.
+Cold `session/load` also reserves its Grok session id synchronously, before ACP can clear
+and later repopulate `Session.activeSessionId`; local/remote resume, delete, and Clear all
+all consult that bounded reservation. A same-token replacement joins the reservation's
+in-flight operation, keeps the pending id authoritative in snapshots, and receives
+completion through whichever relay client currently owns the bound `Session`; a
+different logical tab remains blocked. Ownerless live pool members and unreserved cold
+history remain deletable. This prevents an owner
+from retaining a rendered transcript after its backing process and disk session have
+been destroyed.
+
+Relay IDs change after a network reconnect, so `media/chat.js` persists both the logical
+tab token and `{repoCwd, id, cwd}` in device-scoped `sessionStorage`. Its `ready` binds
+the fresh relay id before re-posting `selectRepo` + `resumeSession`; the host immediately
+replaces the relay's provisional pre-token snapshot with the inherited tab state.
+Same-token handoff therefore works even when replacement `ready` precedes the old
+`client-left`. A session owned by another logical tab/the VS Code view is refused instead
+of starting a colliding process; a missing session or unavailable repository produces a
+targeted error and never silently starts blank. New, Resume, and Select-repo transitions
+are serialized in arrival order per tab, while Resume additionally serializes by Grok
+session id. A send waiting behind a transition is dispatched through the logical-tab token,
+which resolves the current relay id only after the wait; non-`ready` state access never
+implicitly recreates a departed client at the workspace cwd. Turn and mid-turn control
+messages remain unlocked. `client-left` for a superseded socket cannot release the
+replacement's mapping.
 
 The host (`postSessionsList` in [src/sidebar.ts](../src/sidebar.ts)) orders everything
 cheaply with `indexSessions`, then drives an **mtime-keyed read cache** so a re-open /

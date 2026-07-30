@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -9,6 +9,27 @@ describe("spokenTextFromMarkdown", () => {
     expect(spokenTextFromMarkdown(
       "## Done\nSee [the guide](https://example.com).\n```ts\nconst noisy = true;\n```\n- Restart now.",
     )).toBe("Done See the guide. Restart now.");
+  });
+});
+
+describe("isRelaySendRejection", () => {
+  it("accepts only the relay's canonical refused-frame errors", () => {
+    expect(isRelaySendRejection("Slow down — at most 5 messages per minute.")).toBe(true);
+    expect(isRelaySendRejection(
+      "Free plan limit reached (25 messages this week). Resets in 2 days. Upgrade to Remote Max for unlimited use.",
+    )).toBe(true);
+    expect(isRelaySendRejection("Device offline — VS Code isn't connected to the relay.")).toBe(false);
+    expect(isRelaySendRejection("Could not rename this conversation.")).toBe(false);
+    expect(isRelaySendRejection("Weekly prompt limit reached.")).toBe(false);
+  });
+});
+
+describe("versionedSiblingUrl", () => {
+  it("propagates the chat script deploy query to the audio worklet", () => {
+    expect(versionedSiblingUrl(
+      "pcm-worklet.js",
+      "https://relay.example/media/chat.js?v=deploy-123",
+    )).toBe("https://relay.example/media/pcm-worklet.js?v=deploy-123");
   });
 });
 

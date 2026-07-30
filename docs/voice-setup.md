@@ -18,9 +18,14 @@ If you're signed in with **`grok login`**, the extension reuses that stored toke
 
 A known-**expired** login token is skipped (so the mic doesn't look ready and then fail mid-recording); if that happens, run `grok logout` then `grok login`, or set a dedicated key above.
 
-## 2. ffmpeg — required to record
+## 2. ffmpeg — required for the VS Code microphone
 
 Recording the microphone uses [`ffmpeg`](https://ffmpeg.org). Most dev machines already have it; if voice reports it missing, install it:
+
+AFK Pilot records in the remote browser with the Web Audio API and sends
+ephemeral raw PCM to the extension host, so its microphone does not require
+ffmpeg on the browser device. It still uses the host-side credential and the
+same xAI STT stream.
 
 - **Windows:** `winget install ffmpeg` (or `choco install ffmpeg`), or download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to `PATH`.
 - **macOS:** `brew install ffmpeg`.
@@ -42,4 +47,11 @@ Speech-to-Text is a **metered** xAI service billed by audio duration — **$0.10
 
 ## Privacy
 
-Voice is opt-in per use — nothing is captured until you click the mic. While recording, your **audio** and your **STT credential** (the dedicated key you set, or your `grok login` token if you rely on the automatic fallback) are sent to xAI's Speech-to-Text endpoint (`api.x.ai/v1/stt`) to produce the transcript. That transmission is core functionality, separate from the extension's anonymous telemetry — see [docs/privacy.md](privacy.md).
+Voice is opt-in per use — nothing is captured until you click the mic. Local VS
+Code capture stays in the extension host; AFK Pilot capture travels ephemerally
+through the relay as raw PCM to that host. Audio is never persisted or
+content-logged. The host sends the audio and its **STT credential** (the dedicated
+key you set, or your `grok login` token if you rely on the automatic fallback) to
+xAI's Speech-to-Text endpoint (`api.x.ai/v1/stt`) to produce the transcript. The
+credential is never sent to the browser or relay. This is separate from anonymous
+telemetry — see [docs/privacy.md](privacy.md).

@@ -1,5 +1,6 @@
 (function () {
   const vscode = acquireVsCodeApi();
+  const CHAT_SCRIPT_URL = document.currentScript?.src || window.location.href;
   // True in the relay's browser client (its chat.html shim sets the flag before
   // loading this file); always false inside the VS Code webview. Gates the
   // host-only affordances: worktree/rewind actions (their host flows run native
@@ -7,6 +8,170 @@
   const IS_REMOTE = !!window.grokRemoteClient;
   const REMOTE_FONT_SCALE_KEY = "grok.remote.fontScale";
   const REMOTE_TTS_KEY = "grok.remote.tts";
+  const REMOTE_STORAGE_SUFFIX = (
+    typeof location !== "undefined"
+      ? new URLSearchParams(location.search || "").get("device") || "default"
+      : "default"
+  );
+  const REMOTE_SESSION_KEY = "grok.remote.tabSession:" + REMOTE_STORAGE_SUFFIX;
+  const REMOTE_TAB_TOKEN_KEY = "grok.remote.tabToken:" + REMOTE_STORAGE_SUFFIX;
+  const REMOTE_TAB_OWNER_KEY = "grok.remote.tabOwner:" + REMOTE_STORAGE_SUFFIX;
+  const REMOTE_TAB_CHANNEL = "grok.remote.tabClaim:" + REMOTE_STORAGE_SUFFIX;
+  const REMOTE_TAB_CLAIM_TIMEOUT_MS = 250;
+  let remoteTabToken = null;
+  let priorRemoteTabOwner = null;
+  let remoteTabInstanceId = null;
+  let rememberedRemoteSession = null;
+
+  function newRemoteTabToken() {
+    try {
+      const bytes = new Uint8Array(24);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    } catch (_) {
+      try {
+        return crypto.randomUUID().replace(/-/g, "");
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
+  if (IS_REMOTE) {
+    try {
+      remoteTabToken = sessionStorage.getItem(REMOTE_TAB_TOKEN_KEY);
+      priorRemoteTabOwner = sessionStorage.getItem(REMOTE_TAB_OWNER_KEY);
+      if (!remoteTabToken) {
+        remoteTabToken = newRemoteTabToken();
+        if (remoteTabToken) sessionStorage.setItem(REMOTE_TAB_TOKEN_KEY, remoteTabToken);
+      }
+    } catch (_) {
+      remoteTabToken = newRemoteTabToken();
+    }
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(REMOTE_SESSION_KEY) || "null");
+      if (
+        saved &&
+        typeof saved.id === "string" &&
+        typeof saved.repoCwd === "string" &&
+        (!saved.cwd || typeof saved.cwd === "string")
+      ) rememberedRemoteSession = saved;
+    } catch (_) { /* storage unavailable/private mode */ }
+  }
+  function saveRememberedRemoteSession(value) {
+    if (!IS_REMOTE) return;
+    rememberedRemoteSession = value;
+    try {
+      if (value) sessionStorage.setItem(REMOTE_SESSION_KEY, JSON.stringify(value));
+      else sessionStorage.removeItem(REMOTE_SESSION_KEY);
+    } catch (_) { /* storage unavailable/private mode */ }
+  }
+
+  function replaceRemoteTabIdentity() {
+    const replacement = newRemoteTabToken();
+    if (!replacement) return;
+    remoteTabToken = replacement;
+    saveRememberedRemoteSession(null);
+    try {
+      sessionStorage.setItem(REMOTE_TAB_TOKEN_KEY, replacement);
+    } catch (_) { /* storage unavailable/private mode */ }
+  }
+
+  function markRemoteTabClaimed() {
+    if (!remoteTabInstanceId) return;
+    try {
+      sessionStorage.setItem(REMOTE_TAB_OWNER_KEY, remoteTabInstanceId);
+    } catch (_) { /* storage unavailable/private mode */ }
+  }
+
+  function clearRemoteTabOwner() {
+    if (!remoteTabInstanceId) return;
+    try {
+      if (sessionStorage.getItem(REMOTE_TAB_OWNER_KEY) === remoteTabInstanceId) {
+        sessionStorage.removeItem(REMOTE_TAB_OWNER_KEY);
+      }
+    } catch (_) { /* storage unavailable/private mode */ }
+  }
+
+  function claimRemoteTabIdentity(done) {
+    if (!IS_REMOTE || !remoteTabToken) {
+      done(remoteTabToken || undefined);
+      return;
+    }
+    remoteTabInstanceId = newRemoteTabToken();
+    if (!remoteTabInstanceId) {
+      if (priorRemoteTabOwner) replaceRemoteTabIdentity();
+      done(remoteTabToken || undefined);
+      return;
+    }
+    window.addEventListener("pagehide", clearRemoteTabOwner, { once: true });
+
+    const finish = (replace) => {
+      if (replace) replaceRemoteTabIdentity();
+      markRemoteTabClaimed();
+      done(remoteTabToken || undefined);
+    };
+    if (typeof BroadcastChannel !== "function") {
+      finish(!!priorRemoteTabOwner);
+      return;
+    }
+    let channel;
+    try {
+      channel = new BroadcastChannel(REMOTE_TAB_CHANNEL);
+    } catch (_) {
+      finish(!!priorRemoteTabOwner);
+      return;
+    }
+    let claimed = false;
+    let settled = false;
+    let timer;
+    const settle = (replace) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      claimed = true;
+      finish(replace);
+    };
+    channel.onmessage = (event) => {
+      const message = event && event.data;
+      if (!message || message.token !== remoteTabToken || message.instanceId === remoteTabInstanceId) return;
+      if (message.type === "probe") {
+        if (claimed || remoteTabInstanceId < message.instanceId) {
+          channel.postMessage({
+            type: "occupied",
+            token: remoteTabToken,
+            instanceId: remoteTabInstanceId,
+            target: message.instanceId,
+          });
+        } else {
+          settle(true);
+        }
+      } else if (message.type === "occupied" && message.target === remoteTabInstanceId) {
+        settle(true);
+      }
+    };
+    if (priorRemoteTabOwner) {
+      channel.postMessage({ type: "probe", token: remoteTabToken, instanceId: remoteTabInstanceId });
+      timer = setTimeout(() => settle(false), REMOTE_TAB_CLAIM_TIMEOUT_MS);
+    } else {
+      settle(false);
+    }
+    window.addEventListener("pagehide", () => channel.close(), { once: true });
+  }
+
+  let resolveRemoteTabTokenReady;
+  window.__grokTabTokenReady = new Promise((resolve) => {
+    resolveRemoteTabTokenReady = resolve;
+  });
+
+  function restoreRememberedRemoteSession() {
+    const saved = rememberedRemoteSession;
+    if (!IS_REMOTE || !saved) return;
+    if (saved.repoCwd && saved.repoCwd !== state.cwd) {
+      vscode.postMessage({ type: "selectRepo", cwd: saved.repoCwd });
+    }
+    vscode.postMessage({ type: "resumeSession", id: saved.id, cwd: saved.cwd || undefined });
+  }
   const ttsAvailable = !!window.speechSynthesis && typeof window.SpeechSynthesisUtterance === "function";
 
   function storedNumber(key, fallback) {
@@ -44,6 +209,7 @@
   const inputHighlight = $("input-highlight");
   const newBtn = $("new-btn");
   const historyBtn = $("history-btn");
+  const remoteBtn = $("remote-btn");
   const repoBtn = $("repo-btn");
   const modeBtn = $("mode-btn");
   const gearBtn = $("gear-btn");
@@ -113,7 +279,7 @@
     // Voice-input button: "idle" | "listening" | "transcribing" (see nextMicState).
     mic: "idle",
     // Whether the host found a voice API key. Optimistic until the host says
-    // otherwise; drives the mic button's "needs setup" hint.
+    // otherwise; remote clients cannot configure the host themselves.
     voiceConfigured: true,
     // Streaming dictation: text typed before the mic started ("base"), and
     // whether live partials have begun replacing the tail.
@@ -135,6 +301,14 @@
     // flushes it (one combined prompt) when the session's turn ends.
     sendQueue: [],
     queuedWrapEl: null, // the .queued-msgs container pinned to the end of the chat
+    queuedSubmissionPending: false,
+    queuedSubmissionRejected: false,
+    submittedQueuedSendIds: new Set(),
+    queuedSubmissionId: null,
+    pendingSubmissionText: "",
+    rejectedSubmissionText: "",
+    // Remote-only placeholder bubble shown between a send and the host's echo.
+    optimisticSendEl: null,
     // Steer (#52). Optimistic: `_x.ai/interject` is unadvertised, so we can't ask
     // whether it works — we offer it and let the host latch this off the first
     // time the CLI answers -32601 (the text falls back to the queue, never lost).
@@ -308,7 +482,12 @@
     isWorktree: false,
     // Whether the host machine holds a relay device token (`remoteStatus`).
     // Drives the gear AFK Pilot items; never sent to remote clients.
-    remoteLinked: false,
+    // THREE states, not two: null = not answered yet. The host reads the token
+    // from secret storage asynchronously, so defaulting to false told an
+    // already-linked machine to "Sign in (link this device)" for that window —
+    // inviting the user to re-link a device that was working. Unknown shows
+    // nothing at all.
+    remoteLinked: null,
     // toolExpandOverride (per-session, in-memory): the Command Palette
     // Expand/Collapse All latch. null = follow the setting above; true/false =
     // force ALL groups + details open/closed for this session, and keep applying
@@ -382,8 +561,9 @@
     gitFork: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg>`,
     // Undo / rewind — used on user-bubble action row (P2-9).
     undo: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6.7 3L3 13"/></svg>`,
-    // Remote Control gear section (sign in / account / sign out / how it works).
+    // Remote Control gear section (sign in / continue remotely / sign out / how it works).
     user: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+    smartphone: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/></svg>`,
     logOut: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>`,
     info: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`,
     // Animated equalizer bars shown while listening (CSS drives the bounce).
@@ -563,6 +743,14 @@
 
   newBtn.innerHTML = ICON.squarePen;
   historyBtn.innerHTML = ICON.clock;
+  // "Continue remotely", one tap from the chat instead of buried in the gear
+  // menu — the desk is where someone decides to get up and keep going on
+  // their phone. Local client only (a remote is already remote), and only
+  // once this machine is linked; syncRemoteButton flips it live.
+  if (remoteBtn) {
+    remoteBtn.innerHTML = ICON.smartphone;
+    remoteBtn.onclick = () => vscode.postMessage({ type: "openRemotePortal", withHint: true });
+  }
   updateSendButton(); // spinner by default — session is starting up (busy+locked)
   gearBtn.innerHTML = ICON.gear;
   addBtn.innerHTML = ICON.plus;
@@ -571,7 +759,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1522,6 +1710,92 @@
     });
   }
 
+  function showRemoteExplainer() {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay remote-explainer-overlay";
+    const panel = document.createElement("div");
+    panel.className = "confirm-panel remote-explainer-panel";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "remote-explainer-close";
+    closeBtn.innerHTML = ICON.x;
+    closeBtn.title = "Close";
+    closeBtn.setAttribute("aria-label", "Close");
+
+    const title = document.createElement("div");
+    title.className = "confirm-title";
+    title.textContent = "How AFK Pilot works";
+
+    const body = document.createElement("div");
+    body.className = "confirm-body remote-explainer-body";
+    const steps = document.createElement("ol");
+    const step1 = document.createElement("li");
+    step1.textContent = "Link this device. Sign in with your account.";
+    const step2 = document.createElement("li");
+    step2.textContent = "Keep VS Code, Cursor, or Antigravity open.";
+    const step3 = document.createElement("li");
+    step3.append("Open ");
+    const urlBtn = document.createElement("button");
+    urlBtn.type = "button";
+    urlBtn.className = "remote-url-copy";
+    urlBtn.textContent = "afkpilot.com";
+    urlBtn.title = "Copy afkpilot.com";
+    const copied = document.createElement("span");
+    copied.className = "remote-url-copied";
+    copied.setAttribute("aria-live", "polite");
+    step3.append(urlBtn, copied, " on your phone and sign in.");
+    steps.append(step1, step2, step3);
+
+    const note = document.createElement("p");
+    note.textContent = "You can then work 100% remotely — it keeps this device awake, and never stores your prompts or code.";
+    body.append(steps, note);
+
+    const actions = document.createElement("div");
+    actions.className = "confirm-actions";
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "confirm-btn confirm-primary";
+    moreBtn.textContent = "More & FAQ";
+    actions.appendChild(moreBtn);
+
+    const done = () => {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        done();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    closeBtn.onclick = (e) => { e.stopPropagation(); done(); };
+    overlay.onclick = (e) => {
+      if (e.target === overlay) {
+        e.stopPropagation();
+        done();
+      }
+    };
+    urlBtn.onclick = (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText("https://afkpilot.com").then(() => {
+        copied.textContent = "Copied";
+        urlBtn.classList.add("copied");
+      }).catch(() => {});
+    };
+    moreBtn.onclick = (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "openRemotePortal" });
+      done();
+    };
+
+    panel.append(closeBtn, title, body, actions);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    moreBtn.focus();
+  }
+
   function renderGearMain() {
     state.gearView = "main";
     gearPopover.innerHTML = "";
@@ -1595,21 +1869,25 @@
     // The hosted relay account, on the machine that links itself — above
     // Session on purpose (it's about reaching this machine at all). Hidden in
     // the browser client: a remote can't (un)link the desktop it's driving.
-    if (!IS_REMOTE) {
+    // `remoteLinked === null` = the host hasn't answered yet: show NOTHING
+    // rather than guessing. Guessing "not linked" is the harmful direction —
+    // it offers to link a machine that may already be linked and working.
+    if (!IS_REMOTE && state.remoteLinked !== null) {
       addSection("Remote Control");
       if (state.remoteLinked) {
+        addGearItem(`<span class="gear-lead">${ICON.smartphone}<span>Continue remotely</span></span>`, () => {
+          vscode.postMessage({ type: "openRemotePortal", withHint: true });
+          closePopovers();
+        });
+        // Deliberately NOT a one-tap unlink any more: signing out from a menu
+        // item next to "Continue remotely" made an irreversible action (every
+        // other device loses this machine) a slip away. The portal owns
+        // account + device management — it can show what's linked before
+        // anything is removed. `Grok: Unlink Remote Device` still exists in
+        // the Command Palette for the deliberate case.
         addGearItem(`<span class="gear-lead">${ICON.user}<span>Your account</span></span>`, () => {
           vscode.postMessage({ type: "openRemotePortal" });
           closePopovers();
-        });
-        addGearItem(`<span class="gear-lead">${ICON.logOut}<span>Sign out (unlink this device)</span></span>`, () => {
-          closePopovers();
-          uiConfirm({
-            title: "Sign out and unlink this device?",
-            body: "This machine will no longer be reachable from your other devices. To use it again, link it from VS Code again.",
-            confirmLabel: "Sign out",
-            danger: true,
-          }).then((ok) => { if (ok) vscode.postMessage({ type: "remoteSignOut" }); });
         });
       } else {
         addGearItem(`<span class="gear-lead">${ICON.user}<span>Sign in (link this device)</span></span>`, () => {
@@ -1617,8 +1895,8 @@
           closePopovers();
         });
         addGearItem(`<span class="gear-lead">${ICON.info}<span>How it works</span></span>`, () => {
-          vscode.postMessage({ type: "openRemotePortal" });
           closePopovers();
+          showRemoteExplainer();
         });
       }
     }
@@ -2043,8 +2321,8 @@
   const DOT_LABEL = {
     working: "Working",
     "needs-you": "Needs you",
-    unread: "Finished — unopened",
-    error: "Finished with an error — unopened",
+    unread: "Finished while no view was watching",
+    error: "Errored while no view was watching",
   };
 
   function applySessionDot(dot, value) {
@@ -2133,6 +2411,7 @@
       main.onclick = (e) => {
         e.stopPropagation();
         if (!repo.available) return;
+        saveRememberedRemoteSession(null);
         vscode.postMessage({ type: "selectRepo", cwd: repo.cwd });
         closePopovers();
       };
@@ -2427,6 +2706,9 @@
   function resetForNewSession() {
     stopProcessingCue();
     cancelPendingSpeech();
+    // The transcript is about to be emptied wholesale; drop the reference so a
+    // later echo can't try to remove a node from the previous session.
+    state.optimisticSendEl = null;
     state.isWorktree = false; // re-set by the incoming session's `session` message
     // The caret belongs in the box after any session swap — new session, a
     // history-row re-focus, a disk restore (all funnel through here via the
@@ -2493,6 +2775,10 @@
     // snapshot, so its queued messages reappear when you swap back.
     state.sendQueue = [];
     state.queuedWrapEl = null;
+    state.queuedSubmissionPending = false;
+    state.queuedSubmissionRejected = false;
+    state.pendingSubmissionText = "";
+    state.rejectedSubmissionText = "";
     updateSendButton();
   }
 
@@ -4859,11 +5145,14 @@
       btn.type = "button";
       if (opt.kind === "allow_once") btn.classList.add("primary");
       if (opt.kind === "reject_once") {
-        btn.classList.add("danger", "arming");
+        btn.classList.add("danger");
         // A permission arrival force-scrolls the transcript. Ignore pointer
         // targeting during that layout transition so a click intended for the
         // adjacent Thinking disclosure cannot land on Reject (#76).
-        setTimeout(() => btn.classList.remove("arming"), 450);
+        if (state.showThinking) {
+          btn.classList.add("arming");
+          setTimeout(() => btn.classList.remove("arming"), 1000);
+        }
       }
       // Only the default button is in the tab order; the arrow keys move within
       // the group. Standard toolbar/radiogroup roving-tabindex, so Tab escapes
@@ -5715,6 +6004,39 @@
     return true;
   }
 
+  function syncRemoteButton() {
+    if (remoteBtn) remoteBtn.hidden = IS_REMOTE || !state.remoteLinked;
+  }
+
+  // REMOTE ONLY — paint the user's message the instant they send it.
+  //
+  // A local webview echoes back in microseconds, so waiting for the host's
+  // `userMessage` is invisible. Over a relay on a weak phone connection that
+  // round trip is 1-2s, during which the composer had already cleared and the
+  // message existed nowhere on screen — the send read as lost. This is a
+  // PLACEHOLDER, not a second source of truth: the host's echo is still
+  // authoritative and replaces it (clearOptimisticSend runs first, so the
+  // real bubble carries the true chips, rewind index and counter). If the
+  // relay rejects the send instead, the placeholder is removed and the
+  // existing "Not sent" recovery block takes over.
+  function showOptimisticSend(text, chips) {
+    clearOptimisticSend();
+    if (!text && !(chips && chips.length)) return;
+    // addMessage returns the message BODY; the placeholder we later remove is
+    // its whole bubble.
+    const body = addMessage("user", text, chips || []);
+    state.optimisticSendEl = body && body.closest ? body.closest(".msg") : null;
+    if (state.optimisticSendEl) state.optimisticSendEl.dataset.optimistic = "1";
+    forceScrollToBottom();
+    showGrokking();
+  }
+
+  function clearOptimisticSend() {
+    const el = state.optimisticSendEl;
+    state.optimisticSendEl = null;
+    if (el && el.parentNode) el.remove();
+  }
+
   function sendOrStop() {
     if (state.busy) {
       // Typed text signals send-intent — queue it; text present never cancels.
@@ -5731,6 +6053,8 @@
       if (state.sendQueue.length) {
         input.value = state.sendQueue.join("\n\n");
         state.sendQueue = [];
+        state.queuedSubmissionPending = false;
+        state.queuedSubmissionRejected = false;
         renderQueuedBlocks();
         vscode.postMessage({ type: "clearQueuedSends" });
         renderInputHighlight();
@@ -5754,6 +6078,7 @@
     state.activeThoughtHdrEl = null;
     state.thoughtStartTime = null;
     state.activeToolGroupEl = null;
+    if (IS_REMOTE) { state.pendingSubmissionText = text; showOptimisticSend(text, state.chips.filter((c) => !c.hidden)); }
     // Chips are host-owned state (every mutation routes through the host and
     // comes back via postChips) — the host snapshots its own copy on send.
     vscode.postMessage({ type: "send", text });
@@ -5774,9 +6099,13 @@
     micBtn.classList.toggle("listening", state.mic === "listening");
     micBtn.classList.toggle("transcribing", state.mic === "transcribing");
     micBtn.classList.toggle("connecting", state.mic === "connecting");
-    if (IS_REMOTE && !browserRecognitionCtor()) {
+    if (IS_REMOTE && (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode)) {
       micBtn.innerHTML = ICON.mic;
       micBtn.title = "Dictation is not supported by this browser";
+      micBtn.disabled = true;
+    } else if (IS_REMOTE && state.mic === "listening" && !remoteMic) {
+      micBtn.innerHTML = ICON.micWaves;
+      micBtn.title = "Dictation is active in another tab on this repository";
       micBtn.disabled = true;
     } else if (state.mic === "listening") {
       micBtn.innerHTML = ICON.micWaves;
@@ -5789,6 +6118,10 @@
     } else if (state.mic === "transcribing") {
       micBtn.innerHTML = ICON.spinner;
       micBtn.title = "Transcribing…";
+      micBtn.disabled = true;
+    } else if (IS_REMOTE && !state.voiceConfigured) {
+      micBtn.innerHTML = ICON.mic;
+      micBtn.title = "Voice dictation is unavailable because the host has no Speech-to-Text credential";
       micBtn.disabled = true;
     } else {
       micBtn.innerHTML = ICON.mic;
@@ -5829,61 +6162,188 @@
     // "transcribing": ignore clicks until the transcript or an error arrives.
   }
 
-  let browserRecognition = null;
-  let browserTranscript = "";
+  let remoteMic = null;
+  let remoteMicStart = null;
+  const REMOTE_MIC_PREROLL_MAX_BYTES = 16 * 16000 * 2;
 
-  function browserRecognitionCtor() {
-    return window.SpeechRecognition || window.webkitSpeechRecognition;
+  function browserMicErrorText(error) {
+    const name = error && typeof error.name === "string" ? error.name : "";
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      return "Microphone access was denied. Allow microphone access for this site in your browser settings, then try again.";
+    }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return "No microphone was found on this device.";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "The microphone is unavailable. Close other apps using it, check your device settings, then try again.";
+    }
+    return "The browser could not start the microphone. Check its microphone permissions and try again.";
+  }
+
+  function pcmBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return btoa(binary);
+  }
+
+  function postRemotePcm(buffer) {
+    if (!remoteMic) return;
+    if (!remoteMic.ready) {
+      if (
+        !buffer ||
+        typeof buffer.byteLength !== "number" ||
+        remoteMic.pendingBytes + buffer.byteLength > REMOTE_MIC_PREROLL_MAX_BYTES
+      ) {
+        remoteMic.stopping = true;
+        cleanupRemoteMic();
+        setMic("error");
+        addError("Speech recognition took too long to start. No audio was sent; please try dictating again.");
+        vscode.postMessage({ type: "remoteVoiceStop", cancel: true });
+        return;
+      }
+      remoteMic.pending.push(buffer);
+      remoteMic.pendingBytes += buffer.byteLength;
+      return;
+    }
+    vscode.postMessage({ type: "remoteVoiceChunk", data: pcmBase64(buffer) });
+  }
+
+  function cleanupRemoteMic() {
+    const mic = remoteMic;
+    remoteMic = null;
+    if (!mic) return;
+    clearTimeout(mic.timer);
+    if (mic.flushTimer) clearTimeout(mic.flushTimer);
+    try { mic.source.disconnect(); } catch {}
+    try { mic.node.disconnect(); } catch {}
+    try { mic.silent.disconnect(); } catch {}
+    for (const track of mic.stream.getTracks()) {
+      try { track.stop(); } catch {}
+    }
+    void mic.context.close().catch(() => {});
+  }
+
+  function discardBrowserMicSetup(stream, context) {
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        try { track.stop(); } catch {}
+      }
+    }
+    if (context) {
+      try {
+        const closing = context.close();
+        if (closing && typeof closing.catch === "function") void closing.catch(() => {});
+      } catch {}
+    }
+  }
+
+  async function startBrowserMic() {
+    if (!state.voiceConfigured || remoteMic || remoteMicStart || state.mic !== "idle") return;
+    const attempt = { cancelled: false };
+    remoteMicStart = attempt;
+    state.voiceBase = input.value;
+    setMic("start");
+    let stream;
+    let context;
+    let installed = false;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      if (attempt.cancelled) return;
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+      context = new AudioContextCtor();
+      if (context.state === "suspended") await context.resume();
+      await context.audioWorklet.addModule(versionedSiblingUrl("pcm-worklet.js", CHAT_SCRIPT_URL));
+      if (attempt.cancelled) return;
+      const source = context.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(context, "grok-pcm-capture", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      const silent = context.createGain();
+      silent.gain.value = 0;
+      node.port.onmessage = (event) => {
+        if (event.data && event.data.type === "flushed") {
+          if (remoteMic?.stopping) finishBrowserMicStop(remoteMic);
+          return;
+        }
+        postRemotePcm(event.data);
+      };
+      source.connect(node);
+      node.connect(silent);
+      silent.connect(context.destination);
+      remoteMic = {
+        stream, context, source, node, silent, ready: false, pending: [], pendingBytes: 0,
+        timer: setTimeout(() => stopBrowserMic(false), 120000),
+      };
+      for (const track of stream.getTracks()) {
+        track.addEventListener?.("ended", () => stopBrowserMic(true), { once: true });
+      }
+      installed = true;
+      vscode.postMessage({ type: "remoteVoiceStart" });
+    } catch (error) {
+      if (installed) cleanupRemoteMic();
+      if (!attempt.cancelled) {
+        addError(browserMicErrorText(error));
+        setMic("error");
+      }
+    } finally {
+      if (remoteMicStart === attempt) remoteMicStart = null;
+      if (!installed) discardBrowserMicSetup(stream, context);
+    }
+  }
+
+  function stopBrowserMic(cancel) {
+    const mic = remoteMic;
+    if (!mic || mic.stopping) return;
+    mic.stopping = true;
+    if (cancel) {
+      cleanupRemoteMic();
+      setMic("error");
+      vscode.postMessage({ type: "remoteVoiceStop", cancel: true });
+      return;
+    }
+    setMic("stop");
+    mic.flushTimer = setTimeout(() => finishBrowserMicStop(mic), 500);
+    try {
+      mic.node.port.postMessage("flush");
+    } catch {
+      finishBrowserMicStop(mic);
+    }
+  }
+
+  function finishBrowserMicStop(mic) {
+    if (remoteMic !== mic) return;
+    if (mic.flushTimer) clearTimeout(mic.flushTimer);
+    cleanupRemoteMic();
+    vscode.postMessage({ type: "remoteVoiceStop" });
   }
 
   function toggleBrowserMic() {
-    const Recognition = browserRecognitionCtor();
-    if (!Recognition) return;
-    if (state.mic === "listening") {
-      if (browserRecognition) browserRecognition.stop();
-      return;
-    }
-    if (state.mic !== "idle") return;
-
-    state.voiceBase = input.value;
-    browserTranscript = "";
-    const recognition = new Recognition();
-    browserRecognition = recognition;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event) => {
-      let finalText = "";
-      let interimText = "";
-      for (let i = 0; i < event.results.length; i++) {
-        const result = event.results[i];
-        const text = result && result[0] && result[0].transcript ? result[0].transcript : "";
-        if (result.isFinal) finalText += text;
-        else interimText += text;
-      }
-      browserTranscript = finalText;
-      input.value = composeVoiceTail(state.voiceBase, finalText + interimText);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    };
-    recognition.onerror = () => {
-      browserRecognition = null;
+    if (remoteMic && (state.mic === "listening" || state.mic === "connecting")) {
+      stopBrowserMic(false);
+    } else if (remoteMicStart && state.mic === "connecting") {
+      remoteMicStart.cancelled = true;
       setMic("error");
-    };
-    recognition.onend = () => {
-      browserRecognition = null;
-      if (browserTranscript) input.value = composeVoiceTail(state.voiceBase, browserTranscript);
-      setMic("error");
-      input.focus();
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    };
-    state.mic = "listening";
-    renderMic();
-    try {
-      recognition.start();
-    } catch {
-      browserRecognition = null;
-      setMic("error");
+    } else if (state.mic === "idle") {
+      void startBrowserMic();
     }
   }
+
+  function teardownBrowserMic() {
+    if (!IS_REMOTE || !remoteMic) return;
+    remoteMic.stopping = true;
+    cleanupRemoteMic();
+    vscode.postMessage({ type: "remoteVoiceStop", cancel: true });
+  }
+
+  window.addEventListener("pagehide", teardownBrowserMic);
+  window.addEventListener("beforeunload", teardownBrowserMic);
 
   // Append a transcript to whatever's typed (batch mode — one-shot result).
   function insertTranscript(text) {
@@ -5961,6 +6421,7 @@
     state.activeThoughtHdrEl = null;
     state.thoughtStartTime = null;
     state.activeToolGroupEl = null;
+    if (IS_REMOTE) { state.pendingSubmissionText = t; showOptimisticSend(t, []); }
     vscode.postMessage({ type: "send", text: t });
   }
 
@@ -5993,7 +6454,8 @@
     let wrap = state.queuedWrapEl;
     // Defensive join: the host's invariant is a single entry, but render
     // whatever arrives the way the flush would send it.
-    const text = state.sendQueue.join("\n\n");
+    const rejected = !!state.rejectedSubmissionText;
+    const text = rejected ? state.rejectedSubmissionText : state.sendQueue.join("\n\n");
     if (!text) {
       if (wrap) wrap.remove();
       state.queuedWrapEl = null;
@@ -6013,8 +6475,10 @@
     hdr.className = "queued-hdr";
     const tag = document.createElement("span");
     tag.className = "queued-tag";
-    tag.innerHTML = `${ICON.clock}<span>Queued</span>`;
-    tag.title = "Sends when Grok finishes";
+    tag.innerHTML = `${ICON.clock}<span>${state.queuedSubmissionRejected || rejected ? "Not sent" : "Queued"}</span>`;
+    tag.title = state.queuedSubmissionRejected || rejected
+      ? "The relay rejected this prompt. Edit it to retry, or remove it."
+      : "Sends when Grok finishes";
     const actions = document.createElement("span");
     actions.className = "queued-actions";
     const editBtn = document.createElement("button");
@@ -6026,7 +6490,12 @@
     editBtn.onpointerdown = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      vscode.postMessage({ type: "dequeueSend", index: 0 });
+      if (rejected) {
+        state.rejectedSubmissionText = "";
+        renderQueuedBlocks();
+      } else {
+        vscode.postMessage({ type: "dequeueSend", index: 0 });
+      }
       input.value = input.value.trim() ? text + "\n\n" + input.value : text;
       renderInputHighlight();
       input.focus();
@@ -6038,7 +6507,12 @@
     rmBtn.onpointerdown = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      vscode.postMessage({ type: "dequeueSend", index: 0 });
+      if (rejected) {
+        state.rejectedSubmissionText = "";
+        renderQueuedBlocks();
+      } else {
+        vscode.postMessage({ type: "dequeueSend", index: 0 });
+      }
     };
     // Steer (#52): send this into the RUNNING turn instead of waiting for it.
     // Rendered whenever the CLI supports it; `body.turn-busy` (updateSendButton)
@@ -6106,6 +6580,7 @@
         state.effort = msg.effort || "";
         state.cwd = msg.cwd || "";
         state.extVersion = msg.extVersion || "";
+        restoreRememberedRemoteSession();
         if (typeof msg.showThinking === "boolean") state.showThinking = msg.showThinking;
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
@@ -6122,6 +6597,12 @@
         break;
       case "remoteStatus":
         state.remoteLinked = !!msg.linked;
+        syncRemoteButton();
+        // The answer can land while the gear is already open (it usually
+        // arrives within a frame of boot, but a slow secret read is exactly
+        // the case this guards): repaint so the section appears rather than
+        // waiting for the next open.
+        if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
         break;
       case "steerByDefault":
         // Live toggle (grok.steerByDefault). Pure policy for the next send —
@@ -6325,12 +6806,19 @@
         // accept the known states; ignore anything unexpected.
         if (msg.status === "listening" || msg.status === "transcribing") {
           state.mic = msg.status;
+          if (IS_REMOTE && msg.status === "listening" && remoteMic && !remoteMic.ready) {
+            remoteMic.ready = true;
+            const pending = remoteMic.pending.splice(0);
+            remoteMic.pendingBytes = 0;
+            for (const buffer of pending) postRemotePcm(buffer);
+          }
           renderMic();
         } else if (msg.status === "idle") {
           // Hard reset — the host stopped voice (e.g. session switch). Clear the
           // live flag and any queued messages too, not just the button.
           state.mic = "idle";
           state.voiceLive = false;
+          if (IS_REMOTE) cleanupRemoteMic();
           renderMic();
         }
         break;
@@ -6342,14 +6830,20 @@
         break;
       case "voicePartial":
         // Live streaming update: replace the tail after the pre-dictation base.
-        state.voiceLive = true;
-        input.value = composeVoiceTail(state.voiceBase, msg.text || "");
-        renderInputHighlight();
+        // Same-repo passive tabs receive the shared partial too, but their
+        // independently typed composer must remain untouched.
+        if (!IS_REMOTE || remoteMic) {
+          state.voiceLive = true;
+          input.value = composeVoiceTail(state.voiceBase, msg.text || "");
+          renderInputHighlight();
+        }
         break;
       case "voiceSubmit": {
-        // Continuous "grok send": submit now (or queue if Grok is mid-response),
-        // clear the composer, and keep the mic listening for the next utterance.
-        const t = (msg.text || "").trim();
+        // The webview is the submission boundary for local and remote voice.
+        // In AFK Pilot this makes the spoken prompt cross the relay as the same
+        // send/queueSend frame as typed input, so relay metering and busy-turn
+        // queueing apply before the host can prompt the agent.
+        const t = composeVoiceTail(state.voiceBase, msg.text || "").trim();
         state.voiceBase = "";
         state.voiceLive = false;
         input.value = "";
@@ -6372,6 +6866,7 @@
           insertTranscript(msg.text);
         }
         state.voiceLive = false;
+        if (IS_REMOTE) cleanupRemoteMic();
         setMic("transcript");
         // "grok send" detected: submit hands-free — but only when idle, so it
         // never doubles as a "stop" on an in-flight turn.
@@ -6380,6 +6875,7 @@
       case "voiceError":
         // Setup/record/transcribe failed (the host already showed the reason).
         state.voiceLive = false;
+        if (IS_REMOTE) cleanupRemoteMic();
         setMic("error");
         break;
       case "chips":
@@ -6407,6 +6903,12 @@
         break;
       }
       case "userMessage":
+        // The authoritative bubble is about to render — drop the placeholder
+        // first so the transcript never shows both.
+        clearOptimisticSend();
+        state.pendingSubmissionText = "";
+        state.rejectedSubmissionText = "";
+        renderQueuedBlocks();
         // Live send (or immediate verdict-feedback bubble): render and bump the
         // counter so any plan history queued for this position drains first.
         drainPlanHistory(state.userMsgCount);
@@ -6421,6 +6923,7 @@
         hidePlanProcessing();
         break;
       case "agentStart":
+        state.pendingSubmissionText = "";
         // A user-initiated turn just began (live send, or a plan-verdict
         // follow-up). Show "Grokking…" until the first real content replaces it.
         // The silent primer never emits agentStart, so it never shows here.
@@ -6858,7 +7361,35 @@
         // Snapshot of the focused session's host-owned send queue — replayed on
         // re-focus like everything else, so queued blocks survive session swaps.
         state.sendQueue = Array.isArray(msg.items) ? msg.items : [];
+        if (!state.sendQueue.length) {
+          state.queuedSubmissionPending = false;
+          state.queuedSubmissionRejected = false;
+        }
         renderQueuedBlocks();
+        break;
+      case "submitQueuedSend":
+        // Remote dequeue boundary: echo the host-owned text through the browser
+        // as the exact ordinary send frame the relay meters. Do not optimistically
+        // enter busy state — an over-quota relay bounces `error` and never
+        // forwards the frame, so the queued block stays pending and usable.
+        if (
+          IS_REMOTE &&
+          typeof msg.id === "string" &&
+          msg.id &&
+          typeof msg.text === "string" &&
+          msg.text.trim() &&
+          !state.submittedQueuedSendIds.has(msg.id)
+        ) {
+          state.submittedQueuedSendIds.add(msg.id);
+          if (state.submittedQueuedSendIds.size > 32) {
+            state.submittedQueuedSendIds.delete(state.submittedQueuedSendIds.values().next().value);
+          }
+          state.queuedSubmissionPending = true;
+          state.queuedSubmissionRejected = false;
+          state.queuedSubmissionId = msg.id;
+          renderQueuedBlocks();
+          vscode.postMessage({ type: "send", text: msg.text.trim(), queuedSendId: msg.id });
+        }
         break;
       case "steerUnavailable":
         // This CLI can't interject (#52). Latch the button off — the queue,
@@ -6924,7 +7455,32 @@
         showOnboarding(msg.state, { platform: msg.platform });
         break;
       case "error":
+        if (state.queuedSubmissionPending && isRelaySendRejection(msg.text)) {
+          state.queuedSubmissionPending = false;
+          state.queuedSubmissionRejected = true;
+          if (state.queuedSubmissionId) state.submittedQueuedSendIds.delete(state.queuedSubmissionId);
+          state.queuedSubmissionId = null;
+          renderQueuedBlocks();
+        } else if (
+          state.pendingSubmissionText &&
+          isRelaySendRejection(msg.text)
+        ) {
+          // Rejected by the relay (quota/rate cap): the message was never
+          // sent, so the optimistic bubble must go — the "Not sent" recovery
+          // block below is the honest representation.
+          clearOptimisticSend();
+          hideGrokking();
+          state.rejectedSubmissionText = state.pendingSubmissionText;
+          state.pendingSubmissionText = "";
+          state.busy = false;
+          state.busyLocked = false;
+          renderQueuedBlocks();
+          updateSendButton();
+        }
         addError(msg.text);
+        break;
+      case "hostNotice":
+        addPlanNotice(msg.text);
         break;
       case "xaiNotification":
         break;
@@ -6954,7 +7510,18 @@
           state.sessions = entries;
           state.sessionQuery = msg.query || "";
         }
-        if (msg.activeId !== undefined) state.activeSessionId = msg.activeId || null;
+        if (msg.activeId !== undefined) {
+          state.activeSessionId = msg.activeId || null;
+          if (state.activeSessionId) {
+            const activeEntry = entries.find((entry) => entry.id === state.activeSessionId)
+              || state.sessions.find((entry) => entry.id === state.activeSessionId);
+            saveRememberedRemoteSession({
+              id: state.activeSessionId,
+              repoCwd: state.selectedRepoCwd || state.cwd || "",
+              cwd: activeEntry?.cwd || state.activeRepoCwd || state.cwd || "",
+            });
+          } else saveRememberedRemoteSession(null);
+        }
         // Merge (not replace) so dots from earlier pages survive a load-more, which
         // only carries dots for the new page.
         state.dots = Object.assign({}, state.dots, msg.dots || {});
@@ -7014,6 +7581,7 @@
     renderMic();
   }
   newBtn.onclick = () => {
+    saveRememberedRemoteSession(null);
     resetForNewSession();
     vscode.postMessage({ type: "newSession" });
   };
@@ -7361,6 +7929,12 @@
   applyChatZoom();
   initMermaid();
   initMathJax();
-  vscode.postMessage({ type: "ready" });
-  reportRemotePreferences();
+  claimRemoteTabIdentity((finalToken) => {
+    resolveRemoteTabTokenReady(finalToken);
+    vscode.postMessage({
+      type: "ready",
+      ...(IS_REMOTE && finalToken ? { tabToken: finalToken } : {}),
+    });
+    reportRemotePreferences();
+  });
 })();

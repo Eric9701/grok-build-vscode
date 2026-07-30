@@ -12,6 +12,26 @@
 > remain accurate as the design rationale; read every "not possible / not buildable /
 > either wall sinks it / no code was added" conclusion as the *pre-build* assessment.
 > The one still-true limit: audio cannot ride the grok CLI/ACP pipe (Path A unrealized).
+>
+> AFK Pilot also uses Path B: `media/pcm-worklet.js` captures/downsamples a
+> remote browser microphone to signed PCM16 LE / 16 kHz / mono, opaque
+> `remoteVoice*` messages carry ephemeral chunks through the relay, and
+> `PcmVoiceStreamer` feeds the same host-authenticated xAI STT WebSocket. The
+> xAI key never leaves the extension host. Each browser client owns its own
+> remote voice stream; state, partials, final text, composer acknowledgements, and
+> any trailing "grok send" action are targeted only to that client and its active
+> `Session`. A send action returns to that browser as `voiceSubmit`, then crosses
+> the relay through the same `send` / busy-turn queue path as typed input so relay
+> prompt limits and queueing apply. Other tabs on the same repository receive no
+> voice fan-out.
+> `RemotePcmIngress` retains bounded PCM received during the STT reconnect so
+> continuous capture does not fail between utterances. The dictating tab alone
+> receives the composer-clear acknowledgement. A repo switch, page teardown, or
+> relay `client-left` closes that client's host stream. A `client-ready` resync
+> also closes any prior host stream before its snapshot is built: the rebuilt
+> page has no live capture, so a relay↔extension outage cannot resurrect a
+> host-only `voiceState: listening`. Roster reconciliation closes departed
+> clients through the same release path.
 
 **Question.** Can we add a microphone button to the chat textbox that records the
 user's speech and transcribes it into the input box, using the Grok Build CLI?

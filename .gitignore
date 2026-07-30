@@ -13,3 +13,9 @@ CLAUDE.local.md
 
 # Runtime artifacts written by agent commands during dev/testing
 terminals/
+
+# Machine-specific agent tool permissions — per-developer, never shared
+.claude/settings.local.json
+
+# Ad-hoc raw-output dirs an agent may leave behind while verifying
+.verification/

@@ -8,16 +8,66 @@ import {
   parseWorktreeRemove,
   parseWorktreeStatus,
   worktreesForRepo,
+  worktreeCwdsForRepo,
   worktreeDisplayName,
   WORKTREE_NAME_TAG,
   matchWorktreeForCwd,
+  mergeWorktreeRefresh,
   mergeSessionIndexes,
   sanitizeWorktreeLabel,
   pathsEqual,
   pathIsInside,
   isGitRepo,
+  gitRootForPath,
   normalizeFsPath,
 } from "../src/worktree";
+
+describe("worktreeCwdsForRepo", () => {
+  const worktrees = [
+    { path: "/worktrees/a", sourceGitRoot: "/repos/a" },
+    { path: "/worktrees/b", sourceGitRoot: "/repos/b" },
+    { path: "/worktrees/legacy" },
+  ];
+
+  it("does not grant the primary workspace another repository's worktrees", () => {
+    expect(worktreeCwdsForRepo({
+      repoCwd: "/repos/a",
+      repoGitRoot: "/repos/a",
+      worktrees,
+    })).toEqual(["/worktrees/a"]);
+  });
+
+  it("does not let a nested checkout inherit its parent's worktrees", () => {
+    expect(worktreeCwdsForRepo({
+      repoCwd: "/repos/a/nested-b",
+      repoGitRoot: "/repos/a/nested-b",
+      worktrees: [{ path: "/worktrees/a", sourceGitRoot: "/repos/a" }],
+    })).toEqual([]);
+  });
+
+  it("keeps a selected repo's own registered worktrees in scope", () => {
+    expect(worktreeCwdsForRepo({
+      repoCwd: "/repos/b",
+      repoGitRoot: "/repos/b",
+      worktrees,
+    })).toEqual(["/worktrees/b"]);
+  });
+
+  it("matches a worktree git root when VS Code opened a repo subdirectory", () => {
+    expect(worktreeCwdsForRepo({
+      repoCwd: "/repos/a/packages/editor",
+      repoGitRoot: "/repos/a",
+      worktrees,
+    })).toEqual(["/worktrees/a"]);
+  });
+
+  it("does not assign worktrees when the selected checkout identity is unknown", () => {
+    expect(worktreeCwdsForRepo({
+      repoCwd: "/repos/a",
+      worktrees,
+    })).toEqual([]);
+  });
+});
 
 describe("unwrapExtResult", () => {
   it("unwraps a single {result} envelope", () => {
@@ -212,6 +262,40 @@ describe("mergeSessionIndexes", () => {
   });
 });
 
+describe("mergeWorktreeRefresh", () => {
+  const record = (id: string, sourceRepo: string, path: string): any => ({
+    id,
+    sourceRepo,
+    path,
+    repoName: id,
+    kind: "session",
+    creationMode: "linked",
+    gitRef: "HEAD",
+    headCommit: "",
+    status: "alive",
+    label: id,
+    userProvidedLabel: true,
+  });
+
+  it("replaces only the serving client's repo and preserves another repo's registrations", () => {
+    const repoAOld = record("a-old", "C:\\repos\\a", "C:\\worktrees\\a-old");
+    const repoB = record("b", "C:\\repos\\a\\nested-b", "C:\\worktrees\\b");
+    const repoANew = record("a-new", "C:\\repos\\a", "C:\\worktrees\\a-new");
+
+    expect(mergeWorktreeRefresh([repoAOld, repoB], "C:\\repos\\a", [repoANew])).toEqual([
+      repoB,
+      repoANew,
+    ]);
+  });
+
+  it("lets a refreshed row replace the same path even if its source metadata changed", () => {
+    const stale = record("stale", "C:\\repos\\old", "C:\\worktrees\\shared");
+    const fresh = record("fresh", "C:\\repos\\new", "C:\\worktrees\\shared");
+
+    expect(mergeWorktreeRefresh([stale], "C:\\repos\\new", [fresh])).toEqual([fresh]);
+  });
+});
+
 describe("sanitizeWorktreeLabel", () => {
   it("strips path separators and whitespace", () => {
     expect(sanitizeWorktreeLabel("  my feature/v2  ")).toBe("my-feature-v2");
@@ -232,5 +316,18 @@ describe("isGitRepo", () => {
     const fs = { existsSync: (p: string) => existing.has(p) };
     expect(isGitRepo(src, fs)).toBe(true);
     expect(isGitRepo(path.resolve("nope-not-a-repo"), fs)).toBe(false);
+  });
+});
+
+describe("gitRootForPath", () => {
+  it("uses the nearest git marker so a nested checkout has its own identity", () => {
+    const path = require("node:path") as typeof import("node:path");
+    const parent = path.resolve("parent-repo");
+    const nested = path.join(parent, "nested-repo");
+    const existing = new Set([path.join(parent, ".git"), path.join(nested, ".git")]);
+    const fs = { existsSync: (p: string) => existing.has(p) };
+
+    expect(gitRootForPath(path.join(parent, "packages", "editor"), fs)).toBe(parent);
+    expect(gitRootForPath(path.join(nested, "src"), fs)).toBe(nested);
   });
 });

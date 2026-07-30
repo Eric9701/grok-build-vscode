@@ -183,6 +183,14 @@ describe("sessionsDirFor", () => {
     const out = sessionsDirFor("/h/.grok", "/work/space");
     expect(out).toBe(path.join("/h/.grok", "sessions", "%2Fwork%2Fspace"));
   });
+
+  it.each([
+    ["", "%00"],
+    [".", "%2E"],
+    ["..", "%2E%2E"],
+  ])("keeps a non-canonical cwd catalog inside the sessions root: %j", (badCwd, leaf) => {
+    expect(sessionsDirFor(grokHome, badCwd)).toBe(path.join(grokHome, "sessions", leaf));
+  });
 });
 
 describe("fallbackName", () => {
@@ -453,6 +461,31 @@ describe("deleteSessionDir", () => {
     const fs = buildFs({});
     expect(() => deleteSessionDir({ fs, grokHome, cwd, id: "missing" })).not.toThrow();
   });
+
+  it.each(["..", "../..", "..\\..", "/outside", "C:\\outside"])(
+    "refuses an id that could escape the sessions directory: %s",
+    (id) => {
+      const sessionsRoot = sessionsDirFor(grokHome, cwd);
+      const outside = path.resolve(sessionsRoot, id);
+      const fs = buildFs({
+        [sessionsRoot]: { isDir: true },
+        [outside]: { isDir: true },
+      });
+
+      deleteSessionDir({ fs, grokHome, cwd, id });
+
+      expect(fs.existsSync(outside)).toBe(true);
+    },
+  );
+
+  it("cannot escape through a non-canonical cwd even with a safe session id", () => {
+    const outside = path.join(grokHome, "victim");
+    const fs = buildFs({ [outside]: { isDir: true } });
+
+    deleteSessionDir({ fs, grokHome, cwd: "..", id: "victim" });
+
+    expect(fs.existsSync(outside)).toBe(true);
+  });
 });
 
 describe("clearSessions", () => {
@@ -491,6 +524,15 @@ describe("clearSessions", () => {
     expect(fs.existsSync(dirFor("b"))).toBe(true);
     expect(fs.existsSync(dirFor("a"))).toBe(false);
     expect(fs.existsSync(dirFor("c"))).toBe(false);
+  });
+
+  it("keeps every protected session id", () => {
+    const fs = buildThree();
+    const removed = clearSessions({ fs, grokHome, cwd, exceptIds: ["a", "c"] });
+    expect(removed).toEqual(["b"]);
+    expect(fs.existsSync(dirFor("a"))).toBe(true);
+    expect(fs.existsSync(dirFor("b"))).toBe(false);
+    expect(fs.existsSync(dirFor("c"))).toBe(true);
   });
 
   it("skips non-directory entries", () => {

@@ -2,10 +2,12 @@
 // inside happy-dom. Covers the click→record→transcribe→insert lifecycle and the
 // host-driven state sync / error reset — no microphone, ffmpeg, or network.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { bootWebview, dispatch, click, Posted } from "./webview-harness";
 
 const $ = (doc: Document, id: string) => doc.getElementById(id) as HTMLElement;
 const types = (posted: Posted[]) => posted.map((p) => p.type);
+const sidebarSrc = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
 
 describe("voice control mic button", () => {
   it("starts idle showing the mic icon", () => {
@@ -204,6 +206,15 @@ describe("voice control: live streaming transcription", () => {
 });
 
 describe("voice control: continuous listening + queue (hands-free)", () => {
+  it("forwards an empty parsed utterance so a bare send phrase can submit the local draft", () => {
+    const commit = sidebarSrc.slice(
+      sidebarSrc.indexOf("private commitVoiceStream"),
+      sidebarSrc.indexOf("private async finalizeVoiceStream"),
+    );
+    expect(commit).toContain('this.postLocal({ type: "voiceSubmit", text: text.trim() });');
+    expect(commit).not.toContain("if (text.trim())");
+  });
+
   it("voiceSubmit sends immediately when idle, clears composer, and KEEPS listening", () => {
     const { window, posted, doc } = bootWebview();
     const mic = $(doc, "mic-btn");
@@ -218,6 +229,37 @@ describe("voice control: continuous listening + queue (hands-free)", () => {
     expect((sent as Posted)?.text).toBe("add a logout button");
     expect(input.value).toBe("");                              // composer cleared for next utterance
     expect(mic.classList.contains("listening")).toBe(true);   // mic stays on — no click needed
+  });
+
+  it("submits the visible draft plus dictation when hands-free send is detected", () => {
+    const { window, posted, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "Please review";
+    click(window, $(doc, "mic-btn"));
+    dispatch(window, { type: "voicePartial", text: "the authentication code" });
+    expect(input.value).toBe("Please review the authentication code");
+
+    dispatch(window, { type: "voiceSubmit", text: "the authentication code" });
+
+    expect(posted.find((p) => p.type === "send")).toEqual({
+      type: "send",
+      text: "Please review the authentication code",
+    });
+  });
+
+  it("submits the existing draft for a bare hands-free send phrase", () => {
+    const { window, posted, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "Please review";
+    click(window, $(doc, "mic-btn"));
+
+    dispatch(window, { type: "voiceSubmit", text: "" });
+
+    expect(posted.find((p) => p.type === "send")).toEqual({
+      type: "send",
+      text: "Please review",
+    });
+    expect(input.value).toBe("");
   });
 
   it("routes a voiceSubmit to the HOST queue while Grok is busy — never a direct send", () => {

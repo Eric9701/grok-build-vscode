@@ -5,15 +5,16 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
-import { Session, SessionStatus } from "./session";
-import { selectReapable, computeDot, Dot } from "./session-pool";
-import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PHRASE } from "./voice";
+import { Session, SessionStatus, sessionUiSnapshot } from "./session";
+import { buildReapCandidates, selectReapable, computeDot, Dot } from "./session-pool";
+import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
-import { VoiceStreamer } from "./voice-streamer";
+import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta } from "./acp-dispatch";
 import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
+import { beginAuthRecovery } from "./auth-recovery";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
   APTABASE_APP_KEY_PROD,
@@ -25,6 +26,7 @@ import {
   OFFICIAL_EXTENSION_ID,
 } from "./telemetry";
 import { randomUUID } from "node:crypto";
+const dbg = (l: string) => { try { fs.appendFileSync("C:/GitHub/grok-build-vscode/.dbg.log", l + "\n"); } catch { /* debug */ } };
 import {
   locateGrokCli,
   extensionWasUpgraded,
@@ -82,10 +84,13 @@ import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
-import { HostMsg, WebviewMsg } from "./protocol";
+import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
-import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
-import { deviceDisplayName, httpBaseFromRelayUrl, REMOTE_RELAY_URL } from "./remote-frames";
+import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
+import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
+import { SessionRequestState } from "./session-request-state";
+import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import {
   SessionListEntry,
@@ -108,17 +113,19 @@ import {
   sessionsDirFor,
 } from "./sessions";
 import {
+  gitRootForPath,
   isGitRepo,
   matchWorktreeForCwd,
   mergeSessionIndexes,
-  worktreeCwdsForRepo,
-  type WorktreeParentRef,
+  mergeWorktreeRefresh,
   normalizeFsPath,
   pathsEqual,
   sanitizeWorktreeLabel,
+  type WorktreeParentRef,
+  type WorktreeRecord,
+  worktreeCwdsForRepo,
   worktreeDisplayName,
   worktreesForRepo,
-  type WorktreeRecord,
 } from "./worktree";
 import {
   formatRewindPointDetail,
@@ -153,6 +160,31 @@ const INSTALL_ID_KEY = "grok.installId";
  *  file — the #67 complaint. Persisted (not per-session) because a preference
  *  this deliberate should survive a reload, exactly like the setting would. */
 const IMPLICIT_CHIP_HIDDEN_KEY = "grok.implicitChipHidden";
+
+interface RemoteVoiceEntry {
+  credentialCwd: string;
+  session: Session;
+  streamer: PcmVoiceStreamer;
+  ingress: RemotePcmIngress;
+  phrase: string;
+  finalizing: boolean;
+}
+
+interface SessionLoadReservation {
+  token: symbol;
+  ownerTabToken?: string;
+  session?: Session;
+  completion: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+  expiresAt: number;
+  timer: NodeJS.Timeout;
+}
+
+interface RemoteRequester {
+  clientId: string;
+  tabToken?: string;
+}
 
 // History pagination: rows fetched per "page" (initial open + each load-more / search page).
 const SESSION_PAGE_SIZE = 100;
@@ -217,7 +249,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   public static readonly viewId = "grok.chat";
   private view?: vscode.WebviewView;
   /** The session currently shown in the chat — one member of {@link pool}. */
-  private focused = new Session();
+  private focused = this.newLocalSession();
   /**
    * Every live session (each a spawned `grok agent stdio` process), including the
    * focused one. Backgrounded members keep streaming into their own buffers, so
@@ -253,7 +285,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   /** Guards {@link sweepEmptyPrimerSessions} to one run per activation. */
   private sweptEmptySessions = false;
   private output: vscode.OutputChannel;
-  private chips: FileChip[] = [];
+  private get chips(): FileChip[] { return this.focused.chips; }
+  private set chips(value: FileChip[]) { this.focused.chips = value; }
   /** Attachment-staging ops still in flight — see trackAttach. */
   private readonly pendingAttach = new Set<Promise<void>>();
   /** Cached findFiles snapshot for the `@` popover (no open-editor merge).
@@ -261,6 +294,11 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
    *  one in-flight build. Open tabs are layered on at read time. */
   private mentionIndex: { at: number; rels: string[]; absByRel: Map<string, string> } | null = null;
   private mentionIndexPromise: Promise<{ rels: string[]; absByRel: Map<string, string> }> | null = null;
+  private readonly remoteMentionIndexes = new Map<string, {
+    at: number;
+    rels: string[];
+    absByRel: Map<string, string>;
+  }>();
   private editorWatcher?: vscode.Disposable;
   private terminalManager = new TerminalManager();
   private voiceRecorder = new VoiceRecorder();
@@ -270,25 +308,36 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // Stored so a "grok send" can transparently restart a fresh stream (each
   // message = one clean utterance) without re-resolving the mic device.
   private voiceStreamCtx?: { key: string; ffmpegPath: string; device?: string; phrase: string; keyterms: string[] };
+  private localVoiceCwd?: string;
+  private localVoiceCredentialCwd?: string;
+  private readonly remoteVoice = new Map<string, RemoteVoiceEntry>();
+  private static readonly MAX_REMOTE_PCM_BYTES = MAX_RECORDING_SECONDS * 16_000 * 2;
+  private static readonly MAX_REMOTE_PCM_CHUNK_BYTES = 256 * 1024;
   private configWatcher?: vscode.Disposable;
   // Remote uplink — outbound wss to the relay (REMOTE_RELAY_URL), active only
   // when a device token is stored (the "Grok: Link Remote Device" / gear
   // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
   // shipping path is unaffected.
   private uplink?: RemoteUplink;
+  private readonly remoteClients: RemoteClientState<Session>;
+  /** Cold session/load claims the persisted id before ACP has emitted `session`. */
+  private readonly sessionLoadReservations = new Map<string, SessionLoadReservation>();
+  /** Sessions being spawned on a remote tab's behalf — a reconnect burst must
+   *  not start the same one twice. */
+  private readonly startingForRemote = new WeakSet<Session>();
+  private static readonly SESSION_LOAD_RESERVATION_TTL_MS = 10 * 60_000;
+  private testSessionStartDelay?: {
+    resumeId: string | undefined;
+    started: () => void;
+    wait: Promise<void>;
+  };
   // OS wake lock, held for exactly as long as the uplink is (linked device token
   // + live extension host) so an AFK machine can't idle-suspend out from under a
   // remote turn. `grok.remote.keepAwake` is the opt-out. See src/keep-awake.ts.
   private readonly keepAwake = new KeepAwake((l) => this.output.appendLine(l), process.platform, process.pid, os.release());
-  // Last-seen "chrome" messages (labels, donut, lists, config echoes) that live
-  // OUTSIDE Session.buffer — the buffer replays the chat, this replays the shell.
-  // A new remote client's snapshot = these + clearMessages + the focused buffer.
-  private stickyChrome = new Map<HostMsg["type"], HostMsg>();
-  private static readonly STICKY_CHROME_TYPES = new Set<HostMsg["type"]>([
-    "initialState", "session", "modelChanged", "modeChanged", "chips",
-    "contextUsage", "sessions", "repos", "queuedSends", "onboarding", "commandsUpdate",
-    "grokUpdateStatus", "voiceConfigured", "fontScale", "showThinking", "expandCommandOutputs",
-    "soundNotifications", "processingSound", "readRepliesAloud", "summarizeRepliesAloud",
+  private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
+    "showThinking", "fontScale", "grokUpdateStatus", "cliUpdating",
+    "onboarding", "expandCommandOutputs", "steerByDefault", "soundNotifications",
   ]);
   private cliPath?: string;
   /** History browsing scope. Deliberately independent of the live session cwd. */
@@ -313,7 +362,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // request → its diff URIs so the tab can be auto-closed when the user answers.
   private readonly diffProvider = new GrokDiffContentProvider();
   private diffSeq = 0;
-  private readonly openDiffsByRequest = new Map<string, { left: vscode.Uri; right: vscode.Uri }>();
+  private readonly openDiffsByRequest =
+    new SessionRequestState<Session, { left: vscode.Uri; right: vscode.Uri }>();
   /** In-flight in-chat confirms, keyed by request id — see confirmInChat. */
   private readonly pendingConfirms = new Map<string, (ok: boolean) => void>();
   private confirmSeq = 0;
@@ -323,6 +373,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     output: vscode.OutputChannel,
   ) {
     this.output = output;
+    this.remoteClients = new RemoteClientState<Session>(this.workspaceRoot(), normalizeRepoPath);
     context.subscriptions.push(
       vscode.workspace.registerTextDocumentContentProvider(GROK_DIFF_SCHEME, this.diffProvider),
     );
@@ -368,7 +419,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // Re-tell the webview whether voice is set up when the relevant settings
     // change, so the mic button's "needs setup" hint updates without a reload.
     this.configWatcher?.dispose();
-    this.configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+    const configChanges = vscode.workspace.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("grok.voiceApiKey") ||
         e.affectsConfiguration("grok.ffmpegPath") ||
@@ -427,6 +478,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         // Drop the TTL-cached findFiles snapshot so the next `@` rebuilds with
         // the new cap (otherwise a raise would wait up to MENTION_INDEX_TTL_MS).
         this.mentionIndex = null;
+        this.remoteMentionIndexes.clear();
       }
       if (e.affectsConfiguration("grok.terminalShell")) {
         this.applyTerminalShellPref();
@@ -435,6 +487,14 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.refreshKeepAwake();
       }
     });
+    const authWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(resolveGrokHome(process.env), "auth.json"),
+    );
+    const refreshVoiceConfigured = () => this.postVoiceConfigured();
+    authWatcher.onDidCreate(refreshVoiceConfigured);
+    authWatcher.onDidChange(refreshVoiceConfigured);
+    authWatcher.onDidDelete(refreshVoiceConfigured);
+    this.configWatcher = vscode.Disposable.from(configChanges, authWatcher);
     this.applyTerminalShellPref();
     void this.maybeStartUplink();
   }
@@ -506,38 +566,50 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
    * restart — `newSession` re-applies it before the primer runs, while the agent
    * is still rebindable. Same-agent switches stay live (history intact).
    */
-  async switchModel(modelId: string): Promise<void> {
-    const client = this.focused.client;
+  async switchModel(
+    modelId: string,
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
+    const client = session.client;
     // Ignore switches fired during the session-start window: the live set_model
     // would race the hidden primer (sometimes landing before the agent locks,
     // sometimes after — see research/model-switch-race-probe.cjs), making the
     // outcome unpredictable. The webview disables the control while busy; this
     // is the backstop for a click already in flight.
-    if (!client || this.focused.priming || modelId === client.currentModelId) return;
+    if (!client || session.priming || modelId === client.currentModelId) return;
     const cfg = vscode.workspace.getConfiguration("grok");
     try {
       await client.setModel(modelId);
       await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
     } catch (e) {
       if (!isIncompatibleAgentError(e)) {
-        vscode.window.showErrorMessage(`Failed to set model: ${(e as Error).message}`);
+        this.reportRequester(requester, "error", `Failed to set model: ${(e as Error).message}`);
         return;
       }
-      if (!this.focused.hasHistory) {
+      if (!session.hasHistory) {
         // Primer-only session (no real conversation): a cross-agent switch restarts it with a fresh
         // grok id. There's nothing to summarize, so we never prompt here — and we don't leave the
         // abandoned primer-only session cluttering history (repeated switches would pile them up).
         // Drop it after the restart, carrying over any rename the user made.
-        const discardId = this.focused.activeSessionId;
+        const discardId = session.activeSessionId;
         await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
-        await this.startSession();
-        this.discardRestartedEmptySession(discardId);
+        await this.startSession(undefined, session);
+        this.discardRestartedEmptySession(discardId, session);
+        return;
+      }
+      if (requester) {
+        this.reportRequester(
+          requester,
+          "warning",
+          "Switching to this model requires restarting the conversation from the VS Code view.",
+        );
         return;
       }
       const mode = await this.pickRestartMode("Switching to this model requires a new session.");
       if (!mode) return; // dismissed — keep the current model
       await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
-      await this.restartSession(mode);
+      await this.restartSession(mode, session);
     }
   }
 
@@ -597,21 +669,23 @@ See design doc for the full state machine diagram.`;
    * doesn't model (the CLI only knows agent/plan), so we derive the button label
    * here rather than echoing the CLI's raw mode id.
    */
-  private displayMode(): "agent" | "plan" | "yolo" {
-    if (this.focused.planActive) return "plan";
-    if (this.focused.autoApprove) return "yolo";
+  private displayMode(session: Session = this.focused): "agent" | "plan" | "yolo" {
+    if (session.planActive) return "plan";
+    if (session.autoApprove) return "yolo";
     return "agent";
   }
 
-  private postMode(): void {
-    this.post({ type: "modeChanged", modeId: this.displayMode() });
+  private postMode(session: Session = this.focused): void {
+    const message: HostMsg = { type: "modeChanged", modeId: this.displayMode(session) };
+    if (session === this.focused) this.view?.webview.postMessage(message);
+    this.sendRemoteSession(session, message);
   }
 
   /** Whether grok's config.toml forces always-approve (#31). Project
    *  `.grok/config.toml` overrides global `~/.grok/config.toml`. Read fresh on
    *  each session start — it's a couple of small file reads, and the user may
    *  edit the config between sessions. Any read error → false (treat as normal). */
-  private configForcesAutoApprove(): boolean {
+  private configForcesAutoApprove(cwd: string = this.workspaceRoot()): boolean {
     const readSafe = (p?: string): string | undefined => {
       if (!p) return undefined;
       try {
@@ -622,7 +696,6 @@ See design doc for the full state machine diagram.`;
     };
     const home = process.env.HOME || process.env.USERPROFILE || "";
     const globalPath = home ? path.join(home, ".grok", "config.toml") : undefined;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const projectPath = cwd ? path.join(cwd, ".grok", "config.toml") : undefined;
     return configForcesAlwaysApprove({ project: readSafe(projectPath), global: readSafe(globalPath) });
   }
@@ -658,15 +731,18 @@ See design doc for the full state machine diagram.`;
   private setPlanActive(session: Session, v: boolean): void {
     session.planActive = v;
     if (session.client) session.client.planActive = v;
-    if (session === this.focused) this.postMode();
+    this.postMode(session);
   }
 
-  async setMode(modeId: "agent" | "plan" | "yolo"): Promise<void> {
+  async setMode(
+    modeId: "agent" | "plan" | "yolo",
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
     // Agent/plan/yolo are mutually exclusive. Plan = client write/exec gate;
     // YOLO = auto-approve. Both ride on top of the CLI's agent mode, except
     // Plan which also tells the CLI to plan instead of act. The mode button only
     // ever drives the focused session.
-    const session = this.focused;
     // Ignore mode changes until the session exists: before session/new the CLI
     // setMode throws "no session" (and for Plan that error is surfaced to the user).
     // The mode button is disabled while busy; this backstops the toggle-mode command.
@@ -697,7 +773,7 @@ See design doc for the full state machine diagram.`;
       this.setPlanActive(session, true); // posts displayMode → "plan"
       if (session.client) {
         try { await session.client.setMode("plan"); }
-        catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
+        catch (e) { this.reportRequester(requester, "error", `Couldn't switch mode: ${(e as Error).message}`); }
       }
       return;
     }
@@ -705,7 +781,7 @@ See design doc for the full state machine diagram.`;
     this.setPlanActive(session, false); // posts displayMode → "agent"
     if (session.client) {
       try { await session.client.setMode(ACT_MODE_ID); }
-      catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
+      catch (e) { this.reportRequester(requester, "error", `Couldn't switch mode: ${(e as Error).message}`); }
     }
   }
 
@@ -734,8 +810,8 @@ See design doc for the full state machine diagram.`;
     requestId: number | string,
     verdict: "approved" | "abandoned" | "rejected",
     comment?: string,
+    session: Session = this.focused,
   ): void {
-    const session = this.focused;
     const client = session.client;
     if (!client) return;
     const gen = session.gen;
@@ -1055,7 +1131,7 @@ See design doc for the full state machine diagram.`;
       client.respondPermission(requestId, opt.optionId);
       this.emit(session, { type: "permissionResolved", requestId, optionId: opt.optionId });
       this.persistPermissionAnswer(session, requestId, opt.optionId);
-      this.closeDiffForRequest(requestId);
+      this.closeDiffForRequest(session, requestId);
       resolved += 1;
     }
     if (resolved > 0) this.setStatus(session, "working"); // the turn resumes
@@ -1070,21 +1146,35 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Fire the session's queued sends (#37) as ONE combined prompt — blank-line
+   * Resolve the session's queued sends (#37) as ONE combined prompt — blank-line
    * separated, so grok gets a single turn with full context — once its turn is
    * truly over. Safe to call opportunistically: it no-ops while a turn is in
    * flight (`working`), while a card awaits the user (`needs-you`), while a
    * verdict follow-up is pending (`afterTurn`), during the spawn window
    * (`priming` — no session id to prompt yet), or with no live client. Works
-   * for backgrounded sessions too: the flush emits into the session buffer
-   * like any other turn, so its bubbles are there when the user swaps back.
+   * for backgrounded sessions too.
    */
+  private queuedSendReadyText(session: Session): string | undefined {
+    if (!session.queuedSends.length) return undefined;
+    if (!session.client || session.priming || session.afterTurn) return undefined;
+    if (session.status === "working" || session.status === "needs-you") return undefined;
+    return session.queuedSends.join("\n\n");
+  }
+
   private async maybeFlushQueuedSends(session: Session): Promise<void> {
-    if (!session.queuedSends.length) return;
-    if (!session.client || session.priming || session.afterTurn) return;
-    if (session.status === "working" || session.status === "needs-you") return;
-    const combined = session.queuedSends.join("\n\n");
+    const combined = this.queuedSendReadyText(session);
+    if (!combined) return;
+    if (session.queuedSendRequiresRelay) {
+      if (this.remoteClients.clientsForActiveValue(session).length === 0) return;
+      if (session.queuedSendDispatch) return;
+      const dispatch = { id: randomUUID(), text: combined };
+      session.queuedSendDispatch = dispatch;
+      this.sendRemoteSession(session, { type: "submitQueuedSend", ...dispatch });
+      return;
+    }
     session.queuedSends = [];
+    session.queuedSendDispatch = undefined;
+    session.queuedSendRequiresRelay = false;
     this.emit(session, { type: "queuedSends", items: [] });
     await this.handleSend(combined, false, session);
   }
@@ -1101,13 +1191,22 @@ See design doc for the full state machine diagram.`;
    * so the UI feels immediate; a failure re-queues the text rather than losing
    * it, which is the whole point of the host owning this (#37).
    */
-  private async steerSend(text: string): Promise<void> {
-    const session = this.focused;
+  private async steerSend(
+    text: string,
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
     const body = (text ?? "").trim();
     if (!body) return;
     if (!session.client || !session.activeSessionId) {
       // No live turn to steer — fall back to the queue rather than drop it.
-      return void this.onMessage({ type: "queueSend", text: body }, "local");
+      // Deliberately NOT flagged for a relay round-trip: the relay meters
+      // steerSend on ingress exactly like send, so this text is already paid
+      // for — re-submitting the queued fallback through the relay would
+      // charge it twice. Same for the two fallbacks below.
+      session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
+      this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+      return;
     }
     this.emit(session, { type: "userMessage", text: body, chips: [], steer: true });
     try {
@@ -1119,7 +1218,9 @@ See design doc for the full state machine diagram.`;
         this.emit(session, { type: "agentReset" });
         session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
         this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
-        void vscode.window.showWarningMessage(
+        this.reportRequester(
+          requester,
+          "warning",
           "Steering needs a newer Grok Build CLI — your message was queued instead. Update via the gear menu → Version & about.",
         );
         return;
@@ -1142,13 +1243,14 @@ See design doc for the full state machine diagram.`;
    * truncating `updates.jsonl`, so a partial fork would replay a conversation the
    * model has forgotten (see research/grok-build-oss-findings.md § 3a).
    */
-  private async forkFocusedSession(): Promise<void> {
-    const session = this.focused;
+  private async forkFocusedSession(session: Session = this.focused, requester?: RemoteRequester): Promise<void> {
     if (!session.client || !session.activeSessionId) {
-      return void vscode.window.showWarningMessage("Start a session before forking it.");
+      this.reportRequester(requester, "warning", "Start a session before forking it.");
+      return;
     }
     if (!session.hasHistory) {
-      return void vscode.window.showInformationMessage("Nothing to fork yet — this session has no conversation.");
+      this.reportRequester(requester, "info", "Nothing to fork yet — this session has no conversation.");
+      return;
     }
     // Resolve the parent's name BEFORE the fork — it names the fork, so it must
     // be the name the user was looking at when they clicked. Reading it after the
@@ -1162,9 +1264,12 @@ See design doc for the full state machine diagram.`;
       const cwd = this.sessionCwd(session);
       const r = await session.client.forkSession(cwd);
       if (r === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        this.reportRequester(
+          requester,
+          "warning",
           "Forking needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
+        return;
       }
       this.output.appendLine(`[fork] ${session.activeSessionId} → ${r.newSessionId} ("${forkName}")`);
       // Stamp the name before focusing, so neither the history list nor the
@@ -1193,14 +1298,22 @@ See design doc for the full state machine diagram.`;
 
       // The fork is on disk but has no live process; openSession loads it into a
       // fresh pool member and focuses it, exactly like clicking a history row.
-      await this.openSession(r.newSessionId, cwd);
-      void vscode.window.showInformationMessage(
+      if (requester) {
+        const currentClientId = this.resolveRemoteRequester(requester);
+        if (!currentClientId) return;
+        await this.openRemoteSession(currentClientId, r.newSessionId, cwd);
+      } else {
+        await this.openSession(r.newSessionId, cwd);
+      }
+      this.reportRequester(
+        requester,
+        "info",
         `Forked into "${forkName}". The original conversation is unchanged and is in your session history` +
           (parentName ? ` as "${parentName}"` : "") +
           ". Files on disk were not touched.",
       );
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Fork failed: ${e?.message ?? e}`);
+      this.reportRequester(requester, "error", `Fork failed: ${e?.message ?? e}`);
     }
   }
 
@@ -1479,12 +1592,13 @@ See design doc for the full state machine diagram.`;
   private async controlWorkflow(
     action: "pause" | "resume" | "stop",
     displayName: string,
+    session: Session = this.focused,
   ): Promise<void> {
     const cmd = workflowControlCommand(action, displayName);
     if (!cmd) {
       return void vscode.window.showWarningMessage("Missing workflow display name.");
     }
-    await this.handleSend(cmd, true);
+    await this.handleSend(cmd, true, session);
   }
 
   /** Workspace folder root (the main checkout for worktree ops). */
@@ -1495,6 +1609,35 @@ See design doc for the full state machine diagram.`;
   /** Effective cwd for a session (worktree path or workspace root). */
   private sessionCwd(session: Session = this.focused): string {
     return session.cwd || this.workspaceRoot();
+  }
+
+  private setSessionCwd(session: Session, cwd: string, fallbackSourceGitRoot: string): void {
+    session.cwd = cwd;
+    session.worktree = undefined;
+    const wt = matchWorktreeForCwd(cwd, this.worktreeCache);
+    if (!wt) return;
+    session.worktree = {
+      path: wt.path,
+      label: wt.label,
+      sourceGitRoot: wt.sourceRepo || fallbackSourceGitRoot,
+      id: wt.id,
+    };
+  }
+
+  private async persistWorktreeBinding(session: Session): Promise<void> {
+    const id = session.activeSessionId;
+    const wt = session.worktree;
+    if (!id || !wt) return;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    await this.context.globalState.update(SESSION_META_KEY, {
+      ...overrides,
+      [id]: {
+        ...(overrides[id] ?? {}),
+        worktreePath: wt.path,
+        worktreeLabel: wt.label,
+        sourceGitRoot: wt.sourceGitRoot,
+      },
+    });
   }
 
   /**
@@ -1582,7 +1725,7 @@ See design doc for the full state machine diagram.`;
 
           // Open a brand-new session whose process cwd is the worktree.
           this.parkFocused();
-          this.focused = new Session();
+          this.focused = this.newLocalSession();
           this.pool.add(this.focused);
           this.focused.cwd = wtPath;
           this.focused.worktree = {
@@ -1724,8 +1867,14 @@ See design doc for the full state machine diagram.`;
     }
     try {
       // Any live process still using the worktree as cwd locks remove on Windows.
+      // Remember which remote tabs were attached to those sessions (the focused
+      // one included — desk↔remote co-attach): their conversation dies with the
+      // checkout, and they must be re-homed once the removal succeeds instead
+      // of being left on a dead session whose cwd no longer exists.
+      const strandedHolders = new Set<string>();
       for (const s of [...this.pool]) {
         if (s.worktree && pathsEqual(s.worktree.path, wt.path)) {
+          for (const holder of this.remoteClients.clientsForActiveValue(s)) strandedHolders.add(holder);
           s.client?.dispose();
           s.client = undefined;
           if (s !== this.focused) this.pool.delete(s);
@@ -1770,11 +1919,27 @@ See design doc for the full state machine diagram.`;
       this.focused.worktree = undefined;
       // Leave the chat; start a normal workspace session so the user isn't stuck.
       this.parkFocused();
-      this.focused = new Session();
+      this.focused = this.newLocalSession();
       this.pool.add(this.focused);
       this.focused.cwd = this.workspaceRoot();
       await this.startSession();
       this.postSessionsList();
+      // Re-home the remote tabs that were on the removed worktree: a fresh
+      // snapshot gives each a new conversation in its selected repository —
+      // their old Session object is dead and its cwd is gone, so their next
+      // send (or a refresh-restore) had nowhere to land.
+      for (const holder of strandedHolders) {
+        // Cancel any live dictation FIRST: its voice entry still references
+        // the destroyed session, and a transcription completing after the
+        // re-home would submit old-conversation speech into the new one.
+        this.dropRemoteVoice(holder);
+        this.remoteClients.deleteActive(holder);
+        this.sendRemoteClient(holder, {
+          type: "error",
+          text: `Worktree "${wt.label}" was removed in VS Code, so that conversation ended. This tab now has a fresh session in its selected repository.`,
+        });
+        for (const message of this.buildRemoteSnapshot(holder)) this.sendRemoteClient(holder, message);
+      }
       void vscode.window.showInformationMessage(`Removed worktree "${wt.label}".`);
     } catch (e: any) {
       void vscode.window.showErrorMessage(`Remove worktree failed: ${e?.message ?? e}`);
@@ -1785,14 +1950,16 @@ See design doc for the full state machine diagram.`;
   private worktreeCache: WorktreeRecord[] = [];
 
   private async refreshWorktreeCache(): Promise<void> {
-    const client =
-      this.focused.client ||
-      [...this.pool].map((s) => s.client).find((c) => !!c);
+    const session = this.focused.client
+      ? this.focused
+      : [...this.pool].find((candidate) => !!candidate.client);
+    const client = session?.client;
     if (!client) return;
+    const sourceRepo = session.worktree?.sourceGitRoot || this.sessionCwd(session);
     try {
       const list = await client.listWorktrees({});
       if (list === "unsupported") return;
-      this.worktreeCache = list;
+      this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, list);
     } catch (e: any) {
       this.output.appendLine(`[worktree] list failed: ${e?.message ?? e}`);
     }
@@ -1851,7 +2018,11 @@ See design doc for the full state machine diagram.`;
         .filter((s) => s.worktree)
         .map((s) => ({ path: s.worktree!.path, sourceGitRoot: s.worktree!.sourceGitRoot })),
     ];
-    for (const p of worktreeCwdsForRepo({ repoCwd, workspaceRoot: this.workspaceRoot(), worktrees: known })) {
+    for (const p of worktreeCwdsForRepo({
+      repoCwd,
+      repoGitRoot: gitRootForPath(repoCwd, defaultFs) ?? repoCwd,
+      worktrees: known,
+    })) {
       add(p);
     }
     return cwds;
@@ -1898,12 +2069,16 @@ See design doc for the full state machine diagram.`;
       selectedCwd: this.workspaceRoot(),
       activeCwd,
     });
-    this.postRemote({
-      type: "repos",
-      entries,
-      selectedCwd: this.selectedHistoryCwd(),
-      activeCwd,
-    });
+    for (const clientId of this.remoteClients.clients()) {
+      const cwd = this.remoteClients.cwd(clientId);
+      const remoteActive = this.remoteClients.active(clientId);
+      this.sendRemoteClient(clientId, {
+        type: "repos",
+        entries,
+        selectedCwd: cwd,
+        activeCwd: remoteActive ? this.sessionCwd(remoteActive) : cwd,
+      });
+    }
   }
 
   private selectRepo(cwd: string): void {
@@ -1912,6 +2087,16 @@ See design doc for the full state machine diagram.`;
     this.selectedRepoCwd = hit.cwd;
     this.postRepoCatalog();
     this.postSessionsList();
+  }
+
+  private selectRemoteRepo(clientId: string, cwd: string): void {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit || !hit.available) return;
+    if (this.remoteVoice.has(clientId)) void this.handleRemoteVoiceStop(clientId, true);
+    this.parkRemoteSession(clientId);
+    this.remoteClients.select(clientId, hit.cwd);
+    this.remoteSessionFor(clientId);
+    for (const msg of this.buildRemoteSnapshot(clientId)) this.sendRemoteClient(clientId, msg);
   }
 
   private async toggleRepoPin(cwd: string, pinned: boolean): Promise<void> {
@@ -2013,7 +2198,7 @@ See design doc for the full state machine diagram.`;
     png?: string;
     svgDark?: string;
     svgLight?: string;
-  }): Promise<void> {
+  }, session: Session): Promise<void> {
     try {
       const base = msg.kind === "mermaid" ? "diagram" : "equation";
       const toBytes = (png?: string) =>
@@ -2045,10 +2230,7 @@ See design doc for the full state machine diagram.`;
 
       const ext = pick.fmt === "png" ? "png" : "svg";
       const defaultName = `${base}.${ext}`;
-      const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-      const defaultUri = folder
-        ? vscode.Uri.joinPath(folder, defaultName)
-        : vscode.Uri.file(defaultName);
+      const defaultUri = vscode.Uri.joinPath(vscode.Uri.file(this.sessionCwd(session)), defaultName);
       const filters: Record<string, string[]> =
         ext === "png" ? { "PNG image": ["png"] } : { "SVG image": ["svg"] };
       const target = await vscode.window.showSaveDialog({ defaultUri, filters });
@@ -2090,7 +2272,7 @@ See design doc for the full state machine diagram.`;
     // turn) races the onboarding state we're about to show, then reset focus to a
     // fresh, unstarted session.
     await this.disposePool();
-    this.focused = new Session();
+    this.focused = this.newLocalSession();
     // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
     // is a parser error (see runMcpList).
     vscode.window.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
@@ -2108,8 +2290,8 @@ See design doc for the full state machine diagram.`;
     this.editorWatcher?.dispose();
     this.configWatcher?.dispose();
     this.terminalManager.disposeAll();
-    this.voiceRecorder.cancel();
-    this.voiceStreamer?.cancel();
+    this.stopVoiceInput();
+    this.remoteClients.clear();
     try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
   }
 
@@ -2119,14 +2301,14 @@ See design doc for the full state machine diagram.`;
 
   // ---------- internals ----------
 
-  private async ensureClient(): Promise<AcpClient | undefined> {
-    if (this.focused.client) return this.focused.client;
+  private async ensureClient(session: Session = this.focused): Promise<AcpClient | undefined> {
+    if (session.client) return session.client;
     // After a CLI crash the focused session keeps its grok id but loses its
     // client — respawn by RESUMING that id, so the next send continues the same
     // conversation (a bare startSession would open a blank-context session
     // under the old transcript). Fresh/unstarted sessions have no id and start
     // clean as before.
-    return this.startSession(this.focused.activeSessionId);
+    return this.startSession(session.activeSessionId, session);
   }
 
   /** Read `grok --version` for the policy checks. Returns "" on failure (logged). */
@@ -2338,7 +2520,7 @@ See design doc for the full state machine diagram.`;
     // AWAIT the teardown: kill() only *signals*, and on Windows the OS releases
     // the grok.exe lock a beat after the process actually exits — running the
     // update before that loses the rename with "cannot rename locked executable".
-    this.focused = new Session();
+    this.focused = this.newLocalSession();
     this.focused.cwd = resumeCwd;
     this.focused.worktree = resumeWorktree;
     this.post({ type: "clearMessages" });
@@ -2390,42 +2572,42 @@ See design doc for the full state machine diagram.`;
   /** Restart the session. "clear" drops the visible history; "summarize" first
    *  captures a one-paragraph summary of the conversation and re-injects it as
    *  hidden context after the restart so the new session keeps the thread. */
-  private async restartSession(mode: "clear" | "summarize"): Promise<void> {
+  private async restartSession(mode: "clear" | "summarize", session: Session = this.focused): Promise<void> {
     if (mode === "clear") {
-      this.emit(this.focused, { type: "clearMessages" });
-      await this.startSession();
+      this.emit(session, { type: "clearMessages" });
+      await this.startSession(undefined, session);
       return;
     }
-    const currentClient = this.focused.client;
-    this.emit(this.focused, { type: "summarizing" });
+    const currentClient = session.client;
+    this.emit(session, { type: "summarizing" });
     const chunks: string[] = [];
     const captureChunk = (t: string) => chunks.push(t);
     currentClient?.on("messageChunk", captureChunk);
-    this.focused.suppressContent = true;
+    session.suppressContent = true;
     try {
       await currentClient?.prompt(
         "Summarize our conversation so far in a concise paragraph. Be brief.",
       );
     } catch { /* best effort */ } finally {
       currentClient?.off("messageChunk", captureChunk);
-      this.focused.suppressContent = false;
+      session.suppressContent = false;
     }
     const summary = chunks.join("").trim();
 
-    await this.startSession(); // resets suppressContent + eagerly kicks off the primer
+    await this.startSession(undefined, session); // resets suppressContent + eagerly kicks off the primer
 
-    if (summary && this.focused.client) {
+    if (summary && session.client) {
       // Await the eager primer FIRST (it manages its own suppression and ends with
       // suppressContent=false), THEN re-assert suppression for the hidden summary
       // injection. Doing it the other way round would let the primer's completion
       // clear the flag mid-summary and leak "[Context from previous session]".
-      await this.ensurePrimed(this.focused.client, this.focused, this.focused.gen);
-      this.emit(this.focused, { type: "sessionContext" });
-      this.focused.suppressContent = true;
+      await this.ensurePrimed(session.client, session, session.gen);
+      this.emit(session, { type: "sessionContext" });
+      session.suppressContent = true;
       try {
-        await this.focused.client.prompt(`[Context from previous session]\n${summary}`);
+        await session.client.prompt(`[Context from previous session]\n${summary}`);
       } catch { /* best effort */ } finally {
-        this.focused.suppressContent = false;
+        session.suppressContent = false;
       }
     }
   }
@@ -2436,11 +2618,11 @@ See design doc for the full state machine diagram.`;
    *  user rename (`customName`) onto the new session so the chosen name survives the restart. The
    *  caller must only invoke this when the prior session genuinely had no history. No-op if the ids
    *  match or the old session was never persisted. */
-  private discardRestartedEmptySession(oldId: string | undefined): void {
-    const newId = this.focused.activeSessionId;
+  private discardRestartedEmptySession(oldId: string | undefined, session: Session = this.focused): void {
+    const newId = session.activeSessionId;
     if (!oldId || oldId === newId) return;
     // Restart keeps the same session.cwd (workspace or worktree).
-    const cwd = this.sessionCwd(this.focused);
+    const cwd = this.sessionCwd(session);
     const grokHome = resolveGrokHome(process.env);
     try {
       deleteSessionDir({ fs: defaultFs, grokHome, cwd, id: oldId });
@@ -2468,18 +2650,25 @@ See design doc for the full state machine diagram.`;
     this.postSessionsList();
   }
 
-  private async startSession(resumeId?: string): Promise<AcpClient | undefined> {
+  private async startSession(resumeId?: string, target: Session = this.focused): Promise<AcpClient | undefined> {
     // The session this start (re)builds. Today always the focused one (pool-of-1);
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
-    const session = this.focused;
+    const session = target;
     const gen = ++session.gen;
+    const testDelay = this.testSessionStartDelay;
+    if (testDelay && testDelay.resumeId === resumeId) {
+      this.testSessionStartDelay = undefined;
+      testDelay.started();
+      await testDelay.wait;
+      if (gen !== session.gen) return undefined;
+    }
     session.buffer = [];
     session.status = "idle";
     // Stop any in-progress voice capture so listening never carries across a
     // new/resumed/restarted session (covers New Session, history resume, and
     // model/effort restarts — all of which route through here).
-    this.stopVoiceInput();
+    this.stopVoiceInput(session);
     session.client?.dispose();
     session.client = undefined;
     // A brand-new session starts in the remembered mode (#25) immediately, so the
@@ -2495,7 +2684,7 @@ See design doc for the full state machine diagram.`;
     // and is invisible over ACP — the CLI still reports plain agent mode. Detect
     // it so the button shows "Auto accept" instead of a misleading "Agent" (#31).
     // Applies to resumed sessions too (the config is global, not per-session).
-    const configAutoApprove = this.configForcesAutoApprove();
+    const configAutoApprove = this.configForcesAutoApprove(this.sessionCwd(session));
     session.autoApprove = rememberedYolo || configAutoApprove;
     session.planActive = false;
     session.afterTurn = undefined;
@@ -2512,6 +2701,7 @@ See design doc for the full state machine diagram.`;
     session.titleGenerated = false;
     session.firstUserMessageForTitle = undefined;
     session.priming = true;
+    session.queuedSendDispatch = undefined;
     // session.authRecoveryTried deliberately NOT reset here: recoverAuthAndResend
     // calls startSession as its own retry, and a reset would let an entitlement
     // failure (#58) pay a full restart+resend cycle on every prompt. Only a clean
@@ -2886,7 +3076,9 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "exit", code });
       // The process is dead — anything queued for it can never send.
       if (session.queuedSends.length) {
+        session.queuedSendDispatch = undefined;
         session.queuedSends = [];
+        session.queuedSendRequiresRelay = false;
         this.emit(session, { type: "queuedSends", items: [] });
       }
       this.setStatus(session, "error");
@@ -3077,7 +3269,7 @@ See design doc for the full state machine diagram.`;
           try {
             const detected = parseGrokVersion(version)?.join(".") ?? version;
             if (await this.downgradeBrokenCli(cliPath, detected, "reactive")) {
-              return await this.startSession(resumeId); // retry the spawn on the supported build
+              return await this.startSession(resumeId, session); // retry the spawn on the supported build
             }
           } finally {
             this.reactiveDowngradeInFlight = false;
@@ -3100,7 +3292,43 @@ See design doc for the full state machine diagram.`;
     return client;
   }
 
-  private async onMessage(msg: WebviewMsg, origin: MsgOrigin): Promise<void> {
+  private remoteSessionFor(clientId: string): Session {
+    const cwd = this.remoteClients.cwd(clientId);
+    const active = this.remoteClients.active(clientId);
+    if (active) return active;
+    // A tab arriving with nothing of its own — "Continue remotely", or a first
+    // visit — CONTINUES WHAT THE DESK IS DOING. That is the feature's whole
+    // promise, and desk↔remote co-attach is what finally makes it possible:
+    // before, a fresh tab got a blank session that had never been started, so
+    // it showed "Starting" forever and the first send silently began a
+    // SECOND conversation. Only within the tab's selected repo — adopting a
+    // session from another checkout would be cross-repo bleed. A tab that
+    // remembers its own conversation never reaches here (it resumes), and a
+    // deliberate New session still replaces this one.
+    const deskSession = this.focused;
+    const deskCwdMatches = sessionCwdBelongsToRepo(
+      this.sessionCwd(deskSession),
+      this.sessionCwdsForRepo(cwd, this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})),
+      pathsEqual,
+    );
+    if (deskCwdMatches && !this.remoteClients.isActiveValueVisible(deskSession)) {
+      this.remoteClients.setActive(clientId, deskSession);
+      return deskSession;
+    }
+    const session = new Session();
+    session.cwd = cwd;
+    this.remoteClients.setActive(clientId, session);
+    return session;
+  }
+
+  private async onMessage(msg: WebviewMsg, origin: MsgOrigin, clientId?: string): Promise<void> {
+    const session = origin === "remote" && clientId ? this.remoteSessionFor(clientId) : this.focused;
+    const requester = origin === "remote" && clientId
+      ? this.captureRemoteRequester(clientId)
+      : undefined;
+    const messageCwd = origin === "remote" && clientId
+      ? this.remoteClients.cwd(clientId)
+      : this.workspaceRoot();
     switch (msg.type) {
       case "ready":
         this.postInitialState();
@@ -3113,13 +3341,13 @@ See design doc for the full state machine diagram.`;
             msg.fontScale >= 80 &&
             msg.fontScale <= 160
           ) {
-            this.focused.remoteFontScale = msg.fontScale;
+            session.remoteFontScale = msg.fontScale;
           }
           if (typeof msg.readRepliesAloud === "boolean") {
-            this.focused.remoteReadRepliesAloud = msg.readRepliesAloud;
+            session.remoteReadRepliesAloud = msg.readRepliesAloud;
           }
           if (typeof msg.usesTouch === "boolean") {
-            this.focused.remoteUsesTouch = msg.usesTouch;
+            session.remoteUsesTouch = msg.usesTouch;
           }
         }
         break;
@@ -3132,20 +3360,55 @@ See design doc for the full state machine diagram.`;
         if (origin !== "local") break;
         const text = await summarizeForSpeech(
           msg.text,
-          this.resolveVoiceApiKey(this.focused.cwd || this.workspaceRoot()),
+          this.resolveVoiceApiKey(session.cwd || this.workspaceRoot()),
           (line) => this.output.appendLine(line),
         );
         this.post({ type: "speechSummary", requestId: msg.requestId, text });
         break;
       }
       case "send":
-        await this.handleSend(msg.text, msg.bare === true, undefined, origin);
+        if (origin === "remote" && msg.queuedSendId) {
+          if (session.completedQueuedSendIds.includes(msg.queuedSendId)) {
+            this.output.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
+            break;
+          }
+          const dispatch = session.queuedSendDispatch;
+          if (
+            !dispatch ||
+            dispatch.id !== msg.queuedSendId ||
+            dispatch.text.trim() !== msg.text.trim()
+          ) {
+            this.output.appendLine(`[queue] ignored stale or mismatched remote dequeue ${msg.queuedSendId}`);
+            break;
+          }
+          session.completedQueuedSendIds.push(dispatch.id);
+          if (session.completedQueuedSendIds.length > 32) session.completedQueuedSendIds.shift();
+          session.queuedSendDispatch = undefined;
+          const queued = session.queuedSends[0] ?? "";
+          if (queued === dispatch.text) {
+            session.queuedSends = [];
+            session.queuedSendRequiresRelay = false;
+          }
+          else if (queued.startsWith(dispatch.text + "\n\n")) {
+            session.queuedSends = [queued.slice(dispatch.text.length + 2)];
+          }
+          this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+        }
+        else if (
+          origin === "remote" &&
+          session.queuedSendDispatch?.text.trim() === msg.text.trim()
+        ) {
+          this.output.appendLine("[queue] ignored an unidentifiable legacy dequeue echo");
+          break;
+        }
+        await this.handleSend(msg.text, msg.bare === true, session, origin);
         break;
       case "newSession":
-        await this.newFocusedSession(origin);
+        if (origin === "remote" && clientId) await this.newRemoteSession(clientId);
+        else await this.newFocusedSession(origin);
         break;
       case "cancel":
-        await this.focused.client?.cancel("user Stop click");
+        await session.client?.cancel("user Stop click");
         break;
       case "queueSend": {
         // Host-owned per-session queue (#37): the webview renders a mirror from
@@ -3155,8 +3418,15 @@ See design doc for the full state machine diagram.`;
         // (blank-line separator, the exact flush format). Separate entries were
         // a fiction: Stop and the flush both collapse them anyway, and per-entry
         // editing broke ordering (an edited entry re-queued at the end).
-        const s = this.focused;
+        const s = session;
         if (typeof msg.text === "string" && msg.text.trim()) {
+          s.queuedSendDispatch = undefined;
+          // STICKY, never overwritten back to false: with desk↔remote
+          // co-attach both views append to ONE queue, and the combined flush
+          // is a single submission — if ANY contribution is remote it must
+          // round-trip the relay so it gets metered (a local overwrite here
+          // would flush remote text through the unmetered local branch).
+          if (origin === "remote") s.queuedSendRequiresRelay = true;
           if (s.queuedSends.length) s.queuedSends[0] += "\n\n" + msg.text;
           else s.queuedSends.push(msg.text);
           this.emit(s, { type: "queuedSends", items: [...s.queuedSends] });
@@ -3166,18 +3436,20 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "dequeueSend": {
-        const s = this.focused;
+        const s = session;
         if (Number.isInteger(msg.index) && msg.index >= 0 && msg.index < s.queuedSends.length) {
+          s.queuedSendDispatch = undefined;
           s.queuedSends.splice(msg.index, 1);
+          if (!s.queuedSends.length) s.queuedSendRequiresRelay = false;
           this.emit(s, { type: "queuedSends", items: [...s.queuedSends] });
         }
         break;
       }
       case "steerSend":
-        await this.steerSend(msg.text);
+        await this.steerSend(msg.text, session, requester);
         break;
       case "forkSession":
-        await this.forkFocusedSession();
+        await this.forkFocusedSession(session, requester);
         break;
       case "newWorktreeSession":
         await this.newWorktreeSession();
@@ -3197,7 +3469,9 @@ See design doc for the full state machine diagram.`;
         await this.unlinkRemoteDevice();
         break;
       case "openRemotePortal":
-        void vscode.env.openExternal(vscode.Uri.parse(httpBaseFromRelayUrl(REMOTE_RELAY_URL)));
+        void vscode.env.openExternal(vscode.Uri.parse(
+          httpBaseFromRelayUrl(REMOTE_RELAY_URL) + (msg.withHint ? "/?remoteHint=1" : ""),
+        ));
         break;
       case "rewindSession":
         await this.rewindFocusedSession(
@@ -3217,14 +3491,16 @@ See design doc for the full state machine diagram.`;
         await this.editLastMessage(msg.userBubbleIndex, msg.text, msg.totalUserBubbles);
         break;
       case "workflowControl":
-        await this.controlWorkflow(msg.action, msg.displayName);
+        await this.controlWorkflow(msg.action, msg.displayName, session);
         break;
       case "clearQueuedSends": {
         // Posted by the webview's Stop flow BEFORE the cancel — a halt must not
         // auto-fire queued sends into the cancelled turn's wake.
-        const s = this.focused;
+        const s = session;
         if (s.queuedSends.length) {
+          s.queuedSendDispatch = undefined;
           s.queuedSends = [];
+          s.queuedSendRequiresRelay = false;
           this.emit(s, { type: "queuedSends", items: [] });
         }
         break;
@@ -3233,41 +3509,38 @@ See design doc for the full state machine diagram.`;
         await this.pickModel();
         break;
       case "setMode":
-        await this.setMode(msg.modeId);
+        await this.setMode(msg.modeId, session, requester);
         break;
       case "removeChip": {
         // A removed image chip's staged file has no other reference — reclaim
         // it now instead of leaving multi-MB orphans until the weekly sweep.
-        const removed = this.chips.find((c) => c.id === msg.id);
+        const removed = session.chips.find((c) => c.id === msg.id);
         if (removed && isImageChip(removed)) {
           void fs.promises.unlink(removed.path).catch(() => {});
         } else if (removed) {
           const uploadDir = stagedUploadDirectory(this.fileStagingDir(), removed.path);
           if (uploadDir) void fs.promises.rm(uploadDir, { recursive: true, force: true }).catch(() => {});
         }
-        this.chips = removeChip(this.chips, msg.id);
-        this.postChips();
+        session.chips = removeChip(session.chips, msg.id);
+        this.postChips(session);
         break;
       }
       case "toggleChip": {
-        this.chips = toggleChip(this.chips, msg.id);
+        session.chips = toggleChip(session.chips, msg.id);
         // Eye-off on the active-editor chip is a standing "don't send what I'm
         // looking at", not a one-file choice — remember it so the next file
         // switch doesn't quietly re-enable the context (#67).
-        const toggled = this.chips.find((c) => c.id === msg.id);
+        const toggled = session.chips.find((c) => c.id === msg.id);
         if (toggled && isImplicitChip(toggled)) {
           void this.context.globalState.update(IMPLICIT_CHIP_HIDDEN_KEY, toggled.hidden);
         }
-        this.postChips();
+        this.postChips(session);
         break;
       }
       case "openFile": {
         const ref = parseFileRef(msg.path);
         let p = ref.path;
-        if (!path.isAbsolute(p)) {
-          const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-          if (root) p = path.join(root, p);
-        }
+        if (!path.isAbsolute(p)) p = path.join(this.sessionCwd(session), p);
         const uri = vscode.Uri.file(p);
         if (ref.startLine != null) {
           const startLine = Math.max(0, ref.startLine - 1);
@@ -3298,6 +3571,7 @@ See design doc for the full state machine diagram.`;
       }
       case "openDiff":
         await this.openDiffEditor(
+          session,
           msg.path,
           msg.oldText,
           msg.newText,
@@ -3307,57 +3581,67 @@ See design doc for the full state machine diagram.`;
         );
         break;
       case "exportExpr":
-        await this.exportExpr(msg);
+        await this.exportExpr(msg, session);
         break;
       case "dropFile":
-        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift));
+        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, session));
         break;
       case "pasteImage":
-        await this.trackAttach(this.addPastedImage(msg.data, msg.mimeType));
+        await this.trackAttach(this.addPastedImage(
+          msg.data,
+          msg.mimeType,
+          session,
+          requester,
+        ));
         break;
       case "uploadFile":
-        await this.trackAttach(this.addUploadedFile(msg.name, msg.data));
+        await this.trackAttach(this.addUploadedFile(
+          msg.name,
+          msg.data,
+          session,
+          requester,
+        ));
         break;
       case "permissionAnswer":
-        this.focused.client?.respondPermission(msg.requestId, msg.optionId);
+        session.client?.respondPermission(msg.requestId, msg.optionId);
         // Record the resolution in the session buffer so re-focusing this session
         // replays the card collapsed instead of active (the live collapse is a
         // webview-only DOM mutation that the buffer never captured).
-        this.emit(this.focused, { type: "permissionResolved", requestId: msg.requestId, optionId: msg.optionId });
+        this.emit(session, { type: "permissionResolved", requestId: msg.requestId, optionId: msg.optionId });
         // Persist it (title + outcome) so a cold reload replays a collapsed card —
         // the CLI doesn't replay request_permission on session/load.
-        this.persistPermissionAnswer(this.focused, msg.requestId, msg.optionId);
-        this.closeDiffForRequest(msg.requestId); // tidy up the auto-opened diff (#21)
-        this.setStatus(this.focused, "working"); // turn resumes after the answer
+        this.persistPermissionAnswer(session, msg.requestId, msg.optionId);
+        this.closeDiffForRequest(session, msg.requestId); // tidy up the auto-opened diff (#21)
+        this.setStatus(session, "working"); // turn resumes after the answer
         break;
       case "exitPlanAnswer":
-        this.handleExitPlan(msg.requestId, msg.verdict, msg.comment);
+        this.handleExitPlan(msg.requestId, msg.verdict, msg.comment, session);
         break;
       case "questionAnswer":
-        this.focused.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {});
-        this.setStatus(this.focused, "working");
+        session.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {});
+        this.setStatus(session, "working");
         break;
       case "questionCancel":
-        this.focused.client?.respondQuestionCancelled(msg.requestId);
-        this.setStatus(this.focused, "working");
+        session.client?.respondQuestionCancelled(msg.requestId);
+        this.setStatus(session, "working");
         break;
       case "setModel":
-        await this.switchModel(msg.modelId);
+        await this.switchModel(msg.modelId, session, requester);
         break;
       case "setEffort": {
-        if (this.focused.priming) break; // ignore changes fired mid-session-start (see switchModel)
+        if (session.priming) break; // ignore changes fired mid-session-start (see switchModel)
         const newLevel = msg.level;
         const cfg2 = vscode.workspace.getConfiguration("grok");
 
-        if (!this.focused.hasHistory || !this.focused.client) {
+        if (!session.hasHistory || !session.client) {
           // As with a model switch on an empty session: restart without the summarize-vs-restart
           // prompt and discard the abandoned primer-only session — but only when it truly had no
           // history (a dead client on a session WITH history must keep that history).
-          const wasEmpty = !this.focused.hasHistory;
-          const discardId = this.focused.activeSessionId;
+          const wasEmpty = !session.hasHistory;
+          const discardId = session.activeSessionId;
           await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
-          await this.startSession();
-          if (wasEmpty) this.discardRestartedEmptySession(discardId);
+          await this.startSession(undefined, session);
+          if (wasEmpty) this.discardRestartedEmptySession(discardId, session);
           break;
         }
 
@@ -3369,18 +3653,26 @@ See design doc for the full state machine diagram.`;
         // after the switch actually lands (live-applied, or restart accepted) — a
         // persist-before that fails + dismissed restart would leave the saved
         // default changed while the session ran at the old effort.
-        if (newLevel && this.focused.client.currentModelSupportsEffort()) {
-          const applied = await this.focused.client.setReasoningEffort(newLevel).catch(() => false);
+        if (newLevel && session.client.currentModelSupportsEffort()) {
+          const applied = await session.client.setReasoningEffort(newLevel).catch(() => false);
           if (applied) {
             await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
             break;
           }
         }
 
+        if (origin === "remote" && clientId) {
+          this.reportRequester(
+            requester,
+            "warning",
+            "Changing reasoning effort here requires restarting the conversation from the VS Code view.",
+          );
+          break;
+        }
         const mode = await this.pickRestartMode("Changing reasoning effort requires restarting the session.");
         if (!mode) break; // dismissed — leave defaultEffort untouched
         await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
-        await this.restartSession(mode);
+        await this.restartSession(mode, session);
         break;
       }
       case "openGlobalConfig": {
@@ -3394,7 +3686,7 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "openProjectConfig": {
-        const cwd2 = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+        const cwd2 = this.sessionCwd(session);
         const projCfg = path.join(cwd2, ".grok", "config.toml");
         if (!fs.existsSync(projCfg)) {
           fs.mkdirSync(path.dirname(projCfg), { recursive: true });
@@ -3413,7 +3705,7 @@ See design doc for the full state machine diagram.`;
         const mcpCli = this.cliPath || locateGrokCli(
           vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
         );
-        const mcpCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const mcpCwd = this.sessionCwd(session);
         const term = mcpCli
           ? vscode.window.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
           : vscode.window.createTerminal("Grok MCP");
@@ -3507,7 +3799,7 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "recheckConnection":
-        await this.startSession();
+        await this.startSession(session.activeSessionId, session);
         break;
       case "logout":
         await this.logout();
@@ -3519,25 +3811,35 @@ See design doc for the full state machine diagram.`;
         await this.updateGrokCliOnDemand();
         break;
       case "listSessions":
-        this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query });
+        if (origin === "remote" && clientId) {
+          this.sendRemoteClient(clientId, this.buildSessionsList(messageCwd, {
+            offset: msg.offset, limit: msg.limit, query: msg.query,
+          }, session.activeSessionId));
+        } else {
+          this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query });
+        }
         break;
       case "selectRepo":
-        this.selectRepo(msg.cwd);
+        if (origin === "remote" && clientId) this.selectRemoteRepo(clientId, msg.cwd);
+        else this.selectRepo(msg.cwd);
         break;
       case "toggleRepoPin":
         await this.toggleRepoPin(msg.cwd, msg.pinned);
         break;
       case "resumeSession":
-        await this.openSession(msg.id, msg.cwd);
+        if (origin === "remote" && clientId) {
+          await this.openRemoteSession(clientId, msg.id, msg.cwd);
+        }
+        else await this.openSession(msg.id, msg.cwd);
         break;
-      case "renameSession":
-        this.renameSession(msg.id, msg.name);
-        break;
+       case "renameSession":
+          this.renameSession(msg.id, msg.name, origin, clientId);
+          break;
       case "deleteSession":
-        await this.deleteSession(msg.id, msg.name, origin);
+        await this.deleteSession(msg.id, msg.name, origin, clientId);
         break;
       case "clearAllSessions":
-        await this.clearAllSessions(msg.cwd);
+        await this.clearAllSessions(msg.cwd, origin, clientId);
         break;
       case "pickFile":
         await this.trackAttach(this.pickFileFromComputer());
@@ -3547,15 +3849,20 @@ See design doc for the full state machine diagram.`;
         // list (the popover just hides) rather than an error surface.
         let files: string[] = [];
         try {
-          files = filterMentionFiles((await this.mentionFileIndex()).rels, msg.query);
+          const index = await this.mentionFileIndexForCwd(this.sessionCwd(session));
+          files = filterMentionFiles(index.rels, msg.query);
         } catch (e) {
           this.output.appendLine(`[mention] index failed: ${(e as Error).message}`);
         }
-        this.post({ type: "mentionResults", query: msg.query, files });
+        if (requester) {
+          this.sendRemoteRequester(requester, { type: "mentionResults", query: msg.query, files });
+        } else {
+          this.post({ type: "mentionResults", query: msg.query, files });
+        }
         break;
       }
       case "addMentionFile": {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this.sessionCwd(session);
         if (!workspaceRoot) break;
 
         let catalogMatch: string | undefined;
@@ -3564,15 +3871,21 @@ See design doc for the full state machine diagram.`;
           // A remote can only echo a path the host currently exposes through
           // its merged mention catalog. It never gets the local #69 fallback.
           try {
-            catalogMatch = (await this.mentionFileIndex()).absByRel.get(msg.relPath);
+            catalogMatch = (await this.mentionFileIndexForCwd(workspaceRoot)).absByRel.get(msg.relPath);
           } catch (e) {
             this.output.appendLine(`[mention] index failed while validating remote pick: ${(e as Error).message}`);
           }
         } else {
           // Local picks preserve the #69 fallback for a result whose cached/open
           // entry disappeared between rendering and selection.
-          catalogMatch = this.mentionIndex?.absByRel.get(msg.relPath);
-          openTabMatch = this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs;
+          try {
+            catalogMatch = (await this.mentionFileIndexForCwd(workspaceRoot)).absByRel.get(msg.relPath);
+          } catch (e) {
+            this.output.appendLine(`[mention] index failed while validating local pick: ${(e as Error).message}`);
+          }
+          if (pathsEqual(workspaceRoot, this.workspaceRoot())) {
+            openTabMatch = this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs;
+          }
         }
         const abs = resolveMentionAttachmentPath(
           origin,
@@ -3595,14 +3908,23 @@ See design doc for the full state machine diagram.`;
           // Stale/garbage catalog entries remain a no-op, as before.
           break;
         }
-        await this.trackAttach(this.addDroppedFile(abs, false));
+        await this.trackAttach(this.addDroppedFile(abs, false, session));
         break;
       }
       case "voiceStart":
-        await this.handleVoiceStart();
+        await this.handleVoiceStart(session);
         break;
       case "voiceStop":
         await this.handleVoiceStop();
+        break;
+      case "remoteVoiceStart":
+        if (origin === "remote" && clientId) await this.handleRemoteVoiceStart(clientId, session);
+        break;
+      case "remoteVoiceChunk":
+        if (origin === "remote" && clientId) this.handleRemoteVoiceChunk(clientId, msg.data);
+        break;
+      case "remoteVoiceStop":
+        if (origin === "remote" && clientId) await this.handleRemoteVoiceStop(clientId, !!msg.cancel);
         break;
     }
 
@@ -3620,14 +3942,9 @@ See design doc for the full state machine diagram.`;
    * cache once so search stays complete, not just over what's already loaded).
    */
   /**
-   * The repo selection is GLOBAL — that is the whole point of the remote
-   * switcher: one phone drives whichever project you pick. But VS Code hides
-   * that switcher (the window already IS a repository), so a window has no way
-   * to show the selection, no way to change it, and no business following it.
-   * A remote client tapping another repo must not silently re-scope the local
-   * history list or retarget the local *New session* button at a different
-   * checkout. So the local webview reads the workspace root and ignores the
-   * global selection entirely; only remote clients honour it.
+   * The local webview has no repo switcher and always uses the workspace root.
+   * Remote callers bypass this legacy audience helper and resolve their own cwd
+   * through RemoteClientState.
    */
   private historyCwdFor(origin: MsgOrigin): string {
     return repoScopeFor(origin, {
@@ -3636,20 +3953,26 @@ See design doc for the full state machine diagram.`;
     });
   }
 
-  /** Refresh history for both audiences. Each sees its own scope (above), and
-   *  the second scan is skipped whenever the two resolve to the same cwd —
-   *  which is the normal case, until someone switches repos from a phone. */
+  /** Refresh local history plus each connected remote tab. */
   private postSessionsList(opts?: { offset?: number; limit?: number; query?: string }): void {
     const localCwd = this.historyCwdFor("local");
-    const remoteCwd = this.historyCwdFor("remote");
     const local = this.buildSessionsList(localCwd, opts);
     this.postLocal(local);
-    this.postRemote(pathsEqual(localCwd, remoteCwd) ? local : this.buildSessionsList(remoteCwd, opts));
+    if (opts) return;
+    for (const clientId of this.remoteClients.clients()) {
+      const cwd = this.remoteClients.cwd(clientId);
+      const activeId = this.remoteActiveSessionId(clientId);
+      this.sendRemoteClient(
+        clientId,
+        this.buildSessionsList(cwd, undefined, activeId),
+      );
+    }
   }
 
   private buildSessionsList(
     cwd: string,
     opts?: { offset?: number; limit?: number; query?: string },
+    activeId: string | null | undefined = this.focused.activeSessionId,
   ): HostMsg {
     const offset = Math.max(0, opts?.offset ?? 0);
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
@@ -3771,7 +4094,7 @@ See design doc for the full state machine diagram.`;
     return {
       type: "sessions",
       entries: pageEntries,
-      activeId: this.focused.activeSessionId,
+      activeId,
       dots,
       offset,
       total,
@@ -3901,8 +4224,52 @@ See design doc for the full state machine diagram.`;
     return ids.map((id) => this.sessionCache.get(id)?.entry).filter((e): e is SessionListEntry => !!e);
   }
 
-  private renameSession(id: string, name: string): void {
+  private remoteAuthorizedSessionCwd(
+    clientId: string,
+    id: string,
+    overrides: SessionMetaOverrides,
+  ): string | undefined {
+    const selectedCwd = this.remoteClients.cwd(clientId);
+    const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
+    const live = [...this.pool].find((session) => session.activeSessionId === id);
+    if (live) {
+      const cwd = this.sessionCwd(live);
+      if (sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)) return cwd;
+    }
+
+    const candidates = [...new Set([
+      overrides[id]?.worktreePath,
+      this.sessionCache.get(id)?.entry.cwd,
+      ...allowedCwds,
+    ].filter((cwd): cwd is string =>
+      !!cwd && sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)
+    ))];
+    const grokHome = resolveGrokHome(process.env);
+    return candidates.find((cwd) =>
+      indexSessions({ fs: defaultFs, grokHome, cwd })
+        .some((entry) => entry.id === id)
+    );
+  }
+
+  private reportUnauthorizedSessionTarget(clientId: string, action: "rename" | "delete", id: string): void {
+    this.output.appendLine(`[remote] refused ${action}Session for ${id} (session is outside selected repo)`);
+    this.sendRemoteClient(clientId, {
+      type: "error",
+      text: `Could not ${action} this conversation because it does not belong to this tab's selected repository.`,
+    });
+  }
+
+  private renameSession(
+    id: string,
+    name: string,
+    origin: MsgOrigin,
+    clientId?: string,
+  ): void {
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    if (origin === "remote" && clientId && !this.remoteAuthorizedSessionCwd(clientId, id, overrides)) {
+      this.reportUnauthorizedSessionTarget(clientId, "rename", id);
+      return;
+    }
     const trimmed = (name || "").trim();
     const next: SessionMetaOverrides = { ...overrides };
     if (!trimmed) {
@@ -3925,13 +4292,87 @@ See design doc for the full state machine diagram.`;
   // No native confirm here: the webview shows its own confirm dialog before
   // posting deleteSession (works in the browser client too, where a host-side
   // modal would stall invisibly).
-  private async deleteSession(id: string, _name: string | undefined, origin: MsgOrigin): Promise<void> {
+  private sessionHasLiveOwner(session: Session): boolean {
+    return session === this.focused || this.remoteClients.isActiveValueVisible(session);
+  }
+
+  private reportProtectedSession(origin: MsgOrigin, clientId: string | undefined, action: "delete" | "clear"): void {
+    const text = action === "delete"
+      ? "This conversation is open in another tab or the VS Code view. Close it there before deleting it."
+      : "Open conversations were kept. Close them in their tabs or the VS Code view before clearing them.";
+    if (origin === "remote" && clientId) {
+      this.sendRemoteClient(clientId, { type: "error", text });
+    } else {
+      void vscode.window.showInformationMessage(text);
+    }
+  }
+
+  private captureRemoteRequester(clientId: string): RemoteRequester {
+    return { clientId, tabToken: this.remoteClients.tabToken(clientId) };
+  }
+
+  private resolveRemoteRequester(requester: RemoteRequester): string | undefined {
+    if (requester.tabToken) {
+      return this.remoteClients.clientForTabToken(requester.tabToken);
+    }
+    return this.remoteClients.isCurrent(requester.clientId)
+      && this.remoteClients.cwdIfPresent(requester.clientId)
+      ? requester.clientId
+      : undefined;
+  }
+
+  private sendRemoteRequester(requester: RemoteRequester, message: HostMsg): void {
+    const clientId = this.resolveRemoteRequester(requester);
+    if (clientId) this.sendRemoteClient(clientId, message);
+  }
+
+  private reportRequester(
+    requester: RemoteRequester | undefined,
+    level: "info" | "warning" | "error",
+    text: string,
+  ): void {
+    if (requester) {
+      this.sendRemoteRequester(
+        requester,
+        level === "error" ? { type: "error", text } : { type: "hostNotice", level, text },
+      );
+      return;
+    }
+    if (level === "error") void vscode.window.showErrorMessage(text);
+    else if (level === "warning") void vscode.window.showWarningMessage(text);
+    else void vscode.window.showInformationMessage(text);
+  }
+
+  private async deleteSession(
+    id: string,
+    _name: string | undefined,
+    origin: MsgOrigin,
+    clientId?: string,
+  ): Promise<void> {
     const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const authorizedRemoteCwd = origin === "remote" && clientId
+      ? this.remoteAuthorizedSessionCwd(clientId, id, overridesNow)
+      : undefined;
+    if (origin === "remote" && clientId && !authorizedRemoteCwd) {
+      this.reportUnauthorizedSessionTarget(clientId, "delete", id);
+      return;
+    }
+    if (this.isSessionLoadReserved(id)) {
+      this.output.appendLine(`[sessions] refused delete of reserved session ${id}`);
+      this.reportProtectedSession(origin, clientId, "delete");
+      return;
+    }
     const liveForCwd = [...this.pool].find((s) => s.activeSessionId === id);
+    if (liveForCwd && this.sessionHasLiveOwner(liveForCwd)) {
+      this.output.appendLine(`[sessions] refused delete of owned live session ${id}`);
+      this.reportProtectedSession(origin, clientId, "delete");
+      return;
+    }
     // Last-resort cwd — and this one deletes files, so it resolves in the
     // ASKER's scope. A delete from VS Code must never fall back to a repo that
     // some remote client happens to have selected.
     const cwd =
+      authorizedRemoteCwd ||
       liveForCwd?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
@@ -3962,42 +4403,87 @@ See design doc for the full state machine diagram.`;
       const wasFocused = live === this.focused;
       this.disposeSession(live);
       if (wasFocused) {
-        this.focused = new Session();
+        this.focused = this.newLocalSession();
         await this.startSession();
       }
     }
     this.postSessionsList();
   }
 
-  /** Delete every session in this workspace's history except the live/focused one (grok
-   *  re-persists that, so deleting it wouldn't stick). The webview confirms first (custom
-   *  dialog). Tears down any backgrounded live members it deletes and purges their overrides. */
-  private async clearAllSessions(requestedCwd: string): Promise<void> {
-    const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, requestedCwd));
+  /** Delete every inactive session in the requested repo's history. Every session
+   *  currently owned by a remote tab or the local VS Code view is kept: deleting a
+   *  watched session would strand that owner's rendered transcript over a blank
+   *  replacement process. The webview confirms first (custom dialog). */
+  private async clearAllSessions(
+    requestedCwd: string,
+    origin: MsgOrigin,
+    clientId?: string,
+  ): Promise<void> {
+    const selectedCwd = origin === "remote" && clientId
+      ? this.remoteClients.cwd(clientId)
+      : requestedCwd;
+    if (origin === "remote" && !pathsEqual(requestedCwd, selectedCwd)) {
+      this.output.appendLine("[remote] dropped clearAllSessions (cwd does not match selected repo)");
+      return;
+    }
+    const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, selectedCwd));
     if (!repo) return;
     const cwd = repo.cwd;
     const grokHome = resolveGrokHome(process.env);
-    const exceptId = this.focused?.activeSessionId;
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
+    const protectedIds = new Set(
+      [...this.pool]
+        .filter((session) => this.sessionHasLiveOwner(session))
+        .map((session) => session.activeSessionId)
+        .filter((id): id is string => !!id),
+    );
+    for (const id of this.reservedSessionIds()) protectedIds.add(id);
+    const requester = sessionForRequest(
+      origin,
+      this.focused,
+      origin === "remote" && clientId ? this.remoteClients.active(clientId) : undefined,
+    );
+    const requesterId = requester?.activeSessionId;
     // Count via the cheap stat-only index — no need to parse every summary just to confirm.
-    const clearableCount = indexSessions({ fs: defaultFs, grokHome, cwd }).filter(
-      (e) => e.id !== exceptId,
-    ).length;
+    const repoEntries = mergeSessionIndexes(repoCwds.map((sessionCwd) => ({
+      cwd: sessionCwd,
+      entries: indexSessions({ fs: defaultFs, grokHome, cwd: sessionCwd }),
+    })));
+    const keptForAnotherOwner = repoEntries.some(
+      (entry) => protectedIds.has(entry.id) && entry.id !== requesterId,
+    );
+    const clearableCount = repoEntries.filter((entry) => !protectedIds.has(entry.id)).length;
     if (clearableCount === 0) {
-      void vscode.window.showInformationMessage("No history to clear.");
+      if (keptForAnotherOwner) this.reportProtectedSession(origin, clientId, "clear");
+      else this.reportRequester(
+        origin === "remote" && clientId ? this.captureRemoteRequester(clientId) : undefined,
+        "info",
+        "No history to clear.",
+      );
       return;
     }
     // Confirm lives in the webview (custom dialog) — see deleteSession.
 
-    let removed: string[] = [];
-    try {
-      removed = clearSessions({ fs: defaultFs, grokHome, cwd, exceptId });
-    } catch (e) {
-      this.output.appendLine(`[sessions] clear-all failed: ${(e as Error).message}`);
+    const removedIds = new Set<string>();
+    for (const sessionCwd of repoCwds) {
+      try {
+        for (const id of clearSessions({
+          fs: defaultFs,
+          grokHome,
+          cwd: sessionCwd,
+          exceptIds: protectedIds,
+        })) removedIds.add(id);
+      } catch (e) {
+        this.output.appendLine(
+          `[sessions] clear-all failed for ${sessionCwd}: ${(e as Error).message}`,
+        );
+      }
     }
+    const removed = [...removedIds];
 
     // Purge our meta overrides + read cache for every removed id.
     if (removed.length) {
-      const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       await this.removeUploadsForSessions(removed, overrides);
       const next = { ...overrides };
       let changed = false;
@@ -4012,14 +4498,21 @@ See design doc for the full state machine diagram.`;
       if (changed) await this.context.globalState.update(SESSION_META_KEY, next);
     }
 
-    // Tear down any backgrounded live pool members we just deleted (the focused one is kept).
+    // Tear down only ownerless live pool members whose history was deleted.
     const gone = new Set(removed);
+    let removedFocused = false;
     for (const s of [...this.pool]) {
-      if (s !== this.focused && s.activeSessionId && gone.has(s.activeSessionId)) {
+      if (s.activeSessionId && gone.has(s.activeSessionId)) {
+        removedFocused ||= s === this.focused;
         this.disposeSession(s);
       }
     }
+    if (removedFocused) {
+      this.focused = this.newLocalSession();
+      await this.startSession();
+    }
     this.postSessionsList();
+    if (keptForAnotherOwner) this.reportProtectedSession(origin, clientId, "clear");
   }
 
   private async pickFileFromComputer(): Promise<void> {
@@ -4203,7 +4696,7 @@ See design doc for the full state machine diagram.`;
       const event = buildSessionStartEvent(
         {
           installId: this.installId(),
-          mode: this.displayMode(),
+          mode: this.displayMode(session),
           model: session.client?.currentModelId || cfg.get<string>("defaultModel", "") || "",
           effort: cfg.get<string>("defaultEffort", ""),
           // The three feature flags + the host app. Config values only — the same
@@ -4237,13 +4730,45 @@ See design doc for the full state machine diagram.`;
   }
 
   private postVoiceConfigured(): void {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = this.workspaceRoot();
     const cfg = vscode.workspace.getConfiguration("grok");
-    this.post({
+    this.postLocal({
       type: "voiceConfigured",
       value: !!this.resolveVoiceApiKey(cwd),
       sendPhrase: cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE),
     });
+    for (const clientId of this.remoteClients.clients()) {
+      const remoteCwd = this.remoteClients.cwd(clientId);
+      this.sendRemoteClient(clientId, {
+        type: "voiceConfigured",
+        value: !!this.resolveVoiceApiKey(this.sessionCwd(this.remoteSessionFor(clientId))),
+        sendPhrase: cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE),
+      });
+    }
+  }
+
+  private async mentionFileIndexForCwd(cwd: string): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
+    if (pathsEqual(cwd, this.workspaceRoot())) return this.mentionFileIndex();
+    const key = normalizeRepoPath(cwd);
+    const cached = this.remoteMentionIndexes.get(key);
+    if (cached && Date.now() - cached.at < MENTION_INDEX_TTL_MS) return cached;
+    const cfg = vscode.workspace.getConfiguration();
+    const exclude = buildExcludeGlob([
+      cfg.get<Record<string, unknown>>("files.exclude"),
+      cfg.get<Record<string, unknown>>("search.exclude"),
+    ]);
+    const limit = clampMentionIndexLimit(
+      vscode.workspace.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
+    );
+    const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(cwd, "**/*"), exclude, limit);
+    const absByRel = new Map<string, string>();
+    for (const uri of uris) {
+      const rel = normalizeRelPath(path.relative(cwd, uri.fsPath));
+      if (rel && !absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
+    }
+    const value = { at: Date.now(), rels: orderMentionIndex([...absByRel.keys()]), absByRel };
+    this.remoteMentionIndexes.set(key, value);
+    return value;
   }
 
   /** Show actionable guidance for setting up the voice API key. */
@@ -4263,14 +4788,43 @@ See design doc for the full state machine diagram.`;
   /** Begin recording the microphone (in the extension host — the webview can't
    *  reach the mic). The webview has already flipped its button to "listening";
    *  on any setup failure we send `voiceError` to reset it. */
-  private async handleVoiceStart(): Promise<void> {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const key = this.resolveVoiceApiKey(cwd);
+  private rejectVoiceStart(clientId?: string): void {
+    const message = clientId
+      ? "Voice control is already active in this browser tab."
+      : "Voice control is already active.";
+    if (clientId) {
+      this.sendRemoteClient(clientId, { type: "voiceError" });
+      this.sendRemoteClient(clientId, { type: "error", text: message });
+    } else {
+      this.postLocal({ type: "voiceError" });
+      void vscode.window.showWarningMessage(message);
+    }
+  }
+
+  private claimVoice(cwd: string): boolean {
+    if (this.localVoiceCwd) return false;
+    this.localVoiceCwd = cwd;
+    return true;
+  }
+
+  private releaseVoice(cwd?: string): void {
+    if (!cwd || cwd === this.localVoiceCwd) this.localVoiceCwd = undefined;
+  }
+
+  private async handleVoiceStart(session: Session = this.focused): Promise<void> {
+    const cwd = this.sessionCwd(session);
+    const credentialCwd = this.sessionCwd(session);
+    const key = this.resolveVoiceApiKey(credentialCwd);
     if (!key) {
       void this.promptVoiceKeySetup();
-      this.post({ type: "voiceError" });
+      this.postLocal({ type: "voiceError" });
       return;
     }
+    if (!this.claimVoice(cwd)) {
+      this.rejectVoiceStart();
+      return;
+    }
+    this.localVoiceCredentialCwd = credentialCwd;
     const cfg = vscode.workspace.getConfiguration("grok");
     const ffmpegPath = cfg.get<string>("ffmpegPath", "") || "ffmpeg";
     const device = cfg.get<string>("voiceInputDevice", "") || undefined;
@@ -4286,7 +4840,7 @@ See design doc for the full state machine diagram.`;
     try {
       await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.output.appendLine(m) });
       this.voiceTempPath = tmp;
-      this.post({ type: "voiceState", status: "listening" });
+      this.postLocal({ type: "voiceState", status: "listening" });
     } catch (e) {
       const msg = (e as Error).message;
       this.output.appendLine(`[voice] start failed: ${msg}`);
@@ -4299,7 +4853,10 @@ See design doc for the full state machine diagram.`;
       } else {
         vscode.window.showErrorMessage(msg);
       }
-      this.post({ type: "voiceError" });
+      this.releaseVoice(cwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
+      this.postLocal({ type: "voiceError" });
     }
   }
 
@@ -4335,7 +4892,7 @@ See design doc for the full state machine diagram.`;
     // reconnect picks up a token the CLI refreshed mid-session, rather than
     // reusing a possibly-stale cached one (Codex #7). Keep the old key if the
     // fresh read comes back empty — it'll 401 with the source-aware guidance.
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = this.localVoiceCredentialCwd ?? this.workspaceRoot();
     const fresh = this.resolveVoiceApiKey(cwd);
     if (fresh) ctx.key = fresh;
     const streamer = new VoiceStreamer();
@@ -4344,7 +4901,7 @@ See design doc for the full state machine diagram.`;
 
     streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
       if (!isCurrent()) return;
-      this.post({ type: "voicePartial", text: ev.text });
+      this.postLocal({ type: "voicePartial", text: ev.text });
       // A finished utterance ending in the send phrase → submit + keep listening.
       if (ev.speechFinal && ctx.phrase) {
         const parsed = parseVoiceCommand(ev.text, ctx.phrase);
@@ -4358,6 +4915,7 @@ See design doc for the full state machine diagram.`;
     });
     streamer.on("error", (e: Error) => {
       if (!isCurrent()) return;
+      streamer.cancel();
       this.output.appendLine(`[voice] stream error: ${e.message}`);
       if (!this.voiceFinalizing) {
         if (/\b(401|403)\b|rejected/i.test(e.message)) {
@@ -4367,16 +4925,19 @@ See design doc for the full state machine diagram.`;
         } else {
           vscode.window.showErrorMessage(`Voice transcription failed: ${e.message}`);
         }
-        this.post({ type: "voiceError" });
+        this.postLocal({ type: "voiceError" });
       }
       this.voiceStreamer = undefined;
       this.voiceStreamCtx = undefined;
+      this.releaseVoice(this.localVoiceCwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
     });
 
     try {
       await streamer.start({ ffmpegPath: ctx.ffmpegPath, apiKey: ctx.key, device: ctx.device, keyterms: ctx.keyterms, log: (m) => this.output.appendLine(m) });
       if (!isCurrent()) { streamer.cancel(); return; }
-      this.post({ type: "voiceState", status: "listening" });
+      this.postLocal({ type: "voiceState", status: "listening" });
     } catch (e) {
       if (!isCurrent()) return;
       this.voiceStreamer = undefined;
@@ -4398,7 +4959,10 @@ See design doc for the full state machine diagram.`;
       } else {
         vscode.window.showErrorMessage(msg);
       }
-      this.post({ type: "voiceError" });
+      this.releaseVoice(this.localVoiceCwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
+      this.postLocal({ type: "voiceError" });
     }
   }
 
@@ -4408,7 +4972,7 @@ See design doc for the full state machine diagram.`;
     const old = this.voiceStreamer;
     this.voiceStreamer = undefined; // detach so late events are ignored
     old?.cancel();
-    if (text.trim()) this.post({ type: "voiceSubmit", text: text.trim() });
+    this.postLocal({ type: "voiceSubmit", text: text.trim() });
     void this.openVoiceStream(); // reuses cached device → fast restart
   }
 
@@ -4421,31 +4985,46 @@ See design doc for the full state machine diagram.`;
     this.voiceStreamer = undefined;
     this.voiceStreamCtx = undefined;
     if (!streamer) { this.voiceFinalizing = false; return; }
-    this.post({ type: "voiceState", status: "transcribing" });
+    this.postLocal({ type: "voiceState", status: "transcribing" });
     let finalText = "";
     try { finalText = await streamer.stop(); } catch { finalText = streamer.transcript; }
     const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
     const { text, send } = parseVoiceCommand(finalText, phrase);
     this.voiceFinalizing = false;
+    this.releaseVoice(this.localVoiceCwd);
+    this.localVoiceCwd = undefined;
+    this.localVoiceCredentialCwd = undefined;
     if (!text && !send) {
-      this.post({ type: "voiceError" });
+      this.postLocal({ type: "voiceError" });
       return;
     }
-    this.post({ type: "voiceTranscript", text, send });
+    this.postLocal({ type: "voiceTranscript", text, send });
   }
 
   /** Hard-stop any voice capture (no transcript) and reset the mic to idle.
    *  Called on session switch/restart so listening never bleeds across sessions. */
-  private stopVoiceInput(): void {
-    const wasActive = !!this.voiceStreamer || this.voiceRecorder.active;
-    this.voiceStreamer?.cancel();
-    this.voiceStreamer = undefined;
-    this.voiceStreamCtx = undefined;
-    this.voiceFinalizing = false;
-    this.voiceRecorder.cancel();
-    try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
-    this.voiceTempPath = undefined;
-    if (wasActive) this.post({ type: "voiceState", status: "idle" });
+  private stopVoiceInput(session?: Session): void {
+    if (!session || session === this.focused) {
+      const wasActive = !!this.voiceStreamer || this.voiceRecorder.active;
+      this.voiceStreamer?.cancel();
+      this.voiceStreamer = undefined;
+      this.voiceStreamCtx = undefined;
+      this.voiceFinalizing = false;
+      this.voiceRecorder.cancel();
+      try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
+      this.voiceTempPath = undefined;
+      this.releaseVoice(this.localVoiceCwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
+      if (wasActive) this.postLocal({ type: "voiceState", status: "idle" });
+    }
+    for (const [clientId, remote] of [...this.remoteVoice]) {
+      if (session && remote.session !== session) continue;
+      remote.ingress.close();
+      remote.streamer.cancel();
+      this.remoteVoice.delete(clientId);
+      this.sendRemoteClient(clientId, { type: "voiceState", status: "idle" });
+    }
   }
 
   /** Stop recording, transcribe via xAI STT, and send the text to the composer. */
@@ -4456,14 +5035,17 @@ See design doc for the full state machine diagram.`;
       return;
     }
     if (!this.voiceRecorder.active) {
-      this.post({ type: "voiceError" });
+      this.postLocal({ type: "voiceError" });
       return;
     }
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = this.localVoiceCredentialCwd ?? this.workspaceRoot();
     const key = this.resolveVoiceApiKey(cwd);
     if (!key) {
       this.voiceRecorder.cancel();
-      this.post({ type: "voiceError" });
+      this.releaseVoice(this.localVoiceCwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
+      this.postLocal({ type: "voiceError" });
       return;
     }
     let wavPath: string;
@@ -4472,10 +5054,13 @@ See design doc for the full state machine diagram.`;
     } catch (e) {
       this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
       vscode.window.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
-      this.post({ type: "voiceError" });
+      this.releaseVoice(this.localVoiceCwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
+      this.postLocal({ type: "voiceError" });
       return;
     }
-    this.post({ type: "voiceState", status: "transcribing" });
+    this.postLocal({ type: "voiceState", status: "transcribing" });
     try {
       const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
       // Strip a trailing "grok send" (configurable) so dictation can submit
@@ -4484,21 +5069,193 @@ See design doc for the full state machine diagram.`;
       const { text, send } = parseVoiceCommand(raw, sendPhrase);
       if (!text && !send) {
         vscode.window.showInformationMessage("Voice control: nothing was transcribed (silence?).");
-        this.post({ type: "voiceError" });
+        this.postLocal({ type: "voiceError" });
         return;
       }
-      this.post({ type: "voiceTranscript", text, send });
+      this.postLocal({ type: "voiceTranscript", text, send });
     } catch (e) {
       this.output.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
       vscode.window.showErrorMessage((e as Error).message);
-      this.post({ type: "voiceError" });
+      this.postLocal({ type: "voiceError" });
     } finally {
       try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
       this.voiceTempPath = undefined;
+      this.releaseVoice(this.localVoiceCwd);
+      this.localVoiceCwd = undefined;
+      this.localVoiceCredentialCwd = undefined;
     }
   }
 
+  private async startRemotePcm(
+    clientId: string,
+    entry: RemoteVoiceEntry,
+  ): Promise<void> {
+    const key = this.resolveVoiceApiKey(entry.credentialCwd);
+    if (!key) throw new Error("Voice control needs an xAI Speech-to-Text key on the host.");
+    const streamer = new PcmVoiceStreamer();
+    entry.streamer = streamer;
+    const current = () => this.remoteVoice.get(clientId) === entry && entry.streamer === streamer;
+    streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
+      if (!current()) return;
+      this.sendRemoteClient(clientId, { type: "voicePartial", text: ev.text });
+      if (ev.speechFinal && entry.phrase) {
+        const parsed = parseVoiceCommand(ev.text, entry.phrase);
+        if (parsed.send) void this.commitRemoteVoice(clientId, parsed.text);
+      }
+    });
+    streamer.on("ended", () => {
+      if (current()) void this.handleRemoteVoiceStop(clientId, false);
+    });
+    streamer.on("error", (e: Error) => {
+      if (!current() || entry.finalizing) return;
+      this.output.appendLine(`[remote-voice] stream error: ${e.message}`);
+      this.failRemoteVoice(clientId, e.message);
+    });
+    const keyterms = [...new Set([entry.phrase, "Grok"].map((s) => (s || "").trim()).filter(Boolean))];
+    await streamer.start({ apiKey: key, keyterms, log: (m) => this.output.appendLine(`[remote] ${m}`) });
+    if (!current()) {
+      streamer.cancel();
+      return;
+    }
+    const pending = entry.ingress.ready();
+    for (const bytes of pending) {
+      if (!streamer.writePcm(bytes)) {
+        this.failRemoteVoice(clientId, "The Speech-to-Text stream did not accept buffered microphone audio.");
+        return;
+      }
+    }
+    this.sendRemoteClient(clientId, { type: "voiceState", status: "listening" });
+  }
+
+  private async handleRemoteVoiceStart(clientId: string, session: Session): Promise<void> {
+    const credentialCwd = this.sessionCwd(session);
+    if (!this.resolveVoiceApiKey(credentialCwd)) {
+      this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false });
+      this.sendRemoteClient(clientId, { type: "voiceError" });
+      this.sendRemoteClient(clientId, { type: "error", text: "Voice control needs an xAI Speech-to-Text key on the host." });
+      return;
+    }
+    if (this.remoteVoice.has(clientId)) {
+      this.rejectVoiceStart(clientId);
+      return;
+    }
+    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    let entry!: RemoteVoiceEntry;
+    const ingress = new RemotePcmIngress(
+      GrokSidebar.MAX_REMOTE_PCM_CHUNK_BYTES,
+      GrokSidebar.MAX_REMOTE_PCM_BYTES,
+      MAX_RECORDING_SECONDS * 1000,
+      () => { void this.handleRemoteVoiceStop(clientId, false); },
+    );
+    entry = {
+      credentialCwd,
+      session,
+      streamer: new PcmVoiceStreamer(),
+      ingress,
+      phrase,
+      finalizing: false,
+    };
+    this.remoteVoice.set(clientId, entry);
+    try {
+      await this.startRemotePcm(clientId, entry);
+    } catch (e) {
+      if (this.remoteVoice.get(clientId) !== entry) return;
+      this.failRemoteVoice(clientId, (e as Error).message);
+    }
+  }
+
+  private handleRemoteVoiceChunk(clientId: string, data: string): void {
+    const entry = this.remoteVoice.get(clientId);
+    if (entry?.finalizing) return;
+    const accepted = acceptRemotePcm(entry?.ingress, data);
+    switch (accepted.kind) {
+      case "unowned":
+        this.sendRemoteClient(clientId, { type: "voiceError" });
+        return;
+      case "invalid":
+        this.failRemoteVoice(clientId, "The browser sent an invalid microphone audio chunk.");
+        return;
+      case "limit":
+        void this.handleRemoteVoiceStop(clientId, false);
+        return;
+      case "buffered":
+        return;
+      case "write":
+        if (!entry!.streamer.writePcm(accepted.bytes)) {
+          this.failRemoteVoice(clientId, "The Speech-to-Text stream is not ready for microphone audio.");
+        }
+    }
+  }
+
+  private async commitRemoteVoice(clientId: string, text: string): Promise<void> {
+    const entry = this.remoteVoice.get(clientId);
+    if (!entry || entry.finalizing) return;
+    if (!entry.ingress.restarting()) return;
+    const old = entry.streamer;
+    old.cancel();
+    this.sendRemoteClient(clientId, { type: "voiceSubmit", text: text.trim() });
+    try {
+      await this.startRemotePcm(clientId, entry);
+    } catch (e) {
+      if (this.remoteVoice.get(clientId) !== entry) return;
+      this.failRemoteVoice(clientId, (e as Error).message);
+    }
+  }
+
+  private async handleRemoteVoiceStop(clientId: string, cancel: boolean): Promise<void> {
+    const entry = this.remoteVoice.get(clientId);
+    if (!entry || entry.finalizing) {
+      this.sendRemoteClient(clientId, { type: "voiceError" });
+      return;
+    }
+    entry.finalizing = true;
+    entry.ingress.close();
+    this.sendRemoteClient(clientId, { type: "voiceState", status: cancel ? "idle" : "transcribing" });
+    let transcript = "";
+    if (cancel) entry.streamer.cancel();
+    else {
+      try { transcript = await entry.streamer.stop(); } catch { transcript = entry.streamer.transcript; }
+    }
+    if (this.remoteVoice.get(clientId) !== entry) return;
+    this.remoteVoice.delete(clientId);
+    if (cancel) return;
+    const { text, send } = parseVoiceCommand(transcript, entry.phrase);
+    if (!text && !send) {
+      this.sendRemoteClient(clientId, { type: "voiceError" });
+      return;
+    }
+    if (send) {
+      this.sendRemoteClient(clientId, { type: "voiceSubmit", text: text.trim() });
+      this.sendRemoteClient(clientId, { type: "voiceState", status: "idle" });
+    } else {
+      this.sendRemoteClient(clientId, { type: "voiceTranscript", text, send: false });
+    }
+  }
+
+  private dropRemoteVoice(clientId: string): void {
+    const entry = this.remoteVoice.get(clientId);
+    if (!entry) return;
+    entry.ingress.close();
+    entry.streamer.cancel();
+    this.remoteVoice.delete(clientId);
+    this.sendRemoteClient(clientId, { type: "voiceState", status: "idle" });
+  }
+
+  private failRemoteVoice(clientId: string, detail: string): void {
+    const entry = this.remoteVoice.get(clientId);
+    if (entry) {
+      entry.ingress.close();
+      entry.streamer.cancel();
+      this.remoteVoice.delete(clientId);
+      this.sendRemoteClient(clientId, { type: "voiceError" });
+    } else {
+      this.sendRemoteClient(clientId, { type: "voiceError" });
+    }
+    this.sendRemoteClient(clientId, { type: "error", text: `Voice transcription failed: ${detail}` });
+  }
+
   private async openDiffEditor(
+    session: Session,
     filePath: string,
     oldText: string,
     newText: string,
@@ -4529,8 +5286,8 @@ See design doc for the full state machine diagram.`;
     if (requestId !== undefined) {
       // Auto-open is per pending permission; remember the URIs so the matching
       // tab can be closed (and its content dropped) once the user decides (#21).
-      this.closeDiffForRequest(requestId); // drop a stale diff for the same request first
-      this.openDiffsByRequest.set(String(requestId), { left, right });
+      const stale = this.openDiffsByRequest.set(session, requestId, { left, right });
+      if (stale) this.closeDiffUris(stale);
     }
     // preview:true reuses a single preview tab across grok's many small sequential
     // edits; preserveFocus:true keeps focus on the chat so the permission card is
@@ -4569,11 +5326,13 @@ See design doc for the full state machine diagram.`;
 
   /** Close the diff tab opened for a pending permission request and free its
    *  virtual content (issue #21). No-op if the user already closed it. */
-  private closeDiffForRequest(requestId: number | string): void {
-    const k = String(requestId);
-    const uris = this.openDiffsByRequest.get(k);
+  private closeDiffForRequest(session: Session, requestId: number | string): void {
+    const uris = this.openDiffsByRequest.take(session, requestId);
     if (!uris) return;
-    this.openDiffsByRequest.delete(k);
+    this.closeDiffUris(uris);
+  }
+
+  private closeDiffUris(uris: { left: vscode.Uri; right: vscode.Uri }): void {
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
         const input = tab.input;
@@ -4796,7 +5555,12 @@ See design doc for the full state machine diagram.`;
 
   /** Validate and stage one remote browser document, then mint the exact same
    * explicit path chip as a local drag-and-drop. */
-  private async addUploadedFile(suppliedName: string, data: string): Promise<void> {
+  private async addUploadedFile(
+    suppliedName: string,
+    data: string,
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
     const prepared = prepareFileUpload(suppliedName, data, MAX_VISION_IMAGE_BYTES);
     if (!prepared.ok) {
       const detail = prepared.reason === "unsupported-extension"
@@ -4807,7 +5571,7 @@ See design doc for the full state machine diagram.`;
             ? "the file is empty"
             : "the file data is invalid";
       this.output.appendLine(`[upload] rejected ${suppliedName}: ${detail}`);
-      this.post({ type: "error", text: `Could not attach document — ${detail}.` });
+      this.reportRequester(requester, "error", `Could not attach document — ${detail}.`);
       return;
     }
 
@@ -4816,12 +5580,12 @@ See design doc for the full state machine diagram.`;
     try {
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.writeFile(absPath, prepared.bytes, { flag: "wx" });
-      await this.addDroppedFile(absPath, false);
-      this.revealAndFocusComposer();
+      await this.addDroppedFile(absPath, false, session);
+      if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       void fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
       this.output.appendLine(`[upload] staging failed for ${prepared.name}: ${(e as Error).message}`);
-      this.post({ type: "error", text: `Could not attach document — ${(e as Error).message}` });
+      this.reportRequester(requester, "error", `Could not attach document — ${(e as Error).message}`);
     }
   }
 
@@ -4869,36 +5633,42 @@ See design doc for the full state machine diagram.`;
     bytes: Buffer,
     mimeType: string,
     originRelPath?: string,
+    session: Session = this.focused,
   ): Promise<void> {
     const dir = this.imageStagingDir();
     await fs.promises.mkdir(dir, { recursive: true });
     const absPath = path.join(dir, `image-${randomUUID()}${extFromMime(mimeType)}`);
     await fs.promises.writeFile(absPath, bytes);
-    const imageIndex = ++this.focused.imageCounter;
-    this.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath));
-    this.postChips();
+    const imageIndex = ++session.imageCounter;
+    session.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath));
+    this.postChips(session);
   }
 
   /** Clipboard paste from the webview (base64 + mime, already prefiltered to
    *  raster image types there — re-checked here since the webview isn't a
    *  trust boundary). */
-  private async addPastedImage(base64: string, mimeType: string): Promise<void> {
+  private async addPastedImage(
+    base64: string,
+    mimeType: string,
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
     try {
       if (!isVisionMime(mimeType)) {
-        void vscode.window.showErrorMessage(`Grok: unsupported image type ${mimeType} — use PNG, JPEG, GIF, or WebP.`);
+        this.reportRequester(requester, "error", `Grok: unsupported image type ${mimeType} — use PNG, JPEG, GIF, or WebP.`);
         return;
       }
       const bytes = Buffer.from(base64, "base64");
       if (bytes.length === 0) return;
       if (bytes.length > MAX_VISION_IMAGE_BYTES) {
-        void vscode.window.showErrorMessage("Grok: pasted image exceeds the 20 MiB vision limit.");
+        this.reportRequester(requester, "error", "Grok: pasted image exceeds the 20 MiB vision limit.");
         return;
       }
-      await this.stageImageAttachment(bytes, mimeType);
-      this.revealAndFocusComposer();
+      await this.stageImageAttachment(bytes, mimeType, undefined, session);
+      if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       this.output.appendLine(`[image] paste failed: ${(e as Error).message}`);
-      void vscode.window.showErrorMessage(`Grok: could not attach the pasted image — ${(e as Error).message}`);
+      this.reportRequester(requester, "error", `Grok: could not attach the pasted image — ${(e as Error).message}`);
     }
   }
 
@@ -4906,20 +5676,21 @@ See design doc for the full state machine diagram.`;
    *  the workspace-relative origin so the prompt tag can carry the real file
    *  identity. Returns false when the file should stay a plain path chip
    *  (oversized, or unreadable as a regular file). */
-  private async importImageFromDisk(srcPath: string): Promise<boolean> {
+  private async importImageFromDisk(srcPath: string, session: Session = this.focused): Promise<boolean> {
     const stat = await fs.promises.stat(srcPath);
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_VISION_IMAGE_BYTES) return false;
     const bytes = await fs.promises.readFile(srcPath);
-    const uri = vscode.Uri.file(srcPath);
-    const rel = vscode.workspace.asRelativePath(uri);
+    const rel = normalizeRelPath(path.relative(this.sessionCwd(session), srcPath));
     // asRelativePath returns the input unchanged for files outside the
     // workspace — only carry the origin when it's a real workspace-relative path.
-    const originRelPath = rel !== srcPath && rel !== uri.fsPath ? rel : undefined;
-    await this.stageImageAttachment(bytes, mimeFromPath(srcPath), originRelPath);
+    const originRelPath = rel !== ".." && !rel.startsWith("../") && !path.isAbsolute(rel)
+      ? rel
+      : undefined;
+    await this.stageImageAttachment(bytes, mimeFromPath(srcPath), originRelPath, session);
     return true;
   }
 
-  private async addDroppedFile(dropped: string, shiftHeld: boolean): Promise<void> {
+  private async addDroppedFile(dropped: string, shiftHeld: boolean, session: Session = this.focused): Promise<void> {
     // The webview posts the raw file:// URI (it has no path library); accept a
     // plain path too so older webview builds degrade instead of breaking.
     let absPath = dropped;
@@ -4933,15 +5704,14 @@ See design doc for the full state machine diagram.`;
     if (!fs.existsSync(absPath)) return;
     if (!shiftHeld && isVisionImagePath(absPath)) {
       try {
-        if (await this.importImageFromDisk(absPath)) return;
+        if (await this.importImageFromDisk(absPath, session)) return;
       } catch (e) {
         this.output.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
       }
       // Oversized / unreadable-as-image → fall through to a plain path chip,
       // the pre-vision behavior (grok decides how to consume the path).
     }
-    const uri = vscode.Uri.file(absPath);
-    const relPath = vscode.workspace.asRelativePath(uri);
+    const relPath = normalizeRelPath(path.relative(this.sessionCwd(session), absPath));
     if (shiftHeld) {
       // Only read the whole file (to count lines for an inline selection) when
       // it's small enough not to freeze the host thread. Large files fall back
@@ -4954,15 +5724,42 @@ See design doc for the full state machine diagram.`;
       } catch {
         /* fall back to a no-selection chip */
       }
-      this.chips.push(
+      session.chips.push(
         totalLines != null
           ? makeExplicitChip(absPath, relPath, 1, totalLines)
           : makeExplicitChip(absPath, relPath),
       );
     } else {
-      this.chips.push(makeExplicitChip(absPath, relPath));
+      session.chips.push(makeExplicitChip(absPath, relPath));
     }
-    this.postChips();
+    this.postChips(session);
+  }
+
+  /** A prompt is running or pending user action — a new prompt now would
+   *  cancel it (a second `session/prompt` kills the in-flight turn). */
+  private turnInFlight(session: Session): boolean {
+    return session.status === "working" || session.status === "needs-you" || !!session.afterTurn;
+  }
+
+  /** A send that raced into a running turn (desk↔remote co-attach: the other
+   *  view learns `busy` only after agentStart crosses the relay). Ordinary
+   *  sends join the host-owned queue — what the sender's own chat.js does
+   *  when it knows in time. Bare slash turns (/compact, /workflow …) can't be
+   *  queued (their text would corrupt the combined queued prompt) and must
+   *  not cancel the running turn either, so they are rejected visibly. */
+  private divertRacingSend(session: Session, text: string, bare: boolean): void {
+    if (bare) {
+      this.emit(session, {
+        type: "error",
+        text: "Grok is mid-turn — that command was not run. Try again when the turn finishes.",
+      });
+      return;
+    }
+    session.queuedSendDispatch = undefined;
+    if (session.queuedSends.length) session.queuedSends[0] += "\n\n" + text;
+    else session.queuedSends.push(text);
+    this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+    void this.maybeFlushQueuedSends(session);
   }
 
   private async handleSend(
@@ -4975,7 +5772,24 @@ See design doc for the full state machine diagram.`;
     // turn ended while another was focused). Only the focused session may spawn
     // a client on demand; a background target without one has nothing to talk to.
     const session = target ?? this.focused;
-    const client = session.client ?? (session === this.focused ? await this.ensureClient() : undefined);
+    // Desk↔remote co-attach: the OTHER view only learns `busy` once the
+    // mirrored agentStart crosses the relay, so a send can race through that
+    // window into a turn that is already running — and a second
+    // `session/prompt` cancels the in-flight turn (see steerIntoTurn's note).
+    // Serialize host-side: such a send joins the queued-send path, which is
+    // what the sender's own chat.js does when it knows in time. A remote send
+    // was already metered on ingress, so the flag stays as-is (queueSend's
+    // sticky rule governs unmetered contributions). This entry check is the
+    // fast path only — the awaits below can suspend past it, so the SAME
+    // check runs again at the commit point, where everything through
+    // setStatus("working") is synchronous.
+    // maybeFlushQueuedSends can never re-enter this branch: it only flushes
+    // when the turn is over (queuedSendReadyText).
+    if (this.turnInFlight(session)) {
+      this.divertRacingSend(session, text, bare);
+      return;
+    }
+    const client = session.client ?? await this.ensureClient(session);
     if (!client) return;
     const gen = session.gen;
 
@@ -4994,7 +5808,7 @@ See design doc for the full state machine diagram.`;
     // (every mutation routes through us + postChips).
     // `bare` sends (gear-menu /compact) deliberately carry no attachments, and
     // a background flush must not consume the FOCUSED view's composer chips.
-    const chips = bare || session !== this.focused ? [] : [...this.chips];
+    const chips = bare ? [] : [...session.chips];
 
     // Pre-read every visible image BEFORE anything is cleared or sent. Any
     // failure blocks the whole send with the chips intact — never a prompt
@@ -5051,8 +5865,19 @@ See design doc for the full state machine diagram.`;
     await this.retainUploadedFilesForSession(session, chips);
     if (gen !== session.gen) return;
 
-    if (bare || session !== this.focused) {
-      if (bare) this.postChips();
+    // COMMIT-POINT re-check: that was the last await before this send turns
+    // into a prompt — everything from here through setStatus("working") is
+    // synchronous. Without this, two views' sends could both pass the entry
+    // check while one was still reading attachments, and the second prompt
+    // would cancel the first turn. Runs before chips are consumed, so a
+    // diverted send leaves its attachments staged for the queued flush.
+    if (this.turnInFlight(session)) {
+      this.divertRacingSend(session, text, bare);
+      return;
+    }
+
+    if (bare) {
+      this.postChips(session);
     } else {
       // One-shot attachments are consumed by the send; the implicit context
       // chip mirrors IDE state and stays resident (like Claude Code's). Keep
@@ -5060,8 +5885,9 @@ See design doc for the full state machine diagram.`;
       // the user's eye-off choice and no-op-diffing against the live editor.
       // Consume by id, not wholesale: a chip staged after the snapshot (while
       // images were pre-reading) belongs to the next turn and must survive.
-      this.chips = consumeChips(this.chips, chips);
-      this.refreshImplicitChip(true);
+      session.chips = consumeChips(session.chips, chips);
+      if (session === this.focused) this.refreshImplicitChip(true);
+      else this.postChips(session);
     }
     // Staged files are one-shot: their bytes ride the prompt inline now.
     for (const chip of chips) {
@@ -5194,7 +6020,7 @@ See design doc for the full state machine diagram.`;
    * its 401-refresh loses a rotation race with the sibling processes / `grok
    * login` that share `~/.grok/auth.json`. A FRESH process re-reads the current
    * disk token — exactly what re-login does, minus the sign-out — so we
-   * transparently restart the focused session (`startSession` respawns +
+   * transparently restart the owning session (`startSession` respawns +
    * `session/load`s to preserve history) and RE-SEND the failed prompt once.
    * Guarded by `authRecoveryTried` (reset on any clean turn) so a genuine
    * dead-auth / entitlement error can't loop. The resend's failure is the
@@ -5215,17 +6041,15 @@ See design doc for the full state machine diagram.`;
   ): Promise<boolean> {
     const errorText = errorDetail(err);
     if (!isAuthErrorText(errorText) && !isCredentialError(err)) return false;
-    if (session !== this.focused) return false;   // only the active session is safe to reload here
-    if (!session.activeSessionId) return false;   // need an id to session/load history back
-    if (session.authRecoveryTried) return false;  // already retried this streak → let it surface
-    session.authRecoveryTried = true;
+    const resumeId = beginAuthRecovery(session);
+    if (!resumeId) return false;
     this.output.appendLine(`[auth] recoverable token error — reloading session + resending: ${errorText}`);
 
-    // Fresh process, current disk token. Rebuilds this.focused (same object) and
-    // replays history from disk — which drops the un-persisted failed turn, so we
-    // re-add the user's bubble below before resending.
-    const client = await this.startSession(session.activeSessionId);
-    if (!client || this.focused !== session) return true; // startSession surfaced its own failure/onboarding
+    // Fresh process, current disk token. Rebuild this same pool member and replay
+    // its history from disk. Its generation + authRecoveryTried guards are both
+    // session-scoped, so unrelated local/remote turns remain independent.
+    const client = await this.startSession(resumeId, session);
+    if (!client || session.client !== client) return true; // startSession surfaced its own failure/onboarding
     await (session.primingPromise ?? Promise.resolve()); // grok runs one turn at a time
     const gen = session.gen;
     if (gen !== session.gen) return true;
@@ -5294,7 +6118,7 @@ See design doc for the full state machine diagram.`;
 
   private buildInitialStateMsg(): HostMsg {
     const cfg = vscode.workspace.getConfiguration("grok");
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = this.workspaceRoot();
     return {
       type: "initialState",
       effort: cfg.get("defaultEffort", ""),
@@ -5307,7 +6131,7 @@ See design doc for the full state machine diagram.`;
       soundNotifications: cfg.get("soundNotifications", false),
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
-      capabilities: { uploadFile: true },
+      capabilities: HOST_CAPABILITIES,
     };
   }
 
@@ -5325,13 +6149,14 @@ See design doc for the full state machine diagram.`;
     // Sweep stale empty primer sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep).
     void this.startSession().then(() => {
-      this.postRepoCatalog();
       this.sweepEmptyPrimerSessions();
     });
   }
 
-  private postChips(): void {
-    this.post({ type: "chips", chips: this.chips });
+  private postChips(session: Session = this.focused): void {
+    const message: HostMsg = { type: "chips", chips: session.chips };
+    if (session === this.focused) this.view?.webview.postMessage(message);
+    this.sendRemoteSession(session, message);
   }
 
   // grok's OUTPUT for a hidden turn (primer / summary injection) — dropped from
@@ -5356,29 +6181,52 @@ See design doc for the full state machine diagram.`;
     if (this.focused.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     if (this.focused.suppressPlanReject && GrokSidebar.PLAN_REJECT_SUPPRESS.has(message.type)) return;
     this.view?.webview.postMessage(message);
-    this.mirrorToRemote(message);
+    if (GrokSidebar.DEVICE_GLOBAL_REMOTE_TYPES.has(message.type)) {
+      this.broadcastRemoteDevice(message);
+    } else {
+      this.sendRemoteSession(this.focused, message);
+    }
   }
 
-  /** Post to the VS Code webview only. Used where the two audiences must see
-   *  DIFFERENT payloads — repo-scoped chrome, where the local window ignores the
-   *  global selection (see `historyCwdFor`). Both are chrome, never content, so
-   *  the suppress gates in `post` don't apply. */
+  /** Post to the VS Code webview only. */
   private postLocal(message: HostMsg): void {
     this.postTap?.("local", message);
     this.view?.webview.postMessage(message);
   }
 
-  /** Post to remote clients only. Also records sticky chrome, so a client that
-   *  connects later replays the REMOTE variant — never the local one. */
-  private postRemote(message: HostMsg): void {
-    this.postTap?.("remote", message);
-    this.mirrorToRemote(message);
+  /** Target one opaque relay clientId. */
+  private sendRemoteClient(clientId: string, message: HostMsg): void {
+    this.postTap?.("remote", message, [clientId]);
+    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
+    if (out) this.uplink?.broadcastTo([clientId], out);
+  }
+
+  private sendRemoteRepo(cwd: string, message: HostMsg): void {
+    const clientIds = this.remoteClients.clientsForCwd(cwd);
+    this.postTap?.("remote", message, clientIds);
+    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
+    if (!out) return;
+    this.uplink?.broadcastTo(clientIds, out);
+  }
+
+  private sendRemoteSession(session: Session, message: HostMsg): void {
+    for (const clientId of this.remoteClients.clients()) {
+      if (this.remoteClients.active(clientId) === session) {
+        this.sendRemoteClient(clientId, message);
+      }
+    }
+  }
+
+  private broadcastRemoteDevice(message: HostMsg): void {
+    this.postTap?.("remote", message, this.remoteClients.clients());
+    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
+    if (out) this.uplink?.broadcast(out);
   }
 
   /** Test-only tap on the split posts. Never assigned in a released build:
    *  `extension.ts` hands out `installTestHooks` only under
    *  `ExtensionMode.Test`, which VS Code sets exclusively for a test runner. */
-  private postTap?: (dest: MsgOrigin, message: HostMsg) => void;
+  private postTap?: (dest: MsgOrigin, message: HostMsg, clientIds?: string[]) => void;
 
   /**
    * Test-only seam for the integration suite. It exists because one property of
@@ -5389,15 +6237,192 @@ See design doc for the full state machine diagram.`;
    * tests still pass (verified by performing it).
    */
   installTestHooks(): {
-    onPost(fn: (dest: MsgOrigin, message: HostMsg) => void): void;
-    fromRemote(message: WebviewMsg): void;
+    onPost(fn: (dest: MsgOrigin, message: HostMsg, clientIds?: string[]) => void): void;
+    fromRemote(message: WebviewMsg, clientId?: string): void;
+    fromRelayFrame(raw: string): void;
+    emitRemote(clientId: string, message: HostMsg): void;
+    seedRemoteSession(
+      clientId: string,
+      id: string,
+      cwd: string,
+      messages?: HostMsg[],
+      hasHistory?: boolean,
+      chips?: FileChip[],
+    ): void;
+    seedLocalBackgroundSession(id: string, cwd: string): void;
+    openLocalSession(id: string, cwd: string): Promise<void>;
+    seedWorktree(record: WorktreeRecord): void;
+    seedWorktreeRefresh(sourceRepo: string, records: WorktreeRecord[]): void;
+    seedRemoteUnstartedSession(clientId: string, cwd: string): void;
+    seedRemoteStartingSession(clientId: string, id: string, cwd: string, queuedText: string): void;
+    seedRemoteQueuedDispatch(
+      clientId: string,
+      id: string,
+      cwd: string,
+      queuedText: string,
+    ): { promptCount(): number };
+    finishRemoteStartup(clientId: string): void;
+    seedRemoteVoice(clientId: string): { cancelled(): boolean };
+    emitContextUsage(clientId: string): void;
+    delayNextSessionStart(resumeId?: string): { started: Promise<void>; release(): void };
+    waitForSessionLoad(id: string): Promise<void>;
+    setSessionStatus(id: string, status: SessionStatus): void;
+    activeRemoteSessionId(clientId: string): string | undefined;
+    activeRemoteWorktree(clientId: string): Session["worktree"];
+    focusedSessionId(): string | undefined;
+    hasLiveSession(id: string): boolean;
+    remoteClientLeft(clientId: string): void;
+    remoteClientRoster(clientIds: string[]): void;
     workspaceRoot(): string;
   } {
     return {
       onPost: (fn) => {
         this.postTap = fn;
       },
-      fromRemote: (message) => this.handleRemoteMessage(message),
+      fromRemote: (message, clientId = "test-client") => this.handleRemoteMessage(clientId, message),
+      fromRelayFrame: (raw) => {
+        const frame = parseRelayFrame(raw);
+        if (frame?.t !== "client-ready") return;
+        this.handleRemoteClientReady(frame.clientId, frame.tabToken);
+        for (const message of this.buildRemoteSnapshot(frame.clientId)) {
+          this.sendRemoteClient(frame.clientId, message);
+        }
+      },
+      emitRemote: (clientId, message) => {
+        const session = this.remoteSessionFor(clientId);
+        this.emit(session, message);
+      },
+      seedRemoteSession: (clientId, id, cwd, messages = [], hasHistory = false, chips = []) => {
+        this.remoteClients.ready(clientId);
+        this.remoteClients.select(clientId, cwd);
+        const session = new Session();
+        session.cwd = cwd;
+        session.activeSessionId = id;
+        session.client = { dispose() {} } as AcpClient;
+        session.hasHistory = hasHistory;
+        session.chips = chips;
+        session.buffer.push(...messages);
+        this.pool.add(session);
+        this.remoteClients.setActive(clientId, session);
+      },
+      seedLocalBackgroundSession: (id, cwd) => {
+        const session = this.newLocalSession();
+        session.cwd = cwd;
+        session.activeSessionId = id;
+        session.client = { dispose() {} } as AcpClient;
+        session.hasHistory = true;
+        this.pool.add(session);
+      },
+      openLocalSession: (id, cwd) => this.openSession(id, cwd),
+      seedWorktree: (record) => {
+        this.worktreeCache = this.worktreeCache.filter((wt) => !pathsEqual(wt.path, record.path));
+        this.worktreeCache.push(record);
+      },
+      seedWorktreeRefresh: (sourceRepo, records) => {
+        this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, records);
+      },
+      seedRemoteUnstartedSession: (clientId, cwd) => {
+        this.remoteClients.ready(clientId);
+        this.remoteClients.select(clientId, cwd);
+        const session = new Session();
+        this.setSessionCwd(session, cwd, this.workspaceRoot());
+        this.remoteClients.setActive(clientId, session);
+      },
+      seedRemoteStartingSession: (clientId, id, cwd, queuedText) => {
+        this.remoteClients.ready(clientId);
+        this.remoteClients.select(clientId, cwd);
+        const session = new Session();
+        session.cwd = cwd;
+        session.activeSessionId = id;
+        session.client = { dispose() {} } as AcpClient;
+        session.priming = true;
+        session.queuedSends = [queuedText];
+        session.queuedSendRequiresRelay = true;
+        this.pool.add(session);
+        this.remoteClients.setActive(clientId, session);
+      },
+      seedRemoteQueuedDispatch: (clientId, id, cwd, queuedText) => {
+        this.remoteClients.ready(clientId);
+        this.remoteClients.select(clientId, cwd);
+        let prompts = 0;
+        const session = new Session();
+        session.cwd = cwd;
+        session.activeSessionId = id;
+        session.client = {
+          availableCommands: [],
+          dispose() {},
+          prompt: async () => {
+            prompts += 1;
+            return {};
+          },
+        } as unknown as AcpClient;
+        session.hasHistory = true;
+        session.primed = true;
+        session.status = "done";
+        session.queuedSends = [queuedText];
+        session.queuedSendRequiresRelay = true;
+        this.pool.add(session);
+        this.remoteClients.setActive(clientId, session);
+        void this.maybeFlushQueuedSends(session);
+        return { promptCount: () => prompts };
+      },
+      finishRemoteStartup: (clientId) => {
+        const session = this.remoteClients.active(clientId);
+        if (!session) return;
+        session.priming = false;
+        session.queuedSendDispatch = undefined;
+        session.queuedSends = [];
+        session.queuedSendRequiresRelay = false;
+      },
+      seedRemoteVoice: (clientId) => {
+        const session = this.remoteSessionFor(clientId);
+        let cancelled = false;
+        const ingress = new RemotePcmIngress(
+          GrokSidebar.MAX_REMOTE_PCM_CHUNK_BYTES,
+          GrokSidebar.MAX_REMOTE_PCM_BYTES,
+          MAX_RECORDING_SECONDS * 1000,
+          () => {},
+        );
+        const streamer = {
+          cancel: () => { cancelled = true; },
+        } as PcmVoiceStreamer;
+        this.remoteVoice.set(clientId, {
+          credentialCwd: this.sessionCwd(session),
+          session,
+          streamer,
+          ingress,
+          phrase: DEFAULT_SEND_PHRASE,
+          finalizing: false,
+        });
+        return { cancelled: () => cancelled };
+      },
+      emitContextUsage: (clientId) => this.emitContextUsage(this.remoteSessionFor(clientId)),
+      delayNextSessionStart: (resumeId) => {
+        let markStarted!: () => void;
+        let release!: () => void;
+        const started = new Promise<void>((resolve) => { markStarted = resolve; });
+        const wait = new Promise<void>((resolve) => { release = resolve; });
+        this.testSessionStartDelay = { resumeId, started: markStarted, wait };
+        return { started, release };
+      },
+      waitForSessionLoad: (id) => {
+        const reservation = this.sessionLoadReservations.get(id);
+        return reservation
+          ? reservation.completion
+          : Promise.reject(new Error(`No in-flight session load for ${id}`));
+      },
+      setSessionStatus: (id, status) => {
+        const session = [...this.pool].find((candidate) => candidate.activeSessionId === id);
+        if (session) this.setStatus(session, status);
+      },
+      activeRemoteSessionId: (clientId) => this.remoteActiveSessionId(clientId) ?? undefined,
+      activeRemoteWorktree: (clientId) => this.remoteClients.active(clientId)?.worktree,
+      focusedSessionId: () => this.focused.activeSessionId,
+      hasLiveSession: (id) => [...this.pool].some((session) =>
+        session.activeSessionId === id && !!session.client
+      ),
+      remoteClientLeft: (clientId) => this.releaseRemoteClient(clientId),
+      remoteClientRoster: (clientIds) => this.retainRemoteClients(clientIds),
       workspaceRoot: () => this.workspaceRoot(),
     };
   }
@@ -5420,21 +6445,8 @@ See design doc for the full state machine diagram.`;
     else session.buffer.push(message);
     if (session === this.focused) {
       this.view?.webview.postMessage(message);
-      this.mirrorToRemote(message);
     }
-  }
-
-  /** Record sticky chrome + fan the (already-un-suppressed, focused) message out
-   *  to remote clients. No-op unless the uplink is running. Shared focus:
-   *  remote mirrors exactly what the local webview sees. Outbound policy applies
-   *  here: host-local messages (voice) + video are suppressed, image `media` is
-   *  base64-inlined (an asWebviewUri src only resolves inside the local webview). */
-  private mirrorToRemote(message: HostMsg): void {
-    if (GrokSidebar.STICKY_CHROME_TYPES.has(message.type)) this.stickyChrome.set(message.type, message);
-    if (!this.uplink) return;
-    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
-    if (!out) return;
-    this.uplink.broadcast(out);
+    this.sendRemoteSession(session, message);
   }
 
   // ---------- session pool ----------
@@ -5448,6 +6460,112 @@ See design doc for the full state machine diagram.`;
    * without re-running the suppress/clearMessages bookkeeping (that already ran
    * when each message was first buffered).
    */
+  private newLocalSession(): Session {
+    return new Session();
+  }
+
+  private reserveSessionLoad(
+    id: string,
+    ownerTabToken?: string,
+  ): { reservation: SessionLoadReservation; joined: boolean } | undefined {
+    const existing = this.sessionLoadReservations.get(id);
+    if (existing && existing.expiresAt > Date.now()) {
+      return ownerTabToken && existing.ownerTabToken === ownerTabToken
+        ? { reservation: existing, joined: true }
+        : undefined;
+    }
+    if (existing) {
+      clearTimeout(existing.timer);
+      this.sessionLoadReservations.delete(id);
+    }
+    const token = Symbol(id);
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    void completion.catch(() => undefined);
+    const timer = setTimeout(() => {
+      const current = this.sessionLoadReservations.get(id);
+      if (current?.token === token) this.sessionLoadReservations.delete(id);
+    }, GrokSidebar.SESSION_LOAD_RESERVATION_TTL_MS);
+    timer.unref?.();
+    const reservation: SessionLoadReservation = {
+      token,
+      ownerTabToken,
+      completion,
+      resolve,
+      reject,
+      expiresAt: Date.now() + GrokSidebar.SESSION_LOAD_RESERVATION_TTL_MS,
+      timer,
+    };
+    this.sessionLoadReservations.set(id, reservation);
+    return { reservation, joined: false };
+  }
+
+  private bindSessionLoad(id: string, reservation: SessionLoadReservation, session: Session): void {
+    const current = this.sessionLoadReservations.get(id);
+    if (current?.token === reservation.token) current.session = session;
+  }
+
+  private releaseSessionLoad(
+    id: string,
+    reservation: SessionLoadReservation,
+    error?: unknown,
+  ): void {
+    if (error === undefined) reservation.resolve();
+    else reservation.reject(error);
+    const current = this.sessionLoadReservations.get(id);
+    if (current?.token !== reservation.token) return;
+    clearTimeout(current.timer);
+    this.sessionLoadReservations.delete(id);
+  }
+
+  private isSessionLoadReserved(id: string): boolean {
+    const current = this.sessionLoadReservations.get(id);
+    if (!current) return false;
+    if (current.expiresAt > Date.now()) return true;
+    clearTimeout(current.timer);
+    this.sessionLoadReservations.delete(id);
+    return false;
+  }
+
+  private reservedSessionIds(): string[] {
+    return [...this.sessionLoadReservations.keys()].filter((id) => this.isSessionLoadReserved(id));
+  }
+
+  private remoteActiveSessionId(clientId: string): string | null {
+    const session = this.remoteClients.active(clientId);
+    if (session?.activeSessionId) return session.activeSessionId;
+    if (!session) return null;
+    for (const [id, reservation] of this.sessionLoadReservations) {
+      if (reservation.session === session && this.isSessionLoadReserved(id)) return id;
+    }
+    return null;
+  }
+
+  private sendRemoteSessionList(session: Session, ownerTabToken?: string): void {
+    const currentOwner = ownerTabToken
+      ? this.remoteClients.clientForTabToken(ownerTabToken)
+      : undefined;
+    const clientIds = ownerTabToken
+      ? currentOwner && this.remoteClients.active(currentOwner) === session
+        ? [currentOwner]
+        : []
+      : this.remoteClients.clientsForActiveValue(session);
+    for (const clientId of clientIds) {
+      this.sendRemoteClient(
+        clientId,
+        this.buildSessionsList(
+          this.remoteClients.cwd(clientId),
+          undefined,
+          this.remoteActiveSessionId(clientId),
+        ),
+      );
+    }
+  }
+
   private focusSession(session: Session): void {
     if (session === this.focused) return;
     this.focused = session;
@@ -5457,6 +6575,7 @@ See design doc for the full state machine diagram.`;
     if (wv) {
       wv.postMessage({ type: "clearMessages" });
       for (const m of bracketRemoteSnapshot(session.buffer)) wv.postMessage(m);
+      for (const m of sessionUiSnapshot(session, this.displayMode(session))) wv.postMessage(m);
     }
     // Remote clients don't share the webview, so replay the same clear + buffer
     // to them over the uplink — otherwise re-focusing a session that's still
@@ -5464,17 +6583,15 @@ See design doc for the full state machine diagram.`;
     // remote keeps showing the previous session (switching a session in history
     // didn't always reload on the browser client). Cold loads go through
     // emit()/post(), which already mirror; this path deliberately bypasses them.
-    // Transform by hand (image inlining, host-local/video drop) but skip
-    // mirrorToRemote's sticky-chrome recording — this is chat content, and
-    // postMode()/postSessionsList() below refresh the remote's chrome.
+    // The targeted send applies the normal remote transform; the calls below
+    // refresh current mode, repository, and history chrome independently.
     if (this.uplink) {
       const replay: HostMsg[] = [
         { type: "clearMessages" },
         ...bracketRemoteSnapshot(session.buffer),
       ];
       for (const m of replay) {
-        const out = transformHostMsgForRemote(m, GrokSidebar.REMOTE_MEDIA_DEPS);
-        if (out) this.uplink.broadcast(out);
+        this.sendRemoteSession(session, m);
       }
     }
     this.postMode();
@@ -5494,7 +6611,9 @@ See design doc for the full state machine diagram.`;
     // never auto-delete it as an "empty primer session", even before the first
     // message (that's what made creating/leaving a worktree replace the current
     // one). It's removed only via Remove worktree.
-    if (cur.hasHistory || cur.afterTurn || busy || cur.worktree) return; // real/active work — keep it parked & alive
+    if (cur.hasHistory || cur.afterTurn || busy || cur.chips.length > 0 || cur.worktree) return; // real/active work — keep it parked & alive
+    // Co-attached: a remote tab still shows this session — not ours to tear down.
+    if (this.remoteClients.clientsForActiveValue(cur).length > 0) return;
     // Empty (primer-only) session being left behind (New Session, or switching to
     // another): tear down its process AND delete its on-disk dir so it doesn't pile
     // up in history (#24). The next focused session becomes the single live "New
@@ -5502,6 +6621,52 @@ See design doc for the full state machine diagram.`;
     this.disposeSession(cur);
     this.removeSessionFromDisk(cur.activeSessionId, cur.cwd);
     this.postSessionsList();
+  }
+
+  /** Remote counterpart of parkFocused: abandoning a primer-only tab session
+   * must not leave an ownerless process or history row behind. */
+  private parkRemoteSession(clientId: string, next?: Session): void {
+    const current = this.remoteClients.active(clientId);
+    if (!current || current === next) return;
+    const busy = current.status === "working" || current.status === "needs-you";
+    if (
+      current.hasHistory ||
+      current.afterTurn ||
+      busy ||
+      current.priming ||
+      current.queuedSends.length > 0 ||
+      current.chips.length > 0 ||
+      current.worktree
+    ) return;
+    // Co-attached elsewhere (the VS Code view, or — defensively — another
+    // tab): the session is still on screen there; only this tab lets go.
+    if (current === this.focused) return;
+    if (this.remoteClients.clientsForActiveValue(current).some((ownerId) => ownerId !== clientId)) return;
+    const id = current.activeSessionId;
+    const cwd = current.cwd;
+    this.disposeSession(current);
+    this.removeSessionFromDisk(id, cwd);
+  }
+
+  /** The sole remote-client release path: abandon its session before deleting ownership. */
+  private releaseRemoteClient(clientId: string): void {
+    const current = this.remoteClients.active(clientId);
+    const preserveLogicalTab = !!current && (
+      current.priming ||
+      current.queuedSends.length > 0 ||
+      current.chips.length > 0
+    );
+    this.parkRemoteSession(clientId);
+    this.dropRemoteVoice(clientId);
+    if (preserveLogicalTab) this.remoteClients.detachClient(clientId);
+    else this.remoteClients.deleteClient(clientId);
+  }
+
+  private retainRemoteClients(clientIds: Iterable<string>): void {
+    const keep = new Set(clientIds);
+    for (const clientId of this.remoteClients.clients()) {
+      if (!keep.has(clientId)) this.releaseRemoteClient(clientId);
+    }
   }
 
   /** Delete a session's on-disk dir + drop its meta override and read-cache entry.
@@ -5538,7 +6703,7 @@ See design doc for the full state machine diagram.`;
   private sweepEmptyPrimerSessions(): void {
     if (this.sweptEmptySessions) return;
     this.sweptEmptySessions = true;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = this.workspaceRoot();
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.output.appendLine(m);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -5605,6 +6770,7 @@ See design doc for the full state machine diagram.`;
     session.client?.dispose();
     session.client = undefined;
     this.pool.delete(session);
+    this.remoteClients.deleteActiveValue(session);
     if (id) this.post({ type: "sessionDot", id, dot: this.dotForId(id) });
   }
 
@@ -5619,18 +6785,28 @@ See design doc for the full state machine diagram.`;
    * Called eagerly after each new start (cap) and on the periodic timer (TTL).
    */
   private reapPool(): void {
-    const candidates = [...this.pool].map((session) => ({
-      session,
-      status: session.status,
-      lastActiveAt: session.lastActiveAt,
-      focused: session === this.focused,
-    }));
+    const candidates = buildReapCandidates(
+      this.pool,
+      this.focused,
+      (session) => this.remoteClients.isActiveValueVisible(session),
+    );
     const doomed = selectReapable(candidates, {
       maxLive: GrokSidebar.MAX_LIVE_SESSIONS,
       idleTtlMs: GrokSidebar.IDLE_TTL_MS,
       now: Date.now(),
     });
-    for (const c of doomed) this.disposeSession(c.session);
+    for (const c of doomed) {
+      const visibleClients = this.remoteClients.clientsForActiveValue(c.session);
+      this.disposeSession(c.session);
+      for (const clientId of visibleClients) {
+        this.remoteClients.setActive(clientId, c.session);
+        for (const message of this.buildRemoteSnapshot(clientId)) this.sendRemoteClient(clientId, message);
+        this.sendRemoteClient(clientId, {
+          type: "error",
+          text: "This session was unloaded to keep the live session pool bounded. It will reload automatically when you next send.",
+        });
+      }
+    }
   }
 
   /**
@@ -5645,10 +6821,10 @@ See design doc for the full state machine diagram.`;
     session.status = status;
     // Activity refreshes the LRU/TTL clock so a busy session never ages out.
     if (status === "working" || status === "needs-you") this.touch(session);
-    // A turn that finishes while the user is looking at a *different* session
-    // becomes "unread" (green/red dot) until they open it. If it's the focused
-    // session, they watched it happen — no badge.
-    if ((status === "done" || status === "error") && session !== this.focused) {
+    // Unread metadata is global per conversation, while visibility is per view.
+    // Define the badge as "completed while nobody was looking": if VS Code or any
+    // remote tab owns this session, at least one view watched the result arrive.
+    if ((status === "done" || status === "error") && !this.sessionHasLiveOwner(session)) {
       this.setMetaUnread(session.activeSessionId, true, status === "error");
     }
     this.pushDot(session);
@@ -5659,7 +6835,19 @@ See design doc for the full state machine diagram.`;
    *  and on reaping (where the session has left the pool but may stay green). */
   private pushDot(session: Session): void {
     const id = session.activeSessionId;
-    if (id) this.post({ type: "sessionDot", id, dot: this.dotForId(id) });
+    if (!id) return;
+    const message: HostMsg = { type: "sessionDot", id, dot: this.dotForId(id) };
+    this.view?.webview.postMessage(message);
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const sent = new Set<string>();
+    for (const clientId of this.remoteClients.clients()) {
+      const repoCwd = this.remoteClients.cwd(clientId);
+      const key = normalizeRepoPath(repoCwd);
+      if (sent.has(key)) continue;
+      if (!this.sessionCwdsForRepo(repoCwd, overrides).some((cwd) => pathsEqual(cwd, this.sessionCwd(session)))) continue;
+      sent.add(key);
+      this.sendRemoteRepo(repoCwd, message);
+    }
   }
 
   /** The dashboard dot for a grok-session id, from live status (if it's a live pool
@@ -5739,7 +6927,7 @@ See design doc for the full state machine diagram.`;
   private emitContextUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const cwd = this.sessionCwd(session);
     const usage = readContextUsage({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd, id });
     if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });
   }
@@ -5821,41 +7009,198 @@ See design doc for the full state machine diagram.`;
     // button at another checkout, and Grok would write files there.
     const targetCwd = this.historyCwdFor(origin);
     this.parkFocused();
-    this.focused = new Session();
-    this.focused.cwd = targetCwd;
-    this.focused.worktree = undefined;
-    const wt = matchWorktreeForCwd(
-      this.focused.cwd,
-      worktreesForRepo(this.worktreeCache, this.workspaceRoot(), { includeDead: true }),
-    );
-    if (wt) {
-      this.focused.worktree = {
-        path: wt.path,
-        label: wt.label,
-        sourceGitRoot: wt.sourceRepo || this.workspaceRoot(),
-        id: wt.id,
-      };
-    }
+    this.focused = this.newLocalSession();
+    this.setSessionCwd(this.focused, targetCwd, this.workspaceRoot());
     // The webview toolbar button clears its own DOM before posting newSession,
     // but the Command Palette command lands here directly — without this clear
     // the old transcript stayed onscreen under the fresh session. (The toolbar
     // path just clears twice, a no-op.)
     this.emit(this.focused, { type: "clearMessages" });
     await this.startSession();
-    if (this.focused.activeSessionId && this.focused.worktree) {
-      const id = this.focused.activeSessionId;
-      const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-      await this.context.globalState.update(SESSION_META_KEY, {
-        ...overrides,
-        [id]: {
-          ...(overrides[id] ?? {}),
-          worktreePath: this.focused.worktree.path,
-          worktreeLabel: this.focused.worktree.label,
-          sourceGitRoot: this.focused.worktree.sourceGitRoot,
-        },
-      });
-    }
+    await this.persistWorktreeBinding(this.focused);
     this.postRepoCatalog();
+  }
+
+  private focusRemoteSession(clientId: string, session: Session): void {
+    const cwd = this.remoteClients.cwd(clientId);
+    this.remoteClients.setActive(clientId, session);
+    this.touch(session);
+    this.markRead(session);
+    this.sendRemoteClient(clientId, { type: "clearMessages" });
+    for (const msg of bracketRemoteSnapshot(session.buffer)) this.sendRemoteClient(clientId, msg);
+    for (const msg of sessionUiSnapshot(session, this.displayMode(session))) this.sendRemoteClient(clientId, msg);
+    this.postRepoCatalog();
+    this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
+  }
+
+  private async newRemoteSession(clientId: string): Promise<void> {
+    const ownerTabToken = this.remoteClients.tabToken(clientId);
+    const cwd = this.remoteClients.cwd(clientId);
+    this.parkRemoteSession(clientId);
+    this.dropRemoteVoice(clientId);
+    const session = new Session();
+    this.setSessionCwd(session, cwd, this.workspaceRoot());
+    this.remoteClients.setActive(clientId, session);
+    this.emit(session, { type: "clearMessages" });
+    await this.startSession(undefined, session);
+    await this.persistWorktreeBinding(session);
+    this.postRepoCatalog();
+    this.sendRemoteSessionList(session, ownerTabToken);
+  }
+
+  private async openRemoteSession(clientId: string, id: string, sessionCwd?: string): Promise<void> {
+    const claim = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
+    if (!claim) {
+      const selectedCwd = this.remoteClients.cwd(clientId);
+      this.output.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: "Could not restore this conversation because it is already being opened in another tab or the VS Code view.",
+      });
+      this.sendRemoteClient(
+        clientId,
+        this.buildSessionsList(
+          selectedCwd,
+          undefined,
+          this.remoteActiveSessionId(clientId),
+        ),
+      );
+      return;
+    }
+    if (claim.joined) {
+      this.output.appendLine(`[remote] joined in-flight session load for the same logical tab`);
+      await claim.reservation.completion;
+      return;
+    }
+    let failure: unknown;
+    try {
+      await this.openRemoteSessionReserved(clientId, id, claim.reservation, sessionCwd);
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      this.releaseSessionLoad(id, claim.reservation, failure);
+    }
+  }
+
+  private async openRemoteSessionReserved(
+    clientId: string,
+    id: string,
+    reservation: SessionLoadReservation,
+    sessionCwd?: string,
+  ): Promise<void> {
+    const selectedCwd = this.remoteClients.cwd(clientId);
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
+    const conflictingOwner = this.remoteClients.clients().find((ownerId) =>
+      ownerId !== clientId && this.remoteClients.active(ownerId)?.activeSessionId === id
+    );
+    // Tabs stay mutually exclusive: each browser tab is its own conversation,
+    // and the duplicate-tab theft guard builds on that. The VS Code view is
+    // NOT a rival tab — a session open (or parked) at the desk is joined, not
+    // refused: emit() fans every frame of a session to the focused webview and
+    // to each remote holder, so the desk and the phone stay in sync.
+    if (conflictingOwner) {
+      this.output.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: "Could not restore this conversation because it is already open in another tab.",
+      });
+      this.sendRemoteClient(
+        clientId,
+        this.buildSessionsList(
+          selectedCwd,
+          undefined,
+          this.remoteActiveSessionId(clientId),
+        ),
+      );
+      return;
+    }
+    for (const session of this.pool) {
+      if (session.activeSessionId === id && session.client) {
+        if (!sessionCwdBelongsToRepo(this.sessionCwd(session), allowedCwds, pathsEqual)) {
+          this.output.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
+          this.sendRemoteClient(clientId, {
+            type: "error",
+            text: "Could not restore this tab's conversation because its repository is no longer selected or available.",
+          });
+          this.sendRemoteClient(
+            clientId,
+            this.buildSessionsList(
+              selectedCwd,
+              undefined,
+              this.remoteActiveSessionId(clientId),
+            ),
+          );
+          return;
+        }
+        this.parkRemoteSession(clientId, session);
+        this.dropRemoteVoice(clientId);
+        this.focusRemoteSession(clientId, session);
+        return;
+      }
+    }
+    const cachedCwd = this.sessionCache.get(id)?.entry.cwd;
+    const candidates = [...new Set([
+      ...(sessionCwd ? [sessionCwd] : []),
+      ...(cachedCwd ? [cachedCwd] : []),
+      ...allowedCwds,
+    ])].filter((cwd) => sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual));
+    const actualCwd = candidates.find((cwd) =>
+      indexSessions({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd })
+        .some((entry) => entry.id === id),
+    );
+    if (!actualCwd) {
+      this.output.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: "Could not restore this tab's previous conversation. It may have been deleted, or its repository may no longer be available. Start a new session explicitly to continue.",
+      });
+      this.sendRemoteClient(
+        clientId,
+        this.buildSessionsList(
+          selectedCwd,
+          undefined,
+          this.remoteActiveSessionId(clientId),
+        ),
+      );
+      return;
+    }
+    const current = this.remoteClients.active(clientId);
+    // Mirror of the desk-side adoption: if the DESK still holds this
+    // conversation as a clientless object (crashed / reaped focused session),
+    // resume INTO that object rather than forking the session directory into
+    // a second live process. Other tabs' objects can't reach here — the
+    // conflictingOwner guard above refused them regardless of client state.
+    const session = current?.activeSessionId === id
+      ? current
+      : this.focused.activeSessionId === id
+        ? this.focused
+        : [...this.pool].find((candidate) => candidate.activeSessionId === id && !candidate.client)
+          ?? new Session();
+    const savedWorktree = overrides[id];
+    if (savedWorktree?.worktreePath) {
+      session.cwd = actualCwd;
+      session.worktree = {
+        path: savedWorktree.worktreePath,
+        label: savedWorktree.worktreeLabel || path.basename(savedWorktree.worktreePath),
+        sourceGitRoot: savedWorktree.sourceGitRoot || selectedCwd,
+      };
+    } else if (!session.worktree) {
+      this.setSessionCwd(session, actualCwd, selectedCwd);
+    } else {
+      session.cwd = actualCwd;
+    }
+    this.pool.add(session);
+    this.parkRemoteSession(clientId, session);
+    this.dropRemoteVoice(clientId);
+    this.remoteClients.setActive(clientId, session);
+    this.bindSessionLoad(id, reservation, session);
+    this.sendRemoteClient(clientId, { type: "clearMessages" });
+    await this.startSession(id, session);
+    this.markRead(session);
+    this.postRepoCatalog();
+    this.sendRemoteSessionList(session, reservation.ownerTabToken);
   }
 
   /**
@@ -5864,6 +7209,30 @@ See design doc for the full state machine diagram.`;
    * session and load this one cold from grok's on-disk history into a fresh member.
    */
   private async openSession(id: string, sessionCwd?: string): Promise<void> {
+    const claim = this.reserveSessionLoad(id);
+    if (!claim) {
+      this.output.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
+      void vscode.window.showInformationMessage(
+        "This conversation is already being opened in another tab or view.",
+      );
+      return;
+    }
+    let failure: unknown;
+    try {
+      await this.openSessionReserved(id, sessionCwd);
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      this.releaseSessionLoad(id, claim.reservation, failure);
+    }
+  }
+
+  private async openSessionReserved(id: string, sessionCwd?: string): Promise<void> {
+    // A session held by a remote tab is not off-limits here: the desk JOINS it
+    // — focusSession replays the shared buffer into the webview and already
+    // mirrors the replay to remote holders, and emit() keeps serving both
+    // views from then on.
     for (const s of this.pool) {
       if (s.activeSessionId === id && s.client) {
         this.focusSession(s);
@@ -5871,7 +7240,16 @@ See design doc for the full state machine diagram.`;
       }
     }
     this.parkFocused();
-    this.focused = new Session();
+    // A remote tab may still hold this conversation as a CLIENTLESS object
+    // (its CLI crashed, or it was LRU-reaped — the mapping deliberately
+    // survives so the tab reloads on its next send). Cold-loading a NEW
+    // object here would hand the same Grok session directory to two live
+    // processes the moment both views touch it — adopt the held object
+    // instead, so this restart lands in BOTH views.
+    const held = this.remoteClients.clients()
+      .map((clientId) => this.remoteClients.active(clientId))
+      .find((s): s is Session => !!s && s.activeSessionId === id);
+    this.focused = held ?? this.newLocalSession();
     this.pool.add(this.focused);
     // Resolve cwd: explicit (history row) → meta worktree → cache → workspace.
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -6054,18 +7432,106 @@ See design doc for the full state machine diagram.`;
 
   /** The single inbound choke point for remote clients: capability-gate, then
    *  route into the normal onMessage switch. */
-  private handleRemoteMessage(m: WebviewMsg): void {
-    if (!allowFromRemote(m.type, GrokSidebar.REMOTE_TIER)) {
-      this.output.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
-      return;
+  private handleRemoteMessage(clientId: string, m: WebviewMsg): void {
+    try {
+      // Compatibility path for a relay/browser pair that still forwards the raw
+      // webview ready message in addition to client-ready.
+      if (m.type === "ready") {
+        this.handleRemoteClientReady(clientId, m.tabToken);
+        if (!this.remoteClients.isCurrent(clientId)) return;
+        for (const message of this.buildRemoteSnapshot(clientId)) {
+          this.sendRemoteClient(clientId, message);
+        }
+        return;
+      }
+      if (!allowFromRemote(m.type, GrokSidebar.REMOTE_TIER)) {
+        this.output.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
+        return;
+      }
+      if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
+        this.output.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
+        return;
+      }
+      if (!this.remoteClients.isCurrent(clientId)) {
+        this.output.appendLine(`[remote] dropped ${m.type} from a superseded tab connection`);
+        this.sendRemoteClient(clientId, {
+          type: "error",
+          text: "This page's remote connection was replaced by another tab. Open AFK Pilot in a new tab to reconnect independently.",
+        });
+        return;
+      }
+      this.remoteClients.ready(clientId);
+      const requester = this.captureRemoteRequester(clientId);
+      const transition = async (currentClientId: string) => {
+        if (m.type === "newSession") {
+          await this.newRemoteSession(currentClientId);
+        } else if (m.type === "resumeSession") {
+          await this.openRemoteSession(currentClientId, m.id, m.cwd);
+        } else if (m.type === "selectRepo") {
+          this.selectRemoteRepo(currentClientId, m.cwd);
+        }
+      };
+      const operation = serializesRemoteSessionTransition(m.type)
+        ? this.remoteClients.runSessionTransition(
+            clientId,
+            m.type === "resumeSession" ? m.id : undefined,
+            transition,
+          )
+        : m.type === "send"
+          ? this.remoteClients.runAfterSessionTransition(
+              clientId,
+              (currentClientId) => this.onMessage(m, "remote", currentClientId),
+            )
+          : this.onMessage(m, "remote", clientId);
+      void operation.catch((e) => {
+        const detail = (e as Error)?.message ?? String(e);
+        this.output.appendLine(`[remote] ${m.type} failed: ${detail}`);
+        this.sendRemoteRequester(requester, {
+          type: "error",
+          text: `Grok: ${m.type} failed — ${detail}`,
+        });
+      });
+    } catch (e) {
+      this.output.appendLine(`[remote] dropped malformed frame: ${(e as Error)?.message ?? String(e)}`);
     }
-    if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
-      this.output.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
-      return;
+  }
+
+  private handleRemoteClientReady(clientId: string, tabToken?: string): void {
+    if (tabToken) {
+      const superseded = this.remoteClients.identify(clientId, tabToken);
+      if (superseded) {
+        this.dropRemoteVoice(superseded);
+        this.sendRemoteClient(superseded, {
+          type: "error",
+          text: "This page's remote connection was replaced by another tab. Open AFK Pilot in a new tab to reconnect independently.",
+        });
+        this.output.appendLine(`[remote] handed tab ownership from ${superseded} to ${clientId}`);
+      }
     }
-    void this.onMessage(m, "remote").catch((e) =>
-      this.output.appendLine(`[remote] ${m.type} failed: ${(e as Error)?.message ?? String(e)}`),
-    );
+    if (!this.remoteClients.isCurrent(clientId)) return;
+    // A ready client has rebuilt its page and therefore has no live capture to
+    // feed an older host ingress. Drop it before buildRemoteSnapshot inspects
+    // remoteVoice, so reconnect cannot resurrect a host-only listening state.
+    this.dropRemoteVoice(clientId);
+    this.remoteClients.ready(clientId);
+    const session = this.remoteSessionFor(clientId);
+    // A tab attached to a session with no live process would sit on "Starting"
+    // forever — nothing ever emits `initialized`, and the first send would
+    // quietly spawn a DIFFERENT conversation. Bring the process up (resuming
+    // its id when it has one, so a crashed/reaped conversation reloads its
+    // own history). Deferred: the caller sends this client's snapshot
+    // synchronously right after we return, and the start's frames must land
+    // after it, not race it.
+    if (!session.client) {
+      setTimeout(() => {
+        if (this.remoteClients.active(clientId) !== session) return; // moved on
+        if (session.client || this.startingForRemote.has(session)) return;
+        this.startingForRemote.add(session);
+        this.pool.add(session);
+        void this.startSession(session.activeSessionId, session)
+          .finally(() => this.startingForRemote.delete(session));
+      }, 0);
+    }
   }
 
   private static readonly DEVICE_TOKEN_SECRET = "grok.remoteControl.deviceToken";
@@ -6080,8 +7546,13 @@ See design doc for the full state machine diagram.`;
       relayUrl: REMOTE_RELAY_URL,
       token,
       deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
-      snapshot: () => this.buildRemoteSnapshot(),
-      onClientMessage: (m) => this.handleRemoteMessage(m),
+      snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
+      onClientReady: (clientId, tabToken) => this.handleRemoteClientReady(clientId, tabToken),
+      onClientLeft: (clientId) => {
+        this.releaseRemoteClient(clientId);
+      },
+      onClientRoster: (clientIds) => this.retainRemoteClients(clientIds),
+      onClientMessage: (clientId, m) => this.handleRemoteMessage(clientId, m),
       log: (l) => this.output.appendLine(l),
     });
     this.uplink.start();
@@ -6183,6 +7654,8 @@ See design doc for the full state machine diagram.`;
     await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
     this.uplink?.dispose();
     this.uplink = undefined;
+    this.stopVoiceInput();
+    this.remoteClients.clear();
     this.refreshKeepAwake();
     this.post({ type: "remoteStatus", linked: false });
     void vscode.window.showInformationMessage("Remote device unlinked.");
@@ -6195,19 +7668,41 @@ See design doc for the full state machine diagram.`;
     this.post({ type: "remoteStatus", linked: !!token });
   }
 
-  /** Ordered catch-up for a newly-`ready` client: initialState first (so chat.js
-   *  initializes), then clearMessages + the focused chat buffer, then the rest of
-   *  the sticky chrome (labels/donut/lists — order among them is moot). All of it
-   *  through the outbound policy (media inlined, host-local suppressed). */
-  private buildRemoteSnapshot(): HostMsg[] {
+  /** Ordered catch-up built from this client's cwd and active remote session. */
+  private buildRemoteSnapshot(clientId: string): HostMsg[] {
+    const cwd = this.remoteClients.cwd(clientId);
+    const session = this.remoteSessionFor(clientId);
+    const entries = this.repoCatalog();
+    const initial = { ...this.buildInitialStateMsg(), cwd };
+    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
     const snap: HostMsg[] = [];
-    snap.push(this.stickyChrome.get("initialState") ?? this.buildInitialStateMsg());
+    snap.push(initial);
     snap.push({ type: "clearMessages" });
-    snap.push(...bracketRemoteSnapshot(this.focused.buffer));
-    for (const [type, m] of this.stickyChrome) {
-      if (type === "initialState") continue;
-      snap.push(m);
+    snap.push(...bracketRemoteSnapshot(session.buffer));
+    snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
+    if (session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
+      const text = this.queuedSendReadyText(session);
+      if (text) session.queuedSendDispatch = { id: randomUUID(), text };
     }
+    if (session.queuedSendDispatch) {
+      snap.push({ type: "submitQueuedSend", ...session.queuedSendDispatch });
+    }
+    snap.push({
+      type: "voiceConfigured",
+      value: !!this.resolveVoiceApiKey(this.sessionCwd(session)),
+      sendPhrase: phrase,
+    });
+    const activeVoice = this.remoteVoice.get(clientId);
+    if (activeVoice) {
+      snap.push({ type: "voiceState", status: activeVoice.finalizing ? "transcribing" : "listening" });
+    }
+    snap.push({
+      type: "repos",
+      entries,
+      selectedCwd: cwd,
+      activeCwd: this.sessionCwd(session),
+    });
+    snap.push(this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
     const out: HostMsg[] = [];
     for (const m of snap) {
       const t = transformHostMsgForRemote(m, GrokSidebar.REMOTE_MEDIA_DEPS);
@@ -6245,6 +7740,7 @@ See design doc for the full state machine diagram.`;
 
   <header class="top-bar">
     <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>
+    <button id="remote-btn" class="icon-btn remote-btn" title="Continue remotely" hidden></button>
     <button id="history-btn" class="icon-btn" title="Session history"></button>
     <button id="new-btn" class="icon-btn" title="New session"></button>
     <div id="repo-popover" class="toolbar-popover repo-popover" hidden></div>

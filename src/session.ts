@@ -1,6 +1,7 @@
 import { AcpClient } from "./acp";
 import type { PromptUsage } from "./acp";
 import type { HostMsg } from "./protocol";
+import type { FileChip } from "./chips";
 
 /** Live state for the dashboard dot. `cold` (no live process) is represented by
  *  the absence of a Session, so it isn't in this union. */
@@ -18,6 +19,8 @@ export type SessionStatus = "idle" | "working" | "needs-you" | "done" | "error";
  * singletons it replaces 1:1).
  */
 export class Session {
+  /** Host-owned composer attachments for this session/view. */
+  chips: FileChip[] = [];
   /** The live ACP client (one spawned `grok agent stdio` process), once started. */
   client?: AcpClient;
 
@@ -224,6 +227,21 @@ export class Session {
    */
   queuedSends: string[] = [];
 
+  /**
+   * Remote-only dequeue handshake. While set, the host has asked the owning
+   * browser to echo this claimed submission through the relay, but has not
+   * positively acknowledged its metered frame yet.
+   */
+  queuedSendDispatch?: { id: string; text: string };
+
+  /** Recently accepted dequeue ids. Delayed outbox copies are ignored even
+   * after the active dispatch has been retired. Bounded per live session. */
+  completedQueuedSendIds: string[] = [];
+
+  /** True when this queue originated in AFK Pilot and therefore must return
+   * through the relay's metered `send` path, even across a disconnected tab. */
+  queuedSendRequiresRelay = false;
+
   /** The last completed prompt's billing usage (#53) — grok's `_meta.usage`. */
   lastTurnUsage?: PromptUsage;
 
@@ -234,4 +252,16 @@ export class Session {
    * globalState (`SessionMetaOverride.usage`) and re-persisted as turns land.
    */
   sessionUsage?: PromptUsage;
+}
+
+/** Current non-chat UI state for rebuilding a view of this live session. */
+export function sessionUiSnapshot(session: Session, modeId: string): HostMsg[] {
+  const messages: HostMsg[] = [];
+  if (session.client?.currentModelId) {
+    messages.push({ type: "modelChanged", modelId: session.client.currentModelId });
+  }
+  messages.push({ type: "modeChanged", modeId });
+  messages.push({ type: "chips", chips: session.chips });
+  messages.push({ type: "queuedSends", items: [...session.queuedSends] });
+  return messages;
 }

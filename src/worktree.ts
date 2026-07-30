@@ -110,15 +110,25 @@ export function isGitRepo(
   cwd: string,
   fs: { existsSync(p: string): boolean; statSync?(p: string): { isDirectory(): boolean; isFile(): boolean } },
 ): boolean {
+  return gitRootForPath(cwd, fs) !== undefined;
+}
+
+/** Resolve the nearest checkout root for `cwd`. The nearest `.git` marker is
+ * authoritative so an independent nested checkout does not inherit its
+ * ancestor repository's worktrees. */
+export function gitRootForPath(
+  cwd: string,
+  fs: { existsSync(p: string): boolean },
+): string | undefined {
   let dir = path.resolve(cwd);
   for (let i = 0; i < 64; i++) {
     const git = path.join(dir, ".git");
-    if (fs.existsSync(git)) return true;
+    if (fs.existsSync(git)) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return false;
+  return undefined;
 }
 
 /** Parse one raw list/show row (snake_case from the CLI) into a WorktreeRecord. */
@@ -266,34 +276,44 @@ export interface WorktreeParentRef {
 /**
  * Which worktree cwds ride along with a repo's session history.
  *
- * **The primary workspace lists every known worktree, unconditionally** — that
- * is how history has always behaved, and it is the invariant to protect. Tying
- * a worktree to a parent is best-effort at most: `sourceGitRoot` holds the
- * CLI's *git root*, which is NOT the workspace folder whenever a subdirectory
- * of a repo is the thing opened in VS Code (`isGitRepo` walks upward for
- * exactly that reason). A failed match must never be why a session vanishes
- * from the list it has lived in since worktrees shipped.
- *
- * Only a *non-primary* repo — one picked in the remote switcher, where "every
- * worktree" would be plainly wrong — filters, and even then by containment in
- * either direction rather than string equality.
+ * Parent matching is by checkout identity: the selected folder's nearest git
+ * root must equal the worktree's recorded source root. A worktree without
+ * parent metadata, or a selected folder whose root cannot be established, is
+ * not assigned to any repository. Hiding an ambiguous row is safer than
+ * authorizing deletion from the wrong checkout.
  */
 export function worktreeCwdsForRepo(opts: {
   repoCwd: string;
-  workspaceRoot: string;
+  repoGitRoot?: string;
   worktrees: WorktreeParentRef[];
 }): string[] {
-  const primary = pathsEqual(opts.repoCwd, opts.workspaceRoot);
   return opts.worktrees
-    .filter((w) => w.path && (primary || belongsToRepo(w.sourceGitRoot, opts.repoCwd)))
+    .filter((w) => w.path && belongsToRepo(w.sourceGitRoot, opts.repoGitRoot))
     .map((w) => w.path);
 }
 
-function belongsToRepo(sourceGitRoot: string | undefined, repoCwd: string): boolean {
-  if (!sourceGitRoot) return false;
-  // Either direction: the repo can sit under its git root (a subdirectory is
-  // open) or, for a nested checkout, the other way round.
-  return pathIsInside(repoCwd, sourceGitRoot) || pathIsInside(sourceGitRoot, repoCwd);
+/**
+ * A worktree list RPC is scoped to the repo of the ACP client that served it.
+ * Replace that repo's rows without erasing registrations learned from clients
+ * rooted in other repositories.
+ */
+export function mergeWorktreeRefresh(
+  current: WorktreeRecord[],
+  sourceRepo: string,
+  refreshed: WorktreeRecord[],
+): WorktreeRecord[] {
+  const refreshedPaths = new Set(refreshed.map((record) => normalizeFsPath(record.path)));
+  return [
+    ...current.filter((record) =>
+      !pathsEqual(record.sourceRepo, sourceRepo) &&
+      !refreshedPaths.has(normalizeFsPath(record.path))
+    ),
+    ...refreshed,
+  ];
+}
+
+function belongsToRepo(sourceGitRoot: string | undefined, repoGitRoot: string | undefined): boolean {
+  return !!sourceGitRoot && !!repoGitRoot && pathsEqual(sourceGitRoot, repoGitRoot);
 }
 
 /**

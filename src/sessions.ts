@@ -155,7 +155,33 @@ export interface DeleteDeps {
 
 /** Build the directory grok uses for sessions rooted at `cwd`. Mirrors grok's URL-encoded layout. */
 export function sessionsDirFor(grokHome: string, cwd: string): string {
-  return path.join(grokHome, "sessions", encodeURIComponent(cwd));
+  const encoded = encodeURIComponent(cwd);
+  const safeCatalog = encoded === "" ? "%00" : encoded === "." ? "%2E" : encoded === ".." ? "%2E%2E" : encoded;
+  return path.join(grokHome, "sessions", safeCatalog);
+}
+
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** Grok session ids are opaque safe path segments, never paths themselves. */
+export function isValidSessionId(id: unknown): id is string {
+  return typeof id === "string" &&
+    SESSION_ID_RE.test(id) &&
+    id !== "__proto__" &&
+    id !== "prototype" &&
+    id !== "constructor";
+}
+
+/** Resolve one session directory and independently prove it is a direct child
+ * of the cwd's sessions directory. Undefined means the caller must not touch
+ * the filesystem for the supplied id. */
+export function sessionDirFor(grokHome: string, cwd: string, id: unknown): string | undefined {
+  if (!isValidSessionId(id)) return undefined;
+  const base = path.normalize(sessionsDirFor(grokHome, cwd));
+  const candidate = path.join(base, id);
+  const same = process.platform === "win32"
+    ? path.dirname(candidate).toLowerCase() === base.toLowerCase()
+    : path.dirname(candidate) === base;
+  return same ? candidate : undefined;
 }
 
 /** Stable repo identity for globalState and remote-policy comparisons. */
@@ -385,7 +411,9 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
   }
   const out: SessionIndexEntry[] = [];
   for (const name of names) {
-    const summaryPath = path.join(dir, name, "summary.json");
+    const resolvedSessionDir = sessionDirFor(grokHome, cwd, name);
+    if (!resolvedSessionDir) continue;
+    const summaryPath = path.join(resolvedSessionDir, "summary.json");
     let st: { mtimeMs: number };
     try {
       // A stat on summary.json doubles as the "is this a real session dir?" check: a stray file
@@ -416,10 +444,11 @@ export interface ReadEntriesDeps {
 export function readSessionEntries(deps: ReadEntriesDeps): SessionListEntry[] {
   const { fs, grokHome, cwd, ids, overrides, log } = deps;
   const now = deps.now ? deps.now() : Date.now();
-  const dir = sessionsDirFor(grokHome, cwd);
   const out: SessionListEntry[] = [];
   for (const id of ids) {
-    const summaryPath = path.join(dir, id, "summary.json");
+    const resolvedSessionDir = sessionDirFor(grokHome, cwd, id);
+    if (!resolvedSessionDir) continue;
+    const summaryPath = path.join(resolvedSessionDir, "summary.json");
     let raw: any;
     try {
       raw = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
@@ -447,7 +476,9 @@ export interface ContextUsage {
  *  a positive number. Pure. */
 export function readContextUsage(deps: { fs: FsLike; grokHome: string; cwd: string; id: string }): ContextUsage | null {
   const { fs, grokHome, cwd, id } = deps;
-  const signalsPath = path.join(sessionsDirFor(grokHome, cwd), id, "signals.json");
+  const resolvedSessionDir = sessionDirFor(grokHome, cwd, id);
+  if (!resolvedSessionDir) return null;
+  const signalsPath = path.join(resolvedSessionDir, "signals.json");
   try {
     const raw = JSON.parse(fs.readFileSync(signalsPath, "utf8"));
     const used = raw?.contextTokensUsed;
@@ -577,7 +608,8 @@ export function isEmptyPrimerSession(
 /** Remove the on-disk session directory. No-op if missing. */
 export function deleteSessionDir(deps: DeleteDeps): void {
   const { fs, grokHome, cwd, id } = deps;
-  const dir = path.join(sessionsDirFor(grokHome, cwd), id);
+  const dir = sessionDirFor(grokHome, cwd, id);
+  if (!dir) return;
   if (!fs.existsSync(dir)) return;
   if (fs.rmSync) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -592,13 +624,17 @@ export interface ClearDeps {
   cwd: string;
   /** Session id to keep (the live/focused one — grok re-persists it, so deleting it wouldn't stick). */
   exceptId?: string;
+  /** Session ids to keep when more than one live view owns history in this cwd. */
+  exceptIds?: Iterable<string>;
 }
 
-/** Remove every session directory under `cwd`, optionally keeping one. Returns the ids it removed.
+/** Remove every session directory under `cwd`, optionally keeping selected ids. Returns the ids it removed.
  *  Best-effort: a directory that fails to remove is skipped, not thrown, so one locked dir doesn't
  *  abort the sweep. The directory name is the session id (mirrors `deleteSessionDir`). */
 export function clearSessions(deps: ClearDeps): string[] {
-  const { fs, grokHome, cwd, exceptId } = deps;
+  const { fs, grokHome, cwd, exceptId, exceptIds } = deps;
+  const kept = new Set(exceptIds);
+  if (exceptId) kept.add(exceptId);
   const dir = sessionsDirFor(grokHome, cwd);
   if (!fs.existsSync(dir)) return [];
   let entries: string[];
@@ -609,8 +645,9 @@ export function clearSessions(deps: ClearDeps): string[] {
   }
   const removed: string[] = [];
   for (const name of entries) {
-    if (exceptId && name === exceptId) continue;
-    const full = path.join(dir, name);
+    if (kept.has(name)) continue;
+    const full = sessionDirFor(grokHome, cwd, name);
+    if (!full) continue;
     try {
       if (!fs.statSync(full).isDirectory()) continue;
     } catch {

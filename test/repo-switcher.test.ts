@@ -143,17 +143,16 @@ describe("worktree cwds that ride along with a repo's history", () => {
   const WT_A = path.resolve("/home/.grok/worktrees/repo/feature-a");
   const WT_B = path.resolve("/home/.grok/worktrees/repo/feature-b");
 
-  // The invariant: worktree sessions have lived in the parent repo's HISTORY
-  // list since worktrees shipped. They are not rows in the project selector,
-  // and whether they have their own cwd is irrelevant to that.
-  it("lists every worktree for the primary workspace, even when the git root differs", () => {
+  // Worktree sessions live in their recorded parent repo's history rather than
+  // becoming rows in the project selector.
+  it("lists recorded worktrees when the primary workspace is below the git root", () => {
     // The regression this pins: `sourceGitRoot` is the CLI's GIT root, so
     // opening a SUBDIRECTORY of a repo in VS Code makes it != workspaceRoot.
     // Matching on equality dropped these from the list they had always been in.
     expect(
       worktreeCwdsForRepo({
         repoCwd: WS,
-        workspaceRoot: WS,
+        repoGitRoot: GIT_ROOT,
         worktrees: [
           { path: WT_A, sourceGitRoot: GIT_ROOT },
           { path: WT_B, sourceGitRoot: GIT_ROOT },
@@ -162,10 +161,10 @@ describe("worktree cwds that ride along with a repo's history", () => {
     ).toEqual([WT_A, WT_B]);
   });
 
-  it("still lists worktrees whose parent was never recorded", () => {
+  it("does not authorize a parentless worktree under an arbitrary repo", () => {
     expect(
-      worktreeCwdsForRepo({ repoCwd: WS, workspaceRoot: WS, worktrees: [{ path: WT_A }] }),
-    ).toEqual([WT_A]);
+      worktreeCwdsForRepo({ repoCwd: WS, repoGitRoot: GIT_ROOT, worktrees: [{ path: WT_A }] }),
+    ).toEqual([]);
   });
 
   it("scopes to the matching repo once a NON-primary one is selected", () => {
@@ -173,7 +172,7 @@ describe("worktree cwds that ride along with a repo's history", () => {
     const otherWt = path.resolve("/home/.grok/worktrees/other/wt");
     const picked = worktreeCwdsForRepo({
       repoCwd: other,
-      workspaceRoot: WS,
+      repoGitRoot: other,
       worktrees: [
         { path: WT_A, sourceGitRoot: GIT_ROOT },
         { path: otherWt, sourceGitRoot: other },
@@ -188,7 +187,7 @@ describe("worktree cwds that ride along with a repo's history", () => {
     expect(
       worktreeCwdsForRepo({
         repoCwd: sub,
-        workspaceRoot: WS,
+        repoGitRoot: path.resolve("/work/other"),
         worktrees: [{ path: wt, sourceGitRoot: path.resolve("/work/other") }],
       }),
     ).toEqual([wt]);
@@ -198,7 +197,7 @@ describe("worktree cwds that ride along with a repo's history", () => {
     expect(
       worktreeCwdsForRepo({
         repoCwd: path.resolve("/work/other"),
-        workspaceRoot: WS,
+        repoGitRoot: path.resolve("/work/other"),
         worktrees: [{ path: WT_A }],
       }),
     ).toEqual([]);
