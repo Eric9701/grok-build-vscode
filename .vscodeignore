@@ -29,3 +29,5 @@ docs/codex-style-analysis.md
 
 # Runtime terminal artifacts (never ship)
 terminals/**
+.verification/**
+.grok/**
