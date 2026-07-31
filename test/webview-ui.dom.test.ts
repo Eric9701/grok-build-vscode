@@ -2259,6 +2259,23 @@ describe("context popover — usage breakdown (#53)", () => {
     click(window, hdr);
     expect((hdr.nextElementSibling as HTMLElement).textContent).toContain("$0.008");
   });
+
+  it("clears both usage ledgers when the local view switches sessions", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "usage",
+      turn: { inputTokens: 16000, costUsdTicks: 80_000_000 },
+      session: { inputTokens: 32000, costUsdTicks: 180_384_000 },
+    });
+
+    dispatch(window, { type: "clearMessages" });
+    click(window, $(doc, "donut"));
+
+    const text = $(doc, "context-popover").textContent!;
+    expect(text).not.toContain("Session total");
+    expect(text).not.toContain("Last turn");
+    expect(text).not.toContain("Cost");
+  });
 });
 
 describe("agent message footer (copy + timestamp) — one per turn", () => {

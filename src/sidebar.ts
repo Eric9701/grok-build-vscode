@@ -18,7 +18,7 @@ import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterm
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
-import type { PromptResultMeta } from "./acp-dispatch";
+import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
 import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
@@ -1103,7 +1103,7 @@ See design doc for the full state machine diagram.`;
    * discarded verdict there would restore plan mode from a turn that no longer
    * exists.
    */
-  private truncateSessionCardsAfterRewind(sessionId: string, surviving: number): void {
+  private async truncateSessionCardsAfterRewind(sessionId: string, surviving: number): Promise<void> {
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[sessionId];
     if (!cur) return;
@@ -1132,7 +1132,7 @@ See design doc for the full state machine diagram.`;
     this.output.appendLine(
       `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
     );
-    void this.context.globalState.update(SESSION_META_KEY, {
+    await this.context.globalState.update(SESSION_META_KEY, {
       ...overrides,
       [sessionId]: {
         ...cur,
@@ -1146,6 +1146,7 @@ See design doc for the full state machine diagram.`;
     // Keep the live session + popover in step with what we just persisted.
     const live = [...this.pool].find((s) => s.activeSessionId === sessionId);
     if (live) {
+      live.usageLog = usageLog;
       live.rawSessionUsage = rawUsage;
       live.sessionUsage = usage;
       live.lastTurnUsage = undefined;
@@ -1502,7 +1503,7 @@ See design doc for the full state machine diagram.`;
       );
       const resumeId = session.activeSessionId;
       const surviving = survivingUserMessagesAfterRewind(points, target);
-      this.truncateSessionCardsAfterRewind(resumeId, surviving);
+      await this.truncateSessionCardsAfterRewind(resumeId, surviving);
       this.applyRewindToView(session, surviving);
       this.emit(session, { type: "restoreComposer", text });
       if (nFiles > 0) {
@@ -1629,7 +1630,7 @@ See design doc for the full state machine diagram.`;
       // Same as Edit: our plan/permission cards are not grok's, so the rewind
       // doesn't touch them and a replay would resurrect them at the bottom.
       const surviving = survivingUserMessagesAfterRewind(points, target);
-      this.truncateSessionCardsAfterRewind(resumeId, surviving);
+      await this.truncateSessionCardsAfterRewind(resumeId, surviving);
       this.applyRewindToView(session, surviving);
       // Rewind DISCARDS the message it targets, so hand its text back exactly
       // as Edit does — otherwise the button silently destroys what the user
@@ -3056,7 +3057,7 @@ See design doc for the full state machine diagram.`;
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
       this.emit(session, { type: "promptComplete", meta: gateZeroTokenMeta(meta) });
-      this.accumulateUsage(session, meta);
+      void this.accumulateUsage(session, meta);
       // A zero report (stripped above) is /compact or /session-info; neither
       // warrants a donut update here. /session-info leaves the context
       // untouched, and after /compact the fresh count comes from the live
@@ -6443,6 +6444,17 @@ See design doc for the full state machine diagram.`;
     finishRemoteStartup(clientId: string): void;
     seedRemoteVoice(clientId: string): { cancelled(): boolean };
     emitContextUsage(clientId: string): void;
+    seedUsageLedger(
+      clientId: string,
+      entries: { afterUserMessage: number; afterHistoryEvent?: number; usage?: PromptUsage }[],
+      userMessageCount: number,
+    ): Promise<void>;
+    rewindUsageLedger(clientId: string, surviving: number): Promise<void>;
+    completeUsageTurn(clientId: string, usage: PromptUsage): Promise<void>;
+    reloadUsageLedger(clientId: string, userMessageCount: number): {
+      usageLog: Session["usageLog"];
+      sessionUsage: PromptUsage | undefined;
+    };
     delayNextSessionStart(resumeId?: string): { started: Promise<void>; release(): void };
     waitForSessionLoad(id: string): Promise<void>;
     setSessionStatus(id: string, status: SessionStatus): void;
@@ -6588,6 +6600,53 @@ See design doc for the full state machine diagram.`;
         return { cancelled: () => cancelled };
       },
       emitContextUsage: (clientId) => this.emitContextUsage(this.remoteSessionFor(clientId)),
+      seedUsageLedger: async (clientId, entries, userMessageCount) => {
+        const session = this.remoteSessionFor(clientId);
+        const id = session.activeSessionId;
+        if (!id) throw new Error("Seeded usage session has no id");
+        session.userMessageCount = userMessageCount;
+        session.usageLog = entries.map((entry) => ({
+          ...entry,
+          usage: entry.usage ? { ...entry.usage } : undefined,
+        }));
+        session.rawSessionUsage = sumUsage(session.usageLog);
+        session.sessionUsage = enforceCompleteSessionCost(
+          session.rawSessionUsage,
+          session.usageLog,
+          userMessageCount,
+        );
+        const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+        await this.context.globalState.update(SESSION_META_KEY, {
+          ...overrides,
+          [id]: {
+            ...(overrides[id] ?? {}),
+            usage: session.sessionUsage,
+            usageLog: session.usageLog,
+          },
+        });
+      },
+      rewindUsageLedger: async (clientId, surviving) => {
+        const session = this.remoteSessionFor(clientId);
+        if (!session.activeSessionId) throw new Error("Seeded usage session has no id");
+        await this.truncateSessionCardsAfterRewind(session.activeSessionId, surviving);
+        session.userMessageCount = surviving;
+      },
+      completeUsageTurn: async (clientId, usage) => {
+        const session = this.remoteSessionFor(clientId);
+        session.userMessageCount += 1;
+        await this.accumulateUsage(session, { totalTokens: 1, usage });
+      },
+      reloadUsageLedger: (clientId, userMessageCount) => {
+        const current = this.remoteSessionFor(clientId);
+        const restored = new Session();
+        restored.activeSessionId = current.activeSessionId;
+        restored.userMessageCount = userMessageCount;
+        this.restoreUsage(restored);
+        return {
+          usageLog: restored.usageLog,
+          sessionUsage: restored.sessionUsage,
+        };
+      },
       delayNextSessionStart: (resumeId) => {
         let markStarted!: () => void;
         let release!: () => void;
@@ -7089,7 +7148,7 @@ See design doc for the full state machine diagram.`;
    * The total is persisted per session id because nothing on disk can rebuild
    * it: grok reports usage per prompt and `signals.json` keeps only context size.
    */
-  private accumulateUsage(session: Session, meta: PromptResultMeta): void {
+  private accumulateUsage(session: Session, meta: PromptResultMeta): PromiseLike<void> | undefined {
     const measured = usageIsRealMeasurement(meta);
     // totalTokens:0 is the CLI's reliable no-inference result for native slash
     // turns such as /compact. Record that successful prompt as covered without
@@ -7115,7 +7174,7 @@ See design doc for the full state machine diagram.`;
     if (!id) return;
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
-    void this.context.globalState.update(SESSION_META_KEY, {
+    return this.context.globalState.update(SESSION_META_KEY, {
       ...overrides,
       [id]: { ...cur, usage: session.sessionUsage, usageLog: session.usageLog },
     });

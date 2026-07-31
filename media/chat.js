@@ -2796,6 +2796,8 @@
     state.userMsgCount = 0;
     state.interjectionCount = 0;
     state.historyEventCount = 0;
+    state.lastTurnUsage = null;
+    state.sessionUsage = null;
     state.suppressReplayTurn = false;
     state.skipUserBubble = false;
     state.stickToBottom = true; // a fresh/loaded session starts pinned
@@ -6979,6 +6981,12 @@
         state.activeThoughtEl = null;
         state.activeToolGroupEl = null;
         state.turnAgentActionsEl = null;
+        // The host has just rebuilt the aggregate from the surviving ledger.
+        // No completed-turn figure survives a rewind; when the whole transcript
+        // is gone, neither does the session aggregate.
+        state.lastTurnUsage = null;
+        if (msg.surviving === 0) state.sessionUsage = null;
+        if (!contextPopover.hidden) openContextPopover();
         hideGrokking();
         hideThinkingIndicator();
         // The newest surviving agent message ends a finished turn, so its

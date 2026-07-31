@@ -265,6 +265,45 @@ describe("truncateMessages removes only the tail (#56/P2-9)", () => {
     expect(userBubbles(doc)).toHaveLength(0);
   });
 
+  it("clears the discarded last-turn usage while keeping the surviving aggregate", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "usage",
+      turn: { inputTokens: 300, costUsdTicks: 30_000_000 },
+      session: { inputTokens: 600, costUsdTicks: 60_000_000 },
+    });
+    dispatch(window, {
+      type: "usage",
+      session: { inputTokens: 100, costUsdTicks: 10_000_000 },
+    });
+
+    dispatch(window, { type: "truncateMessages", surviving: 1 });
+    click(window, doc.getElementById("donut") as HTMLElement);
+
+    const text = doc.getElementById("context-popover")!.textContent!;
+    expect(text).toContain("Session total");
+    expect(text).not.toContain("Last turn");
+    expect(text).toContain("$0.001");
+    expect(text).not.toContain("$0.003");
+  });
+
+  it("clears the session aggregate when rewind removes every turn", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "usage",
+      turn: { inputTokens: 300, costUsdTicks: 30_000_000 },
+      session: { inputTokens: 600, costUsdTicks: 60_000_000 },
+    });
+
+    dispatch(window, { type: "truncateMessages", surviving: 0 });
+    click(window, doc.getElementById("donut") as HTMLElement);
+
+    const text = doc.getElementById("context-popover")!.textContent!;
+    expect(text).not.toContain("Session total");
+    expect(text).not.toContain("Last turn");
+    expect(text).not.toContain("Cost");
+  });
+
   it("is a no-op when nothing is discarded", () => {
     const { window, doc } = bootWebview();
     turn(window, "one", "1");

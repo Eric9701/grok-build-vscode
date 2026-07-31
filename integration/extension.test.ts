@@ -326,6 +326,44 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     );
   });
 
+  test("rewind keeps discarded usage out after another turn and a reload", async () => {
+    const suffix = Date.now();
+    const clientId = `usage-rewind-${suffix}`;
+    const id = `usage-session-${suffix}`;
+    hooks.seedRemoteSession(clientId, id, repoB, [], true);
+    await hooks.seedUsageLedger(clientId, [
+      { afterUserMessage: 1, usage: { inputTokens: 100, outputTokens: 10, costUsdTicks: 10_000_000 } },
+      { afterUserMessage: 2, usage: { inputTokens: 200, outputTokens: 20, costUsdTicks: 20_000_000 } },
+      { afterUserMessage: 3, usage: { inputTokens: 300, outputTokens: 30, costUsdTicks: 30_000_000 } },
+    ], 3);
+
+    await hooks.rewindUsageLedger(clientId, 1);
+    await hooks.completeUsageTurn(clientId, {
+      inputTokens: 400,
+      outputTokens: 40,
+      costUsdTicks: 40_000_000,
+    });
+    const restored = hooks.reloadUsageLedger(clientId, 2);
+
+    assert.deepStrictEqual(
+      restored.usageLog.map((entry: any) => ({
+        afterUserMessage: entry.afterUserMessage,
+        inputTokens: entry.usage?.inputTokens,
+        costUsdTicks: entry.usage?.costUsdTicks,
+      })),
+      [
+        { afterUserMessage: 1, inputTokens: 100, costUsdTicks: 10_000_000 },
+        { afterUserMessage: 2, inputTokens: 400, costUsdTicks: 40_000_000 },
+      ],
+    );
+    assert.deepStrictEqual(restored.sessionUsage, {
+      inputTokens: 500,
+      outputTokens: 50,
+      costUsdTicks: 50_000_000,
+    });
+    hooks.remoteClientLeft(clientId);
+  });
+
   test("ordinary history actions cannot destroy another tab's live conversation", async () => {
     const worktree = path.join(repoB, ".clear-all-worktree");
     fs.mkdirSync(worktree, { recursive: true });

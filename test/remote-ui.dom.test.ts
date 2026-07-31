@@ -15,6 +15,23 @@ function key(window: any, el: Element, init: Record<string, unknown>) {
 }
 
 describe("AFK Pilot shared webview controls", () => {
+  it("clears both usage ledgers when a browser tab switches conversations", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "usage",
+      turn: { inputTokens: 16000, costUsdTicks: 80_000_000 },
+      session: { inputTokens: 32000, costUsdTicks: 180_384_000 },
+    });
+
+    dispatch(window, { type: "clearMessages" });
+    click(window, doc.getElementById("donut") as HTMLElement);
+
+    const text = doc.getElementById("context-popover")!.textContent!;
+    expect(text).not.toContain("Session total");
+    expect(text).not.toContain("Last turn");
+    expect(text).not.toContain("Cost");
+  });
+
   it("keeps remote voice completion out of the host prompt path", () => {
     const continuous = sidebarSrc.slice(
       sidebarSrc.indexOf("private async commitRemoteVoice"),
