@@ -333,7 +333,9 @@ export function extractPromptMeta(result: any): PromptResultMeta {
  *
  * `undefined + undefined` stays undefined (never invents a 0 for a field the CLI
  * doesn't report), but a present field added to an absent one keeps the present
- * value. `apiDurationMs` and `numTurns` sum too — both are per-prompt totals.
+ * value. Cost is stricter: it stays absent unless every contributing turn
+ * reported it, because a partial sum must not be presented as a session total.
+ * `apiDurationMs` and `numTurns` sum too — both are per-prompt totals.
  */
 export function addUsage(a: PromptUsage | undefined, b: PromptUsage | undefined): PromptUsage | undefined {
   if (!a) return b ? { ...b } : undefined;
@@ -348,6 +350,8 @@ export function addUsage(a: PromptUsage | undefined, b: PromptUsage | undefined)
     const x = a[k];
     const y = b[k];
     if (x === undefined && y === undefined) continue;
+    // A cost is a truthful total only when every contributing turn reported it.
+    if (k === "costUsdTicks" && (x === undefined || y === undefined)) continue;
     out[k] = (x ?? 0) + (y ?? 0);
   }
   return out;

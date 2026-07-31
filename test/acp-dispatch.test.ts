@@ -1086,6 +1086,15 @@ describe("sumUsage (session total is derived, not patched)", () => {
     expect(out).toEqual({ inputTokens: 10, reasoningTokens: 9 });
   });
 
+  it("withholds session cost when a pre-cost turn is mixed with a cost-bearing turn", () => {
+    const out = sumUsage([
+      { usage: { inputTokens: 100, outputTokens: 10 } },
+      { usage: { inputTokens: 200, outputTokens: 20, costUsdTicks: 25_000_000 } },
+    ]);
+    expect(out).toEqual({ inputTokens: 300, outputTokens: 30 });
+    expect("costUsdTicks" in (out as object)).toBe(false);
+  });
+
   it("skips entries with no usage rather than throwing", () => {
     expect(sumUsage([{ usage: undefined }, { usage: { inputTokens: 3 } }])).toEqual({ inputTokens: 3 });
   });

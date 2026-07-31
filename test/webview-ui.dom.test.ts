@@ -2236,6 +2236,29 @@ describe("context popover — usage breakdown (#53)", () => {
     click(window, hdr);
     expect((hdr.nextElementSibling as HTMLElement).textContent).toContain("$0.008");
   });
+
+  it("omits an incomplete session cost while retaining the current turn's cost", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "usage",
+      turn: { inputTokens: 16000, costUsdTicks: 80_000_000 },
+      session: { inputTokens: 32000 },
+    });
+    click(window, $(doc, "donut"));
+    const pop = $(doc, "context-popover");
+    const sessionSection = pop.querySelector(".popover-section") as HTMLElement;
+    expect(sessionSection.textContent).toBe("Session total");
+    expect(sessionSection.nextElementSibling?.textContent).toContain("Input");
+
+    const hdr = pop.querySelector(".popover-section-toggle") as HTMLElement;
+    const sessionText: string[] = [];
+    for (let el = sessionSection.nextElementSibling; el && el !== hdr; el = el.nextElementSibling) {
+      sessionText.push(el.textContent ?? "");
+    }
+    expect(sessionText.join(" ")).not.toContain("Cost");
+    click(window, hdr);
+    expect((hdr.nextElementSibling as HTMLElement).textContent).toContain("$0.008");
+  });
 });
 
 describe("agent message footer (copy + timestamp) — one per turn", () => {

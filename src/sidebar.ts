@@ -7110,7 +7110,10 @@ See design doc for the full state machine diagram.`;
   private restoreUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
-    const stored = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]?.usage;
+    const persisted = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
+    // Re-derive ledgers instead of trusting an aggregate that may have summed
+    // cost-bearing turns over historical turns where cost was not recorded.
+    const stored = persisted?.usageLog ? sumUsage(persisted.usageLog) : persisted?.usage;
     if (!stored) return;
     session.sessionUsage = stored;
     this.emit(session, { type: "usage", session: stored, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });

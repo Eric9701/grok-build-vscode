@@ -142,7 +142,19 @@ describe("command details (#41)", () => {
   });
 
   it("clips a long single-line command but keeps the full text reachable remotely", () => {
-    const { window, doc } = bootWebview({ remote: true });
+    const { window, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (win) => {
+        Object.defineProperty(win.HTMLElement.prototype, "clientWidth", {
+          configurable: true,
+          get() { return this.classList?.contains("tool-cmd") ? 120 : 0; },
+        });
+        Object.defineProperty(win.HTMLElement.prototype, "scrollWidth", {
+          configurable: true,
+          get() { return this.classList?.contains("tool-cmd") ? 480 : 0; },
+        });
+      },
+    });
     const longCmd = `node -e "${"console.log('x');".repeat(12)}"`;
     dispatch(window, exec("long", longCmd));
     close(window);
@@ -155,6 +167,34 @@ describe("command details (#41)", () => {
     click(window, viewAll);
     expect(pre.classList.contains("command-full")).toBe(true);
     expect(pre.textContent).toBe(longCmd);
+  });
+
+  it("offers a touch reveal when a short command actually overflows a narrow container", () => {
+    const { window, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (win) => {
+        Object.defineProperty(win.HTMLElement.prototype, "clientWidth", {
+          configurable: true,
+          get() { return this.classList?.contains("tool-cmd") ? 72 : 0; },
+        });
+        Object.defineProperty(win.HTMLElement.prototype, "scrollWidth", {
+          configurable: true,
+          get() { return this.classList?.contains("tool-cmd") ? 240 : 0; },
+        });
+      },
+    });
+    const command = "git status --short src media test";
+    expect(command.length).toBeLessThan(80);
+    dispatch(window, exec("narrow", command));
+    close(window);
+    const row = doc.querySelector(".tool-flat.has-details")!;
+    click(window, row);
+
+    const reveal = row.querySelector(".command-view-all") as HTMLButtonElement;
+    expect(reveal).not.toBeNull();
+    expect(reveal.tagName).toBe("BUTTON");
+    click(window, reveal);
+    expect((row.querySelector(".tool-cmd") as HTMLElement).classList.contains("command-full")).toBe(true);
   });
 
   it("caps long IN/OUT previews at six lines and opens the full text in untitled editors", () => {

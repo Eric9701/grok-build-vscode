@@ -3533,6 +3533,9 @@
       if (e.target.closest(".tool-item-details")) return; // selecting text inside must not collapse
       details.hidden = !details.hidden;
       rowEl.classList.toggle("expanded", !details.hidden); // › ↔ v
+      if (!details.hidden) {
+        details.querySelectorAll(".tool-cmd").forEach((pre) => pre._syncOverflowAffordance?.());
+      }
     });
   }
 
@@ -3562,27 +3565,48 @@
     pre.textContent = preview.text;
     if (className === "tool-cmd") pre.title = fullText;
     container.appendChild(pre);
-    const clippedLongCommand = className === "tool-cmd" && fullText
-      .split(/\r?\n/)
-      .some((line) => line.length > 80);
-    if (!preview.truncated && !clippedLongCommand) return;
     const label = preview.truncated ? `View all (${preview.lineCount} lines) →` : "View all →";
-    const viewAll = IS_REMOTE
-      ? makeInlineExpandToggle(label, "msg-collapse-btn command-view-all", (expanding) => {
-          pre.textContent = expanding ? fullText : preview.text;
-          pre.classList.toggle("command-full", expanding);
-        })
-      : document.createElement("button");
-    if (!IS_REMOTE) {
-      viewAll.type = "button";
-      viewAll.className = "preview-link command-view-all";
-      viewAll.textContent = label;
-      viewAll.onclick = (e) => {
-        e.stopPropagation();
-        vscode.postMessage({ type: "openText", content: fullText, language });
-      };
+    let viewAll = null;
+    const ensureViewAll = () => {
+      if (viewAll) return viewAll;
+      viewAll = IS_REMOTE
+        ? makeInlineExpandToggle(label, "msg-collapse-btn command-view-all", (expanding) => {
+            pre.textContent = expanding ? fullText : preview.text;
+            pre.classList.toggle("command-full", expanding);
+          })
+        : document.createElement("button");
+      if (!IS_REMOTE) {
+        viewAll.type = "button";
+        viewAll.className = "preview-link command-view-all";
+        viewAll.textContent = label;
+        viewAll.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: "openText", content: fullText, language });
+        };
+      }
+      container.appendChild(viewAll);
+      return viewAll;
+    };
+    if (preview.truncated) {
+      ensureViewAll();
+      return;
     }
-    container.appendChild(viewAll);
+    if (className !== "tool-cmd") return;
+
+    const syncOverflowAffordance = () => {
+      const overflowing = pre.clientWidth > 0 && pre.scrollWidth > pre.clientWidth;
+      if (overflowing) ensureViewAll();
+      else if (viewAll && viewAll.getAttribute("aria-expanded") !== "true") {
+        viewAll.remove();
+        viewAll = null;
+      }
+    };
+    pre._syncOverflowAffordance = syncOverflowAffordance;
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(syncOverflowAffordance);
+      observer.observe(pre);
+    }
+    requestAnimationFrame(syncOverflowAffordance);
   }
 
   function attachCommandDetails(item, command, toolCallId) {
