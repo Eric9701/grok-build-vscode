@@ -99,7 +99,7 @@ import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
 import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
-import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
+import { isPrimerText, isPrimerSummary } from "./grok-primer";
 import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
@@ -295,9 +295,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly IDLE_TTL_MS = 60 * 60 * 1000; // 1h
   private static readonly REAP_INTERVAL_MS = 5 * 60 * 1000; // sweep every 5 min
   private static readonly STAGING_ORPHAN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-  // The empty-session sweep only scans the newest N by mtime — empty primer
-  // sessions accumulate at the top (a fresh one each open), so this catches them
-  // while keeping the one-shot scan bounded on a large store.
+  // The legacy empty-primer sweep only scans the newest N by mtime, keeping its
+  // one-shot compatibility scan bounded on a large store.
   private static readonly SWEEP_SCAN_LIMIT = 300;
   private reaper?: ReturnType<typeof setInterval>;
   /** Guards {@link sweepEmptyPrimerSessions} to one run per activation. */
@@ -588,8 +587,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
    * cursor for the composer models); the CLI binds the agent at spawn and locks
    * it after the first turn, so a live `set_model` only works within the same
    * agent. When it's rejected for a cross-agent model we persist the choice and
-   * restart — `newSession` re-applies it before the primer runs, while the agent
-   * is still rebindable. Same-agent switches stay live (history intact).
+   * restart — `newSession` reapplies it before the first agent turn, while the
+   * agent is still rebindable. Same-agent switches stay live (history intact).
    */
   async switchModel(
     modelId: string,
@@ -597,11 +596,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     requester?: RemoteRequester,
   ): Promise<void> {
     const client = session.client;
-    // Ignore switches fired during the session-start window: the live set_model
-    // would race the hidden primer (sometimes landing before the agent locks,
-    // sometimes after — see research/model-switch-race-probe.cjs), making the
-    // outcome unpredictable. The webview disables the control while busy; this
-    // is the backstop for a click already in flight.
+    // Ignore switches fired during session startup. The webview disables the
+    // control while busy; this is the backstop for a click already in flight.
     if (!client || session.priming || modelId === client.currentModelId) return;
     const cfg = vscode.workspace.getConfiguration("grok");
     try {
@@ -613,9 +609,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         return;
       }
       if (!session.hasHistory) {
-        // Primer-only session (no real conversation): a cross-agent switch restarts it with a fresh
-        // grok id. There's nothing to summarize, so we never prompt here — and we don't leave the
-        // abandoned primer-only session cluttering history (repeated switches would pile them up).
+        // Empty session (no real conversation): a cross-agent switch restarts it
+        // with a fresh grok id. There is nothing to summarize or preserve.
         // Drop it after the restart, carrying over any rename the user made.
         const discardId = session.activeSessionId;
         await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
@@ -820,27 +815,14 @@ See design doc for the full state machine diagram.`;
     }
   }
 
-  /**
-   * Resolve a plan-review card. The CLI's `exit_plan_mode` treats *any* response
-   * as approval, so the protocol verdict is cosmetic — our gate is the real
-   * decision. Crucially, this fires *during* the planning prompt's turn, so we
-   * only respond here and defer any new prompt/set_mode to `afterTurn`, which
-   * runs once that turn completes (handleSend).
+  /** Resolve a plan-review card inside the ORIGINAL planning turn.
    *
-   * Three verdicts:
-   *  - `approved`: drop gate, return CLI to act mode, send "implement now".
-   *  - `rejected`: keep gate up. If the user left a comment, send it as a plain
-   *    user message after the turn ends and let grok decide what to do next
-   *    (re-plan, ask clarifying questions, etc.) — we don't force a specific
-   *    "revise the plan" framing.
-   *  - `abandoned`: drop gate (exit plan mode entirely), no follow-up prompt.
-   *    The user wants to back out and continue freely.
-   *
-   * `rejected`/`abandoned` cut off the CLI's false-approval continuation via
-   * `cancel()` + a content-only suppression flag. Lifecycle events
-   * (`promptComplete`, `agentEnd`) still reach the webview so `busy` clears and
-   * the send button re-enables when the cancelled turn finally ends.
-   */
+   * Native outcomes drive grok's continuation: approved resumes into
+   * implementation, rejected stays in Plan and lets grok revise, and abandoned
+   * exits to Agent. Gate + permission state must be settled before the response
+   * releases the blocked tool call because implementation can begin immediately.
+   * A comment is interjected first; unsupported older CLIs queue its plain text
+   * for a normal prompt after this turn instead of losing it. */
   private handleExitPlan(
     requestId: number | string,
     verdict: "approved" | "abandoned" | "rejected",
@@ -850,205 +832,75 @@ See design doc for the full state machine diagram.`;
     const client = session.client;
     if (!client) return;
     const gen = session.gen;
-    client.respondExitPlan(requestId, verdict);
+    const feedback = comment?.trim();
+
     this.persistPlanVerdict(session, verdict);
     // Record the resolution in the session buffer (mirrors permissionResolved)
     // so a re-focus replays the plan card collapsed with its verdict instead of
     // actionable — the live collapse is a webview-only DOM mutation the buffer
     // never captured.
     this.emit(session, { type: "planResolved", requestId, verdict });
-    this.setStatus(session, "working"); // a verdict always triggers a follow-up turn
-
-    const feedback = comment?.trim();
+    this.setStatus(session, "working"); // the blocked original prompt is resuming
 
     if (verdict === "approved") {
-      // Drop the gate now, then once the planning turn ends, return the CLI to
-      // act mode and have it implement. The wire-level prompt uses the same
-      // [Plan approved] marker the primer trained grok to recognize, so all
-      // three verdicts speak a consistent protocol. If the user attached a
-      // comment, post it as their user bubble immediately and append it to the
-      // wire-level prompt — same pattern as reject/cancel.
+      // Restore the mode chosen before Plan (#64) before native implementation
+      // can raise a permission request in this same turn.
+      session.autoApprove = vscode.workspace.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
       this.setPlanActive(session, false);
-      // Responding unblocked grok's planning turn (the CLI treats ANY
-      // exit_plan_mode response as approval), and the primer-trained
-      // continuation is contentless by design ("I'll wait for your verdict…").
-      // Cancel + content-suppress it exactly like reject/cancel do — grok
-      // doesn't persist it into replayed history, so live must hide it too;
-      // the [Plan approved] follow-up below is the real continuation. No
-      // agentReset here (unlike reject): pre-card narration the user already
-      // read stays on screen.
-      void client.cancel("plan-verdict approved");
-      session.suppressPlanReject = true;
-      if (feedback) {
-        session.userMessageCount += 1;
-        this.emit(session, { type: "userMessage", text: feedback, chips: [] });
-      }
-      this.emit(session, { type: "planProcessing" }); // indicator while we wait for grok
-      const promptToGrok = feedback ? `[Plan approved] ${feedback}` : "[Plan approved]";
-      session.afterTurn = async () => {
-        session.suppressPlanReject = false;
-        // Return to the mode the user was in BEFORE planning (#64): if that was
-        // Auto-accept, implementation runs without re-prompting; otherwise Agent.
-        // `defaultMode` is the last non-plan mode (Plan is never remembered), so
-        // it holds exactly the pre-plan choice. The gate was already dropped above.
-        const prePlanYolo = vscode.workspace.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
-        session.autoApprove = prePlanYolo;
-        this.emit(session, { type: "modeChanged", modeId: prePlanYolo ? "yolo" : "agent" });
-        try { await client.setMode(ACT_MODE_ID); } catch { /* CLI usually auto-exits already */ }
-        this.emit(session, { type: "agentStart" });
-        this.setStatus(session, "working");
-        try {
-          await this.ensurePrimed(client, session, gen);
-          if (gen !== session.gen) return;
-          const meta = await client.prompt(promptToGrok);
-          if (gen !== session.gen) return;
-          this.emit(session, { type: "agentEnd", meta });
-          this.setStatus(session, "done");
-        } catch (err) {
-          if (gen !== session.gen) return;
-          this.emit(session, { type: "agentError", text: promptErrorText(err) });
-          this.setStatus(session, "error");
-        }
-      };
-      return;
-    }
-
-    // rejected / abandoned: cancel the in-flight turn and suppress its content
-    // so the false-approval response doesn't reach the screen.
-    void client.cancel(`plan-verdict ${verdict}`);
-    this.emit(session, { type: "agentReset" });
-    session.suppressPlanReject = true;
-
-    // If the user attached a comment, post it as their user bubble IMMEDIATELY
-    // (not deferred to afterTurn) so it lands in the conversation right after
-    // the verdict click. Same text gets sent to grok later, verbatim — what the
-    // user sees IS what grok receives, no wire-level boilerplate prefix.
-    if (feedback) {
-      session.userMessageCount += 1;
-      this.emit(session, { type: "userMessage", text: feedback, chips: [] });
-      this.emit(session, { type: "planProcessing" }); // grok will process this comment
-    }
-
-    if (verdict === "rejected") {
-      // Stay in plan mode. The wire-level prompt is always prefixed with the
-      // [Plan rejected] marker the primer trained grok to recognize — even when
-      // the user typed a comment, grok needs the unambiguous verdict tag in
-      // front of it to distinguish "Reject + free-form note" from a regular
-      // user message. The webview's user bubble (posted earlier in this
-      // function) still shows just the user's words.
+      if (session.autoApprove) this.autoApprovePendingPermissions(session);
+    } else if (verdict === "rejected") {
+      session.autoApprove = false;
       this.setPlanActive(session, true);
       if (!feedback) {
         this.emit(session, {
           type: "planNotice",
           text: "Plan rejected — staying in Plan mode.",
         });
-        this.emit(session, { type: "planProcessing" });
       }
-      const promptToGrok = feedback ? `[Plan rejected] ${feedback}` : "[Plan rejected]";
-      session.afterTurn = async () => {
-        session.suppressPlanReject = false;
-        try { await client.setMode("plan"); } catch { /* gate still enforces */ }
-        this.emit(session, { type: "agentStart" });
-        this.setStatus(session, "working");
-        try {
-          await this.ensurePrimed(client, session, gen);
-          if (gen !== session.gen) return;
-          const meta = await client.prompt(promptToGrok);
-          if (gen !== session.gen) return;
-          this.emit(session, { type: "agentEnd", meta });
-          this.setStatus(session, "done");
-        } catch (err) {
-          if (gen !== session.gen) return;
-          this.emit(session, { type: "agentError", text: promptErrorText(err) });
-          this.setStatus(session, "error");
-        }
-      };
-      return;
+    } else {
+      // Preserve the existing safety choice: explicit Cancel lands in Agent,
+      // never back in remembered YOLO/Auto-accept.
+      session.autoApprove = false;
+      this.setPlanActive(session, false);
+      if (!feedback) {
+        this.emit(session, {
+          type: "planNotice",
+          text: "Plan abandoned — switched to Agent mode.",
+        });
+      }
     }
 
-    // abandoned: drop the gate, return to agent mode. The wire-level prompt is
-    // always prefixed with the [Plan cancelled] marker (per the primer
-    // contract). With a comment, the marker precedes the user's words; without
-    // one, the marker stands alone.
-    this.setPlanActive(session, false);
-    if (!feedback) {
-      this.emit(session, {
-        type: "planNotice",
-        text: "Plan abandoned — switched to Agent mode.",
+    // Calling the async method writes before its first await. Keep this call
+    // before respondExitPlan so the comment is queued while grok is still
+    // blocked on exit_plan_mode; capability handling continues asynchronously.
+    const commentDelivery = feedback ? client.interject(feedback) : undefined;
+    client.respondExitPlan(requestId, verdict);
+
+    if (feedback && commentDelivery) {
+      void commentDelivery.then((result) => {
+        // A restart while this unadvertised RPC was in flight makes even an
+        // "ok" ambiguous: queue against the replacement session rather than
+        // risk losing the user's only copy of the refinement.
+        if (gen !== session.gen) {
+          this.divertRacingSend(session, feedback, false);
+          return;
+        }
+        if (result === "ok") {
+          session.userMessageCount += 1;
+          this.emit(session, { type: "userMessage", text: feedback, chips: [], steer: true });
+          this.output.appendLine(`[plan-verdict] interjected ${feedback.length} comment chars`);
+          return;
+        }
+        this.emit(session, { type: "steerUnavailable" });
+        this.divertRacingSend(session, feedback, false);
+      }).catch((e: any) => {
+        this.emit(session, {
+          type: "error",
+          text: `Plan comment steering failed: ${e?.message ?? e}. Your comment was queued instead.`,
+        });
+        this.divertRacingSend(session, feedback, false);
       });
     }
-    const promptToGrok = feedback ? `[Plan cancelled] ${feedback}` : "[Plan cancelled]";
-    session.afterTurn = async () => {
-      try { await client.setMode(ACT_MODE_ID); } catch { /* best-effort */ }
-      if (!feedback) {
-        // Plain cancel: the notice above is the whole UX — no dots, no
-        // follow-up bubble. The wire-level [Plan cancelled] still goes out
-        // (the primer contract needs the verdict), but grok's ack reply is
-        // noise: suppressPlanReject stays up through the turn so nothing
-        // paints, and agentEnd just releases the composer.
-        this.setStatus(session, "working");
-        try {
-          const meta = await client.prompt(promptToGrok);
-          if (gen !== session.gen) return;
-          this.emit(session, { type: "agentEnd", meta });
-        } catch (err) {
-          if (gen !== session.gen) return;
-          this.output.appendLine(`[plan-cancel] hidden ack turn failed: ${(err as Error).message}`);
-          this.emit(session, { type: "agentEnd" });
-        }
-        this.setStatus(session, "done");
-        return;
-      }
-      session.suppressPlanReject = false;
-      this.emit(session, { type: "agentStart" });
-      this.setStatus(session, "working");
-      try {
-        const meta = await client.prompt(promptToGrok);
-        if (gen !== session.gen) return;
-        this.emit(session, { type: "agentEnd", meta });
-        this.setStatus(session, "done");
-      } catch (err) {
-        if (gen !== session.gen) return;
-        this.emit(session, { type: "agentError", text: promptErrorText(err) });
-        this.setStatus(session, "error");
-      }
-    };
-  }
-
-  /** Send the extension's standing instructions ("primer") to grok exactly once
-   *  per grok session — teaching it the plan-verdict protocol the CLI's buggy
-   *  exit_plan_mode can't convey. It fires EAGERLY and NON-BLOCKING the moment a
-   *  session goes live (startSession kicks this off), so the composer is never
-   *  held: the user can send immediately, and their first real prompt awaits this
-   *  same promise (grok can't run two turns at once) — released the instant the
-   *  silent primer acks. The primer's turn is hidden from live chat
-   *  (suppressContent drops grok's "ok"); the user's own message bubble + the
-   *  Grokking indicator are NOT suppressed (they're not in SUPPRESS_TYPES), so a
-   *  send that overlaps the still-running primer shows as sent right away.
-   *
-   *  Idempotent: returns the existing in-flight promise so a fast send doesn't
-   *  start a second primer; resolves immediately once primed. Best-effort — a
-   *  failed primer clears the promise so the next send retries, and never throws
-   *  to the caller (the plan-gate, not the primer, is the actual enforcement). */
-  private ensurePrimed(client: AcpClient, session: Session, gen: number): Promise<void> {
-    if (session.primed) return Promise.resolve();
-    if (session.primingPromise) return session.primingPromise;
-    const promise = (async () => {
-      session.suppressContent = true;
-      try {
-        await client.prompt(GROK_PRIMER);
-        if (gen === session.gen) session.primed = true;
-      } catch (e) {
-        this.output.appendLine(`[primer] failed: ${(e as Error).message}`);
-      } finally {
-        if (gen === session.gen) session.suppressContent = false;
-        // On failure leave the session unprimed and drop the promise so the next
-        // outbound prompt retries instead of awaiting a dead one.
-        if (!session.primed) session.primingPromise = undefined;
-      }
-    })();
-    session.primingPromise = promise;
-    return promise;
   }
 
   /** Persist this plan (text + verdict) so the resume view can replay every plan
@@ -1171,26 +1023,18 @@ See design doc for the full state machine diagram.`;
     if (resolved > 0) this.setStatus(session, "working"); // the turn resumes
   }
 
-  /** Run and clear any deferred post-turn action set by `handleExitPlan`. */
-  private async runAfterTurn(session: Session): Promise<void> {
-    const fn = session.afterTurn;
-    if (!fn) return;
-    session.afterTurn = undefined;
-    await fn();
-  }
-
   /**
    * Resolve the session's queued sends (#37) as ONE combined prompt — blank-line
    * separated, so grok gets a single turn with full context — once its turn is
    * truly over. Safe to call opportunistically: it no-ops while a turn is in
    * flight (`working`), while a card awaits the user (`needs-you`), while a
-   * verdict follow-up is pending (`afterTurn`), during the spawn window
-   * (`priming` — no session id to prompt yet), or with no live client. Works
+   * during the spawn window (`priming` — no session id to prompt yet), or with
+   * no live client. Works
    * for backgrounded sessions too.
    */
   private queuedSendReadyText(session: Session): string | undefined {
     if (!session.queuedSends.length) return undefined;
-    if (!session.client || session.priming || session.afterTurn) return undefined;
+    if (!session.client || session.priming) return undefined;
     if (session.status === "working" || session.status === "needs-you") return undefined;
     return session.queuedSends.join("\n\n");
   }
@@ -1381,13 +1225,6 @@ See design doc for the full state machine diagram.`;
     if (!session.client || !session.activeSessionId) {
       return void vscode.window.showWarningMessage("Start a session before editing a message.");
     }
-    // The hidden primer is a real in-flight prompt that never sets `status`, and
-    // grok runs one turn at a time — so without this an Edit clicked just after
-    // a reload raced the primer. Await it rather than refusing: it's short, and
-    // the user's click was legitimate.
-    if (session.primingPromise) {
-      await session.primingPromise.catch(() => {});
-    }
     if (session.status === "working" || session.status === "needs-you") {
       // Name the state. "Wait for the current turn" is useless when the turn
       // already finished and the status is merely stale — the user can't tell
@@ -1490,9 +1327,6 @@ See design doc for the full state machine diagram.`;
     if (!session.hasHistory) {
       return void vscode.window.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
     }
-    // Same race Edit guards: the hidden primer is a real in-flight prompt that
-    // never sets `status`, and grok runs one turn at a time.
-    if (session.primingPromise) await session.primingPromise.catch(() => {});
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
@@ -1514,7 +1348,7 @@ See design doc for the full state machine diagram.`;
       }
       let target: ReturnType<typeof resolveUserBubbleRewind> = null;
       if (typeof userBubbleIndex === "number") {
-        // Bubble button: map visible user bubble → wire prompt_index (skips primer).
+        // Bubble button: map visible user bubble → wire prompt_index (skips legacy hidden turns).
         target = resolveUserBubbleRewind(points, userBubbleIndex);
         if (!target) {
           return void vscode.window.showInformationMessage(
@@ -1533,8 +1367,8 @@ See design doc for the full state machine diagram.`;
           );
         }
         // Number each entry by its place among the user's VISIBLE messages, not
-        // by the wire prompt_index — that index counts the hidden primer and
-        // marker-only plan verdicts, so it renders as "#1 #2 … #6 #8": a
+        // by the wire prompt_index — old sessions include hidden primer and
+        // marker-only verdict points, so it can render as "#1 #2 … #6 #8": a
         // sequence the user can't match to anything on screen.
         const visiblePosition = new Map(facing.map((p, i) => [p.promptIndex, i + 1]));
         const items = [...selectable]
@@ -2631,14 +2465,9 @@ See design doc for the full state machine diagram.`;
     }
     const summary = chunks.join("").trim();
 
-    await this.startSession(undefined, session); // resets suppressContent + eagerly kicks off the primer
+    await this.startSession(undefined, session); // resets suppressContent
 
     if (summary && session.client) {
-      // Await the eager primer FIRST (it manages its own suppression and ends with
-      // suppressContent=false), THEN re-assert suppression for the hidden summary
-      // injection. Doing it the other way round would let the primer's completion
-      // clear the flag mid-summary and leak "[Context from previous session]".
-      await this.ensurePrimed(session.client, session, session.gen);
       this.emit(session, { type: "sessionContext" });
       session.suppressContent = true;
       try {
@@ -2649,7 +2478,7 @@ See design doc for the full state machine diagram.`;
     }
   }
 
-  /** A model/effort switch on a primer-only session (no real conversation) restarts it with a new
+  /** A model/effort switch on an empty session (no real conversation) restarts it with a new
    *  grok session id. grok already persisted the abandoned one, so without this each repeated switch
    *  would pile another empty session into history. Drop the old session's on-disk dir and carry any
    *  user rename (`customName`) onto the new session so the chosen name survives the restart. The
@@ -2724,12 +2553,8 @@ See design doc for the full state machine diagram.`;
     const configAutoApprove = this.configForcesAutoApprove(this.sessionCwd(session));
     session.autoApprove = rememberedYolo || configAutoApprove;
     session.planActive = false;
-    session.afterTurn = undefined;
     session.hasHistory = false;
-    session.primed = false;
-    session.primingPromise = undefined;
     session.suppressContent = false;
-    session.suppressPlanReject = false;
     session.lastPlanText = "";
     session.pendingPlanText = "";
     session.userMessageCount = 0;
@@ -2747,11 +2572,9 @@ See design doc for the full state machine diagram.`;
     if (configAutoApprove) this.noticeAlwaysApproveOnce();
     if (resumeId) this.emit(session, { type: "clearMessages" });
 
-    // Lock the composer (spinner, disabled) for the session-start window —
-    // start() + newSession()/load — so a prompt can't be sent before the session
-    // exists, which would otherwise throw "no session". The primer is NOT sent
-    // here; it's deferred to the first real send (ensurePrimed). The success path
-    // unlocks once the session is live (below); the failure paths clear it too.
+    // Lock the composer (spinner, disabled) for start() + newSession()/load so a
+    // prompt cannot be sent before the session exists. Success and failure paths
+    // both clear this startup lock below.
     this.emit(session, { type: "setBusy", value: true, locked: true });
 
     const cfg = vscode.workspace.getConfiguration("grok");
@@ -2862,10 +2685,9 @@ See design doc for the full state machine diagram.`;
         session.autoApprove = false;
         this.setPlanActive(session, true);
       } else if (session === this.focused) {
-        // CLI reports a non-plan mode. Do NOT auto-drop the gate here: the buggy
-        // exit_plan_mode emits "default" even when the user chose to keep
-        // planning. The gate is lowered only by explicit user action (approve,
-        // or pick Agent/YOLO). Just refresh the button label.
+        // A non-plan update is descriptive, not authority to lower the safety
+        // gate. The verdict handler settles that gate before its response; direct
+        // Agent/YOLO choices do so in setMode. Just refresh the button label.
         this.postMode();
       }
     });
@@ -2890,13 +2712,9 @@ See design doc for the full state machine diagram.`;
       // echo would render a duplicate bubble and double-count. Only the CLI's
       // session/load *replay* should drive user bubbles from here.
       if (!session.replaying) return;
-      // Our own hidden primer(s) replay as user messages. Don't count them toward
-      // plan positions (the webview hides them too, via its matching
-      // PRIMER_PATTERN) but DO forward so the webview can suppress the whole
-      // primer turn (its bubble + grok's ack). We deliberately do NOT mark the
-      // session primed from this: a primer buried in replayed history isn't
-      // reliably honored by grok (a /compact can drop it), so the first
-      // post-restore send re-primes instead of trusting the replay.
+      // Older extension sessions contain a hidden primer user turn. Don't count
+      // it toward plan positions, but forward it so the webview's matching
+      // legacy pattern suppresses the primer bubble and grok's acknowledgement.
       if (!session.inUserMessage && isPrimerText(text)) {
         session.inUserMessage = true;
         this.emit(session, {
@@ -3303,24 +3121,14 @@ See design doc for the full state machine diagram.`;
         }
       }
 
-      // Session is live — unlock the composer now. The "system prompt" (primer)
-      // that teaches grok the plan-verdict protocol fires here EAGERLY and in the
-      // BACKGROUND (not awaited), on a new OR restored session, so the composer is
-      // never blocked waiting on it. The user can send immediately; their first
-      // real prompt awaits the same priming promise (ensurePrimed) and is released
-      // the instant the silent primer acks. A glance-only restore costs only one
-      // cheap background round-trip (the v4 primer no longer explores). See
-      // src/grok-primer.ts.
+      // Session is live — unlock the composer and flush anything typed during
+      // the startup window (#37).
       session.priming = false;
       this.pool.add(session);
       this.touch(session);
       this.reapPool(); // enforce the LRU cap now that the pool grew
       this.emit(session, { type: "setBusy", value: false });
-      // After the eager primer acks, fire anything type-ahead-queued during the
-      // startup window (#37). ensurePrimed never throws.
-      void this.ensurePrimed(client, session, gen).then(() => {
-        if (gen === session.gen) void this.maybeFlushQueuedSends(session);
-      });
+      if (gen === session.gen) void this.maybeFlushQueuedSends(session);
     } catch (err) {
       if (gen !== session.gen) { client.dispose(); return undefined; }
       const msg = (err as any).message ?? String(err);
@@ -3733,7 +3541,7 @@ See design doc for the full state machine diagram.`;
 
         if (!session.hasHistory || !session.client) {
           // As with a model switch on an empty session: restart without the summarize-vs-restart
-          // prompt and discard the abandoned primer-only session — but only when it truly had no
+          // prompt and discard the abandoned empty session — but only when it truly had no
           // history (a dead client on a session WITH history must keep that history).
           const wasEmpty = !session.hasHistory;
           const discardId = session.activeSessionId;
@@ -4166,8 +3974,8 @@ See design doc for the full state machine diagram.`;
       }
     }
 
-    // A live, still-empty (primer-only) session must read "New session", never grok's
-    // primer-derived summary — even after grok flushes summary.json. The truth is in
+    // A live, still-empty session must read "New session", never a stale disk-derived
+    // summary — even after grok flushes summary.json. The truth is in
     // memory (hasHistory), so override the disk-derived name here. This is the single
     // untitled session the user starts from; abandoning it deletes it (parkFocused).
     const liveEmpty = new Set<string>();
@@ -4214,12 +4022,10 @@ See design doc for the full state machine diagram.`;
    *  first (that IS the row's label for any session that has one), then grok's
    *  own `session_summary` from disk, then the first user message.
    *
-   *  The one deliberate departure: a **primer-derived** summary is skipped. We
-   *  prime every session with a hidden message, and grok titles the session from
-   *  it, so `session_summary` is routinely "… Primer v4 Plan Mode …" — an
-   *  internal name for a message the user cannot even see. Inheriting that into a
-   *  fork's name propagates the noise forever (fork-of-a-fork), so `isPrimerSummary`
-   *  rejects it and we fall through to something real. */
+   *  The one deliberate departure: a **legacy primer-derived** summary is
+   *  skipped. Older builds sent the primer as message #1, so inheriting that
+   *  invisible internal title into a fork would propagate it forever.
+   *  `isPrimerSummary` rejects it and we fall through to something real. */
   private sessionDisplayName(session: Session): string {
     const id = session.activeSessionId;
     if (!id) return "";
@@ -4773,7 +4579,7 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Fire the single `session_start` telemetry event for the first real user
-   *  message of `session` (callers gate on isFirstSend, so primers/empty sessions
+   *  message of `session` (callers gate on isFirstSend, so empty sessions
    *  never reach here). Respects VS Code's global telemetry setting + our own
    *  `grok.telemetry.enabled`; fully fire-and-forget. */
   private reportSessionStart(session: Session, origin: MsgOrigin): void {
@@ -5867,7 +5673,7 @@ See design doc for the full state machine diagram.`;
   /** A prompt is running or pending user action — a new prompt now would
    *  cancel it (a second `session/prompt` kills the in-flight turn). */
   private turnInFlight(session: Session): boolean {
-    return session.status === "working" || session.status === "needs-you" || !!session.afterTurn;
+    return session.status === "working" || session.status === "needs-you";
   }
 
   /** A send that raced into a running turn (desk↔remote co-attach: the other
@@ -6045,8 +5851,7 @@ See design doc for the full state machine diagram.`;
       // generated summary shows through, instead of pinning a permanent
       // "[Image #1]" customName over every screenshot-first session.
       session.firstUserMessageForTitle = text;
-      // One `session_start` per session, on the first real user message — never
-      // the primer (that takes a separate prompt path that doesn't set hasHistory).
+      // One `session_start` per session, on the first real user message.
       this.reportSessionStart(session, origin);
     }
     const sentChips = chips.filter((c) => !c.hidden);
@@ -6057,13 +5862,6 @@ See design doc for the full state machine diagram.`;
     this.setStatus(session, "working");
 
     try {
-      // The hidden primer was kicked off eagerly when the session went live, so
-      // this usually just awaits an already-settled promise. If the user sent
-      // before it acked, we hold the real prompt here until it does (grok runs one
-      // turn at a time) — the user's bubble already shows as sent and the Grokking
-      // indicator covers the gap. If the eager primer failed, this retries it.
-      await this.ensurePrimed(client, session, gen);
-      if (gen !== session.gen) return;
       // Arm the compact-notification watch BEFORE the prompt: the live
       // auto_compact_completed / auto_compact_failed land DURING this turn.
       if (slashCommand === "compact") {
@@ -6092,39 +5890,10 @@ See design doc for the full state machine diagram.`;
           if (gen !== session.gen) return;
         }
       }
-      // Skip agentEnd if a verdict was clicked mid-turn (afterTurn is queued).
-      // Otherwise busy clears here, then the user could send during the brief
-      // gap before afterTurn's own client.prompt starts. afterTurn emits its
-      // own agentEnd at the end of its prompt, so busy stays true throughout.
-      if (!session.afterTurn) {
-        this.emit(session, { type: "agentEnd", meta });
-        this.setStatus(session, "done");
-      }
+      this.emit(session, { type: "agentEnd", meta });
+      this.setStatus(session, "done");
       session.authRecoveryTried = false; // a clean turn re-arms token auto-recovery
       this.maybeGenerateTitle(session);
-      if (slashCommand === "compact") {
-        // A native compact rewrites the history around a summary, which can fold
-        // the hidden primer away with everything else — silently breaking the
-        // plan-verdict protocol for the rest of the session. Re-prime eagerly
-        // (non-blocking, same as session start); this must run AFTER the compact
-        // turn's own agentEnd above, or the primer's suppressContent window
-        // would swallow it. Both flags reset: a settled primingPromise would
-        // otherwise short-circuit ensurePrimed without sending anything.
-        session.primed = false;
-        session.primingPromise = undefined;
-        // The re-prime doubles as the donut BACKUP for /compact, but only when
-        // it can be TRUSTED: skip it if the live rail already gave us the exact
-        // count (sawCompactNotification), and require a SUCCESSFUL primer
-        // (session.primed) — a failed primer means no inference turn ended, so
-        // signals.json still holds the STALE pre-compact count and reading it
-        // would clobber the good value. When it does run, the CLI has recomputed
-        // signals.json at the primer turn's end (research/signals-refresh-probe.cjs).
-        void this.ensurePrimed(client, session, gen).then(() => {
-          if (gen === session.gen && !session.sawCompactNotification && session.primed) {
-            this.emitContextUsageSoon(session, gen);
-          }
-        });
-      }
     } catch (err) {
       if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
       const e = err as any;
@@ -6147,13 +5916,7 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "agentError", text: promptErrorText(e) });
       this.setStatus(session, "error");
     } finally {
-      // If the user approved/declined a plan mid-turn, the follow-up action was
-      // deferred until now (a new prompt can't overlap the one above).
-      try { await this.runAfterTurn(session); }
-      finally { session.suppressPlanReject = false; } // safety net for plan-reject suppression
-      // The turn (incl. any verdict follow-up) is fully over — fire anything
-      // queued during it (#37). No-ops when the queue is empty or the session
-      // was torn down mid-turn.
+      // The turn is fully over — fire anything queued during it (#37).
       if (gen === session.gen) void this.maybeFlushQueuedSends(session);
     }
   }
@@ -6194,7 +5957,6 @@ See design doc for the full state machine diagram.`;
     // session-scoped, so unrelated local/remote turns remain independent.
     const client = await this.startSession(resumeId, session);
     if (!client || session.client !== client) return true; // startSession surfaced its own failure/onboarding
-    await (session.primingPromise ?? Promise.resolve()); // grok runs one turn at a time
     const gen = session.gen;
     if (gen !== session.gen) return true;
 
@@ -6290,7 +6052,7 @@ See design doc for the full state machine diagram.`;
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     void this.postRemoteStatus();
-    // Sweep stale empty primer sessions once the first session is live (so the
+    // Sweep legacy empty-primer sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep).
     void this.startSession().then(() => {
       this.sweepEmptyPrimerSessions();
@@ -6303,27 +6065,14 @@ See design doc for the full state machine diagram.`;
     this.sendRemoteSession(session, message);
   }
 
-  // grok's OUTPUT for a hidden turn (primer / summary injection) — dropped from
-  // both the buffer and the live view. Deliberately excludes `userMessage` and
-  // `agentStart`: those are the user's own input bubble + the "grok is starting"
-  // lifecycle marker, emitted only by genuine user-initiated turns. With the
-  // eager non-blocking primer, a user send can overlap the still-running silent
-  // primer; suppressing those two would swallow the user's own message and the
-  // Grokking indicator. The primer/summary injections never emit them, so leaving
-  // them out costs those flows nothing.
+  // grok's output for hidden summary/context-injection turns, dropped from both
+  // the session buffer and live view. User input/lifecycle messages are excluded.
   private static readonly SUPPRESS_TYPES = new Set([
     "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate",
     "promptComplete", "xaiNotification", "subagentUpdate", "runProgress", "commandOutput", "agentEnd",
   ]);
-  // Subset: content only, not lifecycle. Lets promptComplete/agentEnd through so
-  // the webview's `busy` state clears when the false-approval turn ends.
-  private static readonly PLAN_REJECT_SUPPRESS = new Set([
-    "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate", "xaiNotification", "subagentUpdate", "runProgress", "commandOutput",
-  ]);
-
   private post(message: HostMsg): void {
     if (this.focused.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
-    if (this.focused.suppressPlanReject && GrokSidebar.PLAN_REJECT_SUPPRESS.has(message.type)) return;
     this.view?.webview.postMessage(message);
     if (GrokSidebar.DEVICE_GLOBAL_REMOTE_TYPES.has(message.type)) {
       this.broadcastRemoteDevice(message);
@@ -6502,7 +6251,6 @@ See design doc for the full state machine diagram.`;
           },
         } as unknown as AcpClient;
         session.hasHistory = true;
-        session.primed = true;
         session.status = "done";
         session.chips = chips;
         session.queuedSends = [queuedText];
@@ -6581,7 +6329,7 @@ See design doc for the full state machine diagram.`;
    * Session-scoped post. Records the message in that session's view buffer (so a
    * focus switch can rebuild its chat losslessly — clearMessages + replay) and,
    * when the session is the focused one, forwards it to the webview. Per-session
-   * suppress flags drop primer/summary content from BOTH the buffer and the live
+   * suppress flags drop hidden summary/context content from BOTH buffer and live
    * view (so they never reappear on replay). `clearMessages` resets the buffer —
    * the replay path issues its own clear before replaying, and a (re)started
    * session begins empty. Background sessions buffer silently; nothing reaches
@@ -6590,7 +6338,6 @@ See design doc for the full state machine diagram.`;
    */
   private emit(session: Session, message: HostMsg): void {
     if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
-    if (session.suppressPlanReject && GrokSidebar.PLAN_REJECT_SUPPRESS.has(message.type)) return;
     if (message.type === "clearMessages") session.buffer = [];
     else session.buffer.push(message);
     if (session === this.focused) {
@@ -6758,13 +6505,13 @@ See design doc for the full state machine diagram.`;
     const cur = this.focused;
     const busy = cur.status === "working" || cur.status === "needs-you";
     // A worktree session backs a real git checkout the user explicitly created —
-    // never auto-delete it as an "empty primer session", even before the first
+    // never auto-delete it as an empty session, even before the first
     // message (that's what made creating/leaving a worktree replace the current
     // one). It's removed only via Remove worktree.
-    if (cur.hasHistory || cur.afterTurn || busy || cur.chips.length > 0 || cur.worktree) return; // real/active work — keep it parked & alive
+    if (cur.hasHistory || busy || cur.chips.length > 0 || cur.worktree) return; // real/active work — keep it parked & alive
     // Co-attached: a remote tab still shows this session — not ours to tear down.
     if (this.remoteClients.clientsForActiveValue(cur).length > 0) return;
-    // Empty (primer-only) session being left behind (New Session, or switching to
+    // Empty session being left behind (New Session, or switching to
     // another): tear down its process AND delete its on-disk dir so it doesn't pile
     // up in history (#24). The next focused session becomes the single live "New
     // session"; abandoning this one removes it entirely.
@@ -6773,7 +6520,7 @@ See design doc for the full state machine diagram.`;
     this.postSessionsList();
   }
 
-  /** Remote counterpart of parkFocused: abandoning a primer-only tab session
+  /** Remote counterpart of parkFocused: abandoning an empty tab session
    * must not leave an ownerless process or history row behind. */
   private parkRemoteSession(clientId: string, next?: Session): void {
     const current = this.remoteClients.active(clientId);
@@ -6781,7 +6528,6 @@ See design doc for the full state machine diagram.`;
     const busy = current.status === "working" || current.status === "needs-you";
     if (
       current.hasHistory ||
-      current.afterTurn ||
       busy ||
       current.priming ||
       current.queuedSends.length > 0 ||
@@ -6820,7 +6566,7 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Delete a session's on-disk dir + drop its meta override and read-cache entry.
-   *  Used when an empty (primer-only) session is abandoned or swept. Best-effort —
+   *  Used when an empty session is abandoned or a legacy primer-only session is swept. Best-effort —
    *  a locked/already-gone dir is logged, not thrown. */
   private removeSessionFromDisk(id: string | undefined, sessionCwd?: string): void {
     if (!id) return;
@@ -7069,11 +6815,8 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Push the context size from grok's on-disk signals.json to the webview —
-   *  the source that has a real count when the ACP turn meta can't: a cold
-   *  restore (no turn has run), the hidden post-/compact re-prime (its meta is
-   *  suppressed), and zero-reporting turns like /session-info (stripped by
-   *  gateZeroTokenMeta). Best-effort: no readable count, no message (the
-   *  donut keeps whatever it has). */
+   *  chiefly the cold-restore source before any turn has run. Best-effort: no
+   *  readable count, no message (the donut keeps whatever it has). */
   private emitContextUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
@@ -7099,7 +6842,7 @@ See design doc for the full state machine diagram.`;
    *  restore; its reply text is the only place the fresh count exists this early
    *  on such builds (research/signals-refresh-probe.cjs). Runs before the compact
    *  turn's agentEnd clears busy, so no user send can interleave. Parse failure is
-   *  silent — the post-compact re-prime's signals.json read is the second backup. */
+   *  silent; the donut retains its previous value until a later real count. */
   private async refreshContextAfterCompact(client: AcpClient, session: Session, gen: number): Promise<void> {
     // Drift guard: if a future CLI stops advertising /session-info, sending it
     // anyway would become a REAL inference turn (and a restore-visible bubble).

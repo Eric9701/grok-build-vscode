@@ -47,6 +47,7 @@
 //   node research/plan-mode-recheck-probe.cjs --scenario=approve-native
 //   node research/plan-mode-recheck-probe.cjs --scenario=approve-shipped
 //   node research/plan-mode-recheck-probe.cjs --scenario=approve-native-comment
+//   node research/plan-mode-recheck-probe.cjs --scenario=reject-native-comment
 //   (optional: GROK_BIN=/path/to/grok, --json for a machine-readable tail)
 //
 // Scenarios are independent processes on independent temp dirs — safe to run
@@ -60,7 +61,29 @@ const fs = require("node:fs");
 const crypto = require("node:crypto");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
-const { GROK_PRIMER } = require(path.join(REPO_ROOT, "out", "grok-primer.js"));
+// Archived research fixture: production no longer exports or sends this v4
+// primer, but the historical primer-marker and approve-shipped controls must
+// remain reproducible after a clean rebuild.
+const GROK_PRIMER = `[grok-build-vscode primer v4]
+
+## HIDDEN PRIMER
+
+This is a system message, not a user request. The user cannot see it in the UI. Skip it when discussing previous user messages or summarizing the conversation. It is informational only: **do not use any tools, do not read any files, do not search the workspace, and do not take any action in response to it.**
+
+## Plan Mode
+
+The \`exit_plan_mode\` tool's response is currently unreliable in this CLI version — it always reports "approved" to any client reply, regardless of what the user actually chose in the plan-review UI. **Do not trust the tool result.**
+
+After \`exit_plan_mode\` resolves, end your turn and wait for the NEXT user message. The user's actual verdict will arrive there as a bracketed marker, optionally followed by a comment:
+
+- \`[Plan approved]\` → implement the plan
+- \`[Plan rejected]\` → stay in plan mode; if a comment follows, treat it as refinement guidance
+- \`[Plan cancelled]\` → exit plan mode; if a comment follows, respond to it normally
+- Anything else → treat as a normal user message
+
+The verdict is **always** in the follow-up message, **never** in the tool result.
+
+Reply with exactly: ok`;
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => {
@@ -71,7 +94,7 @@ const SCENARIO = arg("scenario", "error");
 const AS_JSON = argv.includes("--json");
 const VALID = [
   "error", "result", "noprimer-marker", "primer-marker", "adversarial", "toolprobe", "termescape",
-  "approve-native", "approve-shipped", "approve-native-comment",
+  "approve-native", "approve-shipped", "approve-native-comment", "reject-native-comment",
 ];
 if (!VALID.includes(SCENARIO)) {
   console.error(`unknown --scenario=${SCENARIO}; expected one of ${VALID.join(", ")}`);
@@ -81,7 +104,8 @@ if (!VALID.includes(SCENARIO)) {
 const APPROVE_NATIVE = SCENARIO === "approve-native";
 const APPROVE_SHIPPED = SCENARIO === "approve-shipped";
 const APPROVE_NATIVE_COMMENT = SCENARIO === "approve-native-comment";
-const APPROVAL_PROBE = APPROVE_NATIVE || APPROVE_SHIPPED || APPROVE_NATIVE_COMMENT;
+const REJECT_NATIVE_COMMENT = SCENARIO === "reject-native-comment";
+const APPROVAL_PROBE = APPROVE_NATIVE || APPROVE_SHIPPED || APPROVE_NATIVE_COMMENT || REJECT_NATIVE_COMMENT;
 const USE_PRIMER = SCENARIO === "primer-marker" || APPROVE_SHIPPED;
 const RESPOND_ERROR = SCENARIO !== "result" && !APPROVAL_PROBE;
 // Which typed verdict the `result` scenario sends. Approval is the EASY half —
@@ -116,7 +140,7 @@ const TOOLPROBE = SCENARIO === "toolprobe";
 // Terminals are ACKed but NEVER executed, so issuance is measured safely.
 const TERMESCAPE = SCENARIO === "termescape";
 
-// Approval A/B/C (all independent processes/workspaces):
+// Approval/verdict probes (all independent processes/workspaces):
 //   approve-native          approve and let the ORIGINAL planning prompt run
 //                           to completion, with no cancel or follow-up.
 //   approve-shipped         primer, approve, immediate session/cancel
@@ -125,6 +149,9 @@ const TERMESCAPE = SCENARIO === "termescape";
 //   approve-native-comment  queue _x.ai/interject while exit_plan_mode is still
 //                           blocked, THEN approve. Its raw response is evidence;
 //                           -32601 is recorded rather than aborting the run.
+//   reject-native-comment   same pre-response interject ordering, but reply
+//                           {outcome:"cancelled"}; the same original turn must
+//                           revise the plan and request approval again.
 const APPROVAL_PLAN_PROMPT =
   "Plan how to add a subtract(a, b) function to app.js and a test for it. " +
   "Acceptance criteria for the eventual implementation: app.js defines subtract(a, b) so it returns a - b; " +
@@ -133,6 +160,8 @@ const APPROVAL_PLAN_PROMPT =
   "Produce a detailed plan and request approval; do not implement before approval.";
 const APPROVAL_COMMENT =
   "Approved, with one change: also make subtract throw TypeError for non-number operands, and add a test that verifies that behavior.";
+const REJECT_COMMENT =
+  "Before I can approve: revise the plan so subtract throws TypeError for non-number operands, and include a test for that behavior.";
 
 const GROK = process.env.GROK_BIN ||
   path.join(os.homedir(), ".grok", "bin", process.platform === "win32" ? "grok.exe" : "grok");
@@ -185,7 +214,7 @@ const T = {
 // Do not add these keys to legacy scenarios: their --json output stays
 // byte-for-byte shaped as before this probe gained the approval A/B/C.
 if (APPROVAL_PROBE) Object.assign(T, {
-  approvalEvents: [], approvalWrites: [], approvalToolTrace: [], interject: null,
+  approvalEvents: [], approvalWrites: [], approvalToolTrace: [], planMdWriteTrace: [], interject: null,
 });
 
 function log(s) { process.stderr.write(`[recheck:${SCENARIO}] ${s}\n`); }
@@ -263,6 +292,10 @@ rl.on("line", (line) => {
       }
       if (isPlanMd(p) && !isInside(p, REPO_ROOT)) {
         T.planMdWrites++;
+        if (APPROVAL_PROBE) T.planMdWriteTrace.push({
+          phase, afterExitRequestCount: T.exitPlanParams.length,
+          bytes: Buffer.byteLength(body), hash: sha(body), content: body,
+        });
         trace("plan-md-write", { path: p, bytes: Buffer.byteLength(body), hash: sha(body) });
         try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, body); } catch {}
         return respond(msg.id, {});
@@ -291,11 +324,12 @@ rl.on("line", (line) => {
       log(`[${phase}]   params=${JSON.stringify(msg.params).slice(0, 400)}`);
       if (APPROVAL_PROBE) {
         trace("exit-plan-request", { id: msg.id, method: m });
-        if (APPROVE_NATIVE_COMMENT) {
+        if ((APPROVE_NATIVE_COMMENT || REJECT_NATIVE_COMMENT) && T.exitPlanParams.length === 1) {
           // Put the interjection on stdin before releasing the blocked
           // exit_plan_mode request. Do not await here: a CLI that cannot service
           // a nested request must not deadlock the approval response.
-          const interjectParams = { sessionId: activeSessionId, text: APPROVAL_COMMENT };
+          const interjectText = REJECT_NATIVE_COMMENT ? REJECT_COMMENT : APPROVAL_COMMENT;
+          const interjectParams = { sessionId: activeSessionId, text: interjectText };
           trace("interject-request-send", { method: "_x.ai/interject", params: interjectParams });
           T.interject = { request: { method: "_x.ai/interject", params: interjectParams }, response: null };
           interjectPromise = send("_x.ai/interject", interjectParams).then((wire) => {
@@ -304,8 +338,9 @@ rl.on("line", (line) => {
             return wire;
           });
         }
-        trace("exit-plan-response-send", { id: msg.id, result: { outcome: "approved" } });
-        respond(msg.id, { outcome: "approved" });
+        const nativeOutcome = REJECT_NATIVE_COMMENT ? "cancelled" : "approved";
+        trace("exit-plan-response-send", { id: msg.id, result: { outcome: nativeOutcome } });
+        respond(msg.id, { outcome: nativeOutcome });
         phase = "original-after-approval";
         if (APPROVE_SHIPPED) {
           // AcpClient.cancel() writes this notification immediately after the
@@ -573,7 +608,7 @@ function summarize(afterPlan) {
   log("================ RECHECK SUMMARY ================");
   log(`scenario:        ${SCENARIO}   grok ${T.grokVersion}`);
   log(`primer:          ${USE_PRIMER}`);
-  log(`exit_plan reply: ${RESPOND_ERROR ? "JSON-RPC ERROR (reject)" : 'RESULT {outcome:"approved"}'}`);
+  log(`exit_plan reply: ${RESPOND_ERROR ? "JSON-RPC ERROR (reject)" : `RESULT {outcome:"${OUTCOME}"}`}`);
   log(`follow-up:       ${SEND_MARKER ? "[Plan rejected]" : '"What\'s next?"'}`);
   log(`gate:            OFF (writes into the temp workspace really land)`);
   log("");
@@ -676,9 +711,35 @@ function semanticOracle(snapshot, requireComment) {
   return { pass: Object.values(checks).every(Boolean), checks, definitionCount, unexpectedFiles };
 }
 
+function rejectCommentOracle() {
+  const revisedPlans = T.planMdWriteTrace.filter((w) => w.afterExitRequestCount >= 1);
+  const refinementLanded = revisedPlans.some((w) =>
+    /TypeError/i.test(w.content) && /non[- ]?number|typeof|number operands?/i.test(w.content));
+  // The CLI double-wraps: {jsonrpc, id, result: {result: {status: "queued"}}}.
+  // Reading one level up silently yields undefined and reports FAIL on a run
+  // whose own trace shows the interjection was accepted — verified against the
+  // 0.2.117 wire log, not assumed. Tolerate either depth.
+  const wire = T.interject && T.interject.response;
+  const interjectResult = wire && wire.result && (wire.result.result || wire.result);
+  const checks = {
+    interjectQueued: !!interjectResult && interjectResult.status === "queued",
+    exitPlanRequestedAgain: T.exitPlanParams.length >= 2,
+    secondRequestSameOriginalTurn: T.exitPlanParams.length >= 2 &&
+      T.exitPlanParams[0].phase === "plan" && T.exitPlanParams[1].phase === "original-after-approval" &&
+      !T.stops["follow-up"],
+    refinementPresentInRevisedPlan: refinementLanded,
+    remainedInPlanMode: !T.modeUpdates.some((m) => m.modeId === "default"),
+    noWorkspaceWrites: T.approvalWrites.length === 0,
+    originalTurnEndedNormally: T.stops.original === "end_turn",
+  };
+  return { pass: Object.values(checks).every(Boolean), checks, revisedPlans };
+}
+
 function summarizeApproval(afterOriginal) {
   const final = workspaceSnapshot();
-  const oracle = semanticOracle(final, APPROVE_NATIVE_COMMENT);
+  const oracle = REJECT_NATIVE_COMMENT
+    ? rejectCommentOracle()
+    : semanticOracle(final, APPROVE_NATIVE_COMMENT);
   const mutator = (c) => c.toolKind === "edit" || /write|edit|create|str_replace|apply_patch/i.test(String(c.toolName || ""));
   const uniqueMutatorIds = (wantedPhase) => [...new Set(T.approvalToolTrace
     .filter((c) => c.phase === wantedPhase && mutator(c))
@@ -697,7 +758,7 @@ function summarizeApproval(afterOriginal) {
   log("================ APPROVAL A/B/C SUMMARY ================");
   log(`scenario:              ${SCENARIO}   grok ${T.grokVersion}`);
   log(`primer:                ${USE_PRIMER}`);
-  log(`native comment:        ${APPROVE_NATIVE_COMMENT ? JSON.stringify(APPROVAL_COMMENT) : "(none)"}`);
+  log(`native comment:        ${APPROVE_NATIVE_COMMENT ? JSON.stringify(APPROVAL_COMMENT) : REJECT_NATIVE_COMMENT ? JSON.stringify(REJECT_COMMENT) : "(none)"}`);
   log(`original stop:         ${originalStop}`);
   log(`follow-up stop:        ${T.stops["follow-up"] || "(none)"}`);
   log(`cancel expected/path:  ${APPROVE_SHIPPED ? `${cancelExpectedPass ? "PASS" : "FAIL"} (expected cancelled)` : "N/A"}`);
@@ -718,11 +779,16 @@ function summarizeApproval(afterOriginal) {
   log(`outside writes refused:        ${T.outsideWrites.length}`);
   for (const w of T.outsideWrites) log(`  REFUSED [${w.phase}] ${w.path}`);
   log("");
-  log("--- SEMANTIC ACCEPTANCE ORACLE (static; source is printed below) ---");
+  log(`--- ${REJECT_NATIVE_COMMENT ? "SAME-TURN RE-PLAN" : "SEMANTIC ACCEPTANCE"} ORACLE (audit evidence below) ---`);
   for (const [name, pass] of Object.entries(oracle.checks)) log(`  ${pass ? "PASS" : "FAIL"} ${name}`);
   log(`  overall: ${oracle.pass ? "PASS" : "FAIL"}`);
-  log(`  subtract definition count: ${oracle.definitionCount}`);
-  log(`  unexpected files: ${JSON.stringify(oracle.unexpectedFiles)}`);
+  if (!REJECT_NATIVE_COMMENT) {
+    log(`  subtract definition count: ${oracle.definitionCount}`);
+    log(`  unexpected files: ${JSON.stringify(oracle.unexpectedFiles)}`);
+  } else {
+    log(`  exit requests: ${JSON.stringify(T.exitPlanParams)}`);
+    log(`  revised plan writes: ${JSON.stringify(oracle.revisedPlans)}`);
+  }
   log("");
   log("--- AGENT TEXT BY TURN (clipped to 1200 chars each) ---");
   for (const [name, body] of Object.entries(T.agentTextByPhase)) {

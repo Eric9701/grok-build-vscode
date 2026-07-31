@@ -42,11 +42,10 @@ const fs = require("node:fs");
 
 // ── Real extension modules (compiled CJS + shipped webview helper) ───────────
 const REPO = path.resolve(__dirname, "..");
-let dispatch, planGate, helpers, primer;
+let dispatch, planGate, helpers;
 try {
   dispatch = require(path.join(REPO, "out", "acp-dispatch.js"));
   planGate = require(path.join(REPO, "out", "plan-gate.js"));
-  primer = require(path.join(REPO, "out", "grok-primer.js"));
   helpers = require(path.join(REPO, "media", "webview-helpers.js"));
 } catch (e) {
   console.error("Could not load compiled modules — run `npm run compile` (or `tsc -p .`) first.\n" + e.message);
@@ -54,7 +53,6 @@ try {
 }
 const { isMediaGenToolCall, extractGeneratedMediaPaths, contextUsedFromCompactNotification, resolveModelId } = dispatch;
 const { shouldBlockWrite } = planGate;
-const { GROK_PRIMER } = primer;
 const { isSubagentToolCall, subagentLabel } = helpers;
 
 // ── grok locator (cross-platform; mirrors cli-locator's resolution order) ────
@@ -96,7 +94,7 @@ const VIDEO_TIMEOUT_MS = Number(flagVal("video-timeout") || process.env.GROK_VID
 // the mandatory server→client requests, and records writes + media/subagent
 // tool calls so each test can assert against real wire output.
 class Acp {
-  constructor(cwd, { extraArgs = [], onWrite } = {}) {
+  constructor(cwd, { extraArgs = [], onWrite, onExitPlan } = {}) {
     this.cwd = cwd;
     this.nextId = 1;
     this.waiters = new Map();
@@ -111,6 +109,7 @@ class Acp {
     this.lifecycle = [];     // subagent_spawned/subagent_finished (method _x.ai/session/update)
     this.xaiNotifs = [];     // LIVE rail: _x.ai/session_notification updates (auto_compact_completed, subagent_*, turn_completed, …) — the method the extension consumes
     this.onWrite = onWrite;  // optional per-test hook (path) => "write" | "ack"
+    this.onExitPlan = onExitPlan; // optional synchronous hook (params, count) => native outcome
     this.buf = "";
     const win = process.platform === "win32";
     const useShell = /\.(cmd|bat)$/i.test(GROK);
@@ -209,7 +208,10 @@ class Acp {
     if (meth === "terminal/kill" || meth === "terminal/release") return this._respond(m.id, {});
     if (meth.includes("exit_plan_mode")) {
       this.exitPlans.push(m.params || {});
-      return this._respond(m.id, { outcome: "approved" });
+      const outcome = this.onExitPlan
+        ? this.onExitPlan(m.params || {}, this.exitPlans.length)
+        : "approved";
+      return this._respond(m.id, { outcome });
     }
     if (meth === "session/request_permission") {
       const opts = (m.params && m.params.options) || [];
@@ -878,14 +880,8 @@ async function testEditDiffRestore() {
   } finally { b.kill(); }
 }
 
-// Plan mode is the full loop, not a fragment: primer teaches the verdict protocol
-// → plan turn (gate up) → the user's verdict is injected as a follow-up prompt →
-// the gate stays up on REJECT and drops on APPROVE. The old test modeled an
-// impossible state — it auto-"approved" grok's exit_plan_mode request, injected NO
-// verdict, and kept the write gate UP — so grok was told "plan resolved" yet every
-// write was silently blocked, and grok-4.5 escalated to force-writing directly to
-// disk (bypassing the ACP gate). That FAIL was an artifact of the contradiction, not
-// a real containment loss. This models the two flows the extension actually produces.
+// Plan mode uses the CLI's native verdict result. State changes happen in the
+// exit_plan_mode handler before its response releases grok's continuation.
 //
 // Two separate signals are tracked, per the plan-mode research:
 //   A. in-workspace ACP write *attempts* while the gate is up = model discipline
@@ -896,10 +892,9 @@ async function testEditDiffRestore() {
 // Rewind/Edit contract (#56 + P2-9), exercised over the shape that actually
 // broke in dogfooding: repeated no-op plans, each CANCELLED.
 //
-// Why plans specifically — a plan round adds TWO prompts that render NO user
-// bubble (the hidden primer once, then a marker-only "[Plan cancelled]" per
-// round), so the bubble -> rewind-point map has to skip them. When it doesn't,
-// Rewind targets the wrong turn and reverts the wrong files.
+// Why plans specifically — Cancel now abandons each plan inside its original
+// prompt turn. The bubble -> rewind-point map must therefore stay one-to-one;
+// legacy primer/marker filtering remains covered by the offline rewind tests.
 //
 // Pins three things that were each wrong at some point:
 //   1. execute DISCARDS its target (Edit must target the message ITSELF —
@@ -911,7 +906,10 @@ async function testEditDiffRestore() {
 async function testPlanCancelRewind() {
   const rw = require(path.join(REPO, "out", "rewind.js"));
   const cwd = mkTmp("plancancel");
-  const acp = new Acp(cwd, { onWrite: () => "ack" }); // plan mode: never touch disk
+  const acp = new Acp(cwd, {
+    onWrite: () => "ack", // plan mode: never touch disk
+    onExitPlan: () => "abandoned",
+  });
   const ROUNDS = 3;
   try {
     await withTimeout(acp.send("initialize", INIT), 30000, "init");
@@ -919,12 +917,6 @@ async function testPlanCancelRewind() {
     assert(ns.result && ns.result.sessionId, "session/new failed");
     const sessionId = ns.result.sessionId;
 
-    // The primer is a real prompt that renders no bubble — it must not take a slot.
-    try {
-      await withTimeout(
-        acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: GROK_PRIMER }] }),
-        90000, "primer");
-    } catch { /* advisory */ }
     await withTimeout(acp.send("session/set_mode", { sessionId, modeId: "plan" }), 30000, "set_mode plan");
 
     for (let i = 1; i <= ROUNDS; i++) {
@@ -933,10 +925,10 @@ async function testPlanCancelRewind() {
         prompt: [{ type: "text", text:
           "No-op plan test " + i + ": present a trivial plan that changes nothing. Do not edit files." }],
       }), 180000, "plan turn " + i);
-      // Exactly what the extension sends on Cancel: a prompt with no bubble.
-      await withTimeout(acp.send("session/prompt", {
-        sessionId, prompt: [{ type: "text", text: "[Plan cancelled]" }],
-      }), 120000, "cancel " + i);
+      // Native `abandoned` ends the original turn; re-enter Plan for the next round.
+      if (i < ROUNDS) {
+        await withTimeout(acp.send("session/set_mode", { sessionId, modeId: "plan" }), 30000, "set_mode plan " + (i + 1));
+      }
     }
 
     const pts = await withTimeout(acp.send("_x.ai/rewind/points", { sessionId }), 30000, "points");
@@ -945,7 +937,7 @@ async function testPlanCancelRewind() {
     const points = rw.parseRewindPoints(pts.result);
     const facing = rw.userFacingRewindPoints(points);
 
-    // ROUNDS real messages -> ROUNDS bubbles; primer + cancel markers filtered.
+    // ROUNDS original plan messages -> ROUNDS bubbles; no synthetic verdict turns.
     assert(facing.length === ROUNDS,
       "bubble map wrong: " + facing.length + " user-facing of " + points.length +
       " points, expected " + ROUNDS + " (previews: " +
@@ -957,7 +949,7 @@ async function testPlanCancelRewind() {
     assert(tipTarget.promptIndex === facing[ROUNDS - 1].promptIndex,
       "Edit target #" + tipTarget.promptIndex + " != its own point #" + facing[ROUNDS - 1].promptIndex);
 
-    // Editing the FIRST message targets its own point, leaving the primer alive.
+    // Editing the FIRST message targets its own point and removes that turn only.
     const firstTarget = rw.resolveEditRewindTarget(points, 0);
     assert(firstTarget && firstTarget.promptIndex === facing[0].promptIndex,
       "Edit on the first message must target its own point");
@@ -1082,23 +1074,30 @@ async function testPlanMode() {
   // `gateUp` flips exactly where the real extension raises/lowers it.
   let gateUp = true;
   const inWs = (p) => { const rel = path.relative(cwd, p); return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel); };
-  const acp = new Acp(cwd, { onWrite: (p) => (inWs(p) ? (gateUp ? "ack" : "write") : "write") });
-  const wsAttempts = () => acp.writes.filter(inWs).length;
   const diskMutated = () => { try { return fs.readFileSync(appPath, "utf8") !== seed; } catch { return true; } };
+  let rejectedClean = false;
+  let rejectedAttempts = 0;
+  const acp = new Acp(cwd, {
+    onWrite: (p) => (inWs(p) ? (gateUp ? "ack" : "write") : "write"),
+    onExitPlan: (_params, count) => {
+      if (count === 1) {
+        assert(!diskMutated(), "CONTAINMENT: app.js changed before the rejected verdict");
+        rejectedClean = true;
+        rejectedAttempts = acp.writes.filter(inWs).length;
+        return "cancelled";
+      }
+      // Mirror handleExitPlan: lower the gate before releasing native approval.
+      gateUp = false;
+      return "approved";
+    },
+  });
+  const wsAttempts = () => acp.writes.filter(inWs).length;
 
   try {
     await withTimeout(acp.send("initialize", INIT), 30000, "init");
     const ns = await withTimeout(acp.send("session/new", { cwd, mcpServers: [] }), 30000, "new");
     assert(ns.result && ns.result.sessionId, "session/new failed");
     const sessionId = ns.result.sessionId;
-
-    // The hidden primer is what teaches grok to read [Plan approved]/[Plan rejected];
-    // without it the reject turn doesn't model what the extension produces. Best-effort
-    // — a primer hiccup shouldn't fail the plan assertions (the CLI's own plan-mode
-    // system reminders still apply).
-    try {
-      await withTimeout(acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: GROK_PRIMER }] }), 90000, "primer");
-    } catch { /* advisory */ }
 
     const sm = await withTimeout(acp.send("session/set_mode", { sessionId, modeId: "plan" }), 30000, "set_mode plan");
     assert(!sm.error, "set_mode plan errored: " + JSON.stringify(sm.error));
@@ -1108,44 +1107,29 @@ async function testPlanMode() {
     // keeps session-dir state, may delegate to a planning subagent) — real PASSes
     // have clocked 305-315s, and a slow-backend night tips a 6-min ceiling into a
     // false FAIL. 10 min keeps the timeout a hang detector, not a latency bet.
-    await withTimeout(
+    const turn = await withTimeout(
       acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: "Plan how to add a subtract(a,b) function to app.js and a test for it. Produce a detailed plan; do not implement yet." }] }),
       600000, "plan prompt");
+    assert(!turn.error, "plan turn errored: " + JSON.stringify(turn.error));
 
     const upCtx = { active: true, workspaceRoot: cwd, grokHome: GROK_HOME };
     assert(shouldBlockWrite(appPath, upCtx) === true, "plan-gate failed to block an in-workspace write while up");
     const planFile = path.join(GROK_HOME, "sessions", "enc", sessionId, "plan.md");
     assert(shouldBlockWrite(planFile, upCtx) === false, "plan-gate wrongly blocked grok's own plan.md");
-    assert(!diskMutated(), "CONTAINMENT: app.js changed on disk during planning — a write bypassed the ACP gate");
-    const planAttempts = wsAttempts(); // signal A, informational
-
-    // ── Phase 2: REJECT (gate stays up) ──────────────────────────────────────
-    // The extension's "Keep planning": inject the verdict grok was taught to read.
-    // It must stay planning and leave the workspace byte-for-byte untouched.
-    await withTimeout(
-      acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: "[Plan rejected]" }] }),
-      240000, "reject follow-up");
-    assert(!diskMutated(), "REJECT: app.js changed on disk after [Plan rejected] — grok implemented a rejected plan");
-
-    // ── Phase 3: APPROVE (gate down) ─────────────────────────────────────────
-    // The extension's "Approve": lower the gate + leave plan mode, then inject the
-    // approval. The old test kept the gate UP here and asserted 0 writes — a
-    // self-contradiction (approve means writes are SUPPOSED to land).
-    gateUp = false;
-    const dm = await withTimeout(acp.send("session/set_mode", { sessionId, modeId: "default" }), 30000, "set_mode default");
-    assert(!dm.error, "set_mode default errored: " + JSON.stringify(dm.error));
+    // The first native `cancelled` response must cause a same-turn re-plan and a
+    // second exit request. The second is approved with the gate already down, so
+    // implementation continues in this same original prompt.
+    assert(rejectedClean, "grok never requested the rejected native verdict");
+    assert(acp.exitPlans.length >= 2,
+      "cancelled verdict did not re-plan/re-ask in the original turn (exit requests: " + acp.exitPlans.length + ")");
+    assert(gateUp === false, "approval did not lower the client gate before continuation");
     const downCtx = { active: false, workspaceRoot: cwd, grokHome: GROK_HOME };
     assert(shouldBlockWrite(appPath, downCtx) === false, "plan-gate still blocked an in-workspace write after approval");
-    await withTimeout(
-      acp.send("session/prompt", { sessionId, prompt: [{ type: "text", text: "[Plan approved]" }] }),
-      300000, "approve follow-up");
-    // Positive signal (soft): with the gate down, grok's implementation is now allowed
-    // to land. Its post-approve behavior in a headless harness can vary, so we report
-    // rather than fail if it declined — the hard proof is the gate-down pure check above.
-    const landed = diskMutated() || wsAttempts() > planAttempts;
+    const landed = diskMutated();
+    assert(landed, "native approval did not land the implementation inside the original turn");
 
     const wrotePlan = acp.writes.some((w) => /plan\.md$/i.test(w));
-    return `reject: gate up, 0 workspace mutations (${planAttempts} attempt(s) blocked); approve: gate down, implementation ${landed ? "landed" : "not attempted by grok"}${wrotePlan ? "; grok kept its own plan.md" : ""}`;
+    return `native cancelled → re-plan → approved in one turn (${acp.exitPlans.length} exit requests); ${rejectedAttempts} pre-reject workspace attempt(s) contained; gate lowered before implementation; ${wsAttempts()} total workspace write request(s), implementation landed${wrotePlan ? "; grok kept its own plan.md" : ""}`;
   } finally { acp.kill(); }
 }
 
@@ -1436,7 +1420,7 @@ const TESTS = [
   // v1.6.1 notification-rail features (drift canaries):
   { name: "compact-notification", fn: testCompactNotification, slow: false },
   { name: "effort-live", fn: testEffortLive, slow: false, smoke: true },
-  // Now the full loop (primer -> plan -> reject -> approve, ~4 grok turns), so it's
+  // The native reject-then-approve plan loop is intentionally slow, so it's
   // slow enough to skip under --quick; the full release gate still runs it.
   { name: "plan-mode", fn: testPlanMode, slow: true },
   // Rewind/Edit over repeated cancelled plans — the map + discard-semantics gate.

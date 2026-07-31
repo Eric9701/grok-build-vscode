@@ -393,12 +393,16 @@ describe("response builders", () => {
     });
   });
 
-  it("makeExitPlanResponse: approved sends result, rejected/abandoned send error", () => {
-    expect(makeExitPlanResponse(9, "approved").result).toEqual({ outcome: "approved" });
-    expect(makeExitPlanResponse(9, "rejected").error?.code).toBe(-32000);
-    expect(makeExitPlanResponse(9, "rejected").result).toBeUndefined();
-    expect(makeExitPlanResponse(9, "abandoned").error?.code).toBe(-32000);
-    expect(makeExitPlanResponse(9, "abandoned").result).toBeUndefined();
+  it("makeExitPlanResponse maps UI verdicts to native successful outcomes", () => {
+    expect(makeExitPlanResponse(9, "approved")).toEqual({
+      jsonrpc: "2.0", id: 9, result: { outcome: "approved" },
+    });
+    expect(makeExitPlanResponse(9, "rejected")).toEqual({
+      jsonrpc: "2.0", id: 9, result: { outcome: "cancelled" },
+    });
+    expect(makeExitPlanResponse(9, "abandoned")).toEqual({
+      jsonrpc: "2.0", id: 9, result: { outcome: "abandoned" },
+    });
   });
 
   it("makeExitPlanResponse wraps in jsonrpc 2.0 envelope", () => {

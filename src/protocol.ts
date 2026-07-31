@@ -101,7 +101,6 @@ export type HostMsg =
   | { type: "historyReplay"; active: boolean }
   | { type: "permissionHistoryQueue"; permissions: unknown[] }
   | { type: "planHistoryQueue"; plans: PlanHistoryItem[] }
-  | { type: "planProcessing" }
   | { type: "toolCall"; call: ToolCallPayload }
   | { type: "toolCallUpdate"; call: ToolCallPayload }
   | { type: "permissionRequest"; req: PermissionRequest }
@@ -320,7 +319,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
-  planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
+  toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
   permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
   planNotice: true, autoCompactNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,

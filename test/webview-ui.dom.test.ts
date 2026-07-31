@@ -1010,20 +1010,6 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     expect(msg._copyText).toBe("explain this");
   });
 
-  it("is mutually exclusive with the plan-processing indicator (one waiting indicator at a time)", () => {
-    const { window, doc } = bootWebview();
-    // planProcessing then agentStart → Grokking wins, plan-processing is gone.
-    dispatch(window, { type: "planProcessing" });
-    expect(doc.querySelector(".plan-processing")).not.toBeNull();
-    dispatch(window, { type: "agentStart" });
-    expect(doc.querySelector(".plan-processing")).toBeNull();
-    expect(grokking(doc)).not.toBeNull();
-    // …and the reverse: planProcessing replaces Grokking.
-    dispatch(window, { type: "planProcessing" });
-    expect(grokking(doc)).toBeNull();
-    expect(doc.querySelector(".plan-processing")).not.toBeNull();
-  });
-
   it("does not duplicate when agentStart fires twice without content", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "agentStart" });
@@ -1597,12 +1583,12 @@ describe("scroll-to-bottom button (#28)", () => {
 
 describe("continuous progress indicator (always show something mid-turn)", () => {
   // A *live* progress affordance: Grokking / a running tool group / Thinking /
-  // plan-processing / streaming message / an open card. A CSS-hidden thinking
+  // streaming message / an open card. A CSS-hidden thinking
   // block does NOT count (that's the whole point of the stand-in).
   const hasLiveIndicator = (doc: Document) => {
     if (
       doc.querySelector(
-        ".grokking, .thinking-indicator, .tool-group.in-progress, .plan-processing, .msg.agent, .card:not(.resolved)",
+        ".grokking, .thinking-indicator, .tool-group.in-progress, .msg.agent, .card:not(.resolved)",
       )
     )
       return true;

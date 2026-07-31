@@ -16,26 +16,28 @@ hardest unsolved problem.
 
 ## 1. Retire the hidden primer; adopt the CLI's native plan verdicts
 
-**Live-verified (0.2.112).** Replying to `_x.ai/exit_plan_mode` with a JSON-RPC **success**
-`{outcome: "approved" | "cancelled" | "abandoned"}` — instead of the JSON-RPC error we send today —
-does the right thing: the plan turn ends `end_turn` (not `cancelled`), mode stays `["plan"]` on
-`cancelled`, and the model volunteers *"You asked me to **revise** the plan (not approve or reject),
-and **yes — I am still in plan mode**."* That is the whole job the primer performs, done natively,
-with no synthetic turn.
+**Live-verified (0.2.117).** Replying to `_x.ai/exit_plan_mode` with a JSON-RPC **success**
+`{outcome: "approved" | "cancelled" | "abandoned"}` does the right thing inside the original
+turn. Approval changes the mode to `default` and implements once; cancellation stays in Plan and
+grok revises and re-asks without a synthetic prompt. A user comment can be queued with
+`_x.ai/interject` while grok is blocked on `exit_plan_mode`, before the verdict response releases
+the turn, so it influences either implementation or re-planning at the first native continuation.
 
 This is the highest-leverage item by a wide margin, because the primer is load-bearing for a
 surprising amount of machinery that exists *only* to clean up after it:
 
-| Goes away | Why it existed |
+| Retired write-side machinery | Why it existed |
 |---|---|
-| `src/grok-primer.ts`, `ensurePrimed`, `primingPromise` | Teaching the model the bracket protocol |
-| `isPrimerText` / `isPrimerSummary` | Hiding the primer when grok replays it |
-| The empty-primer sweep + `parkFocused` recycle (`sessions.ts`) | Primer-only sessions littering history |
-| Primer-derived title repair, incl. `forkDisplayName`'s carve-out | grok titles from message #1 = the primer |
+| `GROK_PRIMER`, `ensurePrimed`, `primingPromise` | Teaching the model the bracket protocol |
 | Marker-only `[Plan approved/rejected/cancelled]` hidden turns | The protocol itself |
-| `suppressContent` / `SUPPRESS_TYPES` plumbing | Hiding the primer's turn |
 | Post-`/compact` re-priming | `/compact` folds the primer away |
-| Prompt-index compensation in rewind/plan positioning | The primer counts as a user message |
+| Verdict-time cancel, follow-up prompt, and synthetic turn lifecycle | Preventing the primer-trained filler from painting |
+
+The legacy read side deliberately remains. Existing sessions still contain primer turns, so
+`isPrimerText` / `isPrimerSummary`, replay hiding (including `media/chat.js`'s mirror), the
+empty-primer sweep, title repair, and prompt-index compensation must continue to recognize them.
+`suppressContent` / `SUPPRESS_TYPES` also remain: hidden summary and context-maintenance turns use
+the same generic suppression mechanism even though priming no longer does.
 
 **Keep the client-side gate.** This is not "trust native plan mode." `terminal/create` still escapes
 the CLI's plan gate — re-confirmed live on 0.2.112 for the third consecutive build (4 `terminal/create`

@@ -1,6 +1,6 @@
 // Privacy-first, cookieless usage telemetry via Aptabase. We send exactly ONE
 // event — `session_start`, on the first real user message of a session (never
-// the primer / empty sessions) — carrying only an anonymous install id + the
+// empty sessions) — carrying only an anonymous install id + the
 // chosen mode/model/effort + UI configuration. No content (prompts, code, paths)
 // is ever sent, and the IP is used by Aptabase only to derive country, then
 // discarded. The whole

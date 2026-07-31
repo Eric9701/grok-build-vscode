@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { GROK_PRIMER, PRIMER_MARKER, isPrimerText, isPrimerSummary } from "../src/grok-primer";
+import { isPrimerText, isPrimerSummary } from "../src/grok-primer";
 
-describe("isPrimerSummary (empty-session sweep pre-filter)", () => {
+describe("isPrimerSummary (legacy empty-session/title cleanup)", () => {
   it("matches grok's primer-derived summaries/titles", () => {
     for (const s of [
       "Grok-Build-VSCode Primer V4 Plan Mode Handling",
@@ -22,10 +22,9 @@ describe("isPrimerSummary (empty-session sweep pre-filter)", () => {
   });
 });
 
-describe("isPrimerText (host-side replay detection)", () => {
-  it("matches the current primer message", () => {
-    expect(isPrimerText(GROK_PRIMER)).toBe(true);
-    expect(isPrimerText(PRIMER_MARKER)).toBe(true);
+describe("isPrimerText (legacy replay detection)", () => {
+  it("matches the last production primer marker", () => {
+    expect(isPrimerText("[grok-build-vscode primer v4]\n\n## HIDDEN PRIMER")).toBe(true);
   });
 
   it("matches any primer version (v1, v2, … v17) for forward/back compat", () => {
@@ -53,47 +52,5 @@ describe("isPrimerText (host-side replay detection)", () => {
   it("does not match a near-miss marker (wrong name / no version)", () => {
     expect(isPrimerText("[grok-build-vscode primer]")).toBe(false);
     expect(isPrimerText("[some-other primer v3]")).toBe(false);
-  });
-});
-
-describe("GROK_PRIMER content (v4 — trimmed to stop pre-turn exploration)", () => {
-  it("is marked v4 and starts with the marker", () => {
-    expect(PRIMER_MARKER).toBe("[grok-build-vscode primer v4]");
-    expect(GROK_PRIMER.startsWith(PRIMER_MARKER)).toBe(true);
-    expect(isPrimerText(GROK_PRIMER)).toBe(true);
-  });
-
-  // The whole point of v4: an agentic CLI treated the old product paragraph +
-  // repo URL as an invitation to go read the workspace before the user's real
-  // turn. These assertions lock in that those exploration triggers are gone.
-  it("dropped the product/repo paragraph that invited workspace exploration", () => {
-    expect(GROK_PRIMER).not.toMatch(/open source repo/i);
-    expect(GROK_PRIMER).not.toMatch(/Grok Build VS Code extension/i);
-    expect(GROK_PRIMER).not.toMatch(/https?:\/\//); // no URL to chase
-    expect(GROK_PRIMER).not.toMatch(/marketplace/i);
-  });
-
-  it("dropped 'Acknowledge briefly' (which licensed a verify-by-exploring turn)", () => {
-    expect(GROK_PRIMER).not.toMatch(/acknowledge briefly/i);
-  });
-
-  it("adds an explicit do-NOT-act constraint and a one-word reply", () => {
-    expect(GROK_PRIMER).toMatch(/do not use any tools/i);
-    expect(GROK_PRIMER).toMatch(/do not read any files/i);
-    expect(GROK_PRIMER).toMatch(/do not search the workspace/i);
-    expect(GROK_PRIMER).toMatch(/do not take any action/i);
-    expect(GROK_PRIMER).toMatch(/Reply with exactly: ok/);
-  });
-
-  it("still teaches the full plan-verdict protocol (the reason the primer exists)", () => {
-    expect(GROK_PRIMER).toContain("exit_plan_mode");
-    expect(GROK_PRIMER).toContain("[Plan approved]");
-    expect(GROK_PRIMER).toContain("[Plan rejected]");
-    expect(GROK_PRIMER).toContain("[Plan cancelled]");
-    expect(GROK_PRIMER).toMatch(/Do not trust the tool result/i);
-  });
-
-  it("flags itself as a hidden system message to keep out of summaries", () => {
-    expect(GROK_PRIMER).toMatch(/system message, not a user request/i);
   });
 });

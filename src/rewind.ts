@@ -11,8 +11,8 @@
  * `force: true` is required for the execute to actually truncate (without it
  * the CLI returns success:false with empty arrays — the TUI confirmation gate).
  *
- * User-bubble mapping: the extension's hidden primer (and other non-bubbled
- * turns) still create rewind points. `userFacingRewindPoints` strips those so
+ * Legacy user-bubble mapping: hidden primers and other historical non-bubbled
+ * turns still create rewind points. `userFacingRewindPoints` strips those so
  * the Nth visible user bubble aligns with the Nth user-facing point.
  */
 
@@ -138,8 +138,8 @@ export function parseRewindExecute(payload: unknown): RewindExecuteResult | null
  * QuickPick label for a rewind point.
  *
  * `position` is the message's 1-based place among the user's VISIBLE messages.
- * Pass it — the wire `promptIndex` counts turns the user cannot see (the hidden
- * primer, marker-only plan verdicts), so labelling with it produces a
+ * Pass it — in older sessions the wire `promptIndex` counts turns the user cannot
+ * see (primer and marker-only verdicts), so labelling with it produces a
  * non-contiguous "#1 #2 … #6 #8" that refers to nothing on screen. Omitted only
  * by callers that have no visible ordering, where the number is dropped rather
  * than shown wrong.
@@ -173,7 +173,7 @@ export function formatRewindPointDetail(p: RewindPoint): string | undefined {
  * Edit, which discards that turn AND hands its text back.
  * When only one point exists, returns [] (nothing to rewind to).
  *
- * Pass *all* points (including primer) so the tip is the true conversation tip;
+ * Pass *all* points (including any legacy primer) so the tip is the true conversation tip;
  * filter with `userFacingRewindPoints` first when picking among user bubbles.
  */
 export function selectableRewindPoints(points: RewindPoint[]): RewindPoint[] {
@@ -210,7 +210,7 @@ export function userFacingRewindPoints(points: RewindPoint[]): RewindPoint[] {
  * Returns null when the index is out of range or the point is the conversation
  * tip (nothing after it to discard).
  *
- * `allPoints` is the full list from `/points` (primer included) so tip detection
+ * `allPoints` is the full list from `/points` (legacy primer included) so tip detection
  * uses the real max `prompt_index`.
  */
 export function resolveUserBubbleRewind(
@@ -309,7 +309,7 @@ export function truncateReplayBuffer<T extends { type: string; steer?: boolean }
  *
  * The bubble→point map rests on two heuristics that can drift out from under
  * us: `isHiddenRewindPoint` recognizes plumbing turns by their preview text
- * (primer / system-reminder / bare plan markers), and the webview recognizes
+ * (legacy primer / system-reminder / bare plan markers), and the webview recognizes
  * steered messages by the CLI's interjection wording. If the CLI adds a new
  * silent turn shape, or rewords an envelope, the lists silently diverge — and a
  * divergence does not error, it targets the WRONG turn and reverts the wrong

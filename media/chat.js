@@ -405,23 +405,15 @@
     // request, so the host persists + re-queues these.
     permissionHistoryQueue: [],
     userMsgCount: 0,
-    // Element rendered below a resolved plan card while the host is waiting on
-    // grok's response to the verdict (or its comment). Visible only between
-    // the verdict click and the first incoming agent chunk; cleared by any
-    // arriving content or by reset.
-    planProcessingEl: null,
     // The "Grokking…" placeholder shown while a user-initiated turn is waiting on
     // grok — from the moment the user sends (agentStart) until the first real
     // content arrives (a thought, message, tool card, …), which replaces it in
     // place. Same font + animated dots as the Thinking header, minus the expand
-    // chevron. Covers the held-behind-primer gap too: the message shows as sent,
-    // this spins, then the real Thinking block takes over. Never shown for the
-    // silent primer turn (which emits no agentStart). One at a time with
-    // planProcessing (each hides the other).
+    // chevron. The real Thinking block replaces it once content arrives.
     grokkingEl: null,
     // When true, the busy state is "locked" (e.g. session-start priming): the
     // send button shows a spinner and is disabled. When false, busy is
-    // "stoppable" (regular prompts, verdict afterTurn) and the send button
+    // "stoppable" (regular prompts) and the send button
     // shows a stop icon that the user can click to cancel grok mid-stream.
     // Starts true so the very first paint is the disabled spinner (see `busy`).
     busyLocked: true,
@@ -439,10 +431,8 @@
     // Latest `grok update --check` result for the About panel: { checking } while
     // in flight, then { current, latest, updateAvailable, error }.
     grokUpdate: null,
-    // While replaying, suppress everything from the start of the current user
-    // message (a primer turn) through the end of grok's response to it — until
-    // the next user message starts. Keeps the chat clean of our session-start
-    // priming when the user resumes a session.
+    // While replaying an older session, suppress a legacy primer user turn and
+    // grok's response until the next user message starts.
     suppressReplayTurn: false,
     // While replaying, suppress just the user bubble for a marker-only verdict
     // message ([Plan cancelled] with no comment) — grok's response to it still
@@ -499,9 +489,8 @@
     toolExpandOverride: null,
   };
 
-  // Matches any version of the extension's primer (v1, v2, …). Used during
-  // session replay to detect and hide the primer + grok's ack from the
-  // restored conversation.
+  // Matches legacy primers persisted by older extension versions so their user
+  // bubble and grok acknowledgement stay hidden on replay.
   const PRIMER_PATTERN = /^\s*\[grok-build-vscode primer v\d+\]/;
 
   // The CLI feeds background-task notices (and similar plumbing) back to the
@@ -1812,9 +1801,8 @@
     const row = document.createElement("div");
     row.className = "model-effort-row";
 
-    // Model + effort both restart or race the session, so they're locked while
-    // a turn is in flight or the session is still priming (the hidden primer) —
-    // the same `busy` signal that disables send/submit.
+    // Model + effort both restart or race the session, so they are locked while
+    // a turn or session startup is in flight (the same busy signal as Send).
     const settingsLocked = state.busy;
 
     // Until the session's model info arrives (its name + advertised effort menu),
@@ -2613,8 +2601,8 @@
       } else {
         const name = document.createElement("div");
         name.className = "history-row-name";
-        // Tooltip is the name the USER sees/gave — never the primer-derived
-        // summary (rawSummary), which is an internal title on primed sessions.
+        // Tooltip is the name the USER sees/gave — never a legacy primer-derived
+        // summary (rawSummary), which is internal compatibility data.
         name.title = s.displayName || "";
         // A worktree session gets a branch icon (a TYPE marker in muted gray,
         // off the status-dot palette), not a "(WT)" text prefix like a fork's
@@ -2776,7 +2764,6 @@
     state.skipUserBubble = false;
     state.stickToBottom = true; // a fresh/loaded session starts pinned
     updateScrollBtn();
-    hidePlanProcessing();
     hideGrokking();
     hideThinkingIndicator();
     // Busy is per-session UI state — a swap must not leak the previous
@@ -2911,7 +2898,7 @@
       el.appendChild(bubble);
       contentParent = bubble;
       // 0-based index among visible user bubbles — host maps this to a rewind
-      // prompt_index (skipping the hidden primer). Set after userMsgCount bump.
+      // prompt_index (skipping a hidden primer in legacy sessions). Set after userMsgCount bump.
       if (state.userMsgCount > 0) {
         el.dataset.userBubbleIndex = String(state.userMsgCount - 1);
       }
@@ -4569,7 +4556,6 @@
 
   function appendThought(text) {
     if (state.suppressReplayTurn) return; // thinking inside the primer turn
-    hidePlanProcessing(); // thought streaming → indicator obsolete
     hideGrokking(); // real content arrived — the Thinking block takes over
     // Traces hidden (the default): stand in with a "Thinking…" row. While
     // replaying a loaded session there's no live reasoning to indicate.
@@ -4616,7 +4602,6 @@
 
   function appendAgent(text) {
     if (state.suppressReplayTurn) return; // grok's response to the primer
-    hidePlanProcessing(); // agent output started — clear the indicator
     hideGrokking(); // real content arrived — the message bubble takes over
     hideThinkingIndicator(); // a real message replaces the "Thinking…" stand-in
     state.activeUserEl = null;
@@ -4910,35 +4895,13 @@
     state.permissionHistoryQueue = [];
   }
 
-  function showPlanProcessing() {
-    hidePlanProcessing(); // dedupe
-    hideGrokking(); // one waiting indicator at a time
-    hideThinkingIndicator();
-    clearWelcome();
-    const el = document.createElement("div");
-    el.className = "plan-processing";
-    el.innerHTML = '<span class="plan-processing-dots"><span></span><span></span><span></span></span>';
-    el.setAttribute("aria-label", "Grok is processing");
-    messagesEl.appendChild(el);
-    state.planProcessingEl = el;
-    scrollToBottom();
-  }
-
-  function hidePlanProcessing() {
-    if (state.planProcessingEl && state.planProcessingEl.parentElement) {
-      state.planProcessingEl.parentElement.removeChild(state.planProcessingEl);
-    }
-    state.planProcessingEl = null;
-  }
-
   // "Grokking…" — the generic waiting indicator shown on every user-initiated
   // turn from agentStart until grok produces its first content (thought /
   // message / tool / card), which removes it and renders in its place. Mirrors
   // the Thinking header's look (loading-dots ellipsis, same muted font) without
-  // the chevron, and is not expandable. Mutually exclusive with planProcessing.
+  // the chevron, and is not expandable.
   function showGrokking() {
     hideGrokking(); // dedupe
-    hidePlanProcessing(); // one waiting indicator at a time
     hideThinkingIndicator();
     clearWelcome();
     const el = document.createElement("div");
@@ -4970,7 +4933,6 @@
     if (state.thinkingIndicatorEl) return; // already up — keep it stable
     if (state.activeToolGroupEl) return; // a running tool already indicates work
     hideGrokking();
-    hidePlanProcessing();
     clearWelcome();
     const el = document.createElement("div");
     el.className = "thinking-indicator";
@@ -5005,7 +4967,6 @@
     return !!(
       state.grokkingEl ||
       state.thinkingIndicatorEl ||
-      state.planProcessingEl ||
       state.activeToolGroupEl ||
       (state.activeAgentEl && (state.activeAgentRaw || "").trim()) ||
       (state.showThinking && state.activeThoughtEl) ||
@@ -6795,7 +6756,6 @@
         state.turnAgentActionsEl = null;
         hideGrokking();
         hideThinkingIndicator();
-        hidePlanProcessing();
         // The newest surviving agent message ends a finished turn, so its
         // copy/timestamp footer belongs visible.
         const agents = messagesEl.querySelectorAll(".msg.agent .msg-actions");
@@ -6835,10 +6795,8 @@
         if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
         break;
       case "initialized": {
-        // The ACP handshake is done, but grok isn't ready for the user until the
-        // hidden primer turn lands. Stash the version and keep showing "starting…";
-        // the line flips to "connected · v…" only when the spinner hides (the
-        // setBusy:false at the end of priming). See the setBusy handler.
+        // The ACP handshake is done, but session/new or session/load may still be
+        // running. Keep showing Starting until the startup lock clears.
         state.cliVersion = msg.info.version || "";
         state.startingPhase = true;
         const verEl = $("welcome-version");
@@ -6849,8 +6807,8 @@
       }
       case "cliUpdating": {
         // One-time hint while the silent `grok update` runs before the session
-        // spawns; overwritten by "starting…" once grok connects, then
-        // "connected · v<new version>" once the primer finishes.
+        // spawns; overwritten by Starting once grok connects, then Connected
+        // once session startup finishes.
         const verEl = $("welcome-version");
         if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Updating Grok Build CLI"; }
         break;
@@ -7009,16 +6967,9 @@
         state.userMsgCount += 1;
         addMessage("user", msg.text, msg.chips || [], { steer: msg.steer });
         forceScrollToBottom(); // jump back to the bottom on the user's own send (#16)
-        // If the indicator is showing and a NEW (live-send) user message comes
-        // in, hide it. (When the host posts a userMessage as part of the verdict
-        // flow, it then immediately posts planProcessing, which re-shows it
-        // after we hide here — the net effect is correct: indicator below.)
-        hidePlanProcessing();
         break;
       case "agentStart":
-        // A user-initiated turn just began (live send, or a plan-verdict
-        // follow-up). Show "Grokking…" until the first real content replaces it.
-        // The silent primer never emits agentStart, so it never shows here.
+        // A user-initiated turn began. Show Grokking until content replaces it.
         state.turnAgentActionsEl = null; // new turn → previous turn keeps its footer
         state.ttsTurnText = "";
         showGrokking();
@@ -7095,9 +7046,6 @@
         // of historical plan cards from appendUserChunk / live userMessage.
         state.planHistoryQueue = (msg.plans || []).slice();
         state.userMsgCount = 0;
-        break;
-      case "planProcessing":
-        showPlanProcessing();
         break;
       case "toolCall":
         if (state.suppressReplayTurn) break; // tool calls inside the primer turn (unlikely but defensive)
@@ -7328,16 +7276,12 @@
         break;
       case "promptComplete":
         // Finalize the Thinking block and update the token donut — but DO NOT
-        // clear busy here. agentEnd is now the single authoritative "user can
-        // send again" signal, so that the verdict → afterTurn flow can keep
-        // busy=true across two consecutive client.prompt() calls (the original
-        // turn ends emitting promptComplete; afterTurn's follow-up turn then
-        // runs and emits its own agentEnd at the end, which clears busy).
+        // clear busy here. agentEnd is the authoritative "user can send again"
+        // signal for the host-owned prompt lifecycle.
         commitAgentTurn();
         // Deliberately NOT revealTurnFooter(): promptComplete ends one
         // client.prompt(), not necessarily the TURN. More tool calls and text
-        // routinely follow (and a plan verdict runs a second prompt entirely),
-        // so revealing here put a copy/timestamp footer mid-conversation that
+        // routinely follow, so revealing here put a footer mid-conversation that
         // then had content rendered below it — a footer that flickers in and
         // leaves a gap. agentEnd/agentError are the authoritative turn end and
         // already reveal it; the same signal that clears busy should be the one
@@ -7402,7 +7346,6 @@
       }
       case "agentReset": {
         stopProcessingCue();
-        hidePlanProcessing(); // turn is being reset, indicator no longer applies
         hideGrokking();
         hideThinkingIndicator();
         // Drop the in-flight agent bubble entirely. Used when the host wants to
@@ -7427,7 +7370,6 @@
         stopProcessingCue();
         hideGrokking(); // turn ended (possibly before any content)
         hideThinkingIndicator();
-        hidePlanProcessing();
         revealTurnFooter();
         addError(msg.text);
         state.busy = false;
@@ -7443,7 +7385,6 @@
         // A turn that ends with NO content (grok's [Plan cancelled] ack can be
         // empty) would otherwise orphan the dots forever — content-based
         // clearing never fires.
-        hidePlanProcessing();
         revealTurnFooter();
         state.busy = false;
         updateSendButton();
@@ -7453,7 +7394,6 @@
       case "exit":
         stopProcessingCue();
         hideGrokking();
-        hidePlanProcessing();
         addError(`Grok exited (code ${msg.code}). Send a message to restart this session, or start a new one.`);
         state.busy = false;
         state.busyLocked = false; // a dead process ends any startup lock too
@@ -7519,11 +7459,8 @@
         state.busyLocked = !!msg.locked;
         updateSendButton();
         if (!state.busy) {
-          // (Anything type-ahead-queued during the startup window is flushed by
-          // the HOST once the primer acks — nothing to do here.)
-          // Priming just finished: the first hidden message was sent and processed,
-          // so grok is finally ready. Reveal the version now — not at "initialized",
-          // which fires while the primer is still in flight (spinner still up).
+          // Anything typed during startup is flushed by the host. Reveal the
+          // version only now; initialized fires before session startup finishes.
           if (state.startingPhase) {
             state.startingPhase = false;
             const verEl = $("welcome-version");

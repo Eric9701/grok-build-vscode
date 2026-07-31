@@ -135,7 +135,7 @@ export function buildPrompt(
  *   that path to the model, which then tries `Read` on the binary and fails —
  *   a noisy no-op on every pasted image (observed in Windows dogfooding,
  *   2026-07-09). The hint kills the temptation at the point of use instead of
- *   burdening the global primer; see research/vision-input.md.
+ *   burdening global instructions; see research/vision-input.md.
  * - Confirmed slash commands (`slashCommand: true`) flip the envelope too:
  *   `<text>\n\n<envelope>\n\n<tags>` — the same position-0 rule the tag
  *   placement already honors also applies to the envelope itself (that was

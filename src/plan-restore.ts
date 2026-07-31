@@ -3,10 +3,9 @@
 // without mocking vscode, the ACP client, or the filesystem.
 //
 // Background:
-//  - The CLI's `x.ai/exit_plan_mode` treats any response as approval (see
-//    research/plan-mode.md). The extension persists each resolved plan locally
-//    so the live verdict and the resume view both reflect what the user
-//    actually chose, not what the CLI thinks happened.
+//  - Native `exit_plan_mode` outcomes drive the live CLI. The extension still
+//    persists each resolved plan locally so cards and client-side gate state can
+//    be reconstructed on resume (including sessions created by older versions).
 //  - Plan content + verdict + `afterUserMessage` (count of user messages sent
 //    at the moment the plan was resolved) are appended via `appendPlanEntry`.
 //  - On resume, `decideRestoreState` returns the plan-gate + CLI-mode the host
@@ -27,10 +26,9 @@ export type PlanVerdict = "approved" | "rejected" | "abandoned";
  * restore then carries an unreachable position — its card permanently lands
  * at the END of the conversation on later restores.
  *
- * Mirrors chat.js exactly: `<system-reminder>` turns and marker-only plan
- * verdicts ("[Plan cancelled]" with no comment) render no bubble; a marker
- * WITH a comment renders the comment (counts). The primer is handled
- * separately (isPrimerText) by both sides.
+ * Mirrors chat.js exactly. Legacy `<system-reminder>` and marker-only verdict
+ * turns render no bubble; a legacy marker WITH a comment renders that comment.
+ * Legacy primer turns are handled separately by isPrimerText on both sides.
  */
 export function countsAsUserBubble(text: string): boolean {
   const t = text ?? "";

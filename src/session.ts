@@ -72,48 +72,14 @@ export class Session {
   /** Plan-mode gate is up for this session (client-side enforcement mirror). */
   planActive = false;
 
-  /**
-   * Deferred post-turn action. The CLI's exit_plan_mode arrives *during* an
-   * in-flight session/prompt, so we can't send a new prompt/set_mode from the
-   * approval handler — we'd collide with the running turn. We stash the action
-   * here and run it once the current prompt resolves (see handleSend).
-   */
-  afterTurn?: () => Promise<void>;
-
   /** This session has conversational history (vs. a fresh, empty one). */
   hasHistory = false;
 
-  /**
-   * True for the whole session-start window (spawn → newSession/load → primer).
-   * Model/effort changes are settings that restart or race the session, so they
-   * are ignored while priming — the webview also disables the controls (busy),
-   * this is the host-side backstop for a click that slips through that window.
-   */
+  /** True for the session-start window (spawn → newSession/load). Model/effort
+   * changes that would race startup are ignored; the webview also locks busy. */
   priming = false;
 
-  /**
-   * False until the hidden primer has been sent on THIS session load. The primer
-   * is no longer sent at session start — it's deferred to the first outbound
-   * prompt (ensurePrimed), so a startup or glance-only restore costs nothing.
-   * It's (re-)sent on the first send of every load, new OR restored: a primer
-   * buried in a restored session's replayed history isn't reliably honored by
-   * grok (a /compact can drop it from effective context), so we re-assert it
-   * once before the first post-restore turn rather than trusting history.
-   */
-  primed = false;
-
-  /**
-   * In-flight (or settled) hidden-primer turn for THIS session load, if one has
-   * been kicked off. The primer now fires eagerly + non-blocking the moment a
-   * session goes live (ensurePrimed in sidebar), so the user can send straight
-   * away; their first real prompt awaits this promise (grok can't run two turns
-   * at once) and is released the instant the silent primer acks. Reused so a
-   * concurrent send doesn't start a second primer; cleared on failure so the
-   * next send retries. undefined until the primer is first requested.
-   */
-  primingPromise?: Promise<void>;
-
-  /** Drop streaming content from the webview (primer / summary injection). */
+  /** Drop streaming content from hidden summary/context-injection turns. */
   suppressContent = false;
 
   /**
@@ -149,13 +115,6 @@ export class Session {
    * fresh context count. undefined = no capture.
    */
   captureAgentText?: string;
-
-  /**
-   * Plan-reject specific suppression: drop streaming output (the false-approval
-   * ramble) but let lifecycle events through so the webview clears `busy` and
-   * re-enables the send button when the cancelled turn finally ends.
-   */
-  suppressPlanReject = false;
 
   /** Live permission requests awaiting an answer, by request id. Set when the
    *  card is shown, read when the user answers so we can persist the resolved

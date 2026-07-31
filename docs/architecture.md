@@ -59,14 +59,9 @@ When the panel opens (or you click **+** for a new session):
 5. Stream `session/update` notifications (messages, thoughts, tool calls,
    permission requests, mode changes) back into the chat.
 
-The composer unlocks as soon as the session is live. The extension's hidden
-"primer" message (below) fires **eagerly and silently** the moment the session
-goes live — in the background, without blocking the composer — so it's almost
-always finished before you send. Your first real prompt simply `await`s the same
-in-flight primer turn (grok runs one turn at a time) and is released the instant
-it acks. While any user turn is waiting on grok — including that brief held-behind-
-primer gap — the chat shows an animated **Grokking…** placeholder, replaced in
-place by the first thought / message / tool card.
+The composer unlocks as soon as the session is live. While a user turn is waiting
+on grok, the chat shows an animated **Grokking…** placeholder, replaced in place
+by the first thought / message / tool card.
 
 ## The session pool (Agent Dashboard)
 
@@ -139,12 +134,14 @@ it and fail with *"cannot rename locked executable"*. On Windows the kill is a
 children that a parent-only kill would orphan, and they keep the binary locked),
 and the update retries once if a lingering lock still slips through.
 
-## Plan Mode — the one part that isn't thin
+## Plan Mode — native verdicts plus a client-side safety gate
 
-Everything else mirrors the CLI. Plan Mode is enforced **client-side**, because
-the CLI's `x.ai/exit_plan_mode` is unreliable: it reports "approved" to *any*
-client reply — result or error — regardless of what the user actually chose. So
-the extension can't trust the wire verdict. Two mechanisms cover the gap:
+The CLI owns plan-review continuation. The extension responds to
+`_x.ai/exit_plan_mode` with its native success result: `approved`, `cancelled`
+(Keep planning), or `abandoned` (Cancel). Approval continues into implementation
+inside the original turn; cancellation stays in Plan and lets grok revise and
+re-ask inside that same turn. There is no verdict follow-up prompt, turn cancel,
+or synthetic lifecycle.
 
 - **The gate** ([src/plan-gate.ts](../src/plan-gate.ts)). While Plan Mode is
   active, the two mandatory server→client choke points are policed: a
@@ -157,31 +154,22 @@ the extension can't trust the wire verdict. Two mechanisms cover the gap:
   plan mode *any* way — including the agent
   self-initiating it — raises the gate; only an explicit user action lowers it.
 
-- **The primer** ([src/grok-primer.ts](../src/grok-primer.ts)). A hidden system
-  message tells grok in plain English to ignore the bogus tool verdict and read
-  the real decision from the **next** user message instead, as a bracketed
-  marker: `[Plan approved]` / `[Plan rejected]` / `[Plan cancelled]` (optionally
-  followed by a free-form comment). Approve → drop the gate + send "implement it
-  now"; Keep planning → the gate stays up. The primer fires **eagerly and
-  non-blocking** (`ensurePrimed`) — its own hidden turn, kicked off the moment a
-  session goes live (new **and** restored, and after `/compact`) rather than in
-  front of the user's first prompt. It returns a reused `session.primingPromise`,
-  so a first send that races the background primer awaits the *same* turn and is
-  released when it acks. It is *re-sent* on go-live after a restore: a primer
-  buried in replayed history isn't reliably honored (a `/compact` can drop it from
-  effective context), so the extension re-asserts it rather than trusting the
-  replay. The silent turn is hidden by a session-level `suppressContent` flag,
-  which deliberately lets `userMessage`/`agentStart` through so a racing user send
-  still paints its own bubble + Grokking indicator. **Primer v4** is kept minimal
-  on purpose: grok-build is agentic, and the old v3 primer's product-blurb
-  paragraph + repo URL + "acknowledge briefly" line were tempting grok into a
-  15–40s pre-turn exploration of the workspace before the user's message even ran
-  — so v4 keeps only the plan protocol and adds an explicit *do not use tools /
-  read files / search the workspace / take any action; reply with just `ok`*
-  constraint. When grok replays an earlier primer as a user message on restore,
-  the pure `isPrimerText()` helper detects it so the bubble is hidden and not
-  counted toward plan positions — but that detection does **not** mark the session
-  primed.
+- **Verdict state and comments.** `handleExitPlan` settles all implementation-
+  relevant state *before* releasing the blocked response. Approval restores the
+  remembered pre-plan Auto accept choice and lowers the gate; Keep planning keeps
+  the gate raised; Cancel lowers it but deliberately lands on Agent. A non-empty
+  review comment is sent through `_x.ai/interject` before the verdict response,
+  without awaiting it inline. If the unadvertised RPC is unsupported or fails,
+  the exact user text is placed in the ordinary queued-send path rather than
+  being lost.
+
+- **Legacy primer reads.** Older sessions on disk contain the retired v4 hidden
+  primer and bracket-marker turns. `src/grok-primer.ts` therefore keeps only the
+  version-agnostic `isPrimerText()` / `isPrimerSummary()` readers. Replay hiding,
+  title repair, the empty-session sweep, and rewind/plan-position mapping continue
+  to account for those historical turns. `suppressContent` / `SUPPRESS_TYPES` are
+  also retained for other hidden maintenance turns; they are no longer a priming
+  mechanism.
 
 The full pedagogical write-up lives in
 [research/understanding-plan-mode.md](../research/understanding-plan-mode.md).
@@ -203,7 +191,7 @@ The full pedagogical write-up lives in
 | [src/terminal-manager.ts](../src/terminal-manager.ts) | Headless shells for the agent's `terminal/*` calls |
 | [src/plan-gate.ts](../src/plan-gate.ts) | Plan-mode policy (pure) — workspace-write containment + read-only command allowlist |
 | [src/plan-restore.ts](../src/plan-restore.ts) | Plan persist + restore decision (pure) |
-| [src/grok-primer.ts](../src/grok-primer.ts) | The hidden primer text + replay-detection helper (pure) |
+| [src/grok-primer.ts](../src/grok-primer.ts) | Legacy primer replay/title detection helpers (pure) |
 | [src/chips.ts](../src/chips.ts) | File-chip CRUD (pure) |
 | [src/prompt-builder.ts](../src/prompt-builder.ts) | Chip → prompt-string with `@path` refs and fenced blocks (pure) |
 | [src/slash-filter.ts](../src/slash-filter.ts) | Slash-command autocomplete filter + `matchSlashCommand` dispatch gate + hidden-command filter (`filterAdvertisedCommands` drops the config-mutating `/always-approve`) (pure) |
@@ -369,27 +357,27 @@ the steady-state fix.
 - **Model switching is agent-aware.** Models belong to *agent types*
   (`grok-build`/`grok-build-plan` vs. the `cursor` agent that owns the Composer
   models). The CLI binds the agent when the process spawns and locks it after the
-  first turn (including our primer), so a live `session/set_model` only works
+  first turn, so a live `session/set_model` only works
   *within* the same agent — a cross-agent switch errors
   `MODEL_SWITCH_INCOMPATIBLE_AGENT`. So `switchModel` tries the live switch and,
   on that specific error (`isIncompatibleAgentError` in
   [src/acp-dispatch.ts](../src/acp-dispatch.ts)), persists the pick to
-  `grok.defaultModel` and restarts — `newSession` re-applies the model *before* the
-  primer runs, while the agent is still rebindable. No history → transparent
+  `grok.defaultModel` and restarts — `newSession` re-applies the model before the
+  first turn, while the agent is still rebindable. No history → transparent
   restart; with history → a Summarize / Just-Restart choice. (An **effort** change,
   by contrast, no longer restarts on recent CLIs — see the live-effort bullet
-  below.) A restart on a *primer-only* session (no real conversation — common when
+  below.) A restart on an empty session (no real conversation — common when
   you flip models/effort right after opening) takes the no-prompt path **and**
   discards the abandoned grok session dir afterward, so repeated switches don't pile
   up identical empty sessions in history; the pure `carrySessionName` moves any user
   rename onto the fresh session so the chosen name survives. The same cleanup runs on
   the effort-change empty-session branch, guarded so a dead client on a session *with*
   history keeps its history.
-- **Empty primer sessions never accumulate (#24).** Beyond the model/effort restart
-  case above, *any* time you leave an empty (primer-only, `hasHistory === false`)
+- **Empty sessions never accumulate (#24).** Beyond the model/effort restart
+  case above, *any* time you leave an empty (`hasHistory === false`)
   session — New Session or switching to another — `parkFocused` deletes its on-disk
   dir, so at most one untitled **New session** exists at a time. A one-shot startup
-  sweep (`sweepEmptyPrimerSessions`) clears empties left by earlier runs, each
+  legacy sweep (`sweepEmptyPrimerSessions`) clears primer-only empties left by earlier runs, each
   confirmed by reading `chat_history.jsonl` (`isEmptyPrimerSession`): swept only if
   the session received our primer and **zero real user queries**. Detection is
   content-based and agent-agnostic — `extractUserQueries` counts both

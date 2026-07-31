@@ -251,7 +251,6 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   historyReplay: "mirror",
   permissionHistoryQueue: "mirror",
   planHistoryQueue: "mirror",
-  planProcessing: "mirror",
   toolCall: "mirror",
   toolCallUpdate: "mirror",
   permissionRequest: "mirror",
