@@ -13,6 +13,12 @@ export interface FileChip {
    *  (kept so the prompt tag can carry the real file identity — `path` points at
    *  the staged copy). Absent for clipboard pastes, which have no origin file. */
   originRelPath?: string;
+  /** Opaque browser-generated correlation id for a pasted image preview. The
+   *  bytes stay in the browser; only this id crosses the relay and comes back. */
+  previewId?: string;
+  /** Local-webview-only URI for the staged file. Never stored on Session and
+   *  never sent to a remote browser. */
+  previewSrc?: string;
 }
 
 // Formats we send to grok as inline vision blocks. Deliberately narrower than
@@ -119,6 +125,7 @@ export function makeImageChip(
   imageIndex: number,
   mimeType: string,
   originRelPath?: string,
+  previewId?: string,
 ): FileChip {
   explicitChipCounter += 1;
   return {
@@ -129,6 +136,7 @@ export function makeImageChip(
     imageIndex,
     mimeType,
     originRelPath,
+    ...(previewId ? { previewId } : {}),
   };
 }
 

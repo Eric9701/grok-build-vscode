@@ -191,6 +191,18 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return isRemoteMentionPath(value.relPath) ? msg as WebviewMsg : null;
     case "uploadFile":
       return isRemoteUploadName(value.name) ? msg as WebviewMsg : null;
+    case "pasteImage":
+      if (typeof value.mimeType !== "string" || typeof value.data !== "string") return null;
+      if (
+        value.previewId !== undefined &&
+        (typeof value.previewId !== "string" || !REMOTE_TAB_TOKEN_RE.test(value.previewId))
+      ) return null;
+      return {
+        type: "pasteImage",
+        mimeType: value.mimeType,
+        data: value.data,
+        ...(value.previewId !== undefined ? { previewId: value.previewId } : {}),
+      };
     case "exitPlanAnswer": {
       const validRequestId = typeof value.requestId === "string" || typeof value.requestId === "number";
       if (

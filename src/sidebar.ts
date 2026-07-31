@@ -420,6 +420,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       localResourceRoots: [
         vscode.Uri.joinPath(this.context.extensionUri, "media"),
         vscode.Uri.joinPath(this.context.extensionUri, "resources"),
+        vscode.Uri.file(this.imageStagingDir()),
         // grok writes generated media under ~/.grok/sessions/<cwd>/<id>/{images,videos};
         // serving it via asWebviewUri (instead of a base64 data: URI) lets the
         // webview stream a multi-MB video from disk — see postGeneratedMedia.
@@ -3741,6 +3742,7 @@ See design doc for the full state machine diagram.`;
           msg.mimeType,
           session,
           requester,
+          msg.previewId,
         ));
         break;
       case "uploadFile":
@@ -5824,13 +5826,14 @@ See design doc for the full state machine diagram.`;
     mimeType: string,
     originRelPath?: string,
     session: Session = this.focused,
+    previewId?: string,
   ): Promise<void> {
     const dir = this.imageStagingDir();
     await fs.promises.mkdir(dir, { recursive: true });
     const absPath = path.join(dir, `image-${randomUUID()}${extFromMime(mimeType)}`);
     await fs.promises.writeFile(absPath, bytes);
     const imageIndex = ++session.imageCounter;
-    session.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath));
+    session.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath, previewId));
     this.postChips(session);
   }
 
@@ -5842,6 +5845,7 @@ See design doc for the full state machine diagram.`;
     mimeType: string,
     session: Session = this.focused,
     requester?: RemoteRequester,
+    previewId?: string,
   ): Promise<void> {
     try {
       if (!isVisionMime(mimeType)) {
@@ -5854,7 +5858,7 @@ See design doc for the full state machine diagram.`;
         this.reportRequester(requester, "error", "Grok: pasted image exceeds the 20 MiB vision limit.");
         return;
       }
-      await this.stageImageAttachment(bytes, mimeType, undefined, session);
+      await this.stageImageAttachment(bytes, mimeType, undefined, session, previewId);
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       this.output.appendLine(`[image] paste failed: ${(e as Error).message}`);
@@ -6318,9 +6322,18 @@ See design doc for the full state machine diagram.`;
   }
 
   private postChips(session: Session = this.focused): void {
-    const message: HostMsg = { type: "chips", chips: session.chips };
-    if (session === this.focused) this.view?.webview.postMessage(message);
-    this.sendRemoteSession(session, message);
+    const remoteMessage: HostMsg = { type: "chips", chips: session.chips };
+    if (session === this.focused && this.view) {
+      const webview = this.view.webview;
+      const localMessage: HostMsg = {
+        type: "chips",
+        chips: session.chips.map((chip) => isImageChip(chip)
+          ? { ...chip, previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+          : chip),
+      };
+      void webview.postMessage(localMessage);
+    }
+    this.sendRemoteSession(session, remoteMessage);
   }
 
   // grok's output for hidden summary/context-injection turns, dropped from both

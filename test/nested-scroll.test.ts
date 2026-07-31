@@ -33,3 +33,16 @@ describe("the 12-line diff collapse can actually hide overflow rows (#71)", () =
     expect(ruleBody(".tdl[hidden]")).toMatch(/display\s*:\s*none/);
   });
 });
+
+describe("command input clipping (#92)", () => {
+  it("keeps command lines single-line and clips inside the detail surface", () => {
+    const rule = ruleBody(".tool-cmd");
+    expect(rule).toMatch(/white-space\s*:\s*pre\b/);
+    expect(rule).toMatch(/overflow-x\s*:\s*hidden/);
+    expect(rule).toMatch(/overflow-wrap\s*:\s*normal/);
+  });
+
+  it("does not apply the no-wrap rule to command output", () => {
+    expect(ruleBody(".tool-cmd-output")).not.toMatch(/white-space\s*:\s*pre\b/);
+  });
+});

@@ -325,6 +325,10 @@
     // is held while > 0 so a paste-then-Enter can't race the image onto the
     // NEXT message — the pasteImage post must reach the host before send does.
     pendingPaste: 0,
+    // Browser-owned data URLs for pasted image previews, keyed by an opaque id
+    // echoed through the host chip. The bytes never make a second relay trip.
+    imagePreviews: new Map(),
+    acknowledgedImagePreviews: new Set(),
     activeThoughtEl: null,
     activeThoughtHdrEl: null,
     thoughtStartTime: null,
@@ -3531,12 +3535,17 @@
     const pre = document.createElement("pre");
     pre.className = className;
     pre.textContent = preview.text;
+    if (className === "tool-cmd") pre.title = fullText;
     container.appendChild(pre);
-    if (!preview.truncated) return;
-    const label = `View all (${preview.lineCount} lines) →`;
+    const clippedLongCommand = className === "tool-cmd" && fullText
+      .split(/\r?\n/)
+      .some((line) => line.length > 80);
+    if (!preview.truncated && !clippedLongCommand) return;
+    const label = preview.truncated ? `View all (${preview.lineCount} lines) →` : "View all →";
     const viewAll = IS_REMOTE
       ? makeInlineExpandToggle(label, "msg-collapse-btn command-view-all", (expanding) => {
           pre.textContent = expanding ? fullText : preview.text;
+          pre.classList.toggle("command-full", expanding);
         })
       : document.createElement("button");
     if (!IS_REMOTE) {
@@ -5070,6 +5079,25 @@
     if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   }).observe(messagesEl);
 
+  // The scrollport's own border-box does not resize when content inside an
+  // expanded tool detail grows, so ResizeObserver above cannot see that case.
+  // Re-follow after subtree layout changes only when the reader was already
+  // pinned; a deliberate scroll-up has cleared stickToBottom and is untouched.
+  let contentFollowFrame = 0;
+  new MutationObserver(() => {
+    if (!state.stickToBottom || contentFollowFrame) return;
+    contentFollowFrame = requestAnimationFrame(() => {
+      contentFollowFrame = 0;
+      if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+  }).observe(messagesEl, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["hidden", "class", "style"],
+  });
+
   // While a click-triggered smooth scroll is animating, the intermediate scroll
   // events would briefly re-show the button; suppress recompute until we land.
   let autoScrolling = false;
@@ -5837,6 +5865,32 @@
 
   // ---------- chips ----------
 
+  function openImagePreview(src, label) {
+    if (!src) return;
+    let overlay = document.querySelector(".image-preview-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "image-preview-overlay";
+      overlay.hidden = true;
+      overlay.innerHTML = `<button type="button" class="image-preview-close" aria-label="Close image preview">&times;</button><img>`;
+      const close = () => { overlay.hidden = true; };
+      overlay.onclick = (e) => { if (e.target === overlay) close(); };
+      overlay.querySelector(".image-preview-close").onclick = close;
+      document.body.appendChild(overlay);
+    }
+    const img = overlay.querySelector("img");
+    img.src = src;
+    img.alt = label || "Attached image";
+    overlay.hidden = false;
+    overlay.querySelector(".image-preview-close").focus();
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const overlay = document.querySelector(".image-preview-overlay");
+    if (overlay && !overlay.hidden) overlay.hidden = true;
+  });
+
   function renderChips() {
     chipsEl.innerHTML = "";
     attachmentsEl.innerHTML = "";
@@ -5871,7 +5925,22 @@
         // For a disk-imported image the interesting path is the ORIGINAL file,
         // not the staged copy the chip's path points at.
         el.title = (chip.originRelPath || chip.path) + rangeTitle;
-        el.innerHTML = chip.imageIndex != null ? ICON.image : ICON.file;
+        const previewSrc = chip.previewSrc || (chip.previewId && state.imagePreviews.get(chip.previewId));
+        if (chip.previewId && previewSrc) state.acknowledgedImagePreviews.add(chip.previewId);
+        if (chip.imageIndex != null && previewSrc) {
+          const preview = document.createElement("button");
+          preview.type = "button";
+          preview.className = "attachment-preview";
+          preview.title = `Preview ${label}`;
+          const img = document.createElement("img");
+          img.src = previewSrc;
+          img.alt = "";
+          preview.appendChild(img);
+          preview.onclick = () => openImagePreview(previewSrc, label);
+          el.appendChild(preview);
+        } else {
+          el.innerHTML = chip.imageIndex != null ? ICON.image : ICON.file;
+        }
         const span = document.createElement("span");
         span.textContent = label;
         el.appendChild(span);
@@ -5880,7 +5949,11 @@
         rm.className = "attachment-remove";
         rm.title = "Remove";
         rm.textContent = "×";
-        rm.onclick = () => vscode.postMessage({ type: "removeChip", id: chip.id });
+        rm.onclick = (e) => {
+          e.stopPropagation();
+          if (chip.previewId) state.imagePreviews.delete(chip.previewId);
+          vscode.postMessage({ type: "removeChip", id: chip.id });
+        };
         el.appendChild(rm);
         attachmentsEl.appendChild(el);
         continue;
@@ -5892,6 +5965,13 @@
         `<span>${escapeHtml(label)}</span>`;
       el.onclick = () => vscode.postMessage({ type: "toggleChip", id: chip.id });
       chipsEl.appendChild(el);
+    }
+    const livePreviewIds = new Set(state.chips.map((chip) => chip.previewId).filter(Boolean));
+    for (const previewId of state.acknowledgedImagePreviews) {
+      if (!livePreviewIds.has(previewId)) {
+        state.imagePreviews.delete(previewId);
+        state.acknowledgedImagePreviews.delete(previewId);
+      }
     }
   }
 
@@ -7909,7 +7989,11 @@
       reader.onload = () => {
         const dataUrl = String(reader.result || "");
         const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-        if (m) vscode.postMessage({ type: "pasteImage", mimeType: m[1], data: m[2] });
+        if (m) {
+          const previewId = newRemoteTabToken();
+          state.imagePreviews.set(previewId, dataUrl);
+          vscode.postMessage({ type: "pasteImage", mimeType: m[1], data: m[2], previewId });
+        }
         settle();
       };
       reader.readAsDataURL(blob);

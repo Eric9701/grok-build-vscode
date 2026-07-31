@@ -141,6 +141,22 @@ describe("command details (#41)", () => {
     expect(details.querySelector(".tool-cmd-output")!.textContent).toBe("orphan output");
   });
 
+  it("clips a long single-line command but keeps the full text reachable remotely", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const longCmd = `node -e "${"console.log('x');".repeat(12)}"`;
+    dispatch(window, exec("long", longCmd));
+    close(window);
+    const row = doc.querySelector(".tool-flat.has-details")!;
+    click(window, row);
+    const pre = row.querySelector(".tool-cmd") as HTMLElement;
+    const viewAll = row.querySelector(".command-view-all")!;
+    expect(pre.textContent).toBe(longCmd);
+    expect(pre.classList.contains("command-full")).toBe(false);
+    click(window, viewAll);
+    expect(pre.classList.contains("command-full")).toBe(true);
+    expect(pre.textContent).toBe(longCmd);
+  });
+
   it("caps long IN/OUT previews at six lines and opens the full text in untitled editors", () => {
     const { window, doc, posted } = bootWebview();
     const command = Array.from({ length: 8 }, (_, i) => `command ${i + 1}`).join("\n");

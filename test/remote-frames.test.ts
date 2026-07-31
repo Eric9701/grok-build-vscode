@@ -145,6 +145,25 @@ describe("parseRelayFrame", () => {
     }
   });
 
+  it("validates the opaque preview id without adding preview bytes", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    const previewId = "0123456789abcdef".repeat(3);
+    expect(parseRelayFrame(wrap({
+      type: "pasteImage",
+      mimeType: "image/png",
+      data: "iVBORw==",
+      previewId,
+      previewSrc: "data:image/png;base64,should-not-pass",
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: { type: "pasteImage", mimeType: "image/png", data: "iVBORw==", previewId },
+    });
+    expect(parseRelayFrame(wrap({
+      type: "pasteImage", mimeType: "image/png", data: "iVBORw==", previewId: "short",
+    }))).toBeNull();
+  });
+
   it("validates and reconstructs remote plan verdicts before host state can change", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     expect(parseRelayFrame(wrap({

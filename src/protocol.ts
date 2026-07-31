@@ -265,7 +265,7 @@ export type WebviewMsg =
   // (same pipeline as drop / the + picker). The `@rel/path` text stays in the
   // composer, so the prompt carries both the prose reference and the chip.
   | { type: "addMentionFile"; relPath: string }
-  | { type: "pasteImage"; mimeType: string; data: string }
+  | { type: "pasteImage"; mimeType: string; data: string; previewId?: string }
   // Remote browser upload: an untrusted basename plus base64 bytes. The host
   // allowlists/sanitizes/stages it, then routes it through addDroppedFile.
   | { type: "uploadFile"; name: string; data: string }

@@ -163,4 +163,51 @@ describe("image chips in the composer", () => {
     expect(row.getAttribute("title")).toBe("assets/a.png");
     expect(row.querySelector(".attachment-remove")).not.toBeNull();
   });
+
+  it("renders the host's staged-file thumbnail and opens a large preview", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "chips",
+      chips: [{
+        id: "image:/staging/a.png:1:7",
+        path: "/staging/a.png",
+        relPath: "Image #1",
+        hidden: false,
+        imageIndex: 1,
+        mimeType: "image/png",
+        previewSrc: "vscode-webview://preview/image.png",
+      }],
+    });
+
+    const thumbnail = doc.querySelector(".attachment-preview")!;
+    expect(thumbnail.querySelector("img")!.getAttribute("src")).toBe("vscode-webview://preview/image.png");
+    click(window, thumbnail);
+    const overlay = doc.querySelector(".image-preview-overlay") as HTMLElement;
+    expect(overlay.hidden).toBe(false);
+    expect(overlay.querySelector("img")!.getAttribute("src")).toBe("vscode-webview://preview/image.png");
+  });
+
+  it("reuses browser-owned paste bytes for a remote thumbnail", async () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+    const input = doc.getElementById("input")!;
+    input.dispatchEvent(pasteEvent(window, [{ kind: "file", type: "image/png", file: pngFile(window) }]));
+    await vi.waitFor(() => expect(posted.some((m) => m.type === "pasteImage")).toBe(true));
+    const paste = posted.find((m) => m.type === "pasteImage")!;
+    expect(typeof paste.previewId).toBe("string");
+
+    dispatch(window, {
+      type: "chips",
+      chips: [{
+        id: "image:/staging/remote.png:1:8",
+        path: "/staging/remote.png",
+        relPath: "Image #1",
+        hidden: false,
+        imageIndex: 1,
+        mimeType: "image/png",
+        previewId: paste.previewId,
+      }],
+    });
+    expect(doc.querySelector(".attachment-preview img")!.getAttribute("src"))
+      .toMatch(/^data:image\/png;base64,/);
+  });
 });
