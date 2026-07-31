@@ -6,6 +6,7 @@ import {
   collectToolImages,
   contextUsedFromCompactNotification,
   contextUsedFromUpdateEnvelope,
+  enforceCompleteSessionCost,
   autoCompactStartedNote,
   isSubagentLifecycleUpdate,
   extractGeneratedMediaPaths,
@@ -1109,6 +1110,34 @@ describe("sumUsage (session total is derived, not patched)", () => {
     // Rewound so only 1 user message survives -> only its turn is billed.
     const kept = log.filter((e) => e.afterUserMessage <= 1);
     expect(sumUsage(kept)).toEqual({ inputTokens: 100, outputTokens: 10, costUsdTicks: 10_000_000 });
+  });
+});
+
+describe("enforceCompleteSessionCost", () => {
+  const total = { inputTokens: 600, costUsdTicks: 60_000_000 };
+
+  it("withholds cost when the ledger has a prompt-coordinate gap", () => {
+    expect(enforceCompleteSessionCost(total, [
+      { afterUserMessage: 1, usage: { costUsdTicks: 10_000_000 } },
+      { afterUserMessage: 3, usage: { costUsdTicks: 50_000_000 } },
+    ], 3)).toEqual({ inputTokens: 600 });
+  });
+
+  it("withholds cost when an existing conversation has an empty ledger", () => {
+    expect(enforceCompleteSessionCost(total, [], 4)).toEqual({ inputTokens: 600 });
+  });
+
+  it("keeps the total for a genuinely fresh conversation covered from prompt one", () => {
+    expect(enforceCompleteSessionCost(total, [
+      { afterUserMessage: 1, usage: { costUsdTicks: 60_000_000 } },
+    ], 1)).toEqual(total);
+  });
+
+  it("counts a successful zero-inference marker as covered", () => {
+    expect(enforceCompleteSessionCost(total, [
+      { afterUserMessage: 1, usage: { costUsdTicks: 60_000_000 } },
+      { afterUserMessage: 2, usage: undefined },
+    ], 2)).toEqual(total);
   });
 });
 

@@ -180,6 +180,16 @@ export class Session {
   /** grok's id for this session (set on session/new or session/load). */
   activeSessionId?: string;
 
+  /** Host-owned per-prompt billing ledger. A usage-less entry is a deliberate
+   * coverage marker for a successful zero-inference prompt such as `/compact`;
+   * a missing prompt coordinate means the session total is incomplete. */
+  usageLog: { afterUserMessage: number; afterHistoryEvent?: number; usage?: PromptUsage }[] = [];
+
+  /** Full aggregate retained even while `sessionUsage` has its cost withheld
+   * from display. Keeping the raw value lets a prompt-zero maintenance call be
+   * included once the first visible conversation turn establishes coverage. */
+  rawSessionUsage?: PromptUsage;
+
   /** Last browser-reported AFK Pilot preferences, in displayed percent + boolean.
    * Undefined until a remote client reports them for this focused session. */
   remoteFontScale?: number;

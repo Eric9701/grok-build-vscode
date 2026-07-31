@@ -19,7 +19,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
@@ -1123,7 +1123,12 @@ See design doc for the full state machine diagram.`;
     // leaving the user billed in the UI for a turn that no longer exists. A
     // session with no `usageLog` (recorded before it existed) keeps its stored
     // total rather than dropping to zero: uncorrectable, but not wrong-by-a-lot.
-    const usage = cur.usageLog ? sumUsage(usageLog) : cur.usage;
+    const rawUsage = cur.usageLog ? sumUsage(usageLog) : cur.usage;
+    const usage = enforceCompleteSessionCost(
+      rawUsage,
+      usageLog,
+      surviving,
+    );
     this.output.appendLine(
       `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
     );
@@ -1141,6 +1146,7 @@ See design doc for the full state machine diagram.`;
     // Keep the live session + popover in step with what we just persisted.
     const live = [...this.pool].find((s) => s.activeSessionId === sessionId);
     if (live) {
+      live.rawSessionUsage = rawUsage;
       live.sessionUsage = usage;
       live.lastTurnUsage = undefined;
       this.emit(live, { type: "usage", session: usage, afterUserMessage: surviving, afterHistoryEvent: live.historyEventCount });
@@ -7084,23 +7090,34 @@ See design doc for the full state machine diagram.`;
    * it: grok reports usage per prompt and `signals.json` keeps only context size.
    */
   private accumulateUsage(session: Session, meta: PromptResultMeta): void {
-    if (!usageIsRealMeasurement(meta)) return;
-    session.lastTurnUsage = meta.usage;
-    session.sessionUsage = addUsage(session.sessionUsage, meta.usage);
-    this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
+    const measured = usageIsRealMeasurement(meta);
+    // totalTokens:0 is the CLI's reliable no-inference result for native slash
+    // turns such as /compact. Record that successful prompt as covered without
+    // counting its stale usage siblings. A real inference with missing usage is
+    // NOT covered: its cost is unknown, so the aggregate must remain withheld.
+    if (!measured && meta.totalTokens !== 0) return;
+    session.usageLog.push({
+      afterUserMessage: session.userMessageCount,
+      afterHistoryEvent: session.historyEventCount,
+      usage: measured ? meta.usage : undefined,
+    });
+    if (measured) {
+      session.lastTurnUsage = meta.usage;
+      session.rawSessionUsage = addUsage(session.rawSessionUsage, meta.usage);
+      session.sessionUsage = enforceCompleteSessionCost(
+        session.rawSessionUsage,
+        session.usageLog,
+        session.userMessageCount,
+      );
+      this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
+    }
     const id = session.activeSessionId;
-    if (!id || !session.sessionUsage) return;
+    if (!id) return;
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
-    // Log the turn as well as the total: a rewind must be able to subtract the
-    // discarded turns, and a running total alone can't be undone.
-    const usageLog = [
-      ...(cur.usageLog ?? []),
-      { afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount, usage: meta.usage! },
-    ];
     void this.context.globalState.update(SESSION_META_KEY, {
       ...overrides,
-      [id]: { ...cur, usage: session.sessionUsage, usageLog },
+      [id]: { ...cur, usage: session.sessionUsage, usageLog: session.usageLog },
     });
   }
 
@@ -7111,9 +7128,15 @@ See design doc for the full state machine diagram.`;
     const id = session.activeSessionId;
     if (!id) return;
     const persisted = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
+    session.usageLog = [...(persisted?.usageLog ?? [])];
     // Re-derive ledgers instead of trusting an aggregate that may have summed
     // cost-bearing turns over historical turns where cost was not recorded.
-    const stored = persisted?.usageLog ? sumUsage(persisted.usageLog) : persisted?.usage;
+    session.rawSessionUsage = persisted?.usageLog ? sumUsage(persisted.usageLog) : persisted?.usage;
+    const stored = enforceCompleteSessionCost(
+      session.rawSessionUsage,
+      session.usageLog,
+      session.userMessageCount,
+    );
     if (!stored) return;
     session.sessionUsage = stored;
     this.emit(session, { type: "usage", session: stored, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });

@@ -366,6 +366,36 @@ export function sumUsage(entries: Array<{ usage?: PromptUsage }>): PromptUsage |
 }
 
 /**
+ * A dollar SESSION total is honest only when our ledger spans every real user
+ * prompt in the conversation. `afterUserMessage` is the replay-stable prompt
+ * coordinate shared by live sends and cold `session/load`; entries without
+ * usage may deliberately cover successful zero-inference turns such as
+ * `/compact`. Missing coordinates remain unknown gaps.
+ *
+ * Token fields keep their existing best-known aggregate semantics. Only cost is
+ * removed when coverage is incomplete; per-turn usage is never passed here and
+ * therefore always retains its own honest cost.
+ */
+export function enforceCompleteSessionCost(
+  usage: PromptUsage | undefined,
+  entries: readonly { afterUserMessage?: number; usage?: PromptUsage }[],
+  userMessageCount: number,
+): PromptUsage | undefined {
+  if (usage?.costUsdTicks === undefined) return usage;
+  const covered = new Set<number>();
+  for (const entry of entries) {
+    const position = entry.afterUserMessage;
+    if (typeof position === "number" && Number.isSafeInteger(position) && position >= 1 && position <= userMessageCount) {
+      covered.add(position);
+    }
+  }
+  const complete = userMessageCount > 0 && covered.size === userMessageCount;
+  if (complete) return usage;
+  const { costUsdTicks: _incompleteCost, ...withoutCost } = usage;
+  return withoutCost;
+}
+
+/**
  * Whether a turn's usage is a real measurement worth counting (#53).
  *
  * A `/compact` (or `/session-info`) turn runs no inference of its own, and grok

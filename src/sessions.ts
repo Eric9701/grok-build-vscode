@@ -46,7 +46,7 @@ export interface SessionMetaOverride {
    *  the extension is the only place per-turn usage exists at all (grok reports
    *  it per prompt and never persists it). Sessions predating this field keep
    *  their total uncorrected rather than losing it. */
-  usageLog?: { afterUserMessage: number; afterHistoryEvent?: number; usage: PromptUsage }[];
+  usageLog?: { afterUserMessage: number; afterHistoryEvent?: number; usage?: PromptUsage }[];
   /** Last verdict the user gave to an exit_plan_mode card in this session, for the restore-card label. */
   lastPlanVerdict?: "approved" | "rejected" | "abandoned";
   /** Every plan the user resolved in this session, in chronological order. grok's plan.md only
