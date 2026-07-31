@@ -428,18 +428,21 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     await new Promise((r) => setTimeout(r, 1500));
 
     const replayToReconnect = posts.filter((p) => p.clientIds?.includes("reload-replacement"));
+    const carriesHistoryText = (post: { msg: any }, text: string) =>
+      (post.msg?.type === "messageChunk" && post.msg.text === text) ||
+      (post.msg?.type === "historyBatch" && post.msg.messages?.some(
+        (nested: any) => nested?.type === "messageChunk" && nested.text === text,
+      ));
     assert.ok(
-      replayToReconnect.some((p) => p.msg?.type === "messageChunk" && p.msg.text === "reload-history"),
+      replayToReconnect.some((p) => carriesHistoryText(p, "reload-history")),
       JSON.stringify(replayToReconnect.map((p) => p.msg)),
     );
-    assert.ok(!replayToReconnect.some((p) => p.msg?.type === "messageChunk" && p.msg.text === "only-b"));
+    assert.ok(!replayToReconnect.some((p) => carriesHistoryText(p, "only-b")));
     assert.ok(replayToReconnect.some((p) =>
       p.msg?.type === "sessions" && p.msg.activeId === id
     ));
     assert.ok(!posts.some((p) =>
-      p.msg?.type === "messageChunk" &&
-      p.msg.text === "reload-history" &&
-      p.clientIds?.includes("tab-b")
+      carriesHistoryText(p, "reload-history") && p.clientIds?.includes("tab-b")
     ));
 
     hooks.remoteClientLeft("reload-old");

@@ -61,6 +61,8 @@ State the rule, name the function / constant / config-key an agent would grep fo
 | `scripts/install.{ps1,sh}` | Auto-detect a code-compatible CLI (`code` → `code-insiders` → `cursor` → Antigravity), build .vsix, install; optional CLI arg / `-Cli` / `CODE_CLI` targets a specific IDE; `-All`/`--all` installs into **every** detected known IDE in one run (build once) |
 | `scripts/uninstall.{ps1,sh}` | Uninstall `PawelHuryn.grok-vscode-phuryn` (same optional CLI targeting + detect chain) |
 
+Remote reconnect history flows through the pure `bracketRemoteSnapshot`: only the last ten real user messages and everything between their boundaries cross the relay; plan/permission coordinates are filtered and re-based to that window. The browser receives the retained transcript in one additive `historyBatch` frame inside `historyReplay` brackets, while the local VS Code webview continues replaying its full buffer.
+
 Pure modules (`acp-dispatch`, `auth-recovery`, `protocol`, `chips`, `prompt-builder`, `slash-filter`, `mention`, `grok-config`, `cli-locator`, `sessions`, `plan-gate`, `plan-restore`, `grok-primer`, `file-ref`, `file-upload`, `plan-review`, `mode-prefs`, `view-move`, `voice`, `session-pool`, `worktree`, `rewind`, `run-progress`, `webview-helpers`) were split out specifically so protocol behavior can be unit-tested without spawning processes. (`session.ts` is a plain state bag — no `vscode`/spawn/network either, but it's data, not logic; `protocol.ts` is pure types + two runtime arrays.)
 
 ## Session pool (Agent Dashboard)
