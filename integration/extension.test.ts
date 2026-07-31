@@ -172,6 +172,101 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.ok(!chunks.some((p) => p.msg.text === "only-b" && p.clientIds?.includes("tab-a")));
   });
 
+  test("cold replay stays live on the desk and reaches remote once as a completed batch", async () => {
+    const suffix = Date.now();
+    const id = `cold-replay-${suffix}`;
+    const original = `cold-replay-old-${suffix}`;
+    const replacement = `cold-replay-new-${suffix}`;
+    const tabToken = "3456789abcdef0123456789abcdef012";
+    hooks.fromRelayFrame(JSON.stringify({ t: "client-ready", clientId: original, tabToken }));
+    hooks.seedRemoteSession(original, id, repoB, [], true);
+    await hooks.openLocalSession(id, repoB);
+
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+    let attachSnapshot: typeof posts = [];
+    await hooks.replayRemote(original, [
+      { type: "userMessageChunk", text: "loaded question" },
+      { type: "messageChunk", text: "loaded answer" },
+    ], () => {
+      const before = posts.length;
+      hooks.fromRelayFrame(JSON.stringify({ t: "client-ready", clientId: replacement, tabToken }));
+      attachSnapshot = posts.slice(before);
+    });
+
+    assert.ok(attachSnapshot.some((post) =>
+      post.clientIds?.includes(replacement) && post.msg?.type === "clearMessages"
+    ), JSON.stringify(attachSnapshot));
+    assert.ok(!attachSnapshot.some((post) =>
+      post.clientIds?.includes(replacement) &&
+      ["historyBatch", "historyReplay", "userMessageChunk", "messageChunk"].includes(post.msg?.type)
+    ), `a client attaching mid-load received partial history: ${JSON.stringify(attachSnapshot)}`);
+
+    const remoteTranscript = posts.filter((post) =>
+      post.clientIds?.includes(replacement) &&
+      ["historyBatch", "historyReplay", "userMessageChunk", "messageChunk"].includes(post.msg?.type)
+    ).map((post) => post.msg);
+    assert.deepStrictEqual(remoteTranscript, [
+      { type: "historyReplay", active: true },
+      {
+        type: "historyBatch",
+        messages: [
+          { type: "userMessageChunk", text: "loaded question" },
+          { type: "messageChunk", text: "loaded answer" },
+        ],
+      },
+      { type: "historyReplay", active: false },
+    ]);
+    assert.ok(!posts.some((post) =>
+      post.clientIds?.includes(original) &&
+      ["historyBatch", "historyReplay", "userMessageChunk", "messageChunk"].includes(post.msg?.type)
+    ), "the superseded relay client must not receive replay frames");
+
+    assert.deepStrictEqual(
+      posts.filter((post) => post.dest === "local").map((post) => post.msg),
+      [
+        { type: "historyReplay", active: true },
+        { type: "userMessageChunk", text: "loaded question" },
+        { type: "messageChunk", text: "loaded answer" },
+        { type: "historyReplay", active: false },
+      ],
+      "the desk should continue receiving the replay stream live",
+    );
+
+    posts.length = 0;
+    hooks.emitRemote(replacement, { type: "messageChunk", text: "live after load" });
+    assert.deepStrictEqual(posts, [
+      { dest: "local", msg: { type: "messageChunk", text: "live after load" }, clientIds: undefined },
+      { dest: "remote", msg: { type: "messageChunk", text: "live after load" }, clientIds: [replacement] },
+    ]);
+    hooks.remoteClientLeft(replacement);
+  });
+
+  test("a failed cold replay still sends one balanced snapshot of what loaded", async () => {
+    const suffix = Date.now();
+    const clientId = `failed-cold-replay-${suffix}`;
+    const id = `failed-cold-session-${suffix}`;
+    hooks.seedRemoteSession(clientId, id, repoB, [], true);
+    await hooks.openLocalSession(id, repoB);
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+
+    await assert.rejects(
+      hooks.replayRemote(clientId, [{ type: "messageChunk", text: "partial load" }], undefined, true),
+      /synthetic session\/load failure/,
+    );
+
+    assert.deepStrictEqual(
+      posts.filter((post) => post.clientIds?.includes(clientId)).map((post) => post.msg),
+      [
+        { type: "historyReplay", active: true },
+        { type: "historyBatch", messages: [{ type: "messageChunk", text: "partial load" }] },
+        { type: "historyReplay", active: false },
+      ],
+    );
+    hooks.remoteClientLeft(clientId);
+  });
+
   test("remote context usage is read from the session repo, not the VS Code workspace", () => {
     const id = `context-${Date.now()}`;
     const workspaceDir = storedSessionDirFor(hooks.workspaceRoot(), id);

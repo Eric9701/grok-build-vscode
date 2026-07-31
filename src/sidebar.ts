@@ -3299,27 +3299,22 @@ See design doc for the full state machine diagram.`;
           }
         }
 
-        // Bracket the replay so the webview can finalize historical turns and
-        // distinguish original agentTimestampMs values from live clock time.
-        this.emit(session, { type: "historyReplay", active: true });
-        session.replaying = true;
-        try {
-          await client.loadSession(resumeId, defaultModel || undefined);
-        } catch (e) {
-          // A resumed session's agent is fixed by its history, so a cross-agent
-          // default model (e.g. a Composer model while resuming a grok-build
-          // session, or vice-versa) can't be applied with a live set_model — it
-          // errors MODEL_SWITCH_INCOMPATIBLE_AGENT. The session itself already
-          // loaded and replayed; just keep its own model instead of letting the
-          // whole resume crash with "Grok exited (code null)".
-          if (!isIncompatibleAgentError(e)) throw e;
-          this.output.appendLine(
-            `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
-          );
-        } finally {
-          session.replaying = false;
-          this.emit(session, { type: "historyReplay", active: false });
-        }
+        await this.replayLoadedHistory(session, async () => {
+          try {
+            await client.loadSession(resumeId, defaultModel || undefined);
+          } catch (e) {
+            // A resumed session's agent is fixed by its history, so a cross-agent
+            // default model (e.g. a Composer model while resuming a grok-build
+            // session, or vice-versa) can't be applied with a live set_model — it
+            // errors MODEL_SWITCH_INCOMPATIBLE_AGENT. The session itself already
+            // loaded and replayed; just keep its own model instead of letting the
+            // whole resume crash with "Grok exited (code null)".
+            if (!isIncompatibleAgentError(e)) throw e;
+            this.output.appendLine(
+              `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
+            );
+          }
+        });
         session.activeSessionId = resumeId;
         session.titleGenerated = true; // existing session, name already in storage
         session.hasHistory = true;
@@ -6373,6 +6368,15 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  private sendRemoteHistorySnapshot(session: Session): void {
+    const clientIds = this.remoteClients.clientsForActiveValue(session);
+    if (clientIds.length === 0) return;
+    const snapshot = bracketRemoteSnapshot(session.buffer);
+    for (const clientId of clientIds) {
+      for (const message of snapshot) this.sendRemoteClient(clientId, message);
+    }
+  }
+
   private broadcastRemoteDevice(message: HostMsg): void {
     this.postTap?.("remote", message, this.remoteClients.clients());
     const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
@@ -6397,6 +6401,7 @@ See design doc for the full state machine diagram.`;
     fromRemote(message: WebviewMsg, clientId?: string): void;
     fromRelayFrame(raw: string): void;
     emitRemote(clientId: string, message: HostMsg): void;
+    replayRemote(clientId: string, messages: HostMsg[], during?: () => void, fail?: boolean): Promise<void>;
     seedRemoteSession(
       clientId: string,
       id: string,
@@ -6448,6 +6453,14 @@ See design doc for the full state machine diagram.`;
       emitRemote: (clientId, message) => {
         const session = this.remoteSessionFor(clientId);
         this.emit(session, message);
+      },
+      replayRemote: async (clientId, messages, during, fail = false) => {
+        const session = this.remoteSessionFor(clientId);
+        await this.replayLoadedHistory(session, async () => {
+          for (const message of messages) this.emit(session, message);
+          during?.();
+          if (fail) throw new Error("synthetic session/load failure");
+        });
       },
       seedRemoteSession: (clientId, id, cwd, messages = [], hasHistory = false, chips = []) => {
         this.remoteClients.ready(clientId);
@@ -6604,9 +6617,22 @@ See design doc for the full state machine diagram.`;
     if (message.type === "clearMessages") session.buffer = [];
     else session.buffer.push(message);
     if (session === this.focused) {
+      this.postTap?.("local", message);
       this.view?.webview.postMessage(message);
     }
-    this.sendRemoteSession(session, message);
+    if (!session.replaying) this.sendRemoteSession(session, message);
+  }
+
+  private async replayLoadedHistory(session: Session, load: () => Promise<void>): Promise<void> {
+    session.replaying = true;
+    this.emit(session, { type: "historyReplay", active: true });
+    try {
+      await load();
+    } finally {
+      this.emit(session, { type: "historyReplay", active: false });
+      session.replaying = false;
+      this.sendRemoteHistorySnapshot(session);
+    }
   }
 
   // ---------- session pool ----------
@@ -7880,7 +7906,7 @@ See design doc for the full state machine diagram.`;
     const snap: HostMsg[] = [];
     snap.push(initial);
     snap.push({ type: "clearMessages" });
-    snap.push(...bracketRemoteSnapshot(session.buffer));
+    if (!session.replaying) snap.push(...bracketRemoteSnapshot(session.buffer));
     snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
     if (session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
       const text = this.queuedSendReadyText(session);
