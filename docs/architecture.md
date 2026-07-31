@@ -134,14 +134,36 @@ it and fail with *"cannot rename locked executable"*. On Windows the kill is a
 children that a parent-only kill would orphan, and they keep the binary locked),
 and the update retries once if a lingering lock still slips through.
 
+`maybeUpdateCliOnUpgrade` retains the normal session-start trigger: once per
+activation it compares `CLI_UPDATE_VERSION_KEY`, updating only after an extension
+version change; a fresh install records its baseline without updating. After that,
+every session start reads `grok --version`. On Windows, `maybePinBrokenCli` uses the
+bounded `isStdioBrokenGrokVersion` check to move 0.2.61–0.2.70 to the current
+`GROK_STDIO_DOWNGRADE_TARGET` before ACP spawn. `GROK_REQUIRED_VERSION` is the
+cross-platform ACP behavior floor and the current recovery target. A CLI below the floor, or whose version cannot be
+verified, still starts in Agent/Auto accept, but that `Session` carries
+`planModeAvailable:false`: the host emits `planModeAvailability`, the picker disables
+only Plan and shows the exact reason, and `setMode` rejects stale or forged Plan
+requests. Agent-initiated and restored Plan transitions raise the client safety gate.
+A live untrusted planning turn is cancelled, and the gate stays raised until both
+that `session/prompt` settles and `session/set_mode(default)` confirms Agent; a
+failure or stalled recovery stays gated and is surfaced explicitly.
+Any stray `exit_plan_mode` request is answered with an error rather than entering the
+native-verdict flow that this version floor exists to protect.
+Availability is session-scoped so a later successful update re-enables Plan only for
+newly started compatible processes, never for an older process that is still alive.
+Reactive Windows stdio recovery remains a separate single-retry backstop after an
+observed startup failure.
+
 ## Plan Mode — native verdicts plus a client-side safety gate
 
 The CLI owns plan-review continuation. The extension responds to
 `_x.ai/exit_plan_mode` with its native success result: `approved`, `cancelled`
 (Keep planning), or `abandoned` (Cancel). Approval continues into implementation
 inside the original turn; cancellation stays in Plan and lets grok revise and
-re-ask inside that same turn. There is no verdict follow-up prompt, turn cancel,
-or synthetic lifecycle.
+re-ask inside that same turn; abandon switches the CLI to its default mode and
+ends the turn without a continuation. There is no synthetic verdict prompt, turn
+cancel, or synthetic lifecycle.
 
 - **The gate** ([src/plan-gate.ts](../src/plan-gate.ts)). While Plan Mode is
   active, the two mandatory server→client choke points are policed: a
@@ -157,11 +179,40 @@ or synthetic lifecycle.
 - **Verdict state and comments.** `handleExitPlan` settles all implementation-
   relevant state *before* releasing the blocked response. Approval restores the
   remembered pre-plan Auto accept choice and lowers the gate; Keep planning keeps
-  the gate raised; Cancel lowers it but deliberately lands on Agent. A non-empty
-  review comment is sent through `_x.ai/interject` before the verdict response,
-  without awaiting it inline. If the unadvertised RPC is unsupported or fails,
-  the exact user text is placed in the ordinary queued-send path rather than
-  being lost.
+  the gate raised; Cancel lowers it but deliberately lands on Agent. An
+  Approve/Keep-planning comment is sent through `_x.ai/interject` before the
+  verdict response, without awaiting it inline. Clicking a verdict collapses the
+  card immediately. A successful response write emits buffered `planResolved`;
+  a failed write leaves the pending request unconsumed and the verdict
+  unpersisted, so re-focus rebuilds an actionable card without a separate
+  pending/failure message. While the interject response is outstanding, a
+  memory-only `Session.inFlightPlanComments` entry owns the text. Acceptance
+  removes it synchronously; a controlled restart moves only unresolved entries
+  into the ordinary queue for the replacement process. A dead process drops its
+  queue. Session restart clears the map, so it cannot resurrect text
+  later. A write accepted by Node is never retried merely because its downstream
+  effect is unknown. If the
+  unadvertised RPC is unsupported or fails, the text is placed in the ordinary
+  queued-send path rather than being lost. An abandon comment always uses that
+  queue: the native abandoned turn has no continuation step that could drain an
+  interjection, so the comment becomes a real prompt after the turn settles. A
+  successful interjection emits the same `userMessage {steer:true}` shape as the
+  ordinary Steer path and does not increment `Session.userMessageCount`; it has
+  no prompt/rewind point, so counting it would inflate every later
+  `afterUserMessage` position and make rewind discard surviving extension records.
+  Plan, permission, and usage persistence share `afterHistoryEvent`, a replay-stable
+  assistant/tool update boundary. It places native approvals before same-turn
+  implementation output. `afterInterjection` remains the secondary compatibility
+  boundary for comment/revision cycles, with array-order inference for older entries. The webview
+  keeps the raw CLI envelope for classification but strips it and `<user_query>`
+  from the displayed/copied comment.
+  Each `Session` owns a `pendingExitPlans` map keyed by the ACP request id. The host
+  registers a request only after its async snapshot generation check, and an answer
+  must find that exact entry. Gate changes happen before the JSON-RPC response so
+  same-turn implementation is safe, but consuming the entry and persisting the
+  verdict happen only after `respondExitPlan` reports an accepted stdin write.
+  Re-focus can replay the card without consuming it; stale and duplicate answers
+  have no effect.
 
 - **Legacy primer reads.** Older sessions on disk contain the retired v4 hidden
   primer and bracket-marker turns. `src/grok-primer.ts` therefore keeps only the
@@ -187,7 +238,7 @@ The full pedagogical write-up lives in
 | [src/session-pool.ts](../src/session-pool.ts) | Pure reaping policy (`selectReapable`) — idle-TTL + LRU cap over the live-session pool |
 | [src/acp-dispatch.ts](../src/acp-dispatch.ts) | Pure protocol helpers — line parsing, update routing, response + generated-media extraction (`isMediaGenToolCall`/`extractGeneratedMediaPaths`), and the live `_x.ai/session_notification` consumers (`contextUsedFromCompactNotification`, `autoCompactStartedNote`, `isSubagentLifecycleUpdate`), the billing-usage helpers (`extractPromptUsage`/`addUsage`/`usageIsRealMeasurement`, #53), and `isMethodNotFoundError` — the -32601 capability gate behind Steer/Fork |
 | [src/protocol.ts](../src/protocol.ts) | Single source of truth for the host↔webview message contract — `HostMsg`/`WebviewMsg` unions + the runtime `HOST_MESSAGE_TYPES`/`WEBVIEW_MESSAGE_TYPES` arrays (kept exhaustive by compile-time `Record` maps). Pure types + two arrays, no runtime deps |
-| [src/cli-locator.ts](../src/cli-locator.ts) | Locate the `grok` binary; cross-platform |
+| [src/cli-locator.ts](../src/cli-locator.ts) / [src/cli-process.ts](../src/cli-process.ts) | Locate and invoke the `grok` binary cross-platform; one shim-aware execution policy covers ACP spawn plus version/update commands |
 | [src/terminal-manager.ts](../src/terminal-manager.ts) | Headless shells for the agent's `terminal/*` calls |
 | [src/plan-gate.ts](../src/plan-gate.ts) | Plan-mode policy (pure) — workspace-write containment + read-only command allowlist |
 | [src/plan-restore.ts](../src/plan-restore.ts) | Plan persist + restore decision (pure) |
@@ -267,9 +318,13 @@ claims it with a host-issued submission id and sends `submitQueuedSend` to that 
 only after the active turn settles. The browser echoes the text and id on the ordinary
 `send` path, so both relay limiters run before ACP is prompted. Reconnect snapshots
 reuse the claim, and both the browser and host deduplicate its id; duplicate persisted
-outbox frames therefore execute one prompt. The host clears the queue only when that
-identified frame returns; a quota rejection leaves a visible **Not sent** block that
-can be edited or removed.
+outbox frames therefore execute one prompt. `beginQueuedSendCommit` claims the ready
+prefix and `finishQueuedSendCommit` removes it at the pre-prompt commit point, before
+attachments are consumed and `session/prompt` is attempted. A quota rejection leaves a visible **Not sent**
+block that can be edited or removed.
+
+If the owning grok process exits, the host clears its pending queue and dispatch state;
+queued text is not restored to the composer.
 
 Destructive history actions follow the same ownership boundary. A delete is refused
 while the target session is owned by any browser tab or by the local VS Code view, and

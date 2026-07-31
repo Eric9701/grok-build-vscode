@@ -28,6 +28,7 @@ import {
   usageIsRealMeasurement,
   makeAckResponse,
   makeExitPlanResponse,
+  makeExitPlanUnavailableResponse,
   makePermissionCancelledResponse,
   makePermissionResponse,
   makeQuestionCancelledResponse,
@@ -409,6 +410,17 @@ describe("response builders", () => {
     const r = makeExitPlanResponse(42, "approved");
     expect(r.jsonrpc).toBe("2.0");
     expect(r.id).toBe(42);
+  });
+
+  it("rejects exit-plan requests instead of sending an unsafe success below the floor", () => {
+    expect(makeExitPlanUnavailableResponse(43)).toEqual({
+      jsonrpc: "2.0",
+      id: 43,
+      error: {
+        code: -32000,
+        message: "Plan mode is unavailable for this Grok CLI version",
+      },
+    });
   });
 
   it("makeAckResponse defaults to empty result", () => {

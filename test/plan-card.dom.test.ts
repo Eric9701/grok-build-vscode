@@ -7,7 +7,7 @@
 //   - "Keep planning" sends verdict:"rejected", and includes `comment` ONLY when
 //     the feedback textarea is non-empty (the `...(comment ? {comment} : {})` spread)
 //   - "Approve & implement" sends verdict:"approved" and never a comment
-//   - after a click the card resolves and both buttons + textarea disable
+//   - clicking a verdict collapses the card immediately
 //   - planNotice / planBlocked render a .plan-notice with the right text
 //
 // What it deliberately does NOT cover: real VS Code rendering, CSS, the actual
@@ -96,6 +96,7 @@ describe("plan card (real chat.js in a DOM)", () => {
     const approve = [...doc.querySelectorAll(".card.plan .card-actions button")]
       .find((b) => b.textContent === "Approve & implement") as HTMLButtonElement;
     click(window, approve);
+    dispatch(window, { type: "planResolved", requestId: 23, verdict: "approved" });
 
     const card = doc.querySelector(".card.plan")!;
     expect(card.classList.contains("resolved")).toBe(true);
@@ -105,12 +106,13 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect(card.querySelector(".plan-verdict-label")!.textContent).toBe("Approved");
   });
 
-  it("planResolved is idempotent after a live click already collapsed the card", () => {
+  it("planResolved is idempotent after the host acknowledges a live click", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "exitPlanRequest", req: { id: 22, plan: "p" } });
     const cancel = [...doc.querySelectorAll(".card.plan .card-actions button")]
       .find((b) => b.textContent === "Cancel") as HTMLButtonElement;
-    click(window, cancel); // live collapse
+    click(window, cancel);
+    dispatch(window, { type: "planResolved", requestId: 22, verdict: "abandoned" });
     dispatch(window, { type: "planResolved", requestId: 22, verdict: "abandoned" }); // buffered echo
 
     const card = doc.querySelector(".card.plan")!;
@@ -208,18 +210,18 @@ describe("plan card (real chat.js in a DOM)", () => {
     });
   });
 
-  it("resolves the card: drops buttons + comment box, shows the colored verdict label", () => {
+  it("collapses immediately after a verdict click", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "exitPlanRequest", req: { id: 14, plan: "p" } });
 
     const card = doc.querySelector(".card.plan")!;
-    const buttons = [...card.querySelectorAll(".card-actions button")] as HTMLButtonElement[];
-    const rejectBtn = buttons.find((b) => b.textContent === "Reject")!;
+    const rejectBtn = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Reject") as HTMLButtonElement;
+    const feedback = card.querySelector("textarea.plan-feedback") as HTMLTextAreaElement;
+    feedback.value = "keep this exact text";
     click(window, rejectBtn);
 
     expect(card.classList.contains("resolved")).toBe(true);
-    // Collapses to the same clean representation as a restored history card:
-    // buttons + comment box removed, a single colored verdict label remains.
     expect(card.querySelector(".card-actions")).toBeNull();
     expect(card.querySelector("textarea.plan-feedback")).toBeNull();
     const label = card.querySelector(".plan-verdict-label")!;

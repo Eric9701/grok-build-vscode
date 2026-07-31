@@ -62,12 +62,24 @@ describe("AcpClient notification metadata", () => {
 describe("AcpClient permission responses", () => {
   it("can decline a request when no safe option was offered", () => {
     const { client, written } = clientWithFakeProc();
-    client.respondPermissionCancelled(9);
+    expect(client.respondPermissionCancelled(9)).toBe(true);
     expect(JSON.parse(written[0])).toEqual({
       jsonrpc: "2.0",
       id: 9,
       result: { outcome: { outcome: "cancelled" } },
     });
+  });
+
+  it("surfaces accepted writes for every user response", async () => {
+    const { client } = clientWithFakeProc();
+    (client as any).sessionId = "session-1";
+
+    expect(client.respondPermission(1, "allow-once")).toBe(true);
+    expect(client.respondExitPlan(2, "approved")).toBe(true);
+    expect(client.respondExitPlanUnavailable(3)).toBe(true);
+    expect(client.respondQuestion(4, { Pick: "One" })).toBe(true);
+    expect(client.respondQuestionCancelled(5)).toBe(true);
+    await expect(client.cancel()).resolves.toBe(true);
   });
 });
 

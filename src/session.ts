@@ -24,6 +24,19 @@ export interface PendingPermission {
   planOptions: PendingPermissionOption[];
 }
 
+export interface PendingExitPlan {
+  planText: string;
+}
+
+/** A submitted plan comment owned by one live ACP process until its interject
+ * response arrives. This is intentionally memory-only; process exit hands the
+ * text to the ordinary queue/composer recovery path. */
+export interface InFlightPlanComment {
+  text: string;
+  client: AcpClient;
+  gen: number;
+}
+
 export function createPendingPermission(
   input: Omit<PendingPermission, "planOptions">,
 ): PendingPermission {
@@ -71,6 +84,22 @@ export class Session {
 
   /** Plan-mode gate is up for this session (client-side enforcement mirror). */
   planActive = false;
+
+  /** Whether this session's CLI is new enough for native plan verdicts. */
+  planModeAvailable = true;
+  planModeUnavailableReason?: string;
+
+  /** Latest attempt to force an unavailable Plan session back to Agent. */
+  planModeRecoveryAttempt = 0;
+
+  /** Two-phase unavailable-Plan recovery. The write gate may drop only after
+   * both the forced Agent mode change and any live planning turn have settled. */
+  planModeRecovery?: {
+    attempt: number;
+    modeConfirmed: boolean;
+    turnSettled: boolean;
+    warningTimer?: ReturnType<typeof setTimeout>;
+  };
 
   /** This session has conversational history (vs. a fresh, empty one). */
   hasHistory = false;
@@ -124,13 +153,26 @@ export class Session {
   /** Most recent plan text seen for this session (exit_plan_mode fallback). */
   lastPlanText = "";
 
-  /**
-   * Plan text currently shown in the live exit_plan_mode card. Set when we post
-   * the card to the webview, read by persistPlanVerdict when the user picks a
-   * verdict, then cleared. Decoupled from lastPlanText (which gets nuked the
-   * moment we render the card) so the saved history actually has content.
-   */
-  pendingPlanText = "";
+  /** Live exit_plan_mode requests awaiting one answer, keyed by ACP request id. */
+  pendingExitPlans = new Map<number | string, PendingExitPlan>();
+
+  /** Submitted plan comments still awaiting `_x.ai/interject` acceptance. */
+  inFlightPlanComments = new Map<number | string, InFlightPlanComment>();
+
+  /** Accepted mid-turn interjections in this session. This is the secondary
+   * replay coordinate for multiple native plan reviews inside one prompt. */
+  interjectionCount = 0;
+
+  /** Number of replay-stable assistant update events observed in this session.
+   * Persisted records use this common boundary to order plans, permissions, and
+   * usage inside a turn rather than waiting for the next user message. */
+  historyEventCount = 0;
+
+  /** Accumulator used to classify replayed user-message chunks even when the
+   * CLI splits the interjection envelope across updates. */
+  replayUserRaw = "";
+  replayUserCounted = false;
+  replayUserIsInterjection = false;
 
   /**
    * Count of user messages that have entered this session (replayed + live).
@@ -310,6 +352,11 @@ export function sessionUiSnapshot(session: Session, modeId: string): HostMsg[] {
     messages.push({ type: "modelChanged", modelId: session.client.currentModelId });
   }
   messages.push({ type: "modeChanged", modeId });
+  messages.push({
+    type: "planModeAvailability",
+    available: session.planModeAvailable,
+    reason: session.planModeUnavailableReason,
+  });
   for (const [requestId, pending] of session.pendingPermissions) {
     messages.push({
       type: "permissionOptions",

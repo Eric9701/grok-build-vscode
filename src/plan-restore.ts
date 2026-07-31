@@ -6,8 +6,8 @@
 //  - Native `exit_plan_mode` outcomes drive the live CLI. The extension still
 //    persists each resolved plan locally so cards and client-side gate state can
 //    be reconstructed on resume (including sessions created by older versions).
-//  - Plan content + verdict + `afterUserMessage` (count of user messages sent
-//    at the moment the plan was resolved) are appended via `appendPlanEntry`.
+//  - Plan content + verdict + the lexicographic replay coordinate
+//    (`afterUserMessage`, `afterInterjection`) are appended via `appendPlanEntry`.
 //  - On resume, `decideRestoreState` returns the plan-gate + CLI-mode the host
 //    should restore to, based on the *last* verdict. "rejected" means the user
 //    was still planning, so the gate goes back up. Everything else (including
@@ -15,6 +15,16 @@
 //    mode on a session the user already cancelled or approved.
 
 export type PlanVerdict = "approved" | "rejected" | "abandoned";
+
+// Keep behaviorally synchronized with media/webview-helpers.js's
+// isInterjectionText. test/plan-restore.test.ts runs the same replay-envelope
+// corpus through both implementations because the webview cannot import TS.
+const INTERJECTION_RE = /^\s*The user sent a message while you were working:\s*\r?\n/;
+
+/** True for the CLI envelope used to persist and replay a mid-turn interjection. */
+export function isInterjectionText(text: string): boolean {
+  return INTERJECTION_RE.test(String(text || ""));
+}
 
 /**
  * True when a REPLAYED user turn renders a user bubble in the webview. The
@@ -33,6 +43,7 @@ export type PlanVerdict = "approved" | "rejected" | "abandoned";
 export function countsAsUserBubble(text: string): boolean {
   const t = text ?? "";
   if (/^\s*<system-reminder>/.test(t)) return false;
+  if (isInterjectionText(t)) return false;
   const m = /^\s*\[Plan (approved|rejected|cancelled)\]\s*/i.exec(t);
   if (m && !t.slice(m[0].length).trim()) return false;
   return true;
@@ -45,6 +56,12 @@ export interface PlanEntry {
    *  view uses this to render the plan card inline with the conversation
    *  rather than at the bottom. Older saved entries may not have it. */
   afterUserMessage?: number;
+  /** Number of accepted interjections before this plan was resolved. Together
+   *  with `afterUserMessage`, this orders repeated reject/revise cycles that
+   *  all happen inside one native prompt. */
+  afterInterjection?: number;
+  /** Assistant-update boundary at which the card was resolved. */
+  afterHistoryEvent?: number;
 }
 
 export interface RestoreDecision {
@@ -92,12 +109,17 @@ export function planRestoreSource(saved: PlanEntry[] | undefined): "saved" | "di
  * tell which turn they belong to, and silently deleting a user's plan record on
  * a guess is worse than leaving one card at the bottom.
  */
-export function truncateResolvedAfter<T extends { afterUserMessage?: number }>(
+export function truncateResolvedAfter<T extends { afterUserMessage?: number; afterHistoryEvent?: number }>(
   entries: T[] | undefined,
   surviving: number,
+  survivingHistoryEvents?: number,
 ): T[] {
   return (entries ?? []).filter(
-    (e) => e.afterUserMessage === undefined || e.afterUserMessage <= surviving,
+    (e) => (
+      survivingHistoryEvents !== undefined && e.afterHistoryEvent !== undefined
+        ? e.afterHistoryEvent <= survivingHistoryEvents
+        : e.afterUserMessage === undefined || e.afterUserMessage <= surviving
+    ),
   );
 }
 

@@ -504,6 +504,20 @@ export function makeExitPlanResponse(
   return { jsonrpc: "2.0", id, result: { outcome } };
 }
 
+/** Fail a stray plan-exit request when this session's CLI is below (or could
+ * not be verified against) the native-verdict floor. A successful outcome is
+ * unsafe here: older CLIs can interpret every success as approval. */
+export function makeExitPlanUnavailableResponse(id: number | string) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: {
+      code: -32000,
+      message: "Plan mode is unavailable for this Grok CLI version",
+    },
+  };
+}
+
 /**
  * Response to grok's `x.ai/ask_user_question` request (Rust struct
  * `AskUserQuestionExtResponse` — an internally-tagged enum on field `outcome`,

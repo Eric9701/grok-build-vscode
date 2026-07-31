@@ -19,9 +19,15 @@ import {
   appendPlanEntry,
   countsAsUserBubble,
   decideRestoreState,
+  isInterjectionText as isHostInterjectionText,
   planRestoreSource,
   truncateResolvedAfter,
 } from "../src/plan-restore";
+// @ts-expect-error — plain JS module, no types
+import {
+  isInterjectionText as isWebviewInterjectionText,
+  stripInterjectionEnvelope,
+} from "../media/webview-helpers.js";
 
 describe("countsAsUserBubble (host↔webview replay-count parity)", () => {
   // The host's replay counter must count exactly what chat.js appendUserChunk
@@ -41,6 +47,31 @@ describe("countsAsUserBubble (host↔webview replay-count parity)", () => {
     expect(countsAsUserBubble("[Plan rejected]\n")).toBe(false);
     expect(countsAsUserBubble("<system-reminder>\n[Request interrupted by user]\n</system-reminder>")).toBe(false);
     expect(countsAsUserBubble("  <system-reminder> Plan mode still active </system-reminder>")).toBe(false);
+  });
+
+  it("does not count replayed interjections and keeps the TS/JS classifiers in sync", () => {
+    const cases = [
+      "The user sent a message while you were working:\nrevise the plan",
+      "  The user sent a message while you were working:  \r\napprove with tests",
+      "The user sent a message while you were working: not an envelope",
+      "ordinary user message",
+    ];
+    for (const text of cases) {
+      expect(isHostInterjectionText(text)).toBe(isWebviewInterjectionText(text));
+    }
+    expect(countsAsUserBubble(cases[0])).toBe(false);
+    expect(countsAsUserBubble(cases[1])).toBe(false);
+    expect(countsAsUserBubble(cases[2])).toBe(true);
+  });
+
+  it("strips the replay envelope and optional user_query wrapper for display", () => {
+    expect(stripInterjectionEnvelope(
+      "The user sent a message while you were working:\n<user_query>\nalso use tabs\n</user_query>",
+    )).toBe("also use tabs");
+    expect(stripInterjectionEnvelope(
+      "The user sent a message while you were working:\r\nplain steer",
+    )).toBe("plain steer");
+    expect(stripInterjectionEnvelope("ordinary user text")).toBe("ordinary user text");
   });
 });
 
@@ -206,6 +237,16 @@ describe("truncateResolvedAfter (rewind must drop our own cards too)", () => {
       { title: "Delete src/", outcome: "rejected" as const, afterUserMessage: 4 },
     ];
     expect(truncateResolvedAfter(perms, 2).map((p) => p.title)).toEqual(["Run npm test"]);
+  });
+
+  it("uses the shared history boundary for new plan, permission, and usage records", () => {
+    const entries = [
+      { label: "kept", afterUserMessage: 9, afterHistoryEvent: 4 },
+      { label: "dropped", afterUserMessage: 1, afterHistoryEvent: 8 },
+      { label: "legacy", afterUserMessage: 2 },
+    ];
+    expect(truncateResolvedAfter(entries, 3, 5).map((entry) => entry.label))
+      .toEqual(["kept", "legacy"]);
   });
 });
 

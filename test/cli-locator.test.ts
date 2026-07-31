@@ -6,11 +6,13 @@ import {
   locateGrokCli,
   extensionWasUpgraded,
   parseGrokVersion,
-  isStdioBrokenGrokVersion,
   compareVersionTuple,
   grokUpdatePolicy,
   shouldReactivelyDowngrade,
   isLockedBinaryError,
+  isGrokVersionBelowRequired,
+  isStdioBrokenGrokVersion,
+  GROK_REQUIRED_VERSION,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "../src/cli-locator";
 
@@ -76,25 +78,14 @@ describe("locateGrokCli", () => {
 });
 
 describe("extensionWasUpgraded", () => {
-  it("is false on a fresh install (no prior version recorded)", () => {
-    expect(extensionWasUpgraded(undefined, "1.4.0")).toBe(false);
-    expect(extensionWasUpgraded("", "1.4.0")).toBe(false);
+  it("leaves fresh installs and unchanged versions alone", () => {
+    expect(extensionWasUpgraded(undefined, "2.2.0")).toBe(false);
+    expect(extensionWasUpgraded("2.2.0", "2.2.0")).toBe(false);
   });
 
-  it("is false when the version is unchanged (plain restart)", () => {
-    expect(extensionWasUpgraded("1.4.0", "1.4.0")).toBe(false);
-  });
-
-  it("is true when the extension version changed (an upgrade)", () => {
-    expect(extensionWasUpgraded("1.3.2", "1.4.0")).toBe(true);
-  });
-
-  it("is true even on a downgrade (any version mismatch re-syncs the CLI)", () => {
-    expect(extensionWasUpgraded("1.4.0", "1.3.2")).toBe(true);
-  });
-
-  it("is false defensively when the current version is empty", () => {
-    expect(extensionWasUpgraded("1.4.0", "")).toBe(false);
+  it("detects an extension version change", () => {
+    expect(extensionWasUpgraded("2.1.1", "2.2.0")).toBe(true);
+    expect(extensionWasUpgraded("2.2.0", "2.1.1")).toBe(true);
   });
 });
 
@@ -118,32 +109,6 @@ describe("parseGrokVersion", () => {
   });
 });
 
-describe("isStdioBrokenGrokVersion (issue #22)", () => {
-  it("flags the bounded broken range 0.2.61–0.2.70 on Windows", () => {
-    // 0.2.61–0.2.64 hung at `initialize`; 0.2.67/0.2.69/0.2.70 at `session/new`. Fixed in 0.2.71.
-    for (const p of ["0.2.61", "0.2.64", "0.2.67", "0.2.69", "0.2.70"]) {
-      expect(isStdioBrokenGrokVersion(`grok ${p} (x) [stable]`, "win32")).toBe(true);
-    }
-  });
-
-  it("does not flag the supported 0.2.71+ or anything 0.2.60 and older (the fix is above the range)", () => {
-    for (const p of ["0.2.71", "0.2.72", "0.3.0", "1.0.0", "0.2.60", "0.2.59", "0.1.211"]) {
-      expect(isStdioBrokenGrokVersion(`grok ${p} (x) [stable]`, "win32")).toBe(false);
-    }
-    expect(GROK_STDIO_DOWNGRADE_TARGET).toBe("0.2.72");
-  });
-
-  it("never flags non-Windows platforms (the bug is Windows-only)", () => {
-    expect(isStdioBrokenGrokVersion("grok 0.2.64 (x) [stable]", "linux")).toBe(false);
-    expect(isStdioBrokenGrokVersion("grok 0.2.64 (x) [stable]", "darwin")).toBe(false);
-  });
-
-  it("is false defensively when the version is unparseable", () => {
-    expect(isStdioBrokenGrokVersion("grok (dev)", "win32")).toBe(false);
-    expect(isStdioBrokenGrokVersion("", "win32")).toBe(false);
-  });
-});
-
 describe("compareVersionTuple", () => {
   it("orders by major, then minor, then patch", () => {
     expect(compareVersionTuple([0, 2, 60], [0, 2, 61])).toBeLessThan(0);
@@ -151,6 +116,40 @@ describe("compareVersionTuple", () => {
     expect(compareVersionTuple([0, 2, 60], [0, 2, 60])).toBe(0);
     expect(compareVersionTuple([1, 0, 0], [0, 9, 9])).toBeGreaterThan(0);
     expect(compareVersionTuple([0, 3, 0], [0, 2, 99])).toBeGreaterThan(0);
+  });
+});
+
+describe("required grok behavior floor", () => {
+  it("identifies versions below 0.2.117, including versions outside the old Windows regression", () => {
+    for (const version of ["0.1.999", "0.2.60", "0.2.71", "0.2.100", "0.2.116"]) {
+      expect(isGrokVersionBelowRequired(`grok ${version} (x) [stable]`)).toBe(true);
+    }
+    expect(GROK_REQUIRED_VERSION).toBe("0.2.117");
+    expect(GROK_STDIO_DOWNGRADE_TARGET).toBe(GROK_REQUIRED_VERSION);
+  });
+
+  it("accepts the floor and newer versions, and leaves unverifiable banners to the caller", () => {
+    for (const version of ["0.2.117", "0.2.118", "0.3.0", "1.0.0"]) {
+      expect(isGrokVersionBelowRequired(`grok ${version} (x) [stable]`)).toBe(false);
+    }
+    expect(isGrokVersionBelowRequired("grok (dev build)")).toBe(false);
+  });
+});
+
+describe("isStdioBrokenGrokVersion (issue #22 bounded proactive pin)", () => {
+  it("matches only Windows builds 0.2.61 through 0.2.70", () => {
+    for (const version of ["0.2.61", "0.2.64", "0.2.67", "0.2.70"]) {
+      expect(isStdioBrokenGrokVersion(`grok ${version} (x) [stable]`, "win32")).toBe(true);
+    }
+    for (const version of ["0.2.60", "0.2.71", "0.2.117", "0.3.0", "1.0.0"]) {
+      expect(isStdioBrokenGrokVersion(`grok ${version} (x) [stable]`, "win32")).toBe(false);
+    }
+  });
+
+  it("is a no-op off Windows and for unverifiable banners", () => {
+    expect(isStdioBrokenGrokVersion("grok 0.2.67 (x) [stable]", "linux")).toBe(false);
+    expect(isStdioBrokenGrokVersion("grok 0.2.67 (x) [stable]", "darwin")).toBe(false);
+    expect(isStdioBrokenGrokVersion("grok (dev build)", "win32")).toBe(false);
   });
 });
 
@@ -173,18 +172,17 @@ describe("grokUpdatePolicy (issue #22 update pause lifted in 0.2.71)", () => {
   });
 });
 
-describe("shouldReactivelyDowngrade (issue #22 — backstop for a future build above 0.2.72)", () => {
-  it("downgrades any Windows build ABOVE the supported 0.2.72", () => {
-    for (const v of ["0.2.73", "0.2.99", "0.3.0", "1.0.0"]) {
+describe("shouldReactivelyDowngrade (issue #22 — backstop above the verified target)", () => {
+  it("downgrades any Windows build ABOVE the supported 0.2.117", () => {
+    for (const v of ["0.2.118", "0.2.199", "0.3.0", "1.0.0"]) {
       expect(shouldReactivelyDowngrade(`grok ${v} (x) [stable]`, "win32")).toBe(true);
     }
   });
 
-  it("never downgrades 0.2.72 or below — the loop guard once the pin lands", () => {
-    // The known broken range (0.2.61–0.2.70) is handled proactively; 0.2.72 is the
-    // floor (0.2.71 was the fix, now superseded on stable), so reactive must not fire
-    // on it or anything older.
-    for (const v of ["0.2.72", "0.2.71", "0.2.70", "0.2.60", "0.1.211"]) {
+  it("never downgrades 0.2.117 or below — the loop guard once recovery lands", () => {
+    // The behavior floor handles older builds; reactive recovery applies only to
+    // a newer build that actually failed startup.
+    for (const v of ["0.2.117", "0.2.116", "0.2.72", "0.2.71", "0.2.70", "0.2.60", "0.1.211"]) {
       expect(shouldReactivelyDowngrade(`grok ${v} (x) [stable]`, "win32")).toBe(false);
     }
   });

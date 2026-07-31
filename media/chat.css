@@ -2385,7 +2385,6 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
-.card textarea.plan-feedback:disabled { opacity: 0.5; }
 .card-actions button.chosen {
   outline: 2px solid var(--vscode-focusBorder);
   outline-offset: -1px;

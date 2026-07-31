@@ -14,7 +14,7 @@
   // copy and test/protocol.test.ts asserts the two are set-equal in both
   // directions (and that chat.js actually handles every host type).
   const HOST_MESSAGE_TYPES = [
-    "initialState", "showThinking", "fontScale", "grokUpdateStatus", "initialized",
+    "initialState", "planModeAvailability", "showThinking", "fontScale", "grokUpdateStatus", "initialized",
     "cliUpdating", "session", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "userMessage", "agentStart", "thoughtChunk",
@@ -649,6 +649,16 @@
     return INTERJECTION_RE.test(String(text || ""));
   }
 
+  /** Remove the CLI's replay-only interjection envelope while preserving the
+   * user's original text. Classification still uses the untouched raw value. */
+  function stripInterjectionEnvelope(text) {
+    const raw = String(text || "");
+    if (!isInterjectionText(raw)) return raw;
+    const body = raw.replace(INTERJECTION_RE, "");
+    const wrapped = /^\s*<user_query>\s*\r?\n?([\s\S]*?)\r?\n?\s*<\/user_query>\s*$/i.exec(body);
+    return (wrapped ? wrapped[1] : body).trim();
+  }
+
   // Permission-card option order (#68). The CLI sends `options` in its own
   // order, so the approve action isn't reliably first and the keyboard default
   // could land on a reject. Sort to a fixed, predictable order — approve first,
@@ -772,7 +782,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown, isRelaySendRejection };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

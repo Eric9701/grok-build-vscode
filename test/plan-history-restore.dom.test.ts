@@ -221,25 +221,84 @@ describe("plan-history queue (restore-flow rendering)", () => {
     ]);
   });
 
-  it("multiple plans at the SAME position drain together (all rendered before next user msg)", () => {
+  it("orders repeated native reject/revise cycles inside one prompt", () => {
     const { window, doc } = bootWebview();
+    const interjection = (text: string) =>
+      `The user sent a message while you were working:\n<user_query>\n${text}\n</user_query>`;
     plays(window, [
       { type: "planHistoryQueue", plans: [
-        { text: "first attempt", verdict: "rejected", afterUserMessage: 1 },
-        { text: "second attempt", verdict: "rejected", afterUserMessage: 1 },
+        { text: "first attempt", verdict: "rejected", afterUserMessage: 1, afterInterjection: 0 },
+        { text: "second attempt", verdict: "rejected", afterUserMessage: 1, afterInterjection: 1 },
+        { text: "final attempt", verdict: "approved", afterUserMessage: 1, afterInterjection: 2 },
       ]},
       { type: "historyReplay", active: true },
-      { type: "userMessageChunk", text: "u1" },
-      { type: "messageChunk", text: "a1" },
-      { type: "userMessageChunk", text: "u2" },
+      { type: "userMessageChunk", text: "draft a plan" },
+      { type: "messageChunk", text: "first draft" },
+      { type: "userMessageChunk", text: "The user sent a message while you were working:" },
+      { type: "userMessageChunk", text: "\n<user_query>\nalso use tabs\n</user_query>" },
+      { type: "messageChunk", text: "second draft" },
+      { type: "userMessageChunk", text: interjection("and add tests") },
+      { type: "messageChunk", text: "final draft" },
       { type: "historyReplay", active: false },
     ]);
     expect(transcript(doc)).toEqual([
-      "user: u1",
-      "agent: a1",
+      "user: draft a plan",
+      "agent: first draft",
       "plan[Rejected]: first attempt",
+      "user: also use tabs",
+      "agent: second draft",
       "plan[Rejected]: second attempt",
-      "user: u2",
+      "user: and add tests",
+      "agent: final draft",
+      "plan[Approved]: final attempt",
+    ]);
+    const comments = [...doc.querySelectorAll('.msg.user[data-steer="1"]')] as HTMLElement[];
+    expect(comments.map((el: any) => el._copyText)).toEqual(["also use tabs", "and add tests"]);
+  });
+
+  it("places a final native approval before same-turn implementation output", () => {
+    const { window, doc } = bootWebview();
+    plays(window, [
+      { type: "planHistoryQueue", plans: [
+        { text: "approved plan", verdict: "approved", afterUserMessage: 1, afterInterjection: 0, afterHistoryEvent: 1 },
+      ]},
+      { type: "historyReplay", active: true },
+      { type: "userMessageChunk", text: "make a plan" },
+      { type: "messageChunk", text: "here is the plan" },
+      { type: "messageChunk", text: "implementing now" },
+      { type: "historyReplay", active: false },
+    ]);
+    expect(transcript(doc)).toEqual([
+      "user: make a plan",
+      "agent: here is the plan",
+      "plan[Approved]: approved plan",
+      "agent: implementing now",
+    ]);
+  });
+
+  it("uses chronological array order for old same-prompt entries without the secondary coordinate", () => {
+    const { window, doc } = bootWebview();
+    const interjection = (text: string) =>
+      `The user sent a message while you were working:\n<user_query>\n${text}\n</user_query>`;
+    plays(window, [
+      { type: "planHistoryQueue", plans: [
+        { text: "legacy first", verdict: "rejected", afterUserMessage: 1 },
+        { text: "legacy second", verdict: "approved", afterUserMessage: 1 },
+      ]},
+      { type: "historyReplay", active: true },
+      { type: "userMessageChunk", text: "draft" },
+      { type: "messageChunk", text: "first" },
+      { type: "userMessageChunk", text: interjection("revise") },
+      { type: "messageChunk", text: "second" },
+      { type: "historyReplay", active: false },
+    ]);
+    expect(transcript(doc)).toEqual([
+      "user: draft",
+      "agent: first",
+      "plan[Rejected]: legacy first",
+      "user: revise",
+      "agent: second",
+      "plan[Approved]: legacy second",
     ]);
   });
 
@@ -251,6 +310,7 @@ describe("plan-history queue (restore-flow rendering)", () => {
           text: "first restored plan",
           verdict: "rejected",
           afterUserMessage: 0,
+          afterInterjection: 0,
           planPath: "/tmp/grok/first-plan.md",
           planName: "first-plan.md",
         },
@@ -258,6 +318,7 @@ describe("plan-history queue (restore-flow rendering)", () => {
           text: "second restored plan",
           verdict: "abandoned",
           afterUserMessage: 0,
+          afterInterjection: 0,
           planPath: "/tmp/grok/second-plan.md",
           planName: "second-plan.md",
         },
@@ -387,7 +448,7 @@ describe("plan-history queue (restore-flow rendering)", () => {
 });
 
 describe("plan card verdict labels (live exit_plan_mode flow)", () => {
-  it("each verdict click produces the matching status label on the resolved card", () => {
+  it("each acknowledged verdict produces the matching status label on the resolved card", () => {
     const cases: Array<{ button: string; verdict: string; label: string }> = [
       { button: "Approve & implement", verdict: "approved",  label: "Approved" },
       { button: "Reject",              verdict: "rejected",  label: "Rejected" },
@@ -399,6 +460,7 @@ describe("plan card verdict labels (live exit_plan_mode flow)", () => {
       const btn = [...doc.querySelectorAll(".card.plan .card-actions button")]
         .find((b) => b.textContent === c.button) as HTMLButtonElement;
       btn.dispatchEvent(new (window as any).MouseEvent("click", { bubbles: true, cancelable: true }));
+      dispatch(window, { type: "planResolved", requestId: 1, verdict: c.verdict });
 
       const card = doc.querySelector(".card.plan")!;
       expect(card.classList.contains("resolved")).toBe(true);

@@ -395,16 +395,16 @@
     // snapshot or a later update with the same toolCallId.
     restoredCardsByToolCallId: new Map(),
     // Saved plan cards waiting to be rendered inline as the conversation replays.
-    // Each entry has { text, verdict, afterUserMessage? }. We drain entries whose
-    // afterUserMessage matches the current userMsgCount as user messages stream
-    // in, and dump anything left (legacy plans w/o position, or plans after the
-    // last replayed user msg) at the end of replay.
+    // `afterUserMessage` is the prompt coordinate; `afterInterjection` orders
+    // repeated native reject/revise cycles inside one prompt.
     planHistoryQueue: [],
     // Answered permission cards from a resumed session, drained inline like plans
     // (each { title, outcome, afterUserMessage? }). The CLI doesn't replay the
     // request, so the host persists + re-queues these.
     permissionHistoryQueue: [],
     userMsgCount: 0,
+    interjectionCount: 0,
+    historyEventCount: 0,
     // The "Grokking…" placeholder shown while a user-initiated turn is waiting on
     // grok — from the moment the user sends (agentStart) until the first real
     // content arrives (a thought, message, tool card, …), which replaces it in
@@ -423,6 +423,8 @@
     // priming spinner clears (setBusy:false). See the initialized/setBusy cases.
     cliVersion: "",
     startingPhase: false,
+    planModeAvailable: true,
+    planModeUnavailableReason: "",
     // Extension version (from initialState) — shown in the gear → About panel.
     extVersion: "",
     // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
@@ -750,7 +752,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -2282,20 +2284,23 @@
     for (const [id, meta] of Object.entries(MODE_META)) {
       const el = document.createElement("div");
       const active = id === state.currentModeId;
+      const planUnavailable = id === "plan" && !state.planModeAvailable;
+      const disabled = !!meta.disabled || planUnavailable;
+      const disabledNote = planUnavailable ? state.planModeUnavailableReason : meta.disabledNote;
       el.className = "toolbar-popover-item mode-popover-item" +
         (active ? " active" : "") +
-        (meta.disabled ? " disabled" : "");
+        (disabled ? " disabled" : "");
       el.innerHTML =
         `<span class="mode-item-icon">${meta.icon}</span>` +
         `<span class="mode-item-body">` +
           `<span class="mode-item-label">${escapeHtml(meta.label)}</span>` +
           `<span class="mode-item-desc">${escapeHtml(meta.desc)}</span>` +
-          (meta.disabledNote ? `<span class="mode-item-disabled-note">${escapeHtml(meta.disabledNote)}</span>` : "") +
+          (disabledNote ? `<span class="mode-item-disabled-note">${escapeHtml(disabledNote)}</span>` : "") +
         `</span>` +
         (active ? '<span class="popover-check">✓</span>' : "");
       el.onclick = (e) => {
         e.stopPropagation();
-        if (meta.disabled) return;
+        if (disabled) return;
         vscode.postMessage({ type: "setMode", modeId: id });
         closePopovers();
       };
@@ -2760,6 +2765,8 @@
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
+    state.interjectionCount = 0;
+    state.historyEventCount = 0;
     state.suppressReplayTurn = false;
     state.skipUserBubble = false;
     state.stickToBottom = true; // a fresh/loaded session starts pinned
@@ -4785,6 +4792,21 @@
     if (state.skipUserBubble) return; // marker-only verdict: no user bubble
     if (state.suppressReplayTurn) return; // still inside the primer's user message
     state.activeUserRaw += text;
+    const interjection = isInterjectionText(state.activeUserRaw);
+    if (interjection) {
+      const steerEl = state.activeUserEl.closest(".msg");
+      if (steerEl && steerEl.dataset.steer !== "1") {
+        // Classification may need several chunks. Undo the speculative prompt
+        // count once, then advance the independent in-turn coordinate.
+        state.userMsgCount = Math.max(0, state.userMsgCount - 1);
+        state.interjectionCount += 1;
+        steerEl.dataset.steer = "1";
+        refreshUserRewindButtons();
+      }
+    }
+    const displayRaw = interjection
+      ? stripInterjectionEnvelope(state.activeUserRaw)
+      : state.activeUserRaw;
     // The replayed prompt carries the <vscode-context> envelope we sent; strip it
     // back out so the bubble shows the user's own words + filename-only chips (with
     // the full path on hover), matching the live send — not the raw paths inline.
@@ -4794,21 +4816,11 @@
     // the exact leading/trailing shapes we produce, so a look-alike string in the
     // middle of the user's own words stays put. The stripped body is also what
     // the copy button yields: the user's words, not the context plumbing.
-    const parsed = parseAttachmentContext(state.activeUserRaw);
+    const parsed = parseAttachmentContext(displayRaw);
     const selBlocks = parseSelectionBlocks(parsed.body);
     const imageTags = parseImageTags(selBlocks.body);
     state.activeUserEl.innerHTML = renderMarkdown(imageTags.body);
     applyAutoDir(state.activeUserEl);
-    // On restore, a steered message comes back wrapped in the CLI's own
-    // interjection envelope. Mark it so it doesn't consume a rewind index — the
-    // live path gets the same mark from `steer` on the userMessage.
-    if (isInterjectionText(state.activeUserRaw)) {
-      const steerEl = state.activeUserEl.closest(".msg");
-      if (steerEl) {
-        steerEl.dataset.steer = "1";
-        refreshUserRewindButtons();
-      }
-    }
     const msgEl = state.activeUserEl.closest(".msg");
     if (msgEl) msgEl._copyText = imageTags.body;
     const chipTags = [
@@ -4830,10 +4842,43 @@
   // Render and dequeue every saved plan whose `afterUserMessage` <= cutoff.
   // Plans without a saved position never drain here — they fall out at the end
   // of replay when we flush the rest of the queue.
+  function normalizePlanHistory(plans) {
+    let promptPosition;
+    let promptOrdinal = 0;
+    let inferredInterjections = 0;
+    return (plans || []).map((plan) => {
+      if (typeof plan.afterUserMessage !== "number") return plan;
+      if (plan.afterUserMessage !== promptPosition) {
+        if (promptPosition !== undefined) {
+          inferredInterjections += Math.max(0, promptOrdinal - 1);
+        }
+        promptPosition = plan.afterUserMessage;
+        promptOrdinal = 0;
+      }
+      if (typeof plan.afterInterjection === "number") {
+        inferredInterjections = Math.max(inferredInterjections, plan.afterInterjection);
+        promptOrdinal += 1;
+        return plan;
+      }
+      // Old entries retain chronological array order. Use it as the best
+      // possible in-prompt ordinal instead of bunching equal coordinates.
+      const afterInterjection = inferredInterjections + promptOrdinal;
+      promptOrdinal += 1;
+      return { ...plan, afterInterjection };
+    });
+  }
+
   function drainPlanHistory(cutoff) {
     if (!state.planHistoryQueue.length) return;
     state.planHistoryQueue = state.planHistoryQueue.filter((p) => {
-      if (typeof p.afterUserMessage === "number" && p.afterUserMessage <= cutoff) {
+      const reached = typeof p.afterUserMessage === "number" && (
+        p.afterUserMessage < cutoff ||
+        (p.afterUserMessage === cutoff && (
+          typeof p.afterInterjection !== "number" ||
+          p.afterInterjection <= state.interjectionCount
+        ))
+      );
+      if (reached) {
         addPlanHistoryCard(p.text, p.verdict, p.planPath, p.planName);
         return false;
       }
@@ -5128,6 +5173,27 @@
     wirePermissionKeys(actions, buttons);
     el.appendChild(actions);
     return { buttons, defaultIndex };
+  }
+
+  // A single replay-stable coordinate shared by plan cards, permission cards,
+  // and usage records. Drain before advancing so a verdict that released the
+  // agent appears immediately before the first implementation update.
+  function advanceHistoryEvent() {
+    state.planHistoryQueue = state.planHistoryQueue.filter((p) => {
+      if (typeof p.afterHistoryEvent === "number" && p.afterHistoryEvent <= state.historyEventCount) {
+        addPlanHistoryCard(p.text, p.verdict, p.planPath, p.planName);
+        return false;
+      }
+      return true;
+    });
+    state.permissionHistoryQueue = state.permissionHistoryQueue.filter((p) => {
+      if (!p.toolCallId && typeof p.afterHistoryEvent === "number" && p.afterHistoryEvent <= state.historyEventCount) {
+        addRestoredPermissionCard(p.title, p.outcome);
+        return false;
+      }
+      return true;
+    });
+    state.historyEventCount += 1;
   }
 
   function updatePermissionOptions(requestId, options) {
@@ -5626,8 +5692,8 @@
   // label. A resolved plan drops its inline text entirely — the plan-file
   // link IS the plan (opens as an editor tab); the Show/Hide toggle survives
   // only as the no-file fallback so the text stays reachable. Shared by the
-  // live button click and the buffered `planResolved` replay (re-focus), so a
-  // resolved card can never come back actionable.
+  // live click and buffered `planResolved` replay (re-focus), so a resolved
+  // card can never come back actionable.
   function resolvePlanCardEl(el, verdict) {
     el.classList.add("resolved");
     const actions = el.querySelector(".card-actions");
@@ -5703,7 +5769,6 @@
           verdict,
           ...(comment ? { comment } : {}),
         });
-        // (The comment, if any, lands as its own user bubble below.)
         resolvePlanCardEl(el, verdict);
       };
       return b;
@@ -5722,6 +5787,9 @@
   // and the verdict the user gave it (persisted in globalState).
   function addPlanHistoryCard(text, verdict, planPath, planName) {
     clearWelcome();
+    // A native verdict can sit inside one agent turn. Finalize the plan-drafting
+    // bubble so the implementation chunk after this card starts a new bubble.
+    commitAgentTurn();
     const el = document.createElement("div");
     el.className = "card plan plan-history";
     const title = document.createElement("div");
@@ -5976,7 +6044,11 @@
     // locked, where a setMode would throw "no session"; that flag always clears.
     modeBtn.disabled = state.busyLocked;
     modeBtn.classList.toggle("disabled", state.busyLocked);
-    modeBtn.title = state.busyLocked ? "Mode — available once the session is ready" : "Pick mode";
+    modeBtn.title = state.busyLocked
+      ? "Mode — available once the session is ready"
+      : state.planModeAvailable
+        ? "Pick mode"
+        : `Pick mode — ${state.planModeUnavailableReason}`;
     if (!state.busy) {
       sendBtn.innerHTML = ICON.arrowUp;
       sendBtn.title = "Send";
@@ -6628,6 +6700,13 @@
         }
         applyThinkingVisibility();
         break;
+      case "planModeAvailability":
+        state.planModeAvailable = msg.available !== false;
+        state.planModeUnavailableReason = state.planModeAvailable
+          ? ""
+          : String(msg.reason || "Plan mode is unavailable.");
+        updateSendButton();
+        break;
       case "remoteStatus":
         state.remoteLinked = !!msg.linked;
         syncRemoteButton();
@@ -6960,11 +7039,17 @@
           state.rejectedSubmissionText = "";
           renderQueuedBlocks();
         }
-        // Live send (or immediate verdict-feedback bubble): render and bump the
-        // counter so any plan history queued for this position drains first.
-        drainPlanHistory(state.userMsgCount);
-        drainPermissionHistory(state.userMsgCount);
-        state.userMsgCount += 1;
+        // A steer/interjection is part of the already-running turn: it renders
+        // as a bubble but never advances the prompt counter or drains cards at
+        // a new prompt boundary. Real sends do both.
+        if (msg.steer) {
+          drainPlanHistory(state.userMsgCount);
+          state.interjectionCount += 1;
+        } else {
+          drainPlanHistory(state.userMsgCount);
+          drainPermissionHistory(state.userMsgCount);
+          state.userMsgCount += 1;
+        }
         addMessage("user", msg.text, msg.chips || [], { steer: msg.steer });
         forceScrollToBottom(); // jump back to the bottom on the user's own send (#16)
         break;
@@ -6986,9 +7071,11 @@
         updateSendButton();
         break;
       case "thoughtChunk":
+        advanceHistoryEvent();
         appendThought(msg.text);
         break;
       case "messageChunk":
+        advanceHistoryEvent();
         appendAgent(msg.text);
         break;
       case "media":
@@ -7044,10 +7131,13 @@
       case "planHistoryQueue":
         // Sent by the host right before replay starts. Drives inline placement
         // of historical plan cards from appendUserChunk / live userMessage.
-        state.planHistoryQueue = (msg.plans || []).slice();
+        state.planHistoryQueue = normalizePlanHistory(msg.plans);
         state.userMsgCount = 0;
+        state.interjectionCount = 0;
+        state.historyEventCount = 0;
         break;
       case "toolCall":
+        advanceHistoryEvent();
         if (state.suppressReplayTurn) break; // tool calls inside the primer turn (unlikely but defensive)
         if (isQuestionTool(msg.call)) {
           // No generic tool chip — the question card stands in for it.
@@ -7084,6 +7174,7 @@
         renderRestoredPermissionForTool(msg.call.toolCallId, msg.call.title);
         break;
       case "toolCallUpdate": {
+        advanceHistoryEvent();
         if (state.suppressReplayTurn) break;
         // Resume: anchor a restored permission card here — the update carries the
         // tool's real title (the tool_call is often a generic "Shell"/"Grep"), so

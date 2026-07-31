@@ -46,22 +46,26 @@ export interface SessionMetaOverride {
    *  the extension is the only place per-turn usage exists at all (grok reports
    *  it per prompt and never persists it). Sessions predating this field keep
    *  their total uncorrected rather than losing it. */
-  usageLog?: { afterUserMessage: number; usage: PromptUsage }[];
+  usageLog?: { afterUserMessage: number; afterHistoryEvent?: number; usage: PromptUsage }[];
   /** Last verdict the user gave to an exit_plan_mode card in this session, for the restore-card label. */
   lastPlanVerdict?: "approved" | "rejected" | "abandoned";
   /** Every plan the user resolved in this session, in chronological order. grok's plan.md only
    *  retains the latest plan content on disk; saving each one here lets the resume view replay
    *  rejected/cancelled plans that grok overwrote later in the conversation. `afterUserMessage`
-   *  is the count of user messages that had been sent at the moment the plan was resolved, so
-   *  the resume view can render each card right after that message instead of dumping all the
-   *  plan cards at the bottom of the restored conversation. */
-  plans?: { text: string; verdict: "approved" | "rejected" | "abandoned"; afterUserMessage?: number }[];
+   *  plus `afterInterjection` positions repeated native revisions inside one prompt. */
+  plans?: {
+    text: string;
+    verdict: "approved" | "rejected" | "abandoned";
+    afterUserMessage?: number;
+    afterInterjection?: number;
+    afterHistoryEvent?: number;
+  }[];
   /** Every permission card the user answered in this session, in order. The CLI
    *  doesn't replay `session/request_permission` on `session/load` (it's a server
    *  request, not a session update), so we persist the title + outcome here and
    *  replay each as a collapsed card. `afterUserMessage` positions it inline, like
    *  `plans`. */
-  permissions?: { title: string; outcome: "allowed" | "rejected"; toolCallId?: string; afterUserMessage?: number }[];
+  permissions?: { title: string; outcome: "allowed" | "rejected"; toolCallId?: string; afterUserMessage?: number; afterHistoryEvent?: number }[];
   /** Dashboard "unread" badge: a turn finished while this session wasn't focused and
    *  hasn't been opened since. Drives the green/red dot; cleared on open. Persisted
    *  (not tied to the live process) so the badge survives reaping and a reload. */

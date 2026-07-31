@@ -145,6 +145,35 @@ describe("parseRelayFrame", () => {
     }
   });
 
+  it("validates and reconstructs remote plan verdicts before host state can change", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({
+      type: "exitPlanAnswer",
+      requestId: "plan-7",
+      verdict: "approved",
+      comment: "Please keep the tests focused.",
+      unchecked: true,
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: {
+        type: "exitPlanAnswer",
+        requestId: "plan-7",
+        verdict: "approved",
+        comment: "Please keep the tests focused.",
+      },
+    });
+
+    for (const malformed of [
+      { type: "exitPlanAnswer", verdict: "approved" },
+      { type: "exitPlanAnswer", requestId: null, verdict: "approved" },
+      { type: "exitPlanAnswer", requestId: 7, verdict: "approve" },
+      { type: "exitPlanAnswer", requestId: 7, verdict: "approved", comment: 42 },
+    ]) {
+      expect(parseRelayFrame(wrap(malformed)), JSON.stringify(malformed)).toBeNull();
+    }
+  });
+
   it("accepts canonical filesystem-bearing remote payloads", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     for (const msg of [

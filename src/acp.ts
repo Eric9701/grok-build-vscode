@@ -11,6 +11,7 @@ import {
   type PromptUsage,
   makeAckResponse,
   makeExitPlanResponse,
+  makeExitPlanUnavailableResponse,
   makePermissionCancelledResponse,
   makePermissionResponse,
   makeQuestionCancelledResponse,
@@ -30,6 +31,7 @@ import {
 } from "./plan-gate";
 import { resolveGrokHome } from "./sessions";
 import { filterAdvertisedCommands } from "./slash-filter";
+import { grokCliNeedsShell } from "./cli-process";
 import { resolvedTerminalShellDialect } from "./terminal-manager";
 import {
   parseWorktreeApply,
@@ -148,7 +150,12 @@ export interface TerminalHandler {
   release(terminalId: string): void;
 }
 
-type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer?: ReturnType<typeof setTimeout> };
+type Pending = {
+  resolve: (v: any) => void;
+  reject: (e: any) => void;
+  timer?: ReturnType<typeof setTimeout>;
+  onResolve?: (value: any) => void;
+};
 
 export function buildGrokAgentArgs(effort?: EffortLevel): string[] {
   // `--reasoning-effort` is an `agent`-level flag, so it must precede the `stdio`
@@ -221,7 +228,7 @@ export class AcpClient extends EventEmitter {
     // Node 18+ refuses to spawn .cmd/.bat without `shell: true` on Windows
     // (CVE-2024-27980). Enable shell mode for those so installs that resolve to
     // a .cmd shim (e.g. some package managers, our test fake-CLI) still work.
-    const needsShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(this.opts.cliPath);
+    const needsShell = grokCliNeedsShell(this.opts.cliPath);
     this.proc = spawn(this.opts.cliPath, args, {
       cwd: this.opts.cwd,
       env: this.opts.env ?? process.env,
@@ -249,6 +256,12 @@ export class AcpClient extends EventEmitter {
       // Drop the process handle so later writes are skipped rather than hitting
       // a destroyed pipe (`this.proc?` alone stays truthy after exit).
       this.proc = undefined;
+    });
+    // Wait for `close`, not merely `exit`, before rejecting pending requests and
+    // notifying the host. Node may emit `exit` while stdout is still draining;
+    // a final successful interject response must be parsed before exit recovery
+    // decides whether its user text still needs to be reclaimed.
+    this.proc.on("close", (code) => {
       for (const [id, p] of this.pending) {
         this.pending.delete(id);
         if (p.timer) clearTimeout(p.timer);
@@ -452,10 +465,14 @@ export class AcpClient extends EventEmitter {
    * returns `"unsupported"` (not a throw) so the caller can fall back to queueing
    * — the user's text must never be lost to a capability gap.
    */
-  async interject(text: string): Promise<"ok" | "unsupported"> {
+  async interject(text: string, onQueued?: () => void): Promise<"ok" | "unsupported"> {
     if (!this.sessionId) throw new Error("no session");
     try {
-      await this.request("_x.ai/interject", { sessionId: this.sessionId, text });
+      await this.request(
+        "_x.ai/interject",
+        { sessionId: this.sessionId, text },
+        () => onQueued?.(),
+      );
       return "ok";
     } catch (e: any) {
       if (isMethodNotFoundError(e)) {
@@ -634,8 +651,8 @@ export class AcpClient extends EventEmitter {
     }
   }
 
-  async cancel(reason = "unspecified"): Promise<void> {
-    if (!this.sessionId) return;
+  async cancel(reason = "unspecified"): Promise<boolean> {
+    if (!this.sessionId) return false;
     // Log every outbound cancel with its trigger — the CLI logs the receipt
     // (`shell.cancel.received … trigger:null`) but not who asked, so when a
     // user reports "my turn died and I touched nothing" (#37) this line is
@@ -644,22 +661,27 @@ export class AcpClient extends EventEmitter {
     // ACP defines session/cancel as a notification (no id) — sending it as a
     // request causes grok-cli to ignore it. Write directly to stdin without an
     // id and don't await a response.
-    this.writeLine({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } });
+    return this.writeLine({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } });
   }
 
   /** Respond to a pending permission request (from the agent) with the chosen option id. */
-  respondPermission(requestId: number | string, optionId: string): void {
-    this.writeLine(makePermissionResponse(requestId, optionId));
+  respondPermission(requestId: number | string, optionId: string): boolean {
+    return this.writeLine(makePermissionResponse(requestId, optionId));
   }
 
   /** Decline a permission request when the client has no safe offered option. */
-  respondPermissionCancelled(requestId: number | string): void {
-    this.writeLine(makePermissionCancelledResponse(requestId));
+  respondPermissionCancelled(requestId: number | string): boolean {
+    return this.writeLine(makePermissionCancelledResponse(requestId));
   }
 
   /** Respond to a pending exit_plan_mode request with the user's verdict. */
-  respondExitPlan(requestId: number | string, type: "approved" | "abandoned" | "rejected"): void {
-    this.writeLine(makeExitPlanResponse(requestId, type));
+  respondExitPlan(requestId: number | string, type: "approved" | "abandoned" | "rejected"): boolean {
+    return this.writeLine(makeExitPlanResponse(requestId, type));
+  }
+
+  /** Refuse an exit-plan request when native verdict semantics are unavailable. */
+  respondExitPlanUnavailable(requestId: number | string): boolean {
+    return this.writeLine(makeExitPlanUnavailableResponse(requestId));
   }
 
   /** Respond to a pending ask_user_question request with the user's selections. */
@@ -667,13 +689,13 @@ export class AcpClient extends EventEmitter {
     requestId: number | string,
     answers: Record<string, string>,
     annotations: Record<string, { notes?: string; preview?: string }> = {},
-  ): void {
-    this.writeLine(makeQuestionResponse(requestId, answers, annotations));
+  ): boolean {
+    return this.writeLine(makeQuestionResponse(requestId, answers, annotations));
   }
 
   /** Respond to a pending ask_user_question request that the user dismissed. */
-  respondQuestionCancelled(requestId: number | string): void {
-    this.writeLine(makeQuestionCancelledResponse(requestId));
+  respondQuestionCancelled(requestId: number | string): boolean {
+    return this.writeLine(makeQuestionCancelledResponse(requestId));
   }
 
   /**
@@ -741,10 +763,14 @@ export class AcpClient extends EventEmitter {
     }
   }
 
-  private request(method: string, params: any): Promise<any> {
+  private request(
+    method: string,
+    params: any,
+    onResolve?: (value: any) => void,
+  ): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const entry: Pending = { resolve, reject };
+      const entry: Pending = { resolve, reject, onResolve };
       this.pending.set(id, entry);
       if (!this.writeLine(makeRequest(id, method, params))) {
         this.pending.delete(id);
@@ -763,12 +789,12 @@ export class AcpClient extends EventEmitter {
     });
   }
 
-  private respondOk(id: number | string, result: any = {}): void {
-    this.writeLine(makeAckResponse(id, result));
+  private respondOk(id: number | string, result: any = {}): boolean {
+    return this.writeLine(makeAckResponse(id, result));
   }
 
-  private respondError(id: number | string, code: number, message: string): void {
-    this.writeLine({ jsonrpc: "2.0", id, error: { code, message } });
+  private respondError(id: number | string, code: number, message: string): boolean {
+    return this.writeLine({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
   private onLine(line: string): void {
@@ -784,7 +810,11 @@ export class AcpClient extends EventEmitter {
         this.pending.delete(ev.id as number);
         if (p.timer) clearTimeout(p.timer);
         if (ev.error) p.reject(ev.error);
-        else p.resolve(ev.result);
+        else {
+          try { p.onResolve?.(ev.result); }
+          catch (e) { this.opts.log(`[acp] response hook failed: ${(e as Error).message}`); }
+          p.resolve(ev.result);
+        }
       }
       return;
     }

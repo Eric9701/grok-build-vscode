@@ -126,6 +126,17 @@ rl.on("line", async (line) => {
       return respondOk(id, {});
     case "session/cancel":
       return respondOk(id, {});
+    case "_x.ai/interject":
+      if (params.text.includes("SCENARIO_INTERJECT_ACK_THEN_EXIT")) {
+        // Put the successful response on stdout and exit immediately after the
+        // write reaches the pipe. The parent may observe process `exit` before
+        // it drains that final line; its host-facing exit must wait for drain.
+        return process.stdout.write(
+          JSON.stringify({ jsonrpc: "2.0", id, result: {} }) + "\n",
+          () => process.exit(0),
+        );
+      }
+      return respondOk(id, {});
     case "session/prompt":
       return runScenario(id, extractPromptText(params), params);
   }

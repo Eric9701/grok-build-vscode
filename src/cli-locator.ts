@@ -35,25 +35,20 @@ export function locateGrokCli(configuredPath: string): string | undefined {
   return undefined;
 }
 
-/**
- * Decide whether to silently auto-update the grok CLI because *our extension* was
- * upgraded since the last run. True only when a prior version was recorded (so a
- * fresh install never triggers an update — that's the "not-first-run" rule) and it
- * differs from the current extension version. Pure so it's unit-testable.
- */
+/** Whether this activation follows a previously-recorded extension version. */
 export function extensionWasUpgraded(lastSeen: string | undefined, current: string): boolean {
   return !!lastSeen && !!current && lastSeen !== current;
 }
 
 /**
- * The supported grok CLI version the extension pins Windows to. The `agent stdio`
- * #22 regression broke **0.2.61–0.2.70**; the fix landed in **0.2.71** and is now on
- * the **stable** channel as **0.2.72** (the supported build here), verified end-to-end
- * via the session/new probe + the live ACP gate. We pin a broken build to this. Bump
- * it when a newer Windows-verified build ships — re-verify with the **session/new**
- * probe, not just `initialize`.
+ * Oldest grok CLI whose ACP behavior this extension supports. Native
+ * exit_plan_mode verdicts are part of this contract, so every platform must
+ * meet this floor. It is also the Windows-verified reactive recovery target.
  */
-export const GROK_STDIO_DOWNGRADE_TARGET = "0.2.72";
+export const GROK_REQUIRED_VERSION = "0.2.117";
+
+// Reactive Windows stdio recovery lands on the same fully-supported baseline.
+export const GROK_STDIO_DOWNGRADE_TARGET = GROK_REQUIRED_VERSION;
 
 /**
  * Parse a grok `--version` banner ("grok 0.2.64 (9a9ac25b10) [stable]") into a
@@ -65,44 +60,35 @@ export function parseGrokVersion(versionOutput: string): [number, number, number
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-/**
- * grok CLI **0.2.61–0.2.70** shipped a Windows-only `agent stdio` regression: the
- * agent didn't read stdin lines until EOF (which never comes for a live client), so an
- * ACP startup request timed out and the process was torn down ("exited with code
- * null"). It mutated across builds — 0.2.61–0.2.64 hung at `initialize`;
- * 0.2.67/0.2.69/0.2.70 answered `initialize` but hung at `session/new` — and was
- * **fixed in 0.2.71**, now on stable as **0.2.72** (`GROK_STDIO_DOWNGRADE_TARGET`),
- * verified via the session/new probe + the live ACP gate. See issue #22 and
- * `research/stdio-eof-regression.md`.
- *
- * Detect the bounded broken range **0.2.61–0.2.70** (Windows only) so the host pins
- * those builds to the supported 0.2.72 before spawning. The fix sits *above* the broken
- * range, so this is a closed range — not an open-ended "anything newer" check: both
- * 0.2.71+ and <=0.2.60 are fine. A *future* still-broken build above 0.2.72 is caught
- * reactively (`shouldReactivelyDowngrade`). Pure.
- */
-export function isStdioBrokenGrokVersion(versionOutput: string, platform: NodeJS.Platform): boolean {
-  if (platform !== "win32") return false;
-  const v = parseGrokVersion(versionOutput);
-  if (!v) return false;
-  const [maj, min, pat] = v;
-  return maj === 0 && min === 2 && pat >= 61 && pat <= 70;
-}
-
 /** Compare two `[major, minor, patch]` tuples: <0, 0, or >0. Pure. */
 export function compareVersionTuple(a: [number, number, number], b: [number, number, number]): number {
   return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 }
 
+/** Windows grok 0.2.61-0.2.70 can hang before ACP startup completes. */
+export function isStdioBrokenGrokVersion(versionOutput: string, platform: NodeJS.Platform): boolean {
+  if (platform !== "win32") return false;
+  const version = parseGrokVersion(versionOutput);
+  if (!version) return false;
+  const [major, minor, patch] = version;
+  return major === 0 && minor === 2 && patch >= 61 && patch <= 70;
+}
+
+/** Whether a parseable installed CLI is older than the behavior baseline. */
+export function isGrokVersionBelowRequired(versionOutput: string): boolean {
+  const installed = parseGrokVersion(versionOutput);
+  const required = parseGrokVersion(GROK_REQUIRED_VERSION)!;
+  return !!installed && compareVersionTuple(installed, required) < 0;
+}
+
 /**
- * Decision for the "Update Grok Build CLI" action (manual menu *and* the silent
- * on-upgrade update), given the installed version + platform.
+ * Decision for "Update Grok Build CLI" (manual and extension-upgrade updates),
+ * given the installed version + platform.
  *
  * The #22 Windows update pause is **lifted** now that 0.2.71 fixes the regression —
- * updates proceed normally on every platform (to `latest`). The #22 safety net still
- * stands behind this: the proactive pin (`isStdioBrokenGrokVersion` → 0.2.61–0.2.70)
- * and the reactive downgrade (`shouldReactivelyDowngrade` → builds above 0.2.72)
- * recover a session if an update ever lands on a still-broken build.
+ * updates proceed normally on every platform (to `latest`). The behavior floor
+ * handles old builds; reactive recovery handles a newer Windows build that
+ * actually exhibits the stdio failure.
  */
 export interface GrokUpdatePolicy {
   /** May the update run at all? */
@@ -122,19 +108,15 @@ export function grokUpdatePolicy(_versionOutput: string, _platform: NodeJS.Platf
  * Should the host REACTIVELY downgrade the CLI after an *observed* `agent stdio`
  * init failure (handshake timeout / "exited code null")?
  *
- * The proactive `isStdioBrokenGrokVersion` covers the known broken range
- * (0.2.61–0.2.70) before spawning. This is the evidence-driven backstop for a *future*
- * still-broken build **above** the supported 0.2.72 (no static range can predict it),
- * or for cases the proactive pin couldn't run (version read failed, or the binary was
- * locked so `grok update` couldn't rename it). It fires on the real failure
- * (`initialize` *or* `session/new`), not a version guess, and pins back to 0.2.72.
+ * The proactive bounded-range pin covers known-broken Windows builds before
+ * spawning. This is the evidence-driven backstop for a future still-broken build
+ * above the Windows-verified target. It fires on the real failure (`initialize` or
+ * `session/new`), not a version guess, and restores the supported baseline.
  *
- * Windows-only (the regression is). A build at/below 0.2.72 is never downgraded —
- * that's the loop guard: once the pin lands the version is exactly the target, so a
- * subsequent failure (some other cause) can't trigger another downgrade. A later
- * *manual* re-upgrade pushes the version back above the target, so a fresh failure
- * re-triggers the downgrade — exactly the "they upgraded anyway, fix it again"
- * case. Unparseable version ⇒ leave alone. Pure.
+ * Windows-only (the regression is). A build at/below the target is never
+ * reactively replaced; that is the loop guard once recovery lands. A later
+ * manual upgrade above the target re-arms recovery. Unparseable version means
+ * leave it alone. Pure.
  */
 export function shouldReactivelyDowngrade(versionOutput: string, platform: NodeJS.Platform): boolean {
   if (platform !== "win32") return false;

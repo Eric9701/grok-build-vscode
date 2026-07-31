@@ -191,6 +191,20 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return isRemoteMentionPath(value.relPath) ? msg as WebviewMsg : null;
     case "uploadFile":
       return isRemoteUploadName(value.name) ? msg as WebviewMsg : null;
+    case "exitPlanAnswer": {
+      const validRequestId = typeof value.requestId === "string" || typeof value.requestId === "number";
+      if (
+        !validRequestId ||
+        (value.verdict !== "approved" && value.verdict !== "abandoned" && value.verdict !== "rejected")
+      ) return null;
+      if (value.comment !== undefined && typeof value.comment !== "string") return null;
+      return {
+        type: "exitPlanAnswer",
+        requestId: value.requestId as number | string,
+        verdict: value.verdict,
+        ...(value.comment !== undefined ? { comment: value.comment } : {}),
+      };
+    }
     default:
       return msg as WebviewMsg;
   }

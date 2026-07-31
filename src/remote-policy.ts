@@ -239,6 +239,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   session: "mirror",
   modelChanged: "mirror",
   modeChanged: "mirror",
+  planModeAvailability: "mirror",
   openModePopover: "mirror",
   chips: "mirror",
   commandsUpdate: "mirror",

@@ -44,6 +44,9 @@ export interface ToolCallPayload {
 export interface PlanHistoryItem {
   text: string;
   verdict?: "approved" | "rejected" | "abandoned" | undefined;
+  afterUserMessage?: number;
+  afterInterjection?: number;
+  afterHistoryEvent?: number;
   planPath?: string;
   planName?: string;
 }
@@ -56,6 +59,7 @@ export const HOST_CAPABILITIES = {
 
 export type HostMsg =
   | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean; remoteVoice: boolean } }
+  | { type: "planModeAvailability"; available: boolean; reason?: string }
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
   | { type: "soundNotifications"; value: boolean }
@@ -109,8 +113,6 @@ export type HostMsg =
   // The host spreads the plan-review snapshot (planPath/planName) into the bare
   // ExitPlanRequest before posting, so the wire shape is wider than acp's type.
   | { type: "exitPlanRequest"; req: ExitPlanRequest & { planPath?: string; planName?: string } }
-  // Buffered right after the user's verdict (mirrors permissionResolved) so a
-  // re-focus replays the plan card collapsed instead of actionable.
   | { type: "planResolved"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected" }
   | { type: "questionRequest"; req: QuestionRequest }
   | { type: "planNotice"; text: string }
@@ -312,7 +314,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
+  initialState: true, planModeAvailability: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
   initialized: true, cliUpdating: true, session: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
