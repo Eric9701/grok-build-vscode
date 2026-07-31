@@ -1116,12 +1116,28 @@ async function testPlanMode() {
     assert(shouldBlockWrite(appPath, upCtx) === true, "plan-gate failed to block an in-workspace write while up");
     const planFile = path.join(GROK_HOME, "sessions", "enc", sessionId, "plan.md");
     assert(shouldBlockWrite(planFile, upCtx) === false, "plan-gate wrongly blocked grok's own plan.md");
-    // The first native `cancelled` response must cause a same-turn re-plan and a
-    // second exit request. The second is approved with the gate already down, so
-    // implementation continues in this same original prompt.
     assert(rejectedClean, "grok never requested the rejected native verdict");
+
+    // Whether a `cancelled` verdict makes grok re-plan IN THE SAME TURN is NOT a
+    // guarantee — measured on 0.2.117 across identical prompts it produced 1, 2 and
+    // 15 same-turn re-asks. This assertion used to require >=2 and failed the night
+    // it came back 1. Both outcomes are correct product behaviour: grok either
+    // revises unprompted, or ends the turn and waits for the user (who gets the
+    // "staying in Plan mode" notice and types what to change). So drive the second
+    // case the way a user would, rather than pinning a model coin-flip.
+    const spontaneousReplan = acp.exitPlans.length >= 2;
+    if (!spontaneousReplan) {
+      const revise = await withTimeout(
+        acp.send("session/prompt", { sessionId, prompt: [{ type: "text",
+          text: "Revise the plan to also reject non-number arguments, then ask for approval again." }] }),
+        600000, "revise prompt");
+      assert(!revise.error, "revise turn errored: " + JSON.stringify(revise.error));
+    }
+
+    // What IS guaranteed, and what this test exists for: cancelled contains every
+    // workspace mutation, and approval lowers the gate before implementation runs.
     assert(acp.exitPlans.length >= 2,
-      "cancelled verdict did not re-plan/re-ask in the original turn (exit requests: " + acp.exitPlans.length + ")");
+      "grok never re-asked for approval, even when prompted to revise (exit requests: " + acp.exitPlans.length + ")");
     assert(gateUp === false, "approval did not lower the client gate before continuation");
     const downCtx = { active: false, workspaceRoot: cwd, grokHome: GROK_HOME };
     assert(shouldBlockWrite(appPath, downCtx) === false, "plan-gate still blocked an in-workspace write after approval");
@@ -1129,7 +1145,7 @@ async function testPlanMode() {
     assert(landed, "native approval did not land the implementation inside the original turn");
 
     const wrotePlan = acp.writes.some((w) => /plan\.md$/i.test(w));
-    return `native cancelled → re-plan → approved in one turn (${acp.exitPlans.length} exit requests); ${rejectedAttempts} pre-reject workspace attempt(s) contained; gate lowered before implementation; ${wsAttempts()} total workspace write request(s), implementation landed${wrotePlan ? "; grok kept its own plan.md" : ""}`;
+    return `native cancelled → ${spontaneousReplan ? "same-turn re-plan" : "turn ended, user-prompted revision"} → approved (${acp.exitPlans.length} exit requests); ${rejectedAttempts} pre-reject workspace attempt(s) contained; gate lowered before implementation; ${wsAttempts()} total workspace write request(s), implementation landed${wrotePlan ? "; grok kept its own plan.md" : ""}`;
   } finally { acp.kill(); }
 }
 
