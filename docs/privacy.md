@@ -4,7 +4,7 @@
 
 ## Telemetry — what is sent
 
-A single, anonymous **`session_start`** event ([Aptabase](https://aptabase.com)), fired on the **first real message** of a session — never the hidden plan-mode primer, and never empty or abandoned sessions. Its only purpose is to gauge how many people use the extension, which models/modes are popular, and whether our default settings are the right ones.
+A single, anonymous **`session_start`** event ([Aptabase](https://aptabase.com)), fired on the **first real message** of a session — never for empty or abandoned sessions. Legacy primer turns replayed from sessions created by older extension builds do not count as real messages. Its only purpose is to gauge how many people use the extension, which models/modes are popular, and whether our default settings are the right ones.
 
 The event carries:
 
@@ -69,6 +69,6 @@ Each spoken message adds a billed API request and network delay. The request use
 
 ## Remote Control (AFK Pilot)
 
-Also separate from telemetry, and **entirely opt-in**: nothing runs until you explicitly link this machine (gear → *Remote Control* → **Sign in**). Once linked, the extension keeps an outbound connection to the [AFK Pilot](https://afkpilot.com) service so *your own* paired devices (your phone, another browser) can see and drive this workspace's chat. That means the **conversation you see in the sidebar** — messages, replies, tool activity, generated images — flows through the service while a device is linked; that's the feature. The machine introduces itself by **hostname + OS** (e.g. "Dell (Windows 11)") — your workspace path is deliberately not part of it.
+Also separate from telemetry, and **entirely opt-in**: nothing runs until you explicitly link this machine (gear → *Remote Control* → **Sign in**). Once linked, the extension keeps an outbound connection to the [AFK Pilot](https://afkpilot.com) service so *your own* paired devices (your phone, another browser) can see and drive this workspace's chat. Live messages, replies, tool activity, and generated images flow through the service while a device is linked; a reconnect snapshot contains only the last 10 user messages and the events within that retained window, while the desk webview keeps its full buffer. The machine introduces itself by **hostname + OS** (e.g. "Dell (Windows 11)") — your workspace path is deliberately not part of it.
 
 **Unlink this device** (`AFK Pilot: Unlink this device` in the Command Palette) removes the device token locally and revokes it on your account — after that, nothing connects. If you never link a device, none of this exists. AFK Pilot's own data handling is covered by its policies at [afkpilot.com](https://afkpilot.com).

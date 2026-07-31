@@ -139,8 +139,8 @@ everything together: `title: "imagine: <prompt>"`, `status: "completed"`,
 Because the host's `handleSessionUpdate` runs identically for live and replay,
 and this collapsed payload is *both* media-gen-detected (`isMediaGenToolCall`,
 via the title) *and* path-bearing (`extractGeneratedMediaPaths`), the image
-renders on resume with no extra code. The webview only suppresses the primer turn
-(`suppressReplayTurn`), not real replayed turns. Locked by a unit test
+renders on resume with no extra code. The webview only suppresses legacy primer
+turns (`suppressReplayTurn`), not real replayed turns. Locked by a unit test
 ("resume: the collapsed tool_call carries title + path together").
 
 ## Notes

@@ -1,20 +1,24 @@
-# Plan mode — why it's disabled, and why disabling it isn't enough
+# Plan mode — historical failure and current enforcement
 
-> **Update (grok 0.2.101):** the "`exit_plan_mode` treats any response — result or
-> error — as approval; no wire-level reject" claim below is **FIXED upstream** — a
-> success `{outcome:"cancelled"}` now rejects a plan. The extension retains the
-> primer + client-side gate anyway, because the gate is still needed for the
-> terminal-tool hole (plan mode rejects the edit tool but passes `terminal/create`).
-> See `research/plan-mode-recheck-findings.md` and `research/grok-build-oss-findings.md` §2.1.
+> **Current status (grok 0.2.117):** the extension uses native JSON-RPC success
+> outcomes for `exit_plan_mode`: `approved`, `cancelled` (Keep planning), and
+> `abandoned` (Cancel). Approval/revision continues in the original turn; an
+> Approve/Keep-planning comment is queued through `_x.ai/interject` before the
+> verdict response releases that turn. There is no primer, bracket marker,
+> follow-up verdict prompt, `afterTurn`, or verdict-time cancellation. The
+> client-side gate remains because the CLI still passes `terminal/create` while
+> planning. Legacy primer/marker readers remain for sessions already on disk.
+> Plan is unavailable fail-closed below `GROK_REQUIRED_VERSION`, or when the CLI
+> version cannot be read. The 0.2.3 analysis below is preserved as history.
 
 Research notes. Status as of `grok` 0.2.3 (native Windows), extension v1.1.0, 2026-05-27.
 
-> **Resolved (2026-05-28): Option B+ shipped.** Plan mode is re-enabled and enforced
+> **Historical resolution (2026-05-28): Option B+ shipped.** Plan mode was re-enabled and enforced
 > client-side at the two *mandatory* server→client choke points — `fs/write_text_file`
 > and `terminal/create` — rather than the leaky permission layer. See
-> [§ Resolution](#resolution-what-we-built) below for the empirical probe findings that
-> drove the design and the final architecture. The analysis above is preserved as the
-> problem statement.
+> [§ Resolution](#resolution-safety-gate-retained-verdict-protocol-replaced) below for the empirical probe findings that
+> drove the safety-gate design. Native verdicts later replaced the synthetic
+> conversation protocol without changing those enforcement points.
 
 ## TL;DR
 
@@ -64,8 +68,8 @@ client and waits for a verdict. We handle it correctly:
 
 **The bug:** grok's handler treats the error response the same as a result — it exits
 plan mode and executes the full plan regardless. Re-verified against 0.2.3 (2026-05-27):
-rejecting with a JSON-RPC error still ran the plan. So there is currently **no response we
-can send that means "don't do it."**
+rejecting with a JSON-RPC error still ran the plan. On 0.2.3 there was **no response we
+could send that meant "don't do it."**
 
 Because of that, enabling a Plan UI that silently approves every plan is worse than not
 shipping it, so Plan is marked disabled in the picker — `media/chat.js:88-100`
@@ -159,7 +163,7 @@ Cost: a real departure from the pure thin-client model, and we own the gate's co
 
 In the `modeChanged` handler (`src/sidebar.ts:253-255`), if the incoming mode is `plan`,
 immediately call `client.setMode("agent")` to force back, and surface a notice. Cheap, and
-closes the "ask Grok to switch" hole today. Downside: fights the CLI's state machine and
+would have closed the "ask Grok to switch" hole in that design. Downside: fights the CLI's state machine and
 may produce a visible flicker / race; doesn't give us a *working* plan mode, just prevents
 the broken one. Reasonable as a guard until A or B lands.
 
@@ -182,9 +186,16 @@ the broken one. Reasonable as a guard until A or B lands.
 
 ---
 
-## Resolution: what we built
+## Resolution: safety gate retained, verdict protocol replaced
 
-We took **Option B**, but moved the enforcement point. Option B as written gates at
+The current build retains the B+ safety gate described here, but the verdict path is
+native: `makeExitPlanResponse` maps the three UI choices to successful typed outcomes,
+and `handleExitPlan` settles gate/Auto-accept state before releasing the blocked
+response. Approve and Keep-planning comments are interjected first; an Abandon comment
+is queued after the response because that outcome ends the turn without another model
+step. No synthetic prompt is sent.
+
+Historically, we took **Option B**, but moved the enforcement point. Option B as written gates at
 `session/request_permission` — but that layer is *advisory*: in Agent mode the CLI skips
 the permission prompt entirely for edits it judges non-sensitive, so a permission-layer
 gate leaks. Instead we gate at the two requests the agent *cannot* avoid making to touch
@@ -230,18 +241,16 @@ a plan-mode turn and logged every server→client call without writing anything 
   allowlist (git/npm subcommands, interpreter `--version` only), chaining/redirection
   metacharacters, shell plan-write regressions, and the filesystem-only `plan.md`
   carve-out.
-- **The gate is one of TWO enforcement pillars (since v1.4.x).** Alongside the gate, a
-  hidden **primer** (`src/grok-primer.ts`) is sent before the user's first prompt
-  instructing grok to disregard the always-"approved" `exit_plan_mode` result and read
-  the real verdict from the *next* message as a bracketed marker — `[Plan approved]` /
-  `[Plan rejected]` / `[Plan cancelled]` (+ optional comment). The gate blocks workspace
-  mutation; the primer aligns grok's own behavior. The primer is sent lazily (first
-  prompt of new **and** restored sessions, re-sent on restore — not trusted from replayed
-  history). See [research/understanding-plan-mode.md](understanding-plan-mode.md).
+- **The gate is the extension-owned enforcement pillar.** Native
+  `exit_plan_mode` outcomes align the CLI's behavior; the extension no longer sends a
+  hidden primer or bracket-marker prompt. `src/grok-primer.ts` deliberately remains as
+  a legacy reader so old sessions replay, restore, title, and rewind correctly. See
+  [research/understanding-plan-mode.md](understanding-plan-mode.md).
 - **acp.ts** gates the two handlers and emits `mutationBlocked` / `planFileContent`.
-- **sidebar.ts** owns `planActive`, mutual exclusivity with YOLO, agent-initiated-plan
-  sync (closes the Option-C hole for free — entering plan mode *any* way raises the gate),
-  permission auto-reject while planning, and the approve→implement / keep-planning flow.
+- **sidebar.ts** owns `planActive`, mutual exclusivity with Auto accept,
+  agent-initiated-plan sync (entering plan mode *any* way raises the gate), permission
+  auto-reject while planning, native verdict responses, pre-response interjection, and
+  persisted plan-card history.
 - **Read-only shell stays allowed while planning** (`git status`, `ls`, `cat`, …) so the
   agent can still explore; anything that could mutate is blocked and surfaced as a notice.
   There is deliberately no shell-parser exemption for persisting `plan.md`: a rejected
@@ -249,8 +258,8 @@ a plan-mode turn and logged every server→client call without writing anything 
 
 ### Live validation of the reject-with-feedback flow (2026-05-28)
 
-Two further probes drove real `grok` 0.2.3 end-to-end with the *actual flow the
-extension now ships*, not just the original single-turn observation:
+Two further probes drove real `grok` 0.2.3 end-to-end with the synthetic flow the
+extension shipped at that time, not just the original single-turn observation:
 
 - `research/plan-reject-probe.cjs` — plan turn → respond to `exit_plan_mode` (the
   unavoidable "approved") → re-assert `setMode("plan")` → send the exact

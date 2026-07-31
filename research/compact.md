@@ -87,13 +87,13 @@ over `_meta.totalTokens` for the donut — the per-turn accounting and the
 session-level usage are different quantities and the donut really wants the
 latter.
 
-## Primer interaction
+## Legacy primer interaction
 
-A native compact rewrites history around a summary, which can fold the hidden
-plan-protocol primer away with everything else. The extension re-primes
-(non-blocking `ensurePrimed`) right after a confirmed `/compact` turn — same
-pattern as the restore path, which already distrusts a replayed primer for
-exactly this reason.
+A native compact can fold a primer written by an older extension build into its
+summary. Current builds do not send or re-send a primer after `/compact` (or on
+restore); native `exit_plan_mode` outcomes carry the verdict. The legacy
+`isPrimerText`/`isPrimerSummary` readers and replay filters remain so historical
+primer turns and primer-derived titles stay hidden when old sessions are loaded.
 
 Note on `available_commands_update`: the CLI re-broadcasts it at ordinary turn
 boundaries (the probe saw one during the seed turn and one as the after turn

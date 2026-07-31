@@ -1,6 +1,6 @@
 # What the 0.2.112 re-verification unlocks — recommended next steps
 
-**Status: recommendation, not a plan. Nothing here is implemented.** Written 2026-07-29 alongside
+**Status: recommendation log. Section 1 is implemented; the remaining items are not.** Written 2026-07-29 alongside
 the [ACP-feedback](ACP-feedback.md) re-verification pass (live basis: grok **0.2.112**; source
 basis: the OSS daily sync, now `5da6962`). Every claim below is either **live-verified** on 0.2.112
 or explicitly marked otherwise — see *Evidence discipline* at the end, which is the part most worth
@@ -14,7 +14,7 @@ hardest unsolved problem.
 
 ---
 
-## 1. Retire the hidden primer; adopt the CLI's native plan verdicts
+## 1. Retired the hidden primer; adopted the CLI's native plan verdicts
 
 **Live-verified (0.2.117).** Replying to `_x.ai/exit_plan_mode` with a JSON-RPC **success**
 `{outcome: "approved" | "cancelled" | "abandoned"}` does the right thing inside the original
@@ -23,8 +23,8 @@ grok revises and re-asks without a synthetic prompt. A user comment can be queue
 `_x.ai/interject` while grok is blocked on `exit_plan_mode`, before the verdict response releases
 the turn, so it influences either implementation or re-planning at the first native continuation.
 
-This is the highest-leverage item by a wide margin, because the primer is load-bearing for a
-surprising amount of machinery that exists *only* to clean up after it:
+This was the highest-leverage item by a wide margin, because the primer was load-bearing for a
+surprising amount of machinery that existed *only* to clean up after it:
 
 | Retired write-side machinery | Why it existed |
 |---|---|

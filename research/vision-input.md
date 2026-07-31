@@ -50,9 +50,10 @@ Run it: `node research/vision-probe.cjs` (env: `PROBE_PNG_SIZE=<px>`,
   model's context, so the model `Read`-attempted the binary — `Cannot read
   binary file` — on a pasted image whose pixels it had *already* received (its
   answer was unaffected; the failed read is pure transcript noise). The hint
-  suppresses that at the point of temptation instead of adding a global rule
-  to the plan-mode primer (primer additions have blast radius — see the v3→v4
-  history in CLAUDE.md). No images → byte-identical to `buildPrompt`.
+  suppresses that at the point of temptation instead of adding a global rule.
+  Current builds send no plan-mode primer; older primer revisions demonstrated
+  why unrelated standing instructions have too much blast radius. No images →
+  byte-identical to `buildPrompt`.
   The restore side parses tags back out via `parseImageTags`
   (media/webview-helpers.js), stripping the hint so restore sees a clean path
   (or none) — hint-less legacy tags and leading/inline legacy shapes from the

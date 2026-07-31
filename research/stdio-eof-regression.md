@@ -6,10 +6,12 @@ channel as **0.2.72** (verified 2026-06-28). The regression spanned **0.2.61–0
 the *next* request (`session/new`). 0.2.71 (and 0.2.72) answer `session/new` with stdin
 held open and pass the full live ACP gate (handshake, prompt round-trip, session restore,
 plan-mode, subagent). Last pre-fix working build was **0.2.60**. **Windows-only** — macOS
-ran the broken builds fine (see § macOS is not affected). As of **v1.4.18** the extension
-adopts **0.2.72 as the supported build** (`GROK_STDIO_DOWNGRADE_TARGET`): it pins the
-bounded broken range **0.2.61–0.2.70** up to 0.2.72 before spawning, re-enables Windows
-updates, and keeps the reactive net as a backstop for any *future* build above 0.2.72.
+ran the broken builds fine (see § macOS is not affected). **v1.4.18** adopted 0.2.72
+as that release's supported build; the current `GROK_STDIO_DOWNGRADE_TARGET` and
+`GROK_REQUIRED_VERSION` are **0.2.117**. The extension pins only the bounded broken
+range **0.2.61–0.2.70** up to the current recovery target before spawning, keeps the
+reactive startup-failure net, and disables Plan fail-closed whenever the installed
+CLI is below 0.2.117 or its version cannot be read. Agent and Auto accept remain usable.
 Tracked in extension issue [#22](https://github.com/phuryn/grok-build-vscode/issues/22).
 
 > **0.2.71 (alpha) probe, 2026-06-28** — the hourly fix-watch caught it. `session/new`
@@ -136,19 +138,20 @@ Any persistent client hangs.
 
 ## Extension mitigation (shipped)
 
-As of **v1.4.18** the extension adopts **0.2.72 as the supported build** (the fix landed
-in 0.2.71, now on stable as 0.2.72) (`GROK_STDIO_DOWNGRADE_TARGET`): before spawning it
-reads `grok --version`, and if the build is in the bounded broken range **0.2.61–0.2.70**
-(`isStdioBrokenGrokVersion`, [src/cli-locator.ts](../src/cli-locator.ts)) it runs
-`grok update --version 0.2.72` ([src/sidebar.ts](../src/sidebar.ts) `maybePinBrokenCli`) —
-moving those builds *up* to the fix. Windows updates are **no longer paused**
-(`grokUpdatePolicy` allows normally), and the reactive net (`shouldReactivelyDowngrade`)
-is the backstop for a *future* build **above** 0.2.72 that's still broken, or for when the
-proactive pin couldn't run (version read failed, or the binary was locked) — it recovers
-on an observed startup failure at **`initialize` *or* `session/new`**. When a newer
-Windows-verified build ships (re-verify with the **session/new** probe, not just
-`initialize`), bump `GROK_STDIO_DOWNGRADE_TARGET` and widen the broken range to include the
-superseded builds.
+The current recovery target and native-plan floor are **0.2.117**
+(`GROK_STDIO_DOWNGRADE_TARGET === GROK_REQUIRED_VERSION`). Before spawning, the
+extension reads `grok --version`; if a Windows build is in the bounded broken range
+**0.2.61–0.2.70** (`isStdioBrokenGrokVersion`,
+[src/cli-locator.ts](../src/cli-locator.ts)), `maybePinBrokenCli` runs
+`grok update --version 0.2.117`, moving it past the stdin regression. Windows updates
+are no longer paused, and `shouldReactivelyDowngrade` remains the observed-failure
+backstop at `initialize` or `session/new` when proactive recovery could not run.
+
+Version verification now has a second, independent safety role: a CLI below
+`GROK_REQUIRED_VERSION`, or one whose version cannot be read, may still run Agent and
+Auto accept but receives `planModeAvailable:false`. The picker disables Plan, forged
+Plan requests are rejected, restored/agent-initiated Plan is forced back to Agent, and
+a stray `exit_plan_mode` receives an error instead of an unsafe native verdict.
 
 > **History:** v1.4.12 introduced the 0.2.60 pin (range closed at 0.2.64); v1.4.13 added
 > the reactive net; v1.4.15 extended the range to 0.2.67 and broadened the reactive trigger
@@ -201,11 +204,11 @@ the broken build to check whether the regression is platform-specific:
 - **grok 0.1.216**: answered in ~520 ms with stdin open.
 
 The EOF-gated-first-read hang **does not reproduce on macOS** — the bug is
-**Windows-only**. This confirms the workaround's `win32` gate is correct:
+**Windows-only**. This confirms the stdin-regression workaround's `win32` gate is correct:
 `isStdioBrokenGrokVersion` / `grokUpdatePolicy` (`src/cli-locator.ts`) early-return to
-a no-op on every non-win32 platform, so the auto-pin and update-block never fire off
-Windows regardless of installed version. No code change needed; widen/remove the gate
-only if the regression is later observed on another platform.
+a no-op on every non-win32 platform, so the regression auto-pin never fires off Windows.
+The separate `GROK_REQUIRED_VERSION` Plan-availability check applies on every platform.
+Widen/remove only the regression gate if the EOF bug is later observed elsewhere.
 
 Probe: `research/stdio-eof-mac-probe.cjs` (keeps stdin open, asserts an `initialize`
 response — the exact condition that hangs on Windows).

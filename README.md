@@ -27,7 +27,7 @@ _Click any feature to expand._
 <details>
 <summary><strong>Remote Control (AFK Pilot)</strong> — watch and steer your sessions from a phone or any browser</summary>
 
-Gear → *Remote Control* → **Sign in (link this device)** pairs this machine with **[AFK Pilot](https://afkpilot.com)**, a companion web client that mirrors this chat in the browser: follow a running turn, approve permissions, answer questions, and send or steer messages from your phone while away from your desk. The extension dials **out** to the service — no inbound port, no port forwarding — and **Sign out** unlinks the device again. The mobile view keeps the full chat (diffs, images, equations, diagrams) with touch-sized controls, and its own **+** picker attaches a photo or a document (`.md`/`.txt`/`.pdf`/`.csv`/`.xlsx`/`.docx`) straight from your phone. You can **dictate** there too — say *"grok send"* to submit hands-free — give each browser tab its **own conversation and repository**, and pick up the very conversation VS Code has open, live in both.
+Gear → *Remote Control* → **Sign in (link this device)** pairs this machine with **[AFK Pilot](https://afkpilot.com)**, a companion web client that mirrors this chat in the browser: follow a running turn, approve permissions, answer questions, and send or steer messages from your phone while away from your desk. The extension dials **out** to the service — no inbound port, no port forwarding — and **Sign out** unlinks the device again. The mobile view renders the retained chat window in full fidelity (diffs, images, equations, diagrams) with touch-sized controls; on reconnect, the remote snapshot is capped at the last 10 user messages while the VS Code view keeps the complete buffer. Its own **+** picker attaches a photo or a document (`.md`/`.txt`/`.pdf`/`.csv`/`.xlsx`/`.docx`) straight from your phone. You can **dictate** there too — say *"grok send"* to submit hands-free — give each browser tab its **own conversation and repository**, and pick up the very conversation VS Code has open, live in both.
 
 While a device is linked, the extension also **keeps the machine awake** (`caffeinate` on macOS, `SetThreadExecutionState` on Windows, `systemd-inhibit` on Linux) so a turn you kicked off from your phone isn't cut short by idle sleep. The display still sleeps — only system sleep is blocked — and the lock is released the moment you sign out. Turn it off with `grok.remote.keepAwake`. A **closed laptop lid still suspends** on every OS; no application can override that.
 
@@ -312,7 +312,7 @@ Grok's own **slash commands** (`/imagine`, `/compact`, …) autocomplete in the 
 
 The extension is intentionally **thin**: it speaks JSON-RPC over `grok agent stdio` and renders the results. Grok owns sessions, memory, MCP, models, and tool execution; the extension mediates file reads/writes, terminal requests, diff previews, the webview UI — and **Plan Mode**.
 
-Plan Mode is the one place the extension is *not* thin. The CLI's `exit_plan_mode` is unreliable (it reports "approved" to any reply), so the extension enforces planning itself: a **gate** blocks workspace writes and non-read-only commands until you approve, and a hidden **primer** teaches Grok to read your real verdict (`[Plan approved]` / `[Plan rejected]` / `[Plan cancelled]`) from your next message. The primer fires silently the instant a session goes live, so it never delays your first prompt.
+Plan Mode is the one place the extension adds defense-in-depth. The CLI owns the plan review and receives native JSON-RPC success outcomes (`approved`, `cancelled` for Keep planning, or `abandoned` for Cancel), so approval or revision continues inside the original turn. An Approve/Keep-planning comment is interjected before that verdict releases the turn; a Cancel comment queues as the next ordinary prompt because abandonment has no continuation step. The extension's **gate** still blocks workspace writes and non-read-only commands while planning because the CLI's own terminal path remains porous. No hidden primer, bracket marker, follow-up verdict prompt, or verdict-time turn cancellation is sent. Plan is disabled fail-closed when the CLI is older than the required version or its version cannot be verified.
 
 Full diagram, message flow, module map, and design notes: **[docs/architecture.md](docs/architecture.md)**.
 
@@ -325,13 +325,14 @@ Full diagram, message flow, module map, and design notes: **[docs/architecture.m
 
 ```bash
 npm install
-npm test         # grok-free unit/DOM/integration suite — exactly what CI runs
+npm test         # grok-free unit/DOM/fake-CLI integration suite
+npm run test:integration # grok-free real VS Code Extension Host smoke (also required by CI)
 npm run package  # → grok-vscode-phuryn-<version>.vsix
 ```
 
-`npm test` is grok-free, so **local ≡ CI** — it never spawns the real binary. A separate, on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, plan-mode, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy and what's deferred to a future `@vscode/test-electron` suite: **[TESTS.md](TESTS.md)**. Architecture and module map: **[docs/architecture.md](docs/architecture.md)**.
+`npm test` is grok-free and never spawns the real binary. CI also requires the separate `npm run test:integration` Electron smoke. An on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, native plan verdicts, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy: **[CLAUDE.md](CLAUDE.md#test-taxonomy--three-layers)**. Architecture and module map: **[docs/architecture.md](docs/architecture.md)**.
 
-**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1450-test grok-free suite is the floor — every change keeps it green.
+**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1657-test grok-free suite is the floor — every change keeps it green.
 
 </details>
 

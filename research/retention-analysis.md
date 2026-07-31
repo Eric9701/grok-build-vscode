@@ -83,7 +83,7 @@ flowchart TB
 - **"Returned"**: at least one later `session_start` whose date is D+1, D+2, or D+3 relative to the cohort day.
 - **WAU**: count of unique `installId`s that produced ≥1 `session_start` inside the Jul 4–10 window.
 - **DAU / spikes**: derived from per-day unique `installId` counts in the exports.
-- Only real user-initiated sessions are counted (the extension deliberately suppresses `session_start` for the hidden plan-mode primer and for primer-only/empty sessions).
+- Only real user-initiated sessions are counted. The builds represented in this historical export suppressed `session_start` for their then-active hidden plan-mode primer and for primer-only/empty sessions; current builds no longer send a primer and still emit only on the first real message.
 - No client-side aggregation or retention math exists in the extension; this is purely post-hoc analysis of exported event CSVs.
 
 ## Related code & docs

@@ -28,8 +28,8 @@ yet on the real CLI.
 | §2.6 session RPCs (`_x.ai/session/{list,info,rename,delete,fork}`) | ✅ **shipped** (unadvertised) — `_`-prefixed on the wire; `rename`→`{success:true}`, `delete` removed the dir, `list` returns `{sessions[],nextCursor}` with `sessionKind` a **top-level** row field | ✅ **adoptable now** — can replace disk-scraping for rename/delete/list; probe the `list`/`info` response shapes fully before wiring |
 | §2.7 reasoning effort via `set_model` `_meta.reasoningEffort` | ✅ OK, no error; `session/new` `models[]._meta` advertises `reasoningEffort:"high"`, `supportsReasoningEffort:true`, full `reasoningEfforts` list | ✅ **implement** — drop the process-restart on effort change |
 | §2.3/2.4/2.5 live rail | ✅ present as **`_x.ai/session_notification`** (underscore) — carries `auto_compact_completed{tokens_after}`, `subagent_spawned`/`subagent_progress`/`subagent_finished{duration_ms,tokens_used,output,will_wake}`, `turn_completed`, `session_summary_generated`, `image_dropped{notes}` | ✅ **implement** — we already *receive* it (`acp.ts:655` → `xaiNotification`) but don't consume the kinds |
-| §2.1 plan verdict via success `{outcome:"cancelled"}` | ✅ mode stays `[plan]`, model reads it as "revise" not a tool failure, turn ends `end_turn` | ✅ **implement** — replace the JSON-RPC-error reject |
-| §2.6 primer → `session/new` `_meta.rules` | ✅ injected rule reached the model (nonce echoed verbatim) | ✅ **implement** (larger change) |
+| §2.1 plan verdict via success `{outcome:"cancelled"}` | ✅ mode stays `[plan]`, model reads it as "revise" not a tool failure, turn ends `end_turn` | ✅ **implemented** — all three native outcomes now replace JSON-RPC-error rejection and synthetic markers |
+| §2.6 `session/new` `_meta.rules` | ✅ injected rule reached the model (nonce echoed verbatim) | ℹ️ available for general standing rules; no plan primer is needed now that typed verdicts ship |
 | §2.9 `GROK_SHELL` env at spawn | ✅ sets the model's first-message `Shell:` line (`powershell`/`bash`/`cmd.exe`; unset → host-detected `powershell`) | ✅ **implement** (small) |
 | `_x.ai/interject` — mid-turn steering (#52) | ✅ **shipped + works** — `{sessionId,text}` → `{status:"queued"}`; the model changed course **mid-stream** and echoed the interjected token, turn still ended `end_turn` (**not** cancelled, no work lost) | ✅ **implement** — this is "Steer"; no cancel-and-resend needed |
 | `_x.ai/session/fork` (#48) | ✅ **shipped + works** — copied 17/17 messages, model recalled the parent's codeword after `session/load`, **parent untouched** | ✅ **implement** — don't hand-roll a dir copy |
@@ -64,12 +64,12 @@ These are confirmed *available now*; the only work is wiring them into the exten
 - **Reasoning effort is live-settable per session** — `session/set_model` accepts `_meta.reasoningEffort` (`"none"|"minimal"|"low"|"medium"|"high"|"xhigh"`) and applies it without a process restart; `session/new` already reports the current effort + full effort list in `models[]._meta`. (We still kill/restart the process on effort change — that restart is now removable.)
 - **The live event rail is already flowing** — `_x.ai/session_notification` delivers `auto_compact_completed`, `subagent_spawned/progress/finished` (with `duration_ms`/`tokens_used`/`output`), `turn_completed` (per-turn billing usage), and `image_dropped` (the first four probe-observed; `image_dropped` source-confirmed). The extension already receives it; only the compact-donut kind is consumed so far (v1.6.1).
 - **Session RPCs are shipped (unadvertised)** — `_x.ai/session/{list,info,rename,delete,fork}` work on 0.2.101 (`rename`→`{success:true}`, `delete` removed the dir). They can replace the disk-scraping catalog for rename/delete/list.
-- **Plan verdicts have a real semantic reply** — replying to `x.ai/exit_plan_mode` with a success `{outcome:"cancelled"|"abandoned"|"approved"}` is honored (mode stays `[plan]` on cancel; the model treats it as "revise", not a tool failure). We currently send a JSON-RPC error, which the CLI reads as a client disconnect.
+- **Plan verdicts have a real semantic reply** — replying to `x.ai/exit_plan_mode` with a success `{outcome:"cancelled"|"abandoned"|"approved"}` is honored (mode stays `[plan]` on cancel; the model treats it as "revise", not a tool failure). The extension now sends these native outcomes.
 - **The model's shell dialect is steerable** — setting `GROK_SHELL` in the agent's spawn env (`pwsh`/`powershell`/`bash`/`cmd`) sets the model's `Shell:` hint directly.
-- **System-prompt injection is sanctioned** — `session/new` `_meta.rules` reaches the model verbatim (the home our plan-mode primer should move to).
+- **System-prompt injection is sanctioned** — `session/new` `_meta.rules` reaches the model verbatim. The plan primer was retired rather than moved because native verdicts make it unnecessary.
 - **Generated media carries a typed path** — the completed tool result includes `rawOutput` with a typed `path`, cleaner than parsing the JSON/prose text (and free of the Windows `\\?\` noise).
 
-**Implementation status (v1.6.1, in progress):**
+**Implementation status (originally recorded at v1.6.1; plan rows updated to current):**
 
 *Done + tested (grok-free suite, 932):*
 - ✅ **`auto_compact_completed` → context donut** (retires the hidden `/session-info` scrape; kept as a pre-rail fallback).
@@ -77,11 +77,11 @@ These are confirmed *available now*; the only work is wiring them into the exten
 - ✅ **Live reasoning-effort switch** — `set_model` `_meta.reasoningEffort`, gated on the model's advertised `supportsReasoningEffort`; restart fallback for old CLIs / unset.
 - ✅ **`GROK_SHELL` at spawn** — `grokShellEnvValue` aligns the model's shell dialect with the shell we run.
 
-*Deliberately deferred (with reasons — a judgment call, not blocked):*
+*Status of items originally deferred:*
 - ⏸ **Session RPCs adoption** (`_x.ai/session/{rename,delete,list}`) — confirmed shipped, but **unadvertised** (could change), the disk-scraping catalog is robust, rename would fight the `customName` override system, and delete-of-an-arbitrary-history-id is unprobed. Adopt when advertised/stable, or if disk-scraping becomes a real problem.
-- ⏸ **Plan verdict `{outcome:"cancelled"}`** — mechanism is probe-confirmed, but our verdict UX is driven by the primer + `[Plan …]` markers + client-side gate, and plan-mode enforcement is in flux CLI-side (§2.1). Switching now risks rework against a moving target. (Stale comment in `makeExitPlanResponse` corrected.)
+- ✅ **Native plan verdicts** — implemented with `approved` / `cancelled` / `abandoned`; Approve/Keep-planning comments use `_x.ai/interject` before the verdict response releases the original turn. The client-side terminal/write gate remains.
 - ⏸ **Media `rawOutput.path` parsing** — needs a live `/imagine` wire capture to confirm the typed `rawOutput` shape; guessing would repeat the bare-`x.ai/` mistake. Text-parsing works meanwhile.
-- ⏸ **Primer → `_meta.rules`** — largest change; must handle legacy/resumed sessions (rules apply at session creation, so a fresh-session probe does NOT prove migration / `/compact` survival / restore); downstream of the same plan-mode uncertainty.
+- ✅ **Primer write side retired** — no `_meta.rules` migration was needed. Legacy primer readers remain for resumed sessions already on disk.
 
 Permissions honesty (§2.11) is optional (#49 is closed).
 
@@ -289,12 +289,12 @@ Three facts that decide the #53 UI:
   (`xai-grok-tools/src/implementations/grok_build/exit_plan_mode/types.rs:18-25`, mapped at
   `tool_calls.rs:193-203`; unknown → cancelled, fail-closed). `cancelled` = keep planning (the CLI
   itself tells the model "user wants to revise", `tool_calls.rs:1266-1287`); `abandoned` =
-  deactivate plan mode. A JSON-RPC **error** — what we send today — is treated as *client
+  deactivate plan mode. A JSON-RPC **error** — what older extension builds sent — is treated as *client
   disconnect* (`ext_method_no_client`, `tool_calls.rs:215-220`), not a verdict.
-  **Implement:** map Keep planning → `outcome:"cancelled"` + comment as feedback; Cancel →
-  probably `"abandoned"`; Approve → `"approved"`. If the shipped build honors this, the CLI
-  handles the model-facing messaging itself — which may make the primer's
-  `[Plan approved/rejected/cancelled]` protocol obsolete. Probe.
+  **Implemented:** Keep planning maps to `outcome:"cancelled"`, Cancel to
+  `"abandoned"`, and Approve to `"approved"`. Approve/Keep-planning comments are
+  interjected before the response; the CLI handles the continuation itself, so the
+  primer and `[Plan approved/rejected/cancelled]` protocol are retired.
 - `planContent: null` conditions pinned: plan.md empty/whitespace, missing, or unreadable
   (`tool_calls.rs:106-113, 1204-1227`). Keep the plan.md fallback.
 - `[ui] require_plan_approval` (config) forces plan approval even in yolo
@@ -381,15 +381,15 @@ Three facts that decide the #53 UI:
   comes from the remote catalog); for `grok-4.5` they coincide. `resolveModelId` stays.
 - Agent lock: `MODEL_SWITCH_INCOMPATIBLE_AGENT` fires only when `turn_count > 0`
   (`model_switch.rs:65-88`); at zero turns the harness is **rebuilt in place** (`:89-113`) —
-  which is why our pre-primer `set_model` works.
+  which is why a pre-first-turn `set_model` works.
 - Replay filters only blank/rewind/ACU lines (`session/storage/mod.rs:1106-1196`) —
   `<system-reminder>` and protocol-marker replay is structural; keep client-side filters.
   Resolved `request_permission`s are never persisted (request/response RPC, not a session
   update) — keep our re-injection. `_meta.noReplay` on `session/load` skips replay entirely
   (`mod.rs:355`).
 - Title generation locks onto the **first non-empty text** of message #1, no synthetic-turn skip
-  (`session/summary.rs:58-97`) — the primer-title pollution is structural; fixed for real by
-  moving the primer out of the message stream (below).
+  (`session/summary.rs:58-97`) — historical primer-title pollution was structural and is fixed
+  for new sessions by no longer sending a primer. Legacy title repair remains.
 
 ### §2.7 Session configuration
 
@@ -456,9 +456,8 @@ From the full `ext_method` router (`acp_agent.rs:3164-3508`) and docs
 - **`_meta.rules` on `session/new`** → appended to the system prompt as `<human_rules>`
   (`agent/mvp_agent/mod.rs:1036-1058`); `_meta.systemPromptOverride` replaces it and is re-synced
   on resume (`:1024-1082`, `acp_agent.rs:1643`); `_meta.agentProfile` selects a profile.
-  **This is the sanctioned home for our plan-mode primer** — it would end primer-titled
-  sessions, empty-primer sweeps, replay hiding, `/compact` re-priming, and the priming race,
-  all at once. Probe on shipped build first (and verify rules survive `/compact` + `session/load`).
+  This remains available for general standing instructions. The plan-mode primer was instead
+  retired outright once native verdicts were adopted; its legacy readers stay for old sessions.
 - `x.ai/git/worktree/{create,remove,apply,list,gc}` + `x.ai/session/fork` — the "Worktree UI"
   roadmap item has a full server-side API. **`session/fork` is probe-confirmed working** — § 3a.
 - `x.ai/interject` — mid-turn interjection (the TUI's Ctrl+L) over ACP. **Probe-confirmed

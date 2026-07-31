@@ -45,5 +45,5 @@ Since v1.4.0 the extension **renders the result inline** — `/imagine` output s
 A few things look like slash commands but are surfaced through the extension UI, not the CLI:
 
 - **New session** — sidebar `+` button (`Grok: New Session` from the command palette)
-- **Plan mode** — mode picker in the bottom toolbar; enabled and enforced client-side (Grok proposes a plan; workspace writes and non-read-only commands are blocked until you approve — see [src/plan-gate.ts](../src/plan-gate.ts) and [src/grok-primer.ts](../src/grok-primer.ts))
+- **Plan mode** — mode picker in the bottom toolbar; native CLI verdicts drive plan review, while the extension's safety gate blocks workspace writes and non-read-only commands until approval (see [src/plan-gate.ts](../src/plan-gate.ts)); Plan is unavailable when the CLI is below the required version or its version cannot be verified
 - **Auto accept (YOLO)** — mode picker; toggles auto-approval on the client side
