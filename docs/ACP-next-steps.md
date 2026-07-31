@@ -1,6 +1,6 @@
 # What the 0.2.112 re-verification unlocks — recommended next steps
 
-**Status: recommendation log. Section 1 is implemented; the remaining items are not.** Written 2026-07-29 alongside
+**Status: recommendation log. Sections 1 and 3 are implemented; in §4 the context-envelope and active-auth wins are implemented, while the other items remain open.** Written 2026-07-29 alongside
 the [ACP-feedback](ACP-feedback.md) re-verification pass (live basis: grok **0.2.112**; source
 basis: the OSS daily sync, now `5da6962`). Every claim below is either **live-verified** on 0.2.112
 or explicitly marked otherwise — see *Evidence discipline* at the end, which is the part most worth
@@ -81,7 +81,7 @@ before we shipped. Here we don't yet.
 
 ---
 
-## 3. Usage: harvest `costUsdTicks`, but do **not** retire our ledger
+## 3. Usage: harvest `costUsdTicks`, but do **not** retire our ledger — implemented
 
 This is the item most likely to be over-read, so the finding first:
 
@@ -90,9 +90,9 @@ numTurns: 2, costUsdTicks: 178580000` after two turns → **all zeros** on the n
 `session/load` in a fresh agent process. A cumulative-looking counter that silently resets is worse
 for users than no counter, because it keeps looking authoritative while under-reporting. So:
 
-- **Keep** `SessionMetaOverride.usageLog` and the derived total. It is still the only thing that
+- **Kept:** `SessionMetaOverride.usageLog` and the derived total. It is still the only thing that
   survives a reload *and* the only thing a rewind can subtract from.
-- **Do** start capturing **`costUsdTicks`**, which rides the per-turn `_meta.usage` we already parse.
+- **Implemented:** capture **`costUsdTicks`**, which rides the per-turn `_meta.usage` we already parse.
   It is the first real money figure anywhere on the wire and the number users actually ask for; we
   have never been able to show it. This is a small change to an existing path, not a new subsystem.
 - Optionally use `_x.ai/session/usage` as a per-run cross-check, labelled **"this run"** — never as
@@ -108,7 +108,7 @@ remains blocked upstream.
 
 Each is small, independent, and deletes a workaround we currently maintain:
 
-- **Replace the `/session-info` prose scrape** with the envelope `_meta.totalTokens` that rides
+- **Implemented — replaced the `/session-info` prose scrape** with the envelope `_meta.totalTokens` that rides
   every `session/update` (observed climbing 5487 → 15781 → 16015 within one turn, matching the prose
   exactly). Kills the regex ACP-feedback §2.3 calls "as fragile as it sounds", and the hidden turn
   that feeds it.
@@ -116,7 +116,7 @@ Each is small, independent, and deletes a workaround we currently maintain:
   — retires the send-reordering dance for the command where it was most fragile.
 - **`initialize._meta.modelState`** carries the full model catalog *before* `session/new`, so the
   model picker no longer needs a live session to populate.
-- **`initialize._meta.defaultAuthMethodId`** is populated (`"cached_token"`), so we can finally warn
+- **Implemented — `initialize._meta.defaultAuthMethodId`** is populated (`"cached_token"`), so we warn once per install
   about the OAuth-shadows-`XAI_API_KEY` trap instead of regexing an error string.
 - **`_x.ai/sessions/changed`** pushes an incremental session catalog with `activity`, `yolo`,
   `reasoningEffort`, `isWorktree`. It is strictly better than the paginated list we asked upstream

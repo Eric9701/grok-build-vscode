@@ -277,6 +277,8 @@ export interface PromptUsage {
   modelCalls?: number;
   apiDurationMs?: number;
   numTurns?: number;
+  /** USD billing in Grok's fixed-point unit: 10^10 ticks = $1. */
+  costUsdTicks?: number;
 }
 
 export interface PromptResultMeta {
@@ -305,6 +307,7 @@ export function extractPromptUsage(meta: any): PromptUsage | undefined {
     modelCalls: num(u.modelCalls),
     apiDurationMs: num(u.apiDurationMs),
     numTurns: num(u.numTurns),
+    costUsdTicks: num(u.costUsdTicks),
   };
   return Object.values(out).some((v) => v !== undefined) ? out : undefined;
 }
@@ -338,6 +341,7 @@ export function addUsage(a: PromptUsage | undefined, b: PromptUsage | undefined)
   const keys: (keyof PromptUsage)[] = [
     "inputTokens", "outputTokens", "totalTokens", "cachedReadTokens",
     "reasoningTokens", "modelCalls", "apiDurationMs", "numTurns",
+    "costUsdTicks",
   ];
   const out: PromptUsage = {};
   for (const k of keys) {
@@ -401,6 +405,16 @@ export function gateZeroTokenMeta(meta: PromptResultMeta): PromptResultMeta {
 }
 
 /**
+ * The trustworthy live context count is carried by each `session/update`
+ * envelope's `_meta.totalTokens`, not the prompt result (which can be a
+ * placeholder zero). Invalid values leave the last real donut value intact.
+ */
+export function contextUsedFromUpdateEnvelope(meta: unknown): number | null {
+  const used = (meta as { totalTokens?: unknown } | null | undefined)?.totalTokens;
+  return typeof used === "number" && Number.isFinite(used) && used > 0 ? used : null;
+}
+
+/**
  * The fresh post-compaction context size from an `_x.ai/session_notification`
  * update, or `null` when the update isn't a compaction-completed event or
  * carries no usable count. grok fires `auto_compact_completed` on BOTH a manual
@@ -458,26 +472,6 @@ export function autoCompactStartedNote(update: unknown): string | null {
   return pct != null
     ? `Auto-compacting context (${pct}% full)…`
     : `Auto-compacting context…`;
-}
-
-/**
- * Parse the context line out of `/session-info`'s reply text — grok 0.2.x
- * renders `**Context:** 16017 / 512000 tokens (3%)`. The post-/compact donut
- * refresh prefers the live `auto_compact_completed` notification
- * (`contextUsedFromCompactNotification`); this parser drives the hidden
- * /session-info FALLBACK for CLIs that predate that rail (e.g. the Windows
- * downgrade target). Tolerant of bold markers, casing, and thousands
- * separators; null when the line is missing or the numbers don't parse, in
- * which case callers leave the existing donut value unchanged.
- */
-export function parseSessionInfoContext(text: string): { used: number; window: number } | null {
-  const m = /context:\*{0,2}\s*([\d][\d,]*)\s*\/\s*([\d][\d,]*)\s*tokens/i.exec(text ?? "");
-  if (!m) return null;
-  const num = (s: string) => Number(s.replace(/,/g, ""));
-  const used = num(m[1]);
-  const window = num(m[2]);
-  if (!Number.isFinite(used) || used <= 0 || !Number.isFinite(window) || window <= 0) return null;
-  return { used, window };
 }
 
 export function makePermissionResponse(id: number | string, optionId: string) {

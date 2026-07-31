@@ -19,9 +19,9 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
-import { beginAuthRecovery } from "./auth-recovery";
+import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
   APTABASE_APP_KEY_PROD,
@@ -177,6 +177,8 @@ const INSTALL_ID_KEY = "grok.installId";
  *  file — the #67 complaint. Persisted (not per-session) because a preference
  *  this deliberate should survive a reload, exactly like the setting would. */
 const IMPLICIT_CHIP_HIDDEN_KEY = "grok.implicitChipHidden";
+/** One helpful warning per install, even though every pooled process initializes. */
+const OAUTH_SHADOW_WARNING_KEY = "grok.oauthShadowWarningShown";
 
 interface RemoteVoiceEntry {
   credentialCwd: string;
@@ -304,6 +306,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private reaper?: ReturnType<typeof setInterval>;
   /** Guards {@link sweepEmptyPrimerSessions} to one run per activation. */
   private sweptEmptySessions = false;
+  private oauthShadowWarningShown = false;
   private output: vscode.OutputChannel;
   private get chips(): FileChip[] { return this.focused.chips; }
   private set chips(value: FileChip[]) { this.focused.chips = value; }
@@ -2874,6 +2877,7 @@ See design doc for the full state machine diagram.`;
 
     client.on("initialized", (init) => {
       if (gen !== session.gen) return;
+      this.warnOAuthShadowOnce(init?._meta?.defaultAuthMethodId, env);
       this.emit(session, {
         type: "initialized",
         info: {
@@ -2930,10 +2934,6 @@ See design doc for the full state machine diagram.`;
       if (gen !== session.gen) return;
       session.inUserMessage = false;
       session.historyEventCount += 1;
-      // Hidden host-initiated turns (the pre-rail post-/compact /session-info
-      // fallback) need the reply text; the emit below is suppressed for them
-      // (suppressContent).
-      if (session.captureAgentText !== undefined) session.captureAgentText += text;
       this.emit(session, { type: "messageChunk", text });
     });
     client.on("userMessageChunk", (text: string, meta?: any) => {
@@ -3055,9 +3055,13 @@ See design doc for the full state machine diagram.`;
       // warrants a donut update here. /session-info leaves the context
       // untouched, and after /compact the fresh count comes from the live
       // auto_compact_completed notification (primary; xaiNotification listener)
-      // or the hidden /session-info fallback — reading signals.json now would
+      // or the live session/update envelope — reading signals.json now would
       // fetch the stale pre-compact count (the CLI recomputes it only at the
       // next inference turn's end; research/signals-refresh-probe.cjs).
+    });
+    client.on("contextUsage", (used: number) => {
+      if (gen !== session.gen) return;
+      this.emit(session, { type: "contextUsage", used });
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -3072,16 +3076,12 @@ See design doc for the full state machine diagram.`;
       const compactUsed = contextUsedFromCompactNotification(u);
       if (compactUsed !== null) {
         this.emit(session, { type: "contextUsage", used: compactUsed });
-        // Mark the live rail as authoritative for the in-flight manual /compact
-        // so the pre-rail /session-info fallback + signals.json backup stand down.
-        session.sawCompactNotification = true;
       }
       // Compaction FAILED (either path — compaction.rs emits it on both). The
-      // context is unchanged, so the donut needs no refresh; mark handled so the
-      // /session-info fallback doesn't run, flag it so a manual /compact paints
-      // the failure instead of a false "Compacted.", and surface a note.
+      // context is unchanged, so the donut needs no refresh; flag it so a manual
+      // /compact paints the failure instead of a false "Compacted.", and surface
+      // a note.
       if (kind === "auto_compact_failed") {
-        session.sawCompactNotification = true;
         session.sawCompactFailed = true;
         const err = (u as { error?: unknown })?.error;
         this.emit(session, {
@@ -6124,7 +6124,6 @@ See design doc for the full state machine diagram.`;
       // Arm the compact-notification watch BEFORE the prompt: the live
       // auto_compact_completed / auto_compact_failed land DURING this turn.
       if (slashCommand === "compact") {
-        session.sawCompactNotification = false;
         session.sawCompactFailed = false;
       }
       const meta = await client.prompt(promptBlocks);
@@ -6138,16 +6137,6 @@ See design doc for the full state machine diagram.`;
         // not persisted: grok's own history has no such message, so re-focus keeps
         // it but a disk restore won't.
         if (!session.sawCompactFailed) this.emit(session, { type: "messageChunk", text: "Compacted." });
-        // Donut refresh, dynamic by CLI capability: the fresh post-compact size
-        // lands DURING this turn on the live `_x.ai/session_notification` rail
-        // (auto_compact_completed.tokens_after → the xaiNotification listener,
-        // which sets sawCompactNotification). If that rail didn't fire — a CLI
-        // that predates it — fall back to the hidden /session-info scrape
-        // (exact, CLI-local, before agentEnd).
-        if (!session.sawCompactNotification) {
-          await this.refreshContextAfterCompact(client, session, gen);
-          if (gen !== session.gen) return;
-        }
       }
       this.emit(session, { type: "agentEnd", meta });
       this.setStatus(session, "done");
@@ -7129,48 +7118,6 @@ See design doc for the full state machine diagram.`;
     if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });
   }
 
-  /** emitContextUsage now + once more after the CLI's turn-end file flush has
-   *  certainly landed (the write races the ACP response by a beat). */
-  private emitContextUsageSoon(session: Session, gen: number): void {
-    this.emitContextUsage(session);
-    setTimeout(() => {
-      if (gen === session.gen) this.emitContextUsage(session);
-    }, 1500);
-  }
-
-  /** Pre-rail fallback for the post-/compact donut: fetch the fresh context size
-   *  via a hidden /session-info turn. Runs ONLY when the live
-   *  auto_compact_completed notification didn't fire (a CLI older than that rail,
-   *  e.g. the Windows downgrade target). The turn is CLI-local (~25ms, no model
-   *  call) and is NOT persisted to chat history, so nothing shows live or on
-   *  restore; its reply text is the only place the fresh count exists this early
-   *  on such builds (research/signals-refresh-probe.cjs). Runs before the compact
-   *  turn's agentEnd clears busy, so no user send can interleave. Parse failure is
-   *  silent; the donut retains its previous value until a later real count. */
-  private async refreshContextAfterCompact(client: AcpClient, session: Session, gen: number): Promise<void> {
-    // Drift guard: if a future CLI stops advertising /session-info, sending it
-    // anyway would become a REAL inference turn (and a restore-visible bubble).
-    // Skip entirely — a donut that lags until the next turn beats that.
-    if (!client.availableCommands.some((c) => c?.name === "session-info")) return;
-    session.suppressContent = true;
-    session.captureAgentText = "";
-    try {
-      await client.prompt("/session-info");
-      if (gen !== session.gen) return;
-      // parseSessionInfoContext is null-safe and never throws: a reply-format
-      // change means no donut update (it lags until the next turn), never an
-      // error surfaced to the user.
-      const parsed = parseSessionInfoContext(session.captureAgentText ?? "");
-      if (parsed) this.emit(session, { type: "contextUsage", used: parsed.used, window: parsed.window });
-    } catch (e) {
-      // Even a failed hidden turn stays silent — log-only, no error bubble.
-      this.output.appendLine(`[compact] hidden /session-info failed: ${(e as Error).message}`);
-    } finally {
-      if (gen === session.gen) session.suppressContent = false;
-      session.captureAgentText = undefined;
-    }
-  }
-
   /** Clear a session's unread badge (it's being opened/viewed) and refresh its dot. */
   private markRead(session: Session): void {
     const id = session.activeSessionId;
@@ -7576,6 +7523,16 @@ See design doc for the full state machine diagram.`;
       }
     } catch { /* no .env — fine */ }
     return dotEnv;
+  }
+
+  private warnOAuthShadowOnce(defaultAuthMethodId: unknown, env: NodeJS.ProcessEnv): void {
+    if (!oauthShadowsXaiApiKey(defaultAuthMethodId, env)) return;
+    if (this.oauthShadowWarningShown || this.context.globalState.get<boolean>(OAUTH_SHADOW_WARNING_KEY, false)) return;
+    this.oauthShadowWarningShown = true;
+    void this.context.globalState.update(OAUTH_SHADOW_WARNING_KEY, true);
+    void vscode.window.showWarningMessage(
+      "Grok is using its cached OAuth session, so XAI_API_KEY is currently ignored. To use the API key, run `grok logout`, then start a new session.",
+    );
   }
 
   private buildEnv(cwd: string): NodeJS.ProcessEnv {

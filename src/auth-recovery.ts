@@ -12,3 +12,9 @@ export function beginAuthRecovery(state: AuthRecoveryState): string | undefined 
   state.authRecoveryTried = true;
   return state.activeSessionId;
 }
+
+/** Detect the observed credential-selection trap from initialize metadata,
+ *  rather than waiting for a backend error whose prose happens to mention it. */
+export function oauthShadowsXaiApiKey(defaultAuthMethodId: unknown, env: NodeJS.ProcessEnv): boolean {
+  return defaultAuthMethodId === "cached_token" && !!env.XAI_API_KEY?.trim();
+}

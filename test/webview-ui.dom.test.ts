@@ -2186,6 +2186,7 @@ describe("context popover — usage breakdown (#53)", () => {
     expect(txt.indexOf("Session total")).toBeLessThan(txt.indexOf("Last turn"));
     expect(txt.replace(/[,\s\u00a0\u202f]/g, "")).toContain("32722");
     expect(txt).toContain("cache read");
+    expect(txt).not.toContain("Cost"); // no reported cost => no fake $0 row
     // No cache-CREATION field exists anywhere in the CLI — it must not be faked.
     expect(txt.toLowerCase()).not.toContain("cache creation");
   });
@@ -2218,6 +2219,22 @@ describe("context popover — usage breakdown (#53)", () => {
     const txt = $(doc, "context-popover").textContent!;
     expect(txt).toContain("Session total");
     expect(txt).not.toContain("Last turn");
+  });
+
+  it("shows reported session and turn cost at Grok's 10^10-ticks-per-USD scale", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "usage",
+      turn: { inputTokens: 16000, costUsdTicks: 80_000_000 },
+      session: { inputTokens: 32000, costUsdTicks: 180_384_000 },
+    });
+    click(window, $(doc, "donut"));
+    const pop = $(doc, "context-popover");
+    expect(pop.textContent).toContain("$0.018038");
+
+    const hdr = pop.querySelector(".popover-section-toggle") as HTMLElement;
+    click(window, hdr);
+    expect((hdr.nextElementSibling as HTMLElement).textContent).toContain("$0.008");
   });
 });
 

@@ -1490,6 +1490,18 @@
       (parent || contextPopover).appendChild(el);
     };
     const tok = (n) => Number(n).toLocaleString();
+    // Grok's fixed-point billing unit is 10^10 ticks per USD (xAI's published
+    // UsageTotals contract). Keep the divisor explicit; it is not cents/micros.
+    const usdTicks = (ticks) => {
+      const usd = Number(ticks) / 10_000_000_000;
+      if (usd > 0 && usd < 0.000001) return "<$0.000001";
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 6,
+      }).format(usd);
+    };
 
     const used = state.usedTokens || 0;
     const pct = Math.min(100, Math.round((used / state.contextWindow) * 100));
@@ -1528,6 +1540,7 @@
       row(sess, "Input", "inputTokens");
       row(sess, "↳ cache read", "cachedReadTokens");
       row(sess, "Output", "outputTokens");
+      row(sess, "Cost", "costUsdTicks", usdTicks);
     }
     if (turn) {
       const open = !!uiState().lastTurnOpen;
@@ -1542,6 +1555,7 @@
       row(turn, "↳ cache read", "cachedReadTokens", null, body);
       row(turn, "Output", "outputTokens", null, body);
       row(turn, "↳ reasoning", "reasoningTokens", null, body);
+      row(turn, "Cost", "costUsdTicks", usdTicks, body);
       // The row that makes the arithmetic legible: a turn re-sends the whole
       // conversation on EVERY model call, so billed input ≈ context × calls and
       // routinely dwarfs "Context used". Without this the two numbers look like

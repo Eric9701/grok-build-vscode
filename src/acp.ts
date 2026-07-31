@@ -3,6 +3,7 @@ import { createInterface, Interface } from "node:readline";
 import { EventEmitter } from "node:events";
 import {
   collectToolImages,
+  contextUsedFromUpdateEnvelope,
   extractGeneratedMediaPaths,
   isMediaGenToolCall,
   extractPromptMeta,
@@ -177,6 +178,7 @@ export class AcpClient extends EventEmitter {
   availableModels: ModelInfo[] = [];
   availableCommands: SlashCommand[] = [];
   lastMeta?: PromptResultMeta;
+  private lastContextUsed?: number;
   /**
    * The session's effective reasoning effort. Seeded from the spawn flag
    * (`opts.effort`), updated by a live `setReasoningEffort`, and CARRIED through a
@@ -826,6 +828,11 @@ export class AcpClient extends EventEmitter {
   }
 
   private handleSessionUpdate(u: any, meta?: any): void {
+    const contextUsed = contextUsedFromUpdateEnvelope(meta);
+    if (contextUsed !== null && contextUsed !== this.lastContextUsed) {
+      this.lastContextUsed = contextUsed;
+      this.emit("contextUsage", contextUsed);
+    }
     const r = routeSessionUpdate(u);
     if (!r) return;
     if (r.event === "modeChanged") {

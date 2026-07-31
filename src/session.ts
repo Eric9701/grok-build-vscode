@@ -112,17 +112,8 @@ export class Session {
   suppressContent = false;
 
   /**
-   * True once a live `auto_compact_completed` notification (with a usable
-   * `tokens_after`) has updated the donut for the CURRENT manual /compact. Reset
-   * to false just before each manual compact prompt. Gates the pre-rail
-   * `/session-info` fallback + the signals.json backup so they run ONLY when the
-   * live rail didn't already give us the exact post-compact count.
-   */
-  sawCompactNotification = false;
-
-  /**
    * True when an `auto_compact_failed` notification arrived for the CURRENT
-   * manual /compact (reset with `sawCompactNotification` before each). Gates the
+   * manual /compact (reset before each). Gates the
    * "Compacted." confirmation so a failed compaction doesn't paint a false
    * success next to the failure note.
    */
@@ -136,14 +127,6 @@ export class Session {
    * recovery for a later token expiry.
    */
   authRecoveryTried = false;
-
-  /**
-   * When set (to ""), the sidebar's messageChunk handler accumulates the
-   * agent's streamed text here instead of only forwarding it — used by the
-   * pre-rail post-/compact /session-info fallback, whose reply text carries the
-   * fresh context count. undefined = no capture.
-   */
-  captureAgentText?: string;
 
   /** Live permission requests awaiting an answer, by request id. Set when the
    *  card is shown, read when the user answers so we can persist the resolved

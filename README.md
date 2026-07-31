@@ -152,7 +152,7 @@ When Grok runs a Deep Research, Workflow, or Goal task, a progress card streams 
 <details>
 <summary><strong>Context & cost</strong> — what's in the window, and what the turns actually bill</summary>
 
-Click the **context donut** for the exact `used / window (%)`, plus what the conversation has **billed** — input, cache read, output — as a session total and a per-turn split with its model calls. **Compact conversation** lives here too, right next to the number that tells you when you need it.
+Click the **context donut** for the exact `used / window (%)`, plus what the conversation has **billed** — input, cache read, output, and the CLI-reported **USD cost** — as a session total and a per-turn split with its model calls. **Compact conversation** lives here too, right next to the number that tells you when you need it.
 
 ![The context popover — window usage, billed totals, and Compact](docs/screenshots/context.png)
 

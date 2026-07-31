@@ -143,11 +143,13 @@ standard ACP `usage_update` notification.
 `totalTokens 31828, numTurns 2, costUsdTicks 180384000` (now with a welcome per-model `modelUsage`
 breakdown), then **all zeros** on the next call after `session/load` in a fresh process, and
 `numTurns: 1` after one further turn in a session that had had three. A cumulative-looking counter
-that silently resets under-reports while still looking authoritative.
+that silently resets under-reports while still looking authoritative. Published source defines the
+fixed-point scale as **10^10 ticks per USD**, so that captured cost is `$0.0180384`.
 
-**Client cost/workaround:** we discard the placeholder zeros, read context size from notification
-envelopes, and maintain our own persisted per-turn ledger because the cumulative-looking RPC is
-process-scoped. Rewind must subtract from that client ledger too.
+**Client cost/workaround:** we discard placeholder zeros, read context size from `session/update`
+envelopes (with `signals.json` retained only to seed a cold restore), and maintain our own persisted
+per-turn ledger because the cumulative-looking RPC is process-scoped. Tokens and `costUsdTicks`
+share that ledger, so rewind subtracts both. No hidden `/session-info` turn or prose parser remains.
 
 **Ask:** return the true post-operation context size on the prompt result, including after
 `session/load`; emit a standard `usage_update`; and either persist `_x.ai/session/usage` across load
