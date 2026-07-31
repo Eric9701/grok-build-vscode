@@ -56,7 +56,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.setShowThinking).toBe("host-local");
     expect(INBOUND_DISPOSITION.setReadRepliesAloud).toBe("host-local");
     expect(INBOUND_DISPOSITION.setSummarizeRepliesAloud).toBe("host-local");
-    expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("host-local");
+    expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
     // worktree/rewind flows run native host dialogs (input box / QuickPick) —
     // desktop-only until they get remote-capable UI (2026-07-24)
     expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
@@ -70,7 +70,7 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.remoteStatus).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.readRepliesAloud).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.summarizeRepliesAloud).toBe("host-local");
-    expect(OUTBOUND_DISPOSITION.speechSummary).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.speechSummary).toBe("mirror");
     // Local call sites stay local-only; the same output shapes carry remote STT.
     expect(OUTBOUND_DISPOSITION.voiceState).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.voiceConfigured).toBe("mirror");
@@ -126,6 +126,8 @@ describe("allowFromRemote tier gating", () => {
     expect(allowFromRemote("send", "read-only")).toBe(false);
     expect(allowFromRemote("send", "propose")).toBe(true);
     expect(allowFromRemote("send", "full")).toBe(true);
+    expect(allowFromRemote("summarizeSpeech", "read-only")).toBe(false);
+    expect(allowFromRemote("summarizeSpeech", "propose")).toBe(true);
   });
 
   it("approvals and destructive ops need full", () => {
@@ -294,6 +296,11 @@ describe("remote reconnect snapshot replay", () => {
       { type: "historyBatch", messages: buffer },
       { type: "historyReplay", active: false },
     ]);
+  });
+
+  it("permits the targeted speech-summary result to cross remotely", () => {
+    const msg: HostMsg = { type: "speechSummary", requestId: 7, text: "Brief update." };
+    expect(transformHostMsgForRemote(msg, deps(null))).toBe(msg);
   });
 
   it("uses only the outer replay brackets when the buffered load had its own", () => {

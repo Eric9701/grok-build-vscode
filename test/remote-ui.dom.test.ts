@@ -722,6 +722,7 @@ describe("AFK Pilot shared webview controls", () => {
       type: "remotePreferences",
       fontScale: 100,
       readRepliesAloud: false,
+      summarizeRepliesAloud: false,
       usesTouch: false,
     });
 
@@ -765,6 +766,7 @@ describe("AFK Pilot shared webview controls", () => {
       type: "remotePreferences",
       fontScale: 150,
       readRepliesAloud: false,
+      summarizeRepliesAloud: false,
       usesTouch: false,
     });
 
@@ -775,6 +777,61 @@ describe("AFK Pilot shared webview controls", () => {
       type: "remotePreferences",
       fontScale: 140,
       readRepliesAloud: false,
+      summarizeRepliesAloud: false,
+      usesTouch: false,
+    });
+  });
+
+  it("keeps remote summarization per-device, paid-call explicit, and dependent on remote TTS", () => {
+    const spoken: string[] = [];
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window, posted, doc } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        (w as any).localStorage.setItem("grok.remote.tts", "true");
+        (w as any).localStorage.setItem("grok.remote.ttsSummary", "true");
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = {
+          cancel() {},
+          speak(value: Utterance) { spoken.push(value.text); },
+        };
+      },
+    });
+    dispatch(window, { type: "initialState", readRepliesAloud: false });
+    click(window, doc.getElementById("gear-btn")!);
+    const config = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .find((el) => el.textContent?.includes("Config & debug"))!;
+    click(window, config);
+    const gearToggle = (label: string) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .find((el) => el.textContent?.includes(label)) as HTMLElement;
+
+    const summarize = gearToggle("Summarize before speaking");
+    expect(summarize.querySelector(".popover-switch.on")).not.toBeNull();
+    expect(summarize.querySelector("span")?.title).toContain("Costs an extra xAI call per spoken reply");
+
+    posted.length = 0;
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "Full reply.\n```ts\nhidden();\n```" });
+    dispatch(window, { type: "agentEnd" });
+    const request = posted.find((message) => message.type === "summarizeSpeech") as any;
+    expect(request.text).toBe("Full reply.");
+    expect(spoken).toEqual([]);
+    dispatch(window, { type: "speechSummary", requestId: request.requestId, text: "Brief update." });
+    expect(spoken).toEqual(["Brief update."]);
+
+    click(window, gearToggle("Read replies aloud"));
+    expect((window as any).localStorage.getItem("grok.remote.tts")).toBe("false");
+    expect((window as any).localStorage.getItem("grok.remote.ttsSummary")).toBe("false");
+    const disabledSummary = gearToggle("Summarize before speaking");
+    expect(disabledSummary.classList.contains("disabled")).toBe(true);
+    expect(disabledSummary.querySelector(".popover-switch.on")).toBeNull();
+    expect(posted.at(-1)).toEqual({
+      type: "remotePreferences",
+      fontScale: 100,
+      readRepliesAloud: false,
+      summarizeRepliesAloud: false,
       usesTouch: false,
     });
   });

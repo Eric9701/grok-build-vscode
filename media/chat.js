@@ -8,6 +8,7 @@
   const IS_REMOTE = !!window.grokRemoteClient;
   const REMOTE_FONT_SCALE_KEY = "grok.remote.fontScale";
   const REMOTE_TTS_KEY = "grok.remote.tts";
+  const REMOTE_TTS_SUMMARY_KEY = "grok.remote.ttsSummary";
   const REMOTE_STORAGE_SUFFIX = (
     typeof location !== "undefined"
       ? new URLSearchParams(location.search || "").get("device") || "default"
@@ -260,6 +261,10 @@
     return [...known, ...extra];
   }
 
+  const storedRemoteTts = IS_REMOTE && storedBool(REMOTE_TTS_KEY, false);
+  const storedRemoteTtsSummary = storedRemoteTts && storedBool(REMOTE_TTS_SUMMARY_KEY, false);
+  if (IS_REMOTE && !storedRemoteTts) storeRemotePref(REMOTE_TTS_SUMMARY_KEY, false);
+
   const state = {
     welcomeVisible: true,
     currentModelId: null,
@@ -289,7 +294,8 @@
     voiceSendPhrase: "grok send",
     remoteFontScale: IS_REMOTE ? storedNumber(REMOTE_FONT_SCALE_KEY, 1) : 1,
     hostFontScale: Number(document.body.style.getPropertyValue("--chat-zoom")) || 1,
-    remoteTts: IS_REMOTE && storedBool(REMOTE_TTS_KEY, false),
+    remoteTts: storedRemoteTts,
+    remoteSummarizeRepliesAloud: storedRemoteTtsSummary,
     readRepliesAloud: false,
     summarizeRepliesAloud: false,
     remotePreferencesSupported: false,
@@ -2183,30 +2189,35 @@
           renderConfigDebugPanel();
         },
       );
-      if (!IS_REMOTE) {
-        const summarizeEnabled = state.readRepliesAloud;
-        const summarizeRow = document.createElement("div");
-        summarizeRow.className = "toolbar-popover-item" +
-          (summarizeEnabled ? "" : " popover-action disabled");
-        summarizeRow.innerHTML =
-          `<span title="Use xAI to make each spoken message brief and speech-friendly before reading it. Adds a billed API call and network delay; falls back to the full text on any failure.">Summarize before speaking</span><span class="popover-switch${state.summarizeRepliesAloud ? " on" : ""}" role="switch" aria-checked="${state.summarizeRepliesAloud}"><span class="popover-switch-knob"></span></span>`;
-        if (summarizeEnabled) {
-          summarizeRow.onclick = (e) => {
-            e.stopPropagation();
+      const summarizeEnabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
+      const summarizeOn = IS_REMOTE
+        ? state.remoteSummarizeRepliesAloud
+        : state.summarizeRepliesAloud;
+      const summarizeRow = document.createElement("div");
+      summarizeRow.className = "toolbar-popover-item" +
+        (summarizeEnabled ? "" : " popover-action disabled");
+      summarizeRow.innerHTML =
+        `<span title="Use xAI to make each spoken message brief and speech-friendly before reading it. Costs an extra xAI call per spoken reply and adds network delay; falls back to the full text on any failure.">Summarize before speaking</span><span class="popover-switch${summarizeOn ? " on" : ""}" role="switch" aria-checked="${summarizeOn}"><span class="popover-switch-knob"></span></span>`;
+      if (summarizeEnabled) {
+        summarizeRow.onclick = (e) => {
+          e.stopPropagation();
+          if (IS_REMOTE) {
+            setRemoteTtsSummaryEnabled(!state.remoteSummarizeRepliesAloud);
+          } else {
             state.summarizeRepliesAloud = !state.summarizeRepliesAloud;
             speechRequestId += 1;
             vscode.postMessage({
               type: "setSummarizeRepliesAloud",
               value: state.summarizeRepliesAloud,
             });
-            renderConfigDebugPanel();
-          };
-        } else {
-          summarizeRow.setAttribute("aria-disabled", "true");
-          summarizeRow.title = "Turn on Read replies aloud to summarize spoken replies";
-        }
-        gearPopover.appendChild(summarizeRow);
+          }
+          renderConfigDebugPanel();
+        };
+      } else {
+        summarizeRow.setAttribute("aria-disabled", "true");
+        summarizeRow.title = "Turn on Read replies aloud to summarize spoken replies";
       }
+      gearPopover.appendChild(summarizeRow);
     } else {
       addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
     }
@@ -4668,15 +4679,29 @@
 
   function setRemoteTtsEnabled(enabled) {
     const next = !!enabled;
-    if (state.remoteTts === next) return next;
+    if (state.remoteTts === next && (next || !state.remoteSummarizeRepliesAloud)) return next;
     state.remoteTts = next;
     storeRemotePref(REMOTE_TTS_KEY, state.remoteTts);
-    if (!state.remoteTts && window.speechSynthesis) window.speechSynthesis.cancel();
+    if (!state.remoteTts) {
+      state.remoteSummarizeRepliesAloud = false;
+      storeRemotePref(REMOTE_TTS_SUMMARY_KEY, false);
+      cancelPendingSpeech();
+    }
     window.dispatchEvent(new CustomEvent("grokRemoteTtsChange", {
       detail: { available: ttsAvailable, enabled: state.remoteTts },
     }));
     reportRemotePreferences();
     return state.remoteTts;
+  }
+
+  function setRemoteTtsSummaryEnabled(enabled) {
+    const next = state.remoteTts && !!enabled;
+    if (state.remoteSummarizeRepliesAloud === next) return next;
+    state.remoteSummarizeRepliesAloud = next;
+    storeRemotePref(REMOTE_TTS_SUMMARY_KEY, next);
+    speechRequestId += 1;
+    reportRemotePreferences();
+    return next;
   }
 
   function reportRemotePreferences() {
@@ -4685,6 +4710,7 @@
       type: "remotePreferences",
       fontScale: Math.round(state.remoteFontScale * 100),
       readRepliesAloud: state.remoteTts,
+      summarizeRepliesAloud: state.remoteSummarizeRepliesAloud,
       usesTouch: remoteUsesTouchComposer(),
     });
   }
@@ -4701,7 +4727,10 @@
     if (!text) return;
     const requestId = ++speechRequestId;
     window.speechSynthesis.cancel();
-    if (!IS_REMOTE && state.summarizeRepliesAloud) {
+    const summarize = IS_REMOTE
+      ? state.remoteSummarizeRepliesAloud
+      : state.summarizeRepliesAloud;
+    if (summarize) {
       vscode.postMessage({ type: "summarizeSpeech", requestId, text });
       return;
     }
@@ -6853,9 +6882,9 @@
         break;
       case "speechSummary":
         if (
-          !IS_REMOTE &&
           msg.requestId === speechRequestId &&
-          state.readRepliesAloud &&
+          (IS_REMOTE ? state.remoteTts : state.readRepliesAloud) &&
+          (IS_REMOTE ? state.remoteSummarizeRepliesAloud : state.summarizeRepliesAloud) &&
           ttsAvailable &&
           msg.text
         ) {

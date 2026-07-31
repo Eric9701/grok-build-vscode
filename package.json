@@ -332,7 +332,7 @@
         "grok.summarizeRepliesAloud": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Summarize text with xAI before reading it aloud. Off by default because each spoken message adds a billed API request and a network delay. Uses the same credential resolution as Voice input and falls back to the full reply if summarization fails. VS Code sidebar only."
+          "markdownDescription": "Summarize text with xAI before reading it aloud in VS Code. Off by default because each spoken reply costs an extra billed xAI call and adds network delay. Uses the same credential resolution as Voice input and falls back to the full reply if summarization fails. AFK Pilot keeps its own per-device browser preference."
         },
         "grok.remote.keepAwake": {
           "type": "boolean",

@@ -131,6 +131,39 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     // whether a client is kept up to date.
   });
 
+  test("speech summaries require that tab's TTS preferences and return only to its logical tab", async () => {
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+    hooks.fromRemote({
+      type: "remotePreferences",
+      fontScale: 100,
+      readRepliesAloud: true,
+      summarizeRepliesAloud: true,
+      usesTouch: true,
+    }, "tab-a");
+    hooks.fromRemote({
+      type: "remotePreferences",
+      fontScale: 100,
+      readRepliesAloud: false,
+      summarizeRepliesAloud: true,
+      usesTouch: true,
+    }, "tab-b");
+    posts.length = 0;
+
+    // Empty text makes summarizeForSpeech return locally without credential or
+    // network access; this test is about the host gate and reply routing.
+    hooks.fromRemote({ type: "summarizeSpeech", requestId: 41, text: "" }, "tab-a");
+    hooks.fromRemote({ type: "summarizeSpeech", requestId: 42, text: "" }, "tab-b");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const summaries = posts.filter((p) => p.msg?.type === "speechSummary");
+    assert.deepStrictEqual(summaries, [{
+      dest: "remote",
+      msg: { type: "speechSummary", requestId: 41, text: "" },
+      clientIds: ["tab-a"],
+    }]);
+  });
+
   test("remote Clear all acknowledges an empty history on the requesting tab", async () => {
     const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
     hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));

@@ -184,6 +184,7 @@ export class Session {
    * Undefined until a remote client reports them for this focused session. */
   remoteFontScale?: number;
   remoteReadRepliesAloud?: boolean;
+  remoteSummarizeRepliesAloud?: boolean;
   remoteUsesTouch?: boolean;
 
   /**

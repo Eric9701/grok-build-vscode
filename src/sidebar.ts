@@ -3489,6 +3489,8 @@ See design doc for the full state machine diagram.`;
           if (typeof msg.readRepliesAloud === "boolean") {
             session.remoteReadRepliesAloud = msg.readRepliesAloud;
           }
+          session.remoteSummarizeRepliesAloud =
+            msg.readRepliesAloud && msg.summarizeRepliesAloud === true;
           if (typeof msg.usesTouch === "boolean") {
             session.remoteUsesTouch = msg.usesTouch;
           }
@@ -3500,13 +3502,20 @@ See design doc for the full state machine diagram.`;
         }
         break;
       case "summarizeSpeech": {
-        if (origin !== "local") break;
+        if (
+          origin === "remote" &&
+          (!requester ||
+            session.remoteReadRepliesAloud !== true ||
+            session.remoteSummarizeRepliesAloud !== true)
+        ) break;
         const text = await summarizeForSpeech(
           msg.text,
           this.resolveVoiceApiKey(session.cwd || this.workspaceRoot()),
           (line) => this.output.appendLine(line),
         );
-        this.post({ type: "speechSummary", requestId: msg.requestId, text });
+        const response: HostMsg = { type: "speechSummary", requestId: msg.requestId, text };
+        if (requester) this.sendRemoteRequester(requester, response);
+        else this.postLocal(response);
         break;
       }
       case "send":

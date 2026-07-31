@@ -63,9 +63,9 @@ The STT credential stays in the extension host and is never sent to AFK Pilot or
 
 ## Summarize before speaking
 
-Separate from both telemetry and Voice input: the VS Code-only **Summarize before speaking** switch is off by default. When both it and **Read replies aloud** are enabled, the extension sends only the already-cleaned spoken text (after thinking and fenced code have been removed) to xAI's Responses API. xAI returns a short, speech-friendly version; the visible chat reply is never changed.
+Separate from both telemetry and Voice input: **Summarize before speaking** is off by default. VS Code and each AFK Pilot browser keep independent preferences; AFK Pilot stores its choice in that browser's local storage. The switch is disabled and forced off whenever that device's **Read replies aloud** switch is off. When both are enabled, the extension sends only the already-cleaned spoken text (after thinking and fenced code have been removed) to xAI's Responses API. xAI returns a short, speech-friendly version; the visible chat reply is never changed.
 
-Each spoken message adds a billed API request and network delay. The request uses `grok-4.3` with reasoning disabled and server-side response storage disabled (`store: false`). It reuses the Voice credential order (`grok.voiceApiKey` → `GROK_VOICE_API_KEY` → `XAI_API_KEY` → the token from `grok login`); the key remains in the extension host and is never sent to the webview. With no usable key, or on timeout, network, rate-limit, or response failure, the original cleaned text is spoken instead. AFK Pilot does not use or receive this feature.
+Each spoken reply costs an extra billed xAI API call and adds network delay. The request uses `grok-4.3` with reasoning disabled and server-side response storage disabled (`store: false`). It reuses the Voice credential order (`grok.voiceApiKey` → `GROK_VOICE_API_KEY` → `XAI_API_KEY` → the token from `grok login`); the key remains in the extension host and is never sent to the webview or AFK Pilot. For AFK Pilot, the browser sends the cleaned reply through the linked relay to the host, and only the shortened text returns to that requesting browser. With no usable key, or on timeout, network, rate-limit, or response failure, the original cleaned text is spoken instead.
 
 ## Remote Control (AFK Pilot)
 

@@ -199,7 +199,7 @@ export type HostMsg =
 export type WebviewMsg =
   | { type: "ready"; tabToken?: string }
   // Browser-owned remote preferences reported for session_start telemetry.
-  | { type: "remotePreferences"; fontScale: number; readRepliesAloud: boolean; usesTouch: boolean }
+  | { type: "remotePreferences"; fontScale: number; readRepliesAloud: boolean; summarizeRepliesAloud?: boolean; usesTouch: boolean }
   | { type: "send"; text: string; chips?: FileChip[]; bare?: boolean; queuedSendId?: string; submissionId?: string }
   | { type: "newSession" }
   | { type: "cancel" }

@@ -145,6 +145,66 @@ describe("parseRelayFrame", () => {
     }
   });
 
+  it("validates and reconstructs browser-owned speech preferences", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({
+      type: "remotePreferences",
+      fontScale: 120,
+      readRepliesAloud: true,
+      summarizeRepliesAloud: true,
+      usesTouch: true,
+      unchecked: "drop me",
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: {
+        type: "remotePreferences",
+        fontScale: 120,
+        readRepliesAloud: true,
+        summarizeRepliesAloud: true,
+        usesTouch: true,
+      },
+    });
+    expect(parseRelayFrame(wrap({
+      type: "remotePreferences",
+      fontScale: 100,
+      readRepliesAloud: false,
+      usesTouch: false,
+    }))).not.toBeNull();
+
+    for (const malformed of [
+      { type: "remotePreferences", fontScale: 79, readRepliesAloud: false, usesTouch: false },
+      { type: "remotePreferences", fontScale: 161, readRepliesAloud: false, usesTouch: false },
+      { type: "remotePreferences", fontScale: "100", readRepliesAloud: false, usesTouch: false },
+      { type: "remotePreferences", fontScale: 100, readRepliesAloud: "yes", usesTouch: false },
+      { type: "remotePreferences", fontScale: 100, readRepliesAloud: true, summarizeRepliesAloud: 1, usesTouch: false },
+      { type: "remotePreferences", fontScale: 100, readRepliesAloud: false, usesTouch: "yes" },
+    ]) {
+      expect(parseRelayFrame(wrap(malformed)), JSON.stringify(malformed)).toBeNull();
+    }
+  });
+
+  it("validates and reconstructs remote speech-summary requests", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({
+      type: "summarizeSpeech",
+      requestId: 9,
+      text: "Full spoken reply.",
+      unchecked: true,
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: { type: "summarizeSpeech", requestId: 9, text: "Full spoken reply." },
+    });
+    for (const malformed of [
+      { type: "summarizeSpeech", requestId: "9", text: "x" },
+      { type: "summarizeSpeech", requestId: 1.5, text: "x" },
+      { type: "summarizeSpeech", requestId: 9, text: null },
+    ]) {
+      expect(parseRelayFrame(wrap(malformed)), JSON.stringify(malformed)).toBeNull();
+    }
+  });
+
   it("validates the opaque preview id without adding preview bytes", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     const previewId = "0123456789abcdef".repeat(3);

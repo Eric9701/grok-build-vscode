@@ -243,7 +243,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setProcessingSound: "host-local",
   setReadRepliesAloud: "host-local",
   setSummarizeRepliesAloud: "host-local",
-  summarizeSpeech: "host-local",
+  // A remote may spend one extra xAI call to shorten text it is about to speak.
+  // The host independently requires that tab's reported TTS + summary prefs.
+  summarizeSpeech: "propose",
   composerFocus: "host-local",
   // relay account actions (link/unlink/portal) manage THIS machine's device
   // token — only the local webview may drive them
@@ -397,7 +399,8 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   processingSound: "host-local",
   readRepliesAloud: "host-local",
   summarizeRepliesAloud: "host-local",
-  speechSummary: "host-local",
+  // Only the shortened text is returned; sidebar targets it to the requester.
+  speechSummary: "mirror",
   moveComposerCaret: "host-local",
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",

@@ -172,6 +172,29 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
         ...(value.submissionId !== undefined ? { submissionId: value.submissionId } : {}),
       };
     }
+    case "remotePreferences":
+      if (
+        typeof value.fontScale !== "number" ||
+        !Number.isFinite(value.fontScale) ||
+        value.fontScale < 80 ||
+        value.fontScale > 160 ||
+        typeof value.readRepliesAloud !== "boolean" ||
+        (value.summarizeRepliesAloud !== undefined && typeof value.summarizeRepliesAloud !== "boolean") ||
+        typeof value.usesTouch !== "boolean"
+      ) return null;
+      return {
+        type: "remotePreferences",
+        fontScale: value.fontScale,
+        readRepliesAloud: value.readRepliesAloud,
+        ...(value.summarizeRepliesAloud !== undefined
+          ? { summarizeRepliesAloud: value.summarizeRepliesAloud }
+          : {}),
+        usesTouch: value.usesTouch,
+      };
+    case "summarizeSpeech":
+      return Number.isSafeInteger(value.requestId) && typeof value.text === "string"
+        ? { type: "summarizeSpeech", requestId: value.requestId as number, text: value.text }
+        : null;
     case "selectRepo":
     case "clearAllSessions":
       return isRemoteCwd(value.cwd) ? msg as WebviewMsg : null;
