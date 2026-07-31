@@ -14,6 +14,111 @@ function clientWithFakeProc(): { client: AcpClient; written: string[] } {
   return { client, written };
 }
 
+describe("AcpClient notification metadata", () => {
+  it("preserves session/update metadata on routed text events", () => {
+    const { client } = clientWithFakeProc();
+    const seen: unknown[] = [];
+    client.on("userMessageChunk", (text, meta) => seen.push({ text, meta }));
+
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "user_message_chunk",
+          content: { type: "text", text: "restored" },
+        },
+        _meta: { agentTimestampMs: 1_783_845_298_123, isReplay: true },
+      },
+    }));
+
+    expect(seen).toEqual([{
+      text: "restored",
+      meta: { agentTimestampMs: 1_783_845_298_123, isReplay: true },
+    }]);
+  });
+
+  it("preserves metadata on persisted xAI lifecycle events", () => {
+    const { client } = clientWithFakeProc();
+    const seen: unknown[] = [];
+    client.on("subagentLifecycle", (update, meta) => seen.push({ update, meta }));
+
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "_x.ai/session/update",
+      params: {
+        update: { sessionUpdate: "turn_completed", prompt_id: "p1" },
+        _meta: { agentTimestampMs: 1_783_845_299_456, isReplay: true },
+      },
+    }));
+
+    expect(seen).toEqual([{
+      update: { sessionUpdate: "turn_completed", prompt_id: "p1" },
+      meta: { agentTimestampMs: 1_783_845_299_456, isReplay: true },
+    }]);
+  });
+});
+
+describe("AcpClient permission responses", () => {
+  it("can decline a request when no safe option was offered", () => {
+    const { client, written } = clientWithFakeProc();
+    client.respondPermissionCancelled(9);
+    expect(JSON.parse(written[0])).toEqual({
+      jsonrpc: "2.0",
+      id: 9,
+      result: { outcome: { outcome: "cancelled" } },
+    });
+  });
+});
+
+describe("AcpClient Plan terminal environment", () => {
+  it("strips agent-supplied environment overrides from allowed Plan commands", async () => {
+    const { client, written } = clientWithFakeProc();
+    const create = vi.fn(() => ({ terminalId: "t-1" }));
+    client.planActive = true;
+    (client as any).terminal = { create };
+
+    await (client as any).handleServerRequest({
+      id: 12,
+      method: "terminal/create",
+      params: {
+        command: "node --version",
+        cwd: "/workspace",
+        env: [
+          { name: "NODE_OPTIONS", value: "--require ./evil.js" },
+          { name: "PATH", value: "/attacker/bin" },
+        ],
+      },
+    });
+
+    expect(create).toHaveBeenCalledWith({
+      command: "node --version",
+      cwd: "/workspace",
+    });
+    expect(JSON.parse(written[0])).toEqual({
+      jsonrpc: "2.0",
+      id: 12,
+      result: { terminalId: "t-1" },
+    });
+  });
+
+  it("preserves agent-supplied environment overrides outside Plan mode", async () => {
+    const { client } = clientWithFakeProc();
+    const create = vi.fn(() => ({ terminalId: "t-1" }));
+    client.planActive = false;
+    (client as any).terminal = { create };
+    const env = [{ name: "EXAMPLE", value: "kept" }];
+
+    await (client as any).handleServerRequest({
+      id: 13,
+      method: "terminal/create",
+      params: { command: "custom-command", env },
+    });
+
+    expect(create).toHaveBeenCalledWith({ command: "custom-command", env });
+  });
+});
+
 describe("AcpClient.request timer lifecycle", () => {
   it("clears the per-request timeout when the response arrives (no leaked timer)", async () => {
     vi.useFakeTimers();

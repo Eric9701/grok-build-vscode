@@ -12,6 +12,18 @@ import { bootWebview, dispatch, click, Posted } from "./webview-harness";
 
 const $ = (doc: Document, id: string) => doc.getElementById(id) as HTMLElement;
 const types = (posted: Posted[]) => posted.map((p) => p.type);
+// Mirrors chat.js's formatTime EXACTLY. That function is not locale-aware — it
+// always emits `h:mm AM/PM` — so building the expectation with
+// toLocaleTimeString made this assertion pass only in 12-hour locales and fail
+// with "8:14 AM" vs "8:14" wherever the runtime resolves to a 24-hour one.
+// Deriving from local time (getHours) is deliberate: it keeps the test
+// timezone-independent, which a literal expected string would not be.
+const clock = (timestampMs: number) => {
+  const d = new Date(timestampMs);
+  const ampm = d.getHours() >= 12 ? "PM" : "AM";
+  const h = d.getHours() % 12 || 12;
+  return `${h}:${String(d.getMinutes()).padStart(2, "0")} ${ampm}`;
+};
 
 describe("history popover (regression: popover that never closed)", () => {
   it("opens on the history button and requests the session list", () => {
@@ -650,7 +662,7 @@ describe("gear menu — AFK Pilot onboarding", () => {
   it("sends linked devices to the portal for account management, never a one-tap unlink", () => {
     // Unlinking strands every other device the user works from, so it must not
     // sit one slip away from "Continue remotely" (owner, 2026-07-30). The
-    // portal owns account + device management; `Grok: Unlink Remote Device`
+    // portal owns account + device management; `AFK Pilot: Unlink this device`
     // remains for the deliberate case.
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "remoteStatus", linked: true });
@@ -1359,6 +1371,67 @@ describe("thinking traces toggle (#26)", () => {
     expect(posted.some((p) => p.type === "setReadRepliesAloud" && p.value === false)).toBe(true);
     expect(cancellations).toBe(2); // once before speaking, once when toggled off
     expect(readAloudToggle().querySelector(".popover-switch.on")).toBeNull();
+  });
+
+  it("keeps summarize visible but inert while local read-aloud is off", () => {
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window, posted, doc } = bootWebview({
+      beforeScripts: (w) => {
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = { cancel() {}, speak() {} };
+      },
+    });
+    click(window, $(doc, "gear-btn"));
+    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Config & debug"),
+    ) as HTMLElement;
+    click(window, cfg);
+    const summarize = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Summarize before speaking"),
+    ) as HTMLElement;
+
+    expect(summarize).toBeTruthy();
+    expect(summarize.classList.contains("disabled")).toBe(true);
+    expect(summarize.getAttribute("aria-disabled")).toBe("true");
+    expect(summarize.title).toContain("Turn on Read replies aloud");
+    expect(summarize.textContent).not.toContain("uses your xAI API key");
+    click(window, summarize);
+    expect(posted.some((p) => p.type === "setSummarizeRepliesAloud")).toBe(false);
+    expect(summarize.querySelector(".popover-switch.on")).toBeNull();
+  });
+
+  it("turning local read-aloud off clears and persists summarize in the open popover", () => {
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window, posted, doc } = bootWebview({
+      beforeScripts: (w) => {
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = { cancel() {}, speak() {} };
+      },
+    });
+    dispatch(window, { type: "readRepliesAloud", value: true });
+    dispatch(window, { type: "summarizeRepliesAloud", value: true });
+    posted.length = 0;
+    click(window, $(doc, "gear-btn"));
+    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes("Config & debug"),
+    ) as HTMLElement;
+    click(window, cfg);
+    const gearToggle = (label: string) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => el.textContent?.includes(label),
+    ) as HTMLElement;
+
+    expect(gearToggle("Summarize before speaking").querySelector(".popover-switch.on")).not.toBeNull();
+    click(window, gearToggle("Read replies aloud"));
+
+    expect(posted).toContainEqual({ type: "setReadRepliesAloud", value: false });
+    expect(posted).toContainEqual({ type: "setSummarizeRepliesAloud", value: false });
+    const summarize = gearToggle("Summarize before speaking");
+    expect(summarize.classList.contains("disabled")).toBe(true);
+    expect(summarize.querySelector(".popover-switch.on")).toBeNull();
   });
 
   it("summarizes only the spoken text and ignores stale summary results", () => {
@@ -2146,6 +2219,51 @@ describe("agent message footer (copy + timestamp) — one per turn", () => {
     dispatch(window, { type: "agentEnd" });
 
     expect(doc.querySelectorAll(".msg.agent .msg-actions")).toHaveLength(2);
+  });
+
+  it("uses original user and turn-end times during history replay", () => {
+    const { window, doc } = bootWebview();
+    const userAt = Date.UTC(2026, 6, 30, 6, 14);
+    const agentAt = Date.UTC(2026, 6, 30, 6, 19);
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: "yesterday's question", timestampMs: userAt });
+    dispatch(window, { type: "messageChunk", text: "yesterday's answer" });
+    dispatch(window, {
+      type: "subagentUpdate",
+      update: { sessionUpdate: "turn_completed" },
+      timestampMs: agentAt,
+    });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    expect(doc.querySelector(".msg.user .msg-timestamp")!.textContent).toBe(clock(userAt));
+    expect(doc.querySelector(".msg.agent .msg-timestamp")!.textContent).toBe(clock(agentAt));
+  });
+
+  it("leaves replay timestamps blank when an old CLI sends no timing metadata", () => {
+    const { window, doc } = bootWebview();
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: "old question" });
+    dispatch(window, { type: "messageChunk", text: "old answer" });
+    dispatch(window, {
+      type: "subagentUpdate",
+      update: { sessionUpdate: "turn_completed" },
+    });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    expect(doc.querySelector(".msg.user .msg-timestamp")!.textContent).toBe("");
+    expect(doc.querySelector(".msg.agent .msg-timestamp")!.textContent).toBe("");
+  });
+
+  it("continues stamping live messages with the current clock", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "userMessage", text: "live question" });
+    dispatch(window, { type: "messageChunk", text: "live answer" });
+    dispatch(window, { type: "agentEnd" });
+
+    expect(doc.querySelector(".msg.user .msg-timestamp")!.textContent).not.toBe("");
+    expect(doc.querySelector(".msg.agent .msg-timestamp")!.textContent).not.toBe("");
   });
 });
 

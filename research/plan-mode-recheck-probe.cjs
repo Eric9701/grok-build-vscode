@@ -74,6 +74,11 @@ if (!VALID.includes(SCENARIO)) {
 
 const USE_PRIMER = SCENARIO === "primer-marker";
 const RESPOND_ERROR = SCENARIO !== "result";
+// Which typed verdict the `result` scenario sends. Approval is the EASY half —
+// the whole reason the primer exists is that we could never express a REJECT, so
+// `--outcome=cancelled` is the case that actually decides whether the primer can
+// die. Per the OSS source the CLI understands approved / cancelled / abandoned.
+const OUTCOME = arg("outcome", "approved");
 const SEND_MARKER = SCENARIO === "primer-marker" || SCENARIO === "noprimer-marker";
 // `adversarial` answers the question the cooperative scenarios CANNOT: is plan
 // mode enforced by the CLI, or does it merely rely on the model choosing not to
@@ -232,14 +237,19 @@ rl.on("line", (line) => {
         log(`[${phase}]   → responding JSON-RPC ERROR (reject)`);
         return respondErr(msg.id, -32000, "User rejected the plan. Stay in plan mode; do not implement.");
       }
-      log(`[${phase}]   → responding RESULT {outcome:"approved"}`);
-      return respond(msg.id, { outcome: "approved" });
+      log(`[${phase}]   → responding RESULT {outcome:"${OUTCOME}"}`);
+      return respond(msg.id, { outcome: OUTCOME });
     }
 
     if (m === "session/request_permission") {
       const opts = (msg.params && msg.params.options) || [];
       T.permissionRequests.push({ phase, title: msg.params && msg.params.toolCall && msg.params.toolCall.title });
       log(`[${phase}] PERMISSION REQ ${JSON.stringify(msg.params && msg.params.toolCall && msg.params.toolCall.title)}`);
+      // #89: the host declines an `execute` permission on `kind` ALONE, while the
+      // terminal/create gate classifies the actual command — so a read-only
+      // `ls`/`file` is allowed on one path and refused on the other. Fixing that
+      // needs to know WHICH field carries the command, so dump the whole toolCall.
+      log(`[${phase}] PERMISSION toolCall=${JSON.stringify(msg.params && msg.params.toolCall).slice(0, 700)}`);
       // Gate off → answer the way a NON-planning client would: allow.
       const allow = opts.find((o) => /allow/.test(o.kind)) || opts[0];
       return respond(msg.id, { outcome: { outcome: "selected", optionId: allow && allow.optionId } });

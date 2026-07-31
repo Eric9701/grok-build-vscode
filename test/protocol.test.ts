@@ -46,6 +46,17 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     });
   });
 
+  it("uses findable AFK Pilot titles without changing the remote command ids", () => {
+    expect(packageJson.contributes.commands).toContainEqual({
+      command: "grok.linkRemote",
+      title: "AFK Pilot: Link this device",
+    });
+    expect(packageJson.contributes.commands).toContainEqual({
+      command: "grok.unlinkRemote",
+      title: "AFK Pilot: Unlink this device",
+    });
+  });
+
   it("the webview's host-message list matches the TS union exactly", () => {
     // Guards the "post one shape, handle another" class: if the two copies drift,
     // the host could post a type the webview silently drops (or vice versa).

@@ -77,6 +77,7 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.media).toBe("media");
     expect(OUTBOUND_DISPOSITION.messageChunk).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.permissionRequest).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.permissionOptions).toBe("mirror");
   });
 });
 

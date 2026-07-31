@@ -201,9 +201,11 @@ a plan-mode turn and logged every server→client call without writing anything 
 1. **A plan-mode turn never wrote inside the workspace.** It issued `fs/read_text_file`
    and internal search/tool calls, then wrote its plan to
    `~/.grok/sessions/<urlencoded-cwd>/<id>/plan.md` — **outside** the workspace. So the
-   user's earlier hunch ("isn't the plan itself a file?") was right, and it's why the gate
-   is *workspace-scoped containment*, not "block all writes": blocking everything would
-   break grok's own plan persistence.
+   user's earlier hunch ("isn't the plan itself a file?") was right, and it's why the
+   filesystem gate is *workspace-scoped containment*, not "block all writes": blocking
+   every filesystem callback would break grok's own plan persistence. Mutating shell
+   commands are a separate choke point and fail closed even when they name this path;
+   grok retries the rejected shell write through `fs/write_text_file`.
 2. **`exit_plan_mode` arrives with `planContent: null`.** The plan text isn't in the
    request. We recover it by snooping the `plan.md` write (`isPlanFileWrite` →
    `planFileContent` event → `lastPlanText`) so the review card can show the plan.
@@ -226,7 +228,8 @@ a plan-mode turn and logged every server→client call without writing anything 
   `test/plan-gate.test.ts` covering Windows long-path prefixes, case-insensitive
   containment, sibling-prefix false positives, `..` traversal, the read-only command
   allowlist (git/npm subcommands, interpreter `--version` only), chaining/redirection
-  metacharacters, and the plan.md carve-out.
+  metacharacters, shell plan-write regressions, and the filesystem-only `plan.md`
+  carve-out.
 - **The gate is one of TWO enforcement pillars (since v1.4.x).** Alongside the gate, a
   hidden **primer** (`src/grok-primer.ts`) is sent before the user's first prompt
   instructing grok to disregard the always-"approved" `exit_plan_mode` result and read
@@ -241,6 +244,8 @@ a plan-mode turn and logged every server→client call without writing anything 
   permission auto-reject while planning, and the approve→implement / keep-planning flow.
 - **Read-only shell stays allowed while planning** (`git status`, `ls`, `cat`, …) so the
   agent can still explore; anything that could mutate is blocked and surfaced as a notice.
+  There is deliberately no shell-parser exemption for persisting `plan.md`: a rejected
+  PowerShell write falls back to the allowed `fs/write_text_file` path.
 
 ### Live validation of the reject-with-feedback flow (2026-05-28)
 

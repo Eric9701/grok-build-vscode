@@ -202,6 +202,9 @@ export interface SttStreamParams {
   sampleRate?: number;
   encoding?: string;
   interimResults?: boolean;
+  /** Optional language code. The streaming endpoint uses this to enable
+   *  Inverse Text Normalization; omitting it preserves spoken-form text. */
+  language?: string;
   /** Bias terms (e.g. the "grok send" send-phrase) so the model spells them
    *  right — directly fixes mishearings. Repeatable; ≤100 terms, ≤50 chars each. */
   keyterms?: string[];
@@ -210,6 +213,37 @@ export interface SttStreamParams {
 /** The documented keyterm ceiling ("≤100 terms, ≤50 chars each"). */
 export const MAX_STT_KEYTERMS = 100;
 
+export interface VoiceSettingInspect<T> {
+  defaultValue?: T;
+  globalValue?: T;
+}
+
+/**
+ * Resolve a voice setting for a session cwd. VS Code includes window-workspace
+ * values even when `getConfiguration` is scoped to a resource outside that
+ * workspace, so an external AFK Pilot repo must fall back to User/default
+ * values instead of inheriting another repo's project vocabulary.
+ */
+export function voiceSettingForRepo<T>(
+  effectiveValue: T | undefined,
+  inspected: VoiceSettingInspect<T> | undefined,
+  repoIsInWorkspace: boolean,
+  fallback: T,
+): T {
+  if (repoIsInWorkspace) return effectiveValue ?? fallback;
+  return inspected?.globalValue ?? inspected?.defaultValue ?? fallback;
+}
+
+/** Assemble recognition-bias terms in priority order. The send phrase is
+ *  behavior-critical, and the built-in product term preserves existing bias;
+ *  user vocabulary fills the remaining service-supported slots. */
+export function buildSttKeyterms(sendPhrase: string, userTerms: readonly string[] = []): string[] {
+  const terms = [sendPhrase, "Grok", ...userTerms]
+    .map((term) => (term || "").trim())
+    .filter(Boolean);
+  return [...new Set(terms)].slice(0, MAX_STT_KEYTERMS);
+}
+
 /** Build the streaming STT WebSocket URL. Config rides in query params (the
  *  endpoint takes no setup message); auth is a Bearer header set by the caller. */
 export function buildSttStreamUrl(params: SttStreamParams = {}): string {
@@ -217,6 +251,8 @@ export function buildSttStreamUrl(params: SttStreamParams = {}): string {
   qs.set("sample_rate", String(params.sampleRate ?? 16000));
   qs.set("encoding", params.encoding ?? "pcm");
   qs.set("interim_results", params.interimResults === false ? "false" : "true");
+  const language = params.language?.trim();
+  if (language) qs.set("language", language);
   let appended = 0;
   for (const term of params.keyterms ?? []) {
     if (appended >= MAX_STT_KEYTERMS) break; // enforce the doc'd cap, not just state it

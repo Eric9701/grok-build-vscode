@@ -5,14 +5,23 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
-import { Session, SessionStatus, sessionUiSnapshot } from "./session";
+import {
+  Session,
+  SessionStatus,
+  beginQueuedSendCommit,
+  createPendingPermission,
+  finishQueuedSendCommit,
+  pendingPermissionOptions,
+  preferredPermissionAllowOption,
+  sessionUiSnapshot,
+} from "./session";
 import { buildReapCandidates, selectReapable, computeDot, Dot } from "./session-pool";
-import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
+import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterms, voiceSettingForRepo, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery } from "./auth-recovery";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
@@ -37,7 +46,14 @@ import {
   isLockedBinaryError,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "./cli-locator";
-import { TerminalManager, grokShellEnvValue, resolvedTerminalShell, setTerminalShellPreference, type ShellPreference } from "./terminal-manager";
+import {
+  TerminalManager,
+  grokShellEnvValue,
+  resolvedTerminalShell,
+  resolvedTerminalShellDialect,
+  setTerminalShellPreference,
+  type ShellPreference,
+} from "./terminal-manager";
 import {
   FileChip,
   MAX_VISION_IMAGE_BYTES,
@@ -80,7 +96,7 @@ import {
   unreferencedUploadsForRemovedSessions,
 } from "./file-upload";
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
-import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
@@ -167,6 +183,8 @@ interface RemoteVoiceEntry {
   streamer: PcmVoiceStreamer;
   ingress: RemotePcmIngress;
   phrase: string;
+  keyterms: string[];
+  language?: string;
   finalizing: boolean;
 }
 
@@ -307,7 +325,14 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private voiceFinalizing = false;
   // Stored so a "grok send" can transparently restart a fresh stream (each
   // message = one clean utterance) without re-resolving the mic device.
-  private voiceStreamCtx?: { key: string; ffmpegPath: string; device?: string; phrase: string; keyterms: string[] };
+  private voiceStreamCtx?: {
+    key: string;
+    ffmpegPath: string;
+    device?: string;
+    phrase: string;
+    keyterms: string[];
+    language?: string;
+  };
   private localVoiceCwd?: string;
   private localVoiceCredentialCwd?: string;
   private readonly remoteVoice = new Map<string, RemoteVoiceEntry>();
@@ -315,7 +340,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly MAX_REMOTE_PCM_CHUNK_BYTES = 256 * 1024;
   private configWatcher?: vscode.Disposable;
   // Remote uplink — outbound wss to the relay (REMOTE_RELAY_URL), active only
-  // when a device token is stored (the "Grok: Link Remote Device" / gear
+  // when a device token is stored (the "AFK Pilot: Link this device" / gear
   // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
   // shipping path is unaffected.
   private uplink?: RemoteUplink;
@@ -729,9 +754,19 @@ See design doc for the full state machine diagram.`;
    *  the focused session drives the mode button — a background session entering
    *  plan mode raises its own gate silently. */
   private setPlanActive(session: Session, v: boolean): void {
+    const changed = session.planActive !== v;
     session.planActive = v;
     if (session.client) session.client.planActive = v;
     this.postMode(session);
+    if (changed) {
+      for (const [requestId, pending] of session.pendingPermissions) {
+        this.emit(session, {
+          type: "permissionOptions",
+          requestId,
+          options: pendingPermissionOptions(pending, v),
+        });
+      }
+    }
   }
 
   async setMode(
@@ -1125,8 +1160,7 @@ See design doc for the full state machine diagram.`;
     let resolved = 0;
     // Snapshot first — persistPermissionAnswer mutates pendingPermissions.
     for (const [requestId, pending] of [...session.pendingPermissions]) {
-      const opt = pending.options.find((o) => o.kind === "allow_always")
-                ?? pending.options.find((o) => o.kind === "allow_once");
+      const opt = preferredPermissionAllowOption(pending, session.planActive);
       if (!opt) continue;
       client.respondPermission(requestId, opt.optionId);
       this.emit(session, { type: "permissionResolved", requestId, optionId: opt.optionId });
@@ -1164,6 +1198,7 @@ See design doc for the full state machine diagram.`;
   private async maybeFlushQueuedSends(session: Session): Promise<void> {
     const combined = this.queuedSendReadyText(session);
     if (!combined) return;
+    if (session.queuedSendCommit) return;
     if (session.queuedSendRequiresRelay) {
       if (this.remoteClients.clientsForActiveValue(session).length === 0) return;
       if (session.queuedSendDispatch) return;
@@ -1172,11 +1207,13 @@ See design doc for the full state machine diagram.`;
       this.sendRemoteSession(session, { type: "submitQueuedSend", ...dispatch });
       return;
     }
-    session.queuedSends = [];
-    session.queuedSendDispatch = undefined;
-    session.queuedSendRequiresRelay = false;
-    this.emit(session, { type: "queuedSends", items: [] });
-    await this.handleSend(combined, false, session);
+    const claim = beginQueuedSendCommit(session, combined);
+    if (!claim) return;
+    try {
+      await this.handleSend(combined, false, session, "local", claim);
+    } finally {
+      finishQueuedSendCommit(session, claim, false);
+    }
   }
 
   /**
@@ -2845,7 +2882,7 @@ See design doc for the full state machine diagram.`;
       if (session.captureAgentText !== undefined) session.captureAgentText += text;
       this.emit(session, { type: "messageChunk", text });
     });
-    client.on("userMessageChunk", (text: string) => {
+    client.on("userMessageChunk", (text: string, meta?: any) => {
       if (gen !== session.gen) return;
       // grok ≥0.2.33 echoes the *live* prompt back as user_message_chunk; 0.2.3
       // did not (its comment here read "the agent never echoes them back"). The
@@ -2862,7 +2899,11 @@ See design doc for the full state machine diagram.`;
       // post-restore send re-primes instead of trusting the replay.
       if (!session.inUserMessage && isPrimerText(text)) {
         session.inUserMessage = true;
-        this.emit(session, { type: "userMessageChunk", text });
+        this.emit(session, {
+          type: "userMessageChunk",
+          text,
+          timestampMs: agentTimestampMsFromMeta(meta),
+        });
         return;
       }
       // The first chunk after a non-user chunk marks the start of a new user
@@ -2883,7 +2924,11 @@ See design doc for the full state machine diagram.`;
         const n = Number(m[1]);
         if (n > session.imageCounter) session.imageCounter = n;
       }
-      this.emit(session, { type: "userMessageChunk", text });
+      this.emit(session, {
+        type: "userMessageChunk",
+        text,
+        timestampMs: agentTimestampMsFromMeta(meta),
+      });
     });
     client.on("thoughtChunk", (text: string) => {
       if (gen !== session.gen) return;
@@ -2998,8 +3043,18 @@ See design doc for the full state machine diagram.`;
       // subagent_progress) only bloated the session replay buffer. The kinds we
       // act on are re-emitted as their own (buffered, consumed) messages above.
     });
-    client.on("subagentLifecycle", (u: unknown) => {
+    client.on("subagentLifecycle", (u: unknown, meta?: any) => {
       if (gen !== session.gen) return;
+      if ((u as { sessionUpdate?: unknown })?.sessionUpdate === "turn_completed") {
+        if (session.replaying) {
+          this.emit(session, {
+            type: "subagentUpdate",
+            update: u,
+            timestampMs: agentTimestampMsFromMeta(meta),
+          });
+        }
+        return;
+      }
       this.emit(session, { type: "subagentUpdate", update: u });
     });
     client.on("commandDone", (info: { command: string; output: string; exitCode: number | null; truncated: boolean }) => {
@@ -3019,24 +3074,29 @@ See design doc for the full state machine diagram.`;
     });
     client.on("permissionRequest", (req: PermissionRequest) => {
       if (gen !== session.gen) return;
-      // While planning, decline any mutating permission outright. Agent mode
-      // skips this prompt for edits it deems safe — the fs/terminal gate is the
-      // real backstop — but if the CLI *does* ask, we say no without bothering
-      // the user.
-      if (session.planActive && shouldRejectPermission(req.toolCall?.kind, {
+      // While planning, decline permissions for operations the same fs/terminal
+      // policy would block. A read-only execute request falls through to the
+      // ordinary permission prompt; Plan mode never grants permission itself.
+      if (session.planActive && shouldRejectPermission(req.toolCall, {
         active: true,
         workspaceRoot: cwd,
+        grokHome: resolveGrokHome(process.env),
+        shellDialect: resolvedTerminalShellDialect(),
       })) {
         const rejectId = pickRejectOption(req.options);
         if (rejectId) {
           client.respondPermission(req.id, rejectId);
-          this.emit(session, {
-            type: "planNotice",
-            text: `Plan mode declined a ${req.toolCall?.kind ?? "tool"} request — approve the plan first.`,
-          });
-          return;
+        } else {
+          client.respondPermissionCancelled(req.id);
         }
-        // No decline option offered — fall through and let the user decide.
+        const kind = String(req.toolCall?.kind || "tool").toLowerCase();
+        this.emit(session, {
+          type: "planNotice",
+          text: kind === "execute"
+            ? "Plan mode declined this command because it was not verified as safe to run while planning. Question-card answers are unaffected."
+            : `Plan mode declined this ${kind} request because workspace changes are blocked while planning. Question-card answers are unaffected.`,
+        });
+        return;
       }
       if (session.autoApprove) {
         const opt = req.options.find((o) => o.kind === "allow_always") ??
@@ -3044,12 +3104,34 @@ See design doc for the full state machine diagram.`;
         if (opt) { client.respondPermission(req.id, opt.optionId); return; }
       }
       // Remember it so the answer can be persisted for replay on resume.
-      session.pendingPermissions.set(req.id, {
+      const visibleOptions = permissionOptionsForPlan(
+        req.options ?? [],
+        session.planActive,
+        req.toolCall?.kind,
+      );
+      if (
+        session.planActive &&
+        String(req.toolCall?.kind ?? "").toLowerCase() === "execute" &&
+        visibleOptions.length === 0
+      ) {
+        client.respondPermissionCancelled(req.id);
+        this.emit(session, {
+          type: "planNotice",
+          text: "Plan mode declined this command because it offered no safe one-time or reject option.",
+        });
+        return;
+      }
+      session.pendingPermissions.set(req.id, createPendingPermission({
         title: req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`,
         toolCallId: req.toolCall?.toolCallId,
-        options: (req.options ?? []).map((o) => ({ optionId: o.optionId, kind: o.kind })),
-      });
-      this.emit(session, { type: "permissionRequest", req });
+        toolKind: req.toolCall?.kind,
+        options: (req.options ?? []).map((o) => ({
+          optionId: o.optionId,
+          kind: o.kind,
+          name: o.name,
+        })),
+      }));
+      this.emit(session, { type: "permissionRequest", req: { ...req, options: visibleOptions } });
       this.setStatus(session, "needs-you");
     });
     client.on("mutationBlocked", (info: { kind: string; target: string }) => {
@@ -3149,8 +3231,8 @@ See design doc for the full state machine diagram.`;
           }
         }
 
-        // Bracket the replay so the webview can render finalized "Thought"
-        // headers (no elapsed time — the original timing isn't in the stream).
+        // Bracket the replay so the webview can finalize historical turns and
+        // distinguish original agentTimestampMs values from live clock time.
         this.emit(session, { type: "historyReplay", active: true });
         session.replaying = true;
         try {
@@ -3367,6 +3449,7 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "send":
+        let queuedSendCommit: { text: string } | undefined;
         if (origin === "remote" && msg.queuedSendId) {
           if (session.completedQueuedSendIds.includes(msg.queuedSendId)) {
             this.output.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
@@ -3384,15 +3467,8 @@ See design doc for the full state machine diagram.`;
           session.completedQueuedSendIds.push(dispatch.id);
           if (session.completedQueuedSendIds.length > 32) session.completedQueuedSendIds.shift();
           session.queuedSendDispatch = undefined;
-          const queued = session.queuedSends[0] ?? "";
-          if (queued === dispatch.text) {
-            session.queuedSends = [];
-            session.queuedSendRequiresRelay = false;
-          }
-          else if (queued.startsWith(dispatch.text + "\n\n")) {
-            session.queuedSends = [queued.slice(dispatch.text.length + 2)];
-          }
-          this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+          queuedSendCommit = beginQueuedSendCommit(session, dispatch.text);
+          if (!queuedSendCommit) break;
         }
         else if (
           origin === "remote" &&
@@ -3401,7 +3477,11 @@ See design doc for the full state machine diagram.`;
           this.output.appendLine("[queue] ignored an unidentifiable legacy dequeue echo");
           break;
         }
-        await this.handleSend(msg.text, msg.bare === true, session, origin);
+        try {
+          await this.handleSend(msg.text, msg.bare === true, session, origin, queuedSendCommit, msg.submissionId);
+        } finally {
+          if (queuedSendCommit) finishQueuedSendCommit(session, queuedSendCommit, false);
+        }
         break;
       case "newSession":
         if (origin === "remote" && clientId) await this.newRemoteSession(clientId);
@@ -3439,6 +3519,7 @@ See design doc for the full state machine diagram.`;
         const s = session;
         if (Number.isInteger(msg.index) && msg.index >= 0 && msg.index < s.queuedSends.length) {
           s.queuedSendDispatch = undefined;
+          s.queuedSendCommit = undefined;
           s.queuedSends.splice(msg.index, 1);
           if (!s.queuedSends.length) s.queuedSendRequiresRelay = false;
           this.emit(s, { type: "queuedSends", items: [...s.queuedSends] });
@@ -3499,6 +3580,7 @@ See design doc for the full state machine diagram.`;
         const s = session;
         if (s.queuedSends.length) {
           s.queuedSendDispatch = undefined;
+          s.queuedSendCommit = undefined;
           s.queuedSends = [];
           s.queuedSendRequiresRelay = false;
           this.emit(s, { type: "queuedSends", items: [] });
@@ -3523,6 +3605,10 @@ See design doc for the full state machine diagram.`;
         }
         session.chips = removeChip(session.chips, msg.id);
         this.postChips(session);
+        // A queued send retained after attachment validation failed is waiting
+        // for exactly this state change. Re-drive only now (not from the send's
+        // finally block, which would loop on the same unreadable attachment).
+        void this.maybeFlushQueuedSends(session);
         break;
       }
       case "toggleChip": {
@@ -3535,6 +3621,9 @@ See design doc for the full state machine diagram.`;
           void this.context.globalState.update(IMPLICIT_CHIP_HIDDEN_KEY, toggled.hidden);
         }
         this.postChips(session);
+        // Hiding an unreadable chip removes it from the next prompt just as
+        // deleting it does, so it can unblock a retained idle queue too.
+        void this.maybeFlushQueuedSends(session);
         break;
       }
       case "openFile": {
@@ -3603,17 +3692,26 @@ See design doc for the full state machine diagram.`;
         ));
         break;
       case "permissionAnswer":
-        session.client?.respondPermission(msg.requestId, msg.optionId);
-        // Record the resolution in the session buffer so re-focusing this session
-        // replays the card collapsed instead of active (the live collapse is a
-        // webview-only DOM mutation that the buffer never captured).
-        this.emit(session, { type: "permissionResolved", requestId: msg.requestId, optionId: msg.optionId });
-        // Persist it (title + outcome) so a cold reload replays a collapsed card —
-        // the CLI doesn't replay request_permission on session/load.
-        this.persistPermissionAnswer(session, msg.requestId, msg.optionId);
-        this.closeDiffForRequest(session, msg.requestId); // tidy up the auto-opened diff (#21)
-        this.setStatus(session, "working"); // turn resumes after the answer
-        break;
+        {
+          const pending = session.pendingPermissions.get(msg.requestId);
+          if (!pending || !permissionAnswerAllowed(
+            pendingPermissionOptions(pending, session.planActive),
+            msg.optionId,
+            session.planActive,
+            pending.toolKind,
+          )) break;
+          session.client?.respondPermission(msg.requestId, msg.optionId);
+          // Record the resolution in the session buffer so re-focusing this session
+          // replays the card collapsed instead of active (the live collapse is a
+          // webview-only DOM mutation that the buffer never captured).
+          this.emit(session, { type: "permissionResolved", requestId: msg.requestId, optionId: msg.optionId });
+          // Persist it (title + outcome) so a cold reload replays a collapsed card —
+          // the CLI doesn't replay request_permission on session/load.
+          this.persistPermissionAnswer(session, msg.requestId, msg.optionId);
+          this.closeDiffForRequest(session, msg.requestId); // tidy up the auto-opened diff (#21)
+          this.setStatus(session, "working"); // turn resumes after the answer
+          break;
+        }
       case "exitPlanAnswer":
         this.handleExitPlan(msg.requestId, msg.verdict, msg.comment, session);
         break;
@@ -4730,21 +4828,31 @@ See design doc for the full state machine diagram.`;
   }
 
   private postVoiceConfigured(): void {
-    const cwd = this.workspaceRoot();
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cwd = this.sessionCwd(this.focused);
     this.postLocal({
       type: "voiceConfigured",
       value: !!this.resolveVoiceApiKey(cwd),
-      sendPhrase: cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE),
+      sendPhrase: this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
     });
     for (const clientId of this.remoteClients.clients()) {
-      const remoteCwd = this.remoteClients.cwd(clientId);
+      const remoteCwd = this.sessionCwd(this.remoteSessionFor(clientId));
       this.sendRemoteClient(clientId, {
         type: "voiceConfigured",
-        value: !!this.resolveVoiceApiKey(this.sessionCwd(this.remoteSessionFor(clientId))),
-        sendPhrase: cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE),
+        value: !!this.resolveVoiceApiKey(remoteCwd),
+        sendPhrase: this.voiceSetting(remoteCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
       });
     }
+  }
+
+  private voiceSetting<T>(cwd: string, key: string, fallback: T): T {
+    const resource = vscode.Uri.file(cwd);
+    const cfg = vscode.workspace.getConfiguration("grok", resource);
+    return voiceSettingForRepo(
+      cfg.get<T>(key),
+      cfg.inspect<T>(key),
+      !!vscode.workspace.getWorkspaceFolder(resource),
+      fallback,
+    );
   }
 
   private async mentionFileIndexForCwd(cwd: string): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
@@ -4832,7 +4940,7 @@ See design doc for the full state machine diagram.`;
     // Streaming (default): live transcription over the STT WebSocket, so "grok
     // send" can submit hands-free without a stop-click. Batch is the fallback.
     if (cfg.get<boolean>("voiceStreaming", true)) {
-      await this.startVoiceStream(key, ffmpegPath, device, cfg);
+      await this.startVoiceStream(key, ffmpegPath, device, cwd);
       return;
     }
 
@@ -4867,18 +4975,20 @@ See design doc for the full state machine diagram.`;
     key: string,
     ffmpegPath: string,
     device: string | undefined,
-    cfg: vscode.WorkspaceConfiguration,
+    cwd: string,
   ): Promise<void> {
-    const phrase = cfg.get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
-    // Bias the model toward the send phrase + "Grok" so it spells them right
-    // (fixes the "grok send" → "gronsent" mishearing).
-    const keyterms = [...new Set([phrase, "Grok"].map((s) => (s || "").trim()).filter(Boolean))];
+    const phrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const keyterms = buildSttKeyterms(
+      phrase,
+      this.voiceSetting<string[]>(cwd, "voiceKeyterms", []),
+    );
+    const language = this.voiceSetting(cwd, "voiceLanguage", "").trim() || undefined;
     // Resolve the Windows mic once so per-message restarts don't re-enumerate.
     let resolved = device;
     if (process.platform === "win32" && !resolved) {
       try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.output.appendLine(m)); } catch { /* streamer surfaces it */ }
     }
-    this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms };
+    this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms, language };
     this.voiceFinalizing = false;
     await this.openVoiceStream();
   }
@@ -4935,7 +5045,14 @@ See design doc for the full state machine diagram.`;
     });
 
     try {
-      await streamer.start({ ffmpegPath: ctx.ffmpegPath, apiKey: ctx.key, device: ctx.device, keyterms: ctx.keyterms, log: (m) => this.output.appendLine(m) });
+      await streamer.start({
+        ffmpegPath: ctx.ffmpegPath,
+        apiKey: ctx.key,
+        device: ctx.device,
+        keyterms: ctx.keyterms,
+        language: ctx.language,
+        log: (m) => this.output.appendLine(m),
+      });
       if (!isCurrent()) { streamer.cancel(); return; }
       this.postLocal({ type: "voiceState", status: "listening" });
     } catch (e) {
@@ -4988,7 +5105,8 @@ See design doc for the full state machine diagram.`;
     this.postLocal({ type: "voiceState", status: "transcribing" });
     let finalText = "";
     try { finalText = await streamer.stop(); } catch { finalText = streamer.transcript; }
-    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const cwd = this.localVoiceCredentialCwd ?? this.workspaceRoot();
+    const phrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
     const { text, send } = parseVoiceCommand(finalText, phrase);
     this.voiceFinalizing = false;
     this.releaseVoice(this.localVoiceCwd);
@@ -5065,7 +5183,7 @@ See design doc for the full state machine diagram.`;
       const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
       // Strip a trailing "grok send" (configurable) so dictation can submit
       // hands-free. The webview inserts `text` and, if `send`, fires the send.
-      const sendPhrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+      const sendPhrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
       const { text, send } = parseVoiceCommand(raw, sendPhrase);
       if (!text && !send) {
         vscode.window.showInformationMessage("Voice control: nothing was transcribed (silence?).");
@@ -5111,8 +5229,12 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[remote-voice] stream error: ${e.message}`);
       this.failRemoteVoice(clientId, e.message);
     });
-    const keyterms = [...new Set([entry.phrase, "Grok"].map((s) => (s || "").trim()).filter(Boolean))];
-    await streamer.start({ apiKey: key, keyterms, log: (m) => this.output.appendLine(`[remote] ${m}`) });
+    await streamer.start({
+      apiKey: key,
+      keyterms: entry.keyterms,
+      language: entry.language,
+      log: (m) => this.output.appendLine(`[remote] ${m}`),
+    });
     if (!current()) {
       streamer.cancel();
       return;
@@ -5139,7 +5261,12 @@ See design doc for the full state machine diagram.`;
       this.rejectVoiceStart(clientId);
       return;
     }
-    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const phrase = this.voiceSetting(credentialCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const keyterms = buildSttKeyterms(
+      phrase,
+      this.voiceSetting<string[]>(credentialCwd, "voiceKeyterms", []),
+    );
+    const language = this.voiceSetting(credentialCwd, "voiceLanguage", "").trim() || undefined;
     let entry!: RemoteVoiceEntry;
     const ingress = new RemotePcmIngress(
       GrokSidebar.MAX_REMOTE_PCM_CHUNK_BYTES,
@@ -5153,6 +5280,8 @@ See design doc for the full state machine diagram.`;
       streamer: new PcmVoiceStreamer(),
       ingress,
       phrase,
+      keyterms,
+      language,
       finalizing: false,
     };
     this.remoteVoice.set(clientId, entry);
@@ -5746,7 +5875,15 @@ See design doc for the full state machine diagram.`;
    *  sends join the host-owned queue — what the sender's own chat.js does
    *  when it knows in time. Bare slash turns (/compact, /workflow …) can't be
    *  queued (their text would corrupt the combined queued prompt) and must
-   *  not cancel the running turn either, so they are rejected visibly. */
+   *  not cancel the running turn either, so they are rejected visibly.
+   *
+   *  Known limitation: a raced remote send's `submissionId` is lost here.
+   *  The queue intentionally collapses contributions into one string, so
+   *  retaining one id would falsely acknowledge the others when several
+   *  views race. This can leave a refresh-correctable duplicate, not lose
+   *  delivery. Revisit when queued state can track every contribution id and
+   *  one committed message can acknowledge all of them without changing the
+   *  relay dequeue handshake. */
   private divertRacingSend(session: Session, text: string, bare: boolean): void {
     if (bare) {
       this.emit(session, {
@@ -5767,6 +5904,8 @@ See design doc for the full state machine diagram.`;
     bare = false,
     target?: Session,
     origin: MsgOrigin = "local",
+    queuedSendCommit?: { text: string },
+    submissionId?: string,
   ): Promise<void> {
     // `target` lets a queued-send flush fire into a BACKGROUNDED session (its
     // turn ended while another was focused). Only the focused session may spawn
@@ -5786,7 +5925,7 @@ See design doc for the full state machine diagram.`;
     // maybeFlushQueuedSends can never re-enter this branch: it only flushes
     // when the turn is over (queuedSendReadyText).
     if (this.turnInFlight(session)) {
-      this.divertRacingSend(session, text, bare);
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
       return;
     }
     const client = session.client ?? await this.ensureClient(session);
@@ -5872,8 +6011,13 @@ See design doc for the full state machine diagram.`;
     // would cancel the first turn. Runs before chips are consumed, so a
     // diverted send leaves its attachments staged for the queued flush.
     if (this.turnInFlight(session)) {
-      this.divertRacingSend(session, text, bare);
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
       return;
+    }
+
+    if (queuedSendCommit) {
+      if (!finishQueuedSendCommit(session, queuedSendCommit, true)) return;
+      this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
     }
 
     if (bare) {
@@ -5908,7 +6052,7 @@ See design doc for the full state machine diagram.`;
     const sentChips = chips.filter((c) => !c.hidden);
     session.userMessageCount += 1;
     session.inUserMessage = false; // live send isn't part of the streamed-chunk count path
-    this.emit(session, { type: "userMessage", text, chips: sentChips });
+    this.emit(session, { type: "userMessage", text, chips: sentChips, submissionId });
     this.emit(session, { type: "agentStart" });
     this.setStatus(session, "working");
 
@@ -6260,7 +6404,8 @@ See design doc for the full state machine diagram.`;
       id: string,
       cwd: string,
       queuedText: string,
-    ): { promptCount(): number };
+      chips?: FileChip[],
+    ): { promptCount(): number; queuedSends(): string[] };
     finishRemoteStartup(clientId: string): void;
     seedRemoteVoice(clientId: string): { cancelled(): boolean };
     emitContextUsage(clientId: string): void;
@@ -6341,7 +6486,7 @@ See design doc for the full state machine diagram.`;
         this.pool.add(session);
         this.remoteClients.setActive(clientId, session);
       },
-      seedRemoteQueuedDispatch: (clientId, id, cwd, queuedText) => {
+      seedRemoteQueuedDispatch: (clientId, id, cwd, queuedText, chips = []) => {
         this.remoteClients.ready(clientId);
         this.remoteClients.select(clientId, cwd);
         let prompts = 0;
@@ -6359,12 +6504,16 @@ See design doc for the full state machine diagram.`;
         session.hasHistory = true;
         session.primed = true;
         session.status = "done";
+        session.chips = chips;
         session.queuedSends = [queuedText];
         session.queuedSendRequiresRelay = true;
         this.pool.add(session);
         this.remoteClients.setActive(clientId, session);
         void this.maybeFlushQueuedSends(session);
-        return { promptCount: () => prompts };
+        return {
+          promptCount: () => prompts,
+          queuedSends: () => [...session.queuedSends],
+        };
       },
       finishRemoteStartup: (clientId) => {
         const session = this.remoteClients.active(clientId);
@@ -6392,6 +6541,7 @@ See design doc for the full state machine diagram.`;
           streamer,
           ingress,
           phrase: DEFAULT_SEND_PHRASE,
+          keyterms: buildSttKeyterms(DEFAULT_SEND_PHRASE),
           finalizing: false,
         });
         return { cancelled: () => cancelled };
@@ -7542,7 +7692,7 @@ See design doc for the full state machine diagram.`;
     if (this.uplink) return;
     const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
     if (!token) return; // not linked yet — the link command starts the uplink itself
-    this.uplink = new RemoteUplink({
+    const uplink = new RemoteUplink({
       relayUrl: REMOTE_RELAY_URL,
       token,
       deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
@@ -7552,10 +7702,57 @@ See design doc for the full state machine diagram.`;
         this.releaseRemoteClient(clientId);
       },
       onClientRoster: (clientIds) => this.retainRemoteClients(clientIds),
+      onCredentialRevoked: () => {
+        void this.handleRemoteCredentialRevoked(token, uplink);
+      },
       onClientMessage: (clientId, m) => this.handleRemoteMessage(clientId, m),
       log: (l) => this.output.appendLine(l),
     });
-    this.uplink.start();
+    this.uplink = uplink;
+    uplink.start();
+    this.refreshKeepAwake();
+  }
+
+  private async handleRemoteCredentialRevoked(
+    revokedToken: string,
+    revokedUplink: RemoteUplink,
+  ): Promise<void> {
+    // A replaced/disposed uplink may deliver a late close event. Only the
+    // currently-owned connection is allowed to clear the credential it used.
+    if (this.uplink !== revokedUplink) return;
+    const storedToken = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    if (this.uplink !== revokedUplink || storedToken !== revokedToken) return;
+
+    this.clearRemoteRuntime();
+    this.post({ type: "remoteStatus", linked: false });
+    try {
+      await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
+    } catch (e) {
+      this.output.appendLine(`[remote] failed to clear revoked device token: ${(e as Error)?.message ?? e}`);
+      const retry = "Retry unlink";
+      void vscode.window.showErrorMessage(
+        "AFK Pilot access was revoked, but the stored device token could not be cleared.",
+        retry,
+      ).then((choice) => {
+        if (choice === retry) void vscode.commands.executeCommand("grok.unlinkRemote");
+      });
+      return;
+    }
+
+    const relink = "Link this device again";
+    void vscode.window.showWarningMessage(
+      "AFK Pilot access for this device was revoked, so it has been unlinked. Link it again to continue remotely.",
+      relink,
+    ).then((choice) => {
+      if (choice === relink) void vscode.commands.executeCommand("grok.linkRemote");
+    });
+  }
+
+  private clearRemoteRuntime(): void {
+    this.uplink?.dispose();
+    this.uplink = undefined;
+    this.stopVoiceInput();
+    this.remoteClients.clear();
     this.refreshKeepAwake();
   }
 
@@ -7574,7 +7771,7 @@ See design doc for the full state machine diagram.`;
     }
   }
 
-  /** "Grok: Link Remote Device" — the device-code flow against the relay's REST
+  /** "AFK Pilot: Link this device" — the device-code flow against the relay's REST
    *  edge: start a link, open the browser for the (mock for now) approval, poll
    *  until the relay hands back a long-lived device token, store it in secrets,
    *  connect. Mirrors how a CLI links to a web account. */
@@ -7632,7 +7829,7 @@ See design doc for the full state machine diagram.`;
     return undefined;
   }
 
-  /** "Grok: Unlink Remote Device" — drop the token + connection. */
+  /** "AFK Pilot: Unlink this device" — drop the token + connection. */
   async unlinkRemoteDevice(): Promise<void> {
     // Best-effort server-side revoke first: without it the device row lingers
     // on the account and keeps counting against the relay's device cap (a
@@ -7652,11 +7849,7 @@ See design doc for the full state machine diagram.`;
       }
     }
     await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
-    this.uplink?.dispose();
-    this.uplink = undefined;
-    this.stopVoiceInput();
-    this.remoteClients.clear();
-    this.refreshKeepAwake();
+    this.clearRemoteRuntime();
     this.post({ type: "remoteStatus", linked: false });
     void vscode.window.showInformationMessage("Remote device unlinked.");
   }
@@ -7674,7 +7867,8 @@ See design doc for the full state machine diagram.`;
     const session = this.remoteSessionFor(clientId);
     const entries = this.repoCatalog();
     const initial = { ...this.buildInitialStateMsg(), cwd };
-    const phrase = vscode.workspace.getConfiguration("grok").get<string>("voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const sessionCwd = this.sessionCwd(session);
+    const phrase = this.voiceSetting(sessionCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
     const snap: HostMsg[] = [];
     snap.push(initial);
     snap.push({ type: "clearMessages" });
@@ -7689,7 +7883,7 @@ See design doc for the full state machine diagram.`;
     }
     snap.push({
       type: "voiceConfigured",
-      value: !!this.resolveVoiceApiKey(this.sessionCwd(session)),
+      value: !!this.resolveVoiceApiKey(sessionCwd),
       sendPhrase: phrase,
     });
     const activeVoice = this.remoteVoice.get(clientId);

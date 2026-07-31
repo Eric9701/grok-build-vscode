@@ -306,6 +306,8 @@
     submittedQueuedSendIds: new Set(),
     queuedSubmissionId: null,
     pendingSubmissionText: "",
+    pendingSubmissionId: null,
+    pendingSubmissionChipIds: [],
     rejectedSubmissionText: "",
     // Remote-only placeholder bubble shown between a send and the host's echo.
     optimisticSendEl: null,
@@ -1883,7 +1885,7 @@
         // item next to "Continue remotely" made an irreversible action (every
         // other device loses this machine) a slip away. The portal owns
         // account + device management — it can show what's linked before
-        // anything is removed. `Grok: Unlink Remote Device` still exists in
+        // anything is removed. `AFK Pilot: Unlink this device` still exists in
         // the Command Palette for the deliberate case.
         addGearItem(`<span class="gear-lead">${ICON.user}<span>Your account</span></span>`, () => {
           vscode.postMessage({ type: "openRemotePortal" });
@@ -2162,15 +2164,27 @@
           } else {
             state.readRepliesAloud = !state.readRepliesAloud;
             vscode.postMessage({ type: "setReadRepliesAloud", value: state.readRepliesAloud });
-            if (!state.readRepliesAloud) cancelPendingSpeech();
+            if (!state.readRepliesAloud) {
+              cancelPendingSpeech();
+              if (state.summarizeRepliesAloud) {
+                state.summarizeRepliesAloud = false;
+                vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
+              }
+            }
           }
           renderConfigDebugPanel();
         },
       );
       if (!IS_REMOTE) {
-        addGearItem(
-          `<span title="Use xAI to make each spoken message brief and speech-friendly before reading it. Adds a billed API call and network delay; falls back to the full text on any failure.">Summarize before speaking <span class="popover-ver">(uses your xAI API key)</span></span><span class="popover-switch${state.summarizeRepliesAloud ? " on" : ""}" role="switch" aria-checked="${state.summarizeRepliesAloud}"><span class="popover-switch-knob"></span></span>`,
-          () => {
+        const summarizeEnabled = state.readRepliesAloud;
+        const summarizeRow = document.createElement("div");
+        summarizeRow.className = "toolbar-popover-item" +
+          (summarizeEnabled ? "" : " popover-action disabled");
+        summarizeRow.innerHTML =
+          `<span title="Use xAI to make each spoken message brief and speech-friendly before reading it. Adds a billed API call and network delay; falls back to the full text on any failure.">Summarize before speaking</span><span class="popover-switch${state.summarizeRepliesAloud ? " on" : ""}" role="switch" aria-checked="${state.summarizeRepliesAloud}"><span class="popover-switch-knob"></span></span>`;
+        if (summarizeEnabled) {
+          summarizeRow.onclick = (e) => {
+            e.stopPropagation();
             state.summarizeRepliesAloud = !state.summarizeRepliesAloud;
             speechRequestId += 1;
             vscode.postMessage({
@@ -2178,8 +2192,12 @@
               value: state.summarizeRepliesAloud,
             });
             renderConfigDebugPanel();
-          },
-        );
+          };
+        } else {
+          summarizeRow.setAttribute("aria-disabled", "true");
+          summarizeRow.title = "Turn on Read replies aloud to summarize spoken replies";
+        }
+        gearPopover.appendChild(summarizeRow);
       }
     } else {
       addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
@@ -2778,6 +2796,8 @@
     state.queuedSubmissionPending = false;
     state.queuedSubmissionRejected = false;
     state.pendingSubmissionText = "";
+    state.pendingSubmissionId = null;
+    state.pendingSubmissionChipIds = [];
     state.rejectedSubmissionText = "";
     updateSendButton();
   }
@@ -2942,7 +2962,12 @@
       }
       const ts = document.createElement("span");
       ts.className = "msg-timestamp";
-      ts.textContent = formatTime(Date.now());
+      const replayTimestamp = opts && opts.timestampMs;
+      ts.textContent = state.replaying
+        ? (typeof replayTimestamp === "number" && Number.isFinite(replayTimestamp)
+          ? formatTime(replayTimestamp)
+          : "")
+        : formatTime(Date.now());
       actions.appendChild(ts);
       el.appendChild(actions);
       if (role === "agent") {
@@ -3024,12 +3049,17 @@
   // signal: promptComplete/agentEnd/agentError live, the next user message or
   // replay end on restore. Stamps the time at reveal so it reads as the
   // turn's END time, not the moment the last segment happened to start.
-  function revealTurnFooter() {
+  function revealTurnFooter(timestampMs) {
     const a = state.turnAgentActionsEl;
     if (!a || !a.hidden) return;
     a.hidden = false;
     const ts = a.querySelector(".msg-timestamp");
-    if (ts && !state.replaying) ts.textContent = formatTime(Date.now());
+    if (!ts) return;
+    if (!state.replaying) {
+      ts.textContent = formatTime(Date.now());
+    } else if (typeof timestampMs === "number" && Number.isFinite(timestampMs)) {
+      ts.textContent = formatTime(timestampMs);
+    }
   }
 
   const TOOL_VERB = {
@@ -4712,7 +4742,7 @@
 
   // Replayed user prompts (session/load) arrive as user_message_chunk updates.
   // Commit any in-flight agent turn first, then accumulate into one user bubble.
-  function appendUserChunk(text) {
+  function appendUserChunk(text, timestampMs) {
     // Replay-only: live user bubbles come from the optimistic `userMessage`
     // post. grok ≥0.2.33 echoes the live prompt back as a user_message_chunk;
     // the host already drops those, but guard here too so a stray live echo
@@ -4764,7 +4794,7 @@
         }
       }
       state.userMsgCount += 1;
-      state.activeUserEl = addMessage("user", "");
+      state.activeUserEl = addMessage("user", "", undefined, { timestampMs });
       state.activeUserRaw = "";
     }
     if (state.skipUserBubble) return; // marker-only verdict: no user bubble
@@ -5085,6 +5115,69 @@
     el.appendChild(line);
   }
 
+  function renderPermissionActions(el, requestId, cardTitle, rawOptions) {
+    const oldActions = el.querySelector(".card-actions");
+    if (oldActions) oldActions.remove();
+    el._permOptions = rawOptions || [];
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    // Approve first, reject last — the CLI's own order isn't guaranteed, and the
+    // keyboard default below must never land on a reject (#68).
+    const options = orderPermissionOptions(rawOptions);
+    const defaultIndex = defaultPermissionIndex(options);
+    const buttons = [];
+    options.forEach((opt, i) => {
+      const btn = document.createElement("button");
+      btn.textContent = opt.name;
+      btn.type = "button";
+      if (opt.kind === "allow_once") btn.classList.add("primary");
+      if (opt.kind === "reject_once") {
+        btn.classList.add("danger");
+        // A permission arrival force-scrolls the transcript. Ignore pointer
+        // targeting during that layout transition so a click intended for the
+        // adjacent Thinking disclosure cannot land on Reject (#76).
+        if (state.showThinking) {
+          btn.classList.add("arming");
+          setTimeout(() => btn.classList.remove("arming"), 1000);
+        }
+      }
+      // Only the default button is in the tab order; the arrow keys move within
+      // the group. Standard toolbar/radiogroup roving-tabindex, so Tab escapes
+      // the card in one press instead of walking every option.
+      btn.tabIndex = i === (defaultIndex >= 0 ? defaultIndex : 0) ? 0 : -1;
+      btn.onclick = () => {
+        vscode.postMessage({
+          type: "permissionAnswer",
+          requestId,
+          optionId: opt.optionId,
+        });
+        // Collapse to one muted line and show the working indicator — grok
+        // resumes the turn after the answer.
+        collapsePermissionCard(el, opt.kind, cardTitle);
+        showGrokking();
+        // Return the caret to the composer so the next message can be typed
+        // immediately — answering must not orphan focus on the collapsed card
+        // (#68). Composer, not the editor: the webview iframe can only move
+        // focus within itself, and the composer is where you continue anyway.
+        input.focus();
+      };
+      buttons.push(btn);
+      actions.appendChild(btn);
+    });
+    wirePermissionKeys(actions, buttons);
+    el.appendChild(actions);
+    return { buttons, defaultIndex };
+  }
+
+  function updatePermissionOptions(requestId, options) {
+    const cards = [...messagesEl.querySelectorAll(".card.permission")];
+    const el = cards.find((card) =>
+      card.dataset.permReqId === String(requestId) &&
+      !card.classList.contains("perm-resolved")
+    );
+    if (el) renderPermissionActions(el, requestId, el._permTitle, options);
+  }
+
   function addPermissionCard(req) {
     clearWelcome();
     hideGrokking();
@@ -5100,7 +5193,6 @@
     // mutation that isn't in the session buffer, so without this an already-answered
     // card replays as active on every re-focus.
     el.dataset.permReqId = String(req.id);
-    el._permOptions = req.options || [];
     el._permTitle = cardTitle;
     const title = document.createElement("div");
     title.className = "card-title";
@@ -5132,53 +5224,8 @@
       if (!IS_REMOTE) openDiff();
     }
 
-    const actions = document.createElement("div");
-    actions.className = "card-actions";
-    // Approve first, reject last — the CLI's own order isn't guaranteed, and the
-    // keyboard default below must never land on a reject (#68).
-    const options = orderPermissionOptions(req.options);
-    const defaultIndex = defaultPermissionIndex(options);
-    const buttons = [];
-    options.forEach((opt, i) => {
-      const btn = document.createElement("button");
-      btn.textContent = opt.name;
-      btn.type = "button";
-      if (opt.kind === "allow_once") btn.classList.add("primary");
-      if (opt.kind === "reject_once") {
-        btn.classList.add("danger");
-        // A permission arrival force-scrolls the transcript. Ignore pointer
-        // targeting during that layout transition so a click intended for the
-        // adjacent Thinking disclosure cannot land on Reject (#76).
-        if (state.showThinking) {
-          btn.classList.add("arming");
-          setTimeout(() => btn.classList.remove("arming"), 1000);
-        }
-      }
-      // Only the default button is in the tab order; the arrow keys move within
-      // the group. Standard toolbar/radiogroup roving-tabindex, so Tab escapes
-      // the card in one press instead of walking every option.
-      btn.tabIndex = i === (defaultIndex >= 0 ? defaultIndex : 0) ? 0 : -1;
-      btn.onclick = () => {
-        vscode.postMessage({
-          type: "permissionAnswer",
-          requestId: req.id,
-          optionId: opt.optionId,
-        });
-        // Collapse to one muted line and show the working indicator — grok
-        // resumes the turn after the answer.
-        collapsePermissionCard(el, opt.kind, cardTitle);
-        showGrokking();
-        // Return the caret to the composer so the next message can be typed
-        // immediately — answering must not orphan focus on the collapsed card
-        // (#68). Composer, not the editor: the webview iframe can only move
-        // focus within itself, and the composer is where you continue anyway.
-        input.focus();
-      };
-      buttons.push(btn);
-      actions.appendChild(btn);
-    });
-    wirePermissionKeys(actions, buttons);
-    el.appendChild(actions);
+    const { buttons, defaultIndex } =
+      renderPermissionActions(el, req.id, cardTitle, req.options);
     messagesEl.appendChild(el);
     forceScrollToBottom(); // a pending permission must be visible (#16)
 
@@ -6037,6 +6084,16 @@
     if (el && el.parentNode) el.remove();
   }
 
+  function visibleChipIds(chips) {
+    return (chips || []).filter((chip) => !chip.hidden).map((chip) => String(chip.id || ""));
+  }
+
+  function sameChipIds(chips, expectedIds) {
+    const actualIds = visibleChipIds(chips);
+    return actualIds.length === expectedIds.length &&
+      actualIds.every((id, index) => id === expectedIds[index]);
+  }
+
   function sendOrStop() {
     if (state.busy) {
       // Typed text signals send-intent — queue it; text present never cancels.
@@ -6078,10 +6135,18 @@
     state.activeThoughtHdrEl = null;
     state.thoughtStartTime = null;
     state.activeToolGroupEl = null;
-    if (IS_REMOTE) { state.pendingSubmissionText = text; showOptimisticSend(text, state.chips.filter((c) => !c.hidden)); }
+    let submissionId;
+    if (IS_REMOTE) {
+      const visibleChips = state.chips.filter((c) => !c.hidden);
+      submissionId = newRemoteTabToken();
+      state.pendingSubmissionText = text;
+      state.pendingSubmissionId = submissionId;
+      state.pendingSubmissionChipIds = visibleChipIds(visibleChips);
+      showOptimisticSend(text, visibleChips);
+    }
     // Chips are host-owned state (every mutation routes through the host and
     // comes back via postChips) — the host snapshots its own copy on send.
-    vscode.postMessage({ type: "send", text });
+    vscode.postMessage({ type: "send", text, ...(submissionId ? { submissionId } : {}) });
     input.value = "";
     renderInputHighlight();
     slashPopover.hidden = true;
@@ -6421,8 +6486,15 @@
     state.activeThoughtHdrEl = null;
     state.thoughtStartTime = null;
     state.activeToolGroupEl = null;
-    if (IS_REMOTE) { state.pendingSubmissionText = t; showOptimisticSend(t, []); }
-    vscode.postMessage({ type: "send", text: t });
+    let submissionId;
+    if (IS_REMOTE) {
+      submissionId = newRemoteTabToken();
+      state.pendingSubmissionText = t;
+      state.pendingSubmissionId = submissionId;
+      state.pendingSubmissionChipIds = [];
+      showOptimisticSend(t, []);
+    }
+    vscode.postMessage({ type: "send", text: t, ...(submissionId ? { submissionId } : {}) });
   }
 
   // ---------- queued sends (#37) ----------
@@ -6628,12 +6700,21 @@
       case "readRepliesAloud": {
         const wasEnabled = state.readRepliesAloud;
         state.readRepliesAloud = !!msg.value;
-        if (wasEnabled && !state.readRepliesAloud && !IS_REMOTE) cancelPendingSpeech();
+        if (!state.readRepliesAloud && !IS_REMOTE) {
+          if (wasEnabled) cancelPendingSpeech();
+          if (state.summarizeRepliesAloud) {
+            state.summarizeRepliesAloud = false;
+            vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
+          }
+        }
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
       }
       case "summarizeRepliesAloud":
-        state.summarizeRepliesAloud = !!msg.value;
+        state.summarizeRepliesAloud = !IS_REMOTE && state.readRepliesAloud && !!msg.value;
+        if (!IS_REMOTE && !state.readRepliesAloud && msg.value) {
+          vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
+        }
         speechRequestId += 1;
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
@@ -6903,12 +6984,24 @@
         break;
       }
       case "userMessage":
-        // The authoritative bubble is about to render — drop the placeholder
-        // first so the transcript never shows both.
-        clearOptimisticSend();
-        state.pendingSubmissionText = "";
-        state.rejectedSubmissionText = "";
-        renderQueuedBlocks();
+        // A co-attached view also receives sends from the other view. Prefer our
+        // submission id; old hosts omit it, so fall back to exact text + chip
+        // identity. agentStart has no ownership signal and must not clear the
+        // recovery copy.
+        if (!IS_REMOTE || (
+          state.pendingSubmissionId &&
+          (msg.submissionId !== undefined
+            ? msg.submissionId === state.pendingSubmissionId
+            : msg.text === state.pendingSubmissionText &&
+              sameChipIds(msg.chips, state.pendingSubmissionChipIds))
+        )) {
+          clearOptimisticSend();
+          state.pendingSubmissionText = "";
+          state.pendingSubmissionId = null;
+          state.pendingSubmissionChipIds = [];
+          state.rejectedSubmissionText = "";
+          renderQueuedBlocks();
+        }
         // Live send (or immediate verdict-feedback bubble): render and bump the
         // counter so any plan history queued for this position drains first.
         drainPlanHistory(state.userMsgCount);
@@ -6923,7 +7016,6 @@
         hidePlanProcessing();
         break;
       case "agentStart":
-        state.pendingSubmissionText = "";
         // A user-initiated turn just began (live send, or a plan-verdict
         // follow-up). Show "Grokking…" until the first real content replaces it.
         // The silent primer never emits agentStart, so it never shows here.
@@ -6952,7 +7044,7 @@
         addGeneratedMedia(msg);
         break;
       case "userMessageChunk":
-        appendUserChunk(msg.text);
+        appendUserChunk(msg.text, msg.timestampMs);
         break;
       case "historyReplay":
         if (msg.active) {
@@ -6987,8 +7079,8 @@
             const dots = el.querySelector(".blink-dots");
             if (dots) dots.remove();
           }
-          // The final replayed turn has no explicit turn-end signal — its
-          // footer becomes final here.
+          // Older CLIs may not replay turn_completed; finalize that last footer
+          // here too. Without agentTimestampMs it deliberately stays blank.
           revealTurnFooter();
         }
         break;
@@ -7109,6 +7201,13 @@
         // tool_call_update lacks, and a completion backstop if the tool
         // channel's update never lands.
         const u = msg.update || {};
+        if (u.sessionUpdate === "turn_completed") {
+          if (state.replaying) {
+            commitAgentTurn();
+            revealTurnFooter(msg.timestampMs);
+          }
+          break;
+        }
         // A restore-built card CAN receive its own lifecycle when grok re-forwards
         // the `_x.ai/session/update` rail on session/load (fills Composer's missing
         // duration + the completion backstop). But a LATER LIVE spawn/finish must
@@ -7173,6 +7272,9 @@
           // cue says what the user must do without reading tool details aloud.
           speakWaitingPrompt("Grok is waiting for your permission. Review the request and choose an option.");
         }
+        break;
+      case "permissionOptions":
+        updatePermissionOptions(msg.requestId, msg.options);
         break;
       case "permissionResolved": {
         // Replayed (on re-focus) right after the buffered permissionRequest, or
@@ -7462,7 +7564,7 @@
           state.queuedSubmissionId = null;
           renderQueuedBlocks();
         } else if (
-          state.pendingSubmissionText &&
+          state.pendingSubmissionId &&
           isRelaySendRejection(msg.text)
         ) {
           // Rejected by the relay (quota/rate cap): the message was never
@@ -7472,6 +7574,8 @@
           hideGrokking();
           state.rejectedSubmissionText = state.pendingSubmissionText;
           state.pendingSubmissionText = "";
+          state.pendingSubmissionId = null;
+          state.pendingSubmissionChipIds = [];
           state.busy = false;
           state.busyLocked = false;
           renderQueuedBlocks();

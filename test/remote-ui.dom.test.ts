@@ -384,7 +384,8 @@ describe("AFK Pilot shared webview controls", () => {
     dispatch(spoken.window, { type: "voiceSubmit", text: "charge this prompt" });
     const spokenSend = spoken.posted.find((message) => message.type === "send");
 
-    expect(spokenSend).toEqual(typedSend);
+    expect(spokenSend).toMatchObject({ type: typedSend.type, text: typedSend.text });
+    expect(spokenSend.submissionId).toEqual(expect.any(String));
     expect(spokenInput.value).toBe("");
   });
 
@@ -441,6 +442,107 @@ describe("AFK Pilot shared webview controls", () => {
     expect(doc.getElementById("send-btn")!.classList.contains("stop")).toBe(false);
   });
 
+  it("retains a pending remote prompt across another view's turn until its relay rejection", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "keep my phone prompt";
+    click(window, doc.getElementById("send-btn")!);
+
+    dispatch(window, { type: "userMessage", text: "sent from the desk", chips: [] });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, {
+      type: "error",
+      text: "Slow down — at most 5 messages per minute.",
+    });
+
+    expect(doc.querySelector(".msg.queued .queued-text")?.textContent)
+      .toBe("keep my phone prompt");
+    expect(doc.querySelector(".msg.queued .queued-tag")?.textContent).toBe("Not sent");
+  });
+
+  it("clears a pending remote prompt only when its own text-bearing echo arrives", () => {
+    const { window, posted, doc } = bootWebview({ remote: true });
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "accepted phone prompt";
+    click(window, doc.getElementById("send-btn")!);
+    const submissionId = posted.find((message) => message.type === "send")!.submissionId;
+
+    dispatch(window, { type: "userMessage", text: "accepted phone prompt", chips: [], submissionId });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, {
+      type: "error",
+      text: "Slow down — at most 5 messages per minute.",
+    });
+
+    expect(doc.querySelectorAll(".msg.user:not(.queued)")).toHaveLength(1);
+    expect(doc.querySelector(".msg.queued")).toBeNull();
+  });
+
+  it("falls back to text ownership when an old host echoes no submission id", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "accepted by an old extension";
+    click(window, doc.getElementById("send-btn")!);
+
+    dispatch(window, {
+      type: "userMessage",
+      text: "accepted by an old extension",
+      chips: [],
+    });
+
+    expect(doc.querySelectorAll(".msg.user:not(.queued)")).toHaveLength(1);
+  });
+
+  it("falls back to attachment ownership for an image-only echo from an old host", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const chip = {
+      id: "image-1",
+      path: "C:\\tmp\\image.png",
+      relPath: "image.png",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+    };
+    dispatch(window, { type: "chips", chips: [chip] });
+    click(window, doc.getElementById("send-btn")!);
+
+    dispatch(window, {
+      type: "userMessage",
+      text: "",
+      chips: [{ ...chip, id: "desk-image" }],
+    });
+    expect(doc.querySelectorAll(".msg.user:not(.queued)")).toHaveLength(2);
+
+    dispatch(window, { type: "userMessage", text: "", chips: [chip] });
+    expect(doc.querySelectorAll(".msg.user:not(.queued)")).toHaveLength(2);
+  });
+
+  it("reconciles an image-only send by id without consuming another view's echo", () => {
+    const { window, posted, doc } = bootWebview({ remote: true });
+    const chip = {
+      id: "image-1",
+      path: "C:\\tmp\\image.png",
+      relPath: "image.png",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+    };
+    dispatch(window, { type: "chips", chips: [chip] });
+    click(window, doc.getElementById("send-btn")!);
+    const submissionId = posted.find((message) => message.type === "send")!.submissionId;
+
+    dispatch(window, {
+      type: "userMessage",
+      text: "",
+      chips: [{ ...chip, id: "desk-image" }],
+      submissionId: "another-view-submission",
+    });
+    expect(doc.querySelectorAll(".msg.user:not(.queued)")).toHaveLength(2);
+
+    dispatch(window, { type: "userMessage", text: "", chips: [chip], submissionId });
+    expect(doc.querySelectorAll(".msg.user:not(.queued)")).toHaveLength(2);
+  });
+
   it("does not treat an unrelated host error as rejection of an in-flight send", () => {
     const { window, doc } = bootWebview({ remote: true });
     const input = doc.getElementById("input") as HTMLTextAreaElement;
@@ -465,7 +567,11 @@ describe("AFK Pilot shared webview controls", () => {
     dispatch(queued.window, { type: "submitQueuedSend", id: "queued-send-id-0001", text: "charge this queued prompt" });
     const dequeuedSend = queued.posted.find((message) => message.type === "send");
 
-    expect(dequeuedSend).toEqual({ ...typedSend, queuedSendId: "queued-send-id-0001" });
+    expect(dequeuedSend).toEqual({
+      type: typedSend.type,
+      text: typedSend.text,
+      queuedSendId: "queued-send-id-0001",
+    });
   });
 
   it("converts a repeated dequeue instruction only once in one page", () => {

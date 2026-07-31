@@ -59,7 +59,7 @@ export function parseRelayFrame(raw: string): RelayFrame | null {
       if (typeof f.clientId !== "string") return null;
       if (
         f.tabToken !== undefined &&
-        (typeof f.tabToken !== "string" || !/^[A-Za-z0-9_-]{20,128}$/.test(f.tabToken))
+        (typeof f.tabToken !== "string" || !REMOTE_TAB_TOKEN_RE.test(f.tabToken))
       ) return null;
       return {
         t: "client-ready",
@@ -70,8 +70,10 @@ export function parseRelayFrame(raw: string): RelayFrame | null {
       return typeof f.clientId === "string" ? { t: "client-left", clientId: f.clientId } : null;
     case "msg":
       if (typeof f.clientId !== "string") return null;
-      if (!isRemoteWebviewMsg(f.msg)) return null;
-      return { t: "msg", clientId: f.clientId, msg: f.msg as WebviewMsg };
+      {
+        const msg = parseRemoteWebviewMsg(f.msg);
+        return msg ? { t: "msg", clientId: f.clientId, msg } : null;
+      }
     case "clients":
       return typeof f.count === "number" ? { t: "clients", count: f.count } : null;
     default:
@@ -80,6 +82,8 @@ export function parseRelayFrame(raw: string): RelayFrame | null {
 }
 
 const WEBVIEW_TYPE_SET = new Set<string>(WEBVIEW_MESSAGE_TYPES);
+const REMOTE_TAB_TOKEN_RE = /^[A-Za-z0-9_-]{20,128}$/;
+const REMOTE_SUBMISSION_ID_RE = /^[A-Za-z0-9_-]{16,128}$/;
 const REMOTE_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REMOTE_UPLOAD_NAME_RE = /^[^/\\\0-\x1f\x7f]{1,240}$/;
 const REMOTE_UPLOAD_EXTENSION_RE = /\.(?:md|txt|pdf|csv|xlsx|docx)$/i;
@@ -130,38 +134,65 @@ function isRemoteUploadName(value: unknown): value is string {
     REMOTE_UPLOAD_EXTENSION_RE.test(value);
 }
 
-function isRemoteWebviewMsg(msg: unknown): msg is WebviewMsg {
-  if (typeof msg !== "object" || msg === null) return false;
+function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
+  if (typeof msg !== "object" || msg === null) return null;
   const value = msg as Record<string, unknown>;
-  if (typeof value.type !== "string" || !WEBVIEW_TYPE_SET.has(value.type)) return false;
+  if (typeof value.type !== "string" || !WEBVIEW_TYPE_SET.has(value.type)) return null;
   switch (value.type) {
     case "ready":
-      return value.tabToken === undefined || (
+      return value.tabToken === undefined
+        ? { type: "ready" }
+        : (
         typeof value.tabToken === "string" &&
-        /^[A-Za-z0-9_-]{20,128}$/.test(value.tabToken)
-      );
-    case "send":
-      return value.queuedSendId === undefined || (
-        typeof value.queuedSendId === "string" &&
-        /^[A-Za-z0-9_-]{16,128}$/.test(value.queuedSendId)
-      );
+        REMOTE_TAB_TOKEN_RE.test(value.tabToken)
+          ? { type: "ready", tabToken: value.tabToken }
+          : null
+        );
+    case "send": {
+      if (typeof value.text !== "string") return null;
+      if (value.bare !== undefined && typeof value.bare !== "boolean") return null;
+      if (
+        value.queuedSendId !== undefined &&
+        (typeof value.queuedSendId !== "string" ||
+          !REMOTE_SUBMISSION_ID_RE.test(value.queuedSendId))
+      ) return null;
+      if (
+        value.submissionId !== undefined &&
+        (typeof value.submissionId !== "string" ||
+          !REMOTE_TAB_TOKEN_RE.test(value.submissionId))
+      ) return null;
+      // Reconstruct this newly-extended payload instead of passing the remote
+      // object wholesale. That keeps future send fields outside the host until
+      // this boundary explicitly validates and copies them.
+      return {
+        type: "send",
+        text: value.text,
+        ...(value.bare !== undefined ? { bare: value.bare } : {}),
+        ...(value.queuedSendId !== undefined ? { queuedSendId: value.queuedSendId } : {}),
+        ...(value.submissionId !== undefined ? { submissionId: value.submissionId } : {}),
+      };
+    }
     case "selectRepo":
     case "clearAllSessions":
-      return isRemoteCwd(value.cwd);
+      return isRemoteCwd(value.cwd) ? msg as WebviewMsg : null;
     case "toggleRepoPin":
-      return isRemoteCwd(value.cwd) && typeof value.pinned === "boolean";
+      return isRemoteCwd(value.cwd) && typeof value.pinned === "boolean"
+        ? msg as WebviewMsg
+        : null;
     case "resumeSession":
       return isRemoteSessionId(value.id) &&
-        (value.cwd === undefined || isRemoteCwd(value.cwd));
+        (value.cwd === undefined || isRemoteCwd(value.cwd))
+        ? msg as WebviewMsg
+        : null;
     case "renameSession":
     case "deleteSession":
-      return isRemoteSessionId(value.id);
+      return isRemoteSessionId(value.id) ? msg as WebviewMsg : null;
     case "addMentionFile":
-      return isRemoteMentionPath(value.relPath);
+      return isRemoteMentionPath(value.relPath) ? msg as WebviewMsg : null;
     case "uploadFile":
-      return isRemoteUploadName(value.name);
+      return isRemoteUploadName(value.name) ? msg as WebviewMsg : null;
     default:
-      return true;
+      return msg as WebviewMsg;
   }
 }
 

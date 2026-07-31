@@ -52,12 +52,14 @@ Either change takes effect immediately — no reload needed.
 
 ## Voice input (Speech-to-Text)
 
-Separate from telemetry: **voice input** sends data to xAI, but only when you use it. It is **opt-in per use** — nothing is captured until you click the microphone button. In VS Code, ffmpeg captures locally in the extension host. In AFK Pilot, the browser sends ephemeral raw PCM through the linked relay connection to that same host; it is never persisted or content-logged. The host then sends two things to **xAI's Speech-to-Text endpoint** (`api.x.ai/v1/stt`) to produce the transcript:
+Separate from telemetry: **voice input** sends data to xAI, but only when you use it. It is **opt-in per use** — nothing is captured until you click the microphone button. In VS Code, ffmpeg captures locally in the extension host. In AFK Pilot, the browser sends ephemeral raw PCM through the linked relay connection to that same host; it is never persisted or content-logged. The host then sends the following to **xAI's Speech-to-Text endpoint** (`api.x.ai/v1/stt`) to produce the transcript:
 
-- your **audio** (the recording, streamed live or as a clip), and
-- an **STT credential** — the dedicated key you configured (`grok.voiceApiKey` / `GROK_VOICE_API_KEY` / `XAI_API_KEY`) if set, otherwise the token from your `grok login` (`~/.grok/auth.json`), reused so voice works without a separate key.
+- your **audio** (the recording, streamed live or as a clip);
+- an **STT credential** — the dedicated key you configured (`grok.voiceApiKey` / `GROK_VOICE_API_KEY` / `XAI_API_KEY`) if set, otherwise the token from your `grok login` (`~/.grok/auth.json`), reused so voice works without a separate key;
+- for streaming voice, the configured **language code** (`grok.voiceLanguage`), when set; and
+- for streaming voice, the **recognition keyterms**: the send phrase, `Grok`, and entries from `grok.voiceKeyterms`. These can include project vocabulary, so treat the setting as data sent to xAI.
 
-The STT credential stays in the extension host and is never sent to AFK Pilot or the browser. Remote microphone audio necessarily crosses AFK Pilot on its way back to your linked host; the host-to-xAI STT request is otherwise the same as local voice. If you never use voice, none of this happens. To avoid sending your login token to xAI specifically, set a dedicated `grok.voiceApiKey`. Setup + details: [docs/voice-setup.md](voice-setup.md).
+The STT credential stays in the extension host and is never sent to AFK Pilot or the browser. Remote microphone audio necessarily crosses AFK Pilot on its way back to your linked host; the host-to-xAI STT request is otherwise the same as local voice. Voice connection diagnostics log the endpoint and query-parameter names, but redact all query values. If you never use voice, none of this happens. To avoid sending your login token to xAI specifically, set a dedicated `grok.voiceApiKey`. Setup + details: [docs/voice-setup.md](voice-setup.md).
 
 ## Summarize before speaking
 
@@ -69,4 +71,4 @@ Each spoken message adds a billed API request and network delay. The request use
 
 Also separate from telemetry, and **entirely opt-in**: nothing runs until you explicitly link this machine (gear → *Remote Control* → **Sign in**). Once linked, the extension keeps an outbound connection to the [AFK Pilot](https://afkpilot.com) service so *your own* paired devices (your phone, another browser) can see and drive this workspace's chat. That means the **conversation you see in the sidebar** — messages, replies, tool activity, generated images — flows through the service while a device is linked; that's the feature. The machine introduces itself by **hostname + OS** (e.g. "Dell (Windows 11)") — your workspace path is deliberately not part of it.
 
-**Sign out** (gear → *Remote Control*, or `Grok: Unlink Remote Device`) removes the device token locally and revokes it on your account — after that, nothing connects. If you never link a device, none of this exists. AFK Pilot's own data handling is covered by its policies at [afkpilot.com](https://afkpilot.com).
+**Unlink this device** (`AFK Pilot: Unlink this device` in the Command Palette) removes the device token locally and revokes it on your account — after that, nothing connects. If you never link a device, none of this exists. AFK Pilot's own data handling is covered by its policies at [afkpilot.com](https://afkpilot.com).

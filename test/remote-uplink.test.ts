@@ -107,6 +107,71 @@ describe("RemoteUplink client identity and targeted sends", () => {
     vi.useRealTimers();
   });
 
+  it("surfaces an authoritative 4001 revocation and does not retry it", async () => {
+    vi.useFakeTimers();
+    const revoked = vi.fn();
+    const logs: string[] = [];
+    const uplink = new RemoteUplink({
+      relayUrl: "ws://relay",
+      token: "revoked-token",
+      snapshot: () => [],
+      onCredentialRevoked: revoked,
+      onClientMessage: () => {},
+      log: (line) => logs.push(line),
+    });
+    uplink.start();
+
+    wsMock.sockets[0].emit("close", 4001);
+    expect(revoked).toHaveBeenCalledTimes(1);
+    expect(logs.join("\n")).toContain("AFK Pilot: Link this device");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(wsMock.sockets).toHaveLength(1);
+
+    uplink.dispose();
+    vi.useRealTimers();
+  });
+
+  it("keeps retrying transient 1011 closes", async () => {
+    vi.useFakeTimers();
+    const revoked = vi.fn();
+    const uplink = new RemoteUplink({
+      relayUrl: "ws://relay",
+      token: "token",
+      snapshot: () => [],
+      onCredentialRevoked: revoked,
+      onClientMessage: () => {},
+      log: () => {},
+    });
+    uplink.start();
+
+    wsMock.sockets[0].emit("close", 1011);
+    expect(revoked).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(wsMock.sockets).toHaveLength(2);
+
+    uplink.dispose();
+    vi.useRealTimers();
+  });
+
+  it("does not treat a dispose-driven 4001 close as revocation", () => {
+    const revoked = vi.fn();
+    const uplink = new RemoteUplink({
+      relayUrl: "ws://relay",
+      token: "token",
+      snapshot: () => [],
+      onCredentialRevoked: revoked,
+      onClientMessage: () => {},
+      log: () => {},
+    });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+
+    uplink.dispose();
+    socket.emit("close", 4001);
+
+    expect(revoked).not.toHaveBeenCalled();
+  });
+
   it("finishes roster reconciliation when a client leaves during reconnect replay", () => {
     const rosters: string[][] = [];
     const uplink = new RemoteUplink({

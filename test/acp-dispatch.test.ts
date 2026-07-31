@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  agentTimestampMsFromMeta,
   addUsage,
   sumUsage,
   collectToolImages,
@@ -27,6 +28,7 @@ import {
   usageIsRealMeasurement,
   makeAckResponse,
   makeExitPlanResponse,
+  makePermissionCancelledResponse,
   makePermissionResponse,
   makeQuestionCancelledResponse,
   makeQuestionResponse,
@@ -70,11 +72,17 @@ describe("parseAcpLine", () => {
       JSON.stringify({
         jsonrpc: "2.0",
         method: "session/update",
-        params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "hi" } } },
+        params: {
+          update: { sessionUpdate: "agent_message_chunk", content: { text: "hi" } },
+          _meta: { agentTimestampMs: 1_783_845_298_123, isReplay: true },
+        },
       }),
     );
     expect(r?.kind).toBe("session-update");
-    if (r?.kind === "session-update") expect(r.update.sessionUpdate).toBe("agent_message_chunk");
+    if (r?.kind === "session-update") {
+      expect(r.update.sessionUpdate).toBe("agent_message_chunk");
+      expect(r.meta).toEqual({ agentTimestampMs: 1_783_845_298_123, isReplay: true });
+    }
   });
 
   it("recognizes a server->client request (method present)", () => {
@@ -1051,6 +1059,14 @@ describe("sumUsage (session total is derived, not patched)", () => {
     expect(out).toEqual({ inputTokens: 350, outputTokens: 50, modelCalls: 4 });
   });
 
+  it("makePermissionCancelledResponse declines without inventing an option id", () => {
+    expect(makePermissionCancelledResponse(8)).toEqual({
+      jsonrpc: "2.0",
+      id: 8,
+      result: { outcome: { outcome: "cancelled" } },
+    });
+  });
+
   it("is undefined for an empty log — a rewound-to-nothing session shows no breakdown", () => {
     expect(sumUsage([])).toBeUndefined();
   });
@@ -1081,5 +1097,20 @@ describe("sumUsage (session total is derived, not patched)", () => {
     // Rewound so only 1 user message survives -> only its turn is billed.
     const kept = log.filter((e) => e.afterUserMessage <= 1);
     expect(sumUsage(kept)).toEqual({ inputTokens: 100, outputTokens: 10 });
+  });
+});
+
+describe("agentTimestampMsFromMeta", () => {
+  it("accepts a finite positive millisecond timestamp", () => {
+    expect(agentTimestampMsFromMeta({ agentTimestampMs: 1_783_845_298_123 }))
+      .toBe(1_783_845_298_123);
+  });
+
+  it("leaves old or malformed metadata absent", () => {
+    expect(agentTimestampMsFromMeta(undefined)).toBeUndefined();
+    expect(agentTimestampMsFromMeta({})).toBeUndefined();
+    expect(agentTimestampMsFromMeta({ agentTimestampMs: "1783845298123" })).toBeUndefined();
+    expect(agentTimestampMsFromMeta({ agentTimestampMs: Number.NaN })).toBeUndefined();
+    expect(agentTimestampMsFromMeta({ agentTimestampMs: 0 })).toBeUndefined();
   });
 });

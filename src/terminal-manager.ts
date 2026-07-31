@@ -160,6 +160,15 @@ export function resolvedTerminalShell(): string | true {
   return terminalShell();
 }
 
+/** Shell grammar used by the process returned from `resolvedTerminalShell`. */
+export function resolvedTerminalShellDialect(): "posix" | "powershell" | "cmd" {
+  if (process.platform !== "win32") return "posix";
+  const resolved = resolvedTerminalShell();
+  if (resolved === true) return "cmd";
+  const base = resolved.toLowerCase();
+  return base.includes("pwsh") || base.includes("powershell") ? "powershell" : "cmd";
+}
+
 // Shell resolution runs a `where` subprocess, so cache it for the process
 // lifetime instead of paying that cost on every `terminal/create`.
 let shellPreference: ShellPreference = "auto";

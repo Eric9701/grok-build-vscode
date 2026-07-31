@@ -16,6 +16,7 @@ import { resolveWindowsAudioDevice } from "./voice-recorder";
 
 export interface PcmStreamStartOpts {
   apiKey: string;
+  language?: string;
   keyterms?: string[];
   log?: (msg: string) => void;
 }
@@ -23,6 +24,17 @@ export interface PcmStreamStartOpts {
 export interface StreamStartOpts extends PcmStreamStartOpts {
   ffmpegPath: string;
   device?: string;
+}
+
+export function redactVoiceStreamUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const names = [...parsed.searchParams.keys()];
+    const query = names.map((name) => `${encodeURIComponent(name)}=<redacted>`).join("&");
+    return `${parsed.origin}${parsed.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return String(url).split("?")[0];
+  }
 }
 
 export interface PartialEvent {
@@ -52,8 +64,8 @@ export class PcmVoiceStreamer extends EventEmitter {
     let resolveTerminal!: () => void;
     const terminalPromise = new Promise<void>((resolve) => { resolveTerminal = resolve; });
     this.terminal = { promise: terminalPromise, resolve: resolveTerminal };
-    const url = buildSttStreamUrl({ keyterms: opts.keyterms });
-    opts.log?.(`[voice-stream] connect ${url}`);
+    const url = buildSttStreamUrl({ language: opts.language, keyterms: opts.keyterms });
+    opts.log?.(`[voice-stream] connect ${redactVoiceStreamUrl(url)}`);
     const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${opts.apiKey}` } });
     this.ws = ws;
 

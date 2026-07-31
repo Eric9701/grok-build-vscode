@@ -31,6 +31,8 @@ export interface RemoteUplinkOptions {
   onClientLeft?: (clientId: string) => void;
   /** Authoritative surviving-client roster replayed after each uplink connect. */
   onClientRoster?: (clientIds: string[]) => void;
+  /** The relay authoritatively rejected this device credential (close 4001). */
+  onCredentialRevoked?: () => void;
   /** A browser client's webview->host message (already relayed + parsed). */
   onClientMessage: (clientId: string, msg: WebviewMsg) => void;
   log: (line: string) => void;
@@ -147,7 +149,12 @@ export class RemoteUplink {
       // 4001 = relay rejected the token — retrying with the same token is
       // pointless; the user must re-link. Stop, loudly.
       if (code === 4001) {
-        this.opts.log(`[remote] uplink rejected (bad/expired device token) — run "Grok: Link Remote Device" again`);
+        this.opts.log(`[remote] uplink rejected (revoked device token) — run "AFK Pilot: Link this device" again`);
+        try {
+          this.opts.onCredentialRevoked?.();
+        } catch (e) {
+          this.opts.log(`[remote] failed to handle revoked credential: ${(e as Error)?.message ?? String(e)}`);
+        }
         return;
       }
       this.opts.log(`[remote] uplink disconnected (code ${code}); retrying in ${Math.round(this.backoff / 1000)}s`);

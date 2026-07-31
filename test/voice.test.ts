@@ -13,6 +13,8 @@ import {
   cleanTranscript,
   parseVoiceCommand,
   DEFAULT_SEND_PHRASE,
+  buildSttKeyterms,
+  voiceSettingForRepo,
   buildSttStreamUrl,
   buildFfmpegStreamArgs,
   applySegment,
@@ -344,6 +346,12 @@ describe("buildSttStreamUrl", () => {
     expect((url.match(/keyterm=/g) || []).length).toBe(2);
   });
 
+  it("adds a trimmed language only when explicitly configured", () => {
+    expect(buildSttStreamUrl({ language: "  pl  " })).toContain("language=pl");
+    expect(buildSttStreamUrl({ language: "  " })).not.toContain("language=");
+    expect(buildSttStreamUrl()).not.toContain("language=");
+  });
+
   it("skips blank keyterms and clamps to 50 chars", () => {
     const long = "a".repeat(80);
     const url = buildSttStreamUrl({ keyterms: ["", "  ", long] });
@@ -368,6 +376,65 @@ describe("buildSttStreamUrl", () => {
 
   it("can turn interim results off", () => {
     expect(buildSttStreamUrl({ interimResults: false })).toContain("interim_results=false");
+  });
+});
+
+describe("buildSttKeyterms", () => {
+  it("puts the send phrase and Grok ahead of trimmed, deduplicated user terms", () => {
+    expect(buildSttKeyterms(" grok send ", [" useEffect ", "Grok", "", "useEffect"]))
+      .toEqual(["grok send", "Grok", "useEffect"]);
+  });
+
+  it("reserves the send phrase and Grok when user terms fill the 100-term cap", () => {
+    const userTerms = Array.from({ length: 100 }, (_, i) => `term${i}`);
+    const terms = buildSttKeyterms("grok send", userTerms);
+    const url = buildSttStreamUrl({ keyterms: terms });
+
+    expect(terms).toHaveLength(100);
+    expect(terms.slice(0, 3)).toEqual(["grok send", "Grok", "term0"]);
+    expect(terms.at(-1)).toBe("term97");
+    expect(url).toContain("keyterm=grok+send");
+    expect(url).toContain("keyterm=Grok");
+    expect(url).toContain("keyterm=term97");
+    expect(url).not.toContain("keyterm=term98");
+  });
+
+  it("does not reserve an empty send phrase slot", () => {
+    const userTerms = Array.from({ length: 100 }, (_, i) => `term${i}`);
+    const terms = buildSttKeyterms("", userTerms);
+
+    expect(terms).toHaveLength(100);
+    expect(terms[0]).toBe("Grok");
+    expect(terms.at(-1)).toBe("term98");
+  });
+});
+
+describe("voiceSettingForRepo", () => {
+  it("uses the resource-effective workspace value for a cwd inside the workspace", () => {
+    expect(voiceSettingForRepo(
+      ["workspace-term"],
+      { defaultValue: [], globalValue: ["user-term"] },
+      true,
+      [],
+    )).toEqual(["workspace-term"]);
+  });
+
+  it("does not substitute the open window's workspace value for an external repo", () => {
+    expect(voiceSettingForRepo(
+      ["wrong-repo-term"],
+      { defaultValue: [], globalValue: ["user-term"] },
+      false,
+      [],
+    )).toEqual(["user-term"]);
+  });
+
+  it("falls back to the extension default outside the workspace when no User value exists", () => {
+    expect(voiceSettingForRepo(
+      ["wrong-repo-term"],
+      { defaultValue: ["default-term"] },
+      false,
+      [],
+    )).toEqual(["default-term"]);
   });
 });
 

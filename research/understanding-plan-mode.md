@@ -24,7 +24,7 @@ When you (or the agent) enter Plan mode:
 - Grok is **blocked** from mutating anything inside your workspace.
   - Every `fs/write_text_file` whose target resolves inside the workspace cwd is refused.
   - Every `terminal/create` whose command is not on a curated read-only allowlist is refused.
-- The only write that is deliberately allowed is grok writing its own plan to `~/.grok/sessions/<...>/plan.md` (outside your workspace). The extension *snoops* that write so it can show you the plan text.
+- The only write that is deliberately allowed is grok writing its own plan through `fs/write_text_file` to `~/.grok/sessions/<...>/plan.md` (outside your workspace). The extension *snoops* that write so it can show you the plan text. A shell command that writes the same path is blocked and grok falls back to the filesystem callback.
 
 The CLI still thinks it is in "plan mode" and will eventually emit `x.ai/exit_plan_mode`. **That protocol message cannot be used to reject a plan** (see Lesson 2). The extension therefore ignores the protocol verdict for enforcement and uses its own gate instead.
 
@@ -86,7 +86,7 @@ Key exported pieces:
   - Special cases for `git <subcommand>`, `npm/pnpm/yarn/bun <subcommand>`, and interpreters (`node --version` etc. only).
   - The big `READONLY_HEADS` set (ls, cat, grep, rg, Get-ChildItem, Select-Object, etc.) plus PowerShell read-only cmdlets.
 - `shouldBlockWrite(path, ctx)`, `shouldBlockTerminal(command, ctx)`, `shouldRejectPermission(kind, ctx)`
-- `isPlanFileWrite(path)` — the carve-out regex that recognizes `/.grok/sessions/.../plan.md` so the extension can allow + snoop it.
+- `isPlanFileWrite(path)` — the filesystem-only carve-out regex that recognizes `/.grok/sessions/.../plan.md` so the extension can allow + snoop it. `terminal/create` has no matching carve-out.
 - `PLAN_BLOCKED_CODE = -32010` and the two user-facing messages.
 
 When the gate is active, a blocked mutation still lets the agent continue (it receives the JSON-RPC error with the friendly message). The extension also emits `mutationBlocked` so the webview can show a small notice instead of a scary failure.
@@ -224,7 +224,7 @@ These give you high confidence that the policy and the card rendering match the 
 ## Lesson 8: Common Misconceptions & Debugging Tips
 
 - **"The mode button says Agent but I'm still blocked"** — the gate (`planActive`) and the CLI's reported mode are deliberately allowed to be out of sync for safety. The button derives from the gate.
-- **"Grok just wrote a file while I was in Plan mode"** — either the write was to its own `plan.md` (outside the workspace) or the gate was not actually up at that moment.
+- **"Grok just wrote a file while I was in Plan mode"** — either the `fs/write_text_file` callback wrote its own `plan.md` (outside the workspace) or the gate was not actually up at that moment. Shell-based writes to that plan path are blocked too.
 - **"I rejected the plan but Grok still started implementing"** — this should no longer happen with the shipped B+ gate. If it does, you have found a bug in the containment or the allowlist.
 - **"Why did a second plan card appear after I clicked Reject?"** — because we sent a clarifying prompt on the wire. That prompt produces one extra agent turn (usually a short acknowledgment) so that grok's internal state matches reality.
 - **PowerShell pipeline notice** — the current allowlist is deliberately strict. A command like `Get-ChildItem -Recurse | Select-Object ...` may be blocked on the `|` if the right-hand side isn't recognized as read-only in that context. This produces one cosmetic notice per plan in practice and does not derail the agent (it falls back to native `read_file` / `list_dir` / `grep` tools).

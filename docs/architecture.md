@@ -150,9 +150,11 @@ the extension can't trust the wire verdict. Two mechanisms cover the gap:
   active, the two mandatory server→client choke points are policed: a
   `fs/write_text_file` resolving inside the workspace is blocked, and a
   `terminal/create` that isn't on a read-only allowlist is blocked. grok's own
-  `~/.grok/sessions/<…>/plan.md` write lands *outside* the workspace, so it's
-  allowed (and snooped to recover the plan text, since `exit_plan_mode` arrives
-  with `planContent: null`). Entering plan mode *any* way — including the agent
+  `~/.grok/sessions/<…>/plan.md` is allowed through `fs/write_text_file` and
+  snooped to recover the plan text (since `exit_plan_mode` arrives with
+  `planContent: null`); a shell command that writes the same path is still
+  blocked, after which the CLI retries through the filesystem callback. Entering
+  plan mode *any* way — including the agent
   self-initiating it — raises the gate; only an explicit user action lowers it.
 
 - **The primer** ([src/grok-primer.ts](../src/grok-primer.ts)). A hidden system

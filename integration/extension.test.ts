@@ -1018,6 +1018,61 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     hooks.remoteClientLeft(replacement);
   });
 
+  test("an unreadable image retains a metered dequeue plus text appended during the send", async () => {
+    const suffix = Date.now();
+    const clientId = `dequeue-read-failure-${suffix}`;
+    const id = `dequeue-read-failure-session-${suffix}`;
+    const first = "keep the charged prompt";
+    const second = "and keep this appended part";
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    const model = hooks.seedRemoteQueuedDispatch(clientId, id, repoB, first, [{
+      id: "missing-image",
+      path: path.join(repoB, `missing-${suffix}.png`),
+      relPath: "missing.png",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+    }]);
+    const dispatch = posts.find((post) =>
+      post.clientIds?.includes(clientId) &&
+      post.msg?.type === "submitQueuedSend"
+    )?.msg;
+    assert.ok(dispatch?.id, JSON.stringify(posts));
+
+    hooks.fromRemote({ type: "send", text: first, queuedSendId: dispatch.id }, clientId);
+    hooks.fromRemote({ type: "queueSend", text: second }, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.strictEqual(model.promptCount(), 0, "the unreadable image must bail before model prompt");
+    assert.deepStrictEqual(model.queuedSends(), [`${first}\n\n${second}`]);
+    assert.ok(posts.some((post) =>
+      post.msg?.type === "agentError" &&
+      post.msg.text?.includes("Could not read missing.png")
+    ), JSON.stringify(posts));
+
+    hooks.fromRemote({ type: "removeChip", id: "missing-image" }, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Known limitation: this retained retry is a fresh relay submission, so it
+    // is metered again. Pin that behavior until the queue can represent an
+    // already-metered prefix separately from newly appended text.
+    const retryDispatch = [...posts].reverse().find((post) =>
+      post.clientIds?.includes(clientId) &&
+      post.msg?.type === "submitQueuedSend" &&
+      post.msg.id !== dispatch.id
+    )?.msg;
+    assert.ok(retryDispatch?.id, JSON.stringify(posts));
+    hooks.fromRemote({
+      type: "send",
+      text: `${first}\n\n${second}`,
+      queuedSendId: retryDispatch.id,
+    }, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.strictEqual(model.promptCount(), 1, "removing the bad chip must deliver the retained prompt");
+    assert.deepStrictEqual(model.queuedSends(), []);
+    hooks.remoteClientLeft(clientId);
+  });
+
   test("switching repos disposes a primer-only remote session before dropping its mapping", async () => {
     const id = `primer-only-${Date.now()}`;
     writeStoredSession(id);

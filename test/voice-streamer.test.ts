@@ -59,6 +59,26 @@ import { PcmVoiceStreamer, VoiceStreamer } from "../src/voice-streamer";
 describe("PcmVoiceStreamer startup", () => {
   beforeEach(() => { wsMock.sockets.length = 0; });
 
+  it("passes language and keyterms into the streaming URL", async () => {
+    const logs: string[] = [];
+    const streamer = new PcmVoiceStreamer();
+    const started = streamer.start({
+      apiKey: "test",
+      language: "pl",
+      keyterms: ["grok send", "Get-ChildItem"],
+      log: (message) => logs.push(message),
+    });
+    wsMock.sockets[0].emit("message", Buffer.from(JSON.stringify({ type: "transcript.created" })), false);
+
+    await started;
+    expect(logs[0]).toContain("language=<redacted>");
+    expect(logs[0]).toContain("keyterm=<redacted>");
+    expect(logs[0]).not.toContain("language=pl");
+    expect(logs[0]).not.toContain("grok+send");
+    expect(logs[0]).not.toContain("Get-ChildItem");
+    streamer.cancel();
+  });
+
   it("rejects when the socket closes cleanly before transcript.created", async () => {
     const streamer = new PcmVoiceStreamer();
     const started = streamer.start({ apiKey: "test" });

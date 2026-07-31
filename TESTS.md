@@ -142,14 +142,24 @@ These actually spawn real shell children (real `/bin/sh`, or real PowerShell on 
 - Sorts by most-recently-updated; tolerates malformed/missing session files without throwing
 - Delete removes the right entry and leaves others intact
 
-### `test/plan-gate.test.ts` — plan-mode policy (43 tests)
+### `test/plan-gate.test.ts` — plan-mode policy (63 tests)
 
-The pure heart of client-side plan enforcement. No spawn, no fs — just the classification logic the two choke points call.
+The pure heart of client-side plan enforcement. No spawn, no fs — just the classification logic the **three** choke points call (`fs/write_text_file`, `terminal/create`, and — since 2.1.1 — `session/request_permission`, which previously auto-declined every `execute` on tool kind alone).
 
-- **Workspace-write containment** — a write path that resolves *inside* the workspace cwd is blocked; grok's own `~/.grok/sessions/<…>/plan.md` (outside the workspace) is allowed; relative paths, `..` traversal, and sym_link-style escapes are normalized before the containment check
-- **Read-only command allowlist** — `isReadOnlyCommand` passes only when *every* `|`-separated stage is on the read-only head list (`cat`, `ls`, `grep`, `head`, PowerShell `get-childitem`/`gci`/`get-content`/`select-object`/`test-path`/…); a single mutating stage fails the whole pipeline
-- **Shell-metachar rejection** — redirection (`>`), chaining (`;`, `&&`, `||`), background (`&`), command substitution (`$(…)`, backticks), process substitution (`<(…)`), and script-block braces (`{}`) are rejected outright, so a read-only head can't smuggle a side effect
-- **Permission / plan-file classification** — recognizes grok's plan-file write so it can be allowed-and-snooped rather than blocked
+- **Write containment is allowlist-shaped, not denylist-shaped** — only the canonical grok-owned `~/.grok/sessions/<encoded-cwd>/<id>/plan.md` is permitted; every other write is refused, inside the workspace *or* outside it. The older rule blocked only paths inside the session cwd, which permitted writes into a sibling repository
+- **Read-only command allowlist** — `isReadOnlyCommand` passes only when *every* segment is on the read-only head list, with argument-aware rules where the head alone doesn't decide (`git`/`npm` subcommands, `find -delete`/`-exec`, `sed -i`, `sips -g` versus its transforming forms)
+- **Commands are tokenized the way a shell would** before classification — quotes removed, escapes normalized, dialect-aware (POSIX / PowerShell / cmd). This is what stops `find . -de\lete` reading as safe while executing `-delete`, and it is why properly quoted arguments (`grep -rn "TODO" src`) are *allowed*: a quoted token is inert, so refusing it was over-blocking rather than caution
+- **Metacharacter rejection, by meaning rather than by character** — redirection is judged by its target, so provable null sinks and stream merges (`2>$null`, `2>/dev/null`, `2>&1`) pass while anything naming a path is refused; parentheses, substitution, globbing that could yield an option, and cmd `%VAR%`/`!VAR!` expansion are refused
+- **One narrow control-flow grammar** — `if (Test-Path … | $? | $LASTEXITCODE) { … } else { … }` with both branches recursively classified. Script-block braces stay unsafe by default; nested control flow, computed conditions and calculated properties (`@{e={ … }}`) remain refused
+- **Regression corpus** — each bypass found during the 2.1.1 review rounds is pinned: a mutating command riding along with a plan write, `$()` inside a quoted payload, a bare-paren subexpression behind an allowlisted head, and escaped dangerous options
+
+### `test/queued-send-commit.test.ts` — queued-send claim lifecycle (4 tests)
+
+The queue is released at `handleSend`'s synchronous commit point, not before it. Covers: a send that bails before committing keeps the text, a send that commits releases it and cannot be re-flushed at turn end, and text appended during the attempt survives.
+
+### `test/pending-permission.test.ts` — permission option lifecycle (4 tests)
+
+Plan mode hides persistent-grant options on `execute` cards, and the host validates an answer against the options it actually rendered — so a remote client cannot answer with an option id it was never offered. Covers restoring the full set once plan mode exits.
 
 ### `test/webview-helpers.test.ts` — pure webview helpers (49 tests)
 

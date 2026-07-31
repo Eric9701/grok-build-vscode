@@ -10,7 +10,7 @@ import { fileUriToPath } from "./file-ref";
 
 export type DispatchEvent =
   | { kind: "response"; id: number | string; result?: any; error?: any }
-  | { kind: "session-update"; update: any }
+  | { kind: "session-update"; update: any; meta?: any }
   | { kind: "server-request"; id?: number | string; method: string; params: any }
   | { kind: "non-json"; line: string };
 
@@ -26,12 +26,21 @@ export function parseAcpLine(line: string): DispatchEvent | null {
     return { kind: "response", id: msg.id, result: msg.result, error: msg.error };
   }
   if (msg.method === "session/update") {
-    return { kind: "session-update", update: msg.params?.update };
+    return { kind: "session-update", update: msg.params?.update, meta: msg.params?._meta };
   }
   if (msg.method) {
     return { kind: "server-request", id: msg.id, method: msg.method, params: msg.params };
   }
   return null;
+}
+
+/** Original wall-clock time attached by grok to live and replayed updates.
+ *  Older CLI builds omit it; invalid/missing values deliberately stay absent. */
+export function agentTimestampMsFromMeta(meta: any): number | undefined {
+  const value = meta?.agentTimestampMs;
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
 }
 
 /**
@@ -477,6 +486,14 @@ export function makePermissionResponse(id: number | string, optionId: string) {
     jsonrpc: "2.0",
     id,
     result: { outcome: { outcome: "selected", optionId } },
+  };
+}
+
+export function makePermissionCancelledResponse(id: number | string) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: { outcome: { outcome: "cancelled" } },
   };
 }
 

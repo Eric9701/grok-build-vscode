@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build for VS Code (Community)",
   "description": "GUI for Grok Build CLI (incl. Grok 4.5). Voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT — becomes MIT after two years). Not affiliated with or endorsed by xAI.",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -141,11 +141,11 @@
       },
       {
         "command": "grok.linkRemote",
-        "title": "Grok: Link Remote Device"
+        "title": "AFK Pilot: Link this device"
       },
       {
         "command": "grok.unlinkRemote",
-        "title": "Grok: Unlink Remote Device"
+        "title": "AFK Pilot: Unlink this device"
       },
       {
         "command": "grok._debugDummyPlan",
@@ -370,6 +370,19 @@
           "type": "string",
           "default": "grok send",
           "description": "Spoken phrase that auto-submits the message when it ends a voice transcription (e.g. say \"…fix the bug, grok send\"). The phrase is stripped before sending. Leave empty to disable hands-free sending."
+        },
+        "grok.voiceKeyterms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Words or phrases to help streaming voice recognition spell code and project vocabulary correctly (for example, \"Get-ChildItem\", \"useEffect\", or an internal package name). Put the most important terms first. xAI accepts at most 100 terms of 50 characters each; the send phrase and \"Grok\" are kept first, then user terms fill the remaining slots. Supports User and Workspace scope."
+        },
+        "grok.voiceLanguage": {
+          "type": "string",
+          "default": "",
+          "description": "Optional language code for streaming voice text formatting (for example, \"en\", \"fr\", \"de\", or \"ja\"). When set, xAI converts spoken numbers, currencies, and units to written forms. Leave empty to keep Inverse Text Normalization off and preserve spoken-form text. Supports User and Workspace scope."
         },
         "grok.voiceStreaming": {
           "type": "boolean",

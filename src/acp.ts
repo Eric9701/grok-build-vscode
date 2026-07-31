@@ -11,6 +11,7 @@ import {
   type PromptUsage,
   makeAckResponse,
   makeExitPlanResponse,
+  makePermissionCancelledResponse,
   makePermissionResponse,
   makeQuestionCancelledResponse,
   makeQuestionResponse,
@@ -23,12 +24,13 @@ import {
   PLAN_BLOCKED_CODE,
   PLAN_BLOCKED_TERMINAL_MSG,
   PLAN_BLOCKED_WRITE_MSG,
-  isPlanFileWrite,
+  isGrokOwnedPlanFile,
   shouldBlockTerminal,
   shouldBlockWrite,
 } from "./plan-gate";
 import { resolveGrokHome } from "./sessions";
 import { filterAdvertisedCommands } from "./slash-filter";
+import { resolvedTerminalShellDialect } from "./terminal-manager";
 import {
   parseWorktreeApply,
   parseWorktreeCreate,
@@ -650,6 +652,11 @@ export class AcpClient extends EventEmitter {
     this.writeLine(makePermissionResponse(requestId, optionId));
   }
 
+  /** Decline a permission request when the client has no safe offered option. */
+  respondPermissionCancelled(requestId: number | string): void {
+    this.writeLine(makePermissionCancelledResponse(requestId));
+  }
+
   /** Respond to a pending exit_plan_mode request with the user's verdict. */
   respondExitPlan(requestId: number | string, type: "approved" | "abandoned" | "rejected"): void {
     this.writeLine(makeExitPlanResponse(requestId, type));
@@ -782,13 +789,13 @@ export class AcpClient extends EventEmitter {
       return;
     }
     if (ev.kind === "session-update") {
-      this.handleSessionUpdate(ev.update);
+      this.handleSessionUpdate(ev.update, ev.meta);
       return;
     }
     void this.handleServerRequest({ id: ev.id, method: ev.method, params: ev.params });
   }
 
-  private handleSessionUpdate(u: any): void {
+  private handleSessionUpdate(u: any, meta?: any): void {
     const r = routeSessionUpdate(u);
     if (!r) return;
     if (r.event === "modeChanged") {
@@ -805,8 +812,8 @@ export class AcpClient extends EventEmitter {
     }
     if (r.event === "taskBackgrounded") { this.emit("taskBackgrounded", r.payload); return; }
     if (r.event === "taskCompleted") { this.emit("taskCompleted", r.payload); return; }
-    if (r.event === "messageChunk") this.emit("messageChunk", r.text);
-    else if (r.event === "userMessageChunk") this.emit("userMessageChunk", r.text);
+    if (r.event === "messageChunk") this.emit("messageChunk", r.text, meta);
+    else if (r.event === "userMessageChunk") this.emit("userMessageChunk", r.text, meta);
     else if (r.event === "thoughtChunk") this.emit("thoughtChunk", r.text);
     else if (r.event === "mediaContent") this.emit("mediaContent", r.media);
     else if (r.event === "toolCall") {
@@ -847,13 +854,14 @@ export class AcpClient extends EventEmitter {
         if (!this.fsWrite) throw new Error("fsWrite handler not registered");
         // Snoop grok's own plan file so the review card can show the plan
         // (exit_plan_mode itself arrives with planContent: null).
-        if (isPlanFileWrite(params.path)) {
+        const grokHome = resolveGrokHome(this.opts.env ?? process.env);
+        if (isGrokOwnedPlanFile(params.path, grokHome)) {
           this.emit("planFileContent", params.content ?? "");
         }
         if (shouldBlockWrite(params.path, {
           active: this.planActive,
           workspaceRoot: this.opts.cwd,
-          grokHome: resolveGrokHome(this.opts.env ?? process.env),
+          grokHome,
         })) {
           this.emit("mutationBlocked", { kind: "write", target: params.path });
           this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_WRITE_MSG);
@@ -869,12 +877,19 @@ export class AcpClient extends EventEmitter {
           active: this.planActive,
           workspaceRoot: this.opts.cwd,
           grokHome: resolveGrokHome(this.opts.env ?? process.env),
+          shellDialect: resolvedTerminalShellDialect(),
         })) {
           this.emit("mutationBlocked", { kind: "terminal", target: params.command });
           this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_TERMINAL_MSG);
           return;
         }
-        const created = this.terminal.create(params);
+        // Environment overrides can change the meaning of an otherwise
+        // read-only command (PATH resolution, NODE_OPTIONS, language startup
+        // hooks, etc.). Plan mode classifies the command against the host's
+        // environment, so do not pass agent-supplied overrides to the spawner.
+        const createParams = { ...params };
+        if (this.planActive) delete createParams.env;
+        const created = this.terminal.create(createParams);
         this.terminalCommands.set(created.terminalId, params.command);
         this.respondOk(id, created);
         return;
@@ -992,7 +1007,7 @@ export class AcpClient extends EventEmitter {
         // tool_call_update lacks (wire capture:
         // test/fixtures/composer-subagent-session.jsonl), and doubles as a
         // completion backstop for the card.
-        this.emit("subagentLifecycle", params?.update);
+        this.emit("subagentLifecycle", params?.update, params?._meta);
         if (id != null) this.respondOk(id, {});
         return;
       }

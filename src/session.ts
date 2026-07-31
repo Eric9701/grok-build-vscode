@@ -2,10 +2,52 @@ import { AcpClient } from "./acp";
 import type { PromptUsage } from "./acp";
 import type { HostMsg } from "./protocol";
 import type { FileChip } from "./chips";
+import { permissionOptionsForPlan } from "./plan-gate";
 
 /** Live state for the dashboard dot. `cold` (no live process) is represented by
  *  the absence of a Session, so it isn't in this union. */
 export type SessionStatus = "idle" | "working" | "needs-you" | "done" | "error";
+
+export interface PendingPermissionOption {
+  optionId: string;
+  kind: string;
+  name: string;
+}
+
+export interface PendingPermission {
+  title: string;
+  toolCallId?: string;
+  toolKind?: string;
+  /** Full option set offered by the CLI. */
+  options: PendingPermissionOption[];
+  /** Subset safe to expose while the client-side Plan gate remains active. */
+  planOptions: PendingPermissionOption[];
+}
+
+export function createPendingPermission(
+  input: Omit<PendingPermission, "planOptions">,
+): PendingPermission {
+  return {
+    ...input,
+    planOptions: permissionOptionsForPlan(input.options, true, input.toolKind),
+  };
+}
+
+export function pendingPermissionOptions(
+  pending: PendingPermission,
+  planActive: boolean,
+): PendingPermissionOption[] {
+  return planActive ? pending.planOptions : pending.options;
+}
+
+export function preferredPermissionAllowOption(
+  pending: PendingPermission,
+  planActive: boolean,
+): PendingPermissionOption | undefined {
+  const options = pendingPermissionOptions(pending, planActive);
+  return options.find((option) => option.kind === "allow_always")
+    ?? options.find((option) => option.kind === "allow_once");
+}
 
 /**
  * All state that belongs to a single grok session — extracted from GrokSidebar so
@@ -118,7 +160,7 @@ export class Session {
   /** Live permission requests awaiting an answer, by request id. Set when the
    *  card is shown, read when the user answers so we can persist the resolved
    *  card (title + outcome) for replay on a resumed session, then deleted. */
-  pendingPermissions = new Map<number | string, { title: string; toolCallId?: string; options: { optionId: string; kind: string }[] }>();
+  pendingPermissions = new Map<number | string, PendingPermission>();
 
   /** Most recent plan text seen for this session (exit_plan_mode fallback). */
   lastPlanText = "";
@@ -234,12 +276,29 @@ export class Session {
    */
   queuedSendDispatch?: { id: string; text: string };
 
+  /** A queued send that has reached the host but not yet reached handleSend's
+   * commit point. The queue remains authoritative until this claim commits.
+   *
+   * Known limitation: the commit point precedes `client.prompt()`. That promise
+   * resolves at TURN COMPLETION, not request acceptance, so moving the commit
+   * after it would keep already-executing text flushable for the whole turn.
+   * Restoring on a rejected prompt result can also execute a partially accepted
+   * prompt twice. Do not widen this window without an ACP acceptance signal or
+   * an explicit retained-prefix state plus a proven never-executed classifier. */
+  queuedSendCommit?: { text: string };
+
   /** Recently accepted dequeue ids. Delayed outbox copies are ignored even
    * after the active dispatch has been retired. Bounded per live session. */
   completedQueuedSendIds: string[] = [];
 
   /** True when this queue originated in AFK Pilot and therefore must return
-   * through the relay's metered `send` path, even across a disconnected tab. */
+   * through the relay's metered `send` path, even across a disconnected tab.
+   *
+   * Known limitation: if the relay accepts a dequeue but local preflight
+   * (for example, reading an attachment) fails, retrying the retained queue is
+   * metered again. Avoid changing this until the queue can distinguish an
+   * already-metered prefix from newly appended, unmetered text; conflating the
+   * two risks duplicate delivery or work loss. */
   queuedSendRequiresRelay = false;
 
   /** The last completed prompt's billing usage (#53) — grok's `_meta.usage`. */
@@ -254,6 +313,37 @@ export class Session {
   sessionUsage?: PromptUsage;
 }
 
+export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
+  if (session.queuedSendCommit) return undefined;
+  const queued = session.queuedSends[0] ?? "";
+  if (queued !== text && !queued.startsWith(text + "\n\n")) return undefined;
+  const claim = { text };
+  session.queuedSendCommit = claim;
+  return claim;
+}
+
+export function finishQueuedSendCommit(
+  session: Session,
+  claim: { text: string },
+  committed: boolean,
+): boolean {
+  if (session.queuedSendCommit !== claim) return false;
+  session.queuedSendCommit = undefined;
+  if (!committed) return false;
+
+  const queued = session.queuedSends[0] ?? "";
+  if (queued === claim.text) {
+    session.queuedSends = [];
+    session.queuedSendRequiresRelay = false;
+    return true;
+  }
+  if (queued.startsWith(claim.text + "\n\n")) {
+    session.queuedSends = [queued.slice(claim.text.length + 2)];
+    return true;
+  }
+  return false;
+}
+
 /** Current non-chat UI state for rebuilding a view of this live session. */
 export function sessionUiSnapshot(session: Session, modeId: string): HostMsg[] {
   const messages: HostMsg[] = [];
@@ -261,6 +351,13 @@ export function sessionUiSnapshot(session: Session, modeId: string): HostMsg[] {
     messages.push({ type: "modelChanged", modelId: session.client.currentModelId });
   }
   messages.push({ type: "modeChanged", modeId });
+  for (const [requestId, pending] of session.pendingPermissions) {
+    messages.push({
+      type: "permissionOptions",
+      requestId,
+      options: pendingPermissionOptions(pending, session.planActive),
+    });
+  }
   messages.push({ type: "chips", chips: session.chips });
   messages.push({ type: "queuedSends", items: [...session.queuedSends] });
   return messages;

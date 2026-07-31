@@ -255,6 +255,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   toolCall: "mirror",
   toolCallUpdate: "mirror",
   permissionRequest: "mirror",
+  permissionOptions: "mirror",
   permissionResolved: "mirror",
   exitPlanRequest: "mirror",
   planResolved: "mirror",

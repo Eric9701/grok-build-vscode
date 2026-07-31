@@ -43,6 +43,8 @@ Speech-to-Text is a **metered** xAI service billed by audio duration — **$0.10
 |---|---|---|
 | `grok.voiceStreaming` | `true` | Live streaming transcription (words appear as you speak). Disable for one-shot batch mode (click-start → click-stop → transcribe). Streaming costs $0.20/hr vs $0.10/hr batch. |
 | `grok.voiceSendPhrase` | `grok send` | Spoken phrase that auto-submits when it ends a transcription. Empty disables hands-free sending. |
+| `grok.voiceKeyterms` | `[]` | Words or phrases that help streaming recognition spell code and project vocabulary. The send phrase and `Grok` come first; user terms fill the remaining xAI limit of 100 terms, 50 characters each. |
+| `grok.voiceLanguage` | `""` | Optional language code for streaming text formatting (for example `en`, `fr`, `de`, or `ja`). Empty leaves Inverse Text Normalization off and preserves spoken-form text. |
 | `grok.voiceInputDevice` | `""` | Microphone device. Empty = system default (Windows auto-detects the first DirectShow device). Set a device name (Windows/dshow) or index (macOS/avfoundation) to override. |
 
 ## Privacy
@@ -50,8 +52,11 @@ Speech-to-Text is a **metered** xAI service billed by audio duration — **$0.10
 Voice is opt-in per use — nothing is captured until you click the mic. Local VS
 Code capture stays in the extension host; AFK Pilot capture travels ephemerally
 through the relay as raw PCM to that host. Audio is never persisted or
-content-logged. The host sends the audio and its **STT credential** (the dedicated
-key you set, or your `grok login` token if you rely on the automatic fallback) to
-xAI's Speech-to-Text endpoint (`api.x.ai/v1/stt`) to produce the transcript. The
-credential is never sent to the browser or relay. This is separate from anonymous
+content-logged. The host sends the audio, its **STT credential** (the dedicated
+key you set, or your `grok login` token if you rely on the automatic fallback),
+and—during streaming—the configured language and recognition keyterms to
+xAI's Speech-to-Text endpoint (`api.x.ai/v1/stt`) to produce the transcript.
+Keyterms include the send phrase, `Grok`, and any `grok.voiceKeyterms` entries,
+which may be project-specific. The credential is never sent to the browser or
+relay. This is separate from anonymous
 telemetry — see [docs/privacy.md](privacy.md).

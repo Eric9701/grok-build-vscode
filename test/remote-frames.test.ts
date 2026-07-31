@@ -111,6 +111,40 @@ describe("parseRelayFrame", () => {
     }
   });
 
+  it("validates and reconstructs ordinary remote send frames", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    const submissionId = "0123456789abcdef".repeat(3);
+    expect(parseRelayFrame(wrap({
+      type: "send",
+      text: "from the phone",
+      bare: false,
+      submissionId,
+      chips: [{ id: "unchecked-legacy-render-copy" }],
+      futureUncheckedField: { large: "payload" },
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: {
+        type: "send",
+        text: "from the phone",
+        bare: false,
+        submissionId,
+      },
+    });
+
+    for (const malformed of [
+      { type: "send", text: 42 },
+      { type: "send", text: "x", bare: "false" },
+      { type: "send", text: "x", submissionId: null },
+      { type: "send", text: "x", submissionId: {} },
+      { type: "send", text: "x", submissionId: "short" },
+      { type: "send", text: "x", submissionId: "x".repeat(129) },
+      { type: "send", text: "x", submissionId: "not/a/submission/token" },
+    ]) {
+      expect(parseRelayFrame(wrap(malformed)), JSON.stringify(malformed)).toBeNull();
+    }
+  });
+
   it("accepts canonical filesystem-bearing remote payloads", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     for (const msg of [

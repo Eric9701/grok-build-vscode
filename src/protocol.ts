@@ -92,12 +92,12 @@ export type HostMsg =
   /** `steer` marks a mid-turn interjection (#52). It paints a user bubble but is
    *  NOT a prompt and gets no rewind point, so the bubble must not consume a
    *  rewind index — see refreshUserRewindButtons. */
-  | { type: "userMessage"; text: string; chips?: FileChip[]; steer?: boolean }
+  | { type: "userMessage"; text: string; chips?: FileChip[]; steer?: boolean; submissionId?: string }
   | { type: "agentStart" }
   | { type: "thoughtChunk"; text: string }
   | { type: "messageChunk"; text: string }
   | { type: "media"; media: string; src?: string; url?: string; mimeType?: string; path?: string }
-  | { type: "userMessageChunk"; text: string }
+  | { type: "userMessageChunk"; text: string; timestampMs?: number }
   | { type: "historyReplay"; active: boolean }
   | { type: "permissionHistoryQueue"; permissions: unknown[] }
   | { type: "planHistoryQueue"; plans: PlanHistoryItem[] }
@@ -105,6 +105,7 @@ export type HostMsg =
   | { type: "toolCall"; call: ToolCallPayload }
   | { type: "toolCallUpdate"; call: ToolCallPayload }
   | { type: "permissionRequest"; req: PermissionRequest }
+  | { type: "permissionOptions"; requestId: number | string; options: PermissionRequest["options"] }
   | { type: "permissionResolved"; requestId: number | string; optionId: string }
   // The host spreads the plan-review snapshot (planPath/planName) into the bare
   // ExitPlanRequest before posting, so the wire shape is wider than acp's type.
@@ -133,10 +134,9 @@ export type HostMsg =
   | { type: "error"; text: string }
   | { type: "hostNotice"; level: "info" | "warning"; text: string }
   | { type: "xaiNotification"; update?: unknown }
-  // Subagent lifecycle (method _x.ai/session/update): subagent_spawned /
-  // subagent_finished — duration/output stats the Composer agent's completed
-  // tool_call_update lacks, and a completion backstop for the card.
-  | { type: "subagentUpdate"; update?: unknown }
+  // Persisted xAI lifecycle (method _x.ai/session/update): subagent spawn/finish
+  // plus replayed turn_completed, whose timestamp finalizes the agent footer.
+  | { type: "subagentUpdate"; update?: unknown; timestampMs?: number }
   // Deep Research / Workflow / Goal progress (P2-10) — normalized from the
   // live `_x.ai/session_notification` rail (`workflow_updated` / `goal_updated`).
   // Cards update in place by `id`; terminal phases stop the live dots.
@@ -195,7 +195,7 @@ export type WebviewMsg =
   | { type: "ready"; tabToken?: string }
   // Browser-owned remote preferences reported for session_start telemetry.
   | { type: "remotePreferences"; fontScale: number; readRepliesAloud: boolean; usesTouch: boolean }
-  | { type: "send"; text: string; chips?: FileChip[]; bare?: boolean; queuedSendId?: string }
+  | { type: "send"; text: string; chips?: FileChip[]; bare?: boolean; queuedSendId?: string; submissionId?: string }
   | { type: "newSession" }
   | { type: "cancel" }
   | { type: "pickModel" }
@@ -320,7 +320,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
-  planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true,
+  planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
   permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
   planNotice: true, autoCompactNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
