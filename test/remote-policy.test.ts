@@ -275,7 +275,15 @@ describe("requesting session and repo boundary", () => {
 });
 
 describe("remote reconnect snapshot replay", () => {
-  it("brackets the full buffered transcript so completed turns are replay-only", () => {
+  const batched = (buffer: HostMsg[]) => {
+    const snapshot = bracketRemoteSnapshot(buffer);
+    expect(snapshot[0]).toEqual({ type: "historyReplay", active: true });
+    expect(snapshot[2]).toEqual({ type: "historyReplay", active: false });
+    expect(snapshot[1].type).toBe("historyBatch");
+    return (snapshot[1] as Extract<HostMsg, { type: "historyBatch" }>).messages;
+  };
+
+  it("batches a below-limit transcript without changing its contents", () => {
     const buffer: HostMsg[] = [
       { type: "agentStart" },
       { type: "messageChunk", text: "already finished" },
@@ -283,8 +291,101 @@ describe("remote reconnect snapshot replay", () => {
     ];
     expect(bracketRemoteSnapshot(buffer)).toEqual([
       { type: "historyReplay", active: true },
-      ...buffer,
+      { type: "historyBatch", messages: buffer },
       { type: "historyReplay", active: false },
     ]);
+  });
+
+  it("uses only the outer replay brackets when the buffered load had its own", () => {
+    const messages = batched([
+      { type: "historyReplay", active: true },
+      { type: "userMessageChunk", text: "loaded prompt" },
+      { type: "messageChunk", text: "loaded answer" },
+      { type: "historyReplay", active: false },
+    ]);
+    expect(messages).toEqual([
+      { type: "userMessageChunk", text: "loaded prompt" },
+      { type: "messageChunk", text: "loaded answer" },
+    ]);
+  });
+
+  it("starts the last-ten-user window at a user boundary, not mid-tool-group", () => {
+    const buffer: HostMsg[] = [];
+    for (let n = 1; n <= 12; n++) {
+      buffer.push({ type: "userMessage", text: `user ${n}` });
+      buffer.push({ type: "agentStart" });
+      buffer.push({ type: "toolCall", call: { toolCallId: `tool-${n}`, title: `tool ${n}` } });
+      buffer.push({ type: "toolCallUpdate", call: { toolCallId: `tool-${n}`, status: "completed" } });
+      buffer.push({ type: "agentEnd" });
+    }
+
+    const messages = batched(buffer);
+    expect(messages[0]).toEqual({ type: "userMessage", text: "user 3" });
+    expect(messages.filter((m) => m.type === "userMessage")).toHaveLength(10);
+    expect(messages.some((m) => m.type === "toolCall" && m.call.toolCallId === "tool-2")).toBe(false);
+    expect(messages.some((m) => m.type === "toolCall" && m.call.toolCallId === "tool-3")).toBe(true);
+  });
+
+  it("counts a chunked replay prompt once and cuts at its first chunk", () => {
+    const buffer: HostMsg[] = [];
+    for (let n = 1; n <= 12; n++) {
+      buffer.push({ type: "userMessageChunk", text: `user ${n} part A ` });
+      buffer.push({ type: "userMessageChunk", text: "part B" });
+      buffer.push({ type: "messageChunk", text: `answer ${n}` });
+    }
+
+    const messages = batched(buffer);
+    expect(messages[0]).toEqual({ type: "userMessageChunk", text: "user 3 part A " });
+    expect(messages.filter((m) => m.type === "userMessageChunk")).toHaveLength(20);
+  });
+
+  it("drops cards before the cut and renumbers cards that straddle it", () => {
+    const buffer: HostMsg[] = [
+      {
+        type: "permissionHistoryQueue",
+        permissions: [
+          { title: "before", outcome: "allowed", afterUserMessage: 2, afterHistoryEvent: 2 },
+          { title: "first kept", outcome: "allowed", afterUserMessage: 3, afterHistoryEvent: 3 },
+          { title: "last kept", outcome: "rejected", afterUserMessage: 12, afterHistoryEvent: 12 },
+        ],
+      },
+      {
+        type: "planHistoryQueue",
+        plans: [
+          { text: "before", verdict: "rejected", afterUserMessage: 1, afterHistoryEvent: 1 },
+          { text: "first kept", verdict: "rejected", afterUserMessage: 3, afterHistoryEvent: 3 },
+          { text: "last kept", verdict: "approved", afterUserMessage: 12, afterHistoryEvent: 12 },
+        ],
+      },
+      ...Array.from({ length: 12 }, (_, i): HostMsg[] => [
+        { type: "userMessage", text: `user ${i + 1}` },
+        { type: "messageChunk", text: `answer ${i + 1}` },
+        { type: "usage", session: { inputTokens: i + 1 }, afterUserMessage: i + 1, afterHistoryEvent: i + 1 },
+      ]).flat(),
+    ];
+
+    const messages = batched(buffer);
+    const permissions = messages.find((m) => m.type === "permissionHistoryQueue");
+    const plans = messages.find((m) => m.type === "planHistoryQueue");
+    const usage = messages.filter((m) => m.type === "usage");
+    expect(permissions).toEqual({
+      type: "permissionHistoryQueue",
+      permissions: [
+        { title: "first kept", outcome: "allowed", afterUserMessage: 1, afterHistoryEvent: 1 },
+        { title: "last kept", outcome: "rejected", afterUserMessage: 10, afterHistoryEvent: 10 },
+      ],
+    });
+    expect(plans).toEqual({
+      type: "planHistoryQueue",
+      plans: [
+        { text: "first kept", verdict: "rejected", afterUserMessage: 1, afterHistoryEvent: 1 },
+        { text: "last kept", verdict: "approved", afterUserMessage: 10, afterHistoryEvent: 10 },
+      ],
+    });
+    expect(usage).toHaveLength(10);
+    expect(usage[0]).toMatchObject({ afterUserMessage: 1, afterHistoryEvent: 1, session: { inputTokens: 3 } });
+    expect(usage[9]).toMatchObject({ afterUserMessage: 10, afterHistoryEvent: 10, session: { inputTokens: 12 } });
+    const transcript = messages.filter((m) => m.type !== "permissionHistoryQueue" && m.type !== "planHistoryQueue");
+    expect(transcript[0]).toEqual({ type: "userMessage", text: "user 3" });
   });
 });

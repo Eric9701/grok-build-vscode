@@ -6677,8 +6677,7 @@
     "subagentUpdate",
   ]);
 
-  window.addEventListener("message", (e) => {
-    const msg = e.data;
+  function handleHostMessage(msg) {
     switch (msg.type) {
       case "initialState":
         state.useCtrlEnter = msg.useCtrlEnter;
@@ -7121,6 +7120,9 @@
           // here too. Without agentTimestampMs it deliberately stays blank.
           revealTurnFooter();
         }
+        break;
+      case "historyBatch":
+        for (const nested of msg.messages || []) handleHostMessage(nested);
         break;
       case "permissionHistoryQueue":
         // Answered permission cards from the resumed session, interleaved inline
@@ -7702,7 +7704,9 @@
       // freshly streamed content.
       if (state.sendQueue.length && state.queuedWrapEl) messagesEl.appendChild(state.queuedWrapEl);
     }
-  });
+  }
+
+  window.addEventListener("message", (e) => handleHostMessage(e.data));
 
   // ---------- wire ----------
 

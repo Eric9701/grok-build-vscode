@@ -17,7 +17,22 @@
  */
 
 import { isPrimerText } from "./grok-primer";
+import type { HostMsg } from "./protocol";
 import { unwrapExtResult } from "./worktree";
+
+export function historyEventCount(messages: readonly HostMsg[]): number {
+  return messages.reduce(
+    (count, message) => count + (
+      message.type === "thoughtChunk" ||
+      message.type === "messageChunk" ||
+      message.type === "toolCall" ||
+      message.type === "toolCallUpdate"
+        ? 1
+        : 0
+    ),
+    0,
+  );
+}
 
 /** Modes the execute RPC accepts (serde enum on the wire). */
 export type RewindMode = "all" | "conversation_only" | "code_only" | "files_only";

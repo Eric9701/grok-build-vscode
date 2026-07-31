@@ -10,6 +10,8 @@
 import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch, click, Posted } from "./webview-harness";
 import { countsAsUserBubble } from "../src/plan-restore";
+import { bracketRemoteSnapshot } from "../src/remote-policy";
+import type { HostMsg } from "../src/protocol";
 
 const $ = (doc: Document, id: string) => doc.getElementById(id) as HTMLElement;
 const types = (posted: Posted[]) => posted.map((p) => p.type);
@@ -1072,6 +1074,32 @@ describe("user message (regression: doubled on grok 0.2.33)", () => {
 
     expect(users(doc).length).toBe(1);
     expect(users(doc)[0].textContent).toContain("resumed prompt");
+  });
+
+  it("renders a history batch synchronously while retaining old per-message replay support", () => {
+    const { window, doc } = bootWebview();
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, {
+      type: "historyBatch",
+      messages: [
+        { type: "userMessageChunk", text: "batched prompt" },
+        { type: "agentStart" },
+        { type: "messageChunk", text: "batched answer" },
+        { type: "agentEnd" },
+      ],
+    });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    expect(users(doc)).toHaveLength(1);
+    expect(users(doc)[0].textContent).toContain("batched prompt");
+    expect(doc.querySelector(".msg.agent")?.textContent).toContain("batched answer");
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: "legacy prompt" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(users(doc)).toHaveLength(2);
+    expect(users(doc)[1].textContent).toContain("legacy prompt");
   });
 });
 
@@ -2330,6 +2358,41 @@ describe("user prompt counter parity (interjections never count)", () => {
     expect(doc.querySelectorAll('.msg.user:not([data-steer="1"]):not(.queued)')).toHaveLength(3);
     expect(messageIndex(doc, "after two prompts")).toBeGreaterThan(messageIndex(doc, "live second"));
     expect(messageIndex(doc, "after two prompts")).toBeLessThan(messageIndex(doc, "live third"));
+  });
+});
+
+describe("truncated remote history coordinates", () => {
+  const messageIndex = (doc: Document, text: string) =>
+    [...$(doc, "messages").children].findIndex((el) => el.textContent?.includes(text));
+
+  it("keeps a surviving plan card between the same retained agent chunks", () => {
+    const { window, doc } = bootWebview();
+    const buffer: HostMsg[] = [{
+      type: "planHistoryQueue",
+      plans: [{
+        text: "surviving plan",
+        verdict: "approved",
+        afterUserMessage: 3,
+        afterHistoryEvent: 5,
+      }],
+    }];
+    for (let n = 1; n <= 12; n++) {
+      buffer.push({ type: "userMessage", text: `prompt ${n}` });
+      if (n < 3) {
+        buffer.push({ type: "messageChunk", text: `discarded ${n}a` });
+        buffer.push({ type: "messageChunk", text: `discarded ${n}b` });
+      } else if (n === 3) {
+        buffer.push({ type: "messageChunk", text: "retained draft" });
+        buffer.push({ type: "messageChunk", text: "retained implementation" });
+      } else {
+        buffer.push({ type: "messageChunk", text: `answer ${n}` });
+      }
+    }
+
+    for (const message of bracketRemoteSnapshot(buffer)) dispatch(window, message);
+
+    expect(messageIndex(doc, "surviving plan")).toBeGreaterThan(messageIndex(doc, "retained draft"));
+    expect(messageIndex(doc, "surviving plan")).toBeLessThan(messageIndex(doc, "retained implementation"));
   });
 });
 

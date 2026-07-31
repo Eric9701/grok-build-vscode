@@ -11,13 +11,123 @@
 //   - outbound (host -> remote client): HostMsg, mirrored / transformed / suppressed.
 
 import type { HostMsg, WebviewMsg } from "./protocol";
+import { isPrimerText } from "./grok-primer";
+import { countsAsUserBubble } from "./plan-restore";
+import { historyEventCount } from "./rewind";
 
-/** Mark a reconnect snapshot as replayed UI state. Buffers may already contain
- * their own load-session replay brackets, so the webview treats these as nested. */
+export const REMOTE_HISTORY_USER_LIMIT = 10;
+
+function remoteUserMessageIndexes(buffer: readonly HostMsg[]): number[] {
+  const indexes: number[] = [];
+  let chunkStart = -1;
+  let chunkText = "";
+  const finishChunks = () => {
+    if (chunkStart >= 0 && !isPrimerText(chunkText) && countsAsUserBubble(chunkText)) {
+      indexes.push(chunkStart);
+    }
+    chunkStart = -1;
+    chunkText = "";
+  };
+  buffer.forEach((msg, index) => {
+    if (msg.type === "userMessageChunk") {
+      if (chunkStart < 0) chunkStart = index;
+      chunkText += msg.text;
+      return;
+    }
+    finishChunks();
+    if (msg.type === "userMessage" && !msg.steer) indexes.push(index);
+  });
+  finishChunks();
+  return indexes;
+}
+
+type CounterPositioned = {
+  afterUserMessage?: number;
+  afterHistoryEvent?: number;
+  [key: string]: unknown;
+};
+
+function shiftCounterEntries(
+  entries: readonly unknown[],
+  droppedUsers: number,
+  droppedHistoryEvents: number,
+): unknown[] {
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [entry];
+    const positioned = entry as CounterPositioned;
+    const hasUserPosition = typeof positioned.afterUserMessage === "number";
+    const hasHistoryPosition = typeof positioned.afterHistoryEvent === "number";
+    if (hasUserPosition && positioned.afterUserMessage! <= droppedUsers) return [];
+    if (!hasUserPosition && hasHistoryPosition && positioned.afterHistoryEvent! <= droppedHistoryEvents) return [];
+    return [{
+      ...positioned,
+      ...(hasUserPosition
+        ? { afterUserMessage: positioned.afterUserMessage! - droppedUsers }
+        : {}),
+      ...(hasHistoryPosition
+        ? { afterHistoryEvent: positioned.afterHistoryEvent! - droppedHistoryEvents }
+        : {}),
+    }];
+  });
+}
+
+function shiftCounterMessage(
+  msg: HostMsg,
+  droppedUsers: number,
+  droppedHistoryEvents: number,
+): HostMsg | null {
+  if (msg.type === "planHistoryQueue") {
+    return {
+      ...msg,
+      plans: shiftCounterEntries(msg.plans, droppedUsers, droppedHistoryEvents) as typeof msg.plans,
+    };
+  }
+  if (msg.type === "permissionHistoryQueue") {
+    return {
+      ...msg,
+      permissions: shiftCounterEntries(msg.permissions, droppedUsers, droppedHistoryEvents),
+    };
+  }
+  if (msg.type === "usage" && typeof msg.afterUserMessage === "number") {
+    if (msg.afterUserMessage <= droppedUsers) return null;
+    return {
+      ...msg,
+      afterUserMessage: msg.afterUserMessage - droppedUsers,
+      ...(typeof msg.afterHistoryEvent === "number"
+        ? { afterHistoryEvent: msg.afterHistoryEvent - droppedHistoryEvents }
+        : {}),
+    };
+  }
+  return msg;
+}
+
+/** Mark a reconnect snapshot as replayed UI state. The batch owns one outer
+ * bracket pair, so buffered load-session brackets are removed before delivery. */
 export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
+  const userIndexes = remoteUserMessageIndexes(buffer);
+  const droppedUsers = Math.max(0, userIndexes.length - REMOTE_HISTORY_USER_LIMIT);
+  const start = droppedUsers > 0 ? userIndexes[droppedUsers] : 0;
+  const droppedHistoryEvents = historyEventCount(buffer.slice(0, start));
+  const preamble = droppedUsers > 0
+    ? buffer.slice(0, start)
+      .filter((msg) => msg.type === "planHistoryQueue" || msg.type === "permissionHistoryQueue")
+      .flatMap((msg) => {
+        const shifted = shiftCounterMessage(msg, droppedUsers, droppedHistoryEvents);
+        return shifted ? [shifted] : [];
+      })
+    : [];
+  const messages = [
+    ...preamble,
+    ...buffer.slice(start)
+      .filter((msg) => msg.type !== "historyReplay")
+      .flatMap((msg) => {
+        const shifted = shiftCounterMessage(msg, droppedUsers, droppedHistoryEvents);
+        return shifted ? [shifted] : [];
+      }),
+  ];
   return [
     { type: "historyReplay", active: true },
-    ...buffer,
+    { type: "historyBatch", messages },
     { type: "historyReplay", active: false },
   ];
 }
@@ -250,6 +360,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   messageChunk: "mirror",
   userMessageChunk: "mirror",
   historyReplay: "mirror",
+  historyBatch: "mirror",
   permissionHistoryQueue: "mirror",
   planHistoryQueue: "mirror",
   toolCall: "mirror",
@@ -359,6 +470,15 @@ export function inlineMediaForRemote(msg: MediaMsg, deps: MediaInlineDeps): Medi
 /** The single outbound choke point: what (if anything) crosses to a remote for
  *  this HostMsg. Returns the message to send, or null to suppress. */
 export function transformHostMsgForRemote(msg: HostMsg, deps: MediaInlineDeps): HostMsg | null {
+  if (msg.type === "historyBatch") {
+    return {
+      ...msg,
+      messages: msg.messages.flatMap((nested) => {
+        const transformed = transformHostMsgForRemote(nested, deps);
+        return transformed ? [transformed] : [];
+      }),
+    };
+  }
   switch (OUTBOUND_DISPOSITION[msg.type]) {
     case "mirror":
       return msg;

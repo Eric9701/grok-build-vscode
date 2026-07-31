@@ -103,6 +103,10 @@ export type HostMsg =
   | { type: "media"; media: string; src?: string; url?: string; mimeType?: string; path?: string }
   | { type: "userMessageChunk"; text: string; timestampMs?: number }
   | { type: "historyReplay"; active: boolean }
+  /** Remote reconnect snapshot delivered as one browser event. Updated clients
+   *  render every nested message synchronously; older per-message frames remain
+   *  valid and continue through their existing handlers. */
+  | { type: "historyBatch"; messages: HostMsg[] }
   | { type: "permissionHistoryQueue"; permissions: unknown[] }
   | { type: "planHistoryQueue"; plans: PlanHistoryItem[] }
   | { type: "toolCall"; call: ToolCallPayload }
@@ -189,7 +193,7 @@ export type HostMsg =
   // Session-cumulative billing (#53), summed by the host across the session's
   // turns. `turn` is the last prompt's own usage. Both omitted when the CLI sent
   // no `_meta.usage` — the popover then shows only the context row, never zeros.
-  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage };
+  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage; afterUserMessage?: number; afterHistoryEvent?: number };
 
 /** webview -> host */
 export type WebviewMsg =
@@ -320,7 +324,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
   chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
-  historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
+  historyReplay: true, historyBatch: true, permissionHistoryQueue: true, planHistoryQueue: true,
   toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
   permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
   planNotice: true, autoCompactNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,

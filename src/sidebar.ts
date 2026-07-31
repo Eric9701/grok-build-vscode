@@ -34,20 +34,6 @@ import {
 } from "./telemetry";
 import { randomUUID } from "node:crypto";
 import { execGrokCli } from "./cli-process";
-
-function historyEventCount(messages: readonly HostMsg[]): number {
-  return messages.reduce(
-    (count, message) => count + (
-      message.type === "thoughtChunk" ||
-      message.type === "messageChunk" ||
-      message.type === "toolCall" ||
-      message.type === "toolCallUpdate"
-        ? 1
-        : 0
-    ),
-    0,
-  );
-}
 import {
   locateGrokCli,
   extensionWasUpgraded,
@@ -160,6 +146,7 @@ import {
 import {
   formatRewindPointDetail,
   formatRewindPointLabel,
+  historyEventCount,
   anyFilesAfter,
   bubbleMapIsConsistent,
   editRewindConfirmMessage,
@@ -1152,7 +1139,7 @@ See design doc for the full state machine diagram.`;
     if (live) {
       live.sessionUsage = usage;
       live.lastTurnUsage = undefined;
-      this.emit(live, { type: "usage", session: usage });
+      this.emit(live, { type: "usage", session: usage, afterUserMessage: surviving, afterHistoryEvent: live.historyEventCount });
     }
   }
 
@@ -6747,7 +6734,9 @@ See design doc for the full state machine diagram.`;
     const wv = this.view?.webview;
     if (wv) {
       wv.postMessage({ type: "clearMessages" });
-      for (const m of bracketRemoteSnapshot(session.buffer)) wv.postMessage(m);
+      wv.postMessage({ type: "historyReplay", active: true });
+      for (const m of session.buffer) wv.postMessage(m);
+      wv.postMessage({ type: "historyReplay", active: false });
       for (const m of sessionUiSnapshot(session, this.displayMode(session))) wv.postMessage(m);
     }
     // Remote clients don't share the webview, so replay the same clear + buffer
@@ -7061,7 +7050,7 @@ See design doc for the full state machine diagram.`;
     if (!usageIsRealMeasurement(meta)) return;
     session.lastTurnUsage = meta.usage;
     session.sessionUsage = addUsage(session.sessionUsage, meta.usage);
-    this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage });
+    this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
     const id = session.activeSessionId;
     if (!id || !session.sessionUsage) return;
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -7087,7 +7076,7 @@ See design doc for the full state machine diagram.`;
     const stored = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]?.usage;
     if (!stored) return;
     session.sessionUsage = stored;
-    this.emit(session, { type: "usage", session: stored });
+    this.emit(session, { type: "usage", session: stored, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
   }
 
   /** Push the context size from grok's on-disk signals.json to the webview —
