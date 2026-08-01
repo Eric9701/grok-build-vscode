@@ -13,6 +13,7 @@ import {
   mediaMimeFromPath,
   transformHostMsgForRemote,
   MAX_REMOTE_MEDIA_BYTES,
+  MAX_REMOTE_THUMBNAIL_BYTES,
   type MediaInlineDeps,
 } from "../src/remote-policy";
 import { HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, type HostMsg } from "../src/protocol";
@@ -225,6 +226,72 @@ describe("transformHostMsgForRemote", () => {
   it("media is inlined via the injected reader", () => {
     const out = transformHostMsgForRemote(mediaMsg({ src: "x", path: "/img.webp" }), deps(new Uint8Array([7])));
     expect((out as { src?: string })?.src?.startsWith("data:image/webp;base64,")).toBe(true);
+  });
+
+  it("inlines image-chip previews while preserving the chip when the source is missing", () => {
+    const chip = {
+      id: "image-1",
+      path: "/img.png",
+      relPath: "Image #1",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+    };
+    const out = transformHostMsgForRemote({ type: "chips", chips: [chip] }, deps(new Uint8Array([7]))) as Extract<HostMsg, { type: "chips" }>;
+    expect(out.chips[0].previewSrc).toBe("data:image/png;base64,Bw==");
+
+    const missing = transformHostMsgForRemote({ type: "chips", chips: [chip] }, deps(null)) as Extract<HostMsg, { type: "chips" }>;
+    expect(missing.chips[0]).toEqual(chip);
+    expect(missing.chips[0].previewSrc).toBeUndefined();
+  });
+
+  it("uses the thumbnail hook and keeps replayed image tags usable remotely", () => {
+    const imageDeps: MediaInlineDeps = {
+      ...deps(new Uint8Array([1, 2, 3])),
+      thumbnail: () => new Uint8Array([9]),
+    };
+    const out = transformHostMsgForRemote({
+      type: "userMessageChunk",
+      text: "[Image #1] (C:\\staged\\image.png — attached inline; do not Read it)",
+      images: [{ imageIndex: 1, path: "C:\\staged\\image.png" }],
+    }, imageDeps) as Extract<HostMsg, { type: "userMessageChunk" }>;
+    expect(out.images?.[0].previewSrc).toBe("data:image/png;base64,CQ==");
+    expect(MAX_REMOTE_THUMBNAIL_BYTES).toBe(96 * 1024);
+  });
+
+  it("memoizes a thumbnail by source path and mtime across message shapes", () => {
+    let reads = 0;
+    let thumbnails = 0;
+    const imageDeps: MediaInlineDeps = {
+      readFile: () => {
+        reads += 1;
+        return new Uint8Array([1, 2, 3]);
+      },
+      toBase64: (bytes) => Buffer.from(bytes).toString("base64"),
+      thumbnail: () => {
+        thumbnails += 1;
+        return new Uint8Array([9]);
+      },
+      mtimeMs: () => 42,
+      thumbnailCache: new Map(),
+    };
+    const chip = {
+      id: "image-1",
+      path: "/img.png",
+      relPath: "Image #1",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+    };
+    transformHostMsgForRemote({ type: "chips", chips: [chip] }, imageDeps);
+    const out = transformHostMsgForRemote({
+      type: "userMessageChunk",
+      text: "[Image #1] (img.png)",
+      images: [{ imageIndex: 1, path: "/img.png" }],
+    }, imageDeps) as Extract<HostMsg, { type: "userMessageChunk" }>;
+    expect(out.images?.[0].previewSrc).toBe("data:image/png;base64,CQ==");
+    expect(reads).toBe(1);
+    expect(thumbnails).toBe(1);
   });
 });
 

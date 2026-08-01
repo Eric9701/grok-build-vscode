@@ -590,6 +590,8 @@
     const HINT = " — attached inline";
     const pathFromTag = (raw) => {
       if (!raw || raw.indexOf("attached inline") === 0) return undefined;
+      const staged = raw.indexOf(" — local staged copy; thumbnail only; do not access this path");
+      if (staged !== -1) return raw.slice(0, staged);
       const cut = raw.indexOf(HINT);
       return cut === -1 ? raw : raw.slice(0, cut);
     };

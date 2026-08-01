@@ -20,7 +20,7 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     expect(HOST_CAPABILITIES).toEqual({ uploadFile: true, remoteVoice: true });
   });
 
-  it("keeps the fresh local read-aloud configuration default off", () => {
+  it("keeps read-aloud defaults explicit", () => {
     expect(
       packageJson.contributes.configuration.properties["grok.readRepliesAloud"].default,
     ).toBe(false);
@@ -29,7 +29,7 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     ).toBe(false);
     expect(
       packageJson.contributes.configuration.properties["grok.summarizeRepliesAloud"].default,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("scopes the macOS Emacs composer bindings to composer focus", () => {

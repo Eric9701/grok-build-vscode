@@ -824,7 +824,7 @@ describe("AFK Pilot shared webview controls", () => {
     const gearToggle = (label: string) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
       .find((el) => el.textContent?.includes(label)) as HTMLElement;
 
-    const summarize = gearToggle("Summarize before speaking");
+    const summarize = gearToggle("Read simplified summaries");
     expect(summarize.querySelector(".popover-switch.on")).not.toBeNull();
     expect(summarize.querySelector("span")?.title).toContain("Costs an extra xAI call per spoken reply");
 
@@ -848,7 +848,7 @@ describe("AFK Pilot shared webview controls", () => {
     click(window, gearToggle("Read replies aloud"));
     expect((window as any).localStorage.getItem("grok.remote.tts")).toBe("false");
     expect((window as any).localStorage.getItem("grok.remote.ttsSummary")).toBe("false");
-    const disabledSummary = gearToggle("Summarize before speaking");
+    const disabledSummary = gearToggle("Read simplified summaries");
     expect(disabledSummary.classList.contains("disabled")).toBe(true);
     expect(disabledSummary.querySelector(".popover-switch.on")).toBeNull();
     expect(posted.at(-1)).toEqual({
@@ -940,6 +940,7 @@ describe("AFK Pilot shared webview controls", () => {
       remote: true,
       beforeScripts: (w) => {
         (w as any).localStorage.setItem("grok.remote.tts", "true");
+        (w as any).localStorage.setItem("grok.remote.ttsSummary", "false");
         (w as any).SpeechSynthesisUtterance = Utterance;
         (w as any).speechSynthesis = {
           cancel() {},
@@ -964,6 +965,7 @@ describe("AFK Pilot shared webview controls", () => {
       remote: true,
       beforeScripts: (w) => {
         (w as any).localStorage.setItem("grok.remote.tts", "true");
+        (w as any).localStorage.setItem("grok.remote.ttsSummary", "false");
         (w as any).SpeechSynthesisUtterance = Utterance;
         (w as any).speechSynthesis = {
           cancel() {},
@@ -994,6 +996,7 @@ describe("AFK Pilot shared webview controls", () => {
       remote: true,
       beforeScripts: (w) => {
         (w as any).localStorage.setItem("grok.remote.tts", "true");
+        (w as any).localStorage.setItem("grok.remote.ttsSummary", "false");
         (w as any).SpeechSynthesisUtterance = Utterance;
         (w as any).speechSynthesis = {
           cancel() {},
@@ -1021,6 +1024,7 @@ describe("AFK Pilot shared webview controls", () => {
       remote: true,
       beforeScripts: (w) => {
         (w as any).localStorage.setItem("grok.remote.tts", "true");
+        (w as any).localStorage.setItem("grok.remote.ttsSummary", "false");
         (w as any).SpeechSynthesisUtterance = Utterance;
         (w as any).speechSynthesis = {
           cancel() {},

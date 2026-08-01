@@ -101,7 +101,12 @@ export type HostMsg =
   | { type: "thoughtChunk"; text: string }
   | { type: "messageChunk"; text: string }
   | { type: "media"; media: string; src?: string; url?: string; mimeType?: string; path?: string }
-  | { type: "userMessageChunk"; text: string; timestampMs?: number }
+  | {
+      type: "userMessageChunk";
+      text: string;
+      timestampMs?: number;
+      images?: Array<{ imageIndex: number; path?: string; previewSrc?: string }>;
+    }
   | { type: "historyReplay"; active: boolean }
   /** Remote reconnect snapshot delivered as one browser event. Updated clients
    *  render every nested message synchronously; older per-message frames remain

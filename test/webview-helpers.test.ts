@@ -356,6 +356,13 @@ describe("parseImageTags", () => {
     expect(out).toEqual({ body: "what is this?", images: [{ index: 1, path: undefined }] });
   });
 
+  it("keeps only the basename from a staged pasted-image tag", () => {
+    const out = parseImageTags(
+      "what is this?\n\n[Image #1] (image-123.png — local staged copy; thumbnail only; do not access this path)",
+    );
+    expect(out).toEqual({ body: "what is this?", images: [{ index: 1, path: "image-123.png" }] });
+  });
+
   it("strips the do-not-Read hint but keeps the path on a disk-import tag (current wire)", () => {
     const out = parseImageTags(
       "compress this\n\n[Image #2] (assets/hero.png — attached inline; act on the path if needed, but do not Read it)",

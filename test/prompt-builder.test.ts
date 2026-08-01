@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildPrompt, buildPromptWithImages, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from "../src/prompt-builder";
 import { makeImplicitChip, makeExplicitChip, makeImageChip } from "../src/chips";
+import { STAGED_IMAGE_TAG_HINT, WORKSPACE_IMAGE_TAG_HINT } from "../src/image-history";
 
 const deps = {
   readFile: (p: string) => {
@@ -143,7 +144,9 @@ describe("buildPromptWithImages", () => {
   const PASTE_TAG = (n: number) =>
     `[Image #${n}] (attached inline — already visible to you; do not read it from disk)`;
   const PATH_TAG = (n: number, p: string) =>
-    `[Image #${n}] (${p} — attached inline; act on the path if needed, but do not Read it)`;
+    `[Image #${n}] (${p} — ${WORKSPACE_IMAGE_TAG_HINT})`;
+  const STAGED_TAG = (n: number, basename: string) =>
+    `[Image #${n}] (${basename} — ${STAGED_IMAGE_TAG_HINT})`;
 
   it("is byte-identical to buildPrompt when no images are attached", () => {
     const file = makeExplicitChip("/a.ts", "src/a.ts");
@@ -210,6 +213,24 @@ describe("buildPromptWithImages", () => {
       deps,
     );
     expect(out.text).toBe(`compress this\n\n${PATH_TAG(2, "assets/hero.png")}`);
+  });
+
+  it("uses only the pasted basename and never invites access to the staged copy", () => {
+    const img = makeImageChip("C:/Users/Ada/AppData/Local/grok/image-123.png", 4, "image/png");
+    const out = buildPromptWithImages(
+      "describe this",
+      [img],
+      [{
+        index: 4,
+        mimeType: "image/png",
+        data: b64,
+        path: img.path,
+      }],
+      deps,
+    );
+    expect(out.text).toBe(`describe this\n\n${STAGED_TAG(4, "image-123.png")}`);
+    expect(out.text).not.toContain("Ada");
+    expect(out.text).not.toContain("act on the path");
   });
 
   it("keeps file context separate and ahead of text + tags", () => {

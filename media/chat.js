@@ -262,7 +262,7 @@
   }
 
   const storedRemoteTts = IS_REMOTE && storedBool(REMOTE_TTS_KEY, false);
-  const storedRemoteTtsSummary = storedRemoteTts && storedBool(REMOTE_TTS_SUMMARY_KEY, false);
+  const storedRemoteTtsSummary = storedRemoteTts && storedBool(REMOTE_TTS_SUMMARY_KEY, true);
   if (IS_REMOTE && !storedRemoteTts) storeRemotePref(REMOTE_TTS_SUMMARY_KEY, false);
 
   const state = {
@@ -297,6 +297,9 @@
     remoteTts: storedRemoteTts,
     remoteSummarizeRepliesAloud: storedRemoteTtsSummary,
     readRepliesAloud: false,
+    // The host posts the configured value immediately after initialState. Keep
+    // the pre-sync render conservative so a read-aloud toggle cannot summon a
+    // summary request before that config message arrives.
     summarizeRepliesAloud: false,
     remotePreferencesSupported: false,
     ttsTurnText: "",
@@ -331,11 +334,11 @@
     // is held while > 0 so a paste-then-Enter can't race the image onto the
     // NEXT message — the pasteImage post must reach the host before send does.
     pendingPaste: 0,
-    // Browser-owned data URLs for pasted image previews, keyed by conversation
-    // and opaque id. The bytes never make a second relay trip.
-    conversationSessionId: null,
+    // Browser-owned data URLs for pasted image previews, keyed by opaque id.
+    // previewId is random and globally unique; keeping one map lets a paste
+    // survive the session id being assigned after the first send and survives
+    // switching away from a conversation.
     imagePreviews: new Map(),
-    acknowledgedImagePreviews: new Map(),
     activeThoughtEl: null,
     activeThoughtHdrEl: null,
     thoughtStartTime: null,
@@ -2203,7 +2206,7 @@
       summarizeRow.className = "toolbar-popover-item" +
         (summarizeEnabled ? "" : " popover-action disabled");
       summarizeRow.innerHTML =
-        `<span title="Use xAI to make each spoken message brief and speech-friendly before reading it. Costs an extra xAI call per spoken reply and adds network delay; falls back to the full text on any failure.">Summarize before speaking</span><span class="popover-switch${summarizeOn ? " on" : ""}" role="switch" aria-checked="${summarizeOn}"><span class="popover-switch-knob"></span></span>`;
+        `<span title="Use xAI to read a brief, speech-friendly summary of each spoken message. Costs an extra xAI call per spoken reply and adds network delay; falls back to the full text on any failure.">Read simplified summaries</span><span class="popover-switch${summarizeOn ? " on" : ""}" role="switch" aria-checked="${summarizeOn}"><span class="popover-switch-knob"></span></span>`;
       if (summarizeEnabled) {
         summarizeRow.onclick = (e) => {
           e.stopPropagation();
@@ -2836,7 +2839,6 @@
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
-    state.conversationSessionId = null;
     state.interjectionCount = 0;
     state.historyEventCount = 0;
     state.lastTurnUsage = null;
@@ -2958,7 +2960,23 @@
         ? ` (line ${chip.selectionStart})`
         : ` (lines ${chip.selectionStart}-${chip.selectionEnd})`
       : "";
-    tag.innerHTML = icon + `<span>${escapeHtml(name + range)}</span>`;
+    const previewSrc = chip?.previewSrc || (chip?.previewId && state.imagePreviews.get(chip.previewId));
+    if (chip?.imageIndex != null && previewSrc) {
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.className = "msg-chip-preview";
+      preview.title = `Preview ${name}`;
+      const img = document.createElement("img");
+      img.src = previewSrc;
+      img.alt = "";
+      preview.appendChild(img);
+      preview.onclick = (e) => {
+        e.stopPropagation();
+        openImagePreview(previewSrc, name);
+      };
+      tag.appendChild(preview);
+    }
+    tag.insertAdjacentHTML("beforeend", icon + `<span>${escapeHtml(name + range)}</span>`);
     tag.title = (chip?.originRelPath || chip?.path || pathStr) + lineNote;
     return tag;
   }
@@ -4884,7 +4902,7 @@
 
   // Replayed user prompts (session/load) arrive as user_message_chunk updates.
   // Commit any in-flight agent turn first, then accumulate into one user bubble.
-  function appendUserChunk(text, timestampMs) {
+  function appendUserChunk(text, timestampMs, images) {
     // Replay-only: live user bubbles come from the optimistic `userMessage`
     // post. grok ≥0.2.33 echoes the live prompt back as a user_message_chunk;
     // the host already drops those, but guard here too so a stray live echo
@@ -4969,6 +4987,9 @@
     const parsed = parseAttachmentContext(displayRaw);
     const selBlocks = parseSelectionBlocks(parsed.body);
     const imageTags = parseImageTags(selBlocks.body);
+    const imagePreviews = new Map(
+      (images || []).map((image) => [image.imageIndex, image]),
+    );
     state.activeUserEl.innerHTML = renderMarkdown(imageTags.body);
     applyAutoDir(state.activeUserEl);
     const msgEl = state.activeUserEl.closest(".msg");
@@ -4978,7 +4999,11 @@
       ...selBlocks.selections.map((s) =>
         makeMsgChipTag(s.path, { selectionStart: s.start, selectionEnd: s.end })),
       ...imageTags.images.map((im) =>
-        makeMsgChipTag(`Image #${im.index}`, { imageIndex: im.index, path: im.path })),
+        makeMsgChipTag(`Image #${im.index}`, {
+          imageIndex: im.index,
+          path: im.path || imagePreviews.get(im.index)?.path,
+          previewSrc: imagePreviews.get(im.index)?.previewSrc,
+        })),
     ];
     if (chipTags.length) {
       const chipsRow = document.createElement("div");
@@ -6033,30 +6058,13 @@
   });
 
   function previewCacheForCurrentSession() {
-    const key = state.conversationSessionId || "__starting__";
-    let cache = state.imagePreviews.get(key);
-    if (!cache) {
-      cache = new Map();
-      state.imagePreviews.set(key, cache);
-    }
-    return cache;
-  }
-
-  function acknowledgedPreviewsForCurrentSession() {
-    const key = state.conversationSessionId || "__starting__";
-    let acknowledged = state.acknowledgedImagePreviews.get(key);
-    if (!acknowledged) {
-      acknowledged = new Set();
-      state.acknowledgedImagePreviews.set(key, acknowledged);
-    }
-    return acknowledged;
+    return state.imagePreviews;
   }
 
   function renderChips() {
     chipsEl.innerHTML = "";
     attachmentsEl.innerHTML = "";
     const imagePreviews = previewCacheForCurrentSession();
-    const acknowledgedImagePreviews = acknowledgedPreviewsForCurrentSession();
     for (const chip of state.chips) {
       // Split on both separators — a file outside the workspace has an absolute
       // relPath (Windows backslashes), so split("/") alone would show the whole
@@ -6089,7 +6097,6 @@
         // not the staged copy the chip's path points at.
         el.title = (chip.originRelPath || chip.path) + rangeTitle;
         const previewSrc = chip.previewSrc || (chip.previewId && imagePreviews.get(chip.previewId));
-        if (chip.previewId && previewSrc) acknowledgedImagePreviews.add(chip.previewId);
         if (chip.imageIndex != null && previewSrc) {
           const preview = document.createElement("button");
           preview.type = "button";
@@ -6128,13 +6135,6 @@
         `<span>${escapeHtml(label)}</span>`;
       el.onclick = () => vscode.postMessage({ type: "toggleChip", id: chip.id });
       chipsEl.appendChild(el);
-    }
-    const livePreviewIds = new Set(state.chips.map((chip) => chip.previewId).filter(Boolean));
-    for (const previewId of acknowledgedImagePreviews) {
-      if (!livePreviewIds.has(previewId)) {
-        imagePreviews.delete(previewId);
-        acknowledgedImagePreviews.delete(previewId);
-      }
     }
   }
 
@@ -7145,7 +7145,6 @@
         break;
       }
       case "session": {
-        state.conversationSessionId = msg.sessionId || null;
         state.currentModelId = msg.currentModelId;
         state.isWorktree = !!msg.worktree; // gates the gear Apply/Remove worktree items
         state.availableModels = msg.models || [];
@@ -7335,7 +7334,7 @@
         addGeneratedMedia(msg);
         break;
       case "userMessageChunk":
-        appendUserChunk(msg.text, msg.timestampMs);
+        appendUserChunk(msg.text, msg.timestampMs, msg.images);
         break;
       case "historyReplay":
         if (msg.active) {
@@ -8184,7 +8183,13 @@
         const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (m) {
           const previewId = newRemoteTabToken();
-          previewCacheForCurrentSession().set(previewId, dataUrl);
+          const previews = previewCacheForCurrentSession();
+          previews.set(previewId, dataUrl);
+          while (previews.size > 24) {
+            const oldest = previews.keys().next().value;
+            if (oldest === undefined) break;
+            previews.delete(oldest);
+          }
           vscode.postMessage({ type: "pasteImage", mimeType: m[1], data: m[2], previewId });
         }
         settle();

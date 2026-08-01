@@ -1447,7 +1447,7 @@ describe("thinking traces toggle (#26)", () => {
     ) as HTMLElement;
     click(window, cfg);
     const summarize = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Summarize before speaking"),
+      (el) => el.textContent?.includes("Read simplified summaries"),
     ) as HTMLElement;
 
     expect(summarize).toBeTruthy();
@@ -1482,12 +1482,12 @@ describe("thinking traces toggle (#26)", () => {
       (el) => el.textContent?.includes(label),
     ) as HTMLElement;
 
-    expect(gearToggle("Summarize before speaking").querySelector(".popover-switch.on")).not.toBeNull();
+    expect(gearToggle("Read simplified summaries").querySelector(".popover-switch.on")).not.toBeNull();
     click(window, gearToggle("Read replies aloud"));
 
     expect(posted).toContainEqual({ type: "setReadRepliesAloud", value: false });
     expect(posted).toContainEqual({ type: "setSummarizeRepliesAloud", value: false });
-    const summarize = gearToggle("Summarize before speaking");
+    const summarize = gearToggle("Read simplified summaries");
     expect(summarize.classList.contains("disabled")).toBe(true);
     expect(summarize.querySelector(".popover-switch.on")).toBeNull();
   });

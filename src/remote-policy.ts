@@ -11,6 +11,7 @@
 //   - outbound (host -> remote client): HostMsg, mirrored / transformed / suppressed.
 
 import type { HostMsg, WebviewMsg } from "./protocol";
+import { isImageChip, type FileChip } from "./chips";
 import { isPrimerText } from "./grok-primer";
 import { countsAsUserBubble } from "./plan-restore";
 import { historyEventCount } from "./rewind";
@@ -431,6 +432,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
 
 /** Base64 expansion is ~4/3; 25MiB of file stays well under a sane ws frame. */
 export const MAX_REMOTE_MEDIA_BYTES = 25 * 1024 * 1024;
+/** Chip/history previews are decoration, so keep their relay payload small. */
+export const MAX_REMOTE_THUMBNAIL_BYTES = 96 * 1024;
+const MAX_REMOTE_THUMBNAIL_CACHE_ENTRIES = 32;
 
 const EXT_MIME: Record<string, string> = {
   ".png": "image/png",
@@ -455,6 +459,13 @@ export interface MediaInlineDeps {
   /** Base64-encode bytes (Buffer.toString("base64") on the host). */
   toBase64: (bytes: Uint8Array) => string;
   maxBytes?: number;
+  /** Optional host-native image resizer. A missing resizer falls back to the
+   *  thumbnail byte budget and still refuses oversized source files. */
+  thumbnail?: (bytes: Uint8Array, mimeType: string, maxDimension: number) => Uint8Array | null;
+  /** Optional bounded cache supplied by the host for repeated history replays. */
+  thumbnailCache?: Map<string, string | null>;
+  /** File mtime used with {@link thumbnailCache} to invalidate changed images. */
+  mtimeMs?: (path: string) => number | undefined;
 }
 
 type MediaMsg = Extract<HostMsg, { type: "media" }>;
@@ -480,6 +491,76 @@ export function inlineMediaForRemote(msg: MediaMsg, deps: MediaInlineDeps): Medi
   return { ...msg, mimeType: mime, src: `data:${mime};base64,${deps.toBase64(bytes)}` };
 }
 
+function thumbnailDataUri(path: string | undefined, mimeType: string | undefined, deps: MediaInlineDeps): string | undefined {
+  if (!path) return undefined;
+  const mtimeMs = deps.mtimeMs?.(path);
+  const cacheKey = mtimeMs !== undefined && Number.isFinite(mtimeMs) ? `${path}\0${mtimeMs}` : undefined;
+  if (cacheKey && deps.thumbnailCache?.has(cacheKey)) {
+    const cached = deps.thumbnailCache.get(cacheKey);
+    if (cached) {
+      deps.thumbnailCache.delete(cacheKey);
+      deps.thumbnailCache.set(cacheKey, cached);
+    }
+    return cached ?? undefined;
+  }
+  const bytes = deps.readFile(path);
+  if (!bytes) return undefined;
+  const mime = mimeType || mediaMimeFromPath(path);
+  if (!mime.startsWith("image/")) return undefined;
+  const thumb = deps.thumbnail
+    ? deps.thumbnail(bytes, mime, 320)
+    : bytes;
+  const result = thumb && thumb.byteLength > 0 && thumb.byteLength <= MAX_REMOTE_THUMBNAIL_BYTES
+    ? `data:${mime};base64,${deps.toBase64(thumb)}`
+    : undefined;
+  if (cacheKey && deps.thumbnailCache) {
+    deps.thumbnailCache.delete(cacheKey);
+    deps.thumbnailCache.set(cacheKey, result ?? null);
+    while (deps.thumbnailCache.size > MAX_REMOTE_THUMBNAIL_CACHE_ENTRIES) {
+      const oldest = deps.thumbnailCache.keys().next().value;
+      if (oldest === undefined) break;
+      deps.thumbnailCache.delete(oldest);
+    }
+  }
+  return result;
+}
+
+function dataUriFitsThumbnailBudget(src: string): boolean {
+  const comma = src.indexOf(",");
+  if (comma < 0) return false;
+  const payload = src.slice(comma + 1);
+  if (/;base64$/i.test(src.slice(0, comma))) {
+    return Math.ceil(payload.length * 3 / 4) <= MAX_REMOTE_THUMBNAIL_BYTES;
+  }
+  return payload.length <= MAX_REMOTE_THUMBNAIL_BYTES;
+}
+
+function inlineChipPreviewForRemote(chip: FileChip, deps: MediaInlineDeps): FileChip {
+  if (!isImageChip(chip)) return chip;
+  const src = chip.previewSrc?.startsWith("data:image/") && dataUriFitsThumbnailBudget(chip.previewSrc)
+    ? chip.previewSrc
+    : thumbnailDataUri(chip.path, chip.mimeType, deps);
+  if (!src) {
+    const { previewSrc: _previewSrc, ...withoutPreview } = chip;
+    return withoutPreview;
+  }
+  return { ...chip, previewSrc: src };
+}
+
+function inlineHistoryImageForRemote(
+  image: { imageIndex: number; path?: string; previewSrc?: string },
+  deps: MediaInlineDeps,
+): { imageIndex: number; path?: string; previewSrc?: string } {
+  const src = image.previewSrc?.startsWith("data:image/") && dataUriFitsThumbnailBudget(image.previewSrc)
+    ? image.previewSrc
+    : thumbnailDataUri(image.path, undefined, deps);
+  if (!src) {
+    const { previewSrc: _previewSrc, ...withoutPreview } = image;
+    return withoutPreview;
+  }
+  return { ...image, previewSrc: src };
+}
+
 /** The single outbound choke point: what (if anything) crosses to a remote for
  *  this HostMsg. Returns the message to send, or null to suppress. */
 export function transformHostMsgForRemote(msg: HostMsg, deps: MediaInlineDeps): HostMsg | null {
@@ -490,6 +571,23 @@ export function transformHostMsgForRemote(msg: HostMsg, deps: MediaInlineDeps): 
         const transformed = transformHostMsgForRemote(nested, deps);
         return transformed ? [transformed] : [];
       }),
+    };
+  }
+  if (msg.type === "chips") {
+    return { ...msg, chips: msg.chips.map((chip) => inlineChipPreviewForRemote(chip, deps)) };
+  }
+  if (msg.type === "userMessage") {
+    return {
+      ...msg,
+      ...(msg.chips ? { chips: msg.chips.map((chip) => inlineChipPreviewForRemote(chip, deps)) } : {}),
+    };
+  }
+  if (msg.type === "userMessageChunk") {
+    return {
+      ...msg,
+      ...(msg.images
+        ? { images: msg.images.map((image) => inlineHistoryImageForRemote(image, deps)) }
+        : {}),
     };
   }
   switch (OUTBOUND_DISPOSITION[msg.type]) {

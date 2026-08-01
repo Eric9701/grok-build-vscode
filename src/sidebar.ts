@@ -108,6 +108,8 @@ import { SessionRequestState } from "./session-request-state";
 import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
+import { thumbnailImage } from "./image-thumbnail";
+import { historyImagePreviews } from "./image-history";
 import {
   SessionListEntry,
   SessionMetaOverrides,
@@ -508,7 +510,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       if (e.affectsConfiguration("grok.summarizeRepliesAloud")) {
         this.post({
           type: "summarizeRepliesAloud",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", false),
+          value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
         });
       }
       if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
@@ -3005,6 +3007,7 @@ See design doc for the full state machine diagram.`;
           type: "userMessageChunk",
           text,
           timestampMs: agentTimestampMsFromMeta(meta),
+          images: historyImagePreviews(text, this.imageStagingDir(), this.sessionCwd(session)),
         });
         return;
       }
@@ -3042,6 +3045,11 @@ See design doc for the full state machine diagram.`;
         type: "userMessageChunk",
         text,
         timestampMs: agentTimestampMsFromMeta(meta),
+        images: historyImagePreviews(
+          session.replayUserRaw,
+          this.imageStagingDir(),
+          this.sessionCwd(session),
+        ),
       });
     });
     client.on("thoughtChunk", (text: string) => {
@@ -6101,6 +6109,7 @@ See design doc for the full state machine diagram.`;
           index: chip.imageIndex!,
           mimeType: chip.mimeType ?? "image/png",
           data: bytes.toString("base64"),
+          path: chip.path,
           relPath: chip.originRelPath,
         });
       } catch (e) {
@@ -6171,10 +6180,9 @@ See design doc for the full state machine diagram.`;
       if (session === this.focused) this.refreshImplicitChip(true);
       else this.postChips(session);
     }
-    // Staged files are one-shot: their bytes ride the prompt inline now.
-    for (const chip of chips) {
-      if (isImageChip(chip)) void fs.promises.unlink(chip.path).catch(() => {});
-    }
+    // Keep staged image sources until the seven-day orphan sweeper. The prompt
+    // carries each path so live and restored history can render a thumbnail;
+    // a missing/expired source simply falls back to the image tag.
 
     const isFirstSend = !session.hasHistory;
     session.hasHistory = true;
@@ -6369,7 +6377,7 @@ See design doc for the full state machine diagram.`;
     this.post(this.buildInitialStateMsg());
     this.post({
       type: "summarizeRepliesAloud",
-      value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", false),
+      value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
     });
     // Sync the active-editor context chip into the fresh webview (the config
     // gate + no-editor case live inside refreshImplicitChip).
@@ -6397,6 +6405,25 @@ See design doc for the full state machine diagram.`;
     return session.chips.map((chip) => isImageChip(chip)
       ? { ...chip, previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
       : chip);
+  }
+
+  private localizeHistoryMessage(message: HostMsg, webview: vscode.Webview): HostMsg {
+    if (message.type === "userMessage" && message.chips) {
+      return { ...message, chips: message.chips.map((chip) => isImageChip(chip)
+        ? { ...chip, ...(fs.existsSync(chip.path)
+          ? { previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+          : {}) }
+        : chip) };
+    }
+    if (message.type === "userMessageChunk" && message.images) {
+      return {
+        ...message,
+        images: message.images.map((image) => image.path && fs.existsSync(image.path)
+          ? { ...image, previewSrc: webview.asWebviewUri(vscode.Uri.file(image.path)).toString() }
+          : image),
+      };
+    }
+    return message;
   }
 
   // grok's output for hidden summary/context-injection turns, dropped from both
@@ -6762,7 +6789,8 @@ See design doc for the full state machine diagram.`;
     else session.buffer.push(message);
     if (session === this.focused) {
       this.postTap?.("local", message);
-      this.view?.webview.postMessage(message);
+      const webview = this.view?.webview;
+      if (webview) webview.postMessage(this.localizeHistoryMessage(message, webview));
     }
     if (!session.replaying) this.sendRemoteSession(session, message);
   }
@@ -6905,7 +6933,7 @@ See design doc for the full state machine diagram.`;
     if (wv) {
       wv.postMessage({ type: "clearMessages" });
       wv.postMessage({ type: "historyReplay", active: true });
-      for (const m of session.buffer) wv.postMessage(m);
+      for (const m of session.buffer) wv.postMessage(this.localizeHistoryMessage(m, wv));
       wv.postMessage({ type: "historyReplay", active: false });
       for (const m of sessionUiSnapshot(
         session,
@@ -7752,6 +7780,7 @@ See design doc for the full state machine diagram.`;
   /** Impure half of the media inline transform (the decision logic is the pure
    *  remote-policy). Sync read keeps broadcast ordering; media is rare + capped. */
   private static readonly REMOTE_MEDIA_DEPS: MediaInlineDeps = {
+    thumbnailCache: new Map<string, string | null>(),
     readFile: (p) => {
       try {
         return fs.readFileSync(p);
@@ -7760,6 +7789,14 @@ See design doc for the full state machine diagram.`;
       }
     },
     toBase64: (bytes) => Buffer.from(bytes).toString("base64"),
+    thumbnail: thumbnailImage,
+    mtimeMs: (p) => {
+      try {
+        return fs.statSync(p).mtimeMs;
+      } catch {
+        return undefined;
+      }
+    },
   };
 
   /** The single inbound choke point for remote clients: capability-gate, then
