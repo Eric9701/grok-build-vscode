@@ -2014,8 +2014,8 @@ textarea#input {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
@@ -2026,9 +2026,10 @@ textarea#input {
    same guard a few rules up, for the same reason. */
 .image-preview-spinner[hidden] { display: none; }
 .image-preview-spinner svg {
-  /* Larger glyph, same disc. */
-  width: 21px;
-  height: 21px;
+  /* 24px glyph in a 32px disc — deliberately tight, the ring reads as the
+     affordance and the backdrop only has to keep it legible over the picture. */
+  width: 24px;
+  height: 24px;
   animation: send-spinner-rotate 0.9s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
