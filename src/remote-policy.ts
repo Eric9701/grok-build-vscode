@@ -306,6 +306,16 @@ export function sessionCwdBelongsToRepo(
   return repoCwds.some((cwd) => sameCwd(actualCwd, cwd));
 }
 
+/** The narrow desk-adoption path for a tab that arrives without a session. */
+export function shouldAdoptDeskSession(
+  deskCwd: string,
+  repoCwds: readonly string[],
+  deskSessionVisible: boolean,
+  sameCwd: (a: string, b: string) => boolean,
+): boolean {
+  return !deskSessionVisible && sessionCwdBelongsToRepo(deskCwd, repoCwds, sameCwd);
+}
+
 /** Which side a webview message came from. */
 export type MsgOrigin = "local" | "remote";
 

@@ -15,10 +15,12 @@ import {
   isEmptyPrimerSession,
   isPathInside,
   listSessions,
+  mostRecentSession,
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
   sessionsDirFor,
+  type SessionListEntry,
 } from "../src/sessions";
 
 // Real grok chat_history.jsonl shape: role keyed on `type`, content is an array of
@@ -36,6 +38,32 @@ const realQuery = (q: string) => userMsg(`<user_query>\n${q}\n</user_query>`);
 // grok/composer sends some prompts (notably slash commands) UNWRAPPED — a plain
 // user message with no <user_query>. These must still count as real queries.
 const unwrappedQuery = (q: string) => userMsg(q);
+
+describe("mostRecentSession", () => {
+  const entry = (id: string, updatedAt: number, kind?: "subagent"): SessionListEntry => ({
+    id,
+    cwd: "/work/repo",
+    displayName: id,
+    rawSummary: id,
+    updatedAt,
+    createdAt: updatedAt,
+    numMessages: 1,
+    kind,
+  });
+
+  it("chooses the newest session in a repository scope", () => {
+    expect(mostRecentSession([entry("older", 10), entry("newest", 30), entry("middle", 20)])?.id)
+      .toBe("newest");
+  });
+
+  it("returns no session when the scoped history is empty", () => {
+    expect(mostRecentSession([])).toBeUndefined();
+  });
+
+  it("does not treat a subagent catalog entry as conversation history", () => {
+    expect(mostRecentSession([entry("child", 40, "subagent"), entry("chat", 20)])?.id).toBe("chat");
+  });
+});
 
 describe("extractUserQueries / classifyUserQueries (empty-session detection)", () => {
   it("pulls only <user_query> text, skipping system / <user_info> / <system-reminder> / assistant", () => {

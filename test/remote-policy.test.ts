@@ -8,6 +8,7 @@ import {
   repoScopeFor,
   sessionForRequest,
   sessionCwdBelongsToRepo,
+  shouldAdoptDeskSession,
   inlineMediaForRemote,
   mediaMimeFromPath,
   transformHostMsgForRemote,
@@ -273,6 +274,13 @@ describe("requesting session and repo boundary", () => {
     const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
     expect(sessionCwdBelongsToRepo("C:/Repo/B", ["c:/repo/b", "c:/repo/b-worktree"], same)).toBe(true);
     expect(sessionCwdBelongsToRepo("C:/Repo/A", ["c:/repo/b", "c:/repo/b-worktree"], same)).toBe(false);
+  });
+
+  it("adopts the desk session only for an arriving tab in the same repo", () => {
+    const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+    expect(shouldAdoptDeskSession("C:/Repo/B", ["c:/repo/b"], false, same)).toBe(true);
+    expect(shouldAdoptDeskSession("C:/Repo/A", ["c:/repo/b"], false, same)).toBe(false);
+    expect(shouldAdoptDeskSession("C:/Repo/B", ["c:/repo/b"], true, same)).toBe(false);
   });
 });
 

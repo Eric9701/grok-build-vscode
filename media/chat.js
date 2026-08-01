@@ -361,6 +361,9 @@
     // Set by the first `repos` frame — the host's proof that it supports the
     // switcher at all. Older extensions never send one (see repoSwitcherAvailable).
     reposKnown: false,
+    // A deliberate repo switch stays locked until its transition settles. The
+    // replay bracket also keeps the lock honest for an old conversation load.
+    repoSwitchPending: false,
     selectedRepoCwd: "",
     activeRepoCwd: "",
     activeSessionId: null,
@@ -2402,27 +2405,37 @@
     return IS_REMOTE && state.reposKnown;
   }
 
+  function repoSwitcherLocked() {
+    return state.repoSwitchPending || state.replaying;
+  }
+
   function applyRepoSwitcherVisibility() {
     const on = repoSwitcherAvailable();
     repoBtn.hidden = !on;
-    if (!on) repoPopover.hidden = true;
+    if (!on || repoSwitcherLocked()) repoPopover.hidden = true;
   }
 
   function renderRepoChip() {
     applyRepoSwitcherVisibility();
     if (!repoSwitcherAvailable()) return;
+    const locked = repoSwitcherLocked();
     const selected = state.repos.find((r) => sameCwd(r.cwd, state.selectedRepoCwd));
     const label = selected?.label || cwdLeaf(state.selectedRepoCwd || state.activeRepoCwd);
     const browsing = !!state.selectedRepoCwd && !!state.activeRepoCwd &&
       !sameCwd(state.selectedRepoCwd, state.activeRepoCwd);
+    repoBtn.disabled = locked;
+    repoBtn.classList.toggle("disabled", locked);
+    repoBtn.setAttribute("aria-disabled", String(locked));
     repoBtn.classList.toggle("browsing", browsing);
     repoBtn.innerHTML =
       `<span class="repo-chip-icon">${selected?.worktreeLabel ? ICON.gitBranch : ICON.folder}</span>` +
       `<span class="repo-chip-label"></span>${ICON.chevronDown}`;
     repoBtn.querySelector(".repo-chip-label").textContent = label;
-    repoBtn.title = browsing
-      ? `Browsing ${state.selectedRepoCwd}; live session is in ${state.activeRepoCwd}`
-      : (state.selectedRepoCwd || "Choose repository");
+    repoBtn.title = locked
+      ? "Loading conversation... repository switching is disabled until it finishes."
+      : browsing
+        ? `Browsing ${state.selectedRepoCwd}; live session is in ${state.activeRepoCwd}`
+        : (state.selectedRepoCwd || "Choose repository");
   }
 
   function renderRepoPopover() {
@@ -2444,7 +2457,7 @@
       const main = document.createElement("button");
       main.type = "button";
       main.className = "repo-row-main";
-      main.disabled = !repo.available;
+      main.disabled = !repo.available || repoSwitcherLocked();
       main.innerHTML = `<span class="repo-row-icon">${repo.worktreeLabel ? ICON.gitBranch : ICON.folder}</span><span class="repo-row-copy"><span class="repo-row-name"></span><span class="repo-row-meta"></span></span>`;
       main.querySelector(".repo-row-name").textContent = repo.label || cwdLeaf(repo.cwd);
       const meta = main.querySelector(".repo-row-meta");
@@ -2453,7 +2466,9 @@
         : "Unavailable";
       main.onclick = (e) => {
         e.stopPropagation();
-        if (!repo.available) return;
+        if (!repo.available || repoSwitcherLocked()) return;
+        state.repoSwitchPending = true;
+        renderRepoChip();
         saveRememberedRemoteSession(null);
         vscode.postMessage({ type: "selectRepo", cwd: repo.cwd });
         closePopovers();
@@ -2465,6 +2480,7 @@
       const pin = document.createElement("button");
       pin.type = "button";
       pin.className = "history-action-btn" + (repo.pinned ? " active" : "");
+      pin.disabled = repoSwitcherLocked();
       pin.innerHTML = ICON.pin;
       pin.title = repo.pinned ? "Unpin repository" : "Pin repository";
       pin.onclick = (e) => {
@@ -2744,6 +2760,29 @@
     const welcome = $("welcome");
     if (welcome) welcome.hidden = true;
     state.welcomeVisible = false;
+  }
+
+  function setConversationLoading(active) {
+    const existing = $("conversation-loading");
+    if (!active) {
+      if (existing) existing.remove();
+      const ver = $("welcome-version");
+      if (ver && ver.textContent === "Loading conversation") {
+        ver.classList.remove("loading-dots");
+        ver.textContent = state.cliVersion ? `Connected \u00b7 v${state.cliVersion}` : "Connected";
+      }
+      return;
+    }
+    const banner = existing || document.createElement("div");
+    banner.id = "conversation-loading";
+    banner.className = "session-context-banner loading-dots";
+    banner.textContent = "Loading conversation";
+    if (!existing) messagesEl.insertBefore(banner, messagesEl.firstChild);
+    const ver = $("welcome-version");
+    if (ver && state.welcomeVisible) {
+      ver.classList.add("loading-dots");
+      ver.textContent = "Loading conversation";
+    }
   }
 
   function resetForNewSession() {
@@ -7302,6 +7341,9 @@
         if (msg.active) {
           if (state.replayDepth === 0) {
             state.suppressReplayTurn = false; // fresh outer replay starts unsuppressed
+            state.repoSwitchPending = true;
+            setConversationLoading(true);
+            renderRepoChip();
           }
           state.replayDepth += 1;
           state.replaying = true;
@@ -7312,6 +7354,9 @@
           state.replayDepth -= 1;
           if (state.replayDepth > 0) break;
           state.replaying = false;
+          state.repoSwitchPending = false;
+          setConversationLoading(false);
+          renderRepoChip();
           // A remote snapshot can end while its latest turn is still running.
           // Seed the already-rendered prefix only in that case, so the eventual
           // live agentEnd speaks the complete reply. Finished buffered turns
@@ -7765,6 +7810,10 @@
         // CLI work.
         state.busy = !!msg.value;
         state.busyLocked = !!msg.locked;
+        if (!state.busy && !state.replaying) {
+          state.repoSwitchPending = false;
+          renderRepoChip();
+        }
         updateSendButton();
         if (!state.busy) {
           // Anything typed during startup is flushed by the host. Reveal the
@@ -7802,6 +7851,11 @@
         showOnboarding(msg.state, { platform: msg.platform });
         break;
       case "error":
+        if (state.repoSwitchPending) {
+          state.repoSwitchPending = false;
+          setConversationLoading(false);
+          renderRepoChip();
+        }
         if (state.queuedSubmissionPending && isRelaySendRejection(msg.text)) {
           state.queuedSubmissionPending = false;
           state.queuedSubmissionRejected = true;
@@ -7944,7 +7998,11 @@
   if (welcomeAboutLink) welcomeAboutLink.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openAboutPanel(); };
   addBtn.onclick = (e) => { e.stopPropagation(); openAddPopover(); };
   historyBtn.onclick = (e) => { e.stopPropagation(); openHistoryPopover(); };
-  repoBtn.onclick = (e) => { e.stopPropagation(); openRepoPopover(); };
+  repoBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (repoSwitcherLocked()) return;
+    openRepoPopover();
+  };
   // Hidden from the first paint: the chip has nothing to say until a `repos`
   // frame arrives, and in VS Code it never appears at all.
   applyRepoSwitcherVisibility();

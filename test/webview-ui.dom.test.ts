@@ -1141,6 +1141,20 @@ describe("welcome version line (session-start lifecycle)", () => {
     expect(animating(doc)).toBe(false);
   });
 
+  it("shows a distinct loading state while history replay is active", () => {
+    const { window, doc } = bootWebview();
+
+    dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+    dispatch(window, { type: "historyReplay", active: true });
+
+    expect(ver(doc)).toBe("Loading conversation");
+    expect(animating(doc)).toBe(true);
+    expect(doc.querySelector("#conversation-loading")?.textContent).toBe("Loading conversation");
+
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(doc.querySelector("#conversation-loading")).toBeNull();
+  });
+
   it("does not overwrite the version on later (post-priming) busy toggles", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "initialized", info: { version: "0.2.33" } });

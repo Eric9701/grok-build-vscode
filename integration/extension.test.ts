@@ -63,10 +63,13 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     path.join(grokHome, "sessions", encodeURIComponent(cwd), id);
   const storedSessionDir = (id: string) => storedSessionDirFor(repoB, id);
 
-  const writeStoredSession = (id: string, cwd = repoB) => {
+  const writeStoredSession = (id: string, cwd = repoB, updatedAt?: string) => {
     const dir = storedSessionDirFor(cwd, id);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "summary.json"), "{}");
+    fs.writeFileSync(
+      path.join(dir, "summary.json"),
+      updatedAt ? JSON.stringify({ updated_at: updatedAt }) : "{}",
+    );
   };
 
   suiteSetup(async () => {
@@ -168,24 +171,43 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     }]);
   });
 
-  test("remote Clear all acknowledges an empty history on the requesting tab", async () => {
+  test("switching to a history-free repo starts fresh without misrouting Clear all", async () => {
     const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
     hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+    const emptyRepo = path.join(hooks.workspaceRoot(), `.int-empty-repo-${Date.now()}`);
+    fs.mkdirSync(emptyRepo, { recursive: true });
+    fs.mkdirSync(path.join(grokHome, "sessions", encodeURIComponent(emptyRepo)), { recursive: true });
+    const clientId = `clear-empty-${Date.now()}`;
 
-    hooks.fromRemote({ type: "selectRepo", cwd: repoB }, "tab-a");
+    hooks.fromRemote({ type: "selectRepo", cwd: emptyRepo }, clientId);
     await new Promise((r) => setTimeout(r, 1500));
-    posts.length = 0;
-    hooks.fromRemote({ type: "clearAllSessions", cwd: repoB }, "tab-a");
-    await new Promise((r) => setTimeout(r, 100));
-
     assert.ok(posts.some((p) =>
       p.clientIds?.length === 1 &&
-      p.clientIds[0] === "tab-a" &&
-      p.msg?.type === "hostNotice" &&
-      p.msg.level === "info" &&
-      p.msg.text === "No history to clear."
+      p.clientIds[0] === clientId &&
+      p.msg?.type === "repos" &&
+      p.msg.selectedCwd === emptyRepo
     ), JSON.stringify(posts));
+    const startupDeadline = Date.now() + 15000;
+    while (Date.now() < startupDeadline && !posts.some((p) =>
+      p.clientIds?.includes(clientId) && p.msg?.type === "setBusy" && p.msg.value === false
+    )) await new Promise((r) => setTimeout(r, 200));
+    posts.length = 0;
+    hooks.fromRemote({ type: "clearAllSessions", cwd: emptyRepo }, clientId);
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.ok(posts.some((p) => p.clientIds?.length === 1 && p.clientIds[0] === clientId && p.msg?.type === "sessions"));
+    assert.ok(!posts.some((p) => p.msg?.type === "hostNotice" && p.msg.text === "No history to clear."));
     assert.ok(!posts.some((p) => p.dest === "local" && p.msg?.text === "No history to clear."));
+    hooks.remoteClientLeft(clientId);
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      fs.rmSync(emptyRepo, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (error) {
+      // On Windows the extension host can retain a just-used cwd until the host
+      // exits. The unique fixture is harmless and is cleaned by the outer test
+      // process; do not turn that platform handle lifetime into a product failure.
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+    }
   });
 
   test("two tabs on the same repo have independent, non-crosstalking sessions", async () => {
@@ -925,9 +947,9 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     const repoHistory = `repo-history-${Date.now()}`;
     const workspaceHistory = `workspace-history-${Date.now()}`;
     const resumeId = `resume-delayed-${Date.now()}`;
-    writeStoredSession(repoHistory);
-    writeStoredSession(resumeId);
-    writeStoredSession(workspaceHistory, hooks.workspaceRoot());
+    writeStoredSession(repoHistory, repoB, "2020-01-01T00:00:00.000Z");
+    writeStoredSession(resumeId, repoB, "2020-01-02T00:00:00.000Z");
+    writeStoredSession(workspaceHistory, hooks.workspaceRoot(), "2099-01-01T00:00:00.000Z");
 
     hooks.fromRemote({ type: "selectRepo", cwd: repoB }, clientId);
     await new Promise((r) => setTimeout(r, 100));
@@ -954,21 +976,28 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       // pre-warmed the spawn path, and failed in isolation or after suite
       // reordering. Poll instead of sleeping a fixed slice.
       const deadline = Date.now() + 15000;
-      while (Date.now() < deadline && !posts.some((p) =>
-        p.clientIds?.includes(clientId) &&
-        p.msg?.type === "repos" &&
-        p.msg.selectedCwd === hooks.workspaceRoot()
-      )) await new Promise((r) => setTimeout(r, 200));
-      const switchedAt = posts.findIndex((p) =>
-        p.clientIds?.includes(clientId) &&
-        p.msg?.type === "repos" &&
-        p.msg.selectedCwd === hooks.workspaceRoot()
-      );
+      let switchedAt = -1;
+      let finalHistory: any;
+      while (Date.now() < deadline) {
+        switchedAt = posts.findIndex((p) =>
+          p.clientIds?.includes(clientId) &&
+          p.msg?.type === "repos" &&
+          p.msg.selectedCwd === hooks.workspaceRoot()
+        );
+        if (switchedAt >= 0) {
+          const histories = posts.slice(switchedAt).filter((p) =>
+            p.clientIds?.includes(clientId) && p.msg?.type === "sessions"
+          );
+          finalHistory = histories[histories.length - 1]?.msg;
+          if (finalHistory?.entries.some((entry: any) => entry.id === workspaceHistory)) break;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
       assert.ok(switchedAt >= 0, `delayed ${transition} should eventually yield to selectRepo`);
-      const finalHistory = posts.slice(switchedAt).find((p) =>
-        p.clientIds?.includes(clientId) && p.msg?.type === "sessions"
-      )?.msg;
-      assert.ok(finalHistory, "the selected repository should receive a history snapshot");
+      assert.ok(
+        finalHistory,
+        "the selected repository should receive a history snapshot",
+      );
       assert.ok(finalHistory.entries.some((entry: any) => entry.id === workspaceHistory));
       assert.ok(!finalHistory.entries.some((entry: any) => entry.id === repoHistory));
 
@@ -1007,7 +1036,8 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     const clearOwnId = `clear-own-worktree-${suffix}`;
     const clearForeignId = `clear-foreign-worktree-${suffix}`;
     writeStoredSession(foreignId, repoBWorktree);
-    writeStoredSession(ownId, repoAWorktree);
+    writeStoredSession(ownId, repoAWorktree, "2020-01-01T00:00:00.000Z");
+    writeStoredSession(`primary-${suffix}`, hooks.workspaceRoot(), "2099-01-01T00:00:00.000Z");
     const clientId = `scope-client-${suffix}`;
     hooks.fromRemote({ type: "selectRepo", cwd: hooks.workspaceRoot() }, clientId);
     await new Promise((r) => setTimeout(r, 100));
@@ -1291,7 +1321,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     hooks.fromRemote({ type: "selectRepo", cwd: hooks.workspaceRoot() }, "primer-owner");
     await new Promise((r) => setTimeout(r, 100));
 
-    assert.strictEqual(hooks.activeRemoteSessionId("primer-owner"), undefined);
+    assert.notStrictEqual(hooks.activeRemoteSessionId("primer-owner"), id);
     assert.ok(!hooks.hasLiveSession(id), "the abandoned primer process must be disposed");
     assert.ok(!fs.existsSync(storedSessionDir(id)), "the primer-only history row must be deleted");
   });

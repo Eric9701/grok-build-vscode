@@ -84,6 +84,24 @@ describe("repo switcher DOM", () => {
     expect(posted).toEqual([{ type: "toggleRepoPin", cwd: "/work/beta", pinned: true }]);
   });
 
+  it("disables repository switching while a conversation is loading", () => {
+    const { window, doc, posted } = ready();
+    const chip = doc.getElementById("repo-btn") as HTMLButtonElement;
+    click(window, chip);
+    click(window, doc.querySelectorAll(".repo-row")[1].querySelector(".repo-row-main")!);
+
+    expect(posted).toContainEqual({ type: "selectRepo", cwd: "/work/beta" });
+    expect(chip.disabled).toBe(true);
+    expect(chip.title).toContain("repository switching is disabled");
+
+    dispatch(window, { type: "historyReplay", active: true });
+    expect(chip.disabled).toBe(true);
+    expect(chip.title).toContain("Loading conversation");
+
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(chip.disabled).toBe(false);
+  });
+
   it("keeps missing pinned repos honest and non-selectable", () => {
     const { window, doc, posted } = ready();
     click(window, doc.getElementById("repo-btn")!);

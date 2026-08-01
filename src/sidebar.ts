@@ -105,7 +105,7 @@ import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
-import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import {
@@ -122,6 +122,7 @@ import {
   indexSessions,
   isEmptyPrimerSession,
   isPathInside,
+  mostRecentSession,
   normalizeRepoPath,
   readContextUsage,
   readSessionEntries,
@@ -2161,6 +2162,17 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  private sendRemoteRepoCatalog(clientId: string): void {
+    const cwd = this.remoteClients.cwd(clientId);
+    const active = this.remoteClients.active(clientId);
+    this.sendRemoteClient(clientId, {
+      type: "repos",
+      entries: this.repoCatalog(),
+      selectedCwd: cwd,
+      activeCwd: active ? this.sessionCwd(active) : cwd,
+    });
+  }
+
   private selectRepo(cwd: string): void {
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit || !hit.available) return;
@@ -2169,14 +2181,40 @@ See design doc for the full state machine diagram.`;
     this.postSessionsList();
   }
 
-  private selectRemoteRepo(clientId: string, cwd: string): void {
+  private async selectRemoteRepo(clientId: string, cwd: string): Promise<void> {
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit || !hit.available) return;
     if (this.remoteVoice.has(clientId)) void this.handleRemoteVoiceStop(clientId, true);
     this.parkRemoteSession(clientId);
     this.remoteClients.select(clientId, hit.cwd);
-    this.remoteSessionFor(clientId);
-    for (const msg of this.buildRemoteSnapshot(clientId)) this.sendRemoteClient(clientId, msg);
+    this.sendRemoteRepoCatalog(clientId);
+
+    // A deliberate repository switch has its own rule: choose that repository's
+    // newest real conversation, or create a fresh one when it has no history.
+    // Do not route this through remoteSessionFor(): that method deliberately
+    // keeps the desk-adoption behavior for a tab that arrives with nothing of
+    // its own (Continue remotely / first visit).
+    const history = this.buildSessionsList(
+      hit.cwd,
+      { limit: Number.MAX_SAFE_INTEGER },
+      undefined,
+    );
+    const live = new Map(
+      [...this.pool]
+        .filter((session) => session.activeSessionId)
+        .map((session) => [session.activeSessionId!, session]),
+    );
+    const newest = history.type === "sessions"
+      ? mostRecentSession(history.entries.filter((entry) => {
+          const session = live.get(entry.id);
+          // An empty live session is not repository history; selecting a repo
+          // with no history should still make a new session.
+          return !session || session.hasHistory;
+        }))
+      : undefined;
+    if (newest) await this.openRemoteSession(clientId, newest.id, newest.cwd, false);
+    else await this.newRemoteSession(clientId, false);
+    this.sendRemoteRepoCatalog(clientId);
   }
 
   private async toggleRepoPin(cwd: string, pinned: boolean): Promise<void> {
@@ -3463,12 +3501,13 @@ See design doc for the full state machine diagram.`;
     // remembers its own conversation never reaches here (it resumes), and a
     // deliberate New session still replaces this one.
     const deskSession = this.focused;
-    const deskCwdMatches = sessionCwdBelongsToRepo(
+    const canAdoptDesk = shouldAdoptDeskSession(
       this.sessionCwd(deskSession),
       this.sessionCwdsForRepo(cwd, this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})),
+      this.remoteClients.isActiveValueVisible(deskSession),
       pathsEqual,
     );
-    if (deskCwdMatches && !this.remoteClients.isActiveValueVisible(deskSession)) {
+    if (canAdoptDesk) {
       this.remoteClients.setActive(clientId, deskSession);
       return deskSession;
     }
@@ -3479,7 +3518,11 @@ See design doc for the full state machine diagram.`;
   }
 
   private async onMessage(msg: WebviewMsg, origin: MsgOrigin, clientId?: string): Promise<void> {
-    const session = origin === "remote" && clientId ? this.remoteSessionFor(clientId) : this.focused;
+    const session = origin === "remote" && clientId
+      ? msg.type === "selectRepo"
+        ? this.remoteClients.active(clientId) ?? this.focused
+        : this.remoteSessionFor(clientId)
+      : this.focused;
     const requester = origin === "remote" && clientId
       ? this.captureRemoteRequester(clientId)
       : undefined;
@@ -7294,7 +7337,7 @@ See design doc for the full state machine diagram.`;
     this.postRepoCatalog();
   }
 
-  private focusRemoteSession(clientId: string, session: Session): void {
+  private focusRemoteSession(clientId: string, session: Session, notifyCatalog = true): void {
     const cwd = this.remoteClients.cwd(clientId);
     this.remoteClients.setActive(clientId, session);
     this.touch(session);
@@ -7302,11 +7345,11 @@ See design doc for the full state machine diagram.`;
     this.sendRemoteClient(clientId, { type: "clearMessages" });
     for (const msg of bracketRemoteSnapshot(session.buffer)) this.sendRemoteClient(clientId, msg);
     for (const msg of sessionUiSnapshot(session, this.displayMode(session))) this.sendRemoteClient(clientId, msg);
-    this.postRepoCatalog();
+    if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
   }
 
-  private async newRemoteSession(clientId: string): Promise<void> {
+  private async newRemoteSession(clientId: string, notifyCatalog = true): Promise<void> {
     const ownerTabToken = this.remoteClients.tabToken(clientId);
     const cwd = this.remoteClients.cwd(clientId);
     this.parkRemoteSession(clientId);
@@ -7317,11 +7360,16 @@ See design doc for the full state machine diagram.`;
     this.emit(session, { type: "clearMessages" });
     await this.startSession(undefined, session);
     await this.persistWorktreeBinding(session);
-    this.postRepoCatalog();
+    if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteSessionList(session, ownerTabToken);
   }
 
-  private async openRemoteSession(clientId: string, id: string, sessionCwd?: string): Promise<void> {
+  private async openRemoteSession(
+    clientId: string,
+    id: string,
+    sessionCwd?: string,
+    notifyCatalog = true,
+  ): Promise<void> {
     const claim = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
     if (!claim) {
       const selectedCwd = this.remoteClients.cwd(clientId);
@@ -7347,7 +7395,7 @@ See design doc for the full state machine diagram.`;
     }
     let failure: unknown;
     try {
-      await this.openRemoteSessionReserved(clientId, id, claim.reservation, sessionCwd);
+      await this.openRemoteSessionReserved(clientId, id, claim.reservation, sessionCwd, notifyCatalog);
     } catch (error) {
       failure = error;
       throw error;
@@ -7361,6 +7409,7 @@ See design doc for the full state machine diagram.`;
     id: string,
     reservation: SessionLoadReservation,
     sessionCwd?: string,
+    notifyCatalog = true,
   ): Promise<void> {
     const selectedCwd = this.remoteClients.cwd(clientId);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -7409,7 +7458,7 @@ See design doc for the full state machine diagram.`;
         }
         this.parkRemoteSession(clientId, session);
         this.dropRemoteVoice(clientId);
-        this.focusRemoteSession(clientId, session);
+        this.focusRemoteSession(clientId, session, notifyCatalog);
         return;
       }
     }
@@ -7472,7 +7521,7 @@ See design doc for the full state machine diagram.`;
     this.sendRemoteClient(clientId, { type: "clearMessages" });
     await this.startSession(id, session);
     this.markRead(session);
-    this.postRepoCatalog();
+    if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteSessionList(session, reservation.ownerTabToken);
   }
 
@@ -7751,7 +7800,7 @@ See design doc for the full state machine diagram.`;
         } else if (m.type === "resumeSession") {
           await this.openRemoteSession(currentClientId, m.id, m.cwd);
         } else if (m.type === "selectRepo") {
-          this.selectRemoteRepo(currentClientId, m.cwd);
+          await this.selectRemoteRepo(currentClientId, m.cwd);
         }
       };
       const operation = serializesRemoteSessionTransition(m.type)

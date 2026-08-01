@@ -78,6 +78,16 @@ export interface SessionMetaOverride {
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 
+/** Pick the newest user-visible session from an already-scoped history list. */
+export function mostRecentSession(entries: readonly SessionListEntry[]): SessionListEntry | undefined {
+  return entries
+    .filter((entry) => entry.kind !== "subagent")
+    .reduce<SessionListEntry | undefined>(
+      (recent, entry) => !recent || entry.updatedAt > recent.updatedAt ? entry : recent,
+      undefined,
+    );
+}
+
 export interface RepoPin {
   cwd: string;
   pinnedAt: number;

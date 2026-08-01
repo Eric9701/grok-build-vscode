@@ -164,6 +164,8 @@ a:hover {
    .top-bar is justify-content:flex-end, so the icons keep their position. */
 .repo-chip[hidden] { display: none; }
 .repo-chip:hover { background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08)); color: var(--vscode-foreground); }
+.repo-chip.disabled { cursor: wait; opacity: 0.7; }
+.repo-chip.disabled:hover { background: transparent; }
 .repo-chip.browsing { border-color: var(--vscode-focusBorder); color: var(--vscode-foreground); }
 .repo-chip-icon, .repo-chip > svg { display: inline-flex; flex: none; }
 .repo-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
