@@ -282,6 +282,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // A remote may spend one extra xAI call to shorten text it is about to speak.
   // The host independently requires that tab's reported TTS + summary prefs.
   summarizeSpeech: "propose",
+  // Reads a file, so it looks host-local — but the handle was issued BY the host
+  // for a picture it already sent this tab, so it grants no reach the remote did
+  // not already have. Path-based would be a different question entirely.
+  requestImageFull: "propose",
   composerFocus: "host-local",
   // relay account actions (link/unlink/portal) manage THIS machine's device
   // token — only the local webview may drive them
@@ -447,6 +451,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   summarizeRepliesAloud: "host-local",
   // Only the shortened text is returned; sidebar targets it to the requester.
   speechSummary: "mirror",
+  // Like speechSummary: sidebar targets it at the requesting tab only, so one
+  // phone's enlarged picture never lands in another tab's overlay.
+  imageFull: "mirror",
   moveComposerCaret: "host-local",
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",
@@ -505,6 +512,11 @@ export interface MediaInlineDeps {
     mimeType: string,
     maxDimension: number,
   ) => { bytes: Uint8Array; mime: string } | null;
+  /** Issue (or reuse) the opaque handle a remote can later exchange for a
+   *  full-size render of this path. Called only where a thumbnail is actually
+   *  being sent, so the set of fetchable images stays exactly the set already
+   *  shown. */
+  registerFullImage?: (path: string) => string | undefined;
   /** Optional bounded cache supplied by the host for repeated history replays. */
   thumbnailCache?: Map<string, string | null>;
   /** File mtime used with {@link thumbnailCache} to invalidate changed images. */
@@ -587,13 +599,15 @@ function inlineChipPreviewForRemote(chip: FileChip, deps: MediaInlineDeps): File
     const { previewSrc: _previewSrc, ...withoutPreview } = chip;
     return withoutPreview;
   }
-  return { ...chip, previewSrc: src };
+  // The handle rides ALONGSIDE the thumbnail: a tab may only enlarge a picture
+  // it was actually shown, so issuing it anywhere else would widen that reach.
+  const fullId = deps.registerFullImage?.(chip.path);
+  return { ...chip, previewSrc: src, ...(fullId ? { fullId } : {}) };
 }
 
-function inlineHistoryImageForRemote(
-  image: { imageIndex: number; path?: string; previewSrc?: string },
-  deps: MediaInlineDeps,
-): { imageIndex: number; path?: string; previewSrc?: string } {
+type HistoryImage = { imageIndex: number; path?: string; previewSrc?: string; fullId?: string };
+
+function inlineHistoryImageForRemote(image: HistoryImage, deps: MediaInlineDeps): HistoryImage {
   const src = image.previewSrc?.startsWith("data:image/") && dataUriFitsThumbnailBudget(image.previewSrc)
     ? image.previewSrc
     : thumbnailDataUri(image.path, undefined, deps);
@@ -601,7 +615,8 @@ function inlineHistoryImageForRemote(
     const { previewSrc: _previewSrc, ...withoutPreview } = image;
     return withoutPreview;
   }
-  return { ...image, previewSrc: src };
+  const fullId = image.path ? deps.registerFullImage?.(image.path) : undefined;
+  return { ...image, previewSrc: src, ...(fullId ? { fullId } : {}) };
 }
 
 /** The single outbound choke point: what (if anything) crosses to a remote for

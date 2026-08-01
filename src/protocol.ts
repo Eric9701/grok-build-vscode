@@ -105,8 +105,11 @@ export type HostMsg =
       type: "userMessageChunk";
       text: string;
       timestampMs?: number;
-      images?: Array<{ imageIndex: number; path?: string; previewSrc?: string }>;
+      images?: Array<{ imageIndex: number; path?: string; previewSrc?: string; fullId?: string }>;
     }
+  /** Answer to {@link WebviewMsg} `requestImageFull`. Sent only to the tab that
+   *  asked; `src` absent means the source is gone (swept, or deleted). */
+  | { type: "imageFull"; fullId: string; src?: string }
   | { type: "historyReplay"; active: boolean }
   /** Remote reconnect snapshot delivered as one browser event. Updated clients
    *  render every nested message synchronously; older per-message frames remain
@@ -238,6 +241,10 @@ export type WebviewMsg =
   | { type: "setReadRepliesAloud"; value: boolean }
   | { type: "setSummarizeRepliesAloud"; value: boolean }
   | { type: "summarizeSpeech"; requestId: number; text: string }
+  /** Ask the host to render a full-size version of an image it already sent a
+   *  thumbnail for. `fullId` is an opaque handle the HOST issued — deliberately
+   *  not a path, so a remote can only ask for pictures it was already shown. */
+  | { type: "requestImageFull"; fullId: string }
   | { type: "composerFocus"; focused: boolean }
   | { type: "setExpandCommandOutputs"; value: boolean }
   | { type: "setSteerByDefault"; value: boolean }
@@ -336,7 +343,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true, hostNotice: true,
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
-  soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, moveComposerCaret: true, remoteStatus: true,
+  soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
   sessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, usage: true,
@@ -348,7 +355,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
   setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
-  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, composerFocus: true,
+  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,

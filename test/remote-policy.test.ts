@@ -60,6 +60,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.setReadRepliesAloud).toBe("host-local");
     expect(INBOUND_DISPOSITION.setSummarizeRepliesAloud).toBe("host-local");
     expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
+    expect(INBOUND_DISPOSITION.requestImageFull).toBe("propose");
     // worktree/rewind flows run native host dialogs (input box / QuickPick) —
     // desktop-only until they get remote-capable UI (2026-07-24)
     expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
@@ -261,6 +262,47 @@ describe("transformHostMsgForRemote", () => {
     }, imageDeps) as Extract<HostMsg, { type: "userMessageChunk" }>;
     expect(out.images?.[0].previewSrc).toBe("data:image/jpeg;base64,CQ==");
     expect(MAX_REMOTE_THUMBNAIL_BYTES).toBe(96 * 1024);
+  });
+
+  it("issues an enlarge handle only where a thumbnail actually goes out", () => {
+    // The handle is what a remote exchanges for a full-size render, so the set
+    // of enlargeable images must equal the set already shown. Minting one for an
+    // image we could not thumbnail would hand out reach the remote never had.
+    const registered: string[] = [];
+    const withHandles = (bytes: Uint8Array | null): MediaInlineDeps => ({
+      readFile: () => bytes,
+      toBase64: (b) => Buffer.from(b).toString("base64"),
+      thumbnail: () => ({ bytes: new Uint8Array([9]), mime: "image/png" }),
+      registerFullImage: (p) => {
+        registered.push(p);
+        return `handle-${registered.length}`;
+      },
+    });
+    const chip = {
+      id: "image-1",
+      path: "/img.png",
+      relPath: "Image #1",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+    };
+
+    const shown = transformHostMsgForRemote(
+      { type: "chips", chips: [chip] },
+      withHandles(new Uint8Array([1, 2, 3])),
+    ) as Extract<HostMsg, { type: "chips" }>;
+    expect(shown.chips[0].fullId).toBe("handle-1");
+    expect(registered).toEqual(["/img.png"]);
+
+    // Unreadable source: no thumbnail crosses, so no handle may either.
+    registered.length = 0;
+    const hidden = transformHostMsgForRemote(
+      { type: "chips", chips: [chip] },
+      withHandles(null),
+    ) as Extract<HostMsg, { type: "chips" }>;
+    expect(hidden.chips[0].previewSrc).toBeUndefined();
+    expect(hidden.chips[0].fullId).toBeUndefined();
+    expect(registered).toEqual([]);
   });
 
   it("memoizes a thumbnail by source path and mtime across message shapes", () => {

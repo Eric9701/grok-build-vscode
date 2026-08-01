@@ -339,6 +339,9 @@
     // survive the session id being assigned after the first send and survives
     // switching away from a conversation.
     imagePreviews: new Map(),
+    // The full-size render the overlay is currently waiting on, so a late reply
+    // for a closed or replaced preview is dropped rather than painted.
+    pendingImageFullId: null,
     activeThoughtEl: null,
     activeThoughtHdrEl: null,
     thoughtStartTime: null,
@@ -2975,7 +2978,8 @@
         : ` (lines ${chip.selectionStart}-${chip.selectionEnd})`
       : "";
     const previewSrc = chip?.previewSrc || (chip?.previewId && state.imagePreviews.get(chip.previewId));
-    if (chip?.imageIndex != null && previewSrc) {
+    const hasPreview = chip?.imageIndex != null && !!previewSrc;
+    if (hasPreview) {
       const preview = document.createElement("button");
       preview.type = "button";
       preview.className = "msg-chip-preview";
@@ -2986,11 +2990,13 @@
       preview.appendChild(img);
       preview.onclick = (e) => {
         e.stopPropagation();
-        openImagePreview(previewSrc, name);
+        openImagePreview(previewSrc, name, chip?.fullId);
       };
       tag.appendChild(preview);
     }
-    tag.insertAdjacentHTML("beforeend", icon + `<span>${escapeHtml(name + range)}</span>`);
+    // The icon stands in FOR the picture. With a thumbnail beside it, it is the
+    // same idea said twice — so it appears only when there is nothing to show.
+    tag.insertAdjacentHTML("beforeend", (hasPreview ? "" : icon) + `<span>${escapeHtml(name + range)}</span>`);
     tag.title = (chip?.originRelPath || chip?.path || pathStr) + lineNote;
     return tag;
   }
@@ -5017,6 +5023,7 @@
           imageIndex: im.index,
           path: im.path || imagePreviews.get(im.index)?.path,
           previewSrc: imagePreviews.get(im.index)?.previewSrc,
+          fullId: imagePreviews.get(im.index)?.fullId,
         })),
     ];
     if (chipTags.length) {
@@ -6045,7 +6052,7 @@
 
   // ---------- chips ----------
 
-  function openImagePreview(src, label) {
+  function openImagePreview(src, label, fullId) {
     if (!src) return;
     let overlay = document.querySelector(".image-preview-overlay");
     if (!overlay) {
@@ -6053,7 +6060,11 @@
       overlay.className = "image-preview-overlay";
       overlay.hidden = true;
       overlay.innerHTML = `<button type="button" class="image-preview-close" aria-label="Close image preview">&times;</button><img>`;
-      const close = () => { overlay.hidden = true; };
+      const close = () => {
+        overlay.hidden = true;
+        // Whatever was in flight is for a picture nobody is looking at now.
+        state.pendingImageFullId = null;
+      };
       overlay.onclick = (e) => { if (e.target === overlay) close(); };
       overlay.querySelector(".image-preview-close").onclick = close;
       document.body.appendChild(overlay);
@@ -6063,6 +6074,16 @@
     img.alt = label || "Attached image";
     overlay.hidden = false;
     overlay.querySelector(".image-preview-close").focus();
+
+    // A remote only ever holds a 320px thumbnail, so enlarging it shows a blurry
+    // copy of what was already on screen. Ask the host for a real render and
+    // swap it in when it lands — the thumbnail stays up meanwhile, so a slow or
+    // unanswered request degrades to exactly the old behaviour.
+    state.pendingImageFullId = null;
+    if (IS_REMOTE && fullId) {
+      state.pendingImageFullId = fullId;
+      vscode.postMessage({ type: "requestImageFull", fullId });
+    }
   }
 
   document.addEventListener("keydown", (e) => {
@@ -6144,7 +6165,7 @@
           img.src = previewSrc;
           img.alt = "";
           preview.appendChild(img);
-          preview.onclick = () => openImagePreview(previewSrc, label);
+          preview.onclick = () => openImagePreview(previewSrc, label, chip.fullId);
           el.appendChild(preview);
         } else {
           el.innerHTML = chip.imageIndex != null ? ICON.image : ICON.file;
@@ -7372,6 +7393,15 @@
       case "userMessageChunk":
         appendUserChunk(msg.text, msg.timestampMs, msg.images);
         break;
+      case "imageFull": {
+        // Ignore an answer for a picture the overlay has moved on from, so a
+        // slow reply cannot replace whatever the user is looking at now.
+        if (!msg.src || state.pendingImageFullId !== msg.fullId) break;
+        const overlay = document.querySelector(".image-preview-overlay");
+        if (overlay && !overlay.hidden) overlay.querySelector("img").src = msg.src;
+        state.pendingImageFullId = null;
+        break;
+      }
       case "historyReplay":
         if (msg.active) {
           if (state.replayDepth === 0) {

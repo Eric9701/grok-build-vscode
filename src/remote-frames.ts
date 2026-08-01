@@ -195,6 +195,12 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return Number.isSafeInteger(value.requestId) && typeof value.text === "string"
         ? { type: "summarizeSpeech", requestId: value.requestId as number, text: value.text }
         : null;
+    case "requestImageFull":
+      // Shape-check only; the host still has to recognise the handle. This just
+      // keeps anything path-like from reaching that lookup in the first place.
+      return typeof value.fullId === "string" && REMOTE_TAB_TOKEN_RE.test(value.fullId)
+        ? { type: "requestImageFull", fullId: value.fullId }
+        : null;
     case "selectRepo":
     case "clearAllSessions":
       return isRemoteCwd(value.cwd) ? msg as WebviewMsg : null;

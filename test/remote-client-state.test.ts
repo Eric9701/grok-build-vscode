@@ -17,6 +17,31 @@ describe("RemoteClientState", () => {
     expect(state.clientsForCwd("C:\\Work\\A")).toEqual(["tab-b"]);
   });
 
+  it("follows a tab across a reconnect, and reports nothing once it is gone", () => {
+    // This is what attachment ownership resolves through AFTER its await. If a
+    // departed tab resolved to anything at all, its image would be delivered to
+    // whatever conversation happened to be in view — content crossing
+    // conversations, which is worse than losing the attachment.
+    const state = new RemoteClientState<string>("/work/a", norm);
+    state.ready("relay-1");
+    state.identify("relay-1", "tab-token-aaaaaaaaaaaaaaaaaaaa");
+    state.setActive("relay-1", "session-1");
+
+    // The phone refreshes: same logical tab, new ephemeral relay id.
+    state.ready("relay-2");
+    state.identify("relay-2", "tab-token-aaaaaaaaaaaaaaaaaaaa");
+
+    // The stale id still resolves to the tab's CURRENT connection and session,
+    // so an upload that was mid-write lands where the user expects.
+    expect(state.currentClient("relay-1")).toBe("relay-2");
+    expect(state.active(state.currentClient("relay-1")!)).toBe("session-1");
+
+    // A tab that genuinely left resolves to nothing.
+    state.deleteClient("relay-2");
+    expect(state.currentClient("relay-1")).toBeUndefined();
+    expect(state.currentClient("never-seen")).toBeUndefined();
+  });
+
   it("cannot inspect a missing client's cwd by implicitly recreating it", () => {
     const state = new RemoteClientState<object>("/work/a", norm);
 

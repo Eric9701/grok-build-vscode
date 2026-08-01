@@ -210,7 +210,9 @@ interface RemoteRequester {
   tabToken?: string;
 }
 
-type AttachmentOwner = () => Session;
+/** Resolved at commit time, AFTER any await. Undefined means the tab that asked
+ *  is gone and the attachment must be dropped — never redirected. */
+type AttachmentOwner = () => Session | undefined;
 
 interface RemoteBrowserPreferences {
   fontScale: number;
@@ -3587,6 +3589,18 @@ See design doc for the full state machine diagram.`;
         else this.postLocal(response);
         break;
       }
+      case "requestImageFull": {
+        // Local webviews open the real file directly, so this exists for remotes,
+        // which otherwise can only enlarge the 320px thumbnail.
+        if (origin !== "remote" || !requester) break;
+        const source = this.fullImagePaths.get(msg.fullId);
+        // Unknown handle: say nothing. The overlay keeps showing the thumbnail,
+        // and a probe learns nothing about what does or does not exist on disk.
+        if (!source) break;
+        const src = await this.renderFullImage(source);
+        this.sendRemoteRequester(requester, { type: "imageFull", fullId: msg.fullId, src });
+        break;
+      }
       case "send":
         let queuedSendCommit: { text: string } | undefined;
         if (origin === "remote" && msg.queuedSendId) {
@@ -5775,12 +5789,22 @@ See design doc for the full state machine diagram.`;
   /** Resolve attachment ownership at commit time. Session transitions can
    * replace the active session while staging is awaiting the filesystem; a
    * captured Session would then deliver the chip to the conversation the tab
-   * has already left. */
-  private attachmentOwner(origin: MsgOrigin, clientId?: string): Session {
-    const remote = origin === "remote" && clientId
-      ? this.remoteClients.active(clientId)
-      : undefined;
-    return sessionForRequest(origin, this.focused, remote) ?? this.focused;
+   * has already left.
+   *
+   * Returns undefined when the asking tab is gone, and callers MUST drop the
+   * attachment rather than pick somewhere for it. Falling back to `this.focused`
+   * looks harmless and is not: a phone that uploads and then reconnects gets a
+   * new relay id, so the staging that was still awaiting resolves to no client
+   * and the image lands in whatever conversation the DESK happens to be showing.
+   * That is content crossing conversations, which is worse than losing it.
+   *
+   * The ephemeral relay id is resolved through `currentClient`, which follows
+   * the tab across a reconnect via its stable token — so the ordinary
+   * refresh-mid-upload keeps working and only a genuinely departed tab drops. */
+  private attachmentOwner(origin: MsgOrigin, clientId?: string): Session | undefined {
+    if (origin !== "remote") return this.focused;
+    const current = clientId ? this.remoteClients.currentClient(clientId) : undefined;
+    return current ? this.remoteClients.active(current) : undefined;
   }
 
   /**
@@ -5923,12 +5947,19 @@ See design doc for the full state machine diagram.`;
     originPath?: string,
     owner: AttachmentOwner = () => this.focused,
     previewId?: string,
-  ): Promise<Session> {
+  ): Promise<Session | undefined> {
     const dir = this.imageStagingDir();
     await fs.promises.mkdir(dir, { recursive: true });
     const absPath = path.join(dir, `image-${randomUUID()}${extFromMime(mimeType)}`);
     await fs.promises.writeFile(absPath, bytes);
     const session = owner();
+    if (!session) {
+      // The asking tab left while this was writing. Delivering it anywhere else
+      // would put its image in someone else's conversation; the staged copy is
+      // left for the seven-day sweep rather than deleted, in case the write
+      // raced a reconnect that is about to come back.
+      return undefined;
+    }
     const rel = originPath
       ? normalizeRelPath(path.relative(this.sessionCwd(session), originPath))
       : undefined;
@@ -5974,10 +6005,15 @@ See design doc for the full state machine diagram.`;
 
   /** Copy an on-disk raster image into staging as a vision attachment, keeping
    *  the workspace-relative origin so the prompt tag can carry the real file
-   *  identity. Returns the owning session when it attaches an image, or false
-   *  when the file should stay a plain path chip (oversized, or unreadable as
-   *  a regular file). */
-  private async importImageFromDisk(srcPath: string, owner: AttachmentOwner = () => this.focused): Promise<Session | false> {
+   *  identity. Three outcomes, and they are not interchangeable: the owning
+   *  session when it attached, `false` when the file should stay a plain path
+   *  chip (oversized, or unreadable as a regular file), and `undefined` when the
+   *  asking tab left — which must drop the attachment rather than degrade it to
+   *  a path chip in someone else's conversation. */
+  private async importImageFromDisk(
+    srcPath: string,
+    owner: AttachmentOwner = () => this.focused,
+  ): Promise<Session | false | undefined> {
     const stat = await fs.promises.stat(srcPath);
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_VISION_IMAGE_BYTES) return false;
     const bytes = await fs.promises.readFile(srcPath);
@@ -6003,6 +6039,7 @@ See design doc for the full state machine diagram.`;
     if (!shiftHeld && isVisionImagePath(absPath)) {
       try {
         const imported = await this.importImageFromDisk(absPath, owner);
+        if (imported === undefined) return undefined; // tab gone — not a path chip either
         if (imported) return imported;
       } catch (e) {
         this.output.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
@@ -6011,6 +6048,7 @@ See design doc for the full state machine diagram.`;
       // the pre-vision behavior (grok decides how to consume the path).
     }
     const session = owner();
+    if (!session) return undefined; // asking tab gone — drop, never redirect
     const relPath = normalizeRelPath(path.relative(this.sessionCwd(session), absPath));
     if (shiftHeld) {
       // Only read the whole file (to count lines for an inline selection) when
@@ -6477,14 +6515,14 @@ See design doc for the full state machine diagram.`;
   /** Target one opaque relay clientId. */
   private sendRemoteClient(clientId: string, message: HostMsg): void {
     this.postTap?.("remote", message, [clientId]);
-    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
+    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
     if (out) this.uplink?.broadcastTo([clientId], out);
   }
 
   private sendRemoteRepo(cwd: string, message: HostMsg): void {
     const clientIds = this.remoteClients.clientsForCwd(cwd);
     this.postTap?.("remote", message, clientIds);
-    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
+    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
     if (!out) return;
     this.uplink?.broadcastTo(clientIds, out);
   }
@@ -6508,7 +6546,7 @@ See design doc for the full state machine diagram.`;
 
   private broadcastRemoteDevice(message: HostMsg): void {
     this.postTap?.("remote", message, this.remoteClients.clients());
-    const out = transformHostMsgForRemote(message, GrokSidebar.REMOTE_MEDIA_DEPS);
+    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
     if (out) this.uplink?.broadcast(out);
   }
 
@@ -7803,9 +7841,62 @@ See design doc for the full state machine diagram.`;
    *  later per-device setting. */
   private static readonly REMOTE_TIER: RemoteTier = "full";
 
+  /** Longest edge of the render a remote gets when it taps a thumbnail. Big
+   *  enough to read a screenshot on a phone, small enough not to push a
+   *  multi-megabyte frame over a mobile connection for a single tap. */
+  private static readonly FULL_IMAGE_MAX_EDGE = 1600;
+  private static readonly FULL_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+  /** How many enlargeable images a session remembers. Bounded because the map
+   *  is keyed by a handle we mint per path and never otherwise expire. */
+  private static readonly FULL_IMAGE_HANDLE_LIMIT = 300;
+
+  /** handle -> path, and its inverse so the same picture keeps one handle
+   *  across replays instead of minting a new one on every reconnect. */
+  private readonly fullImagePaths = new Map<string, string>();
+  private readonly fullImageHandles = new Map<string, string>();
+
+  /** Mint (or reuse) the handle for a path we are about to show a remote. */
+  private registerFullImage(imagePath: string): string {
+    const existing = this.fullImageHandles.get(imagePath);
+    if (existing) return existing;
+    const handle = randomUUID().replace(/-/g, "");
+    this.fullImageHandles.set(imagePath, handle);
+    this.fullImagePaths.set(handle, imagePath);
+    while (this.fullImagePaths.size > GrokSidebar.FULL_IMAGE_HANDLE_LIMIT) {
+      const oldest = this.fullImagePaths.keys().next().value;
+      if (oldest === undefined) break;
+      const stalePath = this.fullImagePaths.get(oldest);
+      this.fullImagePaths.delete(oldest);
+      if (stalePath && this.fullImageHandles.get(stalePath) === oldest) {
+        this.fullImageHandles.delete(stalePath);
+      }
+    }
+    return handle;
+  }
+
+  /** Render a bigger version for a remote's tap. Undefined when the source is
+   *  gone (the seven-day sweep, or a deleted original) or will not fit — the
+   *  browser then keeps the thumbnail it already has rather than blanking. */
+  private async renderFullImage(imagePath: string): Promise<string | undefined> {
+    try {
+      const bytes = await fs.promises.readFile(imagePath);
+      const thumb = thumbnailImage(bytes, guessMediaMime(imagePath), GrokSidebar.FULL_IMAGE_MAX_EDGE);
+      if (!thumb || thumb.byteLength === 0 || thumb.byteLength > GrokSidebar.FULL_IMAGE_MAX_BYTES) {
+        return undefined;
+      }
+      return `data:${thumbnailMime(thumb)};base64,${Buffer.from(thumb).toString("base64")}`;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Impure half of the media inline transform (the decision logic is the pure
-   *  remote-policy). Sync read keeps broadcast ordering; media is rare + capped. */
-  private static readonly REMOTE_MEDIA_DEPS: MediaInlineDeps = {
+   *  remote-policy). Sync read keeps broadcast ordering; media is rare + capped.
+   *  Per-instance rather than static: the full-image handles it issues belong to
+   *  this provider, and a shared registry would let one window hand out handles
+   *  into another's files. */
+  private readonly remoteMediaDeps: MediaInlineDeps = {
+    registerFullImage: (p) => this.registerFullImage(p),
     thumbnailCache: new Map<string, string | null>(),
     readFile: (p) => {
       try {
@@ -8147,7 +8238,7 @@ See design doc for the full state machine diagram.`;
     snap.push(this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
     const out: HostMsg[] = [];
     for (const m of snap) {
-      const t = transformHostMsgForRemote(m, GrokSidebar.REMOTE_MEDIA_DEPS);
+      const t = transformHostMsgForRemote(m, this.remoteMediaDeps);
       if (t) out.push(t);
     }
     return out;
