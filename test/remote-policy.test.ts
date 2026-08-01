@@ -12,6 +12,7 @@ import {
   inlineMediaForRemote,
   mediaMimeFromPath,
   transformHostMsgForRemote,
+  REMOTE_HISTORY_BYTE_LIMIT,
   MAX_REMOTE_MEDIA_BYTES,
   MAX_REMOTE_THUMBNAIL_BYTES,
   type MediaInlineDeps,
@@ -469,5 +470,59 @@ describe("remote reconnect snapshot replay", () => {
     expect(usage[9]).toMatchObject({ afterUserMessage: 10, afterHistoryEvent: 10, session: { inputTokens: 12 } });
     const transcript = messages.filter((m) => m.type !== "permissionHistoryQueue" && m.type !== "planHistoryQueue");
     expect(transcript[0]).toEqual({ type: "userMessage", text: "user 3" });
+  });
+
+  it("drops the oldest oversized turn at a user boundary until the batch fits", () => {
+    const buffer: HostMsg[] = [
+      { type: "userMessage", text: "old prompt" },
+      { type: "messageChunk", text: "x".repeat(REMOTE_HISTORY_BYTE_LIMIT - 100) },
+      { type: "userMessage", text: "new prompt" },
+      { type: "messageChunk", text: "new answer" },
+    ];
+
+    const messages = batched(buffer);
+    expect(messages[0]).toEqual({ type: "userMessage", text: "new prompt" });
+    expect(messages).not.toContainEqual(expect.objectContaining({ text: "old prompt" }));
+    expect(Buffer.byteLength(JSON.stringify({ type: "historyBatch", messages }))).toBeLessThanOrEqual(
+      REMOTE_HISTORY_BYTE_LIMIT,
+    );
+  });
+
+  it("trims inside the newest turn rather than delivering an empty batch", () => {
+    // One long agent run: a single turn whose retained output alone busts the
+    // budget. No older user boundary is left to drop, so the only way to fit is
+    // to begin mid-turn. Delivering nothing would read as a vanished conversation.
+    const chunk = "y".repeat(REMOTE_HISTORY_BYTE_LIMIT / 4);
+    const buffer: HostMsg[] = [
+      { type: "userMessage", text: "only prompt" },
+      { type: "messageChunk", text: chunk },
+      { type: "messageChunk", text: chunk },
+      { type: "messageChunk", text: chunk },
+      { type: "messageChunk", text: chunk },
+      { type: "messageChunk", text: "the newest words" },
+    ];
+
+    const messages = batched(buffer);
+    expect(Buffer.byteLength(JSON.stringify({ type: "historyBatch", messages }))).toBeLessThanOrEqual(
+      REMOTE_HISTORY_BYTE_LIMIT,
+    );
+    // Not empty, and it kept the NEWEST end — that is the part worth showing.
+    expect(messages.length).toBeGreaterThan(0);
+    expect(messages[messages.length - 1]).toEqual({ type: "messageChunk", text: "the newest words" });
+  });
+
+  it("empties the body only when one message alone exceeds the whole budget", () => {
+    // Inlining it would blow past the relay's frame ceiling and take the uplink
+    // down, which is strictly worse for the user than a short replay.
+    const buffer: HostMsg[] = [
+      { type: "userMessage", text: "only prompt" },
+      { type: "messageChunk", text: "z".repeat(REMOTE_HISTORY_BYTE_LIMIT + 1000) },
+    ];
+
+    const messages = batched(buffer);
+    expect(Buffer.byteLength(JSON.stringify({ type: "historyBatch", messages }))).toBeLessThanOrEqual(
+      REMOTE_HISTORY_BYTE_LIMIT,
+    );
+    expect(messages).toEqual([]);
   });
 });

@@ -210,6 +210,8 @@ interface RemoteRequester {
   tabToken?: string;
 }
 
+type AttachmentOwner = () => Session;
+
 interface RemoteBrowserPreferences {
   fontScale: number;
   readRepliesAloud: boolean;
@@ -3534,6 +3536,7 @@ See design doc for the full state machine diagram.`;
     const requester = origin === "remote" && clientId
       ? this.captureRemoteRequester(clientId)
       : undefined;
+    const attachmentOwner: AttachmentOwner = () => this.attachmentOwner(origin, clientId);
     const messageCwd = origin === "remote" && clientId
       ? this.remoteClients.cwd(clientId)
       : this.workspaceRoot();
@@ -3809,13 +3812,13 @@ See design doc for the full state machine diagram.`;
         await this.exportExpr(msg, session);
         break;
       case "dropFile":
-        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, session));
+        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, attachmentOwner));
         break;
       case "pasteImage":
         await this.trackAttach(this.addPastedImage(
           msg.data,
           msg.mimeType,
-          session,
+          attachmentOwner,
           requester,
           msg.previewId,
         ));
@@ -3824,7 +3827,7 @@ See design doc for the full state machine diagram.`;
         await this.trackAttach(this.addUploadedFile(
           msg.name,
           msg.data,
-          session,
+          attachmentOwner,
           requester,
         ));
         break;
@@ -4099,7 +4102,7 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "addMentionFile": {
-        const workspaceRoot = this.sessionCwd(session);
+        const workspaceRoot = this.sessionCwd(attachmentOwner());
         if (!workspaceRoot) break;
 
         let catalogMatch: string | undefined;
@@ -4145,7 +4148,7 @@ See design doc for the full state machine diagram.`;
           // Stale/garbage catalog entries remain a no-op, as before.
           break;
         }
-        await this.trackAttach(this.addDroppedFile(abs, false, session));
+        await this.trackAttach(this.addDroppedFile(abs, false, attachmentOwner));
         break;
       }
       case "voiceStart":
@@ -5761,11 +5764,23 @@ See design doc for the full state machine diagram.`;
    *  not serialize async onDidReceiveMessage handlers), so handleSend settles
    *  this set before snapshotting chips: the chip must make THIS send, not the
    *  next one. */
-  private trackAttach(op: Promise<void>): Promise<void> {
-    this.pendingAttach.add(op);
-    const done = () => { this.pendingAttach.delete(op); };
-    void op.then(done, done);
-    return op;
+  private trackAttach(op: Promise<unknown>): Promise<void> {
+    const tracked = op.then(() => undefined);
+    this.pendingAttach.add(tracked);
+    const done = () => { this.pendingAttach.delete(tracked); };
+    void tracked.then(done, done);
+    return tracked;
+  }
+
+  /** Resolve attachment ownership at commit time. Session transitions can
+   * replace the active session while staging is awaiting the filesystem; a
+   * captured Session would then deliver the chip to the conversation the tab
+   * has already left. */
+  private attachmentOwner(origin: MsgOrigin, clientId?: string): Session {
+    const remote = origin === "remote" && clientId
+      ? this.remoteClients.active(clientId)
+      : undefined;
+    return sessionForRequest(origin, this.focused, remote) ?? this.focused;
   }
 
   /**
@@ -5831,7 +5846,7 @@ See design doc for the full state machine diagram.`;
   private async addUploadedFile(
     suppliedName: string,
     data: string,
-    session: Session = this.focused,
+    owner: AttachmentOwner = () => this.focused,
     requester?: RemoteRequester,
   ): Promise<void> {
     const prepared = prepareFileUpload(suppliedName, data, MAX_VISION_IMAGE_BYTES);
@@ -5853,7 +5868,7 @@ See design doc for the full state machine diagram.`;
     try {
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.writeFile(absPath, prepared.bytes, { flag: "wx" });
-      await this.addDroppedFile(absPath, false, session);
+      const session = await this.addDroppedFile(absPath, false, owner);
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       void fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -5905,17 +5920,27 @@ See design doc for the full state machine diagram.`;
   private async stageImageAttachment(
     bytes: Buffer,
     mimeType: string,
-    originRelPath?: string,
-    session: Session = this.focused,
+    originPath?: string,
+    owner: AttachmentOwner = () => this.focused,
     previewId?: string,
-  ): Promise<void> {
+  ): Promise<Session> {
     const dir = this.imageStagingDir();
     await fs.promises.mkdir(dir, { recursive: true });
     const absPath = path.join(dir, `image-${randomUUID()}${extFromMime(mimeType)}`);
     await fs.promises.writeFile(absPath, bytes);
+    const session = owner();
+    const rel = originPath
+      ? normalizeRelPath(path.relative(this.sessionCwd(session), originPath))
+      : undefined;
+    // asRelativePath returns the input unchanged for files outside the
+    // workspace — only carry the origin when it's a real workspace-relative path.
+    const originRelPath = rel && rel !== ".." && !rel.startsWith("../") && !path.isAbsolute(rel)
+      ? rel
+      : undefined;
     const imageIndex = ++session.imageCounter;
     session.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath, previewId));
     this.postChips(session);
+    return session;
   }
 
   /** Clipboard paste from the webview (base64 + mime, already prefiltered to
@@ -5924,7 +5949,7 @@ See design doc for the full state machine diagram.`;
   private async addPastedImage(
     base64: string,
     mimeType: string,
-    session: Session = this.focused,
+    owner: AttachmentOwner = () => this.focused,
     requester?: RemoteRequester,
     previewId?: string,
   ): Promise<void> {
@@ -5939,7 +5964,7 @@ See design doc for the full state machine diagram.`;
         this.reportRequester(requester, "error", "Grok: pasted image exceeds the 20 MiB vision limit.");
         return;
       }
-      await this.stageImageAttachment(bytes, mimeType, undefined, session, previewId);
+      const session = await this.stageImageAttachment(bytes, mimeType, undefined, owner, previewId);
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       this.output.appendLine(`[image] paste failed: ${(e as Error).message}`);
@@ -5949,23 +5974,21 @@ See design doc for the full state machine diagram.`;
 
   /** Copy an on-disk raster image into staging as a vision attachment, keeping
    *  the workspace-relative origin so the prompt tag can carry the real file
-   *  identity. Returns false when the file should stay a plain path chip
-   *  (oversized, or unreadable as a regular file). */
-  private async importImageFromDisk(srcPath: string, session: Session = this.focused): Promise<boolean> {
+   *  identity. Returns the owning session when it attaches an image, or false
+   *  when the file should stay a plain path chip (oversized, or unreadable as
+   *  a regular file). */
+  private async importImageFromDisk(srcPath: string, owner: AttachmentOwner = () => this.focused): Promise<Session | false> {
     const stat = await fs.promises.stat(srcPath);
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_VISION_IMAGE_BYTES) return false;
     const bytes = await fs.promises.readFile(srcPath);
-    const rel = normalizeRelPath(path.relative(this.sessionCwd(session), srcPath));
-    // asRelativePath returns the input unchanged for files outside the
-    // workspace — only carry the origin when it's a real workspace-relative path.
-    const originRelPath = rel !== ".." && !rel.startsWith("../") && !path.isAbsolute(rel)
-      ? rel
-      : undefined;
-    await this.stageImageAttachment(bytes, mimeFromPath(srcPath), originRelPath, session);
-    return true;
+    return this.stageImageAttachment(bytes, mimeFromPath(srcPath), srcPath, owner);
   }
 
-  private async addDroppedFile(dropped: string, shiftHeld: boolean, session: Session = this.focused): Promise<void> {
+  private async addDroppedFile(
+    dropped: string,
+    shiftHeld: boolean,
+    owner: AttachmentOwner = () => this.focused,
+  ): Promise<Session | undefined> {
     // The webview posts the raw file:// URI (it has no path library); accept a
     // plain path too so older webview builds degrade instead of breaking.
     let absPath = dropped;
@@ -5979,13 +6002,15 @@ See design doc for the full state machine diagram.`;
     if (!fs.existsSync(absPath)) return;
     if (!shiftHeld && isVisionImagePath(absPath)) {
       try {
-        if (await this.importImageFromDisk(absPath, session)) return;
+        const imported = await this.importImageFromDisk(absPath, owner);
+        if (imported) return imported;
       } catch (e) {
         this.output.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
       }
       // Oversized / unreadable-as-image → fall through to a plain path chip,
       // the pre-vision behavior (grok decides how to consume the path).
     }
+    const session = owner();
     const relPath = normalizeRelPath(path.relative(this.sessionCwd(session), absPath));
     if (shiftHeld) {
       // Only read the whole file (to count lines for an inline selection) when
@@ -6008,6 +6033,7 @@ See design doc for the full state machine diagram.`;
       session.chips.push(makeExplicitChip(absPath, relPath));
     }
     this.postChips(session);
+    return session;
   }
 
   /** A prompt is running or pending user action — a new prompt now would

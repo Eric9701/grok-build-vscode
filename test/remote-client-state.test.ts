@@ -147,6 +147,22 @@ describe("RemoteClientState", () => {
     expect(state.cwd("tab")).toBe("/work/b");
   });
 
+  it("resolves a staged attachment against the session active when it commits", async () => {
+    const state = new RemoteClientState<{ id: string }>("/work/a", norm);
+    const local = { id: "local" };
+    const first = { id: "first" };
+    const second = { id: "second" };
+    state.ready("tab");
+    state.setActive("tab", first);
+    const ownerAtCommit = () => state.active("tab") ?? local;
+    const staged = Promise.resolve().then(ownerAtCommit);
+
+    state.select("tab", "/work/b");
+    state.setActive("tab", second);
+
+    expect(await staged).toBe(second);
+  });
+
   it("evicts a disposed session from every cwd active map", () => {
     const state = new RemoteClientState<object>("/work/a", norm);
     state.ready("tab-a");

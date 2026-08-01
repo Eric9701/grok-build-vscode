@@ -17,6 +17,8 @@ import { countsAsUserBubble } from "./plan-restore";
 import { historyEventCount } from "./rewind";
 
 export const REMOTE_HISTORY_USER_LIMIT = 10;
+/** Keep reconnect history comfortably below the relay's 36 MiB WS ceiling. */
+export const REMOTE_HISTORY_BYTE_LIMIT = 8 * 1024 * 1024;
 
 function remoteUserMessageIndexes(buffer: readonly HostMsg[]): number[] {
   const indexes: number[] = [];
@@ -102,12 +104,12 @@ function shiftCounterMessage(
   return msg;
 }
 
-/** Mark a reconnect snapshot as replayed UI state. The batch owns one outer
- * bracket pair, so buffered load-session brackets are removed before delivery. */
-export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
-  const userIndexes = remoteUserMessageIndexes(buffer);
-  const droppedUsers = Math.max(0, userIndexes.length - REMOTE_HISTORY_USER_LIMIT);
-  const start = droppedUsers > 0 ? userIndexes[droppedUsers] : 0;
+function snapshotParts(
+  buffer: readonly HostMsg[],
+  userIndexes: readonly number[],
+  start: number,
+): { preamble: HostMsg[]; body: HostMsg[] } {
+  const droppedUsers = userIndexes.filter((index) => index < start).length;
   const droppedHistoryEvents = historyEventCount(buffer.slice(0, start));
   const preamble = droppedUsers > 0
     ? buffer.slice(0, start)
@@ -117,15 +119,70 @@ export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
         return shifted ? [shifted] : [];
       })
     : [];
-  const messages = [
-    ...preamble,
-    ...buffer.slice(start)
-      .filter((msg) => msg.type !== "historyReplay")
-      .flatMap((msg) => {
-        const shifted = shiftCounterMessage(msg, droppedUsers, droppedHistoryEvents);
-        return shifted ? [shifted] : [];
-      }),
-  ];
+  const body = buffer.slice(start)
+    .filter((msg) => msg.type !== "historyReplay")
+    .flatMap((msg) => {
+      const shifted = shiftCounterMessage(msg, droppedUsers, droppedHistoryEvents);
+      return shifted ? [shifted] : [];
+    });
+  return { preamble, body };
+}
+
+function snapshotMessages(
+  buffer: readonly HostMsg[],
+  userIndexes: readonly number[],
+  start: number,
+): HostMsg[] {
+  const { preamble, body } = snapshotParts(buffer, userIndexes, start);
+  return [...preamble, ...body];
+}
+
+function historyBatchBytes(messages: readonly HostMsg[]): number {
+  return new TextEncoder().encode(JSON.stringify({ type: "historyBatch", messages })).length;
+}
+
+/** Mark a reconnect snapshot as replayed UI state. The batch owns one outer
+ * bracket pair, so buffered load-session brackets are removed before delivery. */
+export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
+  const userIndexes = remoteUserMessageIndexes(buffer);
+  const droppedUsers = Math.max(0, userIndexes.length - REMOTE_HISTORY_USER_LIMIT);
+  let start = droppedUsers > 0 ? userIndexes[droppedUsers] : 0;
+  let messages = snapshotMessages(buffer, userIndexes, start);
+
+  // A user boundary is the smallest PREFERRED unit to discard: removing anything
+  // inside it makes the replay begin halfway through a turn. Rebuild the
+  // counters after every byte-budget cut because the final dropped prefix may
+  // contain more user/history events than the turn cap alone did. Bounded by
+  // the turn cap, so this runs at most REMOTE_HISTORY_USER_LIMIT times.
+  while (historyBatchBytes(messages) > REMOTE_HISTORY_BYTE_LIMIT) {
+    const next = userIndexes.find((index) => index > start);
+    if (next === undefined) break;
+    start = next;
+    messages = snapshotMessages(buffer, userIndexes, start);
+  }
+
+  // The newest turn can exceed the budget on its own — one long agent run with
+  // enough retained command output does it. Beginning mid-turn reads oddly, but
+  // delivering nothing reads as a conversation that vanished, so trim the body
+  // from the front instead. The preamble stays: it carries the shifted plan and
+  // permission counters, and dropping those desynchronises the client's replay.
+  // One backward pass with a running total — re-serialising per candidate start
+  // would be quadratic in exactly the oversized case that gets here.
+  if (historyBatchBytes(messages) > REMOTE_HISTORY_BYTE_LIMIT) {
+    const { preamble, body } = snapshotParts(buffer, userIndexes, start);
+    let used = historyBatchBytes(preamble);
+    let keepFrom = body.length;
+    for (let i = body.length - 1; i >= 0; i--) {
+      const size = new TextEncoder().encode(JSON.stringify(body[i])).length + 1;
+      if (used + size > REMOTE_HISTORY_BYTE_LIMIT) break;
+      used += size;
+      keepFrom = i;
+    }
+    // A single message over the whole budget leaves the body empty. That is the
+    // honest outcome: inlining it would blow the relay's frame ceiling and take
+    // the uplink down, which is strictly worse than a short replay.
+    messages = [...preamble, ...body.slice(keepFrom)];
+  }
   return [
     { type: "historyReplay", active: true },
     { type: "historyBatch", messages },
