@@ -11,8 +11,13 @@ out-integration/**
 .vscode-test.mjs
 .vscode-test/**
 tsconfig.json
+# ALLOWLIST — this excludes every dependency and re-includes them one by one.
+# out/ is plain tsc output, not a bundle, so anything `require`d at runtime must
+# be named here or the extension installs and then fails to load. Adding a
+# runtime dependency means adding a line here too; nothing warns you.
 node_modules/**
 !node_modules/ws/**
+!node_modules/jpeg-js/**
 .git/**
 **/*.map
 **/*.ts
