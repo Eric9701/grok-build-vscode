@@ -107,6 +107,21 @@ describe("voice control mic button", () => {
     expect(input.value).toBe("Note: hello");
   });
 
+  it("inserts batch dictation at the caret and preserves the suffix", () => {
+    const { window, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "Please review now";
+    input.setSelectionRange(13, 13);
+
+    click(window, $(doc, "mic-btn"));
+    click(window, $(doc, "mic-btn"));
+    dispatch(window, { type: "voiceTranscript", text: "this", send: false });
+
+    expect(input.value).toBe("Please review this now");
+    expect(input.selectionStart).toBe(18);
+    expect(input.selectionEnd).toBe(18);
+  });
+
   it("resets to idle when the host reports a voiceError", () => {
     const { window, doc } = bootWebview();
     const mic = $(doc, "mic-btn");
@@ -180,6 +195,28 @@ describe("voice control: live streaming transcription", () => {
     expect(input.value).toBe("Note: fix the parser");
   });
 
+  it("anchors to the caret at MIC START, even when the client is unconfigured", () => {
+    // The client is not the authority on the key: it can believe voice is
+    // unconfigured while the host records anyway. The capture used to sit inside
+    // that guard, so the first partial rendered "" + transcript and wiped the
+    // draft. Moving the caret after the click is what makes this test bite —
+    // rendering re-captures lazily as a fallback, so anchoring at start is only
+    // observable once the two positions differ.
+    const { window, posted, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "Keep this draft";
+    input.setSelectionRange(5, 5);
+    dispatch(window, { type: "voiceConfigured", value: false });
+
+    click(window, $(doc, "mic-btn"));
+    expect(posted.some((p) => p.type === "voiceStart")).toBe(true);
+
+    input.setSelectionRange(0, 0); // caret wanders before the first partial lands
+    dispatch(window, { type: "voicePartial", text: "the" });
+
+    expect(input.value).toBe("Keep the this draft"); // not "theKeep this draft"
+  });
+
   it("final voiceTranscript replaces the live tail (not appends) in streaming mode", () => {
     const { window, doc } = bootWebview();
     const mic = $(doc, "mic-btn");
@@ -202,6 +239,7 @@ describe("voice control: live streaming transcription", () => {
     const sent = posted.find((p) => p.type === "send");
     expect(sent).toBeTruthy();
     expect((sent as Posted).text).toBe("add a logout button");
+    expect(posted.filter((p) => p.type === "voiceStop")).toHaveLength(0);
   });
 });
 

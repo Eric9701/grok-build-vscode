@@ -282,7 +282,9 @@ export type WebviewMsg =
   // allowlists/sanitizes/stages it, then routes it through addDroppedFile.
   | { type: "uploadFile"; name: string; data: string }
   | { type: "voiceStart" }
-  | { type: "voiceStop" }
+  /** Stop voice input. Manual Send/Queue sets discard so late transcription
+   * cannot refill the composer that was just sent. */
+  | { type: "voiceStop"; discard?: boolean }
   // AFK Pilot microphone input. Audio remains raw PCM16 LE / 16 kHz / mono;
   // the relay treats these opaque messages like every other WebviewMsg.
   | { type: "remoteVoiceStart" }

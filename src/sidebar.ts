@@ -342,6 +342,8 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private voiceTempPath?: string;
   private voiceStreamer?: VoiceStreamer;
   private voiceFinalizing = false;
+  /** Invalidates async voice callbacks after a manual discard or session swap. */
+  private voiceGeneration = 0;
   // Stored so a "grok send" can transparently restart a fresh stream (each
   // message = one clean utterance) without re-resolving the mic device.
   private voiceStreamCtx?: {
@@ -351,6 +353,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     phrase: string;
     keyterms: string[];
     language?: string;
+    generation: number;
   };
   private localVoiceCwd?: string;
   private localVoiceCredentialCwd?: string;
@@ -4169,7 +4172,8 @@ See design doc for the full state machine diagram.`;
         await this.handleVoiceStart(session);
         break;
       case "voiceStop":
-        await this.handleVoiceStop();
+        if (msg.discard) this.stopVoiceInput();
+        else await this.handleVoiceStop();
         break;
       case "remoteVoiceStart":
         if (origin === "remote" && clientId) await this.handleRemoteVoiceStart(clientId, session);
@@ -5080,6 +5084,7 @@ See design doc for the full state machine diagram.`;
   }
 
   private async handleVoiceStart(session: Session = this.focused): Promise<void> {
+    const generation = ++this.voiceGeneration;
     const cwd = this.sessionCwd(session);
     const credentialCwd = this.sessionCwd(session);
     const key = this.resolveVoiceApiKey(credentialCwd);
@@ -5100,16 +5105,25 @@ See design doc for the full state machine diagram.`;
     // Streaming (default): live transcription over the STT WebSocket, so "grok
     // send" can submit hands-free without a stop-click. Batch is the fallback.
     if (cfg.get<boolean>("voiceStreaming", true)) {
-      await this.startVoiceStream(key, ffmpegPath, device, cwd);
+      await this.startVoiceStream(key, ffmpegPath, device, cwd, generation);
       return;
     }
 
     const tmp = path.join(os.tmpdir(), `grok-voice-${Date.now()}.wav`);
     try {
       await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.output.appendLine(m) });
+      if (generation !== this.voiceGeneration) {
+        this.voiceRecorder.cancel();
+        try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+        return;
+      }
       this.voiceTempPath = tmp;
       this.postLocal({ type: "voiceState", status: "listening" });
     } catch (e) {
+      if (generation !== this.voiceGeneration) {
+        try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+        return;
+      }
       const msg = (e as Error).message;
       this.output.appendLine(`[voice] start failed: ${msg}`);
       // ffmpeg-missing is the common, fixable case — offer a jump to its setting.
@@ -5136,6 +5150,7 @@ See design doc for the full state machine diagram.`;
     ffmpegPath: string,
     device: string | undefined,
     cwd: string,
+    generation: number,
   ): Promise<void> {
     const phrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
     const keyterms = buildSttKeyterms(
@@ -5148,7 +5163,8 @@ See design doc for the full state machine diagram.`;
     if (process.platform === "win32" && !resolved) {
       try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.output.appendLine(m)); } catch { /* streamer surfaces it */ }
     }
-    this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms, language };
+    if (generation !== this.voiceGeneration) return;
+    this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms, language, generation };
     this.voiceFinalizing = false;
     await this.openVoiceStream();
   }
@@ -5167,7 +5183,8 @@ See design doc for the full state machine diagram.`;
     if (fresh) ctx.key = fresh;
     const streamer = new VoiceStreamer();
     this.voiceStreamer = streamer;
-    const isCurrent = () => this.voiceStreamer === streamer;
+    const isCurrent = () =>
+      this.voiceStreamer === streamer && ctx.generation === this.voiceGeneration;
 
     streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
       if (!isCurrent()) return;
@@ -5246,6 +5263,8 @@ See design doc for the full state machine diagram.`;
   /** "grok send": submit the message and KEEP listening by restarting a fresh
    *  stream (each message = one clean utterance). No clicks needed. */
   private commitVoiceStream(text: string): void {
+    const ctx = this.voiceStreamCtx;
+    if (!ctx || ctx.generation !== this.voiceGeneration) return;
     const old = this.voiceStreamer;
     this.voiceStreamer = undefined; // detach so late events are ignored
     old?.cancel();
@@ -5257,6 +5276,7 @@ See design doc for the full state machine diagram.`;
    *  remaining transcript and return to idle. */
   private async finalizeVoiceStream(): Promise<void> {
     if (this.voiceFinalizing) return;
+    const generation = this.voiceGeneration;
     this.voiceFinalizing = true;
     const streamer = this.voiceStreamer;
     this.voiceStreamer = undefined;
@@ -5265,6 +5285,10 @@ See design doc for the full state machine diagram.`;
     this.postLocal({ type: "voiceState", status: "transcribing" });
     let finalText = "";
     try { finalText = await streamer.stop(); } catch { finalText = streamer.transcript; }
+    if (generation !== this.voiceGeneration) {
+      this.voiceFinalizing = false;
+      return;
+    }
     const cwd = this.localVoiceCredentialCwd ?? this.workspaceRoot();
     const phrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
     const { text, send } = parseVoiceCommand(finalText, phrase);
@@ -5283,7 +5307,13 @@ See design doc for the full state machine diagram.`;
    *  Called on session switch/restart so listening never bleeds across sessions. */
   private stopVoiceInput(session?: Session): void {
     if (!session || session === this.focused) {
-      const wasActive = !!this.voiceStreamer || this.voiceRecorder.active;
+      const wasActive =
+        !!this.voiceStreamer ||
+        !!this.voiceStreamCtx ||
+        this.voiceRecorder.active ||
+        this.voiceFinalizing ||
+        !!this.voiceTempPath;
+      this.voiceGeneration += 1;
       this.voiceStreamer?.cancel();
       this.voiceStreamer = undefined;
       this.voiceStreamCtx = undefined;
@@ -5307,6 +5337,7 @@ See design doc for the full state machine diagram.`;
 
   /** Stop recording, transcribe via xAI STT, and send the text to the composer. */
   private async handleVoiceStop(): Promise<void> {
+    const generation = this.voiceGeneration;
     // Streaming path: finalize the live stream.
     if (this.voiceStreamer) {
       await this.finalizeVoiceStream();
@@ -5329,7 +5360,12 @@ See design doc for the full state machine diagram.`;
     let wavPath: string;
     try {
       wavPath = await this.voiceRecorder.stop();
+      if (generation !== this.voiceGeneration) {
+        try { fs.unlinkSync(wavPath); } catch { /* best effort */ }
+        return;
+      }
     } catch (e) {
+      if (generation !== this.voiceGeneration) return;
       this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
       vscode.window.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
       this.releaseVoice(this.localVoiceCwd);
@@ -5338,9 +5374,11 @@ See design doc for the full state machine diagram.`;
       this.postLocal({ type: "voiceError" });
       return;
     }
+    const tempPath = this.voiceTempPath;
     this.postLocal({ type: "voiceState", status: "transcribing" });
     try {
       const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
+      if (generation !== this.voiceGeneration) return;
       // Strip a trailing "grok send" (configurable) so dictation can submit
       // hands-free. The webview inserts `text` and, if `send`, fires the send.
       const sendPhrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
@@ -5352,12 +5390,13 @@ See design doc for the full state machine diagram.`;
       }
       this.postLocal({ type: "voiceTranscript", text, send });
     } catch (e) {
+      if (generation !== this.voiceGeneration) return;
       this.output.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
       vscode.window.showErrorMessage((e as Error).message);
       this.postLocal({ type: "voiceError" });
     } finally {
-      try { if (this.voiceTempPath) fs.unlinkSync(this.voiceTempPath); } catch { /* best effort */ }
-      this.voiceTempPath = undefined;
+      try { if (tempPath) fs.unlinkSync(tempPath); } catch { /* best effort */ }
+      if (this.voiceTempPath === tempPath) this.voiceTempPath = undefined;
       this.releaseVoice(this.localVoiceCwd);
       this.localVoiceCwd = undefined;
       this.localVoiceCredentialCwd = undefined;
@@ -5493,10 +5532,10 @@ See design doc for the full state machine diagram.`;
 
   private async handleRemoteVoiceStop(clientId: string, cancel: boolean): Promise<void> {
     const entry = this.remoteVoice.get(clientId);
-    if (!entry || entry.finalizing) {
-      this.sendRemoteClient(clientId, { type: "voiceError" });
-      return;
-    }
+    // A cancelled stream can still emit an ended/error callback while its stop
+    // promise is settling. Its entry identity is the generation guard; do not
+    // turn that late completion into a new client-visible event.
+    if (!entry || entry.finalizing) return;
     entry.finalizing = true;
     entry.ingress.close();
     this.sendRemoteClient(clientId, { type: "voiceState", status: cancel ? "idle" : "transcribing" });

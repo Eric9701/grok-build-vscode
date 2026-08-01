@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Dictation inserts where your cursor is** instead of always appending to the end, and replaces the text you had selected — so you can pause, correct a sentence in the middle, and carry on in place. Thanks to [@tarcisiomiranda](https://github.com/tarcisiomiranda), whose [#72](https://github.com/phuryn/grok-build-vscode/pull/72) is the design this is built from; it was ported rather than merged because the branch predated the shared-PCM voice rewrite.
+- **Clicking Send or Queue now turns the microphone off** and sends exactly the text you can see. A transcript still in flight can no longer refill the composer you just cleared. Saying **"grok send"** still submits hands-free and keeps listening — that flow is unchanged on purpose.
+
+### Fixed
+
+- **Dictation could wipe a draft you had already typed.** The composer position was only remembered when the extension believed voice was configured, but recording is the host's call — so when the two disagreed, the first words transcribed replaced everything in the box.
+
+---
+
 ## 2.3.0 — 2026-08-01
 
 ### Added

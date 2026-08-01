@@ -286,10 +286,16 @@
     // Whether the host found a voice API key. Optimistic until the host says
     // otherwise; remote clients cannot configure the host themselves.
     voiceConfigured: true,
-    // Streaming dictation: text typed before the mic started ("base"), and
-    // whether live partials have begun replacing the tail.
-    voiceBase: "",
+    // Dictation insertion point: text before and after the selection that was
+    // active when the mic started. Live partials replace only the text between
+    // these anchors.
+    voiceBefore: "",
+    voiceAfter: "",
+    voiceInsertionActive: false,
     voiceLive: false,
+    // Manual Send/Queue discards the active capture and blocks late results
+    // until the next mic start.
+    voiceDiscarded: false,
     // The configured send phrase (for highlighting it in the composer).
     voiceSendPhrase: "grok send",
     remoteFontScale: IS_REMOTE ? storedNumber(REMOTE_FONT_SCALE_KEY, 1) : 1,
@@ -6403,6 +6409,7 @@
   function queueFromComposer() {
     const t = input.value.trim();
     if (!t) return false;
+    stopVoiceForManualSend();
     queueOutgoing(t);
     input.value = "";
     renderInputHighlight(); // also flips the busy button back to Stop (empty composer)
@@ -6487,6 +6494,7 @@
     // Sendable = typed text or any visible chip (file or image alike — image
     // chips render as remove-only attachment rows, so they're never hidden).
     if (!text && state.chips.every((c) => c.hidden)) return;
+    stopVoiceForManualSend();
     state.busy = true;
     updateSendButton();
     state.activeAgentEl = null;
@@ -6570,13 +6578,15 @@
       return;
     }
     if (state.mic === "idle") {
+      // The host is the authority on whether voice is configured, but the
+      // anchors must be captured before every start request it receives.
+      captureVoiceInsertion();
+      state.voiceLive = false;
+      state.voiceDiscarded = false;
       // Skip the optimistic "listening" flash when we know no key is set — the
       // host will pop the setup guidance instead of recording. Still send
       // voiceStart so the host (the authority on the key) makes the call.
       if (state.voiceConfigured) {
-        // Remember what's already typed; live partials replace only the tail.
-        state.voiceBase = input.value;
-        state.voiceLive = false;
         setMic("start");
       }
       vscode.postMessage({ type: "voiceStart" });
@@ -6669,7 +6679,9 @@
     if (!state.voiceConfigured || remoteMic || remoteMicStart || state.mic !== "idle") return;
     const attempt = { cancelled: false };
     remoteMicStart = attempt;
-    state.voiceBase = input.value;
+    captureVoiceInsertion();
+    state.voiceLive = false;
+    state.voiceDiscarded = false;
     setMic("start");
     let stream;
     let context;
@@ -6742,6 +6754,25 @@
     }
   }
 
+  // Manual Send/Queue means "send exactly what is visible now". It cancels
+  // capture and blocks in-flight voice results from repopulating the cleared
+  // composer. The mic button's stop path deliberately does not use this.
+  function stopVoiceForManualSend() {
+    if (state.mic === "idle") return;
+    state.mic = "idle";
+    clearVoiceInsertion();
+    state.voiceLive = false;
+    state.voiceDiscarded = true;
+    if (IS_REMOTE) {
+      if (remoteMicStart) remoteMicStart.cancelled = true;
+      if (remoteMic) stopBrowserMic(true);
+      else if (remoteMicStart) remoteMicStart = null;
+    } else {
+      vscode.postMessage({ type: "voiceStop", discard: true });
+    }
+    renderMic();
+  }
+
   function finishBrowserMicStop(mic) {
     if (remoteMic !== mic) return;
     if (mic.flushTimer) clearTimeout(mic.flushTimer);
@@ -6783,13 +6814,43 @@
     renderInputHighlight();
   }
 
-  // base + live transcript, with a separating space unless base already ends in
-  // whitespace (or the tail is empty). Used for streaming partials/final.
-  function composeVoiceTail(base, text) {
+  function captureVoiceInsertion() {
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    state.voiceBefore = input.value.slice(0, start);
+    state.voiceAfter = input.value.slice(end);
+    state.voiceInsertionActive = true;
+  }
+
+  function clearVoiceInsertion() {
+    state.voiceBefore = "";
+    state.voiceAfter = "";
+    state.voiceInsertionActive = false;
+  }
+
+  // Insert between the text surrounding the selection captured at start. The
+  // caret stays just after the dictated text, before the preserved suffix.
+  function composeVoiceInsertion(before, text, after) {
     const t = text || "";
-    if (!base) return t;
-    if (!t || /\s$/.test(base)) return base + t;
-    return base + " " + t;
+    if (!t) return { value: before + after, caret: before.length };
+    const left = before && !/\s$/.test(before) && !/^\s/.test(t) ? " " : "";
+    const right = after && !/\s$/.test(t) && !/^\s/.test(after) &&
+      !/^[.,!?;:)\]}]/.test(after) ? " " : "";
+    return {
+      value: before + left + t + right + after,
+      caret: before.length + left.length + t.length,
+    };
+  }
+
+  function renderVoiceInsertion(text, focus = false) {
+    if (!state.voiceInsertionActive) captureVoiceInsertion();
+    const result = composeVoiceInsertion(state.voiceBefore, text, state.voiceAfter);
+    input.value = result.value;
+    input.setSelectionRange(result.caret, result.caret);
+    if (focus) input.focus();
+    updateSlash();
+    updateMention();
+    renderInputHighlight();
   }
 
   // Mirror the composer text onto the backdrop, wrapping a trailing send command
@@ -7256,6 +7317,7 @@
       case "voiceState":
         // Host confirms a transition (e.g. recording actually started). Only
         // accept the known states; ignore anything unexpected.
+        if (state.voiceDiscarded && msg.status !== "idle") break;
         if (msg.status === "listening" || msg.status === "transcribing") {
           state.mic = msg.status;
           if (IS_REMOTE && msg.status === "listening" && remoteMic && !remoteMic.ready) {
@@ -7270,6 +7332,7 @@
           // live flag and any queued messages too, not just the button.
           state.mic = "idle";
           state.voiceLive = false;
+          clearVoiceInsertion();
           if (IS_REMOTE) cleanupRemoteMic();
           renderMic();
         }
@@ -7281,22 +7344,29 @@
         renderInputHighlight();
         break;
       case "voicePartial":
-        // Live streaming update: replace the tail after the pre-dictation base.
+        if (state.voiceDiscarded) break;
+        // Live streaming update: replace only the dictated text at the captured
+        // insertion point. Passive remote tabs do not own the capture.
         // Same-repo passive tabs receive the shared partial too, but their
         // independently typed composer must remain untouched.
         if (!IS_REMOTE || remoteMic) {
           state.voiceLive = true;
-          input.value = composeVoiceTail(state.voiceBase, msg.text || "");
-          renderInputHighlight();
+          renderVoiceInsertion(msg.text || "");
         }
         break;
       case "voiceSubmit": {
+        if (state.voiceDiscarded) break;
         // The webview is the submission boundary for local and remote voice.
         // In AFK Pilot this makes the spoken prompt cross the relay as the same
         // send/queueSend frame as typed input, so relay metering and busy-turn
         // queueing apply before the host can prompt the agent.
-        const t = composeVoiceTail(state.voiceBase, msg.text || "").trim();
-        state.voiceBase = "";
+        const composed = state.voiceInsertionActive
+          ? composeVoiceInsertion(state.voiceBefore, msg.text || "", state.voiceAfter).value
+          : (msg.text || "");
+        const t = composed.trim();
+        state.voiceBefore = "";
+        state.voiceAfter = "";
+        state.voiceInsertionActive = true;
         state.voiceLive = false;
         input.value = "";
         renderInputHighlight();
@@ -7307,17 +7377,16 @@
         break;
       }
       case "voiceTranscript":
-        // Final result. Streaming replaces the live tail; batch appends.
-        if (state.voiceLive) {
-          input.value = composeVoiceTail(state.voiceBase, (msg.text || "").trim());
-          input.focus();
-          updateSlash();
-          updateMention();
-          renderInputHighlight();
+        if (state.voiceDiscarded) break;
+        // Final result. Streaming and started dictation replace the captured
+        // insertion; unsolicited transcripts retain append behavior.
+        if (state.voiceLive || state.voiceInsertionActive) {
+          renderVoiceInsertion((msg.text || "").trim(), true);
         } else {
           insertTranscript(msg.text);
         }
         state.voiceLive = false;
+        clearVoiceInsertion();
         if (IS_REMOTE) cleanupRemoteMic();
         setMic("transcript");
         // "grok send" detected: submit hands-free — but only when idle, so it
@@ -7327,6 +7396,7 @@
       case "voiceError":
         // Setup/record/transcribe failed (the host already showed the reason).
         state.voiceLive = false;
+        clearVoiceInsertion();
         if (IS_REMOTE) cleanupRemoteMic();
         setMic("error");
         break;

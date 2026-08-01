@@ -14,7 +14,77 @@ function key(window: any, el: Element, init: Record<string, unknown>) {
   return event;
 }
 
+function bootRemotePcm() {
+  let node: any;
+  const harness = bootWebview({
+    remote: true,
+    beforeScripts: (w) => {
+      const track = { stop() {}, addEventListener() {} };
+      Object.defineProperty((w as any).navigator, "mediaDevices", {
+        configurable: true,
+        value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+      });
+      class FakeNode {
+        port = { onmessage: undefined as any, postMessage() {} };
+        constructor() { node = this; }
+        connect() {}
+        disconnect() {}
+      }
+      class FakeAudioContext {
+        state = "running";
+        audioWorklet = { addModule: async () => {} };
+        destination = {};
+        createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+        createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
+        close() { return Promise.resolve(); }
+      }
+      (w as any).AudioWorkletNode = FakeNode;
+      (w as any).AudioContext = FakeAudioContext;
+    },
+  });
+  return { ...harness, getNode: () => node };
+}
+
 describe("AFK Pilot shared webview controls", () => {
+  it("inserts remote dictation at the caret and preserves the suffix", async () => {
+    const { window, posted, doc } = bootRemotePcm();
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "Please now";
+    input.setSelectionRange(6, 6);
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    dispatch(window, { type: "voiceState", status: "listening" });
+    dispatch(window, { type: "voicePartial", text: "fix the tests" });
+
+    expect(input.value).toBe("Please fix the tests now");
+    expect(input.selectionStart).toBe(20);
+    expect(posted).toContainEqual({ type: "remoteVoiceStart" });
+    click(window, doc.getElementById("mic-btn")!);
+  });
+
+  it("manual remote Send discards capture and ignores a late transcript", async () => {
+    const { window, posted, doc } = bootRemotePcm();
+    const input = doc.getElementById("input") as HTMLTextAreaElement;
+
+    click(window, doc.getElementById("mic-btn")!);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    dispatch(window, { type: "voiceState", status: "listening" });
+    dispatch(window, { type: "voicePartial", text: "send this visible draft" });
+    click(window, doc.getElementById("send-btn")!);
+
+    expect(posted).toContainEqual({ type: "remoteVoiceStop", cancel: true });
+    expect(posted.find((message) => message.type === "send")).toMatchObject({
+      type: "send",
+      text: "send this visible draft",
+    });
+    dispatch(window, { type: "voicePartial", text: "late partial" });
+    dispatch(window, { type: "voiceTranscript", text: "late transcript" });
+    dispatch(window, { type: "voiceSubmit", text: "late submit" });
+    expect(input.value).toBe("");
+    expect(doc.getElementById("mic-btn")!.classList.contains("listening")).toBe(false);
+  });
+
   it("clears both usage ledgers when a browser tab switches conversations", () => {
     const { window, doc } = bootWebview({ remote: true });
     dispatch(window, {
