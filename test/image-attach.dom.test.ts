@@ -189,6 +189,7 @@ describe("image chips in the composer", () => {
 
   it("reuses browser-owned paste bytes for a remote thumbnail", async () => {
     const { window, doc, posted } = bootWebview({ remote: true });
+    dispatch(window, { type: "session", sessionId: "session-a", models: [] });
     const input = doc.getElementById("input")!;
     input.dispatchEvent(pasteEvent(window, [{ kind: "file", type: "image/png", file: pngFile(window) }]));
     await vi.waitFor(() => expect(posted.some((m) => m.type === "pasteImage")).toBe(true));
@@ -207,6 +208,36 @@ describe("image chips in the composer", () => {
         previewId: paste.previewId,
       }],
     });
+    expect(doc.querySelector(".attachment-preview img")!.getAttribute("src"))
+      .toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("keeps a pasted thumbnail when switching away from its session and back", async () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+    dispatch(window, { type: "session", sessionId: "session-a", models: [] });
+    const input = doc.getElementById("input")!;
+    input.dispatchEvent(pasteEvent(window, [{ kind: "file", type: "image/png", file: pngFile(window) }]));
+    await vi.waitFor(() => expect(posted.some((m) => m.type === "pasteImage")).toBe(true));
+    const previewId = posted.find((m) => m.type === "pasteImage")!.previewId;
+    const chip = {
+      id: "image:/staging/remote.png:1:9",
+      path: "/staging/remote.png",
+      relPath: "Image #1",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+      previewId,
+    };
+    dispatch(window, { type: "chips", chips: [chip] });
+    expect(doc.querySelector(".attachment-preview img")).not.toBeNull();
+
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "session", sessionId: "session-b", models: [] });
+    dispatch(window, { type: "chips", chips: [] });
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "session", sessionId: "session-a", models: [] });
+    dispatch(window, { type: "chips", chips: [chip] });
+
     expect(doc.querySelector(".attachment-preview img")!.getAttribute("src"))
       .toMatch(/^data:image\/png;base64,/);
   });

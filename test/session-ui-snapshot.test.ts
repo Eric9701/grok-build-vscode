@@ -31,4 +31,23 @@ describe("sessionUiSnapshot", () => {
       reason: "Plan mode requires a newer CLI.",
     });
   });
+
+  it("accepts locally staged preview URIs for a warm focus snapshot", () => {
+    const session = new Session();
+    const localChip = {
+      id: "image:/staging/a.png:1:1",
+      path: "/staging/a.png",
+      relPath: "Image #1",
+      hidden: false,
+      imageIndex: 1,
+      mimeType: "image/png",
+      previewSrc: "vscode-webview://preview/a.png",
+    };
+    session.chips = [{ ...localChip, previewSrc: undefined }];
+
+    expect(sessionUiSnapshot(session, "agent", [localChip])).toContainEqual({
+      type: "chips",
+      chips: [localChip],
+    });
+  });
 });

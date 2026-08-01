@@ -331,10 +331,11 @@
     // is held while > 0 so a paste-then-Enter can't race the image onto the
     // NEXT message — the pasteImage post must reach the host before send does.
     pendingPaste: 0,
-    // Browser-owned data URLs for pasted image previews, keyed by an opaque id
-    // echoed through the host chip. The bytes never make a second relay trip.
+    // Browser-owned data URLs for pasted image previews, keyed by conversation
+    // and opaque id. The bytes never make a second relay trip.
+    conversationSessionId: null,
     imagePreviews: new Map(),
-    acknowledgedImagePreviews: new Set(),
+    acknowledgedImagePreviews: new Map(),
     activeThoughtEl: null,
     activeThoughtHdrEl: null,
     thoughtStartTime: null,
@@ -2794,6 +2795,7 @@
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
+    state.conversationSessionId = null;
     state.interjectionCount = 0;
     state.historyEventCount = 0;
     state.lastTurnUsage = null;
@@ -5960,9 +5962,31 @@
     if (overlay && !overlay.hidden) overlay.hidden = true;
   });
 
+  function previewCacheForCurrentSession() {
+    const key = state.conversationSessionId || "__starting__";
+    let cache = state.imagePreviews.get(key);
+    if (!cache) {
+      cache = new Map();
+      state.imagePreviews.set(key, cache);
+    }
+    return cache;
+  }
+
+  function acknowledgedPreviewsForCurrentSession() {
+    const key = state.conversationSessionId || "__starting__";
+    let acknowledged = state.acknowledgedImagePreviews.get(key);
+    if (!acknowledged) {
+      acknowledged = new Set();
+      state.acknowledgedImagePreviews.set(key, acknowledged);
+    }
+    return acknowledged;
+  }
+
   function renderChips() {
     chipsEl.innerHTML = "";
     attachmentsEl.innerHTML = "";
+    const imagePreviews = previewCacheForCurrentSession();
+    const acknowledgedImagePreviews = acknowledgedPreviewsForCurrentSession();
     for (const chip of state.chips) {
       // Split on both separators — a file outside the workspace has an absolute
       // relPath (Windows backslashes), so split("/") alone would show the whole
@@ -5994,8 +6018,8 @@
         // For a disk-imported image the interesting path is the ORIGINAL file,
         // not the staged copy the chip's path points at.
         el.title = (chip.originRelPath || chip.path) + rangeTitle;
-        const previewSrc = chip.previewSrc || (chip.previewId && state.imagePreviews.get(chip.previewId));
-        if (chip.previewId && previewSrc) state.acknowledgedImagePreviews.add(chip.previewId);
+        const previewSrc = chip.previewSrc || (chip.previewId && imagePreviews.get(chip.previewId));
+        if (chip.previewId && previewSrc) acknowledgedImagePreviews.add(chip.previewId);
         if (chip.imageIndex != null && previewSrc) {
           const preview = document.createElement("button");
           preview.type = "button";
@@ -6020,7 +6044,7 @@
         rm.textContent = "×";
         rm.onclick = (e) => {
           e.stopPropagation();
-          if (chip.previewId) state.imagePreviews.delete(chip.previewId);
+          if (chip.previewId) imagePreviews.delete(chip.previewId);
           vscode.postMessage({ type: "removeChip", id: chip.id });
         };
         el.appendChild(rm);
@@ -6036,10 +6060,10 @@
       chipsEl.appendChild(el);
     }
     const livePreviewIds = new Set(state.chips.map((chip) => chip.previewId).filter(Boolean));
-    for (const previewId of state.acknowledgedImagePreviews) {
+    for (const previewId of acknowledgedImagePreviews) {
       if (!livePreviewIds.has(previewId)) {
-        state.imagePreviews.delete(previewId);
-        state.acknowledgedImagePreviews.delete(previewId);
+        imagePreviews.delete(previewId);
+        acknowledgedImagePreviews.delete(previewId);
       }
     }
   }
@@ -7047,6 +7071,7 @@
         break;
       }
       case "session": {
+        state.conversationSessionId = msg.sessionId || null;
         state.currentModelId = msg.currentModelId;
         state.isWorktree = !!msg.worktree; // gates the gear Apply/Remove worktree items
         state.availableModels = msg.models || [];
@@ -8066,7 +8091,7 @@
         const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (m) {
           const previewId = newRemoteTabToken();
-          state.imagePreviews.set(previewId, dataUrl);
+          previewCacheForCurrentSession().set(previewId, dataUrl);
           vscode.postMessage({ type: "pasteImage", mimeType: m[1], data: m[2], previewId });
         }
         settle();

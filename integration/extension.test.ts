@@ -364,6 +364,41 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     hooks.remoteClientLeft(clientId);
   });
 
+  for (const mode of ["clear", "summarize"] as const) {
+    test(`${mode} restart derives cost from the replacement session id`, async () => {
+      const suffix = `${mode}-${Date.now()}`;
+      const clientId = `usage-restart-${suffix}`;
+      const oldId = `usage-old-${suffix}`;
+      const newId = `usage-new-${suffix}`;
+      hooks.seedRemoteSession(clientId, oldId, repoB, [], true);
+      await hooks.seedUsageLedger(clientId, [{
+        afterUserMessage: 1,
+        usage: { inputTokens: 100, outputTokens: 10, costUsdTicks: 90_000_000 },
+      }], 1);
+
+      const summaryUsage = mode === "summarize"
+        ? { inputTokens: 5, outputTokens: 2, costUsdTicks: 5_000_000 }
+        : undefined;
+      await hooks.restartUsageSession(clientId, newId, mode, summaryUsage);
+      await hooks.completeUsageTurn(clientId, {
+        inputTokens: 40,
+        outputTokens: 4,
+        costUsdTicks: 40_000_000,
+      });
+      const restored = hooks.reloadUsageLedger(clientId, 1);
+
+      assert.deepStrictEqual(
+        restored.usageLog.map((entry: any) => entry.usage?.costUsdTicks),
+        mode === "summarize" ? [5_000_000, 40_000_000] : [40_000_000],
+      );
+      assert.strictEqual(
+        restored.sessionUsage?.costUsdTicks,
+        mode === "summarize" ? 45_000_000 : 40_000_000,
+      );
+      hooks.remoteClientLeft(clientId);
+    });
+  }
+
   test("ordinary history actions cannot destroy another tab's live conversation", async () => {
     const worktree = path.join(repoB, ".clear-all-worktree");
     fs.mkdirSync(worktree, { recursive: true });

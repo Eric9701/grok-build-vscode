@@ -19,7 +19,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
-import { MediaRef, addUsage, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
@@ -1143,13 +1143,10 @@ See design doc for the full state machine diagram.`;
         lastPlanVerdict: plans.length ? plans[plans.length - 1].verdict : undefined,
       },
     });
-    // Keep the live session + popover in step with what we just persisted.
+    // Keep the live popover in step with what we just persisted. The ledger
+    // itself remains keyed by session id in meta; no live Session copy exists.
     const live = [...this.pool].find((s) => s.activeSessionId === sessionId);
     if (live) {
-      live.usageLog = usageLog;
-      live.rawSessionUsage = rawUsage;
-      live.sessionUsage = usage;
-      live.lastTurnUsage = undefined;
       this.emit(live, { type: "usage", session: usage, afterUserMessage: surviving, afterHistoryEvent: live.historyEventCount });
     }
   }
@@ -6330,15 +6327,16 @@ See design doc for the full state machine diagram.`;
     const remoteMessage: HostMsg = { type: "chips", chips: session.chips };
     if (session === this.focused && this.view) {
       const webview = this.view.webview;
-      const localMessage: HostMsg = {
-        type: "chips",
-        chips: session.chips.map((chip) => isImageChip(chip)
-          ? { ...chip, previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
-          : chip),
-      };
+      const localMessage: HostMsg = { type: "chips", chips: this.localPreviewChips(session, webview) };
       void webview.postMessage(localMessage);
     }
     this.sendRemoteSession(session, remoteMessage);
+  }
+
+  private localPreviewChips(session: Session, webview: vscode.Webview): FileChip[] {
+    return session.chips.map((chip) => isImageChip(chip)
+      ? { ...chip, previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+      : chip);
   }
 
   // grok's output for hidden summary/context-injection turns, dropped from both
@@ -6449,10 +6447,16 @@ See design doc for the full state machine diagram.`;
       entries: { afterUserMessage: number; afterHistoryEvent?: number; usage?: PromptUsage }[],
       userMessageCount: number,
     ): Promise<void>;
+    restartUsageSession(
+      clientId: string,
+      id: string,
+      mode: "clear" | "summarize",
+      summaryUsage?: PromptUsage,
+    ): Promise<void>;
     rewindUsageLedger(clientId: string, surviving: number): Promise<void>;
     completeUsageTurn(clientId: string, usage: PromptUsage): Promise<void>;
     reloadUsageLedger(clientId: string, userMessageCount: number): {
-      usageLog: Session["usageLog"];
+      usageLog: NonNullable<SessionMetaOverrides[string]["usageLog"]>;
       sessionUsage: PromptUsage | undefined;
     };
     delayNextSessionStart(resumeId?: string): { started: Promise<void>; release(): void };
@@ -6605,14 +6609,13 @@ See design doc for the full state machine diagram.`;
         const id = session.activeSessionId;
         if (!id) throw new Error("Seeded usage session has no id");
         session.userMessageCount = userMessageCount;
-        session.usageLog = entries.map((entry) => ({
+        const usageLog = entries.map((entry) => ({
           ...entry,
           usage: entry.usage ? { ...entry.usage } : undefined,
         }));
-        session.rawSessionUsage = sumUsage(session.usageLog);
-        session.sessionUsage = enforceCompleteSessionCost(
-          session.rawSessionUsage,
-          session.usageLog,
+        const usage = enforceCompleteSessionCost(
+          sumUsage(usageLog),
+          usageLog,
           userMessageCount,
         );
         const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -6620,10 +6623,19 @@ See design doc for the full state machine diagram.`;
           ...overrides,
           [id]: {
             ...(overrides[id] ?? {}),
-            usage: session.sessionUsage,
-            usageLog: session.usageLog,
+            usage,
+            usageLog,
           },
         });
+      },
+      restartUsageSession: async (clientId, id, mode, summaryUsage) => {
+        const session = this.remoteSessionFor(clientId);
+        session.activeSessionId = id;
+        session.userMessageCount = 0;
+        session.historyEventCount = 0;
+        if (mode === "summarize" && summaryUsage) {
+          await this.accumulateUsage(session, { totalTokens: 1, usage: summaryUsage });
+        }
       },
       rewindUsageLedger: async (clientId, surviving) => {
         const session = this.remoteSessionFor(clientId);
@@ -6638,14 +6650,10 @@ See design doc for the full state machine diagram.`;
       },
       reloadUsageLedger: (clientId, userMessageCount) => {
         const current = this.remoteSessionFor(clientId);
-        const restored = new Session();
-        restored.activeSessionId = current.activeSessionId;
-        restored.userMessageCount = userMessageCount;
-        this.restoreUsage(restored);
-        return {
-          usageLog: restored.usageLog,
-          sessionUsage: restored.sessionUsage,
-        };
+        const id = current.activeSessionId;
+        if (!id) return { usageLog: [], sessionUsage: undefined };
+        const ledger = this.persistedUsageLedger(id, userMessageCount);
+        return { usageLog: ledger.usageLog, sessionUsage: ledger.usage };
       },
       delayNextSessionStart: (resumeId) => {
         let markStarted!: () => void;
@@ -6839,7 +6847,11 @@ See design doc for the full state machine diagram.`;
       wv.postMessage({ type: "historyReplay", active: true });
       for (const m of session.buffer) wv.postMessage(m);
       wv.postMessage({ type: "historyReplay", active: false });
-      for (const m of sessionUiSnapshot(session, this.displayMode(session))) wv.postMessage(m);
+      for (const m of sessionUiSnapshot(
+        session,
+        this.displayMode(session),
+        this.localPreviewChips(session, wv),
+      )) wv.postMessage(m);
     }
     // Remote clients don't share the webview, so replay the same clear + buffer
     // to them over the uplink — otherwise re-focusing a session that's still
@@ -7155,29 +7167,43 @@ See design doc for the full state machine diagram.`;
     // counting its stale usage siblings. A real inference with missing usage is
     // NOT covered: its cost is unknown, so the aggregate must remain withheld.
     if (!measured && meta.totalTokens !== 0) return;
-    session.usageLog.push({
-      afterUserMessage: session.userMessageCount,
-      afterHistoryEvent: session.historyEventCount,
-      usage: measured ? meta.usage : undefined,
-    });
-    if (measured) {
-      session.lastTurnUsage = meta.usage;
-      session.rawSessionUsage = addUsage(session.rawSessionUsage, meta.usage);
-      session.sessionUsage = enforceCompleteSessionCost(
-        session.rawSessionUsage,
-        session.usageLog,
-        session.userMessageCount,
-      );
-      this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
-    }
     const id = session.activeSessionId;
     if (!id) return;
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
+    const usageLog = [
+      ...(cur.usageLog ?? []),
+      {
+        afterUserMessage: session.userMessageCount,
+        afterHistoryEvent: session.historyEventCount,
+        usage: measured ? meta.usage : undefined,
+      },
+    ];
+    const sessionUsage = enforceCompleteSessionCost(
+      sumUsage(usageLog),
+      usageLog,
+      session.userMessageCount,
+    );
+    if (measured) {
+      this.emit(session, { type: "usage", turn: meta.usage, session: sessionUsage, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
+    }
     return this.context.globalState.update(SESSION_META_KEY, {
       ...overrides,
-      [id]: { ...cur, usage: session.sessionUsage, usageLog: session.usageLog },
+      [id]: { ...cur, usage: sessionUsage, usageLog },
     });
+  }
+
+  private persistedUsageLedger(sessionId: string, userMessageCount: number): {
+    usageLog: NonNullable<SessionMetaOverrides[string]["usageLog"]>;
+    usage: PromptUsage | undefined;
+  } {
+    const persisted = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[sessionId];
+    const usageLog = [...(persisted?.usageLog ?? [])];
+    const rawUsage = persisted?.usageLog ? sumUsage(usageLog) : persisted?.usage;
+    return {
+      usageLog,
+      usage: enforceCompleteSessionCost(rawUsage, usageLog, userMessageCount),
+    };
   }
 
   /** Seed a (re)opened session's cumulative billing from our own globalState and
@@ -7186,18 +7212,10 @@ See design doc for the full state machine diagram.`;
   private restoreUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
-    const persisted = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
-    session.usageLog = [...(persisted?.usageLog ?? [])];
-    // Re-derive ledgers instead of trusting an aggregate that may have summed
+    // Re-derive from the id-keyed ledger instead of trusting an aggregate that may have summed
     // cost-bearing turns over historical turns where cost was not recorded.
-    session.rawSessionUsage = persisted?.usageLog ? sumUsage(persisted.usageLog) : persisted?.usage;
-    const stored = enforceCompleteSessionCost(
-      session.rawSessionUsage,
-      session.usageLog,
-      session.userMessageCount,
-    );
+    const stored = this.persistedUsageLedger(id, session.userMessageCount).usage;
     if (!stored) return;
-    session.sessionUsage = stored;
     this.emit(session, { type: "usage", session: stored, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
   }
 

@@ -1,5 +1,4 @@
 import { AcpClient } from "./acp";
-import type { PromptUsage } from "./acp";
 import type { HostMsg } from "./protocol";
 import type { FileChip } from "./chips";
 import { permissionOptionsForPlan } from "./plan-gate";
@@ -180,16 +179,6 @@ export class Session {
   /** grok's id for this session (set on session/new or session/load). */
   activeSessionId?: string;
 
-  /** Host-owned per-prompt billing ledger. A usage-less entry is a deliberate
-   * coverage marker for a successful zero-inference prompt such as `/compact`;
-   * a missing prompt coordinate means the session total is incomplete. */
-  usageLog: { afterUserMessage: number; afterHistoryEvent?: number; usage?: PromptUsage }[] = [];
-
-  /** Full aggregate retained even while `sessionUsage` has its cost withheld
-   * from display. Keeping the raw value lets a prompt-zero maintenance call be
-   * included once the first visible conversation turn establishes coverage. */
-  rawSessionUsage?: PromptUsage;
-
   /** Last browser-reported AFK Pilot preferences, in displayed percent + boolean.
    * Undefined until a remote client reports them for this focused session. */
   remoteFontScale?: number;
@@ -296,16 +285,6 @@ export class Session {
    * two risks duplicate delivery or work loss. */
   queuedSendRequiresRelay = false;
 
-  /** The last completed prompt's billing usage (#53) — grok's `_meta.usage`. */
-  lastTurnUsage?: PromptUsage;
-
-  /**
-   * Session-cumulative billing (#53), summed by US across the session's turns.
-   * grok reports usage per prompt only and `signals.json` persists just context
-   * size, so nothing on disk can seed this — it is restored from our own
-   * globalState (`SessionMetaOverride.usage`) and re-persisted as turns land.
-   */
-  sessionUsage?: PromptUsage;
 }
 
 export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
@@ -340,7 +319,11 @@ export function finishQueuedSendCommit(
 }
 
 /** Current non-chat UI state for rebuilding a view of this live session. */
-export function sessionUiSnapshot(session: Session, modeId: string): HostMsg[] {
+export function sessionUiSnapshot(
+  session: Session,
+  modeId: string,
+  chips: FileChip[] = session.chips,
+): HostMsg[] {
   const messages: HostMsg[] = [];
   if (session.client?.currentModelId) {
     messages.push({ type: "modelChanged", modelId: session.client.currentModelId });
@@ -358,7 +341,7 @@ export function sessionUiSnapshot(session: Session, modeId: string): HostMsg[] {
       options: pendingPermissionOptions(pending, session.planActive),
     });
   }
-  messages.push({ type: "chips", chips: session.chips });
+  messages.push({ type: "chips", chips });
   messages.push({ type: "queuedSends", items: [...session.queuedSends] });
   return messages;
 }
