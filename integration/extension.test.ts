@@ -131,7 +131,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     // whether a client is kept up to date.
   });
 
-  test("speech summaries require that tab's TTS preferences and return only to its logical tab", async () => {
+  test("speech summaries survive a session switch, require that tab's preferences, and return only there", async () => {
     const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
     hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
     hooks.fromRemote({
@@ -148,6 +148,10 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       summarizeRepliesAloud: true,
       usesTouch: true,
     }, "tab-b");
+    // Browser preferences belong to the logical tab, not the Session it happened
+    // to be showing when it reported them. Replace tab A's active conversation
+    // without another remotePreferences message and keep summarization enabled.
+    hooks.seedRemoteSession("tab-a", `speech-switched-${Date.now()}`, repoB, [], true);
     posts.length = 0;
 
     // Empty text makes summarizeForSpeech return locally without credential or

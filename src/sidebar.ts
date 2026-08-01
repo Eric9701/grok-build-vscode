@@ -207,6 +207,13 @@ interface RemoteRequester {
   tabToken?: string;
 }
 
+interface RemoteBrowserPreferences {
+  fontScale: number;
+  readRepliesAloud: boolean;
+  summarizeRepliesAloud: boolean;
+  usesTouch: boolean;
+}
+
 interface CliCompatibilityResult {
   planModeAvailable: boolean;
   planModeUnavailableReason?: string;
@@ -349,7 +356,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
   // shipping path is unaffected.
   private uplink?: RemoteUplink;
-  private readonly remoteClients: RemoteClientState<Session>;
+  private readonly remoteClients: RemoteClientState<Session, RemoteBrowserPreferences>;
   /** Cold session/load claims the persisted id before ACP has emitted `session`. */
   private readonly sessionLoadReservations = new Map<string, SessionLoadReservation>();
   /** Sessions being spawned on a remote tab's behalf — a reconnect burst must
@@ -403,7 +410,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     output: vscode.OutputChannel,
   ) {
     this.output = output;
-    this.remoteClients = new RemoteClientState<Session>(this.workspaceRoot(), normalizeRepoPath);
+    this.remoteClients = new RemoteClientState<Session, RemoteBrowserPreferences>(
+      this.workspaceRoot(),
+      normalizeRepoPath,
+    );
     context.subscriptions.push(
       vscode.workspace.registerTextDocumentContentProvider(GROK_DIFF_SCHEME, this.diffProvider),
     );
@@ -3482,21 +3492,19 @@ See design doc for the full state machine diagram.`;
         this.postRepoCatalog();
         break;
       case "remotePreferences":
-        if (origin === "remote") {
+        if (origin === "remote" && clientId) {
           if (
             Number.isFinite(msg.fontScale) &&
             msg.fontScale >= 80 &&
             msg.fontScale <= 160
           ) {
-            session.remoteFontScale = msg.fontScale;
-          }
-          if (typeof msg.readRepliesAloud === "boolean") {
-            session.remoteReadRepliesAloud = msg.readRepliesAloud;
-          }
-          session.remoteSummarizeRepliesAloud =
-            msg.readRepliesAloud && msg.summarizeRepliesAloud === true;
-          if (typeof msg.usesTouch === "boolean") {
-            session.remoteUsesTouch = msg.usesTouch;
+            this.remoteClients.setMetadata(clientId, {
+              fontScale: msg.fontScale,
+              readRepliesAloud: msg.readRepliesAloud,
+              summarizeRepliesAloud:
+                msg.readRepliesAloud && msg.summarizeRepliesAloud === true,
+              usesTouch: msg.usesTouch,
+            });
           }
         }
         break;
@@ -3506,11 +3514,14 @@ See design doc for the full state machine diagram.`;
         }
         break;
       case "summarizeSpeech": {
+        const remotePreferences = origin === "remote" && clientId
+          ? this.remoteClients.metadata(clientId)
+          : undefined;
         if (
           origin === "remote" &&
           (!requester ||
-            session.remoteReadRepliesAloud !== true ||
-            session.remoteSummarizeRepliesAloud !== true)
+            remotePreferences?.readRepliesAloud !== true ||
+            remotePreferences?.summarizeRepliesAloud !== true)
         ) break;
         const text = await summarizeForSpeech(
           msg.text,
@@ -4866,6 +4877,12 @@ See design doc for the full state machine diagram.`;
       if (!enabled) return;
       const cfg = vscode.workspace.getConfiguration("grok");
       const appVersion = (this.context.extension.packageJSON as { version?: string })?.version ?? "";
+      const remoteClientId = origin === "remote"
+        ? this.remoteClients.clientsForActiveValue(session)[0]
+        : undefined;
+      const remotePreferences = remoteClientId
+        ? this.remoteClients.metadata(remoteClientId)
+        : undefined;
       const event = buildSessionStartEvent(
         {
           installId: this.installId(),
@@ -4880,9 +4897,9 @@ See design doc for the full state machine diagram.`;
           chatFontScale: Math.round(this.chatFontScale() * 100),
           readRepliesAloud: cfg.get<boolean>("readRepliesAloud", false),
           soundNotifications: cfg.get<boolean>("soundNotifications", false),
-          remoteFontScale: session.remoteFontScale,
-          remoteReadRepliesAloud: session.remoteReadRepliesAloud,
-          ...sessionStartSurface(origin, session.remoteUsesTouch),
+          remoteFontScale: remotePreferences?.fontScale,
+          remoteReadRepliesAloud: remotePreferences?.readRepliesAloud,
+          ...sessionStartSurface(origin, remotePreferences?.usesTouch),
           host: vscode.env.appName || undefined,
         },
         {

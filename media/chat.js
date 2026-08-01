@@ -597,7 +597,9 @@
   // instead of the old morphing "…" ellipsis (#26 follow-up).
   const BLINK_DOTS = `<span class="blink-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>`;
   let composerPreferredColumn = null;
+  const SPEECH_SUMMARY_FALLBACK_MS = 12_000;
   let speechRequestId = 0;
+  let pendingSpeechSummary = null;
 
   // ---------- helpers ----------
 
@@ -2206,7 +2208,7 @@
             setRemoteTtsSummaryEnabled(!state.remoteSummarizeRepliesAloud);
           } else {
             state.summarizeRepliesAloud = !state.summarizeRepliesAloud;
-            speechRequestId += 1;
+            invalidatePendingSpeechSummary();
             vscode.postMessage({
               type: "setSummarizeRepliesAloud",
               value: state.summarizeRepliesAloud,
@@ -2802,6 +2804,7 @@
     state.sessionUsage = null;
     state.suppressReplayTurn = false;
     state.skipUserBubble = false;
+    cancelPendingSpeech();
     state.stickToBottom = true; // a fresh/loaded session starts pinned
     updateScrollBtn();
     hideGrokking();
@@ -4727,7 +4730,7 @@
     if (state.remoteSummarizeRepliesAloud === next) return next;
     state.remoteSummarizeRepliesAloud = next;
     storeRemotePref(REMOTE_TTS_SUMMARY_KEY, next);
-    speechRequestId += 1;
+    invalidatePendingSpeechSummary();
     reportRemotePreferences();
     return next;
   }
@@ -4743,9 +4746,24 @@
     });
   }
 
-  function cancelPendingSpeech() {
+  function clearPendingSpeechSummary() {
+    if (!pendingSpeechSummary) return;
+    clearTimeout(pendingSpeechSummary.timer);
+    pendingSpeechSummary = null;
+  }
+
+  function invalidatePendingSpeechSummary() {
     speechRequestId += 1;
+    clearPendingSpeechSummary();
+  }
+
+  function cancelPendingSpeech() {
+    invalidatePendingSpeechSummary();
     if (window.speechSynthesis) window.speechSynthesis.cancel();
+  }
+
+  function speakText(text) {
+    window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(text));
   }
 
   function requestSpeech(markdownText) {
@@ -4753,16 +4771,29 @@
     if (!enabled || !ttsAvailable || state.replaying) return;
     const text = spokenTextFromMarkdown(markdownText);
     if (!text) return;
+    clearPendingSpeechSummary();
     const requestId = ++speechRequestId;
     window.speechSynthesis.cancel();
     const summarize = IS_REMOTE
       ? state.remoteSummarizeRepliesAloud
       : state.summarizeRepliesAloud;
     if (summarize) {
+      const pending = { requestId, text, timer: 0 };
+      pending.timer = setTimeout(() => {
+        if (pendingSpeechSummary !== pending) return;
+        pendingSpeechSummary = null;
+        if (speechRequestId !== requestId) return;
+        const enabledNow = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
+        const summarizeNow = IS_REMOTE
+          ? state.remoteSummarizeRepliesAloud
+          : state.summarizeRepliesAloud;
+        if (enabledNow && summarizeNow && ttsAvailable) speakText(text);
+      }, SPEECH_SUMMARY_FALLBACK_MS);
+      pendingSpeechSummary = pending;
       vscode.postMessage({ type: "summarizeSpeech", requestId, text });
       return;
     }
-    window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(text));
+    speakText(text);
   }
 
   function speakCompletedTurn() {
@@ -6927,20 +6958,24 @@
         if (!IS_REMOTE && !state.readRepliesAloud && msg.value) {
           vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
         }
-        speechRequestId += 1;
+        invalidatePendingSpeechSummary();
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
-      case "speechSummary":
+      case "speechSummary": {
+        const pending = pendingSpeechSummary;
         if (
+          pending &&
+          pending.requestId === msg.requestId &&
           msg.requestId === speechRequestId &&
           (IS_REMOTE ? state.remoteTts : state.readRepliesAloud) &&
           (IS_REMOTE ? state.remoteSummarizeRepliesAloud : state.summarizeRepliesAloud) &&
-          ttsAvailable &&
-          msg.text
+          ttsAvailable
         ) {
-          window.speechSynthesis.speak(new window.SpeechSynthesisUtterance(msg.text));
+          clearPendingSpeechSummary();
+          speakText(msg.text || pending.text);
         }
         break;
+      }
       case "showThinking":
         // Live toggle (grok.showThinking). Initial value also arrives via
         // initialState + is baked into the <body class> by the host to avoid a flash.

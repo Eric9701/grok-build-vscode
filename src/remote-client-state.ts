@@ -6,13 +6,14 @@ export function serializesRemoteSessionTransition(type: string): boolean {
   return type === "newSession" || type === "resumeSession" || type === "selectRepo";
 }
 
-export class RemoteClientState<T> {
+export class RemoteClientState<T, C = never> {
   private readonly cwdByClient = new Map<string, string>();
   private readonly activeByClient = new Map<string, T>();
+  private readonly metadataByClient = new Map<string, C>();
   private readonly tailsByClient = new Map<string, Promise<void>>();
   private readonly tabTokenByClient = new Map<string, string>();
   private readonly clientByTabToken = new Map<string, string>();
-  private readonly detachedByTabToken = new Map<string, { cwd: string; active?: T }>();
+  private readonly detachedByTabToken = new Map<string, { cwd: string; active?: T; metadata?: C }>();
 
   constructor(
     private readonly defaultCwd: string,
@@ -47,16 +48,20 @@ export class RemoteClientState<T> {
         this.detachedByTabToken.delete(tabToken);
         this.cwdByClient.set(clientId, detached.cwd);
         if (detached.active !== undefined) this.activeByClient.set(clientId, detached.active);
+        if (detached.metadata !== undefined) this.metadataByClient.set(clientId, detached.metadata);
       }
       return undefined;
     }
 
     const cwd = this.cwdByClient.get(priorClientId);
     const active = this.activeByClient.get(priorClientId);
+    const metadata = this.metadataByClient.get(priorClientId);
     this.cwdByClient.delete(priorClientId);
     this.activeByClient.delete(priorClientId);
+    this.metadataByClient.delete(priorClientId);
     if (cwd) this.cwdByClient.set(clientId, cwd);
     if (active !== undefined) this.activeByClient.set(clientId, active);
+    if (metadata !== undefined) this.metadataByClient.set(clientId, metadata);
     return priorClientId;
   }
 
@@ -144,6 +149,17 @@ export class RemoteClientState<T> {
     return this.activeByClient.get(clientId);
   }
 
+  setMetadata(clientId: string, value: C): void {
+    if (!this.cwdByClient.has(clientId)) {
+      throw new Error(`Remote client ${clientId} is not ready`);
+    }
+    this.metadataByClient.set(clientId, value);
+  }
+
+  metadata(clientId: string): C | undefined {
+    return this.metadataByClient.get(clientId);
+  }
+
   deleteActive(clientId: string, value?: T): void {
     if (value === undefined || this.activeByClient.get(clientId) === value) {
       this.activeByClient.delete(clientId);
@@ -227,6 +243,7 @@ export class RemoteClientState<T> {
   deleteClient(clientId: string): void {
     this.cwdByClient.delete(clientId);
     this.activeByClient.delete(clientId);
+    this.metadataByClient.delete(clientId);
     this.tailsByClient.delete(clientId);
     this.tailsByClient.delete(`client:${clientId}`);
     const token = this.tabTokenByClient.get(clientId);
@@ -242,8 +259,9 @@ export class RemoteClientState<T> {
     const token = this.tabTokenByClient.get(clientId);
     const cwd = this.cwdByClient.get(clientId);
     const active = this.activeByClient.get(clientId);
+    const metadata = this.metadataByClient.get(clientId);
     if (token && cwd && this.clientByTabToken.get(token) === clientId) {
-      this.detachedByTabToken.set(token, { cwd, active });
+      this.detachedByTabToken.set(token, { cwd, active, metadata });
     }
     this.deleteClient(clientId);
   }
@@ -251,6 +269,7 @@ export class RemoteClientState<T> {
   clear(): void {
     this.cwdByClient.clear();
     this.activeByClient.clear();
+    this.metadataByClient.clear();
     this.tailsByClient.clear();
     this.tabTokenByClient.clear();
     this.clientByTabToken.clear();

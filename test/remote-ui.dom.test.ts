@@ -829,6 +829,13 @@ describe("AFK Pilot shared webview controls", () => {
     expect(summarize.querySelector("span")?.title).toContain("Costs an extra xAI call per spoken reply");
 
     posted.length = 0;
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, {
+      type: "session",
+      sessionId: "switched-conversation",
+      models: [],
+      currentModelId: "grok-build",
+    });
     dispatch(window, { type: "agentStart" });
     dispatch(window, { type: "messageChunk", text: "Full reply.\n```ts\nhidden();\n```" });
     dispatch(window, { type: "agentEnd" });
@@ -851,6 +858,50 @@ describe("AFK Pilot shared webview controls", () => {
       summarizeRepliesAloud: false,
       usesTouch: false,
     });
+  });
+
+  it("speaks the original reply when a requested summary never arrives", () => {
+    const spoken: string[] = [];
+    let fireFallback: (() => void) | undefined;
+    class Utterance {
+      constructor(public text: string) {}
+    }
+    const { window, posted } = bootWebview({
+      remote: true,
+      beforeScripts: (w) => {
+        const nativeSetTimeout = (w as any).setTimeout.bind(w);
+        (w as any).setTimeout = (callback: () => void, delay: number, ...args: unknown[]) => {
+          if (delay === 12_000) {
+            fireFallback = () => callback();
+            return 12_000;
+          }
+          return nativeSetTimeout(callback, delay, ...args);
+        };
+        (w as any).localStorage.setItem("grok.remote.tts", "true");
+        (w as any).localStorage.setItem("grok.remote.ttsSummary", "true");
+        (w as any).SpeechSynthesisUtterance = Utterance;
+        (w as any).speechSynthesis = {
+          cancel() {},
+          speak(value: Utterance) { spoken.push(value.text); },
+        };
+      },
+    });
+    dispatch(window, { type: "initialState", readRepliesAloud: false });
+    posted.length = 0;
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "The full reply remains useful." });
+    dispatch(window, { type: "agentEnd" });
+
+    const request = posted.find((message) => message.type === "summarizeSpeech") as any;
+    expect(request.text).toBe("The full reply remains useful.");
+    expect(spoken).toEqual([]);
+
+    expect(fireFallback).toBeTypeOf("function");
+    fireFallback!();
+    expect(spoken).toEqual(["The full reply remains useful."]);
+
+    dispatch(window, { type: "speechSummary", requestId: request.requestId, text: "Late summary." });
+    expect(spoken).toEqual(["The full reply remains useful."]);
   });
 
   it("does not expose the remote TTS hook in the VS Code webview", () => {

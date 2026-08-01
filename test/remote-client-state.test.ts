@@ -44,6 +44,21 @@ describe("RemoteClientState", () => {
     expect(state.clientsForCwd("/work/b")).toEqual(["tab-c"]);
   });
 
+  it("keeps browser metadata across conversation switches and logical-tab reconnects", () => {
+    const state = new RemoteClientState<object, { tts: boolean }>("/work/a", norm);
+    const preferences = { tts: true };
+    state.identify("old-client", "stable-tab-token");
+    state.ready("old-client");
+    state.setMetadata("old-client", preferences);
+    state.setActive("old-client", { id: "first" });
+
+    state.setActive("old-client", { id: "second" });
+    expect(state.metadata("old-client")).toBe(preferences);
+
+    expect(state.identify("replacement", "stable-tab-token")).toBe("old-client");
+    expect(state.metadata("replacement")).toBe(preferences);
+  });
+
   it("removes a departed client from cwd groups", () => {
     const state = new RemoteClientState<object>("/work/a", norm);
     state.ready("tab-a");
