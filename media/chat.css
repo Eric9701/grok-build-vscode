@@ -2017,12 +2017,20 @@ textarea#input {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.28);
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   pointer-events: none;
 }
-.image-preview-spinner svg { animation: send-spinner-rotate 0.9s linear infinite; }
+/* `display: flex` above beats the UA stylesheet's rule for [hidden], so without
+   this the spinner keeps turning after the render lands. The overlay carries the
+   same guard a few rules up, for the same reason. */
+.image-preview-spinner[hidden] { display: none; }
+.image-preview-spinner svg {
+  /* Larger glyph, same disc. */
+  width: 21px;
+  height: 21px;
+  animation: send-spinner-rotate 0.9s linear infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .image-preview-spinner svg { animation: none; }
 }
