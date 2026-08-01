@@ -288,6 +288,22 @@ a:hover {
   animation: loading-ellipsis 1.4s steps(1, end) infinite;
 }
 
+/* The welcome panel's busy status line. Shares the send button's loader-circle
+   and its rotation, so every "working" affordance in the UI reads the same. */
+#welcome-version.welcome-status-busy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+#welcome-version.welcome-status-busy svg {
+  flex: none;
+  animation: send-spinner-rotate 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  #welcome-version.welcome-status-busy svg { animation: none; }
+}
+
 /* ---- onboarding panel ---- */
 
 #welcome-onboarding:empty { display: none; }

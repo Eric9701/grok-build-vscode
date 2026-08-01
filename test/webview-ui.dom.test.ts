@@ -1106,9 +1106,9 @@ describe("user message (regression: doubled on grok 0.2.33)", () => {
 describe("welcome version line (session-start lifecycle)", () => {
   const verEl = (doc: Document) => $(doc, "welcome-version");
   const ver = (doc: Document) => verEl(doc).textContent;
-  // The trailing dots are an animated ::after pseudo-element (the .loading-dots
-  // class), so the literal text is dot-free while a status is transient.
-  const animating = (doc: Document) => verEl(doc).classList.contains("loading-dots");
+  // A busy status renders the send button's loader-circle beside the label and
+  // spins it, so the marker is the class, not the text — which stays dot-free.
+  const animating = (doc: Document) => verEl(doc).classList.contains("welcome-status-busy");
 
   it("flips to connected only when priming finishes, not at the handshake", () => {
     const { window, doc } = bootWebview();
@@ -1149,10 +1149,15 @@ describe("welcome version line (session-start lifecycle)", () => {
 
     expect(ver(doc)).toBe("Loading conversation");
     expect(animating(doc)).toBe(true);
-    expect(doc.querySelector("#conversation-loading")?.textContent).toBe("Loading conversation");
+    // Exactly ONE indicator. A second banner above the transcript used to say
+    // the same thing at the same moment, which is what the owner saw as
+    // "double loading conversation".
+    expect(doc.querySelector("#conversation-loading")).toBeNull();
+    expect(doc.querySelectorAll("#welcome-version svg").length).toBe(1);
 
     dispatch(window, { type: "historyReplay", active: false });
-    expect(doc.querySelector("#conversation-loading")).toBeNull();
+    expect(animating(doc)).toBe(false);
+    expect(ver(doc)).toBe("Connected · v0.2.40");
   });
 
   it("does not overwrite the version on later (post-priming) busy toggles", () => {

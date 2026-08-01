@@ -108,7 +108,7 @@ import { SessionRequestState } from "./session-request-state";
 import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
-import { thumbnailImage } from "./image-thumbnail";
+import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
 import { historyImagePreviews } from "./image-history";
 import {
   SessionListEntry,
@@ -7815,7 +7815,10 @@ See design doc for the full state machine diagram.`;
       }
     },
     toBase64: (bytes) => Buffer.from(bytes).toString("base64"),
-    thumbnail: thumbnailImage,
+    thumbnail: (bytes, mimeType, maxDimension) => {
+      const thumb = thumbnailImage(bytes, mimeType, maxDimension);
+      return thumb ? { bytes: thumb, mime: thumbnailMime(thumb) } : null;
+    },
     mtimeMs: (p) => {
       try {
         return fs.statSync(p).mtimeMs;
@@ -8191,7 +8194,7 @@ See design doc for the full state machine diagram.`;
       <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
       <h2>Grok Build (Community)</h2>
       <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm/" class="muted-link">The Product Compass</a>)</p>
-      <p id="welcome-version" class="muted loading-dots">Starting</p>
+      <p id="welcome-version" class="muted welcome-status-busy"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span>Starting</span></p>
       <div id="welcome-onboarding"></div>
     </div>
   </main>

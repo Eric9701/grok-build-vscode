@@ -104,11 +104,11 @@ function shiftCounterMessage(
   return msg;
 }
 
-function snapshotParts(
+function snapshotMessages(
   buffer: readonly HostMsg[],
   userIndexes: readonly number[],
   start: number,
-): { preamble: HostMsg[]; body: HostMsg[] } {
+): HostMsg[] {
   const droppedUsers = userIndexes.filter((index) => index < start).length;
   const droppedHistoryEvents = historyEventCount(buffer.slice(0, start));
   const preamble = droppedUsers > 0
@@ -119,22 +119,15 @@ function snapshotParts(
         return shifted ? [shifted] : [];
       })
     : [];
-  const body = buffer.slice(start)
-    .filter((msg) => msg.type !== "historyReplay")
-    .flatMap((msg) => {
-      const shifted = shiftCounterMessage(msg, droppedUsers, droppedHistoryEvents);
-      return shifted ? [shifted] : [];
-    });
-  return { preamble, body };
-}
-
-function snapshotMessages(
-  buffer: readonly HostMsg[],
-  userIndexes: readonly number[],
-  start: number,
-): HostMsg[] {
-  const { preamble, body } = snapshotParts(buffer, userIndexes, start);
-  return [...preamble, ...body];
+  return [
+    ...preamble,
+    ...buffer.slice(start)
+      .filter((msg) => msg.type !== "historyReplay")
+      .flatMap((msg) => {
+        const shifted = shiftCounterMessage(msg, droppedUsers, droppedHistoryEvents);
+        return shifted ? [shifted] : [];
+      }),
+  ];
 }
 
 function historyBatchBytes(messages: readonly HostMsg[]): number {
@@ -161,28 +154,13 @@ export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
     messages = snapshotMessages(buffer, userIndexes, start);
   }
 
-  // The newest turn can exceed the budget on its own — one long agent run with
-  // enough retained command output does it. Beginning mid-turn reads oddly, but
-  // delivering nothing reads as a conversation that vanished, so trim the body
-  // from the front instead. The preamble stays: it carries the shifted plan and
-  // permission counters, and dropping those desynchronises the client's replay.
-  // One backward pass with a running total — re-serialising per candidate start
-  // would be quadratic in exactly the oversized case that gets here.
-  if (historyBatchBytes(messages) > REMOTE_HISTORY_BYTE_LIMIT) {
-    const { preamble, body } = snapshotParts(buffer, userIndexes, start);
-    let used = historyBatchBytes(preamble);
-    let keepFrom = body.length;
-    for (let i = body.length - 1; i >= 0; i--) {
-      const size = new TextEncoder().encode(JSON.stringify(body[i])).length + 1;
-      if (used + size > REMOTE_HISTORY_BYTE_LIMIT) break;
-      used += size;
-      keepFrom = i;
-    }
-    // A single message over the whole budget leaves the body empty. That is the
-    // honest outcome: inlining it would blow the relay's frame ceiling and take
-    // the uplink down, which is strictly worse than a short replay.
-    messages = [...preamble, ...body.slice(keepFrom)];
-  }
+  // If the newest turn busts the budget on its own, deliver it anyway. The
+  // budget exists to keep a phone's reconnect cheap, NOT as a safety mechanism:
+  // the relay's frame ceiling is 4.5x this, so an over-budget single turn still
+  // arrives intact. Measured before deciding — the largest real conversation on
+  // disk is 2.8 MB in total, so anything past 8 MiB in ONE turn is far outside
+  // what this codebase has ever seen, and machinery to trim inside a turn cost
+  // more surface than the case was worth.
   return [
     { type: "historyReplay", active: true },
     { type: "historyBatch", messages },
@@ -516,9 +494,17 @@ export interface MediaInlineDeps {
   /** Base64-encode bytes (Buffer.toString("base64") on the host). */
   toBase64: (bytes: Uint8Array) => string;
   maxBytes?: number;
-  /** Optional host-native image resizer. A missing resizer falls back to the
-   *  thumbnail byte budget and still refuses oversized source files. */
-  thumbnail?: (bytes: Uint8Array, mimeType: string, maxDimension: number) => Uint8Array | null;
+  /** Optional host-native image resizer. It returns the encoded mime alongside
+   *  the bytes because the encoder picks per image — a PNG source can come back
+   *  as JPEG when that is smaller — and a data: URI labelled with the SOURCE
+   *  mime would then describe bytes that are not in that format. A missing
+   *  resizer falls back to the thumbnail byte budget and still refuses
+   *  oversized source files. */
+  thumbnail?: (
+    bytes: Uint8Array,
+    mimeType: string,
+    maxDimension: number,
+  ) => { bytes: Uint8Array; mime: string } | null;
   /** Optional bounded cache supplied by the host for repeated history replays. */
   thumbnailCache?: Map<string, string | null>;
   /** File mtime used with {@link thumbnailCache} to invalidate changed images. */
@@ -566,9 +552,9 @@ function thumbnailDataUri(path: string | undefined, mimeType: string | undefined
   if (!mime.startsWith("image/")) return undefined;
   const thumb = deps.thumbnail
     ? deps.thumbnail(bytes, mime, 320)
-    : bytes;
-  const result = thumb && thumb.byteLength > 0 && thumb.byteLength <= MAX_REMOTE_THUMBNAIL_BYTES
-    ? `data:${mime};base64,${deps.toBase64(thumb)}`
+    : { bytes, mime };
+  const result = thumb && thumb.bytes.byteLength > 0 && thumb.bytes.byteLength <= MAX_REMOTE_THUMBNAIL_BYTES
+    ? `data:${thumb.mime};base64,${deps.toBase64(thumb.bytes)}`
     : undefined;
   if (cacheKey && deps.thumbnailCache) {
     deps.thumbnailCache.delete(cacheKey);

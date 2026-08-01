@@ -2765,26 +2765,41 @@
     state.welcomeVisible = false;
   }
 
-  function setConversationLoading(active) {
-    const existing = $("conversation-loading");
-    if (!active) {
-      if (existing) existing.remove();
-      const ver = $("welcome-version");
-      if (ver && ver.textContent === "Loading conversation") {
-        ver.classList.remove("loading-dots");
-        ver.textContent = state.cliVersion ? `Connected \u00b7 v${state.cliVersion}` : "Connected";
-      }
+  /** The welcome panel's status line \u2014 the ONE place a pre-transcript wait is
+   *  announced. Busy states borrow the send button's loader-circle so every
+   *  "working" affordance spins the same way; settled states are plain text.
+   *  `dataset.status` records which busy state is showing, so a later clear can
+   *  tell "the conversation finished loading" from "startup finished" without
+   *  comparing display strings. */
+  function setWelcomeStatus(text, busy) {
+    const ver = $("welcome-version");
+    if (!ver) return;
+    ver.classList.remove("loading-dots");
+    ver.classList.toggle("welcome-status-busy", !!busy);
+    ver.dataset.status = busy ? text : "";
+    if (!busy) {
+      ver.textContent = text;
       return;
     }
-    const banner = existing || document.createElement("div");
-    banner.id = "conversation-loading";
-    banner.className = "session-context-banner loading-dots";
-    banner.textContent = "Loading conversation";
-    if (!existing) messagesEl.insertBefore(banner, messagesEl.firstChild);
+    ver.textContent = "";
+    ver.insertAdjacentHTML("beforeend", ICON.spinner);
+    const label = document.createElement("span");
+    label.textContent = text;
+    ver.appendChild(label);
+  }
+
+  function setConversationLoading(active) {
+    if (active) {
+      // Deliberately the only indicator. A second banner above the transcript
+      // used to double it up, and the transcript arrives as one batch anyway \u2014
+      // so the wait that's worth announcing happens while the welcome is still
+      // on screen, and the banner only ever duplicated this line.
+      setWelcomeStatus("Loading conversation", true);
+      return;
+    }
     const ver = $("welcome-version");
-    if (ver && state.welcomeVisible) {
-      ver.classList.add("loading-dots");
-      ver.textContent = "Loading conversation";
+    if (ver && ver.dataset.status === "Loading conversation") {
+      setWelcomeStatus(state.cliVersion ? `Connected \u00b7 v${state.cliVersion}` : "Connected", false);
     }
   }
 
@@ -2810,8 +2825,7 @@
       welcome.hidden = false;
       const onb = $("welcome-onboarding");
       if (onb) onb.innerHTML = "";
-      const ver = $("welcome-version");
-      if (ver) { ver.classList.add("loading-dots"); ver.textContent = "Starting"; }
+      setWelcomeStatus("Starting", true);
     }
     state.welcomeVisible = true;
     state.pendingDiffByToolCallId.clear();
@@ -2882,7 +2896,7 @@
     const ver = $("welcome-version");
     if (!onb) return;
     if (mode === "missing-cli") {
-      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "CLI not installed"; }
+      if (ver) setWelcomeStatus("CLI not installed", false);
       const installCmd = info.platform === "win32"
         ? "irm https://x.ai/cli/install.ps1 | iex"
         : "curl -fsSL https://x.ai/cli/install.sh | bash";
@@ -2897,7 +2911,7 @@
           `<button class="onb-action onb-secondary" type="button" data-act="recheck">Re-check connection</button>` +
         `</div>`;
     } else if (mode === "auth-required") {
-      if (ver) { ver.classList.remove("loading-dots"); ver.textContent = "Authentication required"; }
+      if (ver) setWelcomeStatus("Authentication required", false);
       onb.innerHTML =
         `<div class="onb">` +
           `<p class="onb-heading">Sign in to continue</p>` +
@@ -6061,6 +6075,30 @@
     return state.imagePreviews;
   }
 
+  function rememberImagePreview(previewId, previewSrc) {
+    if (typeof previewId !== "string" || typeof previewSrc !== "string") return false;
+    const previews = previewCacheForCurrentSession();
+    previews.set(previewId, previewSrc);
+    while (previews.size > 24) {
+      const oldest = previews.keys().next().value;
+      if (oldest === undefined) break;
+      previews.delete(oldest);
+    }
+    return true;
+  }
+
+  if (IS_REMOTE) {
+    // The relay registers its decoded/uploaded preview before sending the host
+    // frame. Generate the id here so it uses the same opaque-token contract as
+    // the rest of the remote UI, while keeping imagePreviews private to chat.js.
+    window.grokRegisterRemoteImagePreview = (previewSrc) => {
+      if (typeof previewSrc !== "string" || !previewSrc.startsWith("data:image/")) return null;
+      const previewId = newRemoteTabToken();
+      if (!previewId || !/^[A-Za-z0-9_-]{20,128}$/.test(previewId)) return null;
+      return rememberImagePreview(previewId, previewSrc) ? previewId : null;
+    };
+  }
+
   function renderChips() {
     chipsEl.innerHTML = "";
     attachmentsEl.innerHTML = "";
@@ -7130,8 +7168,7 @@
         // running. Keep showing Starting until the startup lock clears.
         state.cliVersion = msg.info.version || "";
         state.startingPhase = true;
-        const verEl = $("welcome-version");
-        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Starting"; }
+        setWelcomeStatus("Starting", true);
         const onb = $("welcome-onboarding");
         if (onb) onb.innerHTML = "";
         break;
@@ -7140,8 +7177,7 @@
         // One-time hint while the silent `grok update` runs before the session
         // spawns; overwritten by Starting once grok connects, then Connected
         // once session startup finishes.
-        const verEl = $("welcome-version");
-        if (verEl) { verEl.classList.add("loading-dots"); verEl.textContent = "Updating Grok Build CLI"; }
+        setWelcomeStatus("Updating Grok Build CLI", true);
         break;
       }
       case "session": {
@@ -7819,12 +7855,8 @@
           // version only now; initialized fires before session startup finishes.
           if (state.startingPhase) {
             state.startingPhase = false;
-            const verEl = $("welcome-version");
-            if (verEl) {
-              const ver = state.cliVersion ? ` · v${state.cliVersion}` : "";
-              verEl.classList.remove("loading-dots"); // settled — no animated dots
-              verEl.textContent = `Connected${ver}`;
-            }
+            const ver = state.cliVersion ? ` · v${state.cliVersion}` : "";
+            setWelcomeStatus(`Connected${ver}`, false); // settled — no spinner
           }
         }
         // Refresh the gear popover's model/effort lock state if it's open.
@@ -8183,13 +8215,7 @@
         const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (m) {
           const previewId = newRemoteTabToken();
-          const previews = previewCacheForCurrentSession();
-          previews.set(previewId, dataUrl);
-          while (previews.size > 24) {
-            const oldest = previews.keys().next().value;
-            if (oldest === undefined) break;
-            previews.delete(oldest);
-          }
+          rememberImagePreview(previewId, dataUrl);
           vscode.postMessage({ type: "pasteImage", mimeType: m[1], data: m[2], previewId });
         }
         settle();

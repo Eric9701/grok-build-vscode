@@ -249,14 +249,17 @@ describe("transformHostMsgForRemote", () => {
   it("uses the thumbnail hook and keeps replayed image tags usable remotely", () => {
     const imageDeps: MediaInlineDeps = {
       ...deps(new Uint8Array([1, 2, 3])),
-      thumbnail: () => new Uint8Array([9]),
+      // The encoder picks a format per image, so the hook reports the mime of
+      // what it produced — here a JPEG from a PNG source, which is exactly the
+      // case a source-mime label would get wrong.
+      thumbnail: () => ({ bytes: new Uint8Array([9]), mime: "image/jpeg" }),
     };
     const out = transformHostMsgForRemote({
       type: "userMessageChunk",
       text: "[Image #1] (C:\\staged\\image.png — attached inline; do not Read it)",
       images: [{ imageIndex: 1, path: "C:\\staged\\image.png" }],
     }, imageDeps) as Extract<HostMsg, { type: "userMessageChunk" }>;
-    expect(out.images?.[0].previewSrc).toBe("data:image/png;base64,CQ==");
+    expect(out.images?.[0].previewSrc).toBe("data:image/jpeg;base64,CQ==");
     expect(MAX_REMOTE_THUMBNAIL_BYTES).toBe(96 * 1024);
   });
 
@@ -271,7 +274,7 @@ describe("transformHostMsgForRemote", () => {
       toBase64: (bytes) => Buffer.from(bytes).toString("base64"),
       thumbnail: () => {
         thumbnails += 1;
-        return new Uint8Array([9]);
+        return { bytes: new Uint8Array([9]), mime: "image/png" };
       },
       mtimeMs: () => 42,
       thumbnailCache: new Map(),
@@ -488,41 +491,19 @@ describe("remote reconnect snapshot replay", () => {
     );
   });
 
-  it("trims inside the newest turn rather than delivering an empty batch", () => {
-    // One long agent run: a single turn whose retained output alone busts the
-    // budget. No older user boundary is left to drop, so the only way to fit is
-    // to begin mid-turn. Delivering nothing would read as a vanished conversation.
-    const chunk = "y".repeat(REMOTE_HISTORY_BYTE_LIMIT / 4);
+  it("delivers an over-budget single turn rather than truncating it", () => {
+    // The budget keeps a phone's reconnect cheap; it is not a safety mechanism.
+    // The relay's frame ceiling is 4.5x it, so this still arrives — and the
+    // largest real conversation measured on disk is 2.8 MB in total, so one
+    // turn past 8 MiB is well outside anything observed.
     const buffer: HostMsg[] = [
       { type: "userMessage", text: "only prompt" },
-      { type: "messageChunk", text: chunk },
-      { type: "messageChunk", text: chunk },
-      { type: "messageChunk", text: chunk },
-      { type: "messageChunk", text: chunk },
+      { type: "messageChunk", text: "z".repeat(REMOTE_HISTORY_BYTE_LIMIT + 1000) },
       { type: "messageChunk", text: "the newest words" },
     ];
 
     const messages = batched(buffer);
-    expect(Buffer.byteLength(JSON.stringify({ type: "historyBatch", messages }))).toBeLessThanOrEqual(
-      REMOTE_HISTORY_BYTE_LIMIT,
-    );
-    // Not empty, and it kept the NEWEST end — that is the part worth showing.
-    expect(messages.length).toBeGreaterThan(0);
+    expect(messages[0]).toEqual({ type: "userMessage", text: "only prompt" });
     expect(messages[messages.length - 1]).toEqual({ type: "messageChunk", text: "the newest words" });
-  });
-
-  it("empties the body only when one message alone exceeds the whole budget", () => {
-    // Inlining it would blow past the relay's frame ceiling and take the uplink
-    // down, which is strictly worse for the user than a short replay.
-    const buffer: HostMsg[] = [
-      { type: "userMessage", text: "only prompt" },
-      { type: "messageChunk", text: "z".repeat(REMOTE_HISTORY_BYTE_LIMIT + 1000) },
-    ];
-
-    const messages = batched(buffer);
-    expect(Buffer.byteLength(JSON.stringify({ type: "historyBatch", messages }))).toBeLessThanOrEqual(
-      REMOTE_HISTORY_BYTE_LIMIT,
-    );
-    expect(messages).toEqual([]);
   });
 });
