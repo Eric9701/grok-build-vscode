@@ -1045,3 +1045,87 @@ describe("AFK Pilot shared webview controls", () => {
     expect(spoken).toEqual([]);
   });
 });
+
+describe("tap to enlarge (remote)", () => {
+  const chip = (extra: Record<string, unknown> = {}) => ({
+    id: "image-1",
+    path: "/staged/image-1.jpg",
+    relPath: "Image #1",
+    hidden: false,
+    imageIndex: 1,
+    mimeType: "image/jpeg",
+    previewSrc: "data:image/jpeg;base64,dGh1bWI=",
+    ...extra,
+  });
+
+  it("asks the host for a real render and swaps it into the open overlay", () => {
+    // A remote only holds a 320px thumbnail. Without this round trip, tapping
+    // enlarges the thumbnail — which is what issue #88 asked for and did not get
+    // away from the desk.
+    const { window, posted, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "chips", chips: [chip({ fullId: "handle-1" })] });
+
+    click(window, doc.querySelector(".attachment .chip-preview, .attachment button")!);
+
+    expect(posted.find((m) => m.type === "requestImageFull")).toMatchObject({ fullId: "handle-1" });
+    const img = doc.querySelector(".image-preview-overlay img") as HTMLImageElement;
+    expect(img.src).toBe("data:image/jpeg;base64,dGh1bWI="); // thumbnail until the render lands
+
+    dispatch(window, { type: "imageFull", fullId: "handle-1", src: "data:image/jpeg;base64,ZnVsbA==" });
+    expect(img.src).toBe("data:image/jpeg;base64,ZnVsbA==");
+  });
+
+  it("ignores a render for a picture the overlay has moved on from", () => {
+    // A slow reply must not replace whatever the user is looking at now.
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "chips", chips: [chip({ fullId: "handle-1" })] });
+    click(window, doc.querySelector(".attachment .chip-preview, .attachment button")!);
+
+    dispatch(window, { type: "imageFull", fullId: "some-other-handle", src: "data:image/jpeg;base64,d3Jvbmc=" });
+
+    const img = doc.querySelector(".image-preview-overlay img") as HTMLImageElement;
+    expect(img.src).toBe("data:image/jpeg;base64,dGh1bWI=");
+  });
+
+  it("sends nothing when the host offered no handle", () => {
+    // Capability detection: an older host never issues one, and the client must
+    // not emit a frame it cannot answer.
+    const { window, posted, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "chips", chips: [chip()] });
+
+    click(window, doc.querySelector(".attachment .chip-preview, .attachment button")!);
+
+    expect(posted.filter((m) => m.type === "requestImageFull")).toHaveLength(0);
+  });
+});
+
+describe("remembered remote session (the A→B→A→B repo bounce)", () => {
+  it("remembers the repo the SESSION lives in, not the one being browsed", () => {
+    // Browsing repo B's history while the live session is in repo A is a normal
+    // state — the chip says "Browsing B; live session is in A". Remembering B
+    // alongside A's session id makes the next reconnect send selectRepo(B) and
+    // then resumeSession(a session in A): two contradictory commands the host
+    // obeys in order, which is the bounce.
+    const { window } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "repos",
+      entries: [{ cwd: "/work/a", label: "a", available: true }, { cwd: "/work/b", label: "b", available: true }],
+      selectedCwd: "/work/b",
+      activeCwd: "/work/a",
+    });
+    dispatch(window, {
+      type: "sessions",
+      entries: [{ id: "s1", displayName: "live one", updatedAt: 1, cwd: "/work/a" }],
+      activeId: "s1",
+    });
+
+    const saved = JSON.parse(
+      window.sessionStorage.getItem(
+        Object.keys(window.sessionStorage).find((k) => k.startsWith("grok.remote.tabSession:"))!,
+      )!,
+    );
+    expect(saved.id).toBe("s1");
+    expect(saved.repoCwd).toBe("/work/a"); // the session's repo, NOT the browsed "/work/b"
+    expect(saved.cwd).toBe("/work/a");
+  });
+});

@@ -7979,9 +7979,20 @@
           if (state.activeSessionId) {
             const activeEntry = entries.find((entry) => entry.id === state.activeSessionId)
               || state.sessions.find((entry) => entry.id === state.activeSessionId);
+            // repoCwd must name the repo this SESSION lives in, not the one the
+            // list happens to be showing. Those diverge whenever you browse
+            // another repo's history (the chip literally says "Browsing X; live
+            // session is in Y"), and remembering the browsed one pairs a repo
+            // with a session that does not belong to it. On the next reconnect
+            // restoreRememberedRemoteSession then issues two contradictory
+            // commands — selectRepo(X) followed by resumeSession(a session in
+            // Y) — and the host obeys both in order. That is the A→B→A→B
+            // bouncing: the second command lands after the first has finished
+            // loading, and whichever repo you end on gets remembered, so the
+            // next reconnect can flip you straight back.
             saveRememberedRemoteSession({
               id: state.activeSessionId,
-              repoCwd: state.selectedRepoCwd || state.cwd || "",
+              repoCwd: state.activeRepoCwd || state.selectedRepoCwd || state.cwd || "",
               cwd: activeEntry?.cwd || state.activeRepoCwd || state.cwd || "",
             });
           } else saveRememberedRemoteSession(null);
