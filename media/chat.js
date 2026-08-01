@@ -342,6 +342,7 @@
     // The full-size render the overlay is currently waiting on, so a late reply
     // for a closed or replaced preview is dropped rather than painted.
     pendingImageFullId: null,
+    imageFullTimer: null,
     activeThoughtEl: null,
     activeThoughtHdrEl: null,
     thoughtStartTime: null,
@@ -6052,6 +6053,26 @@
 
   // ---------- chips ----------
 
+  /** Toggle the "rendering the full size" disc over the open preview.
+   *  The timeout is not decoration: an unrecognised handle is answered with
+   *  SILENCE on purpose, so that probing reveals nothing about what is on disk —
+   *  which means a spinner waiting on one would turn forever. */
+  function setImagePreviewLoading(active) {
+    if (state.imageFullTimer) {
+      clearTimeout(state.imageFullTimer);
+      state.imageFullTimer = null;
+    }
+    const spinner = document.querySelector(".image-preview-spinner");
+    if (spinner) spinner.hidden = !active;
+    if (!active) return;
+    state.imageFullTimer = setTimeout(() => {
+      const late = document.querySelector(".image-preview-spinner");
+      if (late) late.hidden = true;
+      state.pendingImageFullId = null;
+      state.imageFullTimer = null;
+    }, 20000);
+  }
+
   function openImagePreview(src, label, fullId) {
     if (!src) return;
     let overlay = document.querySelector(".image-preview-overlay");
@@ -6059,10 +6080,12 @@
       overlay = document.createElement("div");
       overlay.className = "image-preview-overlay";
       overlay.hidden = true;
-      overlay.innerHTML = `<button type="button" class="image-preview-close" aria-label="Close image preview">&times;</button><img>`;
+      overlay.innerHTML = `<button type="button" class="image-preview-close" aria-label="Close image preview">&times;</button><img>`
+        + `<div class="image-preview-spinner" role="status" aria-label="Loading full-size image" hidden>${ICON.spinner}</div>`;
       const close = () => {
         overlay.hidden = true;
         // Whatever was in flight is for a picture nobody is looking at now.
+        setImagePreviewLoading(false);
         state.pendingImageFullId = null;
       };
       overlay.onclick = (e) => { if (e.target === overlay) close(); };
@@ -6080,8 +6103,10 @@
     // swap it in when it lands — the thumbnail stays up meanwhile, so a slow or
     // unanswered request degrades to exactly the old behaviour.
     state.pendingImageFullId = null;
+    setImagePreviewLoading(false);
     if (IS_REMOTE && fullId) {
       state.pendingImageFullId = fullId;
+      setImagePreviewLoading(true);
       vscode.postMessage({ type: "requestImageFull", fullId });
     }
   }
@@ -7396,9 +7421,12 @@
       case "imageFull": {
         // Ignore an answer for a picture the overlay has moved on from, so a
         // slow reply cannot replace whatever the user is looking at now.
-        if (!msg.src || state.pendingImageFullId !== msg.fullId) break;
+        if (state.pendingImageFullId !== msg.fullId) break;
         const overlay = document.querySelector(".image-preview-overlay");
-        if (overlay && !overlay.hidden) overlay.querySelector("img").src = msg.src;
+        // A missing src means the source is gone (swept, or deleted). Stop the
+        // spinner either way — the thumbnail already on screen is the answer.
+        if (msg.src && overlay && !overlay.hidden) overlay.querySelector("img").src = msg.src;
+        setImagePreviewLoading(false);
         state.pendingImageFullId = null;
         break;
       }

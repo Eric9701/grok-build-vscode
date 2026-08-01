@@ -2004,6 +2004,28 @@ textarea#input {
   border-radius: 6px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
+/* Shown while the host renders the full-size version. The low-res image stays
+   visible underneath rather than being blanked — you get something to look at
+   immediately — so the spinner needs its own semi-transparent disc to stay
+   legible over a bright picture as well as a dark one. Same loader-circle and
+   rotation as the send button and the welcome status. */
+.image-preview-spinner {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  pointer-events: none;
+}
+.image-preview-spinner svg { animation: send-spinner-rotate 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .image-preview-spinner svg { animation: none; }
+}
 .image-preview-close {
   position: absolute;
   top: 10px;

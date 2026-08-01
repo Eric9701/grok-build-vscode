@@ -1129,3 +1129,54 @@ describe("remembered remote session (the A→B→A→B repo bounce)", () => {
     expect(saved.cwd).toBe("/work/a");
   });
 });
+
+describe("full-size loading spinner", () => {
+  const imgChip = {
+    id: "image-1",
+    path: "/staged/image-1.jpg",
+    relPath: "Image #1",
+    hidden: false,
+    imageIndex: 1,
+    mimeType: "image/jpeg",
+    previewSrc: "data:image/jpeg;base64,dGh1bWI=",
+    fullId: "handle-1",
+  };
+
+  it("spins while the render is in flight and stops when it lands", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "chips", chips: [imgChip] });
+    click(window, doc.querySelector(".attachment .chip-preview, .attachment button")!);
+
+    const spinner = doc.querySelector(".image-preview-spinner") as HTMLElement;
+    expect(spinner.hidden).toBe(false);
+    // The low-res picture stays on screen underneath rather than being blanked.
+    expect((doc.querySelector(".image-preview-overlay img") as HTMLImageElement).src)
+      .toBe("data:image/jpeg;base64,dGh1bWI=");
+
+    dispatch(window, { type: "imageFull", fullId: "handle-1", src: "data:image/jpeg;base64,ZnVsbA==" });
+    expect(spinner.hidden).toBe(true);
+  });
+
+  it("stops spinning when the host has no render to give", () => {
+    // A source that was swept or deleted answers with no src. Left alone the
+    // disc would turn forever over a picture that is never going to sharpen.
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, { type: "chips", chips: [imgChip] });
+    click(window, doc.querySelector(".attachment .chip-preview, .attachment button")!);
+    expect((doc.querySelector(".image-preview-spinner") as HTMLElement).hidden).toBe(false);
+
+    dispatch(window, { type: "imageFull", fullId: "handle-1" });
+
+    expect((doc.querySelector(".image-preview-spinner") as HTMLElement).hidden).toBe(true);
+    expect((doc.querySelector(".image-preview-overlay img") as HTMLImageElement).src)
+      .toBe("data:image/jpeg;base64,dGh1bWI=");
+  });
+
+  it("does not spin when there is nothing to wait for", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    const { fullId: _drop, ...noHandle } = imgChip;
+    dispatch(window, { type: "chips", chips: [noHandle] });
+    click(window, doc.querySelector(".attachment .chip-preview, .attachment button")!);
+    expect((doc.querySelector(".image-preview-spinner") as HTMLElement).hidden).toBe(true);
+  });
+});
