@@ -187,15 +187,32 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       p.msg?.type === "repos" &&
       p.msg.selectedCwd === emptyRepo
     ), JSON.stringify(posts));
-    const startupDeadline = Date.now() + 15000;
-    while (Date.now() < startupDeadline && !posts.some((p) =>
+    // Switching to a history-free repo now STARTS a session there instead of
+    // landing nowhere, so this wait covers a real CLI spawn. A shared CI runner
+    // is slower at exactly that than a dev box, so the deadline is generous and —
+    // unlike before — expiring it fails HERE. Falling through silently meant the
+    // rest of the test ran against a half-started session and the blame landed on
+    // the assertion below, which is what made this look like a product bug.
+    const startupDeadline = Date.now() + 60000;
+    const startupDone = () => posts.some((p) =>
       p.clientIds?.includes(clientId) && p.msg?.type === "setBusy" && p.msg.value === false
-    )) await new Promise((r) => setTimeout(r, 200));
+    );
+    while (Date.now() < startupDeadline && !startupDone()) await new Promise((r) => setTimeout(r, 200));
+    assert.ok(startupDone(), "the empty repo's session never finished starting");
+
     posts.length = 0;
     hooks.fromRemote({ type: "clearAllSessions", cwd: emptyRepo }, clientId);
-    await new Promise((r) => setTimeout(r, 100));
 
-    assert.ok(posts.some((p) => p.clientIds?.length === 1 && p.clientIds[0] === clientId && p.msg?.type === "sessions"));
+    // Poll instead of sleeping a fixed 100ms: the clear touches the filesystem
+    // and can queue behind an in-flight session transition, so how long it takes
+    // is a property of the machine, not of the behaviour under test.
+    const clearDeadline = Date.now() + 15000;
+    const sawSessions = () => posts.some((p) =>
+      p.clientIds?.length === 1 && p.clientIds[0] === clientId && p.msg?.type === "sessions"
+    );
+    while (Date.now() < clearDeadline && !sawSessions()) await new Promise((r) => setTimeout(r, 100));
+
+    assert.ok(sawSessions(), JSON.stringify(posts));
     assert.ok(!posts.some((p) => p.msg?.type === "hostNotice" && p.msg.text === "No history to clear."));
     assert.ok(!posts.some((p) => p.dest === "local" && p.msg?.text === "No history to clear."));
     hooks.remoteClientLeft(clientId);
