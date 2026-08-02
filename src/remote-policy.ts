@@ -193,6 +193,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // view (read-only+)
   remotePreferences: "view",
   listSessions: "view",
+  // Same read as listSessions, aimed at a repo the client is not currently in
+  // (the projects rail previews a few sessions per repo). The host resolves the
+  // cwd through the repo catalog it already published, so this reaches nothing
+  // a read-only remote could not already see by selecting that repo.
+  listRepoSessions: "view",
   selectRepo: "view",
   toggleRepoPin: "full",
   resumeSession: "view",
@@ -322,6 +327,7 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     case "selectRepo":
     case "toggleRepoPin":
     case "clearAllSessions":
+    case "listRepoSessions":
       return isKnownCwd(msg.cwd);
     case "resumeSession":
       return !msg.cwd || isKnownCwd(msg.cwd);
@@ -462,6 +468,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   truncateMessages: "mirror",
   uiConfirmRequest: "mirror",
   sessions: "mirror",
+  repoSessions: "mirror",
   repos: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",

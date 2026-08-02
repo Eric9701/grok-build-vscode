@@ -105,6 +105,10 @@ describe("remote repo target gate", () => {
     expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/work/b", pinned: true }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s", cwd: "/work/a" }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "clearAllSessions", cwd: "/work/a" }, discovered)).toBe(true);
+    // The rail previews a repo without selecting it — same catalog gate, so it
+    // cannot become a way to read history for a path the host never published.
+    expect(allowRemoteRepoTarget({ type: "listRepoSessions", cwd: "/work/a" }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "listRepoSessions", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "selectRepo", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/etc", pinned: true }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s", cwd: "/etc" }, discovered)).toBe(false);
@@ -121,6 +125,7 @@ describe("allowFromRemote tier gating", () => {
   it("view ops pass at every tier", () => {
     for (const tier of ["read-only", "propose", "full"] as const) {
       expect(allowFromRemote("listSessions", tier)).toBe(true);
+      expect(allowFromRemote("listRepoSessions", tier)).toBe(true);
       expect(allowFromRemote("resumeSession", tier)).toBe(true);
       expect(allowFromRemote("remotePreferences", tier)).toBe(true);
     }

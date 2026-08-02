@@ -379,6 +379,24 @@
     repoSwitchPending: false,
     selectedRepoCwd: "",
     activeRepoCwd: "",
+    // Projects rail (browser client only). `repoPreviews` caches one page of
+    // rows per NON-selected repo — the selected one always reads the live
+    // `sessions` list instead. `repoPreviewsSupported` latches on the first
+    // `repoSessions` frame: until a host has answered once, the rail probes with
+    // a single request rather than one per repo, so an older host that ignores
+    // the message costs one dead frame instead of a fan-out on every catalog push.
+    repoPreviews: {},
+    repoPreviewsAsked: {},
+    repoPreviewsSupported: false,
+    railCollapsed: {},
+    railExpanded: {},
+    // True between a catalog naming a new selected repo and the session list for
+    // that repo arriving — the window in which `state.sessions` still describes
+    // the repo we just left.
+    railSessionsStale: false,
+    // The selected repo's newest sessions AS THE RAIL SEES THEM — fed only by
+    // unfiltered first pages, so an open history search never reshapes the rail.
+    railSelectedRows: [],
     activeSessionId: null,
     // Dashboard dot per grok-session id (id → "working"|"needs-you"|"unread"|
     // "error"|"none"). The host computes the value (live status + persisted unread
@@ -2392,13 +2410,36 @@
 
   // Cheap incremental update for a single dot when a `sessionDot` arrives while the
   // popover is open — no full re-render.
-  function patchSessionDot(id) {
+  // `root` defaults to the popover. The projects rail carries the same
+  // `data-session-dot` attribute, and one id can be on screen in both at once,
+  // so callers patch each surface they have rather than assuming one home.
+  function patchSessionDot(id, root) {
+    const host = root || historyPopover;
+    if (!host) return;
     const sel = "[data-session-dot=\"" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "\"]";
-    const dot = historyPopover.querySelector(sel);
-    if (dot) applySessionDot(dot, state.dots[id]);
+    for (const dot of host.querySelectorAll(sel)) applySessionDot(dot, state.dots[id]);
   }
 
-  const cwdKey = (cwd) => String(cwd || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+  // Repo identity, mirroring the host's own `normalizeRepoPath`: trailing
+  // separators and slash direction never matter, but **case only folds on
+  // Windows**. Folding it everywhere merged `/work/Foo` and `/work/foo` — two
+  // genuinely different checkouts on Linux/macOS — into one identity, which the
+  // projects rail turns into one project rendering the other's conversations and
+  // a click acting on the wrong checkout. The host runs this same rule off
+  // `process.platform`; a browser has no such thing, so infer it from the shape
+  // of the path the host sent (drive letter, or backslashes).
+  // Split on the ONE shape that is unambiguous: a repo cwd is always absolute
+  // (the host only catalogues absolute paths), and an absolute path starting
+  // with "/" is POSIX. There, case is significant AND a backslash is an ordinary
+  // filename character — so neither may be normalised away. Everything else is a
+  // Windows spelling (drive letter or UNC), where both fold. Testing for
+  // backslashes instead would mis-read a legitimate POSIX directory such as
+  // `/srv/Foo\bar` as a Windows path.
+  const cwdKey = (cwd) => {
+    const raw = String(cwd || "");
+    if (raw.charAt(0) === "/") return raw.replace(/\/+$/, "");
+    return raw.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+  };
   const sameCwd = (a, b) => cwdKey(a) === cwdKey(b);
   const cwdLeaf = (cwd) => {
     const parts = String(cwd || "").replace(/[\\/]+$/, "").split(/[\\/]+/).filter(Boolean);
@@ -2764,6 +2805,325 @@
     positionDropdownPopover(historyPopover, historyBtn);
     historyPopover.hidden = false;
     requestSessions(0);
+  }
+
+  // ---------- projects rail ----------
+  //
+  // A persistent left rail: every repo with Grok history, each showing its
+  // newest few sessions. It exists ONLY in the browser client — `#projects-rail`
+  // is part of the relay's own page, so in the VS Code webview every function
+  // here finds no mount and returns. That element lookup is the entire gate;
+  // there is no second copy of this UI to keep in sync, and VS Code (where the
+  // window already IS the repo) renders nothing new.
+  //
+  // Rows for a repo the client is NOT currently in arrive on `repoSessions`, a
+  // frame older hosts never send. When it never arrives the rail still works:
+  // the selected repo's rows come from the ordinary `sessions` frame and the
+  // other repos simply stay empty until you open them. Capability detection,
+  // never a version check — same rule as the repo chip above.
+
+  const RAIL_PREVIEW = 3;      // rows per repo before "Show all"
+  const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
+
+  let railEl = null;
+  let railResolved = false;
+
+  function rail() {
+    if (!railResolved) {
+      railResolved = true;
+      railEl = IS_REMOTE ? document.getElementById("projects-rail") : null;
+    }
+    return railEl;
+  }
+
+  /** Repos in rail order: pinned first (newest pin on top), then by recency.
+   *  The host already sorts its catalog this way; re-sorting here keeps the rail
+   *  correct even if a future host returns them unordered. */
+  function railRepos() {
+    return state.repos.slice().sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+  }
+
+  /** Preview rows for a repo. The SELECTED repo reads the live `sessions` list
+   *  rather than its cached preview: that list is the one the host keeps pushing
+   *  on every rename/delete/new-session, so the repo you are working in stays
+   *  correct without the rail asking for anything. */
+  function railRowsFor(repo) {
+    if (sameCwd(repo.cwd, state.selectedRepoCwd)) {
+      // Deliberately NOT `state.sessions`: that list follows the history
+      // popover's search, and it also still describes the PREVIOUS repo in the
+      // beat between the catalog naming a new one and its list arriving —
+      // rendering it then is cross-repo bleed, not a cosmetic lag. This holder
+      // is written only by unfiltered first pages, so it always means "this
+      // repo's newest conversations".
+      if (state.railSessionsStale) return null;
+      return { entries: state.railSelectedRows, total: state.railSelectedRows.length };
+    }
+    const cached = state.repoPreviews[cwdKey(repo.cwd)];
+    return cached ? { entries: cached.entries, total: cached.total } : null;
+  }
+
+  /** Ask the host for previews of the repos we have no rows for. Skipped
+   *  entirely until the host proves it answers — one probe for the first repo,
+   *  and the rest only once a `repoSessions` frame has come back. Without this
+   *  an old host would be sent one dead request per repo on every catalog push. */
+  function requestRailPreviews() {
+    if (!rail() || !state.reposKnown) return;
+    const wanted = railRepos().filter(
+      (r) => r.available && !sameCwd(r.cwd, state.selectedRepoCwd) && !state.repoPreviews[cwdKey(r.cwd)],
+    );
+    if (!wanted.length) return;
+    const ask = state.repoPreviewsSupported ? wanted : wanted.slice(0, 1);
+    for (const r of ask) {
+      const key = cwdKey(r.cwd);
+      if (state.repoPreviewsAsked[key]) continue;
+      state.repoPreviewsAsked[key] = true;
+      vscode.postMessage({ type: "listRepoSessions", cwd: r.cwd, limit: RAIL_EXPANDED });
+    }
+  }
+
+  function renderRail() {
+    const root = rail();
+    if (!root) return;
+    // The rail is the repo switcher in another shape: it appears under exactly
+    // the same condition, so a host that never sends `repos` gets the plain
+    // single-column chat instead of an empty sidebar.
+    const on = repoSwitcherAvailable() && state.repos.length > 0;
+    root.hidden = !on;
+    document.body.classList.toggle("has-rail", on);
+    if (!on) return;
+
+    root.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "rail-head";
+    head.innerHTML = `<span class="rail-head-title">Projects</span>`;
+    root.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "rail-list";
+    root.appendChild(list);
+
+    for (const repo of railRepos()) list.appendChild(renderRailRepo(repo));
+  }
+
+  function renderRailRepo(repo) {
+    const key = cwdKey(repo.cwd);
+    const selected = sameCwd(repo.cwd, state.selectedRepoCwd);
+    const live = sameCwd(repo.cwd, state.activeRepoCwd);
+    const collapsed = !!state.railCollapsed[key];
+
+    const sec = document.createElement("section");
+    sec.className = "rail-repo" +
+      (selected ? " selected" : "") +
+      (repo.available ? "" : " unavailable") +
+      (collapsed ? " collapsed" : "");
+
+    const head = document.createElement("div");
+    head.className = "rail-repo-head";
+    head.title = repo.cwd;
+
+    // Collapse is its own control, so clicking the NAME can mean "work here"
+    // without also folding the rows away.
+    const twisty = document.createElement("button");
+    twisty.type = "button";
+    twisty.className = "rail-twisty";
+    twisty.innerHTML = collapsed ? ICON.chevronRight : ICON.chevronDown;
+    twisty.title = collapsed ? "Expand" : "Collapse";
+    twisty.setAttribute("aria-expanded", String(!collapsed));
+    twisty.onclick = (e) => {
+      e.stopPropagation();
+      if (collapsed) delete state.railCollapsed[key];
+      else state.railCollapsed[key] = true;
+      renderRail();
+    };
+    head.appendChild(twisty);
+
+    const name = document.createElement("button");
+    name.type = "button";
+    name.className = "rail-repo-name";
+    name.disabled = !repo.available || repoSwitcherLocked();
+    name.innerHTML =
+      `<span class="rail-repo-icon">${repo.worktreeLabel ? ICON.gitBranch : ICON.folder}</span>` +
+      `<span class="rail-repo-label"></span>`;
+    name.querySelector(".rail-repo-label").textContent = repo.label || cwdLeaf(repo.cwd);
+    name.onclick = () => {
+      if (!repo.available || repoSwitcherLocked() || selected) return;
+      selectRailRepo(repo);
+    };
+    head.appendChild(name);
+
+    if (live) {
+      const dot = document.createElement("span");
+      dot.className = "rail-repo-live";
+      dot.title = "The live session is in this repository";
+      head.appendChild(dot);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "rail-repo-actions";
+
+    // "New session" only where the answer is unambiguous: the repo already
+    // selected. For any other repo it would have to switch first, and the
+    // browser page arms its own "open this repo's newest session" bridge on
+    // every outbound `selectRepo` — so a cross-repo New would race that bridge
+    // and the tab could land on an existing conversation instead of a new one.
+    // Whoever owns the switch correlation has to own that intent too; until it
+    // does, clicking the project name (which switches, then opens its newest)
+    // is the honest behaviour and this button stays where it cannot lie.
+    if (selected) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "rail-action-btn";
+      add.innerHTML = ICON.plus;
+      add.title = "New session here";
+      add.disabled = !repo.available || repoSwitcherLocked();
+      add.onclick = (e) => {
+        e.stopPropagation();
+        if (!repo.available || repoSwitcherLocked()) return;
+        vscode.postMessage({ type: "newSession" });
+      };
+      actions.appendChild(add);
+    }
+
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "rail-action-btn" + (repo.pinned ? " active" : "");
+    pin.innerHTML = ICON.pin;
+    pin.title = repo.pinned ? "Unpin project" : "Pin project";
+    pin.disabled = repoSwitcherLocked();
+    pin.onclick = (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "toggleRepoPin", cwd: repo.cwd, pinned: !repo.pinned });
+    };
+    actions.appendChild(pin);
+
+    head.appendChild(actions);
+    sec.appendChild(head);
+
+    if (!collapsed) sec.appendChild(renderRailSessions(repo, key));
+    return sec;
+  }
+
+  function renderRailSessions(repo, key) {
+    const body = document.createElement("div");
+    body.className = "rail-sessions";
+
+    if (!repo.available) {
+      body.appendChild(railNote("Unavailable"));
+      return body;
+    }
+
+    const rows = railRowsFor(repo);
+    if (!rows) {
+      // No preview yet: either still in flight, or this host does not answer
+      // `listRepoSessions` at all. Say "open it" rather than "loading" forever.
+      body.appendChild(railNote(
+        state.repoPreviewsSupported || !state.repoPreviewsAsked[key] ? "Loading…" : "Open to see sessions",
+      ));
+      return body;
+    }
+
+    const visible = state.railExpanded[key] ? RAIL_EXPANDED : RAIL_PREVIEW;
+    const shown = rows.entries.slice(0, visible);
+    if (!shown.length) {
+      body.appendChild(railNote("No sessions yet"));
+      return body;
+    }
+    for (const s of shown) body.appendChild(renderRailSessionRow(s, repo));
+
+    // Counted off LOADED rows, never the host's `total`: that total counts index
+    // slots, including subagent sessions the list deliberately hides, so trusting
+    // it renders "Show N more" that reveals nothing when expanded.
+    const hidden = Math.max(0, rows.entries.length - shown.length);
+    if (hidden > 0 && !state.railExpanded[key]) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "rail-more";
+      more.textContent = `Show ${hidden} more`;
+      more.onclick = (e) => {
+        e.stopPropagation();
+        state.railExpanded[key] = true;
+        renderRail();
+      };
+      body.appendChild(more);
+    } else if (state.railExpanded[key] && rows.entries.length > RAIL_PREVIEW) {
+      const less = document.createElement("button");
+      less.type = "button";
+      less.className = "rail-more";
+      less.textContent = "Show less";
+      less.onclick = (e) => {
+        e.stopPropagation();
+        delete state.railExpanded[key];
+        renderRail();
+      };
+      body.appendChild(less);
+    }
+    return body;
+  }
+
+  function renderRailSessionRow(s, repo) {
+    const row = document.createElement("div");
+    const active = s.id === state.activeSessionId && sameCwd(repo.cwd, state.activeRepoCwd);
+    row.className = "rail-session" + (active ? " active" : "");
+    row.title = s.displayName || "";
+
+    const dot = document.createElement("span");
+    // Same attribute the history popover uses, so `sessionDot` patches both
+    // surfaces at once without the rail subscribing to anything of its own.
+    dot.setAttribute("data-session-dot", s.id);
+    applySessionDot(dot, state.dots[s.id]);
+    row.appendChild(dot);
+
+    const label = document.createElement("span");
+    label.className = "rail-session-name";
+    if (s.worktreeLabel) {
+      const branch = document.createElement("span");
+      branch.className = "rail-session-branch";
+      branch.innerHTML = ICON.gitBranch;
+      branch.title = "Worktree: " + s.worktreeLabel;
+      row.appendChild(branch);
+    }
+    let name = s.displayName || "Untitled";
+    if (s.worktreeLabel && name.startsWith("(WT)")) name = name.slice(4).trim() || "Worktree";
+    label.textContent = name;
+    row.appendChild(label);
+
+    row.onclick = () => {
+      if (active || repoSwitcherLocked()) return;
+      // `cwd` rides along so a session in another repo reopens in ITS checkout —
+      // the host resolves sessions by cwd, and omitting it would look the id up
+      // under the repo we happen to be in.
+      if (!sameCwd(repo.cwd, state.selectedRepoCwd)) saveRememberedRemoteSession(null);
+      vscode.postMessage({ type: "resumeSession", id: s.id, cwd: s.cwd || repo.cwd });
+    };
+    return row;
+  }
+
+  function railNote(text) {
+    const el = document.createElement("div");
+    el.className = "rail-note";
+    el.textContent = text;
+    return el;
+  }
+
+  /** Take an unfiltered first page as the selected repo's rail rows. The one
+   *  place `railSelectedRows` is written, so "the rail's list" can only ever be
+   *  a whole, unsearched page for the repo currently selected. */
+  function adoptRailRows(entries) {
+    state.railSelectedRows = Array.isArray(entries) ? entries : [];
+    state.railSessionsStale = false;
+    renderRail();
+  }
+
+  function selectRailRepo(repo) {
+    state.repoSwitchPending = true;
+    renderRepoChip();
+    saveRememberedRemoteSession(null);
+    vscode.postMessage({ type: "selectRepo", cwd: repo.cwd });
   }
 
   // ---------- messages ----------
@@ -8082,6 +8442,12 @@
         // unfiltered first page. If the user has a search active, re-request with it
         // rather than clobbering their filtered view with the full list.
         if (open && offset === 0 && (msg.query || "") !== state.sessionSearch) {
+          // The popover wants its filtered view back, but an unfiltered first
+          // page is exactly what the RAIL needs — and it is the only unfiltered
+          // page it will see while a search is open. Dropping it wholesale left
+          // the rail pinned on "Loading…" after switching projects with a search
+          // still active, until the search was cleared or the page refreshed.
+          if (!(msg.query || "")) adoptRailRows(entries);
           requestSessions(0);
           break;
         }
@@ -8116,9 +8482,19 @@
             // bouncing: the second command lands after the first has finished
             // loading, and whichever repo you end on gets remembered, so the
             // next reconnect can flip you straight back.
+            // repoCwd must be something `selectRepo` can actually accept — i.e.
+            // a row in the catalog. A worktree session's activeCwd is the
+            // ISOLATED CHECKOUT, which is deliberately not a repo row, so
+            // remembering it produced a reconnect that asked to select a repo
+            // the host would silently refuse: identity restore then never
+            // completed and the outbox stayed queued until the tab was closed,
+            // taking anything typed meanwhile with it. Fall back to the repo
+            // that owns it.
+            const activeRepoRow = state.repos.find((r) => sameCwd(r.cwd, state.activeRepoCwd));
             saveRememberedRemoteSession({
               id: state.activeSessionId,
-              repoCwd: state.activeRepoCwd || state.selectedRepoCwd || state.cwd || "",
+              repoCwd: (activeRepoRow && activeRepoRow.cwd) ||
+                state.selectedRepoCwd || state.activeRepoCwd || state.cwd || "",
               cwd: activeEntry?.cwd || state.activeRepoCwd || state.cwd || "",
             });
           } else saveRememberedRemoteSession(null);
@@ -8134,20 +8510,59 @@
         state.sessionNextOffset = typeof msg.nextOffset === "number" ? msg.nextOffset : null;
         state.sessionLoading = false;
         if (open) renderSessionRows();
+        // The rail's selected-repo section reads this list directly, so every
+        // host-driven refresh (rename, delete, new session) repaints it for free.
+        // Skipped for a filtered/paged answer: those are the history popover's
+        // search state, not the repo's newest sessions.
+        if (offset === 0 && !(msg.query || "")) adoptRailRows(entries);
         break;
       }
-      case "repos":
+      case "repoSessions": {
+        // Proof this host answers per-repo previews — until now the rail has
+        // only probed with a single request.
+        const known = state.repoPreviewsSupported;
+        state.repoPreviewsSupported = true;
+        state.repoPreviews[cwdKey(msg.cwd)] = {
+          entries: Array.isArray(msg.entries) ? msg.entries : [],
+          total: typeof msg.total === "number" ? msg.total : (msg.entries || []).length,
+        };
+        state.dots = Object.assign({}, state.dots, msg.dots || {});
+        // First answer: the probe only asked about one repo, so now ask for the rest.
+        if (!known) requestRailPreviews();
+        renderRail();
+        break;
+      }
+      case "repos": {
         state.reposKnown = true;
         state.repos = Array.isArray(msg.entries) ? msg.entries : [];
+        const wasSelected = state.selectedRepoCwd;
         state.selectedRepoCwd = msg.selectedCwd || "";
         state.activeRepoCwd = msg.activeCwd || "";
+        // A repo we just left keeps stale cached rows; drop them so its section
+        // re-reads rather than showing the list from before the switch. The repo
+        // we arrived in reads the live `sessions` list, so its cache is dead weight.
+        if (wasSelected && !sameCwd(wasSelected, state.selectedRepoCwd)) {
+          for (const c of [wasSelected, state.selectedRepoCwd]) {
+            if (!c) continue;
+            delete state.repoPreviews[cwdKey(c)];
+            delete state.repoPreviewsAsked[cwdKey(c)];
+          }
+          // The list for the new repo has not arrived yet — see railRowsFor.
+          state.railSessionsStale = true;
+        }
         renderRepoChip();
         if (!repoPopover.hidden) renderRepoPopover();
+        renderRail();
+        requestRailPreviews();
+        // A rail "+" on another repo waits for the switch to land before starting
+        // the session, so it can never open one in the repo we were leaving.
         break;
+      }
       case "sessionDot":
         if (msg.dot && msg.dot !== "none") state.dots[msg.id] = msg.dot;
         else delete state.dots[msg.id];
         if (!historyPopover.hidden) patchSessionDot(msg.id);
+        patchSessionDot(msg.id, rail());
         break;
       default:
         // No case ran. Either the host posted a type outside the contract (drift

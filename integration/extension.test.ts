@@ -809,6 +809,41 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     ), JSON.stringify(posts));
   });
 
+  // The projects rail lists every repo's sessions at once, so opening one that
+  // lives outside the tab's current selection is now an ordinary click. The host
+  // moves the tab to the owning repo as part of the resume — a client that sent
+  // selectRepo first would race that switch's own auto-open and land on the
+  // repo's newest session rather than the one the user actually picked.
+  test("a remote resume adopts the session's own repo instead of refusing it", async () => {
+    const id = `cross-repo-${Date.now()}`;
+    hooks.seedRemoteSession("seeder", id, repoB, [], true);
+    hooks.remoteClientLeft("seeder");
+    await new Promise((r) => setTimeout(r, 50));
+
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+
+    // Deliberately NO selectRepo — this tab is still scoped to the workspace root.
+    hooks.fromRemote({ type: "resumeSession", id, cwd: repoB }, "rail-jumper");
+    await new Promise((r) => setTimeout(r, 150));
+
+    assert.strictEqual(
+      hooks.activeRemoteSessionId("rail-jumper"), id,
+      `the picked session must open: ${JSON.stringify(posts)}`,
+    );
+    assert.ok(!posts.some((p) =>
+      p.clientIds?.includes("rail-jumper") && p.msg?.type === "error"
+    ), JSON.stringify(posts));
+
+    // And the tab is told its selection moved, so chip and rail agree with the host.
+    const norm = (p: string) => p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+    const catalog = posts.filter((p) =>
+      p.clientIds?.includes("rail-jumper") && p.msg?.type === "repos"
+    ).pop()?.msg;
+    assert.ok(catalog, "the tab must learn that its selection moved");
+    assert.strictEqual(norm(catalog.selectedCwd), norm(repoB));
+  });
+
   test("resume never steals another tab's live session or silently blank-starts a missing one", async () => {
     const posts: Array<{ msg: any; clientIds?: string[] }> = [];
     hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));

@@ -186,6 +186,13 @@ export type HostMsg =
   // from the on-disk index, not entries shown (hidden subagent sessions occupy
   // slots without producing rows).
   | { type: "sessions"; entries: SessionListEntry[]; activeId?: string | null; dots: Record<string, Dot>; offset: number; total: number; hasMore: boolean; nextOffset: number; query: string }
+  // A preview page for ONE repo, answering `listRepoSessions`. Deliberately a
+  // separate frame from `sessions`: that one is the focused history list and
+  // owns paging/search/auto-open state, so a sibling repo's rows arriving on it
+  // would clobber the list the user is actually reading. `cwd` echoes the scope
+  // the host resolved, which is also the capability signal — a client that
+  // never sees this frame keeps its single-repo fallback.
+  | { type: "repoSessions"; cwd: string; entries: SessionListEntry[]; dots: Record<string, Dot>; total: number }
   | { type: "repos"; entries: RepoListEntry[]; selectedCwd: string; activeCwd: string }
   | { type: "sessionDot"; id: string; dot: Dot }
   // Full snapshot of the focused session's host-owned send queue (#37) — the
@@ -261,6 +268,11 @@ export type WebviewMsg =
   | { type: "updateGrok" }
   | { type: "recheckConnection" }
   | { type: "listSessions"; offset?: number; limit?: number; query?: string }
+  // Preview rows for a repo the client is NOT currently in — the projects rail
+  // shows a few sessions per repo without switching to it. `cwd` is matched
+  // against the repo catalog and dropped when it isn't a row, so this never
+  // widens what a remote can read beyond the repos it is already shown.
+  | { type: "listRepoSessions"; cwd: string; limit?: number }
   | { type: "selectRepo"; cwd: string }
   | { type: "toggleRepoPin"; cwd: string; pinned: boolean }
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
@@ -347,7 +359,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
-  sessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
+  sessions: true, repoSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, usage: true,
 };
 
@@ -361,7 +373,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
-  listSessions: true, selectRepo: true, toggleRepoPin: true,
+  listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
   pasteImage: true, uploadFile: true, voiceStart: true,

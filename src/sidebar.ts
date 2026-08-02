@@ -229,6 +229,10 @@ interface CliCompatibilityResult {
 // History pagination: rows fetched per "page" (initial open + each load-more / search page).
 const SESSION_PAGE_SIZE = 100;
 
+/** Rows a `listRepoSessions` preview returns when the client names no limit —
+ *  the projects rail shows a few per repo and links out for the rest. */
+const REPO_PREVIEW_SIZE = 3;
+
 // Records the extension version at the last silent CLI-update check. A fresh
 // install establishes the baseline; a later extension upgrade updates once.
 const CLI_UPDATE_VERSION_KEY = "grok.cliUpdateExtVersion";
@@ -2182,6 +2186,35 @@ See design doc for the full state machine diagram.`;
     });
   }
 
+  /** Answer `listRepoSessions`: the newest few sessions for ONE repo, without
+   *  making it the client's selection. `cwd` is matched against the catalog the
+   *  client was already sent — an unknown or unavailable path is dropped in
+   *  silence rather than answered, so a remote can never turn this into a probe
+   *  for which arbitrary paths exist on the host. */
+  private sendRepoSessionsPreview(clientId: string, cwd: string, limit?: number): void {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit || !hit.available) return;
+    // Clamp: the rail wants a handful, and an unbounded limit would make every
+    // repo row a full history read.
+    const size = Math.max(1, Math.min(20, Math.trunc(Number(limit)) || REPO_PREVIEW_SIZE));
+    const list = this.buildSessionsList(
+      hit.cwd,
+      { offset: 0, limit: size },
+      this.remoteActiveSessionId(clientId),
+    );
+    if (list.type !== "sessions") return;
+    this.sendRemoteClient(clientId, {
+      type: "repoSessions",
+      // The host's own spelling, not the one the client sent — the rail keys its
+      // rows on this, and echoing an arbitrary casing would split one repo into
+      // two rail entries.
+      cwd: hit.cwd,
+      entries: list.entries,
+      dots: list.dots,
+      total: list.total,
+    });
+  }
+
   private selectRepo(cwd: string): void {
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit || !hit.available) return;
@@ -4074,6 +4107,15 @@ See design doc for the full state machine diagram.`;
           }, session.activeSessionId));
         } else {
           this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query });
+        }
+        break;
+      case "listRepoSessions":
+        // Preview rows for a repo WITHOUT selecting it (the projects rail).
+        // Remote-only: the VS Code webview has no rail and is locked to its own
+        // workspace, so answering it locally would be the one path that hands
+        // the local view another repo's history.
+        if (origin === "remote" && clientId) {
+          this.sendRepoSessionsPreview(clientId, msg.cwd, msg.limit);
         }
         break;
       case "selectRepo":
@@ -7535,6 +7577,33 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  /** The repo scope a remote `resumeSession` should run under. Normally the tab's
+   *  own selection; when the named session cwd belongs to a different catalog
+   *  repo, the tab is moved there first and told about it. Returns the scope to
+   *  use. A cwd owned by no catalog repo leaves the selection untouched, so the
+   *  caller's existing "not found in selected repo" refusal still fires. */
+  private adoptRepoForRemoteSession(
+    clientId: string,
+    sessionCwd: string | undefined,
+    overrides: SessionMetaOverrides,
+  ): string {
+    const selectedCwd = this.remoteClients.cwd(clientId);
+    if (!sessionCwd) return selectedCwd;
+    if (sessionCwdBelongsToRepo(sessionCwd, this.sessionCwdsForRepo(selectedCwd, overrides), pathsEqual)) {
+      return selectedCwd;
+    }
+    const owner = this.repoCatalog().find((repo) =>
+      repo.available &&
+      sessionCwdBelongsToRepo(sessionCwd, this.sessionCwdsForRepo(repo.cwd, overrides), pathsEqual),
+    );
+    if (!owner) return selectedCwd;
+    if (this.remoteVoice.has(clientId)) void this.handleRemoteVoiceStop(clientId, true);
+    this.parkRemoteSession(clientId);
+    this.remoteClients.select(clientId, owner.cwd);
+    this.sendRemoteRepoCatalog(clientId);
+    return owner.cwd;
+  }
+
   private async openRemoteSessionReserved(
     clientId: string,
     id: string,
@@ -7542,8 +7611,20 @@ See design doc for the full state machine diagram.`;
     sessionCwd?: string,
     notifyCatalog = true,
   ): Promise<void> {
-    const selectedCwd = this.remoteClients.cwd(clientId);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    // A remote may name a session that lives in a DIFFERENT repo of the catalog
+    // it was shown — the projects rail lists every repo's sessions at once, so
+    // "open that conversation over there" is now an ordinary click. Move the
+    // tab's selection to the owning repo as part of THIS operation instead of
+    // refusing it.
+    //
+    // Deliberately not two messages: `selectRepo` opens that repo's newest
+    // session on its own, so a client that switched and then resumed would race
+    // its own switch and load a session the user did not pick. The isolation
+    // this replaces is unchanged in substance — the cwd must still belong to a
+    // repo in the catalog (`remoteTargetableCwd` already gated it inbound), and
+    // a cwd owned by no catalog repo still falls through to the refusal below.
+    const selectedCwd = this.adoptRepoForRemoteSession(clientId, sessionCwd, overrides);
     const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
     const conflictingOwner = this.remoteClients.clients().find((ownerId) =>
       ownerId !== clientId && this.remoteClients.active(ownerId)?.activeSessionId === id
