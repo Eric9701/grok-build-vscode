@@ -203,18 +203,34 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     posts.length = 0;
     hooks.fromRemote({ type: "clearAllSessions", cwd: emptyRepo }, clientId);
 
-    // Poll instead of sleeping a fixed 100ms: the clear touches the filesystem
-    // and can queue behind an in-flight session transition, so how long it takes
-    // is a property of the machine, not of the behaviour under test.
+    // What this test is named for is ROUTING: the clear must be answered to the
+    // tab that asked and must not leak to the VS Code view.
+    //
+    // It used to also assert the answer was a `sessions` refresh and never "No
+    // history to clear." That expectation belonged to the old world where
+    // switching to a history-free repo left you nowhere, so the clear had
+    // something to act on. Switching now STARTS a session there, Clear all never
+    // deletes the conversation you are sitting in, and so the only thing present
+    // is protected — "No history to clear." is the correct answer, not a bug.
+    // Locally the old assertion still passed by accident, depending on whether
+    // the new session had reached disk in time; CI, being slower, told the truth.
+    // Poll rather than sleep a fixed interval, for the same reason.
     const clearDeadline = Date.now() + 15000;
-    const sawSessions = () => posts.some((p) =>
-      p.clientIds?.length === 1 && p.clientIds[0] === clientId && p.msg?.type === "sessions"
+    const answeredRequester = () => posts.some((p) =>
+      p.clientIds?.length === 1 &&
+      p.clientIds[0] === clientId &&
+      (p.msg?.type === "sessions" ||
+        (p.msg?.type === "hostNotice" && p.msg.text === "No history to clear."))
     );
-    while (Date.now() < clearDeadline && !sawSessions()) await new Promise((r) => setTimeout(r, 100));
+    while (Date.now() < clearDeadline && !answeredRequester()) await new Promise((r) => setTimeout(r, 100));
 
-    assert.ok(sawSessions(), JSON.stringify(posts));
-    assert.ok(!posts.some((p) => p.msg?.type === "hostNotice" && p.msg.text === "No history to clear."));
-    assert.ok(!posts.some((p) => p.dest === "local" && p.msg?.text === "No history to clear."));
+    assert.ok(answeredRequester(), JSON.stringify(posts));
+    // The misrouting guard, which is the actual point: a remote's clear is never
+    // answered into the VS Code view. Deliberately narrow — the local view and
+    // other tabs legitimately receive their own list refreshes, so asserting
+    // "nothing else was posted" would fail on unrelated, correct traffic.
+    assert.ok(!posts.some((p) => p.dest === "local" && p.msg?.text === "No history to clear."),
+      JSON.stringify(posts));
     hooks.remoteClientLeft(clientId);
     await new Promise((r) => setTimeout(r, 2000));
     try {
