@@ -98,6 +98,44 @@ describe("projects rail", () => {
     expect(rail(doc).hidden).toBe(false);
   });
 
+  // A host too old to answer `listRepoSessions` replies with silence, and the
+  // probe only ever names ONE repo — so every other repo would spin forever with
+  // nothing coming. After the deadline the rail says what to do about it.
+  it("tells you to update the extension when the probe goes unanswered", async () => {
+    const h = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => { withRail(w); w.__grokRailProbeTimeoutMs = 5; },
+    });
+    dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    dispatch(h.window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
+    // Every repo we are not in — including the ones never probed, which is the
+    // half that used to hang.
+    expect(notes.filter((t) => t === "Update the extension to preview")).toHaveLength(2);
+    expect(notes).not.toContain("Loading…");
+    // The repo we ARE in still shows its sessions: that list needs no new frame.
+    expect(sessionNames(h.doc, repoNames(h.doc).indexOf("alpha"))).toEqual(["alpha one"]);
+  });
+
+  it("never shows that hint to a host that does answer", async () => {
+    const h = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => { withRail(w); w.__grokRailProbeTimeoutMs = 5; },
+    });
+    dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    dispatch(h.window, {
+      type: "repoSessions", cwd: "/work/beta", entries: [row("b1", "/work/beta", "beta one", 4)], dots: {}, total: 1,
+    });
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
+    expect(notes).not.toContain("Update the extension to preview");
+  });
+
   it("fans out to the remaining repos only once a preview comes back", () => {
     const { doc, window, posted } = boot();
     const probes = () => posted.filter((p) => p.type === "listRepoSessions").map((p) => p.cwd);

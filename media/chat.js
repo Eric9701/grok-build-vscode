@@ -388,6 +388,9 @@
     repoPreviews: {},
     repoPreviewsAsked: {},
     repoPreviewsSupported: false,
+    // Latched when the probe goes unanswered past its deadline — the only way to
+    // learn that a host predates the frame, since silence is all it can offer.
+    repoPreviewsUnsupported: false,
     railCollapsed: {},
     railExpanded: {},
     // True between a catalog naming a new selected repo and the session list for
@@ -2825,8 +2828,13 @@
   const RAIL_PREVIEW = 3;      // rows per repo before "Show all"
   const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
 
+  // Generous: the host answers by scanning the session store on disk, and a slow
+  // first read must not be mistaken for an extension that cannot answer at all.
+  const RAIL_PROBE_TIMEOUT_MS = 8000;
+
   let railEl = null;
   let railResolved = false;
+  let railProbeTimer = null;
 
   function rail() {
     if (!railResolved) {
@@ -2882,7 +2890,24 @@
       if (state.repoPreviewsAsked[key]) continue;
       state.repoPreviewsAsked[key] = true;
       vscode.postMessage({ type: "listRepoSessions", cwd: r.cwd, limit: RAIL_EXPANDED });
+      armRailProbeDeadline();
     }
+  }
+
+  /** A host that predates `listRepoSessions` answers with silence, so the only
+   *  way to tell "still reading the session store" from "will never reply" is a
+   *  deadline. Armed once, on the first probe; cancelled by the first answer. */
+  function armRailProbeDeadline() {
+    if (railProbeTimer || state.repoPreviewsSupported || state.repoPreviewsUnsupported) return;
+    const ms = Number(window.__grokRailProbeTimeoutMs) > 0
+      ? Number(window.__grokRailProbeTimeoutMs)
+      : RAIL_PROBE_TIMEOUT_MS;
+    railProbeTimer = setTimeout(() => {
+      railProbeTimer = null;
+      if (state.repoPreviewsSupported) return;
+      state.repoPreviewsUnsupported = true;
+      renderRail();
+    }, ms);
   }
 
   function renderRail() {
@@ -3019,11 +3044,20 @@
 
     const rows = railRowsFor(repo);
     if (!rows) {
-      // No preview yet: either still in flight, or this host does not answer
-      // `listRepoSessions` at all. Say "open it" rather than "loading" forever.
-      body.appendChild(railNote(
-        state.repoPreviewsSupported || !state.repoPreviewsAsked[key] ? "Loading…" : "Open to see sessions",
-      ));
+      // No rows yet. Two very different reasons, and saying "Loading…" for both
+      // is the wrong answer: a host too old to answer `listRepoSessions` will
+      // NEVER answer, and the probe is sent for one repo only — so every other
+      // repo would sit on a spinner forever with nothing coming.
+      if (state.repoPreviewsUnsupported) {
+        const note = railNote("Update the extension to preview");
+        note.title =
+          "The Grok extension on your computer is older than this page, so it can't " +
+          "list another project's sessions without switching to it. Click the project " +
+          "name to open it, or update the extension.";
+        body.appendChild(note);
+      } else {
+        body.appendChild(railNote("Loading…"));
+      }
       return body;
     }
 
@@ -8522,6 +8556,8 @@
         // only probed with a single request.
         const known = state.repoPreviewsSupported;
         state.repoPreviewsSupported = true;
+        state.repoPreviewsUnsupported = false;
+        if (railProbeTimer) { clearTimeout(railProbeTimer); railProbeTimer = null; }
         state.repoPreviews[cwdKey(msg.cwd)] = {
           entries: Array.isArray(msg.entries) ? msg.entries : [],
           total: typeof msg.total === "number" ? msg.total : (msg.entries || []).length,
