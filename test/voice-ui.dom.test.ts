@@ -416,3 +416,55 @@ describe("voice control: API-key setup hint", () => {
     expect(mic.classList.contains("listening")).toBe(true);
   });
 });
+
+describe("composer marks provisional dictation apart from the send command", () => {
+  it("tints only the dictated span, leaving typed text unmarked", () => {
+    const { window, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "Keep this draft";
+    input.setSelectionRange(5, 5);
+    dispatch(window, { type: "voiceConfigured", value: true });
+    click(window, $(doc, "mic-btn"));
+
+    dispatch(window, { type: "voicePartial", text: "the" });
+
+    const marked = doc.querySelectorAll("#input-highlight .voice-token");
+    expect(marked).toHaveLength(1);
+    expect(marked[0].textContent).toBe("the "); // the separator is part of what was inserted
+    // The text the user typed is not marked — that is the whole point.
+    expect($(doc, "input-highlight").textContent).toBe("Keep the this draft");
+  });
+
+  it("gives the send phrase the command style, and does not double-mark it", () => {
+    // The phrase arrives INSIDE the dictated span, so the two ranges overlap.
+    // The command has to win: it is the irreversible one.
+    const { window, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    input.value = "";
+    dispatch(window, { type: "voiceConfigured", value: true, sendPhrase: "grok send" });
+    click(window, $(doc, "mic-btn"));
+
+    dispatch(window, { type: "voicePartial", text: "ship it grok send" });
+
+    const cmd = doc.querySelectorAll("#input-highlight .cmd-token");
+    const live = doc.querySelectorAll("#input-highlight .voice-token");
+    expect(cmd).toHaveLength(1);
+    expect(cmd[0].textContent).toBe("grok send");
+    expect(live).toHaveLength(1);
+    expect(live[0].textContent).toBe("ship it "); // stops where the command starts
+  });
+
+  it("marks nothing once dictation has finished", () => {
+    const { window, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    dispatch(window, { type: "voiceConfigured", value: true });
+    click(window, $(doc, "mic-btn"));
+    dispatch(window, { type: "voicePartial", text: "hello" });
+    expect(doc.querySelectorAll("#input-highlight .voice-token")).toHaveLength(1);
+
+    dispatch(window, { type: "voiceTranscript", text: "hello" });
+
+    // Finalised text is ordinary text: nothing is provisional any more.
+    expect(doc.querySelectorAll("#input-highlight .voice-token")).toHaveLength(0);
+  });
+});

@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Dictation inserts where your cursor is** instead of always appending to the end, and replaces the text you had selected — so you can pause, correct a sentence in the middle, and carry on in place. Thanks to [@tarcisiomiranda](https://github.com/tarcisiomiranda), whose [#72](https://github.com/phuryn/grok-build-vscode/pull/72) is the design this is built from; it was ported rather than merged because the branch predated the shared-PCM voice rewrite.
+- **Dictation inserts where your cursor is** instead of always appending to the end, and replaces the text you had selected — so you can pause, correct a sentence in the middle, and carry on in place. Authored by [@tarcisiomiranda](https://github.com/tarcisiomiranda) in [#72](https://github.com/phuryn/grok-build-vscode/pull/72), co-authored here; it was ported onto the current voice transport rather than merged, because the branch predated the shared-PCM rewrite.
 - **Clicking Send or Queue now turns the microphone off** and sends exactly the text you can see. A transcript still in flight can no longer refill the composer you just cleared. Saying **"grok send"** still submits hands-free and keeps listening — that flow is unchanged on purpose.
 
 ### Fixed

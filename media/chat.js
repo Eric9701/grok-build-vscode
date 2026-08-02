@@ -6823,9 +6823,14 @@
   }
 
   function clearVoiceInsertion() {
+    const wasActive = state.voiceInsertionActive;
     state.voiceBefore = "";
     state.voiceAfter = "";
     state.voiceInsertionActive = false;
+    // Repaint: dictation is over, so the words stop being provisional and lose
+    // their tint. Callers finalise by rendering FIRST and clearing after, so
+    // without this the mark survives until the next keystroke.
+    if (wasActive && inputHighlight) renderInputHighlight();
   }
 
   // Insert between the text surrounding the selection captured at start. The
@@ -6880,13 +6885,36 @@
     autosizeInput();
     if (!inputHighlight) return;
     const text = input.value;
+
+    // Two things get marked, and they are not the same kind of thing. The words
+    // being dictated are PROVISIONAL — each partial replaces them — so they take
+    // a tint that says "this part is still moving". A trailing send phrase is a
+    // COMMAND about to fire, so it takes solid fill: louder than the text beside
+    // it, because acting on it is irreversible.
     const range = trailingSendPhrase(text, state.voiceSendPhrase);
-    if (!range) {
+    const cmdStart = range ? range.index : text.length;
+    // The dictated span lies between the anchors captured at mic start. Clamped,
+    // because the composer stays editable while dictation runs.
+    const liveStart = state.voiceInsertionActive
+      ? Math.min(state.voiceBefore.length, text.length)
+      : text.length;
+    const liveEnd = state.voiceInsertionActive
+      ? Math.max(liveStart, text.length - state.voiceAfter.length)
+      : text.length;
+    // The command wins where they overlap: it always sits at the tail, and the
+    // dictation that produced it must not out-shout it.
+    const liveEndVisible = Math.min(liveEnd, cmdStart);
+
+    if (!range && liveStart >= liveEnd) {
       inputHighlight.textContent = "";
     } else {
-      const before = text.slice(0, range.index);
-      const cmd = text.slice(range.index, range.index + range.length);
-      inputHighlight.innerHTML = escapeHtml(before) + '<span class="cmd-token">' + escapeHtml(cmd) + "</span>";
+      const span = (cls, s) => (s ? '<span class="' + cls + '">' + escapeHtml(s) + "</span>" : "");
+      inputHighlight.innerHTML =
+        escapeHtml(text.slice(0, liveStart)) +
+        span("voice-token", text.slice(liveStart, liveEndVisible)) +
+        escapeHtml(text.slice(Math.max(liveStart, liveEndVisible), cmdStart)) +
+        span("cmd-token", range ? text.slice(range.index, range.index + range.length) : "") +
+        escapeHtml(range ? text.slice(range.index + range.length) : "");
     }
     inputHighlight.scrollTop = input.scrollTop;
     inputHighlight.scrollLeft = input.scrollLeft;

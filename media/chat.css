@@ -1536,10 +1536,25 @@ textarea#input {
   word-break: break-word;
 }
 /* The recognized command, shown as a subtle accent pill behind the live text. */
+/* The composer marks two different things, and the weights are deliberate.
+   Text still being dictated is PROVISIONAL — the next partial replaces it — so
+   it gets a light wash. A trailing send phrase is a COMMAND about to fire, so it
+   gets a much heavier fill plus a solid ring.
+
+   Neither can set the TEXT colour: .input-highlight is a `color: transparent`
+   backdrop and the glyphs you actually read belong to the <textarea> above it,
+   which cannot colour a substring. So the fills stay translucent rather than
+   opaque — solid blue would leave near-black text on blue in a light theme.
+   Real white-on-blue would mean replacing the textarea with a contenteditable,
+   which is not worth risking IME and mobile keyboards for a colour. */
+.input-highlight .voice-token {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 15%, transparent);
+}
 .input-highlight .cmd-token {
   border-radius: 3px;
-  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 26%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 50%, transparent);
+  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 45%, transparent);
+  box-shadow: 0 0 0 1px var(--vscode-charts-blue, #3794ff);
 }
 
 /* ---- mic / voice-input button (top-right corner of the textbox) ---- */
