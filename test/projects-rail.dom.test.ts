@@ -200,10 +200,12 @@ describe("projects rail", () => {
     expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["alpha secret"]);
 
     dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/beta", activeCwd: "/work/beta" });
-    const betaIndex = repoNames(doc).indexOf("beta");
-    expect(sessionNames(doc, betaIndex)).toEqual([]);
-    expect([...doc.querySelectorAll(".rail-session-name")].map((e) => e.textContent))
-      .not.toContain("alpha secret");
+    // Beta has no preview of its own here, so it shows nothing — and crucially
+    // NOT alpha's conversation, which is the bleed this guards.
+    expect(sessionNames(doc, repoNames(doc).indexOf("beta"))).toEqual([]);
+    // Alpha keeps its own rows as a sibling rather than dropping to a spinner:
+    // we already hold them, and walking away is not a reason to forget them.
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["alpha secret"]);
 
     // ...and the real list restores rows.
     dispatch(window, sessionsFrame([row("b1", "/work/beta", "beta one", 4)]));
@@ -229,6 +231,38 @@ describe("projects rail", () => {
     dispatch(window, sessionsFrame([row("b1", "/work/beta", "beta one", 4)]));
 
     expect(sessionNames(doc, repoNames(doc).indexOf("beta"))).toEqual(["beta one"]);
+  });
+
+  // Switching INTO a repo we already previewed must show what we know at once —
+  // the rows are in hand, so a spinner there would be theatre.
+  it("keeps the repo you switch into showing the sessions already known", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+    dispatch(window, {
+      type: "repoSessions", cwd: "/work/beta", entries: [row("b1", "/work/beta", "beta one", 4)], dots: {}, total: 1,
+    });
+
+    dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/beta", activeCwd: "/work/beta" });
+    const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+    expect([...beta.querySelectorAll(".rail-session-name")].map((e) => e.textContent)).toEqual(["beta one"]);
+    // No spinner in the section we switched INTO. (Repos we have never previewed
+    // still show one — they really have nothing yet.)
+    expect(beta.querySelector(".rail-note")).toBe(null);
+  });
+
+  // Two caps deep: the host's `total` counts hidden subagent rows, and expansion
+  // itself stops at RAIL_EXPANDED. Either one alone makes the label a lie.
+  it("promises only the rows expanding can actually reveal", () => {
+    const { doc, window } = boot();
+    dispatch(window, sessionsFrame(
+      Array.from({ length: 28 }, (_, i) => row(`a${i}`, "/work/alpha", `s${i}`, 100 - i)),
+    ));
+    const more = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
+      .querySelector(".rail-more") as HTMLElement;
+    // 20 reachable, 3 shown — not 25.
+    expect(more.textContent).toBe("Show 17 more");
+    click(window, more);
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toHaveLength(20);
   });
 
   // `total` counts index slots including subagent sessions the host hides, so a
@@ -293,6 +327,18 @@ describe("projects rail", () => {
     dispatch(h.window, { type: "repos", entries: cased, selectedCwd: "c:/work/alpha", activeCwd: "c:/work/alpha" });
     dispatch(h.window, sessionsFrame([row("w1", "C:\\Work\\Alpha", "windows row", 9)]));
     expect(sessionNames(h.doc, 0)).toEqual(["windows row"]);
+  });
+
+  // The pin lives in a hover-revealed action group, so without a persistent
+  // marker a pinned project looks exactly like an unpinned one.
+  it("marks a pinned project without needing a hover", () => {
+    const { doc } = boot();
+    const section = (label: string) => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf(label)];
+    expect(section("beta").classList.contains("pinned")).toBe(true);
+    expect(section("alpha").classList.contains("pinned")).toBe(false);
+    // The CSS keeps `.pin` visible at rest only on a pinned row, so the class
+    // has to be on the button too, not just the section.
+    expect(section("beta").querySelector(".rail-action-btn.pin")).not.toBe(null);
   });
 
   it("offers no session rows for an unavailable checkout", () => {

@@ -2867,7 +2867,16 @@
       // rendering it then is cross-repo bleed, not a cosmetic lag. This holder
       // is written only by unfiltered first pages, so it always means "this
       // repo's newest conversations".
-      if (state.railSessionsStale) return null;
+      // Mid-switch the holder still describes the repo we left, so fall back to
+      // what we already know about THIS repo — the preview fetched while it was
+      // a sibling. Blanking the section instead would throw away rows we hold
+      // and make a switch look like a load; the controls are disabled during the
+      // switch anyway, so showing them costs nothing and keeps the conversation
+      // you just clicked on screen.
+      if (state.railSessionsStale) {
+        const known = state.repoPreviews[cwdKey(repo.cwd)];
+        return known ? { entries: known.entries, total: known.total } : null;
+      }
       return { entries: state.railSelectedRows, total: state.railSelectedRows.length };
     }
     const cached = state.repoPreviews[cwdKey(repo.cwd)];
@@ -2945,6 +2954,10 @@
     sec.className = "rail-repo" +
       (selected ? " selected" : "") +
       (repo.available ? "" : " unavailable") +
+      // A pin is durable state, not an action, so it stays legible without
+      // hovering — position alone cannot carry it, since the sort is
+      // pinned-first THEN recency and the top row may just be the newest.
+      (repo.pinned ? " pinned" : "") +
       (collapsed ? " collapsed" : "");
 
     const head = document.createElement("div");
@@ -3016,7 +3029,7 @@
 
     const pin = document.createElement("button");
     pin.type = "button";
-    pin.className = "rail-action-btn" + (repo.pinned ? " active" : "");
+    pin.className = "rail-action-btn pin" + (repo.pinned ? " active" : "");
     pin.innerHTML = ICON.pin;
     pin.title = repo.pinned ? "Unpin project" : "Pin project";
     pin.disabled = repoSwitcherLocked();
@@ -3069,10 +3082,15 @@
     }
     for (const s of shown) body.appendChild(renderRailSessionRow(s, repo));
 
-    // Counted off LOADED rows, never the host's `total`: that total counts index
-    // slots, including subagent sessions the list deliberately hides, so trusting
-    // it renders "Show N more" that reveals nothing when expanded.
-    const hidden = Math.max(0, rows.entries.length - shown.length);
+    // What expanding ACTUALLY reveals, which is two caps deep:
+    //   - never the host's `total` (it counts index slots, including subagent
+    //     sessions the list hides, so it promises rows that do not exist), and
+    //   - never the full loaded list either, because expanding stops at
+    //     RAIL_EXPANDED. A repo with 28 loaded sessions offered "Show 25 more"
+    //     and then revealed 17, stranding the last 8 behind no control at all.
+    // The rail is a jump list; history remains the place that holds everything.
+    const reachable = Math.min(rows.entries.length, RAIL_EXPANDED);
+    const hidden = Math.max(0, reachable - shown.length);
     if (hidden > 0 && !state.railExpanded[key]) {
       const more = document.createElement("button");
       more.type = "button";
@@ -8578,10 +8596,17 @@
         // re-reads rather than showing the list from before the switch. The repo
         // we arrived in reads the live `sessions` list, so its cache is dead weight.
         if (wasSelected && !sameCwd(wasSelected, state.selectedRepoCwd)) {
-          for (const c of [wasSelected, state.selectedRepoCwd]) {
-            if (!c) continue;
-            delete state.repoPreviews[cwdKey(c)];
-            delete state.repoPreviewsAsked[cwdKey(c)];
+          // Hand the repo we are LEAVING its own rows before the holder is
+          // overwritten, so it keeps showing them as a sibling instead of
+          // dropping to a spinner the moment we walk away from it. The repo we
+          // are arriving in keeps whatever preview it already had — that is
+          // exactly the data that makes the switch look instant (railRowsFor).
+          if (!state.railSessionsStale && state.railSelectedRows.length) {
+            state.repoPreviews[cwdKey(wasSelected)] = {
+              entries: state.railSelectedRows.slice(0, RAIL_EXPANDED),
+              total: state.railSelectedRows.length,
+            };
+            state.repoPreviewsAsked[cwdKey(wasSelected)] = true;
           }
           // The list for the new repo has not arrived yet — see railRowsFor.
           state.railSessionsStale = true;
