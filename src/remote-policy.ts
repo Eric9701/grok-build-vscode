@@ -200,6 +200,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   listRepoSessions: "view",
   selectRepo: "view",
   toggleRepoPin: "full",
+  // Writes host state (globalState), same as the repo pin — classified with it
+  // rather than as a view op, even though nothing is destroyed.
+  toggleSessionPin: "full",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
@@ -330,6 +333,9 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     case "listRepoSessions":
       return isKnownCwd(msg.cwd);
     case "resumeSession":
+    // Same shape as resume: the cwd is optional (the host falls back to its own
+    // bounded lookup), but when given it must name a discovered checkout.
+    case "toggleSessionPin":
       return !msg.cwd || isKnownCwd(msg.cwd);
     default:
       return true;
@@ -469,6 +475,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   uiConfirmRequest: "mirror",
   sessions: "mirror",
   repoSessions: "mirror",
+  pinnedSessions: "mirror",
   repos: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",

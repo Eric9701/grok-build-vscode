@@ -208,6 +208,16 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return isRemoteCwd(value.cwd) && typeof value.pinned === "boolean"
         ? msg as WebviewMsg
         : null;
+    // Shape-checked here like its repo-level sibling rather than riding the
+    // `default` passthrough: the host validates too, but a malformed message
+    // that reaches the host has already crossed the boundary this parser exists
+    // to hold. `cwd` is optional — the host falls back to its own lookup.
+    case "toggleSessionPin":
+      return isRemoteSessionId(value.id) &&
+        typeof value.pinned === "boolean" &&
+        (value.cwd === undefined || isRemoteCwd(value.cwd))
+        ? msg as WebviewMsg
+        : null;
     case "resumeSession":
       return isRemoteSessionId(value.id) &&
         (value.cwd === undefined || isRemoteCwd(value.cwd))

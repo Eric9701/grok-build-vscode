@@ -25,11 +25,19 @@ export interface SessionListEntry {
   kind?: "subagent";
   /** Worktree label when this session's cwd is an isolated git worktree (P2-8). */
   worktreeLabel?: string;
+  /** When the user pinned this conversation, from `SessionMetaOverride`. Drives
+   *  the projects rail's Pinned group; absent means unpinned. */
+  pinnedAt?: number;
 }
 
 export interface SessionMetaOverride {
   customName?: string;
   pinnedAt?: number;
+  /** The checkout this pinned session lives in, captured when it was pinned. The
+   *  Pinned group spans repos, so it must know where to read each session from —
+   *  without this it would have to scan every repo in the catalog to find one
+   *  conversation. Written and cleared together with `pinnedAt`. */
+  pinnedCwd?: string;
   /** Isolated worktree this session is bound to (P2-8). Lets history reopen the
    *  right cwd and show a worktree badge without re-querying the CLI. */
   worktreePath?: string;
@@ -389,7 +397,8 @@ function buildEntry(
   const customName = override?.customName?.trim() || undefined;
   const displayName = customName || fallbackName(rawSummary, updatedAt);
   const kind = raw?.session_kind === "subagent" ? ("subagent" as const) : undefined;
-  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId, kind };
+  const pinnedAt = typeof override?.pinnedAt === "number" ? override.pinnedAt : undefined;
+  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId, kind, pinnedAt };
 }
 
 export interface SessionIndexEntry {

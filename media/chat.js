@@ -385,6 +385,15 @@
     // `repoSessions` frame: until a host has answered once, the rail probes with
     // a single request rather than one per repo, so an older host that ignores
     // the message costs one dead frame instead of a fan-out on every catalog push.
+    // Pinned conversations across every repo — the rail's Pinned group. Host
+    // pushes it; the client never has to ask, and an older host simply never
+    // sends it, leaving the group absent rather than empty.
+    pinnedSessions: [],
+    // Capability latch: the host announces per-session pinning by sending the
+    // frame at all — even empty. Without this the pin renders against a host
+    // that drops `toggleSessionPin`, which is a control that looks broken
+    // rather than absent (the same trap the repo chip avoids).
+    pinnedSessionsKnown: false,
     repoPreviews: {},
     repoPreviewsAsked: {},
     repoPreviewsSupported: false,
@@ -2932,6 +2941,24 @@
 
     root.innerHTML = "";
 
+    // Pinned sits ABOVE Projects and spans every repo: a pin is only worth
+    // anything if it lifts a conversation OUT of the project you would otherwise
+    // have to open first. Rows name their repo, because out here that is the
+    // only thing telling two similarly-named conversations apart.
+    if (state.pinnedSessions.length) {
+      const pinHead = document.createElement("div");
+      pinHead.className = "rail-head";
+      pinHead.innerHTML = `<span class="rail-head-title">Pinned</span>`;
+      root.appendChild(pinHead);
+
+      const pinList = document.createElement("div");
+      pinList.className = "rail-list rail-pinned";
+      for (const s of state.pinnedSessions) {
+        pinList.appendChild(renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }));
+      }
+      root.appendChild(pinList);
+    }
+
     const head = document.createElement("div");
     head.className = "rail-head";
     head.innerHTML = `<span class="rail-head-title">Projects</span>`;
@@ -3117,11 +3144,28 @@
     return body;
   }
 
-  function renderRailSessionRow(s, repo) {
+  function renderRailSessionRow(s, repo, opts) {
     const row = document.createElement("div");
     const active = s.id === state.activeSessionId && sameCwd(repo.cwd, state.activeRepoCwd);
     row.className = "rail-session" + (active ? " active" : "");
     row.title = s.displayName || "";
+    // The row is the primary control, so it has to behave like one: reachable by
+    // Tab and openable with Enter/Space. The repo names and pin buttons around it
+    // are real <button>s; without this the conversations themselves — the whole
+    // point of the rail — were the only thing a keyboard could not reach.
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    if (active) row.setAttribute("aria-current", "true");
+    row.onkeydown = (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      // Only when the ROW itself has focus. The pin button lives inside it and
+      // is a real <button>, so pressing Enter there already activates the pin —
+      // letting the key bubble on to here would also open the conversation, and
+      // opening one in another project moves the whole tab.
+      if (e.target !== row) return;
+      e.preventDefault(); // Space would scroll the rail
+      row.click();
+    };
 
     const dot = document.createElement("span");
     // Same attribute the history popover uses, so `sessionDot` patches both
@@ -3144,7 +3188,63 @@
     label.textContent = name;
     row.appendChild(label);
 
-    row.onclick = () => {
+    // In the Pinned group a row has left its project behind, so it has to say
+    // which one it came from — two conversations called "Untitled" are otherwise
+    // indistinguishable, and opening the wrong one moves the whole tab.
+    if (opts && opts.showRepo) {
+      const where = document.createElement("span");
+      where.className = "rail-session-repo";
+      // Prefer the catalog's label: the host disambiguates repos that share a
+      // leaf name (two checkouts both called "project" become distinguishable
+      // there). Falling back to the leaf covers a worktree session, whose cwd is
+      // a subdirectory and so names no catalog row.
+      const home = state.repos.find((r) => sameCwd(r.cwd, s.cwd));
+      where.textContent = home?.label || cwdLeaf(s.cwd);
+      where.title = s.cwd || "";
+      row.appendChild(where);
+    }
+
+    const isPinned = typeof s.pinnedAt === "number";
+    if (isPinned) row.classList.add("pinned");
+
+    // Capability, never a version: a host that has never sent `pinnedSessions`
+    // will silently drop `toggleSessionPin`, so offering the control there gives
+    // a button that does nothing — worse than not having one. The frame arrives
+    // in every remote snapshot, empty included, so a capable host always says so.
+    if (!state.pinnedSessionsKnown) {
+      row.onclick = railSessionOpener(s, repo, active);
+      return row;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "rail-session-actions";
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "rail-action-btn pin" + (isPinned ? " active" : "");
+    pin.innerHTML = ICON.pin;
+    pin.title = isPinned ? "Unpin conversation" : "Pin conversation";
+    pin.setAttribute("aria-label", pin.title);
+    pin.onclick = (e) => {
+      e.stopPropagation();
+      vscode.postMessage({
+        type: "toggleSessionPin",
+        id: s.id,
+        // The row's own cwd, so the host files the pin under the repo this
+        // conversation actually lives in rather than the one we are viewing.
+        cwd: s.cwd || repo.cwd,
+        pinned: !isPinned,
+      });
+    };
+    actions.appendChild(pin);
+    row.appendChild(actions);
+    row.onclick = railSessionOpener(s, repo, active);
+    return row;
+  }
+
+  /** Opening a rail row is the same act wherever the row is drawn, so both the
+   *  full row and the capability-stripped one share it. */
+  function railSessionOpener(s, repo, active) {
+    return () => {
       if (active || repoSwitcherLocked()) return;
       // `cwd` rides along so a session in another repo reopens in ITS checkout —
       // the host resolves sessions by cwd, and omitting it would look the id up
@@ -3152,7 +3252,6 @@
       if (!sameCwd(repo.cwd, state.selectedRepoCwd)) saveRememberedRemoteSession(null);
       vscode.postMessage({ type: "resumeSession", id: s.id, cwd: s.cwd || repo.cwd });
     };
-    return row;
   }
 
   function railNote(text) {
@@ -8567,6 +8666,13 @@
         // Skipped for a filtered/paged answer: those are the history popover's
         // search state, not the repo's newest sessions.
         if (offset === 0 && !(msg.query || "")) adoptRailRows(entries);
+        break;
+      }
+      case "pinnedSessions": {
+        state.pinnedSessionsKnown = true;
+        state.pinnedSessions = Array.isArray(msg.entries) ? msg.entries : [];
+        state.dots = Object.assign({}, state.dots, msg.dots || {});
+        renderRail();
         break;
       }
       case "repoSessions": {

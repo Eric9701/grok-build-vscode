@@ -193,6 +193,12 @@ export type HostMsg =
   // the host resolved, which is also the capability signal — a client that
   // never sees this frame keeps its single-repo fallback.
   | { type: "repoSessions"; cwd: string; entries: SessionListEntry[]; dots: Record<string, Dot>; total: number }
+  // Every pinned conversation, across ALL repos — the projects rail's Pinned
+  // group. Deliberately not per-repo: a pin is only worth anything if it lifts a
+  // conversation OUT of the project you would otherwise have to open first, so
+  // no repo-scoped frame can answer it. Entries carry their own `cwd`, which is
+  // what lets a row name its repo and reopen in the right checkout.
+  | { type: "pinnedSessions"; entries: SessionListEntry[]; dots: Record<string, Dot> }
   | { type: "repos"; entries: RepoListEntry[]; selectedCwd: string; activeCwd: string }
   | { type: "sessionDot"; id: string; dot: Dot }
   // Full snapshot of the focused session's host-owned send queue (#37) — the
@@ -273,6 +279,10 @@ export type WebviewMsg =
   // against the repo catalog and dropped when it isn't a row, so this never
   // widens what a remote can read beyond the repos it is already shown.
   | { type: "listRepoSessions"; cwd: string; limit?: number }
+  // `cwd` names the session's own checkout so the host can find it without
+  // assuming it lives in the repo the tab happens to be in — pinning is offered
+  // on every rail row, including other projects' conversations.
+  | { type: "toggleSessionPin"; id: string; cwd?: string; pinned: boolean }
   | { type: "selectRepo"; cwd: string }
   | { type: "toggleRepoPin"; cwd: string; pinned: boolean }
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
@@ -359,7 +369,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
-  sessions: true, repoSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
+  sessions: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, usage: true,
 };
 
@@ -373,7 +383,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
-  listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true,
+  listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
   pasteImage: true, uploadFile: true, voiceStart: true,

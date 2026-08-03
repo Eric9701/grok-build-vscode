@@ -341,6 +341,146 @@ describe("projects rail", () => {
     expect(section("beta").querySelector(".rail-action-btn.pin")).not.toBe(null);
   });
 
+  describe("pinned conversations", () => {
+    const pinnedFrame = (entries: unknown[]) => ({ type: "pinnedSessions", entries, dots: {} });
+    const pinned = (id: string, cwd: string, name: string, at: number) =>
+      ({ ...row(id, cwd, name), pinnedAt: at });
+
+    it("shows no Pinned group until something is pinned", () => {
+      const { doc } = boot();
+      expect([...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent)).toEqual(["Projects"]);
+    });
+
+    it("lifts pinned conversations above Projects, newest pin first", () => {
+      const { doc, window } = boot();
+      dispatch(window, pinnedFrame([
+        pinned("b1", "/work/beta", "beta thing", 20),
+        pinned("a1", "/work/alpha", "alpha thing", 10),
+      ]));
+      const heads = [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
+      expect(heads).toEqual(["Pinned", "Projects"]);
+      expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
+        .toEqual(["beta thing", "alpha thing"]);
+    });
+
+    // Out of its project, a row has to say where it came from — two "Untitled"
+    // conversations are otherwise identical, and opening the wrong one moves the tab.
+    it("names each pinned row's repo", () => {
+      const { doc, window } = boot();
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
+      expect(doc.querySelector(".rail-pinned .rail-session-repo")?.textContent).toBe("beta");
+    });
+
+    // Two checkouts can share a leaf name; the host already disambiguates them
+    // in the catalog, so the pinned row must use that label rather than
+    // recomputing a leaf and showing "project" twice.
+    it("uses the catalog's disambiguated repo label", () => {
+      const { doc, window } = boot();
+      const dupes = [
+        { cwd: "/work/client/proj", label: "client/proj", available: true, pinned: false, updatedAt: 30 },
+        { cwd: "/work/archive/proj", label: "archive/proj", available: true, pinned: false, updatedAt: 20 },
+      ];
+      dispatch(window, { type: "repos", entries: dupes, selectedCwd: "/work/client/proj", activeCwd: "/work/client/proj" });
+      dispatch(window, pinnedFrame([
+        pinned("p1", "/work/client/proj", "one", 20),
+        pinned("p2", "/work/archive/proj", "two", 10),
+      ]));
+      expect([...doc.querySelectorAll(".rail-pinned .rail-session-repo")].map((e) => e.textContent))
+        .toEqual(["client/proj", "archive/proj"]);
+    });
+
+    it("reopens a pinned conversation in its own repo", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta/sub", "beta thing", 20)]));
+      click(window, doc.querySelector(".rail-pinned .rail-session") as HTMLElement);
+      expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
+        { type: "resumeSession", id: "b1", cwd: "/work/beta/sub" },
+      ]);
+    });
+
+    // A host that never sends `pinnedSessions` drops `toggleSessionPin`, so a
+    // pin offered there is a control that does nothing. Capability, not version.
+    it("offers no pin control against a host that never mentions pinning", () => {
+      const { doc, window } = boot("/work/alpha");
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      expect(doc.querySelector(".rail-session-actions")).toBe(null);
+      // The rows themselves still work — only the new affordance is withheld.
+      expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["alpha one"]);
+    });
+
+    it("offers the pin once the host has proved it handles pinning", () => {
+      const { doc, window } = boot("/work/alpha");
+      // An EMPTY frame is proof enough — that is what a capable host with no
+      // pins yet sends, and it must not be mistaken for silence.
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      expect(doc.querySelector(".rail-session-actions .rail-action-btn.pin")).not.toBe(null);
+    });
+
+    it("pins from an ordinary project row, naming that row's own repo", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha/wt", "alpha one", 9)]));
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      click(window, section.querySelector(".rail-session-actions .rail-action-btn.pin") as HTMLElement);
+      expect(posted.filter((p) => p.type === "toggleSessionPin")).toEqual([
+        { type: "toggleSessionPin", id: "a1", cwd: "/work/alpha/wt", pinned: true },
+      ]);
+    });
+
+    it("unpins from the Pinned group", () => {
+      const { doc, window, posted } = boot();
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
+      click(window, doc.querySelector(".rail-pinned .rail-action-btn.pin") as HTMLElement);
+      expect(posted.filter((p) => p.type === "toggleSessionPin")).toEqual([
+        { type: "toggleSessionPin", id: "b1", cwd: "/work/beta", pinned: false },
+      ]);
+    });
+
+    // The pin is a real <button> inside a row that also answers Enter/Space.
+    // Without a target check the key bubbles and does both — pinning AND opening
+    // a conversation that may live in another project, moving the whole tab.
+    it("pins by keyboard without also opening the conversation", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const pin = doc.querySelector(".rail-session-actions .rail-action-btn.pin") as HTMLElement;
+
+      // A real button fires click on Enter; the keydown bubbles to the row too.
+      pin.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      click(window, pin);
+
+      expect(posted.filter((p) => p.type === "toggleSessionPin")).toHaveLength(1);
+      expect(posted.filter((p) => p.type === "resumeSession")).toEqual([]);
+    });
+
+    // Clicking the pin must not also open the conversation.
+    it("does not resume when the pin is clicked", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      click(window, section.querySelector(".rail-session-actions .rail-action-btn.pin") as HTMLElement);
+      expect(posted.filter((p) => p.type === "resumeSession")).toEqual([]);
+    });
+  });
+
+  // The conversations are the point of the rail, and they were the one thing a
+  // keyboard could not reach — repo names and pin buttons are real <button>s,
+  // the rows were bare divs with an onclick.
+  it("lets a keyboard reach and open a conversation", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+    const first = doc.querySelector(".rail-session") as HTMLElement;
+    expect(first.getAttribute("role")).toBe("button");
+    expect(first.tabIndex).toBe(0);
+
+    first.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
+      { type: "resumeSession", id: "a1", cwd: "/work/alpha" },
+    ]);
+  });
+
   it("offers no session rows for an unavailable checkout", () => {
     const { doc } = boot();
     const offlineIndex = repoNames(doc).indexOf("offline");

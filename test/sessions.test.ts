@@ -463,6 +463,16 @@ describe("readSessionEntries", () => {
     expect(out[0].displayName).toBe("Renamed");
   });
 
+  // The projects rail reads pin state off the entry. `pinnedAt` sat declared but
+  // unread for a long time; this is the assertion against it drifting back.
+  it("surfaces the pin from the override, and leaves unpinned rows bare", () => {
+    const fs = buildTwo();
+    const overrides: SessionMetaOverrides = { a: { pinnedAt: 1234, pinnedCwd: cwd } };
+    const out = readSessionEntries({ fs, grokHome, cwd, ids: ["a", "b"], overrides });
+    expect(out.find((e) => e.id === "a")?.pinnedAt).toBe(1234);
+    expect(out.find((e) => e.id === "b")?.pinnedAt).toBeUndefined();
+  });
+
   it("skips malformed or missing summaries", () => {
     const fs = buildFs({
       [dir]: { isDir: true },

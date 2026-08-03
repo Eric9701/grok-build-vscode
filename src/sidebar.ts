@@ -2271,6 +2271,114 @@ See design doc for the full state machine diagram.`;
     this.postRepoCatalog();
   }
 
+  /** Pin/unpin one conversation. Stored on the session's own override entry, so
+   *  it survives a rename and travels with nothing else — `pinnedCwd` is kept
+   *  alongside because the Pinned group spans repos and has to know where to
+   *  read each session from without scanning every checkout. */
+  private async toggleSessionPin(id: string, cwd: string | undefined, pinned: boolean): Promise<void> {
+    if (!id) return;
+    await this.updateSessionMeta((overrides) => {
+      const existing = overrides[id];
+      // Resolve the home repo once, at pin time: the client sends the row's own
+      // cwd (already gated against the catalog), and falling back to whatever
+      // repo happens to be selected would file the pin under the wrong project.
+      const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd;
+      if (pinned && !home) return null; // nothing to write
+      const next: SessionMetaOverrides = { ...overrides };
+      const entry = { ...(existing ?? {}) };
+      if (pinned) {
+        entry.pinnedAt = Date.now();
+        entry.pinnedCwd = home;
+      } else {
+        delete entry.pinnedAt;
+        delete entry.pinnedCwd;
+      }
+      // An override that now carries nothing is noise in globalState — drop it
+      // rather than accumulating empty objects for every session ever unpinned.
+      if (Object.keys(entry).length === 0) delete next[id];
+      else next[id] = entry;
+      return next;
+    });
+    // The pin lives in globalState, not in the session's summary.json, so the
+    // file's mtime does not move and the entry cache would keep serving a row
+    // with the OLD pin state — the pin control would then still say "Pin" right
+    // after pinning, and clicking it would pin again instead of unpinning. Same
+    // reason `customName` invalidates here: an override changes the entry
+    // without touching disk.
+    this.sessionCache.delete(id);
+    this.postSessionsList(); // fans out the pinned refresh too
+  }
+
+  /** Read-modify-write on the session-meta map, serialised.
+   *
+   *  Every writer of this map reads the whole object, edits a copy and writes it
+   *  back. The read is synchronous but the write awaits, so two updates started
+   *  in the same tick both read the OLD map and the second silently discards the
+   *  first — pin A then immediately pin B, and only B survives. Remote messages
+   *  are not serialised, so "the same tick" is an ordinary double click.
+   *
+   *  Chaining every call through one promise makes the read-modify-write atomic
+   *  with respect to other users of this helper. It is the mechanism the older
+   *  writers should migrate onto (ROADMAP § Concurrent writes); until they do,
+   *  a pin can still lose a race against a rename, which is far rarer than two
+   *  pins in a row. Returning null from the mutator means "nothing to write". */
+  private sessionMetaWrites: Promise<void> = Promise.resolve();
+  private updateSessionMeta(
+    mutate: (current: SessionMetaOverrides) => SessionMetaOverrides | null,
+  ): Promise<void> {
+    const run = this.sessionMetaWrites.then(async () => {
+      const current = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      const next = mutate(current);
+      if (next) await this.context.globalState.update(SESSION_META_KEY, next);
+    });
+    // Keep the chain alive even if one link throws, or every later write dies.
+    this.sessionMetaWrites = run.catch(() => {});
+    return run;
+  }
+
+  /** Every pinned conversation across every repo, newest pin first. Reads are
+   *  grouped by the stored home cwd so this costs one index scan per repo that
+   *  actually holds a pin — not one per repo in the catalog. */
+  private buildPinnedSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const grokHome = resolveGrokHome(process.env);
+    const log = (m: string) => this.output.appendLine(m);
+    const byCwd = new Map<string, { cwd: string; ids: string[] }>();
+    for (const [id, o] of Object.entries(overrides)) {
+      if (typeof o?.pinnedAt !== "number" || !o.pinnedCwd) continue;
+      const key = normalizeFsPath(o.pinnedCwd);
+      const bucket = byCwd.get(key) ?? { cwd: o.pinnedCwd, ids: [] };
+      bucket.ids.push(id);
+      byCwd.set(key, bucket);
+    }
+    const entries: SessionListEntry[] = [];
+    for (const { cwd, ids } of byCwd.values()) {
+      const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
+      const wanted = new Set(ids);
+      const present = index.filter((e) => wanted.has(e.id));
+      if (!present.length) continue;
+      const mtimeById = new Map(present.map((e) => [e.id, e.mtimeMs]));
+      // One repo per pass, so every id in it reads from that same checkout.
+      const cwdById = new Map(present.map((e) => [e.id, cwd]));
+      entries.push(...this.readEntriesCachedMulti(
+        present.map((e) => e.id), mtimeById, cwdById, overrides, grokHome, log,
+      ));
+    }
+    // Newest pin on top — the same rule the repo rows use, and the one that
+    // matches "I just pinned this, where did it go".
+    entries.sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
+    const dots: Record<string, Dot> = {};
+    for (const e of entries) dots[e.id] = this.dotForId(e.id);
+    return { entries, dots };
+  }
+
+  private postPinnedSessions(clientId?: string): void {
+    if (!clientId && !this.remoteClients.clients().length) return;
+    const msg: HostMsg = { type: "pinnedSessions", ...this.buildPinnedSessions() };
+    if (clientId) this.sendRemoteClient(clientId, msg);
+    else for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, msg);
+  }
+
   private annotateWorktreeLabels(
     entries: SessionListEntry[],
     overrides: SessionMetaOverrides,
@@ -4118,6 +4226,14 @@ See design doc for the full state machine diagram.`;
           this.sendRepoSessionsPreview(clientId, msg.cwd, msg.limit);
         }
         break;
+      case "toggleSessionPin":
+        // Rail-only affordance, so remote-only: the VS Code history popover
+        // offers no pin, and answering it locally would write state no local
+        // surface can show or undo.
+        if (origin === "remote" && clientId) {
+          await this.toggleSessionPin(msg.id, msg.cwd, msg.pinned);
+        }
+        break;
       case "selectRepo":
         if (origin === "remote" && clientId) this.selectRemoteRepo(clientId, msg.cwd);
         else this.selectRepo(msg.cwd);
@@ -4259,6 +4375,13 @@ See design doc for the full state machine diagram.`;
     const local = this.buildSessionsList(localCwd, opts);
     this.postLocal(local);
     if (opts) return;
+    // Pins ride along with every catalog mutation rather than being refreshed at
+    // each site that can invalidate one. Deleting a session, clearing a repo and
+    // removing a worktree all land here; hanging the pinned refresh off the same
+    // funnel fixes the whole class instead of the three cases we happened to
+    // think of. Cheap when nothing is pinned — the scan is over an in-memory map
+    // and reads no disk until a pin actually exists.
+    this.postPinnedSessions();
     for (const clientId of this.remoteClients.clients()) {
       const cwd = this.remoteClients.cwd(clientId);
       const activeId = this.remoteActiveSessionId(clientId);
@@ -8356,6 +8479,10 @@ See design doc for the full state machine diagram.`;
       activeCwd: this.sessionCwd(session),
     });
     snap.push(this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
+    // Pins belong in the snapshot, not behind a `ready` handler: `ready` from a
+    // remote is answered HERE and never reaches onMessage's switch, so anything
+    // pushed from there would simply never arrive on a fresh tab or a reconnect.
+    snap.push({ type: "pinnedSessions", ...this.buildPinnedSessions() });
     const out: HostMsg[] = [];
     for (const m of snap) {
       const t = transformHostMsgForRemote(m, this.remoteMediaDeps);

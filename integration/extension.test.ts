@@ -1521,4 +1521,87 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     });
     fs.rmSync(worktree, { recursive: true, force: true });
   });
+
+  // A remote `ready` is answered by the reconnect snapshot and never reaches the
+  // ordinary message switch, so anything the rail needs at startup has to be IN
+  // that snapshot. Pinned conversations were pushed from the switch first, which
+  // meant a fresh tab or a reconnect never learned about them at all.
+  test("a fresh remote tab is told about pinned conversations in its snapshot", async () => {
+    writeStoredSession("pin-me", repoB, "2026-08-01T10:00:00Z");
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+
+    // Read the session FIRST so it lands in the host's entry cache. That is the
+    // precondition the staleness bug needs — a row nobody has looked at is read
+    // fresh and would carry the right pin either way, so a test that skips this
+    // step passes with the invalidation removed and proves nothing.
+    hooks.fromRemote({ type: "listRepoSessions", cwd: repoB }, "pin-tab");
+    await new Promise((r) => setTimeout(r, 1500));
+
+    hooks.fromRemote({ type: "toggleSessionPin", id: "pin-me", cwd: repoB, pinned: true }, "pin-tab");
+    await new Promise((r) => setTimeout(r, 1500));
+
+    posts.length = 0;
+    hooks.fromRemote({ type: "ready" }, "pin-tab");
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const snapshot = posts.filter((p) => p.msg?.type === "pinnedSessions");
+    assert.ok(snapshot.length, "the snapshot must carry pinnedSessions");
+    const entry = snapshot
+      .flatMap((p) => p.msg.entries ?? [])
+      .find((e: any) => e.id === "pin-me");
+    assert.ok(entry, "the pinned conversation must be in it");
+    // Readable back, not merely stored: the pin lives in globalState while the
+    // entry cache is keyed on the summary file's mtime, which pinning never moves.
+    assert.equal(typeof entry.pinnedAt, "number", "the row must carry its pin, not a stale copy");
+    assert.equal(entry.cwd, repoB, "and must name the repo it actually lives in");
+
+    // Deleting the conversation has to retire its pinned row. Otherwise the row
+    // outlives the thing it points at and clicking it just errors.
+    // Deletion is authorized against the tab's own repo, so put the tab there
+    // first — the same two steps a person takes before deleting a conversation.
+    hooks.fromRemote({ type: "selectRepo", cwd: repoB }, "pin-tab");
+    await new Promise((r) => setTimeout(r, 1500));
+    posts.length = 0;
+    hooks.fromRemote({ type: "deleteSession", id: "pin-me", cwd: repoB }, "pin-tab");
+    await new Promise((r) => setTimeout(r, 2000));
+    const after = posts.filter((p) => p.msg?.type === "pinnedSessions");
+    assert.ok(after.length, "deleting a session must refresh the pinned list");
+    assert.ok(
+      after.every((p) => !p.msg.entries?.some((e: any) => e.id === "pin-me")),
+      "the deleted conversation must not linger in the pinned group",
+    );
+
+    hooks.fromRemote({ type: "toggleSessionPin", id: "pin-me", cwd: repoB, pinned: false }, "pin-tab");
+    await new Promise((r) => setTimeout(r, 1000));
+  });
+
+  // Read-modify-write on one shared map: both handlers read before either writes,
+  // so without serialisation the second pin silently discards the first.
+  test("two pins in the same tick both survive", async () => {
+    writeStoredSession("race-a", repoB, "2026-08-01T10:00:00Z");
+    writeStoredSession("race-b", repoB, "2026-08-01T10:00:01Z");
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+
+    // No await between them — exactly a double click, or two tabs at once.
+    hooks.fromRemote({ type: "toggleSessionPin", id: "race-a", cwd: repoB, pinned: true }, "race-tab");
+    hooks.fromRemote({ type: "toggleSessionPin", id: "race-b", cwd: repoB, pinned: true }, "race-tab");
+    await new Promise((r) => setTimeout(r, 2500));
+
+    posts.length = 0;
+    hooks.fromRemote({ type: "ready" }, "race-tab");
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const ids = posts
+      .filter((p) => p.msg?.type === "pinnedSessions")
+      .flatMap((p) => p.msg.entries ?? [])
+      .map((e: any) => e.id);
+    assert.ok(ids.includes("race-a"), "the first pin must not be discarded by the second");
+    assert.ok(ids.includes("race-b"), "the second pin must land too");
+
+    hooks.fromRemote({ type: "toggleSessionPin", id: "race-a", cwd: repoB, pinned: false }, "race-tab");
+    hooks.fromRemote({ type: "toggleSessionPin", id: "race-b", cwd: repoB, pinned: false }, "race-tab");
+    await new Promise((r) => setTimeout(r, 1500));
+  });
 });
