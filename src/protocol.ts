@@ -288,8 +288,12 @@ export type WebviewMsg =
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
   // by cwd on disk). Omitted → host resolves from meta / workspace root.
   | { type: "resumeSession"; id: string; cwd?: string }
-  | { type: "renameSession"; id: string; name: string }
-  | { type: "deleteSession"; id: string; name?: string }
+  // cwd names the PROJECT the row belongs to, so a client listing several of
+  // them (the browser rail) can act on a conversation without first switching
+  // to its repo. Optional and additive: omitted → the host authorizes against
+  // the client's selected repo, exactly as before.
+  | { type: "renameSession"; id: string; name: string; cwd?: string }
+  | { type: "deleteSession"; id: string; name?: string; cwd?: string }
   | { type: "clearAllSessions"; cwd: string }
   | { type: "pickFile" }
   // The composer's `@` file popover: the current token after `@`, posted on

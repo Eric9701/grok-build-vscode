@@ -225,7 +225,13 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
         : null;
     case "renameSession":
     case "deleteSession":
-      return isRemoteSessionId(value.id) ? msg as WebviewMsg : null;
+      // cwd is optional and, when present, must look like a repo path. The host
+      // still matches it against its OWN catalog before acting, so this only
+      // keeps obvious rubbish off the wire.
+      return isRemoteSessionId(value.id) &&
+        (value.cwd === undefined || isRemoteCwd(value.cwd))
+        ? msg as WebviewMsg
+        : null;
     case "addMentionFile":
       return isRemoteMentionPath(value.relPath) ? msg as WebviewMsg : null;
     case "uploadFile":

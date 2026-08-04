@@ -4248,10 +4248,10 @@ See design doc for the full state machine diagram.`;
         else await this.openSession(msg.id, msg.cwd);
         break;
        case "renameSession":
-          this.renameSession(msg.id, msg.name, origin, clientId);
+          this.renameSession(msg.id, msg.name, origin, clientId, msg.cwd);
           break;
       case "deleteSession":
-        await this.deleteSession(msg.id, msg.name, origin, clientId);
+        await this.deleteSession(msg.id, msg.name, origin, clientId, msg.cwd);
         break;
       case "clearAllSessions":
         await this.clearAllSessions(msg.cwd, origin, clientId);
@@ -4645,12 +4645,36 @@ See design doc for the full state machine diagram.`;
     return ids.map((id) => this.sessionCache.get(id)?.entry).filter((e): e is SessionListEntry => !!e);
   }
 
+  /** Which repo a remote request may act in. The client's selection by default;
+   *  a NAMED repo when it asks for one and that repo is in the host's own
+   *  catalog. Matching the catalog is the whole boundary — the path is never
+   *  trusted as given, so a remote can only ever reach projects this host has
+   *  already discovered and told it about.
+   *
+   *  Widened from selection-only deliberately: the rail lists every project, and
+   *  refusing to rename a row it just drew is a broken affordance, not a guard.
+   *  It was never much of a guard either — a remote can select any catalog repo
+   *  and then act, so the selection only ever added a step to the same reach. */
+  private remoteRepoScope(clientId: string, requestedCwd?: string): string | undefined {
+    if (requestedCwd) {
+      const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, requestedCwd));
+      // The host's own spelling, never the client's.
+      if (hit?.available) return hit.cwd;
+      return undefined;
+    }
+    return this.remoteClients.cwd(clientId);
+  }
+
   private remoteAuthorizedSessionCwd(
     clientId: string,
     id: string,
     overrides: SessionMetaOverrides,
+    requestedCwd?: string,
   ): string | undefined {
-    const selectedCwd = this.remoteClients.cwd(clientId);
+    // A named repo the catalog does not know is a refusal, not a fallback to the
+    // selected one — otherwise a bad cwd would quietly act somewhere else.
+    const selectedCwd = this.remoteRepoScope(clientId, requestedCwd);
+    if (!selectedCwd) return undefined;
     const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
     const live = [...this.pool].find((session) => session.activeSessionId === id);
     if (live) {
@@ -4685,9 +4709,13 @@ See design doc for the full state machine diagram.`;
     name: string,
     origin: MsgOrigin,
     clientId?: string,
+    requestedCwd?: string,
   ): void {
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    if (origin === "remote" && clientId && !this.remoteAuthorizedSessionCwd(clientId, id, overrides)) {
+    const authorizedCwd = origin === "remote" && clientId
+      ? this.remoteAuthorizedSessionCwd(clientId, id, overrides, requestedCwd)
+      : undefined;
+    if (origin === "remote" && clientId && !authorizedCwd) {
       this.reportUnauthorizedSessionTarget(clientId, "rename", id);
       return;
     }
@@ -4708,6 +4736,19 @@ See design doc for the full state machine diagram.`;
     // otherwise keep serving the old name. Drop it so the next read rebuilds the entry.
     this.sessionCache.delete(id);
     this.postSessionsList();
+    this.refreshRemoteRepoPreview(clientId, authorizedCwd);
+  }
+
+  /** Re-push one repo's preview after acting on a session inside it. `postSessionsList`
+   *  only refreshes the repo the client has SELECTED, so a rename or delete in any
+   *  other project would leave the rail showing the old row until something else
+   *  happened to refetch it. */
+  private refreshRemoteRepoPreview(clientId?: string, cwd?: string): void {
+    if (!clientId || !cwd) return;
+    if (pathsEqual(cwd, this.remoteClients.cwd(clientId))) return;
+    // The rail's expanded cap — matches what its own probe asks for, so a
+    // refresh never returns fewer rows than the client already had.
+    this.sendRepoSessionsPreview(clientId, cwd, 20);
   }
 
   // No native confirm here: the webview shows its own confirm dialog before
@@ -4769,10 +4810,11 @@ See design doc for the full state machine diagram.`;
     _name: string | undefined,
     origin: MsgOrigin,
     clientId?: string,
+    requestedCwd?: string,
   ): Promise<void> {
     const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const authorizedRemoteCwd = origin === "remote" && clientId
-      ? this.remoteAuthorizedSessionCwd(clientId, id, overridesNow)
+      ? this.remoteAuthorizedSessionCwd(clientId, id, overridesNow, requestedCwd)
       : undefined;
     if (origin === "remote" && clientId && !authorizedRemoteCwd) {
       this.reportUnauthorizedSessionTarget(clientId, "delete", id);
@@ -4829,6 +4871,7 @@ See design doc for the full state machine diagram.`;
       }
     }
     this.postSessionsList();
+    this.refreshRemoteRepoPreview(clientId, authorizedRemoteCwd);
   }
 
   /** Delete every inactive session in the requested repo's history. Every session
@@ -4840,11 +4883,14 @@ See design doc for the full state machine diagram.`;
     origin: MsgOrigin,
     clientId?: string,
   ): Promise<void> {
+    // Any project in the host's own catalog, not just the selected one — the rail
+    // offers this per project, and the catalog is the boundary (see
+    // remoteRepoScope). A path the host has never discovered still gets nothing.
     const selectedCwd = origin === "remote" && clientId
-      ? this.remoteClients.cwd(clientId)
+      ? this.remoteRepoScope(clientId, requestedCwd)
       : requestedCwd;
-    if (origin === "remote" && !pathsEqual(requestedCwd, selectedCwd)) {
-      this.output.appendLine("[remote] dropped clearAllSessions (cwd does not match selected repo)");
+    if (!selectedCwd) {
+      this.output.appendLine("[remote] dropped clearAllSessions (cwd is not a known repository)");
       return;
     }
     const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, selectedCwd));

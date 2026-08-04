@@ -49,6 +49,16 @@ const sessionNames = (doc: Document, repoIndex: number) =>
   [...doc.querySelectorAll(".rail-repo")[repoIndex].querySelectorAll(".rail-session-name")]
     .map((e) => e.textContent);
 
+// Row actions live behind a ⋯ menu now, parented to <body> (the rail scrolls, so
+// a menu inside it would be clipped) — hence the document-level lookup.
+const openMenu = (window: any, host: Element) => {
+  click(window, host.querySelector(".rail-menu-btn") as HTMLElement);
+  return window.document.querySelector(".rail-menu") as HTMLElement;
+};
+const menuItem = (menu: Element, label: string) =>
+  [...menu.querySelectorAll(".rail-menu-item")]
+    .find((b) => (b.textContent || "").includes(label)) as HTMLElement | undefined;
+
 describe("projects rail", () => {
   it("never mounts in VS Code, even if the element is present", () => {
     // `IS_REMOTE` is the gate, not the element — so a stray mount cannot switch
@@ -68,10 +78,14 @@ describe("projects rail", () => {
     expect(posted.filter((p) => p.type === "listRepoSessions")).toEqual([]);
   });
 
-  it("lists pinned projects first, then by recency", () => {
+  // Recency and nothing else. `beta` carries pinned:true in the fixture on
+  // purpose: the rail deliberately IGNORES repo pins (the VS Code picker still
+  // offers them), because for projects the one you touched last is the one you
+  // want, and a second ordering rule only costs the eye.
+  it("lists projects by last activity, ignoring repo pins", () => {
     const { doc } = boot();
     expect(rail(doc).hidden).toBe(false);
-    expect(repoNames(doc)).toEqual(["beta", "alpha", "gamma", "offline"]);
+    expect(repoNames(doc)).toEqual(["alpha", "gamma", "beta", "offline"]);
   });
 
   // The degrade path — the whole reason the rail reads the selected repo from
@@ -141,18 +155,21 @@ describe("projects rail", () => {
     const probes = () => posted.filter((p) => p.type === "listRepoSessions").map((p) => p.cwd);
     expect(probes()).toHaveLength(1);
 
+    // Whichever repo the probe picked — asserting on the probe rather than on a
+    // hardcoded name keeps this independent of the rail's ordering rule.
+    const probed = probes()[0];
     dispatch(window, {
       type: "repoSessions",
-      cwd: probes()[0],
-      entries: [row("b1", "/work/beta", "beta one", 4)],
+      cwd: probed,
+      entries: [row("p1", probed, "first preview", 4)],
       dots: {},
       total: 1,
     });
 
     // The answer proves the capability; the rest of the catalog is now worth asking.
     expect(probes().length).toBeGreaterThan(1);
-    const betaIndex = repoNames(doc).indexOf("beta");
-    expect(sessionNames(doc, betaIndex)).toEqual(["beta one"]);
+    const probedLabel = repos.find((r) => r.cwd === probed)!.label;
+    expect(sessionNames(doc, repoNames(doc).indexOf(probedLabel))).toEqual(["first preview"]);
   });
 
   it("previews three sessions per repo and expands in place", () => {
@@ -329,16 +346,24 @@ describe("projects rail", () => {
     expect(sessionNames(h.doc, 0)).toEqual(["windows row"]);
   });
 
-  // The pin lives in a hover-revealed action group, so without a persistent
-  // marker a pinned project looks exactly like an unpinned one.
-  it("marks a pinned project without needing a hover", () => {
+  // Projects are not pinnable here at all: no marker, no menu item. The menu
+  // carries only the destructive act, which is the one thing worth hiding behind
+  // an extra click.
+  it("offers no way to pin a project, and no marker for one", () => {
+    const { doc, window } = boot();
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+    expect(section.querySelector(".rail-pin-mark")).toBe(null);
+    const menu = openMenu(window, section.querySelector(".rail-repo-head") as HTMLElement);
+    expect(menuItem(menu, "Pin project")).toBe(undefined);
+    expect(menuItem(menu, "Clear all history")).not.toBe(undefined);
+  });
+
+  // Nothing marks the live or the selected project — the highlighted
+  // conversation locates it, and the header names it.
+  it("marks neither the live nor the selected project", () => {
     const { doc } = boot();
-    const section = (label: string) => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf(label)];
-    expect(section("beta").classList.contains("pinned")).toBe(true);
-    expect(section("alpha").classList.contains("pinned")).toBe(false);
-    // The CSS keeps `.pin` visible at rest only on a pinned row, so the class
-    // has to be on the button too, not just the section.
-    expect(section("beta").querySelector(".rail-action-btn.pin")).not.toBe(null);
+    expect(doc.querySelector(".rail-repo-live")).toBe(null);
+    expect(doc.querySelector(".rail-repo.selected")).toBe(null);
   });
 
   describe("pinned conversations", () => {
@@ -400,11 +425,14 @@ describe("projects rail", () => {
 
     // A host that never sends `pinnedSessions` drops `toggleSessionPin`, so a
     // pin offered there is a control that does nothing. Capability, not version.
+    // The menu itself still exists — rename and delete do not depend on pinning.
     it("offers no pin control against a host that never mentions pinning", () => {
       const { doc, window } = boot("/work/alpha");
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-      expect(doc.querySelector(".rail-session-actions")).toBe(null);
-      // The rows themselves still work — only the new affordance is withheld.
+      const menu = openMenu(window, doc.querySelector(".rail-session") as HTMLElement);
+      expect(menuItem(menu, "Pin conversation")).toBe(undefined);
+      expect(menuItem(menu, "Rename")).not.toBe(undefined);
+      // The rows themselves still work — only the one affordance is withheld.
       expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["alpha one"]);
     });
 
@@ -414,7 +442,8 @@ describe("projects rail", () => {
       // pins yet sends, and it must not be mistaken for silence.
       dispatch(window, pinnedFrame([]));
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-      expect(doc.querySelector(".rail-session-actions .rail-action-btn.pin")).not.toBe(null);
+      const menu = openMenu(window, doc.querySelector(".rail-session") as HTMLElement);
+      expect(menuItem(menu, "Pin conversation")).not.toBe(undefined);
     });
 
     it("pins from an ordinary project row, naming that row's own repo", () => {
@@ -422,46 +451,75 @@ describe("projects rail", () => {
       dispatch(window, pinnedFrame([]));
       dispatch(window, sessionsFrame([row("a1", "/work/alpha/wt", "alpha one", 9)]));
       const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      click(window, section.querySelector(".rail-session-actions .rail-action-btn.pin") as HTMLElement);
+      const menu = openMenu(window, section.querySelector(".rail-session") as HTMLElement);
+      click(window, menuItem(menu, "Pin conversation")!);
       expect(posted.filter((p) => p.type === "toggleSessionPin")).toEqual([
         { type: "toggleSessionPin", id: "a1", cwd: "/work/alpha/wt", pinned: true },
       ]);
     });
 
+    // The Pinned group is where a pinned conversation is unpinned — there is no
+    // pin glyph on the row any more, so the group IS the statement that it is
+    // pinned, and its menu is where that is undone.
     it("unpins from the Pinned group", () => {
       const { doc, window, posted } = boot();
       dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
-      click(window, doc.querySelector(".rail-pinned .rail-action-btn.pin") as HTMLElement);
+      const menu = openMenu(window, doc.querySelector(".rail-pinned .rail-session") as HTMLElement);
+      click(window, menuItem(menu, "Unpin conversation")!);
       expect(posted.filter((p) => p.type === "toggleSessionPin")).toEqual([
         { type: "toggleSessionPin", id: "b1", cwd: "/work/beta", pinned: false },
       ]);
     });
 
-    // The pin is a real <button> inside a row that also answers Enter/Space.
-    // Without a target check the key bubbles and does both — pinning AND opening
-    // a conversation that may live in another project, moving the whole tab.
-    it("pins by keyboard without also opening the conversation", () => {
+    it("shows no pin glyph on any row — the Pinned group carries that", () => {
+      const { doc, window } = boot();
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
+      expect(doc.querySelectorAll(".rail-pin-mark")).toHaveLength(0);
+    });
+
+    // The menu button is a real <button> inside a row that also answers
+    // Enter/Space. Without a target check the key bubbles and does both — opening
+    // the menu AND opening a conversation that may live in another project,
+    // moving the whole tab.
+    it("opens the menu by keyboard without also opening the conversation", () => {
       const { doc, window, posted } = boot("/work/alpha");
       dispatch(window, pinnedFrame([]));
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-      const pin = doc.querySelector(".rail-session-actions .rail-action-btn.pin") as HTMLElement;
+      const btn = doc.querySelector(".rail-session-actions .rail-menu-btn") as HTMLElement;
 
       // A real button fires click on Enter; the keydown bubbles to the row too.
-      pin.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      click(window, pin);
+      btn.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      click(window, btn);
 
-      expect(posted.filter((p) => p.type === "toggleSessionPin")).toHaveLength(1);
+      expect(doc.querySelector(".rail-menu")).not.toBe(null);
       expect(posted.filter((p) => p.type === "resumeSession")).toEqual([]);
     });
 
-    // Clicking the pin must not also open the conversation.
-    it("does not resume when the pin is clicked", () => {
+    // Opening the menu must not also open the conversation.
+    it("does not resume when the menu is opened", () => {
       const { doc, window, posted } = boot("/work/alpha");
       dispatch(window, pinnedFrame([]));
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
       const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      click(window, section.querySelector(".rail-session-actions .rail-action-btn.pin") as HTMLElement);
+      openMenu(window, section.querySelector(".rail-session") as HTMLElement);
       expect(posted.filter((p) => p.type === "resumeSession")).toEqual([]);
+    });
+
+    // Rename and delete are authorized by the host against a REPO, and the host
+    // only knows which one from this field — without it every row the rail draws
+    // from a project it has not selected is refused.
+    it("names the row's own repo when deleting", async () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const menu = openMenu(window, doc.querySelector(".rail-session") as HTMLElement);
+      click(window, menuItem(menu, "Delete")!);
+      click(window, doc.querySelector(".confirm-btn.confirm-danger") as HTMLElement);
+      // uiConfirm resolves a promise, so the post lands a microtask later.
+      await Promise.resolve();
+      expect(posted.filter((p) => p.type === "deleteSession")).toEqual([
+        { type: "deleteSession", id: "a1", name: "alpha one", cwd: "/work/alpha" },
+      ]);
     });
   });
 

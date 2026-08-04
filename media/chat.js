@@ -3100,28 +3100,14 @@
     } catch (_) { /* private mode, or quota */ }
   }
 
-  /** Pinned state as a mark, not a button. The pin is durable state and has to
-   *  stay legible without hovering — but a permanently lit 25px button read as an
-   *  action begging to be pressed, and crowded out the controls that ARE actions.
-   *  The act of pinning lives in the ⋯ menu. */
-  function railPinMark(title) {
-    const mark = document.createElement("span");
-    mark.className = "rail-pin-mark";
-    mark.innerHTML = ICON.pin;
-    mark.title = title;
-    mark.setAttribute("aria-label", title);
-    return mark;
-  }
 
-  /** Repos in rail order: pinned first (newest pin on top), then by recency.
-   *  The host already sorts its catalog this way; re-sorting here keeps the rail
-   *  correct even if a future host returns them unordered. */
+  /** Repos in rail order: most recently worked in, first. The rail deliberately
+   *  ignores repo pins, which the VS Code repo picker still offers — a pin only
+   *  earns its complexity where recency is a poor answer, and for projects it
+   *  never is: the one you touched last is the one you want. Conversations are
+   *  different, and keep their pins. */
   function railRepos() {
-    return state.repos.slice().sort((a, b) => {
-      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-      if (a.pinned && b.pinned) return (b.pinnedAt || 0) - (a.pinnedAt || 0);
-      return (b.updatedAt || 0) - (a.updatedAt || 0);
-    });
+    return state.repos.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }
 
   /** Preview rows for a repo. The SELECTED repo reads the live `sessions` list
@@ -3339,17 +3325,14 @@
   function renderRailRepo(repo) {
     const key = cwdKey(repo.cwd);
     const selected = sameCwd(repo.cwd, state.selectedRepoCwd);
-    const live = sameCwd(repo.cwd, state.activeRepoCwd);
     const collapsed = !!state.railCollapsed[key];
 
+    // No marker for the selected or the live project. The conversation you are
+    // reading is highlighted where it sits, which says which project you are in
+    // without a second, competing mark — and the header names it outright.
     const sec = document.createElement("section");
     sec.className = "rail-repo" +
-      (selected ? " selected" : "") +
       (repo.available ? "" : " unavailable") +
-      // A pin is durable state, not an action, so it stays legible without
-      // hovering — position alone cannot carry it, since the sort is
-      // pinned-first THEN recency and the top row may just be the newest.
-      (repo.pinned ? " pinned" : "") +
       (collapsed ? " collapsed" : "");
 
     const head = document.createElement("div");
@@ -3387,16 +3370,6 @@
     };
     head.appendChild(name);
 
-    if (live) {
-      const dot = document.createElement("span");
-      dot.className = "rail-repo-live";
-      dot.title = "The live session is in this repository";
-      head.appendChild(dot);
-    }
-
-    // Pinned state rides with the name, ahead of the controls, so it survives
-    // the actions fading out when the pointer leaves the row.
-    if (repo.pinned) head.appendChild(railPinMark("Pinned project"));
 
     const actions = document.createElement("div");
     actions.className = "rail-repo-actions";
@@ -3424,14 +3397,11 @@
     };
     actions.appendChild(add);
 
+    // Projects sort by recency and nothing else, so there is no pin here — the
+    // menu carries only the destructive act, which is precisely what a menu is
+    // for. (The VS Code repo picker keeps its own repo pins; the rail ignores
+    // them.)
     actions.appendChild(railMenuButton("Project actions", () => [
-      {
-        label: repo.pinned ? "Unpin project" : "Pin project",
-        icon: ICON.pin,
-        disabled: repoSwitcherLocked(),
-        onSelect: () => vscode.postMessage({ type: "toggleRepoPin", cwd: repo.cwd, pinned: !repo.pinned }),
-      },
-      null,
       {
         label: "Clear all history",
         icon: ICON.trash,
@@ -3605,11 +3575,11 @@
       row.appendChild(where);
     }
 
-    const isPinned = typeof s.pinnedAt === "number";
-    if (isPinned) {
-      row.classList.add("pinned");
-      row.appendChild(railPinMark("Pinned conversation"));
-    }
+    // No pin mark. The Pinned section at the top of the rail already says which
+    // conversations are pinned — more plainly than a glyph could — and repeating
+    // it on the copy inside the project is a second answer to a question already
+    // answered. The menu still says Unpin wherever you open it.
+    if (typeof s.pinnedAt === "number") row.classList.add("pinned");
 
     const actions = document.createElement("div");
     actions.className = "rail-session-actions";
@@ -3628,7 +3598,7 @@
       {
         label: "Rename",
         icon: ICON.pencil,
-        onSelect: () => railRenameSession(s),
+        onSelect: () => railRenameSession(s, cwd),
       },
     ];
     // Capability, never a version: a host that has never sent `pinnedSessions`
@@ -3666,7 +3636,11 @@
           confirmLabel: "Delete",
           danger: true,
         }).then((ok) => {
-          if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName });
+          // `cwd` names the project this row belongs to, so the host can act on a
+          // conversation in a project it has not selected. Without it the host
+          // authorizes against the selected repo only, and every row the rail
+          // draws from elsewhere is refused.
+          if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName, cwd });
         });
       },
     });
@@ -3675,7 +3649,7 @@
 
   /** Rename from the rail. The history popover renames inline in its own row;
    *  out here there is no row to hand over to, so ask for the name directly. */
-  function railRenameSession(s) {
+  function railRenameSession(s, cwd) {
     uiPrompt({
       title: "Rename session",
       value: s.displayName || "",
@@ -3684,7 +3658,7 @@
     }).then((name) => {
       const next = (name || "").trim();
       if (!next || next === s.displayName) return;
-      vscode.postMessage({ type: "renameSession", id: s.id, name: next });
+      vscode.postMessage({ type: "renameSession", id: s.id, name: next, ...(cwd ? { cwd } : {}) });
     });
   }
 
