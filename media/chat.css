@@ -2895,6 +2895,22 @@ mjx-container[display="true"] {
   font-weight: 600;
   margin-bottom: 6px;
 }
+/* uiPrompt's single field — uiConfirm with a name to type into. */
+.confirm-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 10px 0 2px;
+  padding: 7px 9px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: 6px;
+  font: 13px/1.2 var(--vscode-font-family);
+}
+.confirm-input:focus {
+  outline: none;
+  border-color: var(--vscode-focusBorder);
+}
 .confirm-body {
   color: var(--vscode-descriptionForeground);
   line-height: 1.45;

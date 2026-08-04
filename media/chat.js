@@ -596,6 +596,8 @@
     check: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
     chevronRight: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
     chevronDown: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
+    ellipsis: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>`,
+    search: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
     clock: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
     plus: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
     x: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
@@ -1776,6 +1778,64 @@
     });
   }
 
+  /** uiConfirm with a single text field. Resolves to the string, or null on
+   *  cancel — an empty string is a real answer the caller may want to reject on
+   *  its own terms, so it is never conflated with "dismissed". */
+  function uiPrompt(opts) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "confirm-overlay";
+      const panel = document.createElement("div");
+      panel.className = "confirm-panel";
+      const title = document.createElement("div");
+      title.className = "confirm-title";
+      title.textContent = opts.title;
+      panel.appendChild(title);
+
+      const field = document.createElement("input");
+      field.type = "text";
+      field.className = "confirm-input";
+      field.value = opts.value || "";
+      if (opts.placeholder) field.placeholder = opts.placeholder;
+      panel.appendChild(field);
+
+      const actions = document.createElement("div");
+      actions.className = "confirm-actions";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "confirm-btn";
+      cancelBtn.textContent = "Cancel";
+      const okBtn = document.createElement("button");
+      okBtn.type = "button";
+      okBtn.className = "confirm-btn confirm-primary";
+      okBtn.textContent = opts.confirmLabel || "OK";
+      const done = (v) => {
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+        resolve(v);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") { e.stopPropagation(); done(null); }
+      };
+      document.addEventListener("keydown", onKey, true);
+      field.onkeydown = (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") { e.preventDefault(); done(field.value); }
+        if (e.key === "Escape") done(null);
+      };
+      cancelBtn.onclick = (e) => { e.stopPropagation(); done(null); };
+      okBtn.onclick = (e) => { e.stopPropagation(); done(field.value); };
+      overlay.onclick = (e) => { if (e.target === overlay) { e.stopPropagation(); done(null); } };
+      actions.appendChild(cancelBtn);
+      actions.appendChild(okBtn);
+      panel.appendChild(actions);
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      field.focus();
+      field.select();
+    });
+  }
+
   function showRemoteExplainer() {
     const overlay = document.createElement("div");
     overlay.className = "confirm-overlay remote-explainer-overlay";
@@ -2483,6 +2543,8 @@
 
   function renderRepoChip() {
     applyRepoSwitcherVisibility();
+    // The conversation header names the repo too, and a switch changes it.
+    renderSessionHead();
     if (!repoSwitcherAvailable()) return;
     const locked = repoSwitcherLocked();
     const selected = state.repos.find((r) => sameCwd(r.cwd, state.selectedRepoCwd));
@@ -2814,9 +2876,17 @@
     state.sessionLoading = false;
     state.sessionHasMore = false;
     renderHistoryList();
-    positionDropdownPopover(historyPopover, historyBtn);
+    // Where the rail exists the app-wide bar is gone, so `historyBtn` has no box
+    // to hang a dropdown off — the conversation title is the visible trigger and
+    // therefore the anchor. The browser page reparents the popover to match.
+    positionDropdownPopover(historyPopover, railHistoryAnchor() || historyBtn);
     historyPopover.hidden = false;
     requestSessions(0);
+  }
+
+  function railHistoryAnchor() {
+    if (!IS_REMOTE || !document.body.classList.contains("has-rail")) return null;
+    return document.getElementById("session-head-main");
   }
 
   // ---------- projects rail ----------
@@ -2845,12 +2915,156 @@
   let railResolved = false;
   let railProbeTimer = null;
 
+  /** The list body. The browser page wraps the rail in fixed chrome (brand,
+   *  search, account) and gives the scrolling middle its own element, so the
+   *  only thing this file may empty is that middle — clearing the whole aside
+   *  would take the chrome with it on every render. Falls back to the aside so
+   *  a page without the wrapper still works. */
   function rail() {
     if (!railResolved) {
       railResolved = true;
-      railEl = IS_REMOTE ? document.getElementById("projects-rail") : null;
+      railEl = IS_REMOTE
+        ? document.getElementById("rail-scroll") || document.getElementById("projects-rail")
+        : null;
     }
     return railEl;
+  }
+
+  /** The whole panel, chrome included — what gets hidden, and what the drawer
+   *  slides. `rail()` is only its scrolling middle. */
+  function railPanel() {
+    return IS_REMOTE ? document.getElementById("projects-rail") : null;
+  }
+
+  /** Live filter over what the rail already holds: repo labels and the session
+   *  rows already fetched. Deliberately NOT a host search — the host searches one
+   *  repo at a time, so a cross-repo query would be one round-trip per project.
+   *  History remains the place that reaches everything. */
+  function railFilterText() {
+    const input = document.getElementById("rail-search");
+    return input ? input.value.trim().toLowerCase() : "";
+  }
+
+  function railMatches(text) {
+    const q = railFilterText();
+    if (!q) return true;
+    return String(text || "").toLowerCase().includes(q);
+  }
+
+  function wireRailSearch() {
+    const input = document.getElementById("rail-search");
+    if (!input || input.dataset.railWired) return;
+    input.dataset.railWired = "1";
+    input.oninput = () => renderRail();
+    input.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape" && input.value) { input.value = ""; renderRail(); }
+    };
+  }
+
+  // ---------- rail overflow menus ----------
+  //
+  // Anchored to the button but parented to <body> and position:fixed, because
+  // the rail is an `overflow: hidden auto` scroller: a menu positioned inside it
+  // would be clipped by the very rows it belongs to.
+  let railMenuEl = null;
+
+  function closeRailMenu() {
+    if (railMenuEl) { railMenuEl.remove(); railMenuEl = null; }
+  }
+
+  /** items: [{ label, icon, danger, disabled, onSelect }] — a `null` entry is a
+   *  separator, which is how the destructive tail is kept away from the thumb. */
+  function openRailMenu(anchor, items) {
+    const wasMine = railMenuEl && railMenuEl.dataset.anchorId === anchor.dataset.railMenuId;
+    closeRailMenu();
+    if (wasMine) return;
+    if (!anchor.dataset.railMenuId) anchor.dataset.railMenuId = String(++openRailMenu.seq);
+
+    const menu = document.createElement("div");
+    menu.className = "rail-menu";
+    menu.dataset.anchorId = anchor.dataset.railMenuId;
+    menu.setAttribute("role", "menu");
+    for (const item of items) {
+      if (!item) {
+        const sep = document.createElement("div");
+        sep.className = "rail-menu-sep";
+        menu.appendChild(sep);
+        continue;
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rail-menu-item" + (item.danger ? " danger" : "");
+      btn.setAttribute("role", "menuitem");
+      btn.disabled = !!item.disabled;
+      if (item.title) btn.title = item.title;
+      btn.innerHTML = `<span class="rail-menu-icon">${item.icon || ""}</span><span></span>`;
+      btn.lastChild.textContent = item.label;
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        closeRailMenu();
+        item.onSelect();
+      };
+      menu.appendChild(btn);
+    }
+    document.body.appendChild(menu);
+    railMenuEl = menu;
+
+    // Flip up / pull left rather than run off the viewport — the rail sits at the
+    // left edge on desktop and the drawer covers the screen on a phone.
+    const box = anchor.getBoundingClientRect();
+    const size = menu.getBoundingClientRect();
+    const gap = 4;
+    let top = box.bottom + gap;
+    if (top + size.height > window.innerHeight - 8) top = Math.max(8, box.top - size.height - gap);
+    let left = box.right - size.width;
+    left = Math.max(8, Math.min(left, window.innerWidth - size.width - 8));
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.left = `${Math.round(left)}px`;
+    const first = menu.querySelector(".rail-menu-item:not(:disabled)");
+    if (first) first.focus();
+  }
+  openRailMenu.seq = 0;
+
+  if (IS_REMOTE) {
+    document.addEventListener("click", (e) => {
+      if (railMenuEl && !railMenuEl.contains(e.target)) closeRailMenu();
+    }, true);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeRailMenu();
+    });
+    window.addEventListener("resize", closeRailMenu);
+  }
+
+  /** The ⋯ button itself — same shape for a project row, a conversation row and
+   *  the conversation header, so one class carries all three. */
+  function railMenuButton(label, items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-action-btn rail-menu-btn";
+    btn.innerHTML = ICON.ellipsis;
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("aria-haspopup", "menu");
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openRailMenu(btn, typeof items === "function" ? items() : items);
+    };
+    btn.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); };
+    return btn;
+  }
+
+  /** Pinned state as a mark, not a button. The pin is durable state and has to
+   *  stay legible without hovering — but a permanently lit 25px button read as an
+   *  action begging to be pressed, and crowded out the controls that ARE actions.
+   *  The act of pinning lives in the ⋯ menu. */
+  function railPinMark(title) {
+    const mark = document.createElement("span");
+    mark.className = "rail-pin-mark";
+    mark.innerHTML = ICON.pin;
+    mark.title = title;
+    mark.setAttribute("aria-label", title);
+    return mark;
   }
 
   /** Repos in rail order: pinned first (newest pin on top), then by recency.
@@ -2935,17 +3149,26 @@
     // the same condition, so a host that never sends `repos` gets the plain
     // single-column chat instead of an empty sidebar.
     const on = repoSwitcherAvailable() && state.repos.length > 0;
+    const panel = railPanel();
+    if (panel) panel.hidden = !on;
     root.hidden = !on;
     document.body.classList.toggle("has-rail", on);
-    if (!on) return;
+    if (!on) { renderSessionHead(); return; }
+    wireRailSearch();
+    closeRailMenu();
 
     root.innerHTML = "";
+    const q = railFilterText();
+    let shownAnything = false;
 
     // Pinned sits ABOVE Projects and spans every repo: a pin is only worth
     // anything if it lifts a conversation OUT of the project you would otherwise
     // have to open first. Rows name their repo, because out here that is the
     // only thing telling two similarly-named conversations apart.
-    if (state.pinnedSessions.length) {
+    const pinned = state.pinnedSessions.filter(
+      (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
+    );
+    if (pinned.length) {
       const pinHead = document.createElement("div");
       pinHead.className = "rail-head";
       pinHead.innerHTML = `<span class="rail-head-title">Pinned</span>`;
@@ -2953,22 +3176,118 @@
 
       const pinList = document.createElement("div");
       pinList.className = "rail-list rail-pinned";
-      for (const s of state.pinnedSessions) {
+      for (const s of pinned) {
         pinList.appendChild(renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }));
       }
       root.appendChild(pinList);
+      shownAnything = true;
     }
 
-    const head = document.createElement("div");
-    head.className = "rail-head";
-    head.innerHTML = `<span class="rail-head-title">Projects</span>`;
-    root.appendChild(head);
+    // While filtering, a project earns its place either by its own name (then it
+    // shows all its rows) or by holding a matching conversation (then it shows
+    // only those). Projects that do neither are dropped rather than left as empty
+    // headings — a filtered list that still lists everything is not a filter.
+    const repos = railRepos().filter((repo) => !q || railRepoHasMatch(repo));
+    if (repos.length) {
+      const head = document.createElement("div");
+      head.className = "rail-head";
+      head.innerHTML = `<span class="rail-head-title">Projects</span>`;
+      root.appendChild(head);
 
-    const list = document.createElement("div");
-    list.className = "rail-list";
-    root.appendChild(list);
+      const list = document.createElement("div");
+      list.className = "rail-list";
+      root.appendChild(list);
 
-    for (const repo of railRepos()) list.appendChild(renderRailRepo(repo));
+      for (const repo of repos) list.appendChild(renderRailRepo(repo));
+      shownAnything = true;
+    }
+
+    if (!shownAnything) root.appendChild(railNote(q ? "No matches." : "No projects yet"));
+    renderSessionHead();
+  }
+
+  /** The catalog's label for a cwd — repos that share a leaf name are only
+   *  distinguishable there. Falls back to the leaf for a worktree, whose cwd is a
+   *  subdirectory and so names no catalog row. */
+  function railRepoLabelFor(cwd) {
+    const home = state.repos.find((r) => sameCwd(r.cwd, cwd));
+    return home?.label || cwdLeaf(cwd);
+  }
+
+  function railRepoHasMatch(repo) {
+    if (railMatches(repo.label || cwdLeaf(repo.cwd))) return true;
+    const rows = railRowsFor(repo);
+    return !!rows && rows.entries.some((s) => railMatches(s.displayName));
+  }
+
+  // ---------- the conversation header ----------
+  //
+  // Where the rail exists, the app-wide toolbar does not: the controls that
+  // belong to a PROJECT moved into the rail, and what is left belongs to the
+  // conversation you are reading, so it lives with the conversation. On a phone
+  // this same header also carries the drawer handle and New, which is why it is
+  // one component and not two.
+
+  /** The active session's record, wherever we happen to hold it. `railSelectedRows`
+   *  first: it is the only list guaranteed to be an unfiltered page of the repo
+   *  currently selected, where `state.sessions` follows the history search box. */
+  function activeSessionRecord() {
+    const id = state.activeSessionId;
+    if (!id) return null;
+    const lists = [state.railSelectedRows, state.sessions, state.pinnedSessions];
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      const hit = list.find((s) => s && s.id === id);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function renderSessionHead() {
+    if (!IS_REMOTE) return;
+    const head = document.getElementById("session-head");
+    if (!head) return;
+    const titleEl = document.getElementById("session-head-title");
+    const subEl = document.getElementById("session-head-sub");
+    const menuSlot = document.getElementById("session-head-actions");
+    if (!titleEl || !subEl || !menuSlot) return;
+
+    const record = activeSessionRecord();
+    // A brand-new conversation has no stored name until its first turn is
+    // summarised, so say what it is rather than showing an empty bar.
+    let name = record?.displayName || "New session";
+    if (record?.worktreeLabel && name.startsWith("(WT)")) name = name.slice(4).trim() || "Worktree";
+    titleEl.textContent = name;
+
+    const cwd = record?.cwd || state.selectedRepoCwd;
+    subEl.textContent = cwd ? railRepoLabelFor(cwd) : "";
+    subEl.hidden = !cwd;
+    head.title = cwd || "";
+
+    menuSlot.innerHTML = "";
+    if (record) {
+      const repo = state.repos.find((r) => sameCwd(r.cwd, cwd)) || { cwd, available: true };
+      const active = record.id === state.activeSessionId && sameCwd(cwd, state.activeRepoCwd);
+      menuSlot.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(record, repo, active)));
+    }
+
+    // The title IS the affordance for "the other conversations here" — a much
+    // bigger target than a 28px icon, and the place a thumb already goes.
+    const main = document.getElementById("session-head-main");
+    if (main && !main.dataset.railWired) {
+      main.dataset.railWired = "1";
+      main.onclick = (e) => { e.stopPropagation(); openHistoryPopover(); };
+    }
+    const add = document.getElementById("session-new");
+    if (add && !add.dataset.railWired) {
+      add.dataset.railWired = "1";
+      add.innerHTML = ICON.squarePen;
+      add.onclick = (e) => {
+        e.stopPropagation();
+        closePopovers();
+        vscode.postMessage({ type: "newSession" });
+      };
+    }
   }
 
   function renderRailRepo(repo) {
@@ -3028,43 +3347,65 @@
       head.appendChild(dot);
     }
 
+    // Pinned state rides with the name, ahead of the controls, so it survives
+    // the actions fading out when the pointer leaves the row.
+    if (repo.pinned) head.appendChild(railPinMark("Pinned project"));
+
     const actions = document.createElement("div");
     actions.className = "rail-repo-actions";
 
-    // "New session" only where the answer is unambiguous: the repo already
-    // selected. For any other repo it would have to switch first, and the
-    // browser page arms its own "open this repo's newest session" bridge on
-    // every outbound `selectRepo` — so a cross-repo New would race that bridge
-    // and the tab could land on an existing conversation instead of a new one.
-    // Whoever owns the switch correlation has to own that intent too; until it
-    // does, clicking the project name (which switches, then opens its newest)
-    // is the honest behaviour and this button stays where it cannot lie.
-    if (selected) {
-      const add = document.createElement("button");
-      add.type = "button";
-      add.className = "rail-action-btn";
-      add.innerHTML = ICON.plus;
-      add.title = "New session here";
-      add.disabled = !repo.available || repoSwitcherLocked();
-      add.onclick = (e) => {
-        e.stopPropagation();
-        if (!repo.available || repoSwitcherLocked()) return;
-        vscode.postMessage({ type: "newSession" });
-      };
-      actions.appendChild(add);
-    }
-
-    const pin = document.createElement("button");
-    pin.type = "button";
-    pin.className = "rail-action-btn pin" + (repo.pinned ? " active" : "");
-    pin.innerHTML = ICON.pin;
-    pin.title = repo.pinned ? "Unpin project" : "Pin project";
-    pin.disabled = repoSwitcherLocked();
-    pin.onclick = (e) => {
+    // New session in ANY project, selected or not. The host only ever creates in
+    // the repo it currently has selected, so for another one this is really
+    // "switch there, then start fresh" — a two-step intent the page has to own,
+    // because the browser client arms its own "open this repo's newest session"
+    // bridge on every outbound `selectRepo` and would otherwise land the tab on
+    // an existing conversation. `__grokRailNewIntent` tells that bridge which
+    // intent this particular switch carries. The title says so out loud: this
+    // button moves the whole tab, and that should never be a surprise.
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "rail-action-btn";
+    add.innerHTML = ICON.plus;
+    add.title = selected ? "New session here" : "Switch to this project and start a new session";
+    add.disabled = !repo.available || repoSwitcherLocked();
+    add.onclick = (e) => {
       e.stopPropagation();
-      vscode.postMessage({ type: "toggleRepoPin", cwd: repo.cwd, pinned: !repo.pinned });
+      if (!repo.available || repoSwitcherLocked()) return;
+      if (selected) { vscode.postMessage({ type: "newSession" }); return; }
+      window.__grokRailNewIntent = repo.cwd;
+      selectRailRepo(repo);
     };
-    actions.appendChild(pin);
+    actions.appendChild(add);
+
+    actions.appendChild(railMenuButton("Project actions", () => [
+      {
+        label: repo.pinned ? "Unpin project" : "Pin project",
+        icon: ICON.pin,
+        disabled: repoSwitcherLocked(),
+        onSelect: () => vscode.postMessage({ type: "toggleRepoPin", cwd: repo.cwd, pinned: !repo.pinned }),
+      },
+      null,
+      {
+        label: "Clear all history",
+        icon: ICON.trash,
+        danger: true,
+        disabled: !repo.available,
+        title: "Delete all sessions in this repository's history",
+        onSelect: () => {
+          const repoLabel = repo.label || cwdLeaf(repo.cwd);
+          uiConfirm({
+            title: `Clear history for “${repoLabel}”?`,
+            body: `Deletes every session for:\n${repo.cwd}\n\nThe current session is kept. This cannot be undone.`,
+            confirmLabel: "Delete All",
+            danger: true,
+          }).then((ok) => {
+            // `clearAllSessions` is repo-addressed, so this works on a project
+            // the host does not currently have selected — no switch needed.
+            if (ok) vscode.postMessage({ type: "clearAllSessions", cwd: repo.cwd });
+          });
+        },
+      },
+    ]));
 
     head.appendChild(actions);
     sec.appendChild(head);
@@ -3098,6 +3439,17 @@
       } else {
         body.appendChild(railNote("Loading…"));
       }
+      return body;
+    }
+
+    // A search answers itself: showing three of five matches behind a "Show 2
+    // more" would hide the very rows the query asked for. Matching by project
+    // name instead means the whole project matched, so its list stays as it was.
+    const q = railFilterText();
+    const nameMatched = !q || railMatches(repo.label || cwdLeaf(repo.cwd));
+    if (q && !nameMatched) {
+      const hits = rows.entries.filter((s) => railMatches(s.displayName)).slice(0, RAIL_EXPANDED);
+      for (const s of hits) body.appendChild(renderRailSessionRow(s, repo));
       return body;
     }
 
@@ -3205,40 +3557,86 @@
     }
 
     const isPinned = typeof s.pinnedAt === "number";
-    if (isPinned) row.classList.add("pinned");
-
-    // Capability, never a version: a host that has never sent `pinnedSessions`
-    // will silently drop `toggleSessionPin`, so offering the control there gives
-    // a button that does nothing — worse than not having one. The frame arrives
-    // in every remote snapshot, empty included, so a capable host always says so.
-    if (!state.pinnedSessionsKnown) {
-      row.onclick = railSessionOpener(s, repo, active);
-      return row;
+    if (isPinned) {
+      row.classList.add("pinned");
+      row.appendChild(railPinMark("Pinned conversation"));
     }
 
     const actions = document.createElement("div");
     actions.className = "rail-session-actions";
-    const pin = document.createElement("button");
-    pin.type = "button";
-    pin.className = "rail-action-btn pin" + (isPinned ? " active" : "");
-    pin.innerHTML = ICON.pin;
-    pin.title = isPinned ? "Unpin conversation" : "Pin conversation";
-    pin.setAttribute("aria-label", pin.title);
-    pin.onclick = (e) => {
-      e.stopPropagation();
-      vscode.postMessage({
-        type: "toggleSessionPin",
-        id: s.id,
-        // The row's own cwd, so the host files the pin under the repo this
-        // conversation actually lives in rather than the one we are viewing.
-        cwd: s.cwd || repo.cwd,
-        pinned: !isPinned,
-      });
-    };
-    actions.appendChild(pin);
+    actions.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(s, repo, active)));
     row.appendChild(actions);
     row.onclick = railSessionOpener(s, repo, active);
     return row;
+  }
+
+  /** Shared by a rail row and the conversation header, so the same session
+   *  offers the same actions wherever you reach it. */
+  function railSessionMenuItems(s, repo, active) {
+    const cwd = s.cwd || repo.cwd;
+    const isPinned = typeof s.pinnedAt === "number";
+    const items = [
+      {
+        label: "Rename",
+        icon: ICON.pencil,
+        onSelect: () => railRenameSession(s),
+      },
+    ];
+    // Capability, never a version: a host that has never sent `pinnedSessions`
+    // will silently drop `toggleSessionPin`, so offering the control there gives
+    // a control that does nothing — worse than not having one. The frame arrives
+    // in every remote snapshot, empty included, so a capable host always says so.
+    if (state.pinnedSessionsKnown) {
+      items.push({
+        label: isPinned ? "Unpin conversation" : "Pin conversation",
+        icon: ICON.pin,
+        onSelect: () => vscode.postMessage({
+          type: "toggleSessionPin",
+          id: s.id,
+          // The row's own cwd, so the host files the pin under the repo this
+          // conversation actually lives in rather than the one we are viewing.
+          cwd,
+          pinned: !isPinned,
+        }),
+      });
+    }
+    // No delete for the active session: it's the live conversation and the CLI
+    // re-persists it, so a delete wouldn't stick. Same rule the history popover
+    // has always applied — shown disabled here rather than omitted, so the menu
+    // doesn't change shape under the pointer.
+    items.push(null, {
+      label: "Delete",
+      icon: ICON.trash,
+      danger: true,
+      disabled: !!active,
+      title: active ? "The open session can't be deleted" : "Delete",
+      onSelect: () => {
+        uiConfirm({
+          title: s.displayName ? `Delete "${s.displayName}"?` : "Delete this session?",
+          body: "This cannot be undone.",
+          confirmLabel: "Delete",
+          danger: true,
+        }).then((ok) => {
+          if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName });
+        });
+      },
+    });
+    return items;
+  }
+
+  /** Rename from the rail. The history popover renames inline in its own row;
+   *  out here there is no row to hand over to, so ask for the name directly. */
+  function railRenameSession(s) {
+    uiPrompt({
+      title: "Rename session",
+      value: s.displayName || "",
+      placeholder: "Session name",
+      confirmLabel: "Rename",
+    }).then((name) => {
+      const next = (name || "").trim();
+      if (!next || next === s.displayName) return;
+      vscode.postMessage({ type: "renameSession", id: s.id, name: next });
+    });
   }
 
   /** Opening a rail row is the same act wherever the row is drawn, so both the
@@ -8666,6 +9064,10 @@
         // Skipped for a filtered/paged answer: those are the history popover's
         // search state, not the repo's newest sessions.
         if (offset === 0 && !(msg.query || "")) adoptRailRows(entries);
+        // A searched or paged answer skips adoptRailRows, but it can still be
+        // the frame that renames the open conversation — the header reads the
+        // active record, so refresh it either way.
+        else renderSessionHead();
         break;
       }
       case "pinnedSessions": {
