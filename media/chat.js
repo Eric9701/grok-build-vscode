@@ -2926,6 +2926,9 @@
       railEl = IS_REMOTE
         ? document.getElementById("rail-scroll") || document.getElementById("projects-rail")
         : null;
+      // Once, before anything reads the fold state — renderRail() resolves the
+      // mount before it renders a row, so this always lands first.
+      if (railEl) loadRailShape();
     }
     return railEl;
   }
@@ -3052,6 +3055,49 @@
     };
     btn.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); };
     return btn;
+  }
+
+  // ---------- remembered rail shape ----------
+  //
+  // Which projects are folded, and which have been expanded past their preview,
+  // are answers to "how do I like my sidebar", not facts about the session — so
+  // they outlive the tab. Kept in localStorage rather than the host: this is the
+  // BROWSER's view of a catalog it merely reads, and two tabs on two machines
+  // are entitled to different shapes. Keyed by device so a second device's rail
+  // does not inherit the first one's folds.
+  const RAIL_SHAPE_KEY = "grok.remote.railShape";
+
+  function railShapeKey() {
+    try {
+      return RAIL_SHAPE_KEY + ":" + (new URLSearchParams(location.search).get("device") || "default");
+    } catch (_) {
+      return RAIL_SHAPE_KEY + ":default";
+    }
+  }
+
+  function loadRailShape() {
+    if (!IS_REMOTE) return;
+    try {
+      const raw = localStorage.getItem(railShapeKey());
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      // Shapes only — anything else in there is a corrupted or foreign write and
+      // is better ignored than trusted into the render path.
+      if (saved && typeof saved === "object") {
+        if (saved.collapsed && typeof saved.collapsed === "object") state.railCollapsed = saved.collapsed;
+        if (saved.expanded && typeof saved.expanded === "object") state.railExpanded = saved.expanded;
+      }
+    } catch (_) { /* private mode, or a value we did not write */ }
+  }
+
+  function saveRailShape() {
+    if (!IS_REMOTE) return;
+    try {
+      localStorage.setItem(railShapeKey(), JSON.stringify({
+        collapsed: state.railCollapsed,
+        expanded: state.railExpanded,
+      }));
+    } catch (_) { /* private mode, or quota */ }
   }
 
   /** Pinned state as a mark, not a button. The pin is durable state and has to
@@ -3322,6 +3368,7 @@
       e.stopPropagation();
       if (collapsed) delete state.railCollapsed[key];
       else state.railCollapsed[key] = true;
+      saveRailShape();
       renderRail();
     };
     head.appendChild(twisty);
@@ -3478,6 +3525,7 @@
       more.onclick = (e) => {
         e.stopPropagation();
         state.railExpanded[key] = true;
+        saveRailShape();
         renderRail();
       };
       body.appendChild(more);
@@ -3489,6 +3537,7 @@
       less.onclick = (e) => {
         e.stopPropagation();
         delete state.railExpanded[key];
+        saveRailShape();
         renderRail();
       };
       body.appendChild(less);
