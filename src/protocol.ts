@@ -55,10 +55,15 @@ export interface PlanHistoryItem {
 export const HOST_CAPABILITIES = {
   uploadFile: true,
   remoteVoice: true,
+  // Whether `deleteSession` can take the conversation the requester is READING.
+  // Older hosts refuse it — the live CLI re-persisted the files the moment they
+  // went, so the delete did not stick — and a client that offers the control
+  // anyway is offering one that answers with a refusal. Capability, not version.
+  deleteActiveSession: true,
 } as const;
 
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean; remoteVoice: boolean } }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean; remoteVoice: boolean; deleteActiveSession?: boolean } }
   | { type: "planModeAvailability"; available: boolean; reason?: string }
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
@@ -285,6 +290,11 @@ export type WebviewMsg =
   | { type: "toggleSessionPin"; id: string; cwd?: string; pinned: boolean }
   | { type: "selectRepo"; cwd: string }
   | { type: "toggleRepoPin"; cwd: string; pinned: boolean }
+  // Where a project sits in the remote client's rail. Both answers are sent:
+  // `archived: false` means "hold this one in view", which is a different claim
+  // from never having said anything (see RepoArchiveChoice). Purely a remote
+  // affordance — the VS Code repo picker neither offers it nor reads it.
+  | { type: "setRepoArchived"; cwd: string; archived: boolean }
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
   // by cwd on disk). Omitted → host resolves from meta / workspace root.
   | { type: "resumeSession"; id: string; cwd?: string }
@@ -388,6 +398,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
+  setRepoArchived: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
   pasteImage: true, uploadFile: true, voiceStart: true,

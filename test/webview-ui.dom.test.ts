@@ -205,18 +205,54 @@ describe("session rows (regression: only the label was clickable)", () => {
     expect(doc.querySelector(".confirm-overlay")).toBeNull();
   });
 
-  it("hides the delete button for the active session, keeps it for others", () => {
+  // The active row used to carry no delete button at all, and for a real reason:
+  // the live CLI owns the conversation and re-persisted it the moment the files
+  // went, so the delete genuinely did not stick. The host disposes that process
+  // BEFORE touching the disk now, then starts a fresh conversation in the same
+  // project — so the control does something, and it is offered.
+  it("offers delete on the active session, warning that it is the open one", async () => {
     const h = bootWebview();
+    // The host says what it can do; every real snapshot carries this.
+    dispatch(h.window, {
+      type: "initialState", useCtrlEnter: false,
+      capabilities: { uploadFile: true, remoteVoice: true, deleteActiveSession: true },
+    });
     click(h.window, $(h.doc, "history-btn"));
     h.posted.length = 0;
     dispatch(h.window, { type: "sessions", entries, activeId: "s1" });
     const rows = h.doc.querySelectorAll(".history-row");
-    // s1 is active → no delete button (it's the live session; delete wouldn't stick).
-    expect(rows[0].querySelector(".history-action-danger")).toBeNull();
-    // s2 is not active → delete button present.
+    expect(rows[0].querySelector(".history-action-danger")).not.toBeNull();
     expect(rows[1].querySelector(".history-action-danger")).not.toBeNull();
-    // Rename stays available on the active row.
     expect(rows[0].querySelector(".history-action-btn")).not.toBeNull();
+
+    // Deleting what is on your screen is a bigger act than deleting a cold row,
+    // so the dialog says what happens rather than only "cannot be undone".
+    click(h.window, rows[0].querySelector(".history-action-danger") as HTMLElement);
+    const body = h.doc.querySelector(".confirm-overlay")?.textContent || "";
+    expect(body).toContain("conversation you have open");
+    expect(body).toContain("a new one will start");
+
+    click(h.window, h.doc.querySelector(".confirm-overlay .confirm-danger") as HTMLElement);
+    await Promise.resolve();
+    expect(h.posted.filter((p: any) => p.type === "deleteSession").map((p: any) => p.id)).toEqual(["s1"]);
+  });
+
+  // The web client is always as new as the deploy; the extension is whatever the
+  // user happens to have installed. An older host still refuses to delete a live
+  // conversation, so offering the control there hands back a refusal — the exact
+  // "renders a control the host can't answer" the compatibility contract forbids.
+  it("withholds delete on the active session from a host that cannot do it", () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "initialState", useCtrlEnter: false,
+      capabilities: { uploadFile: true, remoteVoice: true },
+    });
+    click(h.window, $(h.doc, "history-btn"));
+    dispatch(h.window, { type: "sessions", entries, activeId: "s1" });
+    const rows = h.doc.querySelectorAll(".history-row");
+    expect(rows[0].querySelector(".history-action-danger")).toBeNull();
+    // Every other row is unaffected — cold history was always deletable.
+    expect(rows[1].querySelector(".history-action-danger")).not.toBeNull();
   });
 
   it("rename button enters rename mode and does NOT resume", () => {

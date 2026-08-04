@@ -116,6 +116,7 @@ import { historyImagePreviews } from "./image-history";
 import {
   SessionListEntry,
   SessionMetaOverrides,
+  RepoArchives,
   RepoPins,
   carrySessionName,
   clearSessions,
@@ -175,6 +176,11 @@ import {
 
 const SESSION_META_KEY = "grok.sessionMeta";
 const REPO_PINS_KEY = "grok.repoPins";
+/** globalState key for the remote rail's Archived section. Stored on the host so
+ *  the choice follows you to a phone and survives a cleared browser — archiving
+ *  is curation of your projects, not a preference about one sidebar. Read by the
+ *  browser client only; the VS Code repo picker ignores it entirely. */
+const REPO_ARCHIVES_KEY = "grok.repoArchives";
 /** globalState key for the anonymous per-install telemetry GUID (survives updates). */
 const INSTALL_ID_KEY = "grok.installId";
 /** globalState key for the eye-off choice on the active-editor context chip.
@@ -2091,6 +2097,7 @@ See design doc for the full state machine diagram.`;
       fs: defaultFs,
       grokHome: resolveGrokHome(process.env),
       pins,
+      archives: this.context.globalState.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
       tmpDir: os.tmpdir(),
       // The primary workspace is already the extension's local execution scope;
       // keep it as the one trusted return target before its first catalog lands.
@@ -2285,6 +2292,23 @@ See design doc for the full state machine diagram.`;
     if (pinned) next[key] = { cwd: hit.cwd, pinnedAt: Date.now() };
     else delete next[key];
     await this.context.globalState.update(REPO_PINS_KEY, next);
+    this.postRepoCatalog();
+  }
+
+  /** Record where a project belongs in the remote rail. Both answers are stored,
+   *  including "not archived" — that one exists to hold a long-idle project in
+   *  view against the rail's own age rule, so forgetting it is not the same as
+   *  storing it (see RepoArchiveChoice). Nothing here changes what VS Code
+   *  shows; the catalog reports the choice and the browser client acts on it. */
+  private async setRepoArchived(cwd: string, archived: boolean): Promise<void> {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit) return;
+    const archives = this.context.globalState.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
+    const key = normalizeRepoPath(hit.cwd);
+    await this.context.globalState.update(REPO_ARCHIVES_KEY, {
+      ...archives,
+      [key]: { cwd: hit.cwd, at: Date.now(), archived },
+    });
     this.postRepoCatalog();
   }
 
@@ -4269,6 +4293,9 @@ See design doc for the full state machine diagram.`;
         if (origin === "remote" && clientId) this.selectRemoteRepo(clientId, msg.cwd);
         else this.selectRepo(msg.cwd);
         break;
+      case "setRepoArchived":
+        await this.setRepoArchived(msg.cwd, msg.archived);
+        break;
       case "toggleRepoPin":
         await this.toggleRepoPin(msg.cwd, msg.pinned);
         break;
@@ -4696,21 +4723,40 @@ See design doc for the full state machine diagram.`;
     return this.remoteClients.cwd(clientId);
   }
 
-  private remoteAuthorizedSessionCwd(
+  /** The catalog repo that owns a session cwd — the checkout itself, or the parent
+   *  of one of its worktrees. A rail row for a worktree session names the WORKTREE
+   *  as its cwd, because that is where its transcript lives, and a worktree is
+   *  deliberately not a catalog row (see sessionCwdsForRepo) — so scoping by
+   *  catalog alone refused every action on one. The catalog is still the whole
+   *  boundary: the parent has to be a repo this host discovered for itself. */
+  private repoOwningSessionCwd(cwd: string, overrides: SessionMetaOverrides): string | undefined {
+    return this.repoCatalog().find(
+      (r) => r.available && this.sessionCwdsForRepo(r.cwd, overrides).some((c) => pathsEqual(c, cwd)),
+    )?.cwd;
+  }
+
+  /** Where a remote's rename/delete may land, or why it may not.
+   *
+   *  "gone" is not a permission answer: the project IS in scope, the conversation
+   *  simply is not in it any more. That is exactly what a rail row left over from
+   *  a clear-all looks like, and answering it with "wrong repository" sent people
+   *  hunting a permissions bug that was really a stale list. */
+  private remoteSessionTarget(
     clientId: string,
     id: string,
     overrides: SessionMetaOverrides,
     requestedCwd?: string,
-  ): string | undefined {
+  ): { cwd: string; reason?: undefined } | { cwd?: undefined; reason: "scope" | "gone"; repoCwd?: string } {
     // A named repo the catalog does not know is a refusal, not a fallback to the
     // selected one — otherwise a bad cwd would quietly act somewhere else.
-    const selectedCwd = this.remoteRepoScope(clientId, requestedCwd);
-    if (!selectedCwd) return undefined;
+    const selectedCwd = this.remoteRepoScope(clientId, requestedCwd)
+      ?? (requestedCwd ? this.repoOwningSessionCwd(requestedCwd, overrides) : undefined);
+    if (!selectedCwd) return { reason: "scope" };
     const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
     const live = [...this.pool].find((session) => session.activeSessionId === id);
     if (live) {
       const cwd = this.sessionCwd(live);
-      if (sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)) return cwd;
+      if (sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)) return { cwd };
     }
 
     const candidates = [...new Set([
@@ -4721,17 +4767,35 @@ See design doc for the full state machine diagram.`;
       !!cwd && sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)
     ))];
     const grokHome = resolveGrokHome(process.env);
-    return candidates.find((cwd) =>
+    const found = candidates.find((cwd) =>
       indexSessions({ fs: defaultFs, grokHome, cwd })
         .some((entry) => entry.id === id)
     );
+    return found ? { cwd: found } : { reason: "gone", repoCwd: selectedCwd };
   }
 
-  private reportUnauthorizedSessionTarget(clientId: string, action: "rename" | "delete", id: string): void {
-    this.output.appendLine(`[remote] refused ${action}Session for ${id} (session is outside selected repo)`);
+  private reportUnauthorizedSessionTarget(
+    clientId: string,
+    action: "rename" | "delete",
+    id: string,
+    miss: { reason: "scope" | "gone"; repoCwd?: string },
+  ): void {
+    if (miss.reason === "gone") {
+      this.output.appendLine(`[remote] dropped ${action}Session for ${id} (no longer in ${miss.repoCwd})`);
+      // Refresh what the client is looking at rather than argue with it: the row
+      // it acted on is stale, so the honest repair is to make the row disappear.
+      this.postSessionsList();
+      this.refreshRemoteRepoPreview(clientId, miss.repoCwd);
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: "That conversation is no longer in this project. The list has been refreshed.",
+      });
+      return;
+    }
+    this.output.appendLine(`[remote] refused ${action}Session for ${id} (session is outside every known project)`);
     this.sendRemoteClient(clientId, {
       type: "error",
-      text: `Could not ${action} this conversation because it does not belong to this tab's selected repository.`,
+      text: `Could not ${action} this conversation because it does not belong to a project this computer knows about.`,
     });
   }
 
@@ -4743,13 +4807,14 @@ See design doc for the full state machine diagram.`;
     requestedCwd?: string,
   ): void {
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const authorizedCwd = origin === "remote" && clientId
-      ? this.remoteAuthorizedSessionCwd(clientId, id, overrides, requestedCwd)
+    const target = origin === "remote" && clientId
+      ? this.remoteSessionTarget(clientId, id, overrides, requestedCwd)
       : undefined;
-    if (origin === "remote" && clientId && !authorizedCwd) {
-      this.reportUnauthorizedSessionTarget(clientId, "rename", id);
+    if (target?.reason && clientId) {
+      this.reportUnauthorizedSessionTarget(clientId, "rename", id, target);
       return;
     }
+    const authorizedCwd = target?.cwd;
     const trimmed = (name || "").trim();
     const next: SessionMetaOverrides = { ...overrides };
     if (!trimmed) {
@@ -4776,10 +4841,20 @@ See design doc for the full state machine diagram.`;
    *  happened to refetch it. */
   private refreshRemoteRepoPreview(clientId?: string, cwd?: string): void {
     if (!clientId || !cwd) return;
-    if (pathsEqual(cwd, this.remoteClients.cwd(clientId))) return;
+    // Resolve to the PROJECT, not the session's own directory. A worktree
+    // conversation lives in a worktree, which is deliberately not a catalog row
+    // — so a preview addressed to it lands under a key no project matches, and
+    // the parent project quietly keeps showing the row that was just renamed or
+    // deleted. Every caller here passes a session cwd, so the resolution belongs
+    // at this seam rather than in each of them.
+    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const repoCwd = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))?.cwd
+      ?? this.repoOwningSessionCwd(cwd, overrides);
+    if (!repoCwd) return;
+    if (pathsEqual(repoCwd, this.remoteClients.cwd(clientId))) return;
     // The rail's expanded cap — matches what its own probe asks for, so a
     // refresh never returns fewer rows than the client already had.
-    this.sendRepoSessionsPreview(clientId, cwd, 20);
+    this.sendRepoSessionsPreview(clientId, repoCwd, 20);
   }
 
   // No native confirm here: the webview shows its own confirm dialog before
@@ -4844,21 +4919,34 @@ See design doc for the full state machine diagram.`;
     requestedCwd?: string,
   ): Promise<void> {
     const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const authorizedRemoteCwd = origin === "remote" && clientId
-      ? this.remoteAuthorizedSessionCwd(clientId, id, overridesNow, requestedCwd)
+    const target = origin === "remote" && clientId
+      ? this.remoteSessionTarget(clientId, id, overridesNow, requestedCwd)
       : undefined;
-    if (origin === "remote" && clientId && !authorizedRemoteCwd) {
-      this.reportUnauthorizedSessionTarget(clientId, "delete", id);
+    if (target?.reason && clientId) {
+      this.reportUnauthorizedSessionTarget(clientId, "delete", id, target);
       return;
     }
+    const authorizedRemoteCwd = target?.cwd;
     if (this.isSessionLoadReserved(id)) {
       this.output.appendLine(`[sessions] refused delete of reserved session ${id}`);
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
-    const liveForCwd = [...this.pool].find((s) => s.activeSessionId === id);
-    if (liveForCwd && this.sessionHasLiveOwner(liveForCwd)) {
-      this.output.appendLine(`[sessions] refused delete of owned live session ${id}`);
+    const live = [...this.pool].find((s) => s.activeSessionId === id);
+    // Deleting the conversation you are READING is allowed. The guard exists to
+    // stop one surface pulling a conversation out from under another, not to
+    // protect you from your own delete — and having the same conversation open
+    // at the desk AND in the browser is an ordinary way to work, so either side
+    // may delete it and every side lands somewhere sensible. What stays refused
+    // is deleting a live conversation you are NOT the one looking at.
+    const watchers = live ? this.remoteClients.clientsForActiveValue(live) : [];
+    const requesterWatches = !!live && (
+      origin === "remote" && clientId
+        ? watchers.includes(clientId)
+        : live === this.focused
+    );
+    if (live && this.sessionHasLiveOwner(live) && !requesterWatches) {
+      this.output.appendLine(`[sessions] refused delete of live session ${id} owned elsewhere`);
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
@@ -4867,10 +4955,18 @@ See design doc for the full state machine diagram.`;
     // some remote client happens to have selected.
     const cwd =
       authorizedRemoteCwd ||
-      liveForCwd?.cwd ||
+      live?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
       this.historyCwdFor(origin);
+    // Tear the CLI down BEFORE touching the disk, not after. The live process
+    // owns this conversation and re-persists it: delete the directory first and
+    // it simply comes back, which is why deleting the open conversation used to
+    // be refused outright rather than merely awkward. `disposeSession` ends the
+    // turn, drops the client and disposes it, so by the time the files go there
+    // is nothing left that could write them again.
+    const wasFocused = !!live && live === this.focused;
+    if (live) this.disposeSession(live);
     try {
       deleteSessionDir({
         fs: defaultFs,
@@ -4890,17 +4986,16 @@ See design doc for the full state machine diagram.`;
       delete next[id];
       void this.context.globalState.update(SESSION_META_KEY, next);
     }
-    // Tear down the live process if this session is in the pool (focused or
-    // backgrounded), then re-home focus if we just killed the visible one.
-    const live = [...this.pool].find((s) => s.activeSessionId === id);
-    if (live) {
-      const wasFocused = live === this.focused;
-      this.disposeSession(live);
-      if (wasFocused) {
-        this.focused = this.newLocalSession();
-        await this.startSession();
-      }
+    // Everyone who was reading it needs somewhere to be. `newRemoteSession`
+    // starts in that tab's OWN repo, which is the repo of the conversation just
+    // deleted — you were sitting in it. The catalog goes out once at the end
+    // rather than once per watcher.
+    if (wasFocused) {
+      this.focused = this.newLocalSession();
+      await this.startSession();
     }
+    for (const watcher of watchers) await this.newRemoteSession(watcher, false);
+    if (watchers.length) this.postRepoCatalog();
     this.postSessionsList();
     this.refreshRemoteRepoPreview(clientId, authorizedRemoteCwd);
   }
@@ -4952,13 +5047,20 @@ See design doc for the full state machine diagram.`;
       (entry) => protectedIds.has(entry.id) && entry.id !== requesterId,
     );
     const clearableCount = repoEntries.filter((entry) => !protectedIds.has(entry.id)).length;
+    // A notice is a line in the transcript, and a transcript belongs to ONE
+    // project — so a remark about a project you are not talking in lands in the
+    // wrong conversation. Where the rail is the thing that asked, the refreshed
+    // rail is the answer: the project shows itself empty, in its own place.
+    const clientCwd = origin === "remote" && clientId ? this.remoteClients.cwd(clientId) : undefined;
+    const inThisConversation = origin !== "remote" || (!!clientCwd && pathsEqual(cwd, clientCwd));
     if (clearableCount === 0) {
       if (keptForAnotherOwner) this.reportProtectedSession(origin, clientId, "clear");
-      else this.reportRequester(
+      else if (inThisConversation) this.reportRequester(
         origin === "remote" && clientId ? this.captureRemoteRequester(clientId) : undefined,
         "info",
         "No history to clear.",
       );
+      this.refreshRemoteRepoPreview(clientId, cwd);
       return;
     }
     // Confirm lives in the webview (custom dialog) — see deleteSession.
@@ -5010,6 +5112,11 @@ See design doc for the full state machine diagram.`;
       await this.startSession();
     }
     this.postSessionsList();
+    // `postSessionsList` only refreshes the project the client has SELECTED, so
+    // clearing any other one left the rail showing every row it had just deleted
+    // — no confirmation, and a later delete on one of those ghosts failed with a
+    // permissions error that was really "this is not there any more".
+    this.refreshRemoteRepoPreview(clientId, cwd);
     if (keptForAnotherOwner) this.reportProtectedSession(origin, clientId, "clear");
   }
 

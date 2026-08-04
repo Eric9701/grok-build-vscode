@@ -208,6 +208,10 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return isRemoteCwd(value.cwd) && typeof value.pinned === "boolean"
         ? msg as WebviewMsg
         : null;
+    case "setRepoArchived":
+      return isRemoteCwd(value.cwd) && typeof value.archived === "boolean"
+        ? msg as WebviewMsg
+        : null;
     // Shape-checked here like its repo-level sibling rather than riding the
     // `default` passthrough: the host validates too, but a malformed message
     // that reaches the host has already crossed the boundary this parser exists

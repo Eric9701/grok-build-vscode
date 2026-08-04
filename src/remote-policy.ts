@@ -200,6 +200,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   listRepoSessions: "view",
   selectRepo: "view",
   toggleRepoPin: "full",
+  // Rearranges the remote's own sidebar and touches nothing on disk beyond a
+  // globalState note. Nothing here can reach the workspace.
+  setRepoArchived: "full",
   // Writes host state (globalState), same as the repo pin — classified with it
   // rather than as a view op, even though nothing is destroyed.
   toggleSessionPin: "full",
@@ -329,6 +332,7 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
   switch (msg.type) {
     case "selectRepo":
     case "toggleRepoPin":
+    case "setRepoArchived":
     case "clearAllSessions":
     case "listRepoSessions":
       return isKnownCwd(msg.cwd);

@@ -17,7 +17,13 @@ const sorted = (a: readonly string[]) => [...a].sort();
 
 describe("host <-> webview message contract (src/protocol.ts is the source of truth)", () => {
   it("advertises remote voice as a host protocol capability", () => {
-    expect(HOST_CAPABILITIES).toEqual({ uploadFile: true, remoteVoice: true });
+    expect(HOST_CAPABILITIES).toEqual({
+      uploadFile: true,
+      remoteVoice: true,
+      // Older hosts refuse to delete the conversation the requester is reading,
+      // so the client has to be told rather than assume. Capability, not version.
+      deleteActiveSession: true,
+    });
   });
 
   it("keeps read-aloud defaults explicit", () => {

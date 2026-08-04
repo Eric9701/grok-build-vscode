@@ -534,10 +534,16 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       fs.existsSync(storedSessionDirFor(workspaceRoot, foreignId)),
       "a cached session outside the selected repo must not be deleted",
     );
+    // The refusal reads "not in this project" rather than naming a repository:
+    // from inside the attacker's scope the two indistinguishable cases are "it
+    // was never here" and "it is not here any more", and the second is the one a
+    // real user hits — a rail row left over from a Clear all. Telling them their
+    // tab had the wrong repository selected sent people hunting a permissions
+    // bug that was really a stale list.
     const refusals = posts.filter((p) =>
       p.clientIds?.includes("repo-b-attacker") &&
       p.msg?.type === "error" &&
-      /does not belong to this tab's selected repository/.test(p.msg.text)
+      /no longer in this project/.test(p.msg.text)
     );
     assert.strictEqual(refusals.length, 2, JSON.stringify(posts));
 
@@ -1121,7 +1127,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.ok(posts.some((post) =>
       post.clientIds?.includes(clientId) &&
       post.msg?.type === "error" &&
-      /does not belong to this tab's selected repository/.test(post.msg.text)
+      /no longer in this project/.test(post.msg.text)
     ), JSON.stringify(posts));
 
     hooks.fromRemote({ type: "deleteSession", id: ownId, name: "own" }, clientId);

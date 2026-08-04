@@ -102,6 +102,21 @@ export interface RepoPin {
 }
 export type RepoPins = Record<string, RepoPin>;
 
+/** The user's own last word on where a project belongs in the remote client's
+ *  rail, and when they said it. A choice is only in force until the project is
+ *  worked in again: any conversation newer than `at` overrides it, which is what
+ *  makes "using an archived project brings it back" need no bookkeeping.
+ *
+ *  `archived: false` is a real, stored answer — "keep showing me this one" —
+ *  not the absence of one. Without it, unarchiving a long-idle project would be
+ *  undone by the age rule on the very next render. */
+export interface RepoArchiveChoice {
+  cwd: string;
+  at: number;
+  archived: boolean;
+}
+export type RepoArchives = Record<string, RepoArchiveChoice>;
+
 export interface RepoListEntry {
   cwd: string;
   label: string;
@@ -110,6 +125,13 @@ export interface RepoListEntry {
   pinnedAt?: number;
   updatedAt: number;
   worktreeLabel?: string;
+  /** The stored choice above, flattened for the wire. Always present — a host
+   *  that knows about archiving says so on every row, which is how the browser
+   *  client tells "nothing archived" from "this host cannot archive" without
+   *  asking a version number. Ordering here deliberately ignores both: the VS
+   *  Code repo picker reads this same list and must not change. */
+  archived: boolean;
+  archivedAt: number;
 }
 
 /** Move a renamed session's `customName` from one id to another and drop the source entry. Used when
@@ -248,6 +270,9 @@ export interface DiscoverReposDeps {
   fs: FsLike;
   grokHome: string;
   pins: RepoPins;
+  /** Remote-rail archive choices. Reported on every row and acted on by nobody
+   *  here — see RepoListEntry.archived. */
+  archives?: RepoArchives;
   tmpDir: string;
   platform?: NodeJS.Platform;
   /** Host-known roots that remain selectable before Grok creates a catalog.
@@ -279,6 +304,10 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
   }
 
   const byKey = new Map<string, Omit<RepoListEntry, "label">>();
+  const archiveOf = (key: string) => {
+    const choice = deps.archives?.[key];
+    return { archived: !!choice?.archived, archivedAt: choice?.at ?? 0 };
+  };
   for (const name of encoded) {
     let cwd = "";
     try { cwd = decodeURIComponent(name).trim(); } catch { continue; }
@@ -303,6 +332,7 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
       pinnedAt: pin?.pinnedAt,
       updatedAt,
       worktreeLabel: deps.worktreeLabels?.get(key),
+      ...archiveOf(key),
     });
   }
 
@@ -321,6 +351,7 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
       pinnedAt: pin?.pinnedAt,
       updatedAt: 0,
       worktreeLabel: deps.worktreeLabels?.get(key),
+      ...archiveOf(key),
     });
   }
 
@@ -343,6 +374,7 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
       pinnedAt: pin.pinnedAt,
       updatedAt: 0,
       worktreeLabel: deps.worktreeLabels?.get(key),
+      ...archiveOf(key),
     });
   }
 

@@ -5,6 +5,7 @@ import {
   normalizeRepoPath,
   repoLabels,
   type FsLike,
+  type RepoArchives,
   type RepoPins,
 } from "../src/sessions";
 import { worktreeCwdsForRepo } from "../src/worktree";
@@ -90,6 +91,32 @@ describe("repo switcher discovery", () => {
       tmpDir: tmp,
       worktreeLabels: labels,
     })).toEqual([]);
+  });
+
+  // Archiving is a REMOTE affordance. The catalog reports the stored choice on
+  // every row so the browser rail can act on it, and does nothing else with it:
+  // this same list is what the VS Code repo picker renders, and that must not
+  // move. Reporting it unconditionally is also the capability signal — a host
+  // that knows about archiving says so even when nothing is archived, which is
+  // the only way the client can tell that from an older host's silence.
+  it("reports archive choices without letting them reorder the picker", () => {
+    const kept = path.join(path.sep, "work", "kept");
+    const put = path.join(path.sep, "work", "put-away");
+    const fs = fakeFs({
+      [root]: { dir: true },
+      [path.join(root, encodeURIComponent(kept))]: { dir: true, mtime: 100 },
+      [path.join(root, encodeURIComponent(put))]: { dir: true, mtime: 200 },
+      [kept]: { dir: true },
+      [put]: { dir: true },
+    });
+    const archives: RepoArchives = {
+      [normalizeRepoPath(put)]: { cwd: put, at: 4242, archived: true },
+    };
+    const repos = discoverRepos({ fs, grokHome, pins: {}, archives, tmpDir: tmp });
+    // Recency order, exactly as without archives: the archived one is still first.
+    expect(repos.map((r) => r.cwd)).toEqual([put, kept]);
+    expect(repos[0]).toMatchObject({ archived: true, archivedAt: 4242 });
+    expect(repos[1]).toMatchObject({ archived: false, archivedAt: 0 });
   });
 
   it("keeps a pinned missing checkout visible and sorts pins above recency", () => {

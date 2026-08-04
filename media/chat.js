@@ -400,8 +400,15 @@
     // Latched when the probe goes unanswered past its deadline — the only way to
     // learn that a host predates the frame, since silence is all it can offer.
     repoPreviewsUnsupported: false,
+    // What the connected host says it can do (initialState.capabilities). Empty
+    // until it says, so a control that needs one is withheld rather than offered
+    // and then refused.
+    hostCaps: {},
     railCollapsed: {},
     railExpanded: {},
+    // Whether the Archived section is open. Closed by default and remembered
+    // per device, like the project folds.
+    railArchiveOpen: false,
     // True between a catalog naming a new selected repo and the session list for
     // that repo arriving — the window in which `state.sessions` still describes
     // the repo we just left.
@@ -409,6 +416,10 @@
     // The selected repo's newest sessions AS THE RAIL SEES THEM — fed only by
     // unfiltered first pages, so an open history search never reshapes the rail.
     railSelectedRows: [],
+    // Whether that list has ever arrived. An empty holder is otherwise
+    // indistinguishable from a project that genuinely has no conversations, and
+    // the two answer "when was this last worked in" very differently.
+    railSelectedRowsKnown: false,
     activeSessionId: null,
     // Dashboard dot per grok-session id (id → "working"|"needs-you"|"unread"|
     // "error"|"none"). The host computes the value (live status + persisted unread
@@ -607,6 +618,8 @@
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
     folder: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>`,
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z"/></svg>`,
+    archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>`,
+    archiveRestore: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h4"/><path d="M20 8v11a2 2 0 0 1-2 2h-4"/><path d="m9 15 3-3 3 3"/><path d="M12 12v9"/></svg>`,
     mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
     cornerDownRight: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>`,
     gitBranch: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
@@ -2845,23 +2858,26 @@
         };
       }
       actions.appendChild(renameBtn);
-      // No delete for the active session: it's the live conversation and the CLI
-      // re-persists it, so a delete wouldn't stick. Rename is still fine.
-      if (!active) {
-        const delBtn = document.createElement("button");
-        delBtn.className = "history-action-btn history-action-danger";
-        delBtn.innerHTML = ICON.trash;
-        delBtn.title = "Delete";
-        delBtn.onclick = (e) => {
-          e.stopPropagation();
-          uiConfirm({
-            title: s.displayName ? `Delete "${s.displayName}"?` : "Delete this session?",
-            body: "This cannot be undone.",
-            confirmLabel: "Delete",
-            danger: true,
-          }).then((ok) => { if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName }); });
-        };
-        actions.appendChild(delBtn);
+      // The open conversation is deletable here too, where the host can do it:
+      // it disposes the CLI before touching the disk — which is what used to
+      // make the delete "not stick" — and then starts a fresh conversation in
+      // the same project. Against a host that cannot, the button stays away
+      // rather than posting a message that comes back refused.
+      if (!active || canDeleteActiveSession()) {
+      const delBtn = document.createElement("button");
+      delBtn.className = "history-action-btn history-action-danger";
+      delBtn.innerHTML = ICON.trash;
+      delBtn.title = "Delete";
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        uiConfirm({
+          title: s.displayName ? `Delete "${s.displayName}"?` : "Delete this session?",
+          body: deleteSessionWarning(active),
+          confirmLabel: "Delete",
+          danger: true,
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName }); });
+      };
+      actions.appendChild(delBtn);
       }
       row.appendChild(actions);
 
@@ -2877,8 +2893,9 @@
     state.sessionHasMore = false;
     renderHistoryList();
     // Where the rail exists the app-wide bar is gone, so `historyBtn` has no box
-    // to hang a dropdown off — the conversation title is the visible trigger and
-    // therefore the anchor. The browser page reparents the popover to match.
+    // to hang a dropdown off — the conversation header carries its own History
+    // icon and that is the anchor. The browser page reparents the popover to
+    // match.
     positionDropdownPopover(historyPopover, railHistoryAnchor() || historyBtn);
     historyPopover.hidden = false;
     requestSessions(0);
@@ -2886,7 +2903,7 @@
 
   function railHistoryAnchor() {
     if (!IS_REMOTE || !document.body.classList.contains("has-rail")) return null;
-    return document.getElementById("session-head-main");
+    return document.getElementById("session-history") || document.getElementById("session-head-main");
   }
 
   // ---------- projects rail ----------
@@ -2906,6 +2923,13 @@
 
   const RAIL_PREVIEW = 3;      // rows per repo before "Show all"
   const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
+
+  // A project nobody has touched in a month is not one you are choosing between
+  // today, so it drops to Archived on its own — the list stays a list of what you
+  // are working on without anyone having to tidy it.
+  const RAIL_ARCHIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+  // …but never so far that Projects empties out. See railSections.
+  const RAIL_ALWAYS_VISIBLE = 3;
 
   // Generous: the host answers by scanning the session store on disk, and a slow
   // first read must not be mistaken for an extension that cannot answer at all.
@@ -3086,6 +3110,9 @@
       if (saved && typeof saved === "object") {
         if (saved.collapsed && typeof saved.collapsed === "object") state.railCollapsed = saved.collapsed;
         if (saved.expanded && typeof saved.expanded === "object") state.railExpanded = saved.expanded;
+        // Whether Archived is open is the same kind of answer, so it keeps the
+        // same company. Default closed: the section exists to be out of the way.
+        if (saved.archiveOpen === true) state.railArchiveOpen = true;
       }
     } catch (_) { /* private mode, or a value we did not write */ }
   }
@@ -3096,18 +3123,140 @@
       localStorage.setItem(railShapeKey(), JSON.stringify({
         collapsed: state.railCollapsed,
         expanded: state.railExpanded,
+        archiveOpen: !!state.railArchiveOpen,
       }));
     } catch (_) { /* private mode, or quota */ }
   }
 
 
-  /** Repos in rail order: most recently worked in, first. The rail deliberately
-   *  ignores repo pins, which the VS Code repo picker still offers — a pin only
-   *  earns its complexity where recency is a poor answer, and for projects it
-   *  never is: the one you touched last is the one you want. Conversations are
-   *  different, and keep their pins. */
+  /** Repos in rail order: the one holding the most recent CONVERSATION, first.
+   *  The rail deliberately ignores repo pins, which the VS Code repo picker still
+   *  offers — a pin only earns its complexity where recency is a poor answer, and
+   *  for projects it never is: the one you touched last is the one you want.
+   *  Conversations are different, and keep their pins. */
   function railRepos() {
-    return state.repos.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return state.repos.slice().sort((a, b) =>
+      // Ties break on the NAME, never on the catalog's own stamp: that stamp is
+      // the session directory's mtime, which clearing a project's history
+      // touches — so using it here would put the just-emptied project above its
+      // equally-empty neighbours, which is the bug this ordering exists to fix,
+      // in miniature.
+      railRepoActivity(b) - railRepoActivity(a) ||
+      String(a.label || a.cwd || "").localeCompare(String(b.label || b.cwd || "")));
+  }
+
+  /** When this project was last worked in, read from its conversations.
+   *
+   *  Deliberately NOT the catalog's own `updatedAt`, which is the mtime of the
+   *  project's session DIRECTORY: emptying a project writes to that directory, so
+   *  clearing a project's history shot it straight to the top of the rail — the
+   *  one project that demonstrably had no recent activity, presented as the most
+   *  recent. Last activity means the last conversation, and a project with none
+   *  has none. Falls back to the catalog stamp only while the rows are still
+   *  loading, where a settling guess beats an arbitrary order. */
+  /** Projects split into the two sections the rail shows them in.
+   *
+   *  Archiving is derived, never a stored section: one timestamped choice per
+   *  project plus an age rule, both read against the project's newest
+   *  conversation. That is what makes "working in an archived project brings it
+   *  back" need no bookkeeping at all — activity newer than the choice simply
+   *  outranks it, and there is no flag left behind to go stale. */
+  function railSections() {
+    const ordered = railRepos();
+    const now = Date.now();
+    // The floor, and it is a REQUIREMENT rather than a rounding error: however
+    // quiet things have been, the newest few projects stay in view. Coming back
+    // from three weeks away would otherwise archive every project at once and
+    // leave a rail that reads as broken. So yes, three projects can sit in
+    // Projects with nothing recent in them — deliberately. It holds back the AGE
+    // rule only; an explicit Archive still takes effect immediately, or the
+    // control would silently do nothing on the projects you use most.
+    const floorKeys = new Set(
+      ordered
+        .filter((r) => !sameCwd(r.cwd, state.selectedRepoCwd))
+        .slice(0, RAIL_ALWAYS_VISIBLE)
+        .map((r) => cwdKey(r.cwd)),
+    );
+    const active = [];
+    const archived = [];
+    for (const repo of ordered) (railRepoArchived(repo, floorKeys, now) ? archived : active).push(repo);
+    return { active, archived };
+  }
+
+  function railRepoArchived(repo, floorKeys, now) {
+    // Never the project you are reading. Archiving it is still recorded — it
+    // drops out of sight the moment you work somewhere else — but a rail that
+    // files the open conversation under "Archived" is describing the screen
+    // wrongly.
+    if (sameCwd(repo.cwd, state.selectedRepoCwd)) return false;
+    const known = railKnownRows(repo);
+    const at = railRepoActivity(repo);
+    // Your own last word, in force until the project is worked in again — and
+    // without the project's own rows there is nothing that could have overruled
+    // it, so it stands as given rather than being tested against a guess.
+    if (repo.archivedAt > 0 && (!known || repo.archivedAt >= at)) return !!repo.archived;
+    // The age rule NEVER runs on a guess. Without the project's conversations we
+    // do not know when it was last worked in: `repo.updatedAt` is the session
+    // DIRECTORY's mtime, and that does not move when you continue an existing
+    // conversation — only when one is added or removed. Against an extension too
+    // old to list another project's sessions that stamp is all there is, and
+    // trusting it files a project you use every day under Archived. Better to
+    // leave every project in view than to hide the wrong one silently.
+    if (!known) return false;
+    if (floorKeys.has(cwdKey(repo.cwd))) return false;
+    // No conversations at all — nothing to have been recent.
+    return at > 0 ? now - at > RAIL_ARCHIVE_AFTER_MS : true;
+  }
+
+  /** Whether the live conversation is one of THIS project's.
+   *
+   *  `activeRepoCwd` is the live session's own cwd, and for a worktree session
+   *  that is the worktree — a directory that is deliberately not a catalog row.
+   *  So the parent project has to recognise its own conversation by the rows it
+   *  actually draws, or the project holding the conversation you are reading
+   *  claims to hold nothing. */
+  function railRepoOwnsActive(repo, row) {
+    if (!state.activeSessionId) return false;
+    if (sameCwd(repo.cwd, state.activeRepoCwd)) return true;
+    if (row) return sameCwd(row.cwd, state.activeRepoCwd);
+    const rows = railRowsFor(repo);
+    return !!rows && rows.entries.some(
+      (s) => s.id === state.activeSessionId && sameCwd(s.cwd, state.activeRepoCwd),
+    );
+  }
+
+  /** Whether the host can record an archive choice. `archived` rides on every
+   *  catalog row from a host that knows about it, empty or not, so its presence
+   *  is the capability — a version number would be the wrong question, and an
+   *  absent field cannot be told from "nothing archived yet". */
+  function railArchiveSupported() {
+    return state.repos.some((r) => typeof r.archived === "boolean");
+  }
+
+  /** Rows we can draw conclusions FROM, as opposed to rows we merely have none
+   *  of yet. The selected project's holder starts empty and stays empty until
+   *  its first list arrives, so an empty one proves nothing about the project —
+   *  and every question the rail asks of it ("when was this last worked in",
+   *  "is there anything here to clear") gets the wrong answer from that. One
+   *  gate, because two of them drifted apart the first time. */
+  function railKnownRows(repo) {
+    const rows = railRowsFor(repo);
+    if (!rows) return null;
+    if (!rows.entries.length && rows.entries === state.railSelectedRows && !state.railSelectedRowsKnown) {
+      return null;
+    }
+    return rows;
+  }
+
+  function railRepoActivity(repo) {
+    const rows = railKnownRows(repo);
+    if (!rows) return repo.updatedAt || 0;
+    let newest = 0;
+    for (const s of rows.entries) {
+      const at = Number(s.updatedAt) || 0;
+      if (at > newest) newest = at;
+    }
+    return newest;
   }
 
   /** Preview rows for a repo. The SELECTED repo reads the live `sessions` list
@@ -3219,7 +3368,8 @@
     // shows all its rows) or by holding a matching conversation (then it shows
     // only those). Projects that do neither are dropped rather than left as empty
     // headings — a filtered list that still lists everything is not a filter.
-    const repos = railRepos().filter((repo) => !q || railRepoHasMatch(repo));
+    const sections = railSections();
+    const repos = sections.active.filter((repo) => !q || railRepoHasMatch(repo));
     if (repos.length) {
       const head = document.createElement("div");
       head.className = "rail-head";
@@ -3230,12 +3380,61 @@
       list.className = "rail-list";
       root.appendChild(list);
 
-      for (const repo of repos) list.appendChild(renderRailRepo(repo));
+      for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
+      shownAnything = true;
+    }
+
+    // Archived: everything you put away, plus everything that went quiet for a
+    // month. Folded by default — the whole point is that it is out of the way —
+    // but a search reaches inside, because a query answered with "No matches."
+    // while the project sits collapsed two inches below is simply wrong.
+    const archived = sections.archived.filter((repo) => !q || railRepoHasMatch(repo));
+    if (archived.length) {
+      const open = q ? true : !!state.railArchiveOpen;
+      root.appendChild(railArchiveHead(archived.length, open, !!q));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list";
+        for (const repo of archived) list.appendChild(renderRailRepo(repo, true));
+        root.appendChild(list);
+      }
       shownAnything = true;
     }
 
     if (!shownAnything) root.appendChild(railNote(q ? "No matches." : "No projects yet"));
     renderSessionHead();
+  }
+
+  /** The Archived heading, which is also its own disclosure control. A count
+   *  rather than a bare label: folded away, the number is the only thing saying
+   *  whether there is anything down there worth opening. */
+  function railArchiveHead(count, open, forcedOpenBySearch) {
+    const head = document.createElement("div");
+    head.className = "rail-head rail-head-fold";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-head-btn";
+    btn.setAttribute("aria-expanded", String(open));
+    btn.innerHTML =
+      `<span class="rail-head-twisty">${open ? ICON.chevronDown : ICON.chevronRight}</span>` +
+      `<span class="rail-head-title">Archived</span>` +
+      `<span class="rail-head-count"></span>`;
+    btn.querySelector(".rail-head-count").textContent = String(count);
+    // While a search is holding it open, the button would otherwise appear to do
+    // nothing — the next render forces it back open. Say so instead.
+    btn.disabled = forcedOpenBySearch;
+    btn.title = forcedOpenBySearch
+      ? "Open while your search matches an archived project"
+      : (open ? "Hide archived projects" : "Show archived projects");
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if (state.railArchiveOpen) delete state.railArchiveOpen;
+      else state.railArchiveOpen = true;
+      saveRailShape();
+      renderRail();
+    };
+    head.appendChild(btn);
+    return head;
   }
 
   /** The catalog's label for a cwd — repos that share a leaf name are only
@@ -3303,12 +3502,15 @@
       menuSlot.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(record, repo, active)));
     }
 
-    // The title IS the affordance for "the other conversations here" — a much
-    // bigger target than a 28px icon, and the place a thumb already goes.
-    const main = document.getElementById("session-head-main");
-    if (main && !main.dataset.railWired) {
-      main.dataset.railWired = "1";
-      main.onclick = (e) => { e.stopPropagation(); openHistoryPopover(); };
+    // The title is a label. It says where you are; it does not also secretly open
+    // something. History and New are their own icons, in the order the VS Code
+    // top bar has always used them — the same two controls in the same two
+    // places, so the browser is not a second thing to learn.
+    const history = document.getElementById("session-history");
+    if (history && !history.dataset.railWired) {
+      history.dataset.railWired = "1";
+      history.innerHTML = ICON.clock;
+      history.onclick = (e) => { e.stopPropagation(); openHistoryPopover(); };
     }
     const add = document.getElementById("session-new");
     if (add && !add.dataset.railWired) {
@@ -3322,10 +3524,17 @@
     }
   }
 
-  function renderRailRepo(repo) {
+  function renderRailRepo(repo, inArchive) {
     const key = cwdKey(repo.cwd);
     const selected = sameCwd(repo.cwd, state.selectedRepoCwd);
-    const collapsed = !!state.railCollapsed[key];
+    // The project holding the live conversation stays open. A fold is a
+    // preference you set at some earlier moment, and the one thing it must never
+    // do is hide where you are NOW — which is exactly what happened when you
+    // folded a project and later opened one of its conversations from elsewhere.
+    // Only in Projects: down in Archived the section is already closed, so
+    // holding one project open inside it would be noise.
+    const holdsLive = !inArchive && railRepoOwnsActive(repo);
+    const collapsed = !holdsLive && !!state.railCollapsed[key];
 
     // No marker for the selected or the live project. The conversation you are
     // reading is highlighted where it sits, which says which project you are in
@@ -3345,10 +3554,14 @@
     twisty.type = "button";
     twisty.className = "rail-twisty";
     twisty.innerHTML = collapsed ? ICON.chevronRight : ICON.chevronDown;
-    twisty.title = collapsed ? "Expand" : "Collapse";
+    twisty.disabled = holdsLive;
+    twisty.title = holdsLive
+      ? "The open conversation is in this project"
+      : (collapsed ? "Expand" : "Collapse");
     twisty.setAttribute("aria-expanded", String(!collapsed));
     twisty.onclick = (e) => {
       e.stopPropagation();
+      if (holdsLive) return;
       if (collapsed) delete state.railCollapsed[key];
       else state.railCollapsed[key] = true;
       saveRailShape();
@@ -3401,13 +3614,51 @@
     // menu carries only the destructive act, which is precisely what a menu is
     // for. (The VS Code repo picker keeps its own repo pins; the rail ignores
     // them.)
+    //
+    // A project we have loaded and found empty offers nothing to clear, so the
+    // item says so on its face instead of taking the click and answering with a
+    // notice in whatever conversation happens to be open. Only a LOADED preview
+    // counts: "no rows yet" is not "no rows".
+    const loaded = railKnownRows(repo);
+    const knownEmpty = !!loaded && loaded.entries.length === 0;
+    // Clearing a project the host has NOT selected is a repo-addressed act, and
+    // an extension that predates that simply drops the message — no error, no
+    // deletion, nothing. A control that fails in silence is worse than one that
+    // isn't offered, so it waits for proof: a host that has answered
+    // `listRepoSessions` is a host that reads the cwd on these messages, and one
+    // that has not cannot draw another project's rows either. The SELECTED
+    // project is never gated — clearing where you already are has always worked.
+    const reachable = selected || state.repoPreviewsSupported;
     actions.appendChild(railMenuButton("Project actions", () => [
+      // First, because it is the everyday one: putting a project away is
+      // housekeeping, and it has to be reachable without passing the delete.
+      // The verb follows the section this row is drawn in rather than the stored
+      // flag — a project the age rule archived has no stored flag, and offering
+      // "Archive" on a row that is already under Archived would be nonsense.
+      // Hidden entirely against a host too old to record the choice: a control
+      // that silently does nothing is worse than one that isn't there.
+      ...(railArchiveSupported() ? [{
+        label: inArchive ? "Move to Projects" : "Archive project",
+        icon: inArchive ? ICON.archiveRestore : ICON.archive,
+        title: inArchive
+          ? "Show this project under Projects again"
+          : "Move this project out of the way. Its conversations stay, and working here brings it back.",
+        onSelect: () => vscode.postMessage({
+          type: "setRepoArchived",
+          cwd: repo.cwd,
+          archived: !inArchive,
+        }),
+      }, null] : []),
       {
         label: "Clear all history",
         icon: ICON.trash,
         danger: true,
-        disabled: !repo.available,
-        title: "Delete all sessions in this repository's history",
+        disabled: !repo.available || knownEmpty || !reachable,
+        title: !reachable
+          ? "Update the Grok extension on your computer to clear another project's history from here"
+          : knownEmpty
+            ? "This project has no history"
+            : "Delete all sessions in this repository's history",
         onSelect: () => {
           const repoLabel = repo.label || cwdLeaf(repo.cwd);
           uiConfirm({
@@ -3517,7 +3768,7 @@
 
   function renderRailSessionRow(s, repo, opts) {
     const row = document.createElement("div");
-    const active = s.id === state.activeSessionId && sameCwd(repo.cwd, state.activeRepoCwd);
+    const active = s.id === state.activeSessionId && railRepoOwnsActive(repo, s);
     row.className = "rail-session" + (active ? " active" : "");
     row.title = s.displayName || "";
     // The row is the primary control, so it has to behave like one: reachable by
@@ -3619,20 +3870,25 @@
         }),
       });
     }
-    // No delete for the active session: it's the live conversation and the CLI
-    // re-persists it, so a delete wouldn't stick. Same rule the history popover
-    // has always applied — shown disabled here rather than omitted, so the menu
-    // doesn't change shape under the pointer.
+    // The open conversation can be deleted too, where the host can do it: it
+    // tears the process down before touching the disk and then starts a fresh
+    // conversation in the same project, so the delete sticks and you land
+    // somewhere rather than nowhere. An older host refuses, so there the item
+    // stays visibly disabled and says why — the menu keeps its shape, and the
+    // reason is the truth rather than "the open session can't be deleted".
+    const activeUndeletable = !!active && !canDeleteActiveSession();
     items.push(null, {
       label: "Delete",
       icon: ICON.trash,
       danger: true,
-      disabled: !!active,
-      title: active ? "The open session can't be deleted" : "Delete",
+      disabled: activeUndeletable,
+      title: activeUndeletable
+        ? "Update the Grok extension on your computer to delete the conversation you have open"
+        : "Delete",
       onSelect: () => {
         uiConfirm({
           title: s.displayName ? `Delete "${s.displayName}"?` : "Delete this session?",
-          body: "This cannot be undone.",
+          body: deleteSessionWarning(active),
           confirmLabel: "Delete",
           danger: true,
         }).then((ok) => {
@@ -3645,6 +3901,25 @@
       },
     });
     return items;
+  }
+
+  /** Whether this host can delete the conversation you are READING. Older ones
+   *  refuse it outright — they deleted the files while the live CLI still owned
+   *  the conversation, so it came straight back — and a control that answers
+   *  with a refusal is worse than one that isn't there. */
+  function canDeleteActiveSession() {
+    return !!(state.hostCaps && state.hostCaps.deleteActiveSession);
+  }
+
+  /** Confirm copy for a delete. Deleting the conversation you are READING is a
+   *  bigger act than deleting a cold row — the thing on your screen goes away
+   *  and something else takes its place — so the dialog says so before you agree
+   *  to it, and says the extra part out loud when a turn is still running. */
+  function deleteSessionWarning(active) {
+    if (!active) return "This cannot be undone.";
+    const stopping = state.busy ? " Grok is still working; that stops." : "";
+    return "This is the conversation you have open. It will close and a new one will start in the same project."
+      + stopping + " This cannot be undone.";
   }
 
   /** Rename from the rail. The history popover renames inline in its own row;
@@ -3687,6 +3962,7 @@
    *  a whole, unsearched page for the repo currently selected. */
   function adoptRailRows(entries) {
     state.railSelectedRows = Array.isArray(entries) ? entries : [];
+    state.railSelectedRowsKnown = true;
     state.railSessionsStale = false;
     renderRail();
   }
@@ -8065,6 +8341,11 @@
         state.effort = msg.effort || "";
         state.cwd = msg.cwd || "";
         state.extVersion = msg.extVersion || "";
+        // What this particular host can do, as the host itself reports it. Every
+        // remote snapshot carries an initialState, so this is answered before
+        // any control is drawn — and a host that says nothing is a host that
+        // cannot, which is the safe way round.
+        state.hostCaps = (msg.capabilities && typeof msg.capabilities === "object") ? msg.capabilities : {};
         restoreRememberedRemoteSession();
         if (typeof msg.showThinking === "boolean") state.showThinking = msg.showThinking;
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
@@ -9592,7 +9873,10 @@
   // otherwise leave it stale until close+reopen. Only the history dropdown is panel-width
   // dependent (the composer popovers are bottom-anchored), so just re-run its positioning.
   window.addEventListener("resize", () => {
-    if (!historyPopover.hidden) positionDropdownPopover(historyPopover, historyBtn);
+    // The SAME anchor the opener used. Where the rail exists, `historyBtn` sits
+    // in a display:none top bar and measures as a zero rect, so a rotate or a
+    // window drag would re-place the popover against nothing.
+    if (!historyPopover.hidden) positionDropdownPopover(historyPopover, railHistoryAnchor() || historyBtn);
     if (!repoPopover.hidden) positionRepoPopover();
   });
 

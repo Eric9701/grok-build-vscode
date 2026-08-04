@@ -10,6 +10,11 @@ const withRail = (window: any) => {
   el.id = "projects-rail";
   el.hidden = true;
   window.document.body.appendChild(el);
+  // The relay page's search box lives in the same shell, and the rail's filter
+  // reads it directly — so the mount is only faithful with it.
+  const search = window.document.createElement("input");
+  search.id = "rail-search";
+  window.document.body.appendChild(search);
 };
 
 // Two available repos besides the selected one, so a fan-out is actually
@@ -86,6 +91,111 @@ describe("projects rail", () => {
     const { doc } = boot();
     expect(rail(doc).hidden).toBe(false);
     expect(repoNames(doc)).toEqual(["alpha", "gamma", "beta", "offline"]);
+  });
+
+  // "Last activity" means the newest CONVERSATION, not the catalog's own stamp —
+  // which is the mtime of the project's session directory, and clearing a
+  // project's history writes to that directory. So the one project that
+  // demonstrably had nothing recent was presented as the most recent thing you
+  // had done. Once its rows are known to be gone, it has no activity at all.
+  it("does not promote a project whose history was just cleared", () => {
+    const catalog = [
+      // gamma's directory was touched by the clear itself, so its catalog stamp
+      // is the freshest number in the rail.
+      { cwd: "/work/gamma", label: "gamma", available: true, pinned: false, updatedAt: 900 },
+      { cwd: "/work/alpha", label: "alpha", available: true, pinned: false, updatedAt: 100 },
+      { cwd: "/work/beta", label: "beta", available: true, pinned: false, updatedAt: 90 },
+    ];
+    const h = bootWebview({ remote: true, beforeScripts: withRail });
+    dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    expect(repoNames(h.doc)).toEqual(["gamma", "alpha", "beta"]);
+
+    dispatch(h.window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 500)]));
+    dispatch(h.window, {
+      type: "repoSessions", cwd: "/work/beta", entries: [row("b1", "/work/beta", "beta one", 400)], dots: {}, total: 1,
+    });
+    // The host's answer for the emptied project: no rows.
+    dispatch(h.window, { type: "repoSessions", cwd: "/work/gamma", entries: [], dots: {}, total: 0 });
+
+    expect(repoNames(h.doc)).toEqual(["alpha", "beta", "gamma"]);
+  });
+
+  // The project you are working in must not sink while its list is in flight:
+  // an empty holder is the state before the first `sessions` frame, not proof of
+  // an empty project.
+  it("keeps the selected project in place until its own list arrives", () => {
+    const { doc } = boot("/work/alpha");
+    expect(repoNames(doc)[0]).toBe("alpha");
+  });
+
+  // Two empty projects tie on activity, and the tie used to break on the
+  // catalog's own stamp — the session directory's mtime, which CLEARING a
+  // project touches. So the just-emptied one still climbed above its equally
+  // empty neighbours: the same bug, one rank smaller.
+  it("does not let the cleared project win the tie between empty ones", () => {
+    const catalog = [
+      { cwd: "/work/zed", label: "zed", available: true, pinned: false, updatedAt: 10 },
+      // Freshly cleared: nothing in it, and the newest directory stamp in the rail.
+      { cwd: "/work/acme", label: "acme", available: true, pinned: false, updatedAt: 999 },
+    ];
+    const h = bootWebview({ remote: true, beforeScripts: withRail });
+    dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/zed", activeCwd: "/work/zed" });
+    dispatch(h.window, sessionsFrame([]));
+    dispatch(h.window, { type: "repoSessions", cwd: "/work/acme", entries: [], dots: {}, total: 0 });
+
+    expect(repoNames(h.doc)).toEqual(["acme", "zed"]); // by name, not by mtime
+  });
+
+  // A project we have looked at and found empty has nothing to clear, so the
+  // menu says so on its face rather than taking the click and answering with a
+  // notice in whatever conversation happens to be open elsewhere.
+  it("disables Clear all history for a project known to be empty", () => {
+    const { doc, window, posted } = boot();
+    dispatch(window, { type: "repoSessions", cwd: "/work/beta", entries: [], dots: {}, total: 0 });
+
+    const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+    const clear = menuItem(openMenu(window, beta), "Clear all history");
+    expect((clear as HTMLButtonElement).disabled).toBe(true);
+    click(window, clear as HTMLElement);
+    expect(posted.filter((p) => p.type === "clearAllSessions")).toEqual([]);
+
+    // …and stays available where rows are merely unknown: "not loaded" is not
+    // "empty", and disabling there would strand a project behind a dead control.
+    const gamma = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("gamma")];
+    const gammaClear = menuItem(openMenu(window, gamma), "Clear all history");
+    expect((gammaClear as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // Clearing a project the host has not SELECTED is a repo-addressed act, and an
+  // extension that predates that drops the message without a word — no error, no
+  // deletion. The rail appears against those hosts (they send `repos`), so the
+  // control has to wait for proof that the cwd on these messages is read at all.
+  // Where you already are is never gated: that always worked.
+  it("withholds cross-project Clear all until the host proves it reads the cwd", () => {
+    const { doc, window, posted } = boot();
+
+    const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+    const dead = menuItem(openMenu(window, beta), "Clear all history") as HTMLButtonElement;
+    expect(dead.disabled).toBe(true);
+    expect(dead.title).toContain("Update the Grok extension");
+    click(window, dead);
+    expect(posted.filter((p) => p.type === "clearAllSessions")).toEqual([]);
+
+    // The project you are in is offered regardless — no probe is even sent for
+    // it, so gating it on one would disable it forever on a single-project box.
+    // It is also offered before its own list has arrived: an empty row-holder is
+    // the state before the first frame, not proof of an empty project.
+    const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    expect((menuItem(openMenu(window, alpha), "Clear all history") as HTMLButtonElement).disabled)
+      .toBe(false);
+
+    // One answered probe is the proof.
+    dispatch(window, {
+      type: "repoSessions", cwd: "/work/beta", entries: [row("b1", "/work/beta", "beta one", 4)], dots: {}, total: 1,
+    });
+    const live = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+    expect((menuItem(openMenu(window, live), "Clear all history") as HTMLButtonElement).disabled)
+      .toBe(false);
   });
 
   // The degrade path — the whole reason the rail reads the selected repo from
@@ -312,7 +422,10 @@ describe("projects rail", () => {
     ];
     const h = bootWebview({ remote: true, beforeScripts: withRail });
     dispatch(h.window, { type: "repos", entries: cased, selectedCwd: "/work/Foo", activeCwd: "/work/Foo" });
-    dispatch(h.window, sessionsFrame([row("f1", "/work/Foo", "upper only", 9)]));
+    // Newer than the sibling's stamp: the rail orders projects by their newest
+    // CONVERSATION, and a fixture whose session predates the sibling's catalog
+    // entry would be asserting an order the sort no longer promises.
+    dispatch(h.window, sessionsFrame([row("f1", "/work/Foo", "upper only", 30)]));
 
     expect(repoNames(h.doc)).toEqual(["Foo", "foo"]);
     expect(sessionNames(h.doc, 0)).toEqual(["upper only"]);
@@ -329,7 +442,7 @@ describe("projects rail", () => {
     ];
     const h = bootWebview({ remote: true, beforeScripts: withRail });
     dispatch(h.window, { type: "repos", entries: odd, selectedCwd: "/srv/Foo\\bar", activeCwd: "/srv/Foo\\bar" });
-    dispatch(h.window, sessionsFrame([row("o1", "/srv/Foo\\bar", "upper only", 9)]));
+    dispatch(h.window, sessionsFrame([row("o1", "/srv/Foo\\bar", "upper only", 30)]));
 
     expect(sessionNames(h.doc, 0)).toEqual(["upper only"]);
     expect(sessionNames(h.doc, 1)).toEqual([]);
@@ -568,6 +681,282 @@ describe("projects rail", () => {
       expect(addFor(doc, "alpha")).not.toBe(null);
       expect(addFor(doc, "beta")).toBe(null);
       expect(addFor(doc, "gamma")).toBe(null);
+    });
+  });
+
+  // Archiving exists so the rail can be a list of what you are working on rather
+  // than everything you have ever opened. It is DERIVED, never a stored section:
+  // one timestamped choice per project plus an age rule, both measured against
+  // that project's newest conversation. Which is what makes "work in it and it
+  // comes back" free — activity newer than the choice simply outranks it, and
+  // there is no second flag to fall out of step.
+  describe("archived projects", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const ago = (days: number) => Date.now() - days * DAY;
+
+    /** A catalog whose stamps are real clock time, so the 30-day rule means
+     *  something. `archived`/`archivedAt` present = a host that can record the
+     *  choice; the fixtures above deliberately omit them. */
+    const repo = (
+      label: string,
+      updatedAt: number,
+      extra: Record<string, unknown> = {},
+    ) => ({
+      cwd: `/work/${label}`,
+      label,
+      available: true,
+      pinned: false,
+      updatedAt,
+      archived: false,
+      archivedAt: 0,
+      ...extra,
+    });
+
+    const heads = (doc: Document) =>
+      [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
+    const sectionRepos = (doc: Document, index: number) =>
+      [...doc.querySelectorAll(".rail-list")[index].querySelectorAll(".rail-repo-label")]
+        .map((e) => e.textContent);
+
+    /** Five projects: one selected, three recent (which the floor would protect
+     *  anyway), and two long-idle ones past the floor. */
+    function bootArchive(overrides: Record<string, Record<string, unknown>> = {}) {
+      const catalog = [
+        repo("home", ago(0), overrides.home),
+        repo("one", ago(1), overrides.one),
+        repo("two", ago(2), overrides.two),
+        repo("three", ago(3), overrides.three),
+        repo("stale", ago(80), overrides.stale),
+        repo("ancient", ago(400), overrides.ancient),
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      // Give every project rows, so activity is read from conversations rather
+      // than from the catalog's directory mtime.
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", ago(0))]));
+      for (const r of catalog.slice(1)) {
+        dispatch(h.window, {
+          type: "repoSessions",
+          cwd: r.cwd,
+          entries: [row(`${r.label}1`, r.cwd, `${r.label} one`, r.updatedAt)],
+          dots: {},
+          total: 1,
+        });
+      }
+      return h;
+    }
+
+    it("drops long-idle projects into a folded Archived section", () => {
+      const { doc } = bootArchive();
+      expect(heads(doc)).toEqual(["Projects", "Archived"]);
+      expect(sectionRepos(doc, 0)).toEqual(["home", "one", "two", "three"]);
+      // Folded by default — the section exists to be out of the way — so the
+      // count is the only thing it can say about itself.
+      expect(doc.querySelectorAll(".rail-list")).toHaveLength(1);
+      expect(doc.querySelector(".rail-head-count")?.textContent).toBe("2");
+    });
+
+    it("opens and remembers the Archived section", () => {
+      const { doc, window } = bootArchive();
+      click(window, doc.querySelector(".rail-head-btn") as HTMLElement);
+      expect(sectionRepos(doc, 1)).toEqual(["stale", "ancient"]);
+      // Whether it is open is the same kind of answer as a project fold, so it
+      // keeps the same company and survives a reload.
+      const key = Object.keys(window.localStorage).find((k) => k.startsWith("grok.remote.railShape"));
+      expect(JSON.parse(window.localStorage.getItem(key as string)).archiveOpen).toBe(true);
+    });
+
+    // Coming back from three weeks away must not archive everything at once and
+    // leave a rail that reads as broken.
+    it("never lets the age rule empty the Projects section", () => {
+      const catalog = [
+        repo("home", ago(200)),
+        repo("a", ago(210)),
+        repo("b", ago(220)),
+        repo("c", ago(230)),
+        repo("d", ago(240)),
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      // Every project's rows, because the age rule only ever runs on rows it
+      // actually has — see the guess test above.
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", ago(200))]));
+      for (const r of catalog.slice(1)) {
+        dispatch(h.window, {
+          type: "repoSessions",
+          cwd: r.cwd,
+          entries: [row(`${r.label}1`, r.cwd, `${r.label} one`, r.updatedAt)],
+          dots: {},
+          total: 1,
+        });
+      }
+      // The three newest besides the one you are in, plus the one you are in.
+      expect(sectionRepos(h.doc, 0)).toEqual(["home", "a", "b", "c"]);
+      expect(h.doc.querySelector(".rail-head-count")?.textContent).toBe("1");
+    });
+
+    // The age rule needs to know when a project was last worked in, and the only
+    // honest source for that is the project's own conversations. The catalog's
+    // stamp is the session DIRECTORY's mtime, which does not move when you
+    // continue an existing conversation — so against an extension too old to
+    // list another project's sessions (v2.3.1 has no `listRepoSessions` at all)
+    // it would file a project you use every day under Archived, silently.
+    it("never archives on a guess when the host cannot list the project's rows", () => {
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: Date.now() },
+        // Used daily, in one long-running conversation — so its directory has
+        // not been written to in a year, and its catalog stamp says so.
+        { cwd: "/work/daily", label: "daily", available: true, pinned: false, updatedAt: ago(400) },
+        { cwd: "/work/other", label: "other", available: true, pinned: false, updatedAt: ago(401) },
+        { cwd: "/work/third", label: "third", available: true, pinned: false, updatedAt: ago(402) },
+        { cwd: "/work/fourth", label: "fourth", available: true, pinned: false, updatedAt: ago(403) },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+
+      // No `repoSessions` ever answers — the whole point. Not even the projects
+      // past the floor may be archived.
+      expect(h.doc.querySelector(".rail-head-fold")).toBe(null);
+      expect(sectionRepos(h.doc, 0)).toHaveLength(5);
+    });
+
+    // A rail that files the conversation on screen under "Archived" is
+    // describing the screen wrongly, whatever the dates say.
+    it("never archives the project you are reading", () => {
+      const { doc } = bootArchive({ home: { archived: true, archivedAt: Date.now() } });
+      expect(sectionRepos(doc, 0)).toContain("home");
+    });
+
+    it("archives on request, and asks the host to remember it", () => {
+      const { doc, window, posted } = bootArchive();
+      const one = doc.querySelectorAll(".rail-repo")[1];
+      const menu = openMenu(window, one.querySelector(".rail-repo-head") as HTMLElement);
+      // First in the menu: putting a project away is the everyday act, and it
+      // must be reachable without passing the delete.
+      expect((menu.querySelector(".rail-menu-item") as HTMLElement).textContent).toContain("Archive project");
+      click(window, menuItem(menu, "Archive project") as HTMLElement);
+      expect(posted.filter((p) => p.type === "setRepoArchived")).toEqual([
+        { type: "setRepoArchived", cwd: "/work/one", archived: true },
+      ]);
+    });
+
+    // The floor holds back the AGE rule only. An explicit Archive on a project
+    // you use every day has to take effect, or the control silently does nothing
+    // exactly where it is most likely to be used.
+    it("honours an explicit archive on a project the floor protects", () => {
+      const { doc } = bootArchive({ one: { archived: true, archivedAt: Date.now() } });
+      expect(sectionRepos(doc, 0)).toEqual(["home", "two", "three"]);
+      expect(doc.querySelector(".rail-head-count")?.textContent).toBe("3");
+    });
+
+    // The whole reason the choice is a timestamp rather than a flag.
+    it("brings a project back the moment it is worked in again", () => {
+      const { doc, window } = bootArchive({ stale: { archived: true, archivedAt: ago(10) } });
+      expect(sectionRepos(doc, 0)).not.toContain("stale");
+
+      dispatch(window, {
+        type: "repoSessions",
+        cwd: "/work/stale",
+        entries: [row("s2", "/work/stale", "back at it", Date.now())],
+        dots: {},
+        total: 1,
+      });
+      expect(sectionRepos(doc, 0)).toContain("stale");
+    });
+
+    // "Keep showing me this one" is a real, stored answer — not the absence of
+    // one. Without it the age rule would undo the unarchive on the next render.
+    it("keeps an unarchived project visible however idle it is", () => {
+      const { doc } = bootArchive({ ancient: { archived: false, archivedAt: Date.now() } });
+      expect(sectionRepos(doc, 0)).toContain("ancient");
+    });
+
+    it("moves an archived project back from its own menu", () => {
+      const { doc, window, posted } = bootArchive();
+      click(window, doc.querySelector(".rail-head-btn") as HTMLElement);
+      const archivedSection = doc.querySelectorAll(".rail-list")[1];
+      const menu = openMenu(window, archivedSection.querySelector(".rail-repo-head") as HTMLElement);
+      // The verb follows the SECTION, not the stored flag: these two were
+      // archived by age and carry no flag at all, so reading the flag would
+      // offer "Archive" on a row already sitting under Archived.
+      expect(menuItem(menu, "Archive project")).toBe(undefined);
+      click(window, menuItem(menu, "Move to Projects") as HTMLElement);
+      expect(posted.filter((p) => p.type === "setRepoArchived")).toEqual([
+        { type: "setRepoArchived", cwd: "/work/stale", archived: false },
+      ]);
+    });
+
+    // A query answered with "No matches." while the project sits collapsed two
+    // inches below is simply wrong.
+    it("reaches into Archived when searching, and opens it", () => {
+      const { doc, window } = bootArchive();
+      const search = doc.getElementById("rail-search") as HTMLInputElement;
+      search.value = "ancient";
+      search.dispatchEvent(new (window as any).Event("input", { bubbles: true }));
+
+      expect(heads(doc)).toEqual(["Archived"]);
+      expect(sectionRepos(doc, 0)).toEqual(["ancient"]);
+      // …and says why it cannot be folded while the search is holding it open,
+      // rather than offering a button whose click the next render undoes.
+      expect((doc.querySelector(".rail-head-btn") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    // Capability, never a version: a host that cannot record the choice must not
+    // be offered a control that does nothing. The age rule still applies — it
+    // needs nothing from the host.
+    it("hides the archive control against a host that cannot record it", () => {
+      const { doc, window } = boot();
+      const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+      const menu = openMenu(window, beta.querySelector(".rail-repo-head") as HTMLElement);
+      expect(menuItem(menu, "Archive project")).toBe(undefined);
+      expect(menuItem(menu, "Clear all history")).not.toBe(undefined);
+    });
+  });
+
+  // A fold is a preference set at some earlier moment, and the one thing it must
+  // never do is hide where you are NOW.
+  describe("the project holding the live conversation", () => {
+    it("cannot be folded away while it holds the open conversation", () => {
+      const { doc, window } = boot("/work/alpha");
+      dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
+
+      const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const twisty = alpha.querySelector(".rail-twisty") as HTMLButtonElement;
+      expect(twisty.disabled).toBe(true);
+      click(window, twisty);
+      expect(doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
+        .querySelector(".rail-sessions")).not.toBe(null);
+    });
+
+    // A worktree conversation reports the WORKTREE as its cwd, and a worktree is
+    // deliberately not a catalog row — so comparing the project's path with the
+    // live session's said "not mine", and the project actually holding the open
+    // conversation neither highlighted it nor held itself open.
+    it("recognises its own conversation when that conversation is in a worktree", () => {
+      const { doc, window } = boot("/work/alpha");
+      dispatch(window, {
+        ...sessionsFrame([{ ...row("w1", "/work/alpha/.wt", "worktree work", 9), worktreeLabel: "feature" }]),
+        activeId: "w1",
+      });
+      // The host names the worktree, not the checkout.
+      dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha/.wt" });
+
+      const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      expect(alpha.querySelector(".rail-session.active")).not.toBe(null);
+      expect((alpha.querySelector(".rail-twisty") as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("re-opens a project that was folded before the conversation moved there", () => {
+      const { doc, window } = boot("/work/alpha");
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      click(window, alpha().querySelector(".rail-twisty") as HTMLElement);
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+
+      // The conversation is opened from somewhere else — a phone, the desk, the
+      // Pinned group. The fold that was fine a moment ago now hides the answer.
+      dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
+      expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
     });
   });
 });
