@@ -7,11 +7,14 @@ import {
   Session,
   SessionStatus,
   beginQueuedSendCommit,
+  beginTurn,
   createPendingPermission,
+  endTurn,
   finishQueuedSendCommit,
   pendingPermissionOptions,
   preferredPermissionAllowOption,
   sessionUiSnapshot,
+  turnIsInFlight,
 } from "./session";
 import { buildReapCandidates, selectReapable, computeDot, Dot } from "./session-pool";
 import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterms, voiceSettingForRepo, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
@@ -232,6 +235,11 @@ const SESSION_PAGE_SIZE = 100;
 /** Rows a `listRepoSessions` preview returns when the client names no limit —
  *  the projects rail shows a few per repo and links out for the rest. */
 const REPO_PREVIEW_SIZE = 3;
+
+/** How long a cancelled turn may go unanswered before the host settles it
+ *  itself. Generous: an honoured cancel comes back well inside a second, so this
+ *  only ever fires when the turn was going to wedge anyway. */
+const CANCEL_SETTLE_GRACE_MS = 10_000;
 
 // Records the extension version at the last silent CLI-update check. A fresh
 // install establishes the baseline; a later extension upgrade updates once.
@@ -1036,7 +1044,13 @@ See design doc for the full state machine diagram.`;
       // This CLI's verdict behavior is not trusted, so there is no safe native
       // continuation to preserve. Cancel it and wait for client.prompt() to
       // settle; a set_mode acknowledgement alone cannot authorize writes.
+      const cancelled = session.turnToken;
       void client.cancel("unavailable Plan recovery");
+      // "Wait for client.prompt() to settle" is the assumption that wedged
+      // sessions in the first place — a cancel is a request, not an outcome.
+      // This path cancels a CLI already known to be misbehaving, so it is the
+      // LAST one that should be trusted to answer. Same recovery as a user Stop.
+      if (cancelled) this.armCancelRecovery(session, cancelled);
     }
     this.emit(session, {
       type: "planNotice",
@@ -1969,8 +1983,11 @@ See design doc for the full state machine diagram.`;
       for (const s of [...this.pool]) {
         if (s.worktree && pathsEqual(s.worktree.path, wt.path)) {
           for (const holder of this.remoteClients.clientsForActiveValue(s)) strandedHolders.add(holder);
-          s.client?.dispose();
-          s.client = undefined;
+          // Detach, don't hand-roll: this used to drop the client without ending
+          // the turn, so a cancel recovery armed before the removal still held a
+          // live token and a matching generation and would respawn the session
+          // against a checkout that no longer exists.
+          this.detachClient(s)?.dispose();
           if (s !== this.focused) this.pool.delete(s);
         }
       }
@@ -2940,6 +2957,14 @@ See design doc for the full state machine diagram.`;
     }
     session.buffer = [];
     session.status = "idle";
+    // The replacement session has no turn, whatever the old one was doing. This
+    // matters most in the case the token exists for: a `prompt()` that never
+    // settles never runs its `finally`, so the token outlives the client that
+    // owned it — and resetting only `status` (which is all this used to have to
+    // do) would leave the fresh session reporting a turn in flight and diverting
+    // every send into the queue. A restart has always been the cure for a wedged
+    // session; it stays the cure.
+    session.turnToken = undefined;
     // Stop any in-progress voice capture so listening never carries across a
     // new/resumed/restarted session (covers New Session, history resume, and
     // model/effort restarts — all of which route through here).
@@ -3446,8 +3471,11 @@ See design doc for the full state machine diagram.`;
       // bail): `handleSend`/`ensureClient` prefer `session.client`, so leaving
       // it set routed every post-crash send into a dead pipe instead of
       // respawning.
-      session.gen++;
-      session.client = undefined;
+      // Ends the turn too: a process that dies mid-turn may never settle its
+      // `prompt()`, and the send path tests for a turn in flight BEFORE it
+      // respawns — so the next send would be diverted into a queue this handler
+      // has just emptied. The turn died with the process.
+      this.detachClient(session);
       void client.dispose();
     });
     client.on("stderr", (text: string) => this.output.append(text));
@@ -3784,9 +3812,12 @@ See design doc for the full state machine diagram.`;
         if (origin === "remote" && clientId) await this.newRemoteSession(clientId);
         else await this.newFocusedSession(origin);
         break;
-      case "cancel":
+      case "cancel": {
+        const cancelled = session.turnToken;
         await session.client?.cancel("user Stop click");
+        if (cancelled) this.armCancelRecovery(session, cancelled);
         break;
+      }
       case "queueSend": {
         // Host-owned per-session queue (#37): the webview renders a mirror from
         // the queuedSends snapshots, so queued messages survive focus switches
@@ -6326,8 +6357,77 @@ See design doc for the full state machine diagram.`;
 
   /** A prompt is running or pending user action — a new prompt now would
    *  cancel it (a second `session/prompt` kills the in-flight turn). */
+  /** Whether a prompt is genuinely running. This used to read `status`, which
+   *  cannot tell "working" from "was working and never settled" — see
+   *  Session.turnToken for the wedge that cost. */
   private turnInFlight(session: Session): boolean {
-    return session.status === "working" || session.status === "needs-you";
+    return turnIsInFlight(session);
+  }
+
+  /** A cancel is a request, not an outcome: `client.prompt()` settling is the ONLY
+   *  thing that ends a turn, so a cancel the CLI never answers leaves the session
+   *  pinned mid-turn and every later send diverted into the queue — permanently,
+   *  with nothing on disk to show for it.
+   *
+   *  Recovery RESTARTS the process rather than declaring the turn over locally.
+   *  Declaring it over is not enough and is worse than doing nothing: the client
+   *  is still live and its handlers are fenced only by `gen`, so a cancel that
+   *  eventually produces chunks, a permission request or a completion would pour
+   *  them into whatever turn is current by then — and flushing the queue would
+   *  put a second prompt on a client that may still be running the first.
+   *  `startSession` is the fence this codebase already has: it bumps `gen` (so
+   *  every event from the old client is ignored), disposes it, clears the turn
+   *  token, and resumes this same conversation from disk so nothing is lost.
+   *
+   *  A CLI that has ignored a stop request for ten seconds is wedged; replacing
+   *  the process is the honest reading of what the user asked for. */
+  private armCancelRecovery(session: Session, token: object): void {
+    const gen = session.gen;
+    setTimeout(() => {
+      if (gen !== session.gen) return; // already restarted or replaced
+      if (session.turnToken !== token) return; // the cancel was honoured
+      void this.recoverUnansweredCancel(session, token);
+    }, CANCEL_SETTLE_GRACE_MS);
+  }
+
+  private async recoverUnansweredCancel(session: Session, token: object): Promise<void> {
+    // Nothing to recover if the client is already gone — something else tore it
+    // down (a crash, a removed worktree), and respawning here would resurrect a
+    // session that was deliberately ended, possibly against a cwd that no longer
+    // exists. Belt to the generation check: whoever disposes a client is
+    // expected to invalidate the turn, and this survives one that forgets.
+    if (!session.client) {
+      endTurn(session, token);
+      return;
+    }
+    this.output.appendLine("[turn] cancel went unanswered; restarting this session's CLI");
+    // Said BEFORE the restart, deliberately. startSession unlocks the composer
+    // and flushes any queued sends itself, so a notice emitted afterwards could
+    // land behind that queued turn's userMessage/agentStart — reading as if the
+    // new turn had failed, and clearing the busy state of a turn that had only
+    // just begun. Live-only as a consequence (the restart clears the buffer);
+    // the conversation itself is reloaded from disk intact.
+    this.emit(session, {
+      type: "agentError",
+      text: "Stopped. The agent didn't answer the stop request, so its process is being restarted. This conversation is intact.",
+    });
+    const client = await this.startSession(session.activeSessionId, session);
+    // Another restart can overtake this one while it is starting. Then the
+    // session belongs to that one, and nothing here has anything to say about
+    // it — least of all an error.
+    if (session.client && session.client !== client) return;
+    if (!session.client) {
+      // startSession clears the token on its way through, but it can fail before
+      // reaching that; either way this session must not be left pinned mid-turn.
+      endTurn(session, token);
+      this.emit(session, {
+        type: "agentError",
+        text: "The agent's process couldn't be restarted. Send again to start it.",
+      });
+      this.setStatus(session, "error");
+    }
+    // A successful restart has already cleared the token, unlocked the composer
+    // and flushed anything queued. There is nothing left to do here.
   }
 
   /** A send that raced into a running turn (desk↔remote co-attach: the other
@@ -6513,6 +6613,9 @@ See design doc for the full state machine diagram.`;
     session.inUserMessage = false; // live send isn't part of the streamed-chunk count path
     this.emit(session, { type: "userMessage", text, chips: sentChips, submissionId });
     this.emit(session, { type: "agentStart" });
+    // The token, not the status, is what says a turn is running from here on —
+    // and only whoever holds it may end this one.
+    const turn = beginTurn(session);
     this.setStatus(session, "working");
 
     try {
@@ -6523,6 +6626,9 @@ See design doc for the full state machine diagram.`;
       }
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) return; // session was switched mid-turn
+      // A cancel recovery may have settled this turn already; a second agentEnd
+      // would end a turn that is no longer ours.
+      if (!endTurn(session, turn)) return;
       if (slashCommand === "compact") {
         // A native /compact streams no agent content (research/compact.md), so
         // the turn would end with a blank bubble and no sign it worked. Paint a
@@ -6539,6 +6645,10 @@ See design doc for the full state machine diagram.`;
       this.maybeGenerateTitle(session);
     } catch (err) {
       if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
+      // Same rule as the success path: if a cancel recovery already ended this
+      // turn, the failure it eventually reported is not ours to announce.
+      // Checked BEFORE the auth resend, which starts a turn of its own.
+      if (!endTurn(session, turn)) return;
       const e = err as any;
       // A rate/usage-limit failure (ACP -32003, or limit phrasing) is not a
       // credential problem: skip the auth recovery — its retry would end on
@@ -6559,6 +6669,12 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "agentError", text: promptErrorText(e) });
       this.setStatus(session, "error");
     } finally {
+      // Belt to the braces above: however this turn left — an early return on a
+      // switched session, a throw nobody caught — it must not stay in flight, or
+      // every later send in this session is diverted into the queue. A no-op
+      // when the turn was already settled, or when the auth resend has since
+      // started one of its own.
+      endTurn(session, turn);
       // The turn is fully over — fire anything queued during it (#37).
       if (gen === session.gen) {
         this.settleUnavailablePlanTurn(session, client, gen);
@@ -6609,16 +6725,21 @@ See design doc for the full state machine diagram.`;
     session.userMessageCount += 1;
     this.emit(session, { type: "userMessage", text: displayText, chips });
     this.emit(session, { type: "agentStart" });
+    // The resend is a turn in its own right — it gets its own token, and the
+    // outer turn's `finally` can no longer end it (the tokens differ).
+    const turn = beginTurn(session);
     this.setStatus(session, "working");
     try {
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) return true;
+      if (!endTurn(session, turn)) return true;
       this.emit(session, { type: "agentEnd", meta });
       this.setStatus(session, "done");
       session.authRecoveryTried = false; // recovered — re-arm for a future expiry
       this.maybeGenerateTitle(session);
     } catch (err2) {
       if (gen !== session.gen) return true;
+      if (!endTurn(session, turn)) return true;
       const e2 = err2 as any;
       // The resend ran into a usage limit — that's the real story, not auth
       // (#57): a fresh process with a fresh token hit the same wall.
@@ -6646,6 +6767,10 @@ See design doc for the full state machine diagram.`;
         this.emit(session, { type: "agentError", text: promptErrorText(e2) });
         this.setStatus(session, "error");
       }
+    } finally {
+      // Same belt as the ordinary send path: a resend that leaves any other way
+      // must not leave the session pinned mid-turn.
+      endTurn(session, turn);
     }
     return true;
   }
@@ -7437,15 +7562,34 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  /** Detach a session from its live client: bump the generation so every handler
+   *  and await bound to that client bails, drop the reference, and END ITS TURN.
+   *
+   *  The turn is the part that is easy to forget and expensive to miss. A client
+   *  that goes away without settling its `prompt()` leaves the turn in flight
+   *  with nothing left to end it, and the send path tests that BEFORE it
+   *  respawns — so the next send is diverted into a queue that can never flush,
+   *  and the session is dead to its user until the window is reloaded. Four
+   *  teardown paths made that same mistake independently, which is why this is
+   *  one function rather than four careful call sites.
+   *
+   *  Returns the detached client so the caller can dispose it as it needs —
+   *  fire-and-forget, or awaited. */
+  private detachClient(session: Session): AcpClient | undefined {
+    const client = session.client;
+    session.gen++;
+    session.client = undefined;
+    session.turnToken = undefined;
+    return client;
+  }
+
   /** Tear down one session's live process and drop it from the pool. Bumps its
    *  generation so any in-flight handlers/awaits bound to the old client bail.
    *  Recomputes the dot after removal — a reaped session that's still unread stays
    *  green; an idle/read one goes gray. */
   private disposeSession(session: Session): void {
     const id = session.activeSessionId;
-    session.gen++;
-    session.client?.dispose();
-    session.client = undefined;
+    this.detachClient(session)?.dispose();
     this.pool.delete(session);
     this.remoteClients.deleteActiveValue(session);
     if (id) this.post({ type: "sessionDot", id, dot: this.dotForId(id) });
@@ -7649,9 +7793,8 @@ See design doc for the full state machine diagram.`;
   private disposePool(): Promise<void> {
     const closing: Promise<void>[] = [];
     for (const s of this.pool) {
-      s.gen++;
-      if (s.client) closing.push(s.client.dispose());
-      s.client = undefined;
+      const client = this.detachClient(s);
+      if (client) closing.push(client.dispose());
     }
     this.pool.clear();
     return Promise.all(closing).then(() => undefined);

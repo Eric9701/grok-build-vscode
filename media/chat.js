@@ -7383,6 +7383,16 @@
     if (el && el.parentNode) el.remove();
   }
 
+  // NOTHING here retires a pending submission on the strength of a queue event,
+  // and that is deliberate. `sendQueue` is SESSION-wide — every attached view
+  // contributes to one collapsed string — while `pendingSubmission*` belongs to
+  // this tab alone, and the queue carries no per-contribution id to correlate
+  // the two. So a queue action (edit, remove, steer) or a process exit says
+  // nothing about whether THIS tab's in-flight send survived, and clearing the
+  // pending state on one of them would destroy the only thing a relay rejection
+  // can rebuild the message from. Only the host's own `userMessage` echo, which
+  // carries the submission id, retires a pending submission.
+
   function visibleChipIds(chips) {
     return (chips || []).filter((chip) => !chip.hidden).map((chip) => String(chip.id || ""));
   }
@@ -7903,6 +7913,29 @@
   // composing more appends to it), pinned to the end of the conversation.
   // Italic + dashed border + clock tag reads "not sent yet"; Edit pulls the
   // whole pending text back to the composer, Remove drops it.
+  /** Does the host's queue hold `text` as a WHOLE contribution?
+   *
+   *  Exact equality only, and deliberately so. The host joins contributions with
+   *  a blank line and a message may itself contain blank lines, so the joined
+   *  string genuinely cannot say where one contribution ends — queued
+   *  "prefix\n\nfix\n\nup" is indistinguishable from a queue holding "fix" as its
+   *  own entry. Only an item that IS the text is unambiguous. Deciding otherwise
+   *  needs per-contribution ids the queue does not carry (see divertRacingSend in
+   *  the host, which explains why it cannot).
+   *
+   *  So this answers "yes" for the case that actually produced the duplicate — a
+   *  send diverted into an empty queue — and "no" once another view has already
+   *  queued something. A "no" leaves a stale placeholder beside the queued block
+   *  until the next refresh, which is cosmetic; a wrong "yes" would retire a
+   *  submission that is still in flight, which is not. */
+  function queueHoldsContribution(items, text) {
+    if (!text) return false;
+    for (var i = 0; i < items.length; i++) {
+      if (String(items[i] || "") === text) return true;
+    }
+    return false;
+  }
+
   function renderQueuedBlocks() {
     let wrap = state.queuedWrapEl;
     // Defensive join: the host's invariant is a single entry, but render
@@ -8871,6 +8904,31 @@
         stopProcessingCue();
         hideGrokking();
         addError(`Grok exited (code ${msg.code}). Send a message to restart this session, or start a new one.`);
+        // A process that dies takes the host's send queue with it: that text
+        // never reached Grok, and the host empties the queue in the very next
+        // breath after this message — so this is the last moment it exists
+        // anywhere. Hand it back as the "Not sent" recovery block, which is
+        // exactly what it is.
+        //
+        // Read from the QUEUE, not from the pending submission. A queued
+        // contribution can be merged with another view's and flushed under a
+        // combined text this tab cannot recognise as its own, which leaves the
+        // pending marker set on a message that WAS delivered — rebuilding that
+        // as "Not sent" would invite sending it twice. The queue is the honest
+        // source: it still holds what never left, and is already empty once it
+        // did.
+        //
+        // Remote only. The same text loss exists in the VS Code webview, but
+        // there the queued block disappearing on exit is long-standing,
+        // deliberate behaviour with a test of its own — and the desk still has
+        // the composer, the transcript and the terminal in front of it. This
+        // fixes the surface where the loss was actually reported and where a
+        // phone has nothing else to fall back on.
+        if (IS_REMOTE && state.sendQueue.length) {
+          state.rejectedSubmissionText = state.sendQueue.join("\n\n");
+          state.sendQueue = [];
+          renderQueuedBlocks();
+        }
         state.busy = false;
         state.busyLocked = false; // a dead process ends any startup lock too
         updateSendButton();
@@ -8882,6 +8940,30 @@
         if (!state.sendQueue.length) {
           state.queuedSubmissionPending = false;
           state.queuedSubmissionRejected = false;
+        }
+        // A send the host QUEUED never produces the `userMessage` echo that
+        // normally retires the optimistic placeholder, so the same text was left
+        // on screen twice — once as a sent bubble, once as a queued block. The
+        // queue is the host's answer to that submission, so treat it as the
+        // acknowledgement: the queued block is now the truthful rendering, and
+        // it carries Steer/edit/cancel the placeholder never had.
+        //
+        // Matched on text because the queue deliberately collapses several
+        // contributions into one string and cannot carry a submission id (see
+        // divertRacingSend in the host).
+        if (state.optimisticSendEl && state.pendingSubmissionText) {
+          if (queueHoldsContribution(state.sendQueue, state.pendingSubmissionText)) {
+            // ONLY the placeholder. The pending submission id and text stay put:
+            // they are what the "Not sent" recovery block is rebuilt from if the
+            // relay bounces this send, and a queue snapshot is not proof the
+            // send was accepted — only the host's own `userMessage` echo is, and
+            // that path clears them. Retiring them here would mean a wrong match
+            // could swallow the text instead of merely tidying the transcript.
+            clearOptimisticSend();
+            // The placeholder's Grokking was ours to show and ours to take back;
+            // a genuinely running turn re-shows it from agentStart.
+            if (!state.busy) hideGrokking();
+          }
         }
         renderQueuedBlocks();
         break;

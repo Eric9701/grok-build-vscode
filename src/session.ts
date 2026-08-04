@@ -219,6 +219,22 @@ export class Session {
   status: SessionStatus = "idle";
 
   /**
+   * The prompt currently in flight, or undefined when none is. A token rather
+   * than a boolean so a settlement can prove WHICH turn it is settling — a
+   * cancel-recovery and the real promise can both come back, and only the first
+   * of them may end the turn.
+   *
+   * It exists because `status` was standing in for this and could not do the
+   * job. Status is set to "working" beside the prompt and only leaves it when
+   * that promise settles, so a cancel the CLI never answered left the session
+   * "working" forever — and `turnInFlight` then diverted every later send in
+   * that session into the queue instead of sending it, permanently, with
+   * nothing on disk to show for it and only a window reload as a cure. Status
+   * now describes the dot; this describes the turn.
+   */
+  turnToken: object | undefined = undefined;
+
+  /**
    * ms-epoch of the last time this session was made the focus, created, or put to
    * work — its "recency" for the pool's LRU/TTL reaping (see session-pool.ts).
    * 0 until the sidebar touches it (kept off the constructor so this stays a pure
@@ -278,6 +294,29 @@ export class Session {
    * two risks duplicate delivery or work loss. */
   queuedSendRequiresRelay = false;
 
+}
+
+/** Mark a prompt as in flight. The returned token is the only thing that can
+ *  later end THIS turn. */
+export function beginTurn(session: Session): object {
+  const token = {};
+  session.turnToken = token;
+  return token;
+}
+
+/** End the turn `token` started, if it is still the one in flight. False means
+ *  something already settled it — a cancel recovery, or a newer turn — and the
+ *  caller must not emit a second end for it. */
+export function endTurn(session: Session, token: object): boolean {
+  if (session.turnToken !== token) return false;
+  session.turnToken = undefined;
+  return true;
+}
+
+/** Whether a prompt is genuinely running. Asked instead of reading `status`,
+ *  which cannot distinguish "working" from "was working and never settled". */
+export function turnIsInFlight(session: Session): boolean {
+  return session.turnToken !== undefined;
 }
 
 export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
