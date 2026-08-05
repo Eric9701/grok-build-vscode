@@ -8,11 +8,12 @@ import {
   carrySessionName,
   classifyUserQueries,
   clearSessions,
+  cliSessionTitle,
   deleteSessionDir,
   extractUserQueries,
   fallbackName,
   indexSessions,
-  isEmptyPrimerSession,
+  isEmptySession,
   isPathInside,
   listSessions,
   mostRecentSession,
@@ -96,49 +97,124 @@ describe("extractUserQueries / classifyUserQueries (empty-session detection)", (
   });
 });
 
-describe("isEmptyPrimerSession", () => {
+describe("isEmptySession", () => {
   const primerOnly = [SYSTEM_LINE, USERINFO_LINE, PRIMER_LINE, ASSISTANT_LINE].join("\n");
   const withRealTurn = [SYSTEM_LINE, USERINFO_LINE, PRIMER_LINE, realQuery("do the thing")].join("\n");
+  // What a session opened by today's extension and never typed into looks like:
+  // grok's own boot lines and nothing else. Requiring a primer here is exactly what
+  // made the sweep a no-op after v2.2.0 (#97).
+  const neverTypedInto = [SYSTEM_LINE, USERINFO_LINE, REMINDER_LINE].join("\n");
 
-  it("content is authoritative: primer-only ⇒ empty", () => {
-    expect(isEmptyPrimerSession({ numMessages: 4, chatHistory: primerOnly })).toBe(true);
+  it("content is authoritative: a session with no real query at all ⇒ empty", () => {
+    expect(isEmptySession({ numMessages: 0, chatHistory: neverTypedInto })).toBe(true);
+  });
+
+  it("content is authoritative: legacy primer-only ⇒ empty", () => {
+    expect(isEmptySession({ numMessages: 4, chatHistory: primerOnly })).toBe(true);
   });
 
   it("content is authoritative: any real query ⇒ NOT empty, even at low message count", () => {
-    expect(isEmptyPrimerSession({ numMessages: 6, chatHistory: withRealTurn })).toBe(false);
+    expect(isEmptySession({ numMessages: 6, chatHistory: withRealTurn })).toBe(false);
   });
 
   it("never flags a session the user renamed", () => {
-    expect(isEmptyPrimerSession({ numMessages: 4, customName: "My work", chatHistory: primerOnly })).toBe(false);
+    expect(isEmptySession({ numMessages: 4, customName: "My work", chatHistory: primerOnly })).toBe(false);
   });
 
-  it("never flags a session that isn't ours (no primer in its history)", () => {
+  it("never flags a pinned, worktree-bound, or subagent session", () => {
+    expect(isEmptySession({ numMessages: 0, pinnedAt: 1, chatHistory: neverTypedInto })).toBe(false);
+    expect(isEmptySession({ numMessages: 0, worktreePath: "/work/wt", chatHistory: neverTypedInto })).toBe(false);
+    expect(isEmptySession({ numMessages: 0, kind: "subagent", chatHistory: neverTypedInto })).toBe(false);
+  });
+
+  it("never flags a session whose history exists but could not be read", () => {
+    // A locked or unreadable file proves nothing; claiming emptiness there would
+    // delete real work on a transient error.
+    expect(isEmptySession({ numMessages: 0, historyUnreadable: true })).toBe(false);
+  });
+
+  it("never flags a session whose history is in a shape we cannot read", () => {
+    // The interlock that keeps one CLI schema change from turning the sweep into a
+    // shredder: a reader that skips what it does not recognise cannot tell "nothing
+    // was said" from "the format moved".
+    const alien = ["not json at all", "{\"speaker\":\"user\",\"body\":\"do the thing\"}"].join("\n");
+    expect(isEmptySession({ numMessages: 12, chatHistory: alien })).toBe(false);
+    expect(isEmptySession({ numMessages: 0, chatHistory: alien })).toBe(false);
+  });
+
+  it("a truncated final line does not hide the real queries before it", () => {
+    // An ordinary mid-write read. The earlier lines still parse, so the session is
+    // correctly seen as having work in it.
+    const midWrite = [SYSTEM_LINE, USERINFO_LINE, realQuery("fix the flaky test"), '{"type":"assis'].join("\n");
+    expect(isEmptySession({ numMessages: 3, chatHistory: midWrite })).toBe(false);
+  });
+
+  it("an empty history FILE falls through to the message count, not to a parse failure", () => {
+    // Zero bytes is not an unreadable format — it is a session grok registered and
+    // never wrote a turn into.
+    expect(isEmptySession({ numMessages: 0, chatHistory: "" })).toBe(true);
+    expect(isEmptySession({ numMessages: 0, chatHistory: "\n\n" })).toBe(true);
+    expect(isEmptySession({ numMessages: 4, chatHistory: "", summary: "Fix the login bug" })).toBe(false);
+  });
+
+  it("never flags a session that isn't ours (a real query from the CLI)", () => {
     const foreign = [SYSTEM_LINE, USERINFO_LINE, realQuery("hello from the CLI")].join("\n");
-    expect(isEmptyPrimerSession({ numMessages: 3, chatHistory: foreign })).toBe(false);
+    expect(isEmptySession({ numMessages: 3, chatHistory: foreign })).toBe(false);
   });
 
   it("never flags a composer session whose real prompt is UNWRAPPED (the #24 composer near-miss)", () => {
     const composer = [SYSTEM_LINE, USERINFO_LINE, unwrappedQuery("/imagine a desert scene"), REMINDER_LINE, PRIMER_LINE].join("\n");
-    expect(isEmptyPrimerSession({ numMessages: 8, chatHistory: composer })).toBe(false);
+    expect(isEmptySession({ numMessages: 8, chatHistory: composer })).toBe(false);
   });
 
   it("content stays authoritative ABOVE the message gate (agentic primer-only turn)", () => {
     // Regression: a primer turn can balloon to dozens of tool/reasoning messages with
     // NO real user query (and grok re-primes on restore/compact). num_messages must
     // not veto the content signal, or such a session (the real 74-message one) lingers.
-    expect(isEmptyPrimerSession({ numMessages: 999, chatHistory: primerOnly })).toBe(true);
+    expect(isEmptySession({ numMessages: 999, chatHistory: primerOnly })).toBe(true);
+  });
+
+  it("a directory holding nothing but summary.json is empty (#97's unloadable rows)", () => {
+    expect(isEmptySession({ numMessages: 0 })).toBe(true);
+    expect(isEmptySession({ numMessages: 0, summary: "", generatedTitle: "" })).toBe(true);
+  });
+
+  it("without any history, a session that recorded messages or earned a title is kept", () => {
+    expect(isEmptySession({ numMessages: 3 })).toBe(false);
+    expect(isEmptySession({ numMessages: 0, summary: "Fix the login bug" })).toBe(false);
   });
 
   it("falls back to the title heuristic when no chat history is available", () => {
-    expect(isEmptyPrimerSession({ numMessages: 4, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(true);
-    expect(isEmptyPrimerSession({ numMessages: 4, generatedTitle: "Hidden Primer v4" })).toBe(true);
-    expect(isEmptyPrimerSession({ numMessages: 4, summary: "Fix the login bug" })).toBe(false);
+    expect(isEmptySession({ numMessages: 4, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(true);
+    expect(isEmptySession({ numMessages: 4, generatedTitle: "Hidden Primer v4" })).toBe(true);
+    expect(isEmptySession({ numMessages: 4, summary: "Fix the login bug" })).toBe(false);
   });
 
   it("without chat history, the message gate still guards the title heuristic", () => {
     // The numMessages gate only applies on the no-content fallback path: a large
     // session with a primer-ish title but no readable history is NOT flagged.
-    expect(isEmptyPrimerSession({ numMessages: 999, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(false);
+    expect(isEmptySession({ numMessages: 999, summary: "Grok Build VSCode Primer v4 Plan Mode" })).toBe(false);
+  });
+});
+
+describe("cliSessionTitle", () => {
+  it("prefers session_summary, falling back to generated_title", () => {
+    expect(cliSessionTitle("Rail archiving", "Something else")).toBe("Rail archiving");
+    expect(cliSessionTitle("  ", "Rail archiving")).toBe("Rail archiving");
+    expect(cliSessionTitle(undefined, undefined)).toBe("");
+  });
+
+  it("rejects legacy primer-derived titles in both forms", () => {
+    // grok summarizes from message #1, which for older extension sessions was our
+    // hidden primer — sometimes summarized, sometimes copied verbatim.
+    expect(cliSessionTitle("Grok VSCode Plan Mode Hidden Primer")).toBe("");
+    expect(cliSessionTitle("[grok-build-vscode primer v4] ## HIDDEN PRIMER This is")).toBe("");
+    expect(cliSessionTitle("Grok VSCode Plan Mode Hidden Primer", "Refactor the uplink"))
+      .toBe("Refactor the uplink");
+  });
+
+  it("keeps a real session that merely mentions a primer", () => {
+    expect(cliSessionTitle("Write a primer for new contributors")).toBe("Write a primer for new contributors");
   });
 });
 
@@ -302,6 +378,94 @@ describe("listSessions", () => {
     expect(out[0].displayName).toBe("My session");
     expect(out[0].customName).toBe("My session");
     expect(out[0].rawSummary).toBe("raw summary");
+  });
+
+  it("prefers grok's own title over our first-message autoName (#96)", () => {
+    // The row the CLI shows for this session is "Rail archiving"; ours was a
+    // truncated opening prompt. Same conversation, so it should read the same way.
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor("a")]: { isDir: true },
+      [path.join(dirFor("a"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: "a", cwd },
+          session_summary: "Rail archiving",
+          updated_at: "2026-01-01T00:00:00Z",
+          num_messages: 8,
+        }),
+      },
+    });
+    const overrides: SessionMetaOverrides = { a: { autoName: "I'd also introduce one more section in rails: P…" } };
+    expect(listSessions({ fs, grokHome, cwd, overrides })[0].displayName).toBe("Rail archiving");
+  });
+
+  it("a manual rename still outranks grok's title", () => {
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor("a")]: { isDir: true },
+      [path.join(dirFor("a"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: "a", cwd },
+          session_summary: "Rail archiving",
+          updated_at: "2026-01-01T00:00:00Z",
+          num_messages: 8,
+        }),
+      },
+    });
+    const overrides: SessionMetaOverrides = { a: { customName: "My session", autoName: "opening prompt…" } };
+    expect(listSessions({ fs, grokHome, cwd, overrides })[0].displayName).toBe("My session");
+  });
+
+  it("uses generated_title when session_summary is blank, and skips a primer title", () => {
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor("a")]: { isDir: true },
+      [dirFor("b")]: { isDir: true },
+      [path.join(dirFor("a"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: "a", cwd },
+          session_summary: "",
+          generated_title: "Uplink reconnect",
+          updated_at: "2026-01-02T00:00:00Z",
+          num_messages: 4,
+        }),
+      },
+      [path.join(dirFor("b"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: "b", cwd },
+          session_summary: "Grok VSCode Plan Mode Hidden Primer",
+          updated_at: "2026-01-01T00:00:00Z",
+          num_messages: 4,
+        }),
+      },
+    });
+    const overrides: SessionMetaOverrides = { b: { autoName: "fix the flaky test" } };
+    const out = listSessions({ fs, grokHome, cwd, overrides });
+    expect(out.find((s) => s.id === "a")?.displayName).toBe("Uplink reconnect");
+    // A legacy primer title must not become the permanent name; ours shows instead.
+    expect(out.find((s) => s.id === "b")?.displayName).toBe("fix the flaky test");
+  });
+
+  it("falls back to autoName before the date when grok has no title yet", () => {
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor("a")]: { isDir: true },
+      [path.join(dirFor("a"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: "a", cwd },
+          session_summary: "",
+          updated_at: "2026-01-01T12:00:00Z",
+          num_messages: 1,
+        }),
+      },
+    });
+    const overrides: SessionMetaOverrides = { a: { autoName: "fix the flaky test" } };
+    expect(listSessions({ fs, grokHome, cwd, overrides })[0].displayName).toBe("fix the flaky test");
   });
 
   it("falls back to date when summary is empty and no customName", () => {

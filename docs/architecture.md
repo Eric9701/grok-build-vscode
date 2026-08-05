@@ -447,10 +447,18 @@ the steady-state fix.
 - **Empty sessions never accumulate (#24).** Beyond the model/effort restart
   case above, *any* time you leave an empty (`hasHistory === false`)
   session — New Session or switching to another — `parkFocused` deletes its on-disk
-  dir, so at most one untitled **New session** exists at a time. A one-shot startup
-  legacy sweep (`sweepEmptyPrimerSessions`) clears primer-only empties left by earlier runs, each
-  confirmed by reading `chat_history.jsonl` (`isEmptyPrimerSession`): swept only if
-  the session received our primer and **zero real user queries**. Detection is
+  dir, so at most one untitled **New session** exists at a time. `sweepEmptySessions`
+  covers what parking cannot reach — a window closed without a prompt, a host that
+  crashed — and runs on activation and after every new/opened session, in that
+  session's repo. Each candidate is confirmed by reading `chat_history.jsonl`
+  (`isEmptySession`): swept on **zero real user queries** in a history that
+  `historyIsIntelligible` could actually parse — an unparseable file is not an empty
+  conversation, and that interlock is what keeps a CLI format change from making
+  every session look sweepable. Covers both today's sessions and the legacy
+  primer-only ones. Live, being-loaded, renamed, pinned, worktree-bound and subagent
+  sessions are excluded, as is anything newer than `SWEEP_MIN_AGE_MS` (30 min) —
+  parking owns the recent ones, and another VS Code window's live sessions are
+  invisible to this process. Detection is
   content-based and agent-agnostic — `extractUserQueries` counts both
   `<user_query>`-wrapped prompts and the unwrapped ones grok/composer sends for slash
   commands — so it's safe for the `grok-build` and `cursor` (composer) agents alike.

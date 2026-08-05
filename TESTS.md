@@ -134,13 +134,14 @@ These actually spawn real shell children (real `/bin/sh`, or real PowerShell on 
 - Returns `undefined` when nothing is found
 - **`extensionWasUpgraded`** — true on any version change (incl. a downgrade), false on a fresh install / unchanged version / empty stored version; gates the silent `grok update` the extension runs once when its own version changes
 
-### `test/sessions.test.ts` — session listing & naming (15 tests)
+### `test/sessions.test.ts` — session listing & naming (93 tests)
 
 - Lists sessions from grok's on-disk layout (`~/.grok/sessions/<urlencoded-cwd>/<id>/`) for the current cwd only
-- Display name falls back to the first user message, then to the id, when no customName override exists
-- customName overrides (stored in VS Code `globalState`) win over the disk-derived name
+- Row naming precedence (#96): a manual `customName`, then grok's own title (`cliSessionTitle` — `session_summary`, else `generated_title`), then our first-message `autoName`, then `Untitled (<date>)`. A legacy primer-derived title is rejected in both its summarized and verbatim forms, while a real session that merely mentions a primer is kept
 - Sorts by most-recently-updated; tolerates malformed/missing session files without throwing
 - Delete removes the right entry and leaves others intact
+- **`isEmptySession`** — the predicate the sweep deletes on (#97). Chat history is authoritative: zero real user queries means empty, whatever `num_messages` says, which covers both today's never-typed-into sessions and legacy primer-only ones. Renamed, pinned, worktree-bound and subagent sessions are refused, as is a history file that exists but cannot be read; a directory holding nothing but `summary.json` is the unloadable shape and does qualify
+- **`historyIsIntelligible`** — the interlock beneath it: a history in a format we cannot parse is never called empty (one CLI schema change would otherwise make the sweep delete everything), while a truncated final line from a write in progress still leaves the real queries before it visible, and a zero-byte file falls through to the message count rather than to a parse failure
 
 ### `test/plan-gate.test.ts` — plan-mode policy (63 tests)
 

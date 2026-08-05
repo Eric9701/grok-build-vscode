@@ -102,7 +102,7 @@ import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
 import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
-import { isPrimerText, isPrimerSummary } from "./grok-primer";
+import { isPrimerText } from "./grok-primer";
 import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
@@ -120,13 +120,14 @@ import {
   RepoPins,
   carrySessionName,
   clearSessions,
+  cliSessionTitle,
   defaultFs,
   deleteSessionDir,
   discoverRepos,
   fallbackName,
   forkDisplayName,
   indexSessions,
-  isEmptyPrimerSession,
+  isEmptySession,
   isPathInside,
   mostRecentSession,
   normalizeRepoPath,
@@ -332,12 +333,20 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly IDLE_TTL_MS = 60 * 60 * 1000; // 1h
   private static readonly REAP_INTERVAL_MS = 5 * 60 * 1000; // sweep every 5 min
   private static readonly STAGING_ORPHAN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-  // The legacy empty-primer sweep only scans the newest N by mtime, keeping its
-  // one-shot compatibility scan bounded on a large store.
+  // The empty-session sweep only scans the newest N by mtime, keeping it bounded
+  // on a large store.
   private static readonly SWEEP_SCAN_LIMIT = 300;
+  // …and leaves recent ones alone entirely. Parking is what removes the empty
+  // session you just walked away from; the sweep exists for the ones nothing was
+  // there to park, and those are never minutes old. A session grok registered
+  // recently may not have written its history yet, and — the case this is really
+  // sized for — may be open in ANOTHER VS Code window, whose live processes this
+  // one cannot see. That window's session would be empty (nothing else is ever
+  // swept) and grok re-persists it on its next turn, so the cost is bounded; the
+  // delay is what keeps it from being routine. Costs nothing in return: an orphan
+  // is stamped when its window opened, so by the next activation it is already old.
+  private static readonly SWEEP_MIN_AGE_MS = 30 * 60 * 1000;
   private reaper?: ReturnType<typeof setInterval>;
-  /** Guards {@link sweepEmptyPrimerSessions} to one run per activation. */
-  private sweptEmptySessions = false;
   private oauthShadowWarningShown = false;
   private output: vscode.OutputChannel;
   private get chips(): FileChip[] { return this.focused.chips; }
@@ -4593,33 +4602,34 @@ See design doc for the full state machine diagram.`;
   /** The name this session shows in the history list — what the user actually
    *  reads, which is what a fork should be named after (#48).
    *
-   *  Precedence mirrors the list itself: the rename/auto-generated `customName`
-   *  first (that IS the row's label for any session that has one), then grok's
-   *  own `session_summary` from disk, then the first user message.
+   *  Precedence mirrors the list itself: the user's `customName` first (that IS
+   *  the row's label for any session that has one), then grok's own title, then
+   *  the first user message.
    *
-   *  The one deliberate departure: a **legacy primer-derived** summary is
-   *  skipped. Older builds sent the primer as message #1, so inheriting that
-   *  invisible internal title into a fork would propagate it forever.
-   *  `isPrimerSummary` rejects it and we fall through to something real. */
+   *  The one deliberate departure: a **legacy primer-derived** title is skipped.
+   *  Older builds sent the primer as message #1, so inheriting that invisible
+   *  internal title into a fork would propagate it forever. `cliSessionTitle`
+   *  rejects it and we fall through to something real. */
   private sessionDisplayName(session: Session): string {
     const id = session.activeSessionId;
     if (!id) return "";
-    const custom = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]?.customName?.trim();
+    const override = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
+    const custom = override?.customName?.trim();
     if (custom) return custom;
     try {
       const cwd = this.sessionCwd(session);
-      const raw = fs.readFileSync(
+      const raw = JSON.parse(fs.readFileSync(
         path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), id, "summary.json"),
         "utf8",
-      );
-      const summary = (JSON.parse(raw)?.session_summary as string | undefined)?.trim();
-      if (summary && !isPrimerSummary(summary)) return fallbackName(summary, Date.now());
+      ));
+      const title = cliSessionTitle(raw?.session_summary, raw?.generated_title);
+      if (title) return fallbackName(title, Date.now());
     } catch {
       // No summary yet (grok flushes it at turn end) — fall through.
     }
     // Same last resort the history list uses ("Untitled (<date>)"), so a fork of
     // a nameless session reads like a row rather than a bare "(Fork)".
-    const first = (session.firstUserMessageForTitle || "").trim();
+    const first = (session.firstUserMessageForTitle || "").trim() || (override?.autoName || "").trim();
     return fallbackName(first, Date.now());
   }
 
@@ -4631,7 +4641,10 @@ See design doc for the full state machine diagram.`;
   ): SessionListEntry {
     const now = Date.now();
     const customName = overrides[id]?.customName?.trim() || undefined;
-    const firstMsg = (session.firstUserMessageForTitle || "").trim();
+    // No summary.json to read yet, so grok has no title for this one — the best
+    // we have is the opening message, live or as the stored `autoName`.
+    const firstMsg = (session.firstUserMessageForTitle || "").trim()
+      || (overrides[id]?.autoName || "").trim();
     const displayName = customName || (firstMsg ? fallbackName(firstMsg, now) : "New session");
     const ts = session.lastActiveAt || now;
     return {
@@ -6882,22 +6895,34 @@ See design doc for the full state machine diagram.`;
     return true;
   }
 
+  /** Give a session a readable name from its opening prompt, as `autoName` — never
+   *  as `customName`. The distinction is the whole of #96: written as a rename, our
+   *  guess outranked grok's own `session_summary` forever, so every unrenamed row
+   *  stayed a truncated first sentence while the CLI had a real topic for it.
+   *  `buildEntry` now ranks this below the CLI title, which means it shows only
+   *  until grok writes one — usually the same turn.
+   *
+   *  Sessions named before this change keep the name they have: an auto title
+   *  already written into `customName` is indistinguishable from a rename, and
+   *  guessing wrong there would silently discard names people typed. */
   private maybeGenerateTitle(session: Session): void {
     if (session.titleGenerated) return;
     const sid = session.client?.sessionId ?? session.activeSessionId;
     const first = session.firstUserMessageForTitle;
     if (!sid || !first) return;
     session.titleGenerated = true;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    if (overrides[sid]?.customName) return;
     const cleaned = first.replace(/\s+/g, " ").trim();
     if (!cleaned) return;
     const title = cleaned.length > 50 ? cleaned.slice(0, 47) + "…" : cleaned;
-    const next: SessionMetaOverrides = {
-      ...overrides,
-      [sid]: { ...(overrides[sid] ?? {}), customName: title },
-    };
-    void this.context.globalState.update(SESSION_META_KEY, next);
+    void this.updateSessionMeta((current) => {
+      const entry = current[sid];
+      if (entry?.customName || entry?.autoName) return null;
+      return { ...current, [sid]: { ...(entry ?? {}), autoName: title } };
+    });
+    // An override changes the row without touching summary.json's mtime, so the
+    // mtime-keyed cache would keep serving the un-named entry (same reason rename
+    // and pin invalidate here).
+    this.sessionCache.delete(sid);
   }
 
   private buildInitialStateMsg(): HostMsg {
@@ -6930,10 +6955,11 @@ See design doc for the full state machine diagram.`;
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     void this.postRemoteStatus();
-    // Sweep legacy empty-primer sessions once the first session is live (so the
-    // newly-focused session is excluded from the sweep).
+    // Sweep abandoned empty sessions once the first session is live (so the
+    // newly-focused session is excluded from the sweep). This is the run that
+    // collects what the last window left behind when it closed without a prompt.
     void this.startSession().then(() => {
-      this.sweepEmptyPrimerSessions();
+      this.sweepEmptySessions();
     });
   }
 
@@ -7101,6 +7127,7 @@ See design doc for the full state machine diagram.`;
     hasLiveSession(id: string): boolean;
     remoteClientLeft(clientId: string): void;
     remoteClientRoster(clientIds: string[]): void;
+    sweepEmptySessions(cwd: string): void;
     workspaceRoot(): string;
   } {
     return {
@@ -7314,6 +7341,7 @@ See design doc for the full state machine diagram.`;
       ),
       remoteClientLeft: (clientId) => this.releaseRemoteClient(clientId),
       remoteClientRoster: (clientIds) => this.retainRemoteClients(clientIds),
+      sweepEmptySessions: (cwd) => this.sweepEmptySessions(cwd),
       workspaceRoot: () => this.workspaceRoot(),
     };
   }
@@ -7604,51 +7632,101 @@ See design doc for the full state machine diagram.`;
     this.sessionCache.delete(id);
   }
 
-  /** One-shot cleanup (per activation) of empty, primer-only sessions left on disk by
-   *  earlier runs — the "extra sessions I didn't create" of #24. Scans the newest
-   *  slice by mtime (bounded, so it stays cheap on a large store), confirms each
-   *  candidate is genuinely primer-only by reading its chat history, and deletes it.
-   *  Never touches a live session, a renamed one, or a session that isn't ours. */
-  private sweepEmptyPrimerSessions(): void {
-    if (this.sweptEmptySessions) return;
-    this.sweptEmptySessions = true;
-    const cwd = this.workspaceRoot();
+  /** Every session id in a repo that has been PROVEN to hold real work, for this
+   *  activation. The sweep runs on every new/opened session, and without this each
+   *  run would re-read every `summary.json` under the repo; with it, a repeat run
+   *  reads only directories it has never classified. Safe to keep forever: a
+   *  session that has a real user turn never becomes empty again. Keyed by
+   *  {@link normalizeRepoPath}. */
+  private readonly provenNonEmpty = new Map<string, Set<string>>();
+
+  /** Delete every empty session directory in `cwd` — one that grok registered but
+   *  no conversation ever reached. `parkFocused` handles the session you walk away
+   *  from inside a running window; this handles the ones nothing was there to park:
+   *  a window closed without a prompt, a crashed host, a remote tab that vanished.
+   *  With the primer retired (v2.2.0) nothing removed those at all and they
+   *  collected as unloadable "Untitled" rows — a session directory holding only
+   *  `summary.json` is not loadable by the CLI (#97).
+   *
+   *  Runs on activation and after every new/opened session, so at most one empty
+   *  session — the live one you are looking at — survives in the repo you are
+   *  working in. Scans the newest slice by mtime so it stays bounded on a large
+   *  store, and reads content only for directories it has not already cleared.
+   *  Never touches a live session, one being loaded right now, one younger than
+   *  {@link SWEEP_MIN_AGE_MS}, a renamed or pinned one, a worktree session, or a
+   *  subagent's transcript. Best-effort throughout: a locked directory is logged
+   *  and skipped. */
+  private sweepEmptySessions(cwd: string = this.workspaceRoot()): void {
+    if (!cwd) return;
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.output.appendLine(m);
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    // A session with a live process re-persists itself the moment it is touched,
+    // so deleting one is at best pointless and at worst races the CLI. The same
+    // goes for a load already in flight: its directory is about to be handed to a
+    // process that has not started yet, and it has no pool entry to protect it.
     const liveIds = new Set<string>();
     for (const s of this.pool) if (s.activeSessionId) liveIds.add(s.activeSessionId);
     if (this.focused.activeSessionId) liveIds.add(this.focused.activeSessionId);
+    for (const clientId of this.remoteClients.clients()) {
+      const id = this.remoteClients.active(clientId)?.activeSessionId;
+      if (id) liveIds.add(id);
+    }
+    for (const id of this.sessionLoadReservations.keys()) liveIds.add(id);
 
+    const repoKey = normalizeRepoPath(cwd);
+    let proven = this.provenNonEmpty.get(repoKey);
+    if (!proven) {
+      proven = new Set<string>();
+      this.provenNonEmpty.set(repoKey, proven);
+    }
     const sessDir = sessionsDirFor(grokHome, cwd);
     const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
     const removed: string[] = [];
-    for (const { id } of index.slice(0, GrokSidebar.SWEEP_SCAN_LIMIT)) {
-      if (liveIds.has(id) || overrides[id]?.customName?.trim()) continue;
+    const now = Date.now();
+    for (const { id, mtimeMs } of index.slice(0, GrokSidebar.SWEEP_SCAN_LIMIT)) {
+      if (liveIds.has(id) || proven.has(id)) continue;
+      // The index is already sorted newest-first, so this could break — but a
+      // clock skew or a touched file would then silently end the scan early.
+      if (now - mtimeMs < GrokSidebar.SWEEP_MIN_AGE_MS) continue;
       let raw: any;
       try {
         raw = JSON.parse(defaultFs.readFileSync(path.join(sessDir, id, "summary.json"), "utf8"));
       } catch {
         continue;
       }
-      const numMessages = typeof raw?.num_messages === "number" ? raw.num_messages : 0;
-      // Read the chat history and let the content check decide — do NOT skip on a high
-      // num_messages. A primer-only session whose agentic primer turn ballooned past
-      // the gate (e.g. 74 messages, zero real queries) would otherwise survive forever.
-      // Real sessions are already cheaply skipped above via their customName override.
+      // Read the chat history and let the content check decide — do NOT skip on a
+      // high num_messages. A primer-only session whose agentic primer turn ballooned
+      // past the gate (e.g. 74 messages, zero real queries) would otherwise survive
+      // forever. A history file that is present but unreadable is not evidence of
+      // anything, so it is reported as such rather than as "no history".
       let chatHistory: string | undefined;
+      let historyUnreadable = false;
+      const historyPath = path.join(sessDir, id, "chat_history.jsonl");
       try {
-        chatHistory = defaultFs.readFileSync(path.join(sessDir, id, "chat_history.jsonl"), "utf8");
+        chatHistory = defaultFs.readFileSync(historyPath, "utf8");
       } catch {
-        chatHistory = undefined;
+        historyUnreadable = defaultFs.existsSync(historyPath);
       }
-      const empty = isEmptyPrimerSession({
-        numMessages,
+      const override = overrides[id];
+      const empty = isEmptySession({
+        customName: override?.customName,
+        pinnedAt: override?.pinnedAt,
+        worktreePath: override?.worktreePath,
+        kind: typeof raw?.session_kind === "string" ? raw.session_kind : undefined,
+        numMessages: typeof raw?.num_messages === "number" ? raw.num_messages : 0,
         summary: typeof raw?.session_summary === "string" ? raw.session_summary : "",
         generatedTitle: typeof raw?.generated_title === "string" ? raw.generated_title : "",
         chatHistory,
+        historyUnreadable,
       });
-      if (!empty) continue;
+      if (!empty) {
+        // Cache only a verdict reached from evidence. A locked file makes this
+        // "not empty" too, and caching THAT would retire the session from every
+        // later sweep this activation — the lock clears, the orphan stays forever.
+        if (!historyUnreadable) proven.add(id);
+        continue;
+      }
       try {
         deleteSessionDir({ fs: defaultFs, grokHome, cwd, id });
         removed.push(id);
@@ -7664,7 +7742,7 @@ See design doc for the full state machine diagram.`;
         this.sessionCache.delete(id);
       }
       void this.context.globalState.update(SESSION_META_KEY, next);
-      log(`[sessions] swept ${removed.length} empty primer session(s) from history`);
+      log(`[sessions] swept ${removed.length} empty session(s) from history`);
       this.postSessionsList();
     }
   }
@@ -7926,6 +8004,7 @@ See design doc for the full state machine diagram.`;
     this.emit(this.focused, { type: "clearMessages" });
     await this.startSession();
     await this.persistWorktreeBinding(this.focused);
+    this.sweepEmptySessions(this.sessionCwd(this.focused));
     this.postRepoCatalog();
   }
 
@@ -7952,6 +8031,7 @@ See design doc for the full state machine diagram.`;
     this.emit(session, { type: "clearMessages" });
     await this.startSession(undefined, session);
     await this.persistWorktreeBinding(session);
+    this.sweepEmptySessions(this.sessionCwd(session));
     if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteSessionList(session, ownerTabToken);
   }
@@ -7994,6 +8074,8 @@ See design doc for the full state machine diagram.`;
     } finally {
       this.releaseSessionLoad(id, claim.reservation, failure);
     }
+    const opened = this.remoteClients.active(clientId);
+    if (opened) this.sweepEmptySessions(this.sessionCwd(opened));
   }
 
   /** The repo scope a remote `resumeSession` should run under. Normally the tab's
@@ -8179,6 +8261,10 @@ See design doc for the full state machine diagram.`;
     } finally {
       this.releaseSessionLoad(id, claim.reservation, failure);
     }
+    // Opening a conversation is the other moment the user is looking straight at
+    // this repo's history — and the moment the session they just left became
+    // abandonable. Only on success: a load that threw has told us nothing.
+    this.sweepEmptySessions(this.sessionCwd(this.focused));
   }
 
   private async openSessionReserved(id: string, sessionCwd?: string): Promise<void> {

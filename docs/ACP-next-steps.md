@@ -35,7 +35,8 @@ surprising amount of machinery that existed *only* to clean up after it:
 
 The legacy read side deliberately remains. Existing sessions still contain primer turns, so
 `isPrimerText` / `isPrimerSummary`, replay hiding (including `media/chat.js`'s mirror), the
-empty-primer sweep, title repair, and prompt-index compensation must continue to recognize them.
+empty-session sweep, the history-title filter (`cliSessionTitle`), title repair, and prompt-index
+compensation must continue to recognize them.
 `suppressContent` / `SUPPRESS_TYPES` also remain: hidden summary and context-maintenance turns use
 the same generic suppression mechanism even though priming no longer does.
 

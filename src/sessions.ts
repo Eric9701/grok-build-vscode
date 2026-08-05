@@ -32,6 +32,14 @@ export interface SessionListEntry {
 
 export interface SessionMetaOverride {
   customName?: string;
+  /** The extension's own title, taken from the first user message when a session's
+   *  first turn completes. Deliberately NOT stored as `customName`: a name the
+   *  user typed and a name we guessed are different claims, and writing the guess
+   *  into the same field made it permanent — grok's own `session_summary` for that
+   *  session could never surface, so history read as half-sentences of the opening
+   *  prompt while `grok sessions list` showed a clean topic (#96). Ranks BELOW the
+   *  CLI's title, so it only fills the gap before grok writes one. */
+  autoName?: string;
   pinnedAt?: number;
   /** The checkout this pinned session lives in, captured when it was pinned. The
    *  Pinned group spans repos, so it must know where to read each session from —
@@ -390,6 +398,24 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
     );
 }
 
+/** grok's own title for a session — `session_summary`, else `generated_title` —
+ *  or "" when it has not produced a usable one. This is the title the CLI shows in
+ *  `grok sessions list`, so preferring it keeps the same conversation recognizable
+ *  in both surfaces (#96).
+ *
+ *  Legacy primer-derived titles are rejected: grok summarizes from message #1, and
+ *  for sessions older extension versions started that message was our hidden
+ *  primer — "Grok VSCode Plan Mode Hidden Primer" is not what that conversation is
+ *  about. Both the summarized form ({@link isPrimerSummary}) and the raw marker
+ *  ({@link isPrimerText}, which grok sometimes copies verbatim) are filtered. Pure. */
+export function cliSessionTitle(summary?: string, generatedTitle?: string): string {
+  for (const candidate of [summary, generatedTitle]) {
+    const title = (candidate ?? "").trim();
+    if (title && !isPrimerSummary(title) && !isPrimerText(title)) return title;
+  }
+  return "";
+}
+
 /** Default friendly name when no `customName` or `session_summary` is available. */
 export function fallbackName(summary: string, updatedAt: number): string {
   const s = (summary || "").trim();
@@ -427,7 +453,13 @@ function buildEntry(
   const modelId = typeof raw?.current_model_id === "string" ? raw.current_model_id : undefined;
   const override = overrides[id];
   const customName = override?.customName?.trim() || undefined;
-  const displayName = customName || fallbackName(rawSummary, updatedAt);
+  // Precedence (#96): what the user called it, then what grok calls it, then our
+  // own first-message guess, then the date. The middle step is the point — it is
+  // the only one of the three that describes the conversation rather than its
+  // opening line, and it is what the CLI shows for the same session.
+  const generatedTitle = typeof raw?.generated_title === "string" ? raw.generated_title : "";
+  const autoName = override?.autoName?.trim() || "";
+  const displayName = customName || fallbackName(cliSessionTitle(rawSummary, generatedTitle) || autoName, updatedAt);
   const kind = raw?.session_kind === "subagent" ? ("subagent" as const) : undefined;
   const pinnedAt = typeof override?.pinnedAt === "number" ? override.pinnedAt : undefined;
   return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId, kind, pinnedAt };
@@ -608,6 +640,28 @@ export function extractUserQueries(chatHistoryJsonl: string): string[] {
   return out;
 }
 
+/** True when a `chat_history.jsonl` is written in the shape {@link extractUserQueries}
+ *  knows how to read: at least one line parses as JSON carrying a role.
+ *
+ *  This is a safety interlock, not a parser. "No real user queries" is only
+ *  evidence of an empty session if we could read the file at all — and a reader
+ *  that silently skips what it does not recognize cannot tell "nothing was said"
+ *  from "grok changed the format". Without this, one CLI schema change would turn
+ *  the sweep from a cleanup into a shredder that finds EVERY session empty. A
+ *  truncated final line (a write in progress) still leaves the earlier ones
+ *  parseable, so this refuses the catastrophic case without refusing the ordinary
+ *  one. Pure. */
+export function historyIsIntelligible(chatHistoryJsonl: string): boolean {
+  for (const line of (chatHistoryJsonl ?? "").split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let o: any;
+    try { o = JSON.parse(s); } catch { continue; }
+    if (typeof (o?.type ?? o?.role) === "string") return true;
+  }
+  return false;
+}
+
 /** Split a session's user queries into primer vs. real. A session is "empty" when
  *  it received our hidden primer and never a real (non-primer) query. Pure. */
 export function classifyUserQueries(chatHistoryJsonl: string): { primer: number; real: number } {
@@ -620,44 +674,75 @@ export function classifyUserQueries(chatHistoryJsonl: string): { primer: number;
   return { primer, real };
 }
 
-export interface EmptyPrimerInput {
+export interface EmptySessionInput {
   /** A user rename means the session matters — never empty, whatever its content. */
   customName?: string;
+  /** A pinned conversation is the same kind of deliberate intent as a rename. */
+  pinnedAt?: number;
+  /** A session bound to an isolated worktree backs a checkout the user asked for.
+   *  `parkFocused` already refuses to auto-delete one; so does this. */
+  worktreePath?: string;
+  /** grok's `session_kind`. A `subagent` directory is a delegation's own
+   *  transcript — never a conversation the user started, and not ours to remove. */
+  kind?: string;
   /** `num_messages` from summary.json (the cheap gate; a primer-only session is ~4). */
   numMessages: number;
   /** `session_summary` from summary.json (fallback signal when no chat history). */
   summary?: string;
   /** `generated_title` from summary.json (fallback signal when no chat history). */
   generatedTitle?: string;
-  /** `chat_history.jsonl` contents — the authoritative signal when provided. */
+  /** `chat_history.jsonl` contents — the authoritative signal when provided.
+   *  Undefined means the file is NOT THERE, which is itself evidence; a file that
+   *  exists but could not be read must arrive as `historyUnreadable` instead. */
   chatHistory?: string;
+  /** The history file exists but could not be read (locked, permissions). We
+   *  cannot prove the session is empty, so we must not claim that it is. */
+  historyUnreadable?: boolean;
 }
 
-/** Decide whether a session is an empty, primer-only extension session safe to
- *  delete. Bulletproof when `chatHistory` is supplied: true iff the session got our
- *  primer and zero real user queries — so a session we didn't start (no primer) or
- *  one with any real turn is never flagged. Without chat history it falls back to
- *  the conservative title heuristic ({@link isPrimerSummary}) gated on a low message
- *  count. Pure. */
-export function isEmptyPrimerSession(
-  inp: EmptyPrimerInput,
+/** Decide whether a session directory holds no conversation at all and is safe to
+ *  delete.
+ *
+ *  Chat history is authoritative — but only when it can be read AND understood. A
+ *  session is empty iff its history is in a shape we can parse and carries **zero
+ *  real user queries**. That covers both shapes we have shipped — the legacy
+ *  primer-only session (our hidden primer, no real turn) and today's primer-free
+ *  one (a session grok created for a view that was never typed into). Requiring a
+ *  primer, as this did until the primer was retired, made the check a no-op on
+ *  every session created since: nothing was removing them, and they piled up in
+ *  history as unloadable "Untitled" rows (#97).
+ *
+ *  `num_messages` deliberately does NOT veto the content signal. An agentic primer
+ *  turn could balloon to dozens of tool/reasoning messages with no real user query
+ *  (and grok re-primes on restore/compact), which once left such sessions — a real
+ *  74-message one — in history forever.
+ *
+ *  Without any history file the honest signals are the message count and the
+ *  title: nothing written at all is empty, and a low-message session wearing a
+ *  primer-derived title is the legacy case. Pure. */
+export function isEmptySession(
+  inp: EmptySessionInput,
   maxMessages = EMPTY_PRIMER_MAX_MESSAGES,
 ): boolean {
   if (inp.customName?.trim()) return false;
-  // Chat history is authoritative: a session is empty iff it got our primer and
-  // ZERO real user queries — regardless of message count. An *agentic* primer turn
-  // can balloon to dozens of tool/reasoning messages with no real user query (and
-  // grok re-primes on restore/compact), so `num_messages` must NOT veto the content
-  // signal — that false-negative left such sessions (e.g. a 74-message primer-only
-  // session) in history forever.
-  if (typeof inp.chatHistory === "string") {
-    const { primer, real } = classifyUserQueries(inp.chatHistory);
-    return primer > 0 && real === 0;
+  if (typeof inp.pinnedAt === "number") return false;
+  if (inp.worktreePath?.trim()) return false;
+  if (inp.kind === "subagent") return false;
+  if (inp.historyUnreadable) return false;
+  if ((inp.chatHistory ?? "").trim()) {
+    // Read it, or refuse to judge it. A file we cannot parse is not an empty
+    // conversation — see historyIsIntelligible.
+    if (!historyIsIntelligible(inp.chatHistory!)) return false;
+    return classifyUserQueries(inp.chatHistory!).real === 0;
   }
-  // No chat history available — fall back to the conservative title heuristic, gated
-  // on a low message count so a large real session can't be flagged on its title.
+  // Either no history file, or one with nothing in it yet.
   if (inp.numMessages > maxMessages) return false;
-  return isPrimerSummary(`${inp.summary ?? ""} ${inp.generatedTitle ?? ""}`);
+  const title = `${inp.summary ?? ""} ${inp.generatedTitle ?? ""}`;
+  // A directory holding nothing but summary.json: grok registered the session and
+  // no turn ever reached it. The commonest producer is a window opened on a repo
+  // and closed again without a prompt.
+  if (inp.numMessages === 0 && !title.trim()) return true;
+  return isPrimerSummary(title);
 }
 
 /** Remove the on-disk session directory. No-op if missing. */

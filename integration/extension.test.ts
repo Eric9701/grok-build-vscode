@@ -1425,6 +1425,76 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.ok(!fs.existsSync(storedSessionDir(id)), "a pruned client's primer history must be deleted");
   });
 
+  test("the empty-session sweep removes what nothing was there to park, and only that", async () => {
+    // #97. `parkFocused` handles the session you walk away from inside a running
+    // window; nothing handled the ones nobody was there to park — a window closed
+    // without a prompt, a host that crashed. The old sweep required our hidden
+    // primer, so once that was retired it recognised nothing and the directories
+    // collected as "Untitled" rows the CLI cannot even load.
+    const stamp = Date.now();
+    const bootOnly = [
+      JSON.stringify({ type: "system", content: [{ type: "text", text: "You are Grok." }] }),
+      JSON.stringify({
+        type: "user",
+        content: [{ type: "text", text: "<system-reminder>\navailable skills\n</system-reminder>" }],
+        synthetic_reason: "system_reminder",
+      }),
+    ].join("\n");
+    const realTurn = [
+      bootOnly,
+      JSON.stringify({ type: "user", content: [{ type: "text", text: "<user_query>\nfix the flaky test\n</user_query>" }] }),
+    ].join("\n");
+    // Backdated on purpose: the sweep only claims a session was ABANDONED, and
+    // refuses to claim that about one grok registered moments ago (which may not
+    // have written its history yet, or may belong to another window).
+    const writeSession = (id: string, numMessages: number, history?: string) => {
+      const dir = storedSessionDirFor(repoB, id);
+      fs.mkdirSync(dir, { recursive: true });
+      const summary = path.join(dir, "summary.json");
+      fs.writeFileSync(
+        summary,
+        JSON.stringify({ info: { id, cwd: repoB }, num_messages: numMessages, session_summary: "" }),
+      );
+      if (history !== undefined) fs.writeFileSync(path.join(dir, "chat_history.jsonl"), history);
+      const old = new Date(Date.now() - 60 * 60 * 1000);
+      fs.utimesSync(summary, old, old);
+    };
+
+    const bare = `sweep-bare-${stamp}`;     // only summary.json — the unloadable shape
+    const booted = `sweep-booted-${stamp}`; // grok's own boot lines, never typed into
+    const real = `sweep-real-${stamp}`;     // one real user query
+    const live = `sweep-live-${stamp}`;     // empty, but a tab is looking at it
+    writeSession(bare, 0);
+    writeSession(booted, 0, bootOnly);
+    writeSession(real, 3, realTurn);
+    writeSession(live, 0, bootOnly);
+    hooks.seedRemoteSession("sweep-owner", live, repoB, [], false);
+
+    hooks.sweepEmptySessions(repoB);
+
+    assert.ok(!fs.existsSync(storedSessionDirFor(repoB, bare)), "a directory holding only summary.json must go");
+    assert.ok(!fs.existsSync(storedSessionDirFor(repoB, booted)), "a session never typed into must go");
+    assert.ok(fs.existsSync(storedSessionDirFor(repoB, real)), "a session with a real turn must survive");
+    assert.ok(
+      fs.existsSync(storedSessionDirFor(repoB, live)),
+      "a live session must survive — its CLI owns the directory and re-persists it",
+    );
+
+    // The same directory, freshly stamped, is not something the sweep will claim
+    // to know about: parking removes those, and one window must not delete what
+    // another just created.
+    const recent = `sweep-recent-${stamp}`;
+    writeSession(recent, 0, bootOnly);
+    const now = new Date();
+    fs.utimesSync(path.join(storedSessionDirFor(repoB, recent), "summary.json"), now, now);
+    hooks.sweepEmptySessions(repoB);
+    assert.ok(fs.existsSync(storedSessionDirFor(repoB, recent)), "a session created moments ago must survive");
+    fs.rmSync(storedSessionDirFor(repoB, recent), { recursive: true, force: true });
+
+    hooks.remoteClientLeft("sweep-owner");
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
   test("an undiscovered cwd is refused, so a remote cannot name an arbitrary path", async () => {
     const posts: Array<{ dest: string; msg: any }> = [];
     hooks.onPost((dest: string, msg: any) => posts.push({ dest, msg }));
