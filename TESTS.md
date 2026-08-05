@@ -224,7 +224,7 @@ happy-dom test driving the shipped webview through a `planHistoryQueue` + `sessi
 - `agentReset` removes the in-flight agent bubble
 - Subsequent `messageChunk` after `agentReset` creates a fresh bubble (the false-approval text doesn't leak through)
 
-### `test/webview-ui.dom.test.ts` — webview regressions in a real DOM (128 tests)
+### `test/webview-ui.dom.test.ts` — webview regressions in a real DOM (170 tests)
 
 happy-dom test locking in the native-Windows regressions this build fixed (plus later busy/version/dedup behavior), so they can't silently come back:
 
@@ -237,6 +237,33 @@ happy-dom test locking in the native-Windows regressions this build fixed (plus 
 - **User-message dedup** — a `user_message_chunk` echoed live (grok ≥0.2.33) never doubles the optimistic bubble; only a `session/load` replay drives user bubbles
 - **Welcome version lifecycle** — flips to "Connected · v<version>" only when session start finishes, not at the bare ACP handshake; later busy toggles don't overwrite it
 - **Gear menu** — the Other group's About sub-view (extension + CLI versions, update check) and Config & debug sub-view render and route correctly
+
+### `test/projects-rail.dom.test.ts` — the browser's projects rail (56 tests)
+
+The rail is the relay page's surface: `#projects-rail` lives in that page, never in the
+extension's `getHtml()`, so the harness adds the mount the way the browser does — and the
+absence of that element is exactly what keeps VS Code free of it. First assertion in the
+file: with the element present but `IS_REMOTE` false, nothing renders and nothing is
+posted.
+
+- **Degrade before feature** — a host that never answers `listRepoSessions` still gets a
+  usable rail (the selected repo reads the ordinary `sessions` frame), is probed **once**
+  rather than once per project, and is never offered controls it would drop: cross-project
+  *Clear all history* and *Archive project* are both withheld until the host proves itself
+- **Ordering is by the newest conversation**, not the catalog's `updatedAt` — that is the
+  session directory's mtime, which *clearing a project touches*, so the emptied project
+  used to jump to the top. Ties break on the name for the same reason
+- **Archiving is derived, never stored as a section** — one timestamped choice per project
+  plus a 30-day rule, both read against that project's newest conversation. Covered: a
+  choice overridden the moment the project is worked in again, an explicit un-archive
+  surviving the age rule, the floor that keeps the three newest projects visible, the
+  project you are reading never being filed away, and the age rule refusing to run at all
+  on a host that cannot supply real activity
+- **The project holding the live conversation stays open** — its twisty is disabled, and a
+  project folded *before* the conversation moved there springs open — including when that
+  conversation lives in a worktree, whose cwd is not a catalog row
+- **Search** reaches into Archived and forces it open, rather than answering "No matches"
+  while the project sits collapsed below
 
 ### `test/file-ref.test.ts` — open-file refs + inline-read guard (8 tests)
 

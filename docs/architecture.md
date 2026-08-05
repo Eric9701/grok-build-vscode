@@ -297,6 +297,22 @@ repository. And because the relay serves a client that can be newer than the ins
 extension, the chip renders only once a `repos` frame has actually arrived — an older
 host that never sends one gets no chip rather than a dead control.
 
+At desktop width that picker becomes a **projects rail**, which is the same
+capability-gated affordance in another shape: `#projects-rail` exists only in the
+relay's page, so the element lookup is the entire gate and the VS Code webview renders
+nothing new. Other projects' rows arrive on `repoSessions` (answering `listRepoSessions`);
+where that frame never comes the rail degrades to the selected repo's own list. Which
+section a project sits in — Projects or Archived — is **derived in the client**, never a
+stored section: `setRepoArchived` records one timestamped choice per repo in
+`grok.repoArchives`, reported back on every catalog row as `archived`/`archivedAt`, and a
+project counts as archived when that choice outranks its newest conversation or when
+nothing has happened in it for thirty days. Activity newer than the choice simply
+overrides it, which is what makes "work in an archived project and it returns" need no
+bookkeeping. The age rule runs only on conversations the client actually holds — the
+catalog's `updatedAt` is the session *directory's* mtime, which does not move when an
+existing conversation continues, so trusting it against an older host would archive a
+project in daily use. Ordering and the VS Code repo picker are untouched by any of it.
+
 Selection and conversation ownership are **per remote browser tab**.
 `RemoteClientState` maps the current opaque relay `clientId` to its normalized cwd and
 active remote `Session`, while a high-entropy logical-tab token in `sessionStorage`
