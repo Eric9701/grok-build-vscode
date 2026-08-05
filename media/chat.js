@@ -405,6 +405,10 @@
     // and then refused.
     hostCaps: {},
     railCollapsed: {},
+    /** The project the live conversation was in at the last render. Only used to
+     *  notice it MOVED, so a fold can be corrected once on arrival instead of
+     *  being refused outright. */
+    railLiveRepoKey: "",
     railExpanded: {},
     // Whether the Archived section is open. Closed by default and remembered
     // per device, like the project folds.
@@ -3336,9 +3340,29 @@
     }, ms);
   }
 
+  /** Open the project the live conversation just moved into, once. A fold is a
+   *  preference set at some earlier moment and must not hide where you are now —
+   *  but that is a correction owed when the conversation ARRIVES, not a reason to
+   *  refuse the fold forever. Keyed on the repo changing, so re-collapsing the
+   *  project you are working in sticks until you go somewhere else. */
+  function railFollowLiveRepo() {
+    // Via railRepoOwnsActive, not the active cwd: a worktree conversation
+    // reports the WORKTREE as its cwd and a worktree is deliberately not a
+    // catalog row, so keying on the path alone would never match the project
+    // that actually holds it — and that project would stay folded.
+    const owner = state.activeSessionId
+      ? (state.repos || []).find((repo) => railRepoOwnsActive(repo))
+      : undefined;
+    const live = owner ? cwdKey(owner.cwd) : "";
+    if (live === state.railLiveRepoKey) return;
+    state.railLiveRepoKey = live;
+    if (live) delete state.railCollapsed[live];
+  }
+
   function renderRail() {
     const root = rail();
     if (!root) return;
+    railFollowLiveRepo();
     // The rail is the repo switcher in another shape: it appears under exactly
     // the same condition, so a host that never sends `repos` gets the plain
     // single-column chat instead of an empty sidebar.
@@ -3653,7 +3677,10 @@
     if (record) {
       const repo = state.repos.find((r) => sameCwd(r.cwd, cwd)) || { cwd, available: true };
       const active = record.id === state.activeSessionId && sameCwd(cwd, state.activeRepoCwd);
-      menuSlot.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(record, repo, active)));
+      menuSlot.appendChild(railMenuButton(
+        "Session actions",
+        () => railSessionMenuItems(record, repo, active, { inlineRename: true }),
+      ));
     }
 
     // The title remains a quiet label for pointer users, but it is also the
@@ -3680,14 +3707,15 @@
   function renderRailRepo(repo, inArchive) {
     const key = cwdKey(repo.cwd);
     const selected = sameCwd(repo.cwd, state.selectedRepoCwd);
-    // The project holding the live conversation stays open. A fold is a
-    // preference you set at some earlier moment, and the one thing it must never
-    // do is hide where you are NOW — which is exactly what happened when you
-    // folded a project and later opened one of its conversations from elsewhere.
-    // Only in Projects: down in Archived the section is already closed, so
-    // holding one project open inside it would be noise.
-    const holdsLive = !inArchive && railRepoOwnsActive(repo);
-    const collapsed = !holdsLive && !!state.railCollapsed[key];
+    // A fold must never hide where you are NOW — folding a project and later
+    // opening one of its conversations from elsewhere used to leave you looking
+    // at a closed section. That is handled by opening the section when the live
+    // conversation ARRIVES in it (see railFollowLiveRepo), which is a one-time
+    // correction rather than a standing ban: pinning the current project open
+    // forever meant the one section you most often want out of the way was the
+    // one you could not fold. Only in Projects — down in Archived the section is
+    // already closed, so holding one open inside it would be noise.
+    const collapsed = !!state.railCollapsed[key];
 
     // No marker for the selected or the live project. The conversation you are
     // reading is highlighted where it sits, which says which project you are in
@@ -3707,14 +3735,10 @@
     twisty.type = "button";
     twisty.className = "rail-twisty";
     twisty.innerHTML = collapsed ? ICON.chevronRight : ICON.chevronDown;
-    twisty.disabled = holdsLive;
-    twisty.title = holdsLive
-      ? "The open conversation is in this project"
-      : (collapsed ? "Expand" : "Collapse");
+    twisty.title = collapsed ? "Expand" : "Collapse";
     twisty.setAttribute("aria-expanded", String(!collapsed));
     twisty.onclick = (e) => {
       e.stopPropagation();
-      if (holdsLive) return;
       if (collapsed) delete state.railCollapsed[key];
       else state.railCollapsed[key] = true;
       saveRailShape();
@@ -3995,10 +4019,14 @@
 
   /** Shared by a rail row and the conversation header, so the same session
    *  offers the same actions wherever you reach it. */
-  function railSessionMenuItems(s, repo, active) {
+  /** `opts.inlineRename` — the caller already offers renaming by clicking the
+   *  name itself (the conversation header does), so a second Rename buried in a
+   *  menu is a longer route to the same edit. Rail ROWS still need it: you
+   *  cannot click the name of a conversation you are not in. */
+  function railSessionMenuItems(s, repo, active, opts) {
     const cwd = s.cwd || repo.cwd;
     const isPinned = typeof s.pinnedAt === "number";
-    const items = [
+    const items = opts?.inlineRename ? [] : [
       {
         label: "Rename",
         icon: ICON.pencil,

@@ -914,36 +914,50 @@ describe("projects rail", () => {
   });
 
   // A fold is a preference set at some earlier moment, and the one thing it must
-  // never do is hide where you are NOW.
+  // never do is hide where you are NOW — corrected when the conversation ARRIVES,
+  // rather than by refusing the fold outright.
   describe("the project holding the live conversation", () => {
-    it("cannot be folded away while it holds the open conversation", () => {
+    it("can still be folded, and stays folded", () => {
       const { doc, window } = boot("/work/alpha");
       dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
 
-      const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      const twisty = alpha.querySelector(".rail-twisty") as HTMLButtonElement;
-      expect(twisty.disabled).toBe(true);
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const twisty = alpha().querySelector(".rail-twisty") as HTMLButtonElement;
+      expect(twisty.disabled).toBe(false);
       click(window, twisty);
-      expect(doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
-        .querySelector(".rail-sessions")).not.toBe(null);
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+
+      // Holding the current project open forever made the one section you most
+      // often want out of the way the one section you could not fold.
+      dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
     });
 
     // A worktree conversation reports the WORKTREE as its cwd, and a worktree is
     // deliberately not a catalog row — so comparing the project's path with the
     // live session's said "not mine", and the project actually holding the open
-    // conversation neither highlighted it nor held itself open.
+    // conversation neither highlighted it nor re-opened for it.
     it("recognises its own conversation when that conversation is in a worktree", () => {
       const { doc, window } = boot("/work/alpha");
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      click(window, alpha().querySelector(".rail-twisty") as HTMLElement);
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+
+      // The host names the worktree, not the checkout — and it lands BEFORE the
+      // conversation goes live, so the active cwd is already the worktree at the
+      // moment that matters. Sent the other way round, keying the re-open on the
+      // active cwd alone still happens to work, and this test proves nothing.
+      dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha/.wt" });
       dispatch(window, {
         ...sessionsFrame([{ ...row("w1", "/work/alpha/.wt", "worktree work", 9), worktreeLabel: "feature" }]),
         activeId: "w1",
       });
-      // The host names the worktree, not the checkout.
-      dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha/.wt" });
 
-      const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      expect(alpha.querySelector(".rail-session.active")).not.toBe(null);
-      expect((alpha.querySelector(".rail-twisty") as HTMLButtonElement).disabled).toBe(true);
+      expect(alpha().querySelector(".rail-session.active")).not.toBe(null);
+      // Keying the re-open on the active cwd alone would miss this entirely: the
+      // conversation's cwd is the worktree, the section's is the checkout.
+      expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
     });
 
     it("re-opens a project that was folded before the conversation moved there", () => {
