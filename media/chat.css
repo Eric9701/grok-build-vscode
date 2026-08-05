@@ -1574,7 +1574,17 @@ body.vscode-light {
   transform: translate(-50%, 0);
   pointer-events: auto;
 }
-.scroll-bottom-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+/* Layer the hover tint OVER the button's own fill rather than replacing it.
+   VS Code themes define toolbar-hoverBackground as a translucent wash (Dark+:
+   rgba(90,93,94,0.31)) meant to tint an opaque toolbar — used as the whole
+   background it left this button see-through, with the conversation reading
+   through the label. The browser client happens to define the same token as
+   opaque hex, which is why it only ever looked wrong on the desk. */
+.scroll-bottom-btn:hover {
+  background:
+    linear-gradient(var(--vscode-toolbar-hoverBackground), var(--vscode-toolbar-hoverBackground)),
+    var(--vscode-editorWidget-background, var(--vscode-input-background));
+}
 .scroll-bottom-btn svg { display: block; }
 .scroll-bottom-label { white-space: nowrap; }
 
