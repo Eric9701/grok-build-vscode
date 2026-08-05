@@ -162,6 +162,12 @@ The queue is released at `handleSend`'s synchronous commit point, not before it.
 
 Plan mode hides persistent-grant options on `execute` cards, and the host validates an answer against the options it actually rendered — so a remote client cannot answer with an option id it was never offered. Covers restoring the full set once plan mode exits.
 
+### `test/persisted-state.test.ts` — durable client state (19 tests)
+
+`PersistedState` keeps session names, pins, archives and the install id in `~/.grok/client-state/*.json` instead of VS Code `globalState`, so another client on the same machine reads the same state. Covered: keys it does not own delegate straight to `globalState`; the first-run migration seeds each file from `globalState` **and preserves the existing install id** (a fresh one would read as a new machine at the relay and mint a second device row against the one-device cap); disk beats a stale shadow, and a disk value hydrates the shadow so downgrade still finds it; a synchronous read refreshes when another client changed the file; a write **rebases on the current disk snapshot** — another client's entries survive, and *the writer's own deletions still delete* rather than being resurrected; the install id is created atomically, so of two racing instances one wins and the other adopts it; write-then-rename; corrupt JSON and wrong-shaped JSON (`null`, arrays, unrelated objects) both fall back to the shadow rather than crashing activation on `Object.values`; an unwritable directory degrades to `globalState`; writes stay ordered.
+
+Injected `StateFs` mirrors node's real `writeFileSync(file, data, options)` signature deliberately: an earlier double read the exclusive-create flag off a fourth positional argument, which node **silently ignores**, so the atomic create was inert in production while the suite stayed green.
+
 ### `test/webview-helpers.test.ts` — pure webview helpers (153 tests)
 
 Includes the **deferred/research-only** subagent classifier `isSubagentToolCall` / `subagentLabel` (the forward-compat `spawn_subagent` + `subagent_type` shape, name/kind/rawInput fallbacks, **and the regression guard that grok's `get_command_or_subagent_output` poller is NOT carded** — its name contains "subagent" but it's a background-task output reader, not a delegation). The classifier is kept tested as forward-compat scaffolding, but grok 0.2.x doesn't emit `spawn_subagent` over ACP so the card rarely fires; see `research/subagents.md`.

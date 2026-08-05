@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
+import { PersistedState } from "./persisted-state";
 import {
   Session,
   SessionStatus,
@@ -177,14 +178,25 @@ import {
 
 const SESSION_META_KEY = "grok.sessionMeta";
 const REPO_PINS_KEY = "grok.repoPins";
-/** globalState key for the remote rail's Archived section. Stored on the host so
- *  the choice follows you to a phone and survives a cleared browser — archiving
+/** Shared client-state key for the remote rail's Archived section. Stored under
+ *  ~/.grok/client-state so the choice follows you to a phone and survives a
+ *  cleared browser — archiving
  *  is curation of your projects, not a preference about one sidebar. Read by the
  *  browser client only; the VS Code repo picker ignores it entirely. */
 const REPO_ARCHIVES_KEY = "grok.repoArchives";
-/** globalState key for the anonymous per-install telemetry GUID (survives updates). */
+/** Shared client-state key for the anonymous per-install telemetry GUID (survives
+ *  updates and identifies this machine across clients).
+ *
+ *  This is MACHINE identity, not DEVICE identity. The relay REVOKES every device
+ *  row carrying the same install id when a link is approved (that is how a
+ *  re-link retires its own stale predecessor instead of hitting the free tier's
+ *  device cap). So a second client on this machine must NOT send this value
+ *  verbatim to `/api/link/start` — it would revoke the extension's device and
+ *  drop its uplink, and re-linking here would revoke that client's in turn.
+ *  Send a discriminated form (`<id>:desktop`) and leave the bare id to the
+ *  extension, whose already-linked rows store it bare. */
 const INSTALL_ID_KEY = "grok.installId";
-/** globalState key for the eye-off choice on the active-editor context chip.
+/** VS Code-local globalState key for the eye-off choice on the active-editor context chip.
  *  The chip is rebuilt from scratch on every file switch, so the user's "don't
  *  send this" has to live outside it or every switch silently re-enables the
  *  file — the #67 complaint. Persisted (not per-session) because a preference
@@ -442,11 +454,24 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly pendingConfirms = new Map<string, (ok: boolean) => void>();
   private confirmSeq = 0;
 
+  /** Session names, pins, archives and the install id — held in `~/.grok` so a
+   *  non-VS-Code client of this machine reads the same state. Everything else
+   *  still lands in `globalState`; see persisted-state.ts. */
+  private readonly state: PersistedState;
+
   constructor(
     private context: vscode.ExtensionContext,
     output: vscode.OutputChannel,
   ) {
     this.output = output;
+    // Before anything can read it: the loss case is an empty read followed by a
+    // write, so this must not be deferred to an async init.
+    this.state = new PersistedState(
+      context.globalState,
+      path.join(resolveGrokHome(process.env), "client-state"),
+      fs,
+      (line) => output.appendLine(line),
+    );
     this.remoteClients = new RemoteClientState<Session, RemoteBrowserPreferences>(
       this.workspaceRoot(),
       normalizeRepoPath,
@@ -1157,7 +1182,7 @@ See design doc for the full state machine diagram.`;
    * exists.
    */
   private async truncateSessionCardsAfterRewind(sessionId: string, surviving: number): Promise<void> {
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[sessionId];
     if (!cur) return;
     const boundarySession = [...this.pool].find((session) => session.activeSessionId === sessionId);
@@ -1185,7 +1210,7 @@ See design doc for the full state machine diagram.`;
     this.output.appendLine(
       `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
     );
-    await this.context.globalState.update(SESSION_META_KEY, {
+    await this.state.update(SESSION_META_KEY, {
       ...overrides,
       [sessionId]: {
         ...cur,
@@ -1211,7 +1236,7 @@ See design doc for the full state machine diagram.`;
   ): void {
     const sid = session.activeSessionId ?? session.client?.sessionId;
     if (!sid) return;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[sid] ?? {};
     const plans = appendPlanEntry(cur.plans, {
       text: planText,
@@ -1224,7 +1249,7 @@ See design doc for the full state machine diagram.`;
       ...overrides,
       [sid]: { ...cur, lastPlanVerdict: verdict, plans },
     };
-    void this.context.globalState.update(SESSION_META_KEY, next);
+    void this.state.update(SESSION_META_KEY, next);
   }
 
   /** Persist an answered permission card (title + allowed/rejected + position) so
@@ -1237,13 +1262,13 @@ See design doc for the full state machine diagram.`;
     const sid = session.activeSessionId ?? session.client?.sessionId;
     if (!sid) return;
     const outcome = permissionOutcomeFor(pending.options, optionId);
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[sid] ?? {};
     const permissions = [
       ...(cur.permissions ?? []),
       { title: pending.title, outcome, toolCallId: pending.toolCallId, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount },
     ];
-    void this.context.globalState.update(SESSION_META_KEY, {
+    void this.state.update(SESSION_META_KEY, {
       ...overrides,
       [sid]: { ...cur, permissions },
     });
@@ -1407,7 +1432,7 @@ See design doc for the full state machine diagram.`;
       this.output.appendLine(`[fork] ${session.activeSessionId} → ${r.newSessionId} ("${forkName}")`);
       // Stamp the name before focusing, so neither the history list nor the
       // toolbar ever flashes grok's own generated title for the fork.
-      const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const prev = overrides[r.newSessionId] ?? {};
       const parentUploads = overrides[session.activeSessionId]?.uploadedFiles ?? [];
       const carried: SessionMetaOverrides[string] = {
@@ -1423,7 +1448,7 @@ See design doc for the full state machine diagram.`;
         carried.worktreeLabel = session.worktree.label;
         carried.sourceGitRoot = session.worktree.sourceGitRoot;
       }
-      await this.context.globalState.update(SESSION_META_KEY, {
+      await this.state.update(SESSION_META_KEY, {
         ...overrides,
         [r.newSessionId]: carried,
       });
@@ -1751,8 +1776,8 @@ See design doc for the full state machine diagram.`;
     const id = session.activeSessionId;
     const wt = session.worktree;
     if (!id || !wt) return;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    await this.context.globalState.update(SESSION_META_KEY, {
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    await this.state.update(SESSION_META_KEY, {
       ...overrides,
       [id]: {
         ...(overrides[id] ?? {}),
@@ -1859,8 +1884,8 @@ See design doc for the full state machine diagram.`;
           await this.startSession();
           const id = this.focused.activeSessionId;
           if (id) {
-            const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-            await this.context.globalState.update(SESSION_META_KEY, {
+            const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+            await this.state.update(SESSION_META_KEY, {
               ...overrides,
               [id]: {
                 ...(overrides[id] ?? {}),
@@ -2031,7 +2056,7 @@ See design doc for the full state machine diagram.`;
       this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wt.path));
       this.output.appendLine(`[worktree] removed ${wt.path} (removed=${r.removed})`);
       // Clear worktree binding on meta for sessions that pointed here.
-      const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       let changed = false;
       const next: SessionMetaOverrides = { ...overrides };
       for (const [id, o] of Object.entries(overrides)) {
@@ -2041,7 +2066,7 @@ See design doc for the full state machine diagram.`;
           changed = true;
         }
       }
-      if (changed) await this.context.globalState.update(SESSION_META_KEY, next);
+      if (changed) await this.state.update(SESSION_META_KEY, next);
       this.focused.worktree = undefined;
       // Leave the chat; start a normal workspace session so the user isn't stuck.
       this.parkFocused();
@@ -2092,9 +2117,9 @@ See design doc for the full state machine diagram.`;
   }
 
   private repoCatalog() {
-    const pins = this.context.globalState.get<RepoPins>(REPO_PINS_KEY, {});
+    const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
     const worktreeLabels = new Map<string, string>();
-    for (const o of Object.values(this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {}))) {
+    for (const o of Object.values(this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {}))) {
       if (o.worktreePath && o.worktreeLabel) {
         worktreeLabels.set(normalizeRepoPath(o.worktreePath), o.worktreeLabel);
       }
@@ -2106,7 +2131,7 @@ See design doc for the full state machine diagram.`;
       fs: defaultFs,
       grokHome: resolveGrokHome(process.env),
       pins,
-      archives: this.context.globalState.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
+      archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
       tmpDir: os.tmpdir(),
       // The primary workspace is already the extension's local execution scope;
       // keep it as the one trusted return target before its first catalog lands.
@@ -2162,7 +2187,7 @@ See design doc for the full state machine diagram.`;
   private remoteTargetableCwd(cwd: string): boolean {
     const wanted = normalizeRepoPath(cwd);
     if (!wanted) return false;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     for (const repo of this.repoCatalog()) {
       for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) {
         if (normalizeRepoPath(c) === wanted) return true;
@@ -2295,12 +2320,12 @@ See design doc for the full state machine diagram.`;
   private async toggleRepoPin(cwd: string, pinned: boolean): Promise<void> {
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) return;
-    const pins = this.context.globalState.get<RepoPins>(REPO_PINS_KEY, {});
+    const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
     const key = normalizeRepoPath(hit.cwd);
     const next = { ...pins };
     if (pinned) next[key] = { cwd: hit.cwd, pinnedAt: Date.now() };
     else delete next[key];
-    await this.context.globalState.update(REPO_PINS_KEY, next);
+    await this.state.update(REPO_PINS_KEY, next);
     this.postRepoCatalog();
   }
 
@@ -2312,9 +2337,9 @@ See design doc for the full state machine diagram.`;
   private async setRepoArchived(cwd: string, archived: boolean): Promise<void> {
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) return;
-    const archives = this.context.globalState.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
+    const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
     const key = normalizeRepoPath(hit.cwd);
-    await this.context.globalState.update(REPO_ARCHIVES_KEY, {
+    await this.state.update(REPO_ARCHIVES_KEY, {
       ...archives,
       [key]: { cwd: hit.cwd, at: Date.now(), archived },
     });
@@ -2377,9 +2402,9 @@ See design doc for the full state machine diagram.`;
     mutate: (current: SessionMetaOverrides) => SessionMetaOverrides | null,
   ): Promise<void> {
     const run = this.sessionMetaWrites.then(async () => {
-      const current = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      const current = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const next = mutate(current);
-      if (next) await this.context.globalState.update(SESSION_META_KEY, next);
+      if (next) await this.state.update(SESSION_META_KEY, next);
     });
     // Keep the chain alive even if one link throws, or every later write dies.
     this.sessionMetaWrites = run.catch(() => {});
@@ -2390,7 +2415,7 @@ See design doc for the full state machine diagram.`;
    *  grouped by the stored home cwd so this costs one index scan per repo that
    *  actually holds a pin — not one per repo in the catalog. */
   private buildPinnedSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.output.appendLine(m);
     const byCwd = new Map<string, { cwd: string; ids: string[] }>();
@@ -2646,7 +2671,7 @@ See design doc for the full state machine diagram.`;
     if (this.cliUpdateChecked) return;
     this.cliUpdateChecked = true;
     const current = (this.context.extension.packageJSON as { version?: string })?.version ?? "";
-    const lastSeen = this.context.globalState.get<string>(CLI_UPDATE_VERSION_KEY);
+    const lastSeen = this.state.get<string>(CLI_UPDATE_VERSION_KEY);
     try {
       if (!extensionWasUpgraded(lastSeen, current)) return;
       const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
@@ -2669,7 +2694,7 @@ See design doc for the full state machine diagram.`;
         this.output.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
       }
     } finally {
-      void this.context.globalState.update(CLI_UPDATE_VERSION_KEY, current);
+      void this.state.update(CLI_UPDATE_VERSION_KEY, current);
     }
   }
 
@@ -2950,7 +2975,7 @@ See design doc for the full state machine diagram.`;
     } catch (e) {
       this.output.appendLine(`[sessions] could not discard empty session ${oldId}: ${(e as Error).message}`);
     }
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // carrySessionName only moves customName — also carry worktree binding so a
     // model switch mid-worktree session doesn't lose Apply/Remove.
     let next = carrySessionName(overrides, oldId, newId);
@@ -2966,7 +2991,7 @@ See design doc for the full state machine diagram.`;
         },
       };
     }
-    void this.context.globalState.update(SESSION_META_KEY, next);
+    void this.state.update(SESSION_META_KEY, next);
     this.sessionCache.delete(oldId);
     this.postSessionsList();
   }
@@ -3091,7 +3116,7 @@ See design doc for the full state machine diagram.`;
     session.cwd = cwd;
     // Re-bind worktree meta from override when resuming (cold open may only have cwd).
     if (!session.worktree && resumeId) {
-      const o = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[resumeId];
+      const o = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[resumeId];
       if (o?.worktreePath) {
         session.worktree = {
           path: o.worktreePath,
@@ -3521,7 +3546,7 @@ See design doc for the full state machine diagram.`;
         // Queue any saved plans BEFORE replay starts so the webview can interleave
         // them inline with user messages as they replay (instead of dumping all
         // cards at the bottom).
-        const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+        const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
         // Answered permission cards (collapsed) for this session, interleaved
         // inline during replay like the plan cards below.
         const savedPerms = overrides[resumeId]?.permissions ?? [];
@@ -3721,7 +3746,7 @@ See design doc for the full state machine diagram.`;
     const deskSession = this.focused;
     const canAdoptDesk = shouldAdoptDeskSession(
       this.sessionCwd(deskSession),
-      this.sessionCwdsForRepo(cwd, this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})),
+      this.sessionCwdsForRepo(cwd, this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})),
       this.remoteClients.isActiveValueVisible(deskSession),
       pathsEqual,
     );
@@ -3980,7 +4005,7 @@ See design doc for the full state machine diagram.`;
         // switch doesn't quietly re-enable the context (#67).
         const toggled = session.chips.find((c) => c.id === msg.id);
         if (toggled && isImplicitChip(toggled)) {
-          void this.context.globalState.update(IMPLICIT_CHIP_HIDDEN_KEY, toggled.hidden);
+          void this.state.update(IMPLICIT_CHIP_HIDDEN_KEY, toggled.hidden);
         }
         this.postChips(session);
         // Hiding an unreadable chip removes it from the next prompt just as
@@ -4469,7 +4494,7 @@ See design doc for the full state machine diagram.`;
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const query = (opts?.query ?? "").trim().toLowerCase();
     const grokHome = resolveGrokHome(process.env);
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const log = (m: string) => this.output.appendLine(m);
 
     // Best-effort refresh so worktree sessions appear without a create this window.
@@ -4614,7 +4639,7 @@ See design doc for the full state machine diagram.`;
   private sessionDisplayName(session: Session): string {
     const id = session.activeSessionId;
     if (!id) return "";
-    const override = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
+    const override = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
     const custom = override?.customName?.trim();
     if (custom) return custom;
     // A live empty session is deliberately shown as "New session" in the
@@ -4839,7 +4864,7 @@ See design doc for the full state machine diagram.`;
     clientId?: string,
     requestedCwd?: string,
   ): void {
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const target = origin === "remote" && clientId
       ? this.remoteSessionTarget(clientId, id, overrides, requestedCwd)
       : undefined;
@@ -4860,7 +4885,7 @@ See design doc for the full state machine diagram.`;
     } else {
       next[id] = { ...(next[id] ?? {}), customName: trimmed };
     }
-    void this.context.globalState.update(SESSION_META_KEY, next);
+    void this.state.update(SESSION_META_KEY, next);
     // A rename changes displayName but not summary.json's mtime, so the mtime-keyed cache would
     // otherwise keep serving the old name. Drop it so the next read rebuilds the entry.
     this.sessionCache.delete(id);
@@ -4884,7 +4909,7 @@ See design doc for the full state machine diagram.`;
     // the parent project quietly keeps showing the row that was just renamed or
     // deleted. Every caller here passes a session cwd, so the resolution belongs
     // at this seam rather than in each of them.
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const repoCwd = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))?.cwd
       ?? this.repoOwningSessionCwd(cwd, overrides);
     if (!repoCwd) return;
@@ -4955,7 +4980,7 @@ See design doc for the full state machine diagram.`;
     clientId?: string,
     requestedCwd?: string,
   ): Promise<void> {
-    const overridesNow = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overridesNow = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const target = origin === "remote" && clientId
       ? this.remoteSessionTarget(clientId, id, overridesNow, requestedCwd)
       : undefined;
@@ -5016,12 +5041,12 @@ See design doc for the full state machine diagram.`;
     }
     this.sessionCache.delete(id);
     this.removePlanReviews(id); // snapshots live outside grok's session dir
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     await this.removeUploadsForSessions([id], overrides);
     if (overrides[id]) {
       const next = { ...overrides };
       delete next[id];
-      void this.context.globalState.update(SESSION_META_KEY, next);
+      void this.state.update(SESSION_META_KEY, next);
     }
     // Everyone who was reading it needs somewhere to be. `newRemoteSession`
     // starts in that tab's OWN repo, which is the repo of the conversation just
@@ -5060,7 +5085,7 @@ See design doc for the full state machine diagram.`;
     if (!repo) return;
     const cwd = repo.cwd;
     const grokHome = resolveGrokHome(process.env);
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
     const protectedIds = new Set(
       [...this.pool]
@@ -5132,7 +5157,7 @@ See design doc for the full state machine diagram.`;
           changed = true;
         }
       }
-      if (changed) await this.context.globalState.update(SESSION_META_KEY, next);
+      if (changed) await this.state.update(SESSION_META_KEY, next);
     }
 
     // Tear down only ownerless live pool members whose history was deleted.
@@ -5303,17 +5328,13 @@ See design doc for the full state machine diagram.`;
     this.post({ type: "showThinking", value: this.showThinking() });
   }
 
-  /** Anonymous, per-install GUID — generated once and kept in globalState (so it
-   *  survives extension updates). It's an opaque random id, not tied to any
+  /** Anonymous, per-install GUID — generated once and kept in shared client state
+   *  (so it survives extension updates and identifies this machine across clients).
+   *  It's an opaque random id, not tied to any
    *  account or the grok login; it's sent only as an event property so distinct
    *  installs can be counted without identifying anyone. */
   private installId(): string {
-    let id = this.context.globalState.get<string>(INSTALL_ID_KEY);
-    if (!id) {
-      id = randomUUID();
-      void this.context.globalState.update(INSTALL_ID_KEY, id);
-    }
-    return id;
+    return this.state.getOrCreate(INSTALL_ID_KEY, randomUUID);
   }
 
   /** Fire the single `session_start` telemetry event for the first real user
@@ -6269,7 +6290,7 @@ See design doc for the full state machine diagram.`;
    * directories use the seven-day orphan policy shared with images. */
   private async sweepFileStaging(): Promise<void> {
     const root = this.fileStagingDir();
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const retained = retainedUploadDirectories(root, overrides);
     try {
       const cutoff = Date.now() - GrokSidebar.STAGING_ORPHAN_TTL_MS;
@@ -6333,10 +6354,10 @@ See design doc for the full state machine diagram.`;
       .filter((chip) => !chip.hidden && !!stagedUploadDirectory(this.fileStagingDir(), chip.path))
       .map((chip) => chip.path);
     if (!uploaded.length) return;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[sid] ?? {};
     const files = [...new Set([...(cur.uploadedFiles ?? []), ...uploaded])];
-    await this.context.globalState.update(SESSION_META_KEY, {
+    await this.state.update(SESSION_META_KEY, {
       ...overrides,
       [sid]: { ...cur, uploadedFiles: files },
     });
@@ -7304,8 +7325,8 @@ See design doc for the full state machine diagram.`;
           usageLog,
           userMessageCount,
         );
-        const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-        await this.context.globalState.update(SESSION_META_KEY, {
+        const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+        await this.state.update(SESSION_META_KEY, {
           ...overrides,
           [id]: {
             ...(overrides[id] ?? {}),
@@ -7637,7 +7658,7 @@ See design doc for the full state machine diagram.`;
    *  a locked/already-gone dir is logged, not thrown. */
   private removeSessionFromDisk(id: string | undefined, sessionCwd?: string): void {
     if (!id) return;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cwd =
       sessionCwd ||
       overrides[id]?.worktreePath ||
@@ -7653,7 +7674,7 @@ See design doc for the full state machine diagram.`;
       void this.removeUploadsForSessions([id], overrides);
       const next = { ...overrides };
       delete next[id];
-      void this.context.globalState.update(SESSION_META_KEY, next);
+      void this.state.update(SESSION_META_KEY, next);
     }
     this.sessionCache.delete(id);
   }
@@ -7686,7 +7707,7 @@ See design doc for the full state machine diagram.`;
     if (!cwd) return;
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.output.appendLine(m);
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // A session with a live process re-persists itself the moment it is touched,
     // so deleting one is at best pointless and at worst races the CLI. The same
     // goes for a load already in flight: its directory is about to be handed to a
@@ -7767,7 +7788,7 @@ See design doc for the full state machine diagram.`;
         delete next[id];
         this.sessionCache.delete(id);
       }
-      void this.context.globalState.update(SESSION_META_KEY, next);
+      void this.state.update(SESSION_META_KEY, next);
       log(`[sessions] swept ${removed.length} empty session(s) from history`);
       this.postSessionsList();
     }
@@ -7870,7 +7891,7 @@ See design doc for the full state machine diagram.`;
     if (!id) return;
     const message: HostMsg = { type: "sessionDot", id, dot: this.dotForId(id) };
     this.view?.webview.postMessage(message);
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const sent = new Set<string>();
     for (const clientId of this.remoteClients.clients()) {
       const repoCwd = this.remoteClients.cwd(clientId);
@@ -7886,14 +7907,14 @@ See design doc for the full state machine diagram.`;
    *  member) plus the persisted unread badge (which outlives the live process). */
   private dotForId(id: string): Dot {
     const live = [...this.pool].find((s) => s.activeSessionId === id);
-    const meta = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
+    const meta = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
     return computeDot({ liveStatus: live?.status, unread: meta?.unread, unreadError: meta?.unreadError });
   }
 
   /** Persist (or clear) a session's unread badge in globalState session-meta. */
   private setMetaUnread(id: string | undefined, unread: boolean, error: boolean): void {
     if (!id) return;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
     const next: SessionMetaOverrides = { ...overrides };
     if (unread) {
@@ -7905,7 +7926,7 @@ See design doc for the full state machine diagram.`;
       if (Object.keys(rest).length === 0) delete next[id];
       else next[id] = rest;
     }
-    void this.context.globalState.update(SESSION_META_KEY, next);
+    void this.state.update(SESSION_META_KEY, next);
   }
 
   /**
@@ -7926,7 +7947,7 @@ See design doc for the full state machine diagram.`;
     if (!measured && meta.totalTokens !== 0) return;
     const id = session.activeSessionId;
     if (!id) return;
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
     const usageLog = [
       ...(cur.usageLog ?? []),
@@ -7944,7 +7965,7 @@ See design doc for the full state machine diagram.`;
     if (measured) {
       this.emit(session, { type: "usage", turn: meta.usage, session: sessionUsage, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
     }
-    return this.context.globalState.update(SESSION_META_KEY, {
+    return this.state.update(SESSION_META_KEY, {
       ...overrides,
       [id]: { ...cur, usage: sessionUsage, usageLog },
     });
@@ -7954,7 +7975,7 @@ See design doc for the full state machine diagram.`;
     usageLog: NonNullable<SessionMetaOverrides[string]["usageLog"]>;
     usage: PromptUsage | undefined;
   } {
-    const persisted = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[sessionId];
+    const persisted = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[sessionId];
     const usageLog = [...(persisted?.usageLog ?? [])];
     const rawUsage = persisted?.usageLog ? sumUsage(usageLog) : persisted?.usage;
     return {
@@ -7991,7 +8012,7 @@ See design doc for the full state machine diagram.`;
   private markRead(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
-    const meta = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
+    const meta = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
     if (!meta?.unread && !meta?.unreadError) return;
     this.setMetaUnread(id, false, false);
     this.pushDot(session);
@@ -8143,7 +8164,7 @@ See design doc for the full state machine diagram.`;
     sessionCwd?: string,
     notifyCatalog = true,
   ): Promise<void> {
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // A remote may name a session that lives in a DIFFERENT repo of the catalog
     // it was shown — the projects rail lists every repo's sessions at once, so
     // "open that conversation over there" is now an ordinary click. Move the
@@ -8322,7 +8343,7 @@ See design doc for the full state machine diagram.`;
     this.focused = held ?? this.newLocalSession();
     this.pool.add(this.focused);
     // Resolve cwd: explicit (history row) → meta worktree → cache → workspace.
-    const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const o = overrides[id];
     const cwd =
       sessionCwd ||
@@ -8380,7 +8401,7 @@ See design doc for the full state machine diagram.`;
   /** The remembered eye-off choice for the active-editor context chip (#67).
    *  Defaults to visible — this only ever reflects an explicit click. */
   private implicitChipHidden(): boolean {
-    return this.context.globalState.get<boolean>(IMPLICIT_CHIP_HIDDEN_KEY, false);
+    return this.state.get<boolean>(IMPLICIT_CHIP_HIDDEN_KEY, false);
   }
 
   /** Mirror the active editor (file + live selection line range) onto the
@@ -8453,9 +8474,9 @@ See design doc for the full state machine diagram.`;
 
   private warnOAuthShadowOnce(defaultAuthMethodId: unknown, env: NodeJS.ProcessEnv): void {
     if (!oauthShadowsXaiApiKey(defaultAuthMethodId, env)) return;
-    if (this.oauthShadowWarningShown || this.context.globalState.get<boolean>(OAUTH_SHADOW_WARNING_KEY, false)) return;
+    if (this.oauthShadowWarningShown || this.state.get<boolean>(OAUTH_SHADOW_WARNING_KEY, false)) return;
     this.oauthShadowWarningShown = true;
-    void this.context.globalState.update(OAUTH_SHADOW_WARNING_KEY, true);
+    void this.state.update(OAUTH_SHADOW_WARNING_KEY, true);
     void vscode.window.showWarningMessage(
       "Grok is using its cached OAuth session, so XAI_API_KEY is currently ignored. To use the API key, run `grok logout`, then start a new session.",
     );
@@ -8774,10 +8795,11 @@ See design doc for the full state machine diagram.`;
     const base = httpBaseFromRelayUrl(REMOTE_RELAY_URL);
     try {
       const name = deviceDisplayName(os.hostname(), process.platform, os.release());
+      // Already persisted by the time this returns — getOrCreate writes the file
+      // synchronously — so a first-ever link cannot outrun persistence and needs
+      // no second write. Re-writing it would only add a way to mark the key
+      // degraded on a link.
       const installId = this.installId();
-      // installId() keeps telemetry's synchronous call site; explicitly await
-      // the same value here so a first-ever link cannot outrun persistence.
-      await this.context.globalState.update(INSTALL_ID_KEY, installId);
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
         headers: { "content-type": "application/json" },

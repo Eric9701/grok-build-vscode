@@ -1,0 +1,267 @@
+import { describe, it, expect } from "vitest";
+import { PersistedState, DISK_KEYS, type StateFs, type MementoLike } from "../src/persisted-state";
+
+const DIR = "/home/.grok/client-state";
+const metaFile = `${DIR}/${DISK_KEYS["grok.sessionMeta"]}`;
+const installFile = `${DIR}/${DISK_KEYS["grok.installId"]}`;
+
+class FakeFs implements StateFs {
+  files = new Map<string, string>();
+  dirs = new Set<string>();
+  failWrites = false;
+  private nextMtime = 1;
+  private mtimes = new Map<string, number>();
+  /** Every path handed to renameSync, in order — proves write-then-rename. */
+  renames: Array<[string, string]> = [];
+
+  setFile(p: string, data: string): void {
+    this.files.set(p, data);
+    this.mtimes.set(p, this.nextMtime++);
+  }
+
+  existsSync(p: string): boolean {
+    return this.files.has(p);
+  }
+  readFileSync(p: string): string {
+    const v = this.files.get(p);
+    if (v === undefined) throw new Error(`ENOENT: ${p}`);
+    return v;
+  }
+  statSync(p: string): { size: number; mtimeMs: number } {
+    const data = this.files.get(p);
+    if (data === undefined) throw new Error(`ENOENT: ${p}`);
+    return { size: Buffer.byteLength(data), mtimeMs: this.mtimes.get(p) ?? 0 };
+  }
+  // Mirrors node's real signature — (file, data, options). Reading the flag off
+  // a fourth positional argument is what let an inert `wx` pass as atomic.
+  writeFileSync(p: string, data: string, opts: { encoding: "utf8"; flag?: string }): void {
+    if (this.failWrites) throw new Error("EACCES: read-only file system");
+    if (opts?.flag === "wx" && this.files.has(p)) {
+      const error = new Error(`EEXIST: ${p}`) as Error & { code: string };
+      error.code = "EEXIST";
+      throw error;
+    }
+    this.setFile(p, data);
+  }
+  renameSync(from: string, to: string): void {
+    const v = this.files.get(from);
+    if (v === undefined) throw new Error(`ENOENT: ${from}`);
+    this.files.delete(from);
+    this.mtimes.delete(from);
+    this.setFile(to, v);
+    this.renames.push([from, to]);
+  }
+  mkdirSync(p: string): void {
+    this.dirs.add(p);
+  }
+}
+
+class FakeMemento implements MementoLike {
+  store = new Map<string, unknown>();
+  get<T>(key: string): T | undefined;
+  get<T>(key: string, defaultValue: T): T;
+  get<T>(key: string, defaultValue?: T): T | undefined {
+    return this.store.has(key) ? (this.store.get(key) as T) : defaultValue;
+  }
+  update(key: string, value: unknown): PromiseLike<void> {
+    this.store.set(key, value);
+    return Promise.resolve();
+  }
+}
+
+const make = (seed?: (fs: FakeFs, m: FakeMemento) => void) => {
+  const fs = new FakeFs();
+  const memento = new FakeMemento();
+  seed?.(fs, memento);
+  const logs: string[] = [];
+  const state = new PersistedState(memento, DIR, fs, (l) => logs.push(l));
+  return { fs, memento, state, logs };
+};
+
+describe("PersistedState", () => {
+  it("delegates keys it does not own straight to globalState", async () => {
+    const { state, memento, fs } = make((_f, m) => m.store.set("grok.cliUpdateExtVersion", "3.1.0"));
+    expect(state.get<string>("grok.cliUpdateExtVersion")).toBe("3.1.0");
+    await state.update("grok.implicitChipHidden", true);
+    expect(memento.store.get("grok.implicitChipHidden")).toBe(true);
+    // Nothing VS Code-local should ever reach the shared directory.
+    expect(fs.files.size).toBe(0);
+  });
+
+  it("migrates existing globalState into the state directory on first load", async () => {
+    const overrides = { s1: { customName: "Refactor the parser" } };
+    const { state, fs } = make((_f, m) => m.store.set("grok.sessionMeta", overrides));
+    // Readable immediately — the migration write must not gate the read.
+    expect(state.get("grok.sessionMeta", {})).toEqual(overrides);
+    await state.flush();
+    expect(JSON.parse(fs.files.get(metaFile)!)).toEqual(overrides);
+  });
+
+  it("PRESERVES an existing install id rather than minting a new one", async () => {
+    // The relay keys device de-duplication on this value: a fresh id reads as a
+    // new machine, mints a second device row, and strands a free-tier user
+    // against the one-device cap.
+    const { state, fs } = make((_f, m) => m.store.set("grok.installId", "abc-123"));
+    expect(state.get<string>("grok.installId")).toBe("abc-123");
+    await state.flush();
+    expect(JSON.parse(fs.files.get(installFile)!)).toBe("abc-123");
+  });
+
+  it("prefers the file over globalState once it exists", () => {
+    const { state } = make((f, m) => {
+      f.setFile(metaFile, JSON.stringify({ s1: { customName: "from disk" } }));
+      m.store.set("grok.sessionMeta", { s1: { customName: "stale shadow" } });
+    });
+    expect(state.get<Record<string, { customName: string }>>("grok.sessionMeta", {}).s1.customName).toBe("from disk");
+  });
+
+  it("hydrates globalState from a pre-existing disk value", () => {
+    const { state, memento } = make((f, m) => {
+      f.setFile(metaFile, JSON.stringify({ s1: { customName: "from disk" } }));
+      m.store.set("grok.sessionMeta", { s1: { customName: "stale shadow" } });
+    });
+    expect(memento.store.get("grok.sessionMeta")).toEqual({ s1: { customName: "from disk" } });
+    expect(state.get("grok.sessionMeta", {})).toEqual({ s1: { customName: "from disk" } });
+  });
+
+  it("refreshes a synchronous read when another client changes the file", () => {
+    const { state, fs } = make((f) => f.setFile(metaFile, JSON.stringify({ first: { customName: "one" } })));
+    fs.setFile(metaFile, JSON.stringify({
+      first: { customName: "one" },
+      second: { customName: "two" },
+    }));
+    expect(state.get<Record<string, { customName: string }>>("grok.sessionMeta", {}).second.customName).toBe("two");
+  });
+
+  it("merges a stale record snapshot instead of erasing another client's entry", async () => {
+    const fs = new FakeFs();
+    const early = new PersistedState(new FakeMemento(), DIR, fs);
+    const migratedMemento = new FakeMemento();
+    migratedMemento.store.set("grok.sessionMeta", { migrated: { customName: "kept" } });
+    const migrated = new PersistedState(migratedMemento, DIR, fs);
+    await migrated.flush();
+
+    await early.update("grok.sessionMeta", { local: { customName: "also kept" } });
+    expect(JSON.parse(fs.files.get(metaFile)!)).toEqual({
+      migrated: { customName: "kept" },
+      local: { customName: "also kept" },
+    });
+  });
+
+  it("still deletes what the writer deleted, rather than resurrecting it from disk", async () => {
+    // The failure mode a merge invites: it cannot tell "I deleted this" from
+    // "this is missing from my stale cache", so a naive one restores every name
+    // a delete (or Clear all) just removed. The write carries the writer's own
+    // before-state, so the distinction survives.
+    const fs = new FakeFs();
+    fs.setFile(metaFile, JSON.stringify({ doomed: { customName: "delete me" }, kept: { customName: "mine" } }));
+    const state = new PersistedState(new FakeMemento(), DIR, fs);
+    // Read it the way a call site does, so the cache holds the before-state.
+    expect(Object.keys(state.get<Record<string, unknown>>("grok.sessionMeta", {}))).toEqual(["doomed", "kept"]);
+    // Another client adds an entry while this one is deciding.
+    fs.setFile(metaFile, JSON.stringify({
+      doomed: { customName: "delete me" },
+      kept: { customName: "mine" },
+      theirs: { customName: "added elsewhere" },
+    }));
+
+    await state.update("grok.sessionMeta", { kept: { customName: "mine" } });
+
+    expect(JSON.parse(fs.files.get(metaFile)!)).toEqual({
+      kept: { customName: "mine" },
+      theirs: { customName: "added elsewhere" },
+    });
+  });
+
+  it("atomically creates an install id and adopts the existing winner", () => {
+    const fs = new FakeFs();
+    const first = new PersistedState(new FakeMemento(), DIR, fs);
+    const second = new PersistedState(new FakeMemento(), DIR, fs);
+    const firstId = first.getOrCreate("grok.installId", () => "first-id");
+    const secondId = second.getOrCreate("grok.installId", () => "second-id");
+    expect(firstId).toBe("first-id");
+    expect(secondId).toBe("first-id");
+    expect(JSON.parse(fs.files.get(installFile)!)).toBe("first-id");
+  });
+
+  it("writes through a temp file and shadows into globalState", async () => {
+    const { state, fs, memento } = make();
+    await state.update("grok.repoPins", { "/repo": { cwd: "/repo", pinnedAt: 7 } });
+    expect(fs.renames).toHaveLength(1);
+    const [from, to] = fs.renames[0];
+    expect(from).toBe(`${to}.tmp`);
+    expect(fs.files.has(from)).toBe(false); // temp file is gone after the rename
+    expect(memento.store.get("grok.repoPins")).toEqual({ "/repo": { cwd: "/repo", pinnedAt: 7 } });
+    expect(fs.dirs.has(DIR)).toBe(true);
+  });
+
+  it("serves reads from memory immediately after a write", async () => {
+    const { state } = make();
+    void state.update("grok.repoArchives", { "/r": { cwd: "/r", at: 1, archived: true } });
+    // Synchronous read, no await — this is how the 60+ call sites use it.
+    expect(state.get<Record<string, { archived: boolean }>>("grok.repoArchives", {})["/r"].archived).toBe(true);
+  });
+
+  it("falls back to globalState when the file is corrupt, without throwing", () => {
+    const { state, logs } = make((f, m) => {
+      f.files.set(metaFile, "{not json");
+      m.store.set("grok.sessionMeta", { s1: { customName: "survived" } });
+    });
+    expect(state.get<Record<string, { customName: string }>>("grok.sessionMeta", {}).s1.customName).toBe("survived");
+    expect(logs.join()).toMatch(/unreadable on disk/);
+  });
+
+  it.each([
+    ["null", null],
+    ["an array", []],
+    ["an unrelated object", { notSessionMeta: true }],
+  ])("treats %s as unreadable record JSON", async (_label, value) => {
+    const { state, fs, logs } = make((f, m) => {
+      f.setFile(metaFile, JSON.stringify(value));
+      m.store.set("grok.sessionMeta", { s1: { customName: "survived" } });
+    });
+    const meta = state.get<Record<string, { customName: string }>>("grok.sessionMeta", {});
+    // This is the activation path: repoCatalog() immediately calls Object.values(meta).
+    expect(Object.values(meta)).toEqual([{ customName: "survived" }]);
+    await state.flush();
+    expect(JSON.parse(fs.files.get(metaFile)!)).toEqual(value);
+    expect(logs.join()).toMatch(/unreadable on disk/);
+  });
+
+  it("treats a non-string install id as unreadable", () => {
+    const { state, memento, logs } = make((f, m) => {
+      f.setFile(installFile, JSON.stringify({ id: "wrong shape" }));
+      m.store.set("grok.installId", "shadow-id");
+    });
+    expect(state.get<string>("grok.installId")).toBe("shadow-id");
+    expect(memento.store.get("grok.installId")).toBe("shadow-id");
+    expect(logs.join()).toMatch(/unreadable on disk/);
+  });
+
+  it("degrades to globalState when the disk cannot be written", async () => {
+    const { state, fs, memento, logs } = make();
+    fs.failWrites = true;
+    await state.update("grok.sessionMeta", { s1: { customName: "typed while read-only" } });
+    // The shadow copy is the point: the value is not lost.
+    expect(memento.store.get("grok.sessionMeta")).toEqual({ s1: { customName: "typed while read-only" } });
+    expect(state.get<Record<string, { customName: string }>>("grok.sessionMeta", {}).s1.customName).toBe(
+      "typed while read-only",
+    );
+    expect(logs.join()).toMatch(/cannot persist/);
+  });
+
+  it("returns the default and writes nothing when there is no prior state", async () => {
+    const { state, fs } = make();
+    expect(state.get("grok.sessionMeta", {})).toEqual({});
+    await state.flush();
+    expect(fs.files.size).toBe(0);
+  });
+
+  it("keeps concurrent writes in order", async () => {
+    const { state, fs } = make();
+    void state.update("grok.repoPins", { a: { cwd: "/a", pinnedAt: 1 } });
+    void state.update("grok.repoPins", { a: { cwd: "/a", pinnedAt: 2 } });
+    await state.update("grok.repoPins", { a: { cwd: "/a", pinnedAt: 3 } });
+    expect(JSON.parse(fs.files.get(`${DIR}/${DISK_KEYS["grok.repoPins"]}`)!).a.pinnedAt).toBe(3);
+  });
+});

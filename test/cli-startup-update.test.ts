@@ -40,7 +40,10 @@ describe("CLI startup compatibility", () => {
     expect(update).toContain("if (this.cliUpdateChecked) return");
     expect(update).toContain("extensionWasUpgraded(lastSeen, current)");
     expect(update).toContain("execGrokCli(cliPath, args");
-    expect(update).toContain("this.context.globalState.update(CLI_UPDATE_VERSION_KEY, current)");
+    // Same store, different accessor: CLI_UPDATE_VERSION_KEY is not one of the
+    // keys that moved to ~/.grok, so it still lands in globalState. See
+    // persisted-state.ts.
+    expect(update).toContain("this.state.update(CLI_UPDATE_VERSION_KEY, current)");
     expect(sessionStart).toContain("await this.maybeUpdateCliOnUpgrade(cliPath)");
   });
 
