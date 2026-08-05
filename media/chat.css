@@ -27,6 +27,17 @@
   --chat-radius-code: 8px;
 }
 
+/* The VS Code panel is a narrow column, and the same gutter that reads as
+   comfortable across a browser tab eats a visible slice of every line there —
+   the two surfaces want different numbers, not one compromise. `desk` is set on
+   the body by getHtml and never by the browser client, so the client keeps the
+   roomier value (and its own phone bump on top of it). The conversation name
+   loses its chip inset here too, so it starts on the same line as the messages
+   below it rather than floating in from the left. */
+body.desk { --pad: 4px; }
+body.desk .top-bar { padding-left: var(--pad); padding-right: var(--pad); }
+body.desk .session-name-chip { padding-left: 0; }
+
 * { box-sizing: border-box; }
 
 /* Explicit scrollbar styling for every scroller (messages, textarea, popovers).

@@ -7051,6 +7051,18 @@ See design doc for the full state machine diagram.`;
     "messageChunk", "userMessageChunk", "thoughtChunk", "toolCall", "toolCallUpdate",
     "promptComplete", "xaiNotification", "subagentUpdate", "runProgress", "commandOutput", "agentEnd",
   ]);
+  /** Messages that DO something once rather than describe the conversation.
+   *  The session buffer exists so a focus switch can rebuild the chat, and it is
+   *  replayed in full every time — so anything action-shaped must stay out of it
+   *  or it fires again on every switch back. `restoreComposer` is the one that
+   *  bit: an Edit puts the message text back in the composer, the client appends
+   *  it (deliberately, so an Edit cannot destroy what you are mid-way through
+   *  typing), and a buffered copy therefore added the same draft again on every
+   *  return to that conversation. The other two would re-steal focus and re-open
+   *  the mode picker on reconnect. */
+  private static readonly TRANSIENT_TYPES = new Set([
+    "restoreComposer", "focusInput", "openModePopover",
+  ]);
   private post(message: HostMsg): void {
     if (this.focused.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     this.view?.webview.postMessage(message);
@@ -7407,7 +7419,7 @@ See design doc for the full state machine diagram.`;
   private emit(session: Session, message: HostMsg): void {
     if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     if (message.type === "clearMessages") session.buffer = [];
-    else session.buffer.push(message);
+    else if (!GrokSidebar.TRANSIENT_TYPES.has(message.type)) session.buffer.push(message);
     if (session === this.focused) {
       this.postTap?.("local", message);
       const webview = this.view?.webview;
@@ -8959,7 +8971,7 @@ See design doc for the full state machine diagram.`;
 </style>
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
 </head>
-<body class="${this.showThinking() ? "" : "thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
+<body class="desk${this.showThinking() ? "" : " thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
 
   <header class="top-bar">
     <div id="session-name-chip" class="session-name-chip" hidden>

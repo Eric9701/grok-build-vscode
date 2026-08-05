@@ -1082,6 +1082,44 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     }
   });
 
+  test("a one-shot composer restore is not replayed when the conversation is re-opened", async () => {
+    // Reported on the browser client: an unsent draft gained one more copy of
+    // itself on every switch back to a pinned conversation. `emit` buffers what
+    // it sends so a focus switch can rebuild the chat, and the buffer replays in
+    // full — so `restoreComposer`, which the client deliberately APPENDS (an
+    // Edit must not destroy what you are mid-way through typing), added the same
+    // draft again every time.
+    const clientId = `transient-replay-${Date.now()}`;
+    const liveId = `transient-live-${Date.now()}`;
+    writeStoredSession(liveId, repoB, "2099-01-01T00:00:00.000Z");
+    hooks.seedRemoteSession(clientId, liveId, repoB, [], true);
+
+    hooks.emitRemote(clientId, { type: "restoreComposer", text: "draft that must not repeat" });
+    hooks.emitRemote(clientId, { type: "userMessage", text: "a real message", chips: [] } as any);
+
+    hooks.fromRemote({ type: "selectRepo", cwd: hooks.workspaceRoot() }, clientId);
+    await new Promise((r) => setTimeout(r, 300));
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    hooks.fromRemote({ type: "selectRepo", cwd: repoB }, clientId);
+    await new Promise((r) => setTimeout(r, 800));
+
+    // The buffer arrives INSIDE a historyBatch, so a top-level scan would pass
+    // whether or not the fix is in — flatten it before asserting anything.
+    const mine = posts.filter((p) => p.clientIds?.includes(clientId)).map((p) => p.msg);
+    const replayed = mine.flatMap((msg) =>
+      msg?.type === "historyBatch" ? (msg.messages ?? []).map((m: any) => m?.type) : [msg?.type],
+    );
+    assert.ok(replayed.includes("clearMessages"), "re-selecting should reload the client");
+    assert.ok(
+      !replayed.includes("restoreComposer"),
+      `a buffered composer restore re-appends the old draft on every switch back — got: ${replayed.join(",")}`,
+    );
+    // The buffer must still carry real conversation content, or the fix has
+    // simply broken replay.
+    assert.ok(replayed.includes("userMessage"), `conversation content must still replay — got: ${replayed.join(",")}`);
+  });
+
   test("re-selecting a repository whose conversation is still live re-announces its name", async () => {
     // `clearMessages` drops the client's latched conversation name, and the
     // header's rename affordance is gated on having one. This path builds its
