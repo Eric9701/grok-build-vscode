@@ -172,6 +172,15 @@ a:hover {
 .session-name-edit { opacity: 0; }
 .session-name-chip:hover .session-name-edit,
 .session-name-edit:focus-visible { opacity: 1; }
+/* The chip is content-sized (`flex: 0 1 auto`), so while it holds the input the
+   input's `width: 100%` would resolve against a parent that has already
+   collapsed to the input's own default ~20-character width — the field came out
+   NARROWER than the label it replaced. Let the chip grow while editing instead;
+   the field then keeps at least the room the name had. */
+.session-name-chip:has(.session-name-input) {
+  flex: 1 1 auto;
+  max-width: min(72%, 460px);
+}
 .session-name-input {
   min-width: 0;
   width: 100%;
