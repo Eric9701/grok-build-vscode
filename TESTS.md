@@ -162,7 +162,7 @@ The queue is released at `handleSend`'s synchronous commit point, not before it.
 
 Plan mode hides persistent-grant options on `execute` cards, and the host validates an answer against the options it actually rendered — so a remote client cannot answer with an option id it was never offered. Covers restoring the full set once plan mode exits.
 
-### `test/webview-helpers.test.ts` — pure webview helpers (49 tests)
+### `test/webview-helpers.test.ts` — pure webview helpers (153 tests)
 
 Includes the **deferred/research-only** subagent classifier `isSubagentToolCall` / `subagentLabel` (the forward-compat `spawn_subagent` + `subagent_type` shape, name/kind/rawInput fallbacks, **and the regression guard that grok's `get_command_or_subagent_output` poller is NOT carded** — its name contains "subagent" but it's a background-task output reader, not a delegation). The classifier is kept tested as forward-compat scaffolding, but grok 0.2.x doesn't emit `spawn_subagent` over ACP so the card rarely fires; see `research/subagents.md`.
 
@@ -297,9 +297,10 @@ posted.
 - `addGeneratedMedia` renders an image as `<img>` and a video as `<video controls>` from the host's `media` message, wires the Copy-path / Open-in-VS-Code hover actions (pinned to the media), and falls back to an open-link button for a remote URL
 - the (deferred) subagent classifier renders a *Subagent: \<type\>* card when fed a delegation shape
 
-### `test/question-card.dom.test.ts` — `x.ai/ask_user_question` card (10 tests)
+### `test/question-card.dom.test.ts` — `x.ai/ask_user_question` card (12 tests)
 
 - Renders each question's options (single-question single-select resolves on one click; multi → pick-then-Submit; Skip → cancel), replies `{outcome:"accepted", answers, annotations}` (or cancelled), collapses to the question + a green `✓ <choice>`, and rebuilds a read-only "You answered" card from the resume replay
+- A free-text **Other** is added to every question the CLI didn't supply one for, is never duplicated when it did, and the typed text — not the label — is what reaches grok (#85)
 
 ---
 

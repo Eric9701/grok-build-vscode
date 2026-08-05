@@ -34,6 +34,7 @@ describe("stick-to-bottom after expanded tool detail growth (#92)", () => {
     });
     const messages = doc.getElementById("messages") as HTMLElement;
     messages.dispatchEvent(new window.Event("scroll"));
+    expect(messages.classList.contains("stick-to-bottom")).toBe(true);
     dispatch(window, exec);
     grow();
     dispatch(window, {
@@ -62,6 +63,7 @@ describe("stick-to-bottom after expanded tool detail growth (#92)", () => {
     messages.scrollTop = 500;
     messages.dispatchEvent(new window.Event("scroll"));
     expect(doc.getElementById("scroll-bottom-btn")!.classList.contains("visible")).toBe(true);
+    expect(messages.classList.contains("stick-to-bottom")).toBe(false);
 
     grow();
     dispatch(window, {

@@ -137,6 +137,64 @@ a:hover {
   position: relative;
 }
 .top-bar > .icon-btn { flex: none; }
+.session-name-chip {
+  min-width: 0;
+  max-width: min(52%, 280px);
+  flex: 0 1 auto;
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px 1px 6px;
+  border-radius: 5px;
+}
+.session-name-chip[hidden] { display: none; }
+.session-name-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 2px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-name-label:hover,
+.session-name-label:focus-visible,
+.session-name-chip:hover { color: var(--vscode-foreground); }
+.session-name-label:focus-visible,
+.session-name-input:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.session-name-edit { opacity: 0; }
+.session-name-chip:hover .session-name-edit,
+.session-name-edit:focus-visible { opacity: 1; }
+.session-name-input {
+  min-width: 0;
+  width: 100%;
+  padding: 3px 5px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+/* The browser client owns its header's layout and type — it only borrows the
+   reveal behaviour, so the pencil appears there on the same terms as here. */
+.session-name-edit-remote { opacity: 0; }
+#session-head:hover .session-name-edit-remote,
+.session-name-edit-remote:focus-visible { opacity: 1; }
+/* A touch screen has no hover, so a pencil that waits for one is a control that
+   never exists. Tapping the name is the rename gesture there; the pencil is
+   shown outright so it reads as one. */
+@media (hover: none) {
+  .session-name-edit,
+  .session-name-edit-remote { opacity: 1; }
+}
 .repo-chip {
   min-width: 0;
   /* Cap the growth: the chip is a label, not a field. Left to `flex: 1 1 auto`
@@ -237,11 +295,17 @@ a:hover {
 .messages {
   flex: 1;
   overflow-y: auto;
+  /* The pinned reader follows the bottom in JS. Turning anchoring off only in
+     that state prevents a browser-generated anchor adjustment from looking
+     like a deliberate scroll-up; the unpinned state keeps native anchoring so
+     history readers retain their line when content above grows (#92). */
+  overflow-anchor: auto;
   padding: var(--pad);
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+.messages.stick-to-bottom { overflow-anchor: none; }
 
 .welcome {
   display: flex;
@@ -1067,6 +1131,13 @@ body.thinking-hidden .msg.thinking { display: none; }
   font-size: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.command-preview-capped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--command-preview-lines, 6);
+  line-clamp: var(--command-preview-lines, 6);
+  overflow: hidden;
 }
 .tool-cmd {
   color: var(--vscode-editor-foreground, var(--vscode-foreground));
@@ -2228,6 +2299,17 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   /* A card title ("Plan ready for review") is prose, not code — the UI font,
      not the editor's monospace. Paths/commands elsewhere stay mono on purpose. */
   font-family: var(--vscode-font-family);
+}
+.card.permission .command-card-title {
+  /* Permission actions must remain in view while a long command is clipped to
+     the same row-bound mechanism as command IN/OUT previews. The View all
+     control is the way out; this title never becomes a nested chat scroller. */
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 .card .card-subtitle {
   color: var(--vscode-descriptionForeground);

@@ -83,6 +83,10 @@ export type HostMsg =
   | { type: "cliUpdating" }
   // `worktree` gates the gear's Apply/Remove worktree items to worktree sessions.
   | { type: "session"; sessionId: string; models: ModelInfo[]; currentModelId: string | undefined; worktree?: boolean }
+  // The focused conversation's display name, using the same precedence as a
+  // history row. It is separate from `sessions` because VS Code does not keep
+  // that browser-only list populated while the history popover is closed.
+  | { type: "sessionName"; sessionId: string; name: string; cwd: string }
   | { type: "modelChanged"; modelId: string }
   | { type: "modeChanged"; modeId: string }
   | { type: "openModePopover" }
@@ -235,7 +239,10 @@ export type WebviewMsg =
   | { type: "toggleChip"; id: string }
   | { type: "openFile"; path: string }
   | { type: "openUrl"; url: string }
-  | { type: "openText"; content: string; language: string }
+  // `language` is optional on purpose: omitting it hands the untitled document
+  // to VS Code's own language detection, which is what a command should get —
+  // forcing `shellscript` mislabels a Python one-liner (#71).
+  | { type: "openText"; content: string; language?: string }
   | {
       type: "openDiff";
       path: string;
@@ -369,7 +376,7 @@ export type WebviewMsg =
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   initialState: true, planModeAvailability: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
-  initialized: true, cliUpdating: true, session: true, modelChanged: true,
+  initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
   chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,

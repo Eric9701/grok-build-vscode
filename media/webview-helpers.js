@@ -15,7 +15,7 @@
   // directions (and that chat.js actually handles every host type).
   const HOST_MESSAGE_TYPES = [
     "initialState", "planModeAvailability", "showThinking", "fontScale", "grokUpdateStatus", "initialized",
-    "cliUpdating", "session", "modelChanged", "modeChanged", "openModePopover",
+    "cliUpdating", "session", "sessionName", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "userMessage", "agentStart", "thoughtChunk",
     "messageChunk", "media", "userMessageChunk", "historyReplay", "historyBatch", "permissionHistoryQueue",
@@ -157,6 +157,22 @@
     const m = re.exec(t);
     if (!m) return null;
     return { index: m.index, length: m[0].length };
+  }
+
+  // Does this option already offer the "none of these, let me type" escape the
+  // tool contract promises? Only used to decide whether the card must add one
+  // itself (#85), so it errs toward recognising the CLI's: injecting a second
+  // free-text choice beside grok's own is worse than not injecting at all, and
+  // the CLI is free to word it differently the day it starts sending one.
+  // Trailing ellipsis and punctuation are stripped because "Other…" and
+  // "Other:" are the same offer.
+  function isFreeTextOptionLabel(label) {
+    const text = String(label ?? "").trim().toLowerCase()
+      .replace(/[…\.\:\s]+$/, "")
+      .replace(/\s+/g, " ");
+    if (!text) return false;
+    if (text === "other" || text.startsWith("other (") || text.startsWith("other -")) return true;
+    return text === "something else" || text === "none of these" || text === "none of the above";
   }
 
   // Build the `answers` map for an ask_user_question response from the user's
@@ -784,7 +800,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

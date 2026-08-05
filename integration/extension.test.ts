@@ -1082,6 +1082,36 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     }
   });
 
+  test("re-selecting a repository whose conversation is still live re-announces its name", async () => {
+    // `clearMessages` drops the client's latched conversation name, and the
+    // header's rename affordance is gated on having one. This path builds its
+    // own targeted history list rather than going through postSessionsList, so
+    // nothing else would put the name back until an unrelated refresh.
+    const clientId = `name-refocus-${Date.now()}`;
+    const liveId = `live-named-${Date.now()}`;
+    writeStoredSession(liveId, repoB, "2099-01-01T00:00:00.000Z");
+    hooks.seedRemoteSession(clientId, liveId, repoB, [], true);
+
+    hooks.fromRemote({ type: "selectRepo", cwd: hooks.workspaceRoot() }, clientId);
+    await new Promise((r) => setTimeout(r, 300));
+
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    hooks.fromRemote({ type: "selectRepo", cwd: repoB }, clientId);
+    await new Promise((r) => setTimeout(r, 800));
+
+    const mine = posts.filter((p) => p.clientIds?.includes(clientId));
+    const cleared = mine.map((p) => p.msg?.type).lastIndexOf("clearMessages");
+    assert.ok(cleared >= 0, "re-selecting the repository should reload the client");
+    const named = mine.slice(cleared).find((p) => p.msg?.type === "sessionName");
+    assert.ok(named, "a sessionName must follow the clear, or the header cannot offer rename");
+    assert.strictEqual(named!.msg.sessionId, liveId);
+    assert.ok(
+      typeof named!.msg.name === "string" && named!.msg.name.length > 0,
+      "the re-announced name must be the title itself, not an empty placeholder",
+    );
+  });
+
   test("primary-repo deletion refuses another repo's worktree and permits its own", async () => {
     const suffix = Date.now();
     const repoAWorktree = path.join(hooks.workspaceRoot(), `.int-a-worktree-${suffix}`);

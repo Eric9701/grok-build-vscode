@@ -415,6 +415,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   initialized: "mirror",
   cliUpdating: "mirror",
   session: "mirror",
+  // Conversation names are already exposed in the remote history list, so
+  // the focused-name update has the same display-only sensitivity.
+  sessionName: "mirror",
   modelChanged: "mirror",
   modeChanged: "mirror",
   planModeAvailability: "mirror",

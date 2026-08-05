@@ -421,6 +421,10 @@
     // the two answer "when was this last worked in" very differently.
     railSelectedRowsKnown: false,
     activeSessionId: null,
+    // The host sends this independently of history pagination. The latch is
+    // also the compatibility gate for the new inline rename affordance.
+    sessionName: null,
+    sessionNameEditing: null,
     // Dashboard dot per grok-session id (id → "working"|"needs-you"|"unread"|
     // "error"|"none"). The host computes the value (live status + persisted unread
     // badge); the webview just paints it. Sent in full on each `sessions` message
@@ -826,7 +830,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -2774,22 +2778,31 @@
         inp.className = "history-rename";
         inp.value = s.displayName;
         inp.onclick = (e) => e.stopPropagation();
+        const commit = () => {
+          if (state.renamingSessionId !== s.id) return;
+          const next = (inp.value || "").trim();
+          // An empty box is not "nothing to do" — the host reads it as dropping
+          // the custom name, which is the only way back to the title grok gives
+          // the conversation. Escape is the cancel; clearing the field is a
+          // deliberate act.
+          if (next !== s.displayName) {
+            vscode.postMessage({ type: "renameSession", id: s.id, name: next });
+          }
+          state.renamingSessionId = null;
+          renderSessionRows();
+        };
         inp.onkeydown = (e) => {
           e.stopPropagation();
           if (e.key === "Enter") {
-            vscode.postMessage({ type: "renameSession", id: s.id, name: inp.value });
-            state.renamingSessionId = null;
+            e.preventDefault();
+            commit();
           } else if (e.key === "Escape") {
+            e.preventDefault();
             state.renamingSessionId = null;
             renderSessionRows();
           }
         };
-        inp.onblur = () => {
-          if (state.renamingSessionId === s.id) {
-            vscode.postMessage({ type: "renameSession", id: s.id, name: inp.value });
-            state.renamingSessionId = null;
-          }
-        };
+        inp.onblur = commit;
         main.appendChild(inp);
         setTimeout(() => { inp.focus(); inp.select(); }, 0);
       } else {
@@ -3474,6 +3487,112 @@
     return null;
   }
 
+  function activeSessionName() {
+    const data = state.sessionName;
+    if (!data) return null;
+    if (state.activeSessionId && data.sessionId !== state.activeSessionId) return null;
+    return data;
+  }
+
+  function displayedSessionName(record) {
+    const data = activeSessionName();
+    let name = data?.name || record?.displayName || "New session";
+    if (record?.worktreeLabel && name.startsWith("(WT)")) name = name.slice(4).trim() || "Worktree";
+    return name;
+  }
+
+  function sessionNameTarget() {
+    const data = activeSessionName();
+    if (!data) return null;
+    const record = activeSessionRecord();
+    return { id: data.sessionId, cwd: data.cwd || record?.cwd || state.activeRepoCwd || state.selectedRepoCwd };
+  }
+
+  function finishSessionNameEdit(commit) {
+    const edit = state.sessionNameEditing;
+    if (!edit) return;
+    state.sessionNameEditing = null;
+    const next = (edit.input.value || "").trim();
+    // Emptying the field is how you give a conversation its grok-generated title
+    // back — the host drops the custom name on an empty rename. Escape is the
+    // cancel, so this can't be reached by backing out of an edit.
+    if (commit && next !== edit.original) {
+      vscode.postMessage({ type: "renameSession", id: edit.id, name: next, ...(edit.cwd ? { cwd: edit.cwd } : {}) });
+    }
+    if (edit.input.isConnected) edit.input.replaceWith(edit.label);
+    edit.editBtn.hidden = false;
+    if (edit.surface === "local") renderSessionName();
+    else renderSessionHead();
+  }
+
+  function beginSessionNameEdit(surface, labelEl, editBtn) {
+    if (state.sessionNameEditing) return;
+    const target = sessionNameTarget();
+    if (!target || !labelEl) return;
+    const inputEl = document.createElement("input");
+    inputEl.type = "text";
+    inputEl.className = "session-name-input";
+    inputEl.id = labelEl.id;
+    inputEl.value = displayedSessionName(activeSessionRecord());
+    inputEl.setAttribute("aria-label", "Conversation name");
+    inputEl.onclick = (e) => e.stopPropagation();
+    inputEl.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); finishSessionNameEdit(true); }
+      else if (e.key === "Escape") { e.preventDefault(); finishSessionNameEdit(false); }
+    };
+    inputEl.onblur = () => finishSessionNameEdit(true);
+    labelEl.replaceWith(inputEl);
+    editBtn.hidden = true;
+    state.sessionNameEditing = {
+      surface,
+      id: target.id,
+      cwd: target.cwd,
+      original: inputEl.value,
+      input: inputEl,
+      label: labelEl,
+      editBtn,
+    };
+    setTimeout(() => { inputEl.focus(); inputEl.select(); }, 0);
+  }
+
+  function wireSessionNameLabel(labelEl, editBtn, surface) {
+    labelEl.onclick = (e) => {
+      e.stopPropagation();
+      // The label is deliberately a button on desktop too: this gives a
+      // keyboard and screen-reader user the same direct route as a touch tap,
+      // while the pencil remains the quiet pointer affordance.
+      beginSessionNameEdit(surface, labelEl, editBtn);
+    };
+    labelEl.onkeydown = (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      beginSessionNameEdit(surface, labelEl, editBtn);
+    };
+  }
+
+  function renderSessionName() {
+    if (IS_REMOTE) return;
+    const chip = $("session-name-chip");
+    const label = $("session-name-label");
+    const editBtn = $("session-name-edit");
+    if (!chip || !label || !editBtn) return;
+    const data = activeSessionName();
+    chip.hidden = !data;
+    if (!data || state.sessionNameEditing?.surface === "local") return;
+    const name = displayedSessionName(activeSessionRecord());
+    label.textContent = name;
+    label.title = name;
+    editBtn.hidden = false;
+    label.setAttribute("aria-label", `Conversation: ${name}. Activate to rename.`);
+    editBtn.title = "Rename conversation";
+    editBtn.setAttribute("aria-label", "Rename conversation");
+    editBtn.innerHTML = ICON.pencil;
+    wireSessionNameLabel(label, editBtn, "local");
+    editBtn.onclick = (e) => { e.stopPropagation(); beginSessionNameEdit("local", label, editBtn); };
+  }
+
   function renderSessionHead() {
     if (!IS_REMOTE) return;
     const head = document.getElementById("session-head");
@@ -3486,14 +3605,49 @@
     const record = activeSessionRecord();
     // A brand-new conversation has no stored name until its first turn is
     // summarised, so say what it is rather than showing an empty bar.
-    let name = record?.displayName || "New session";
-    if (record?.worktreeLabel && name.startsWith("(WT)")) name = name.slice(4).trim() || "Worktree";
-    titleEl.textContent = name;
+    const name = displayedSessionName(record);
+    const editingRemote = state.sessionNameEditing?.surface === "remote";
+    if (!editingRemote) titleEl.textContent = name;
+    titleEl.title = name;
 
     const cwd = record?.cwd || state.selectedRepoCwd;
     subEl.textContent = cwd ? railRepoLabelFor(cwd) : "";
     subEl.hidden = !cwd;
+    // The name has its own tooltip on the title element; leave the header's to
+    // the full path, which the truncated repo line below cannot show.
     head.title = cwd || "";
+
+    let editBtn = document.getElementById("session-head-edit");
+    const canRename = !!sessionNameTarget();
+    if (!editBtn && canRename && titleEl.parentElement) {
+      editBtn = document.createElement("button");
+      editBtn.id = "session-head-edit";
+      editBtn.className = "session-name-edit session-name-edit-remote icon-btn";
+      titleEl.parentElement.appendChild(editBtn);
+    }
+    if (editBtn) {
+      editBtn.hidden = !canRename;
+      editBtn.title = "Rename conversation";
+      editBtn.setAttribute("aria-label", "Rename conversation");
+      editBtn.innerHTML = ICON.pencil;
+      editBtn.onclick = (e) => { e.stopPropagation(); beginSessionNameEdit("remote", titleEl, editBtn); };
+    }
+    if (canRename) {
+      titleEl.classList.add("session-name-label");
+      titleEl.setAttribute("role", "button");
+      titleEl.tabIndex = 0;
+      titleEl.setAttribute("aria-label", `Conversation: ${name}. Activate to rename.`);
+      if (!state.sessionNameEditing || state.sessionNameEditing.surface !== "remote") {
+        wireSessionNameLabel(titleEl, editBtn || { hidden: true }, "remote");
+      }
+    } else {
+      titleEl.classList.remove("session-name-label");
+      titleEl.removeAttribute("role");
+      titleEl.removeAttribute("tabindex");
+      titleEl.removeAttribute("aria-label");
+      titleEl.onclick = null;
+      titleEl.onkeydown = null;
+    }
 
     menuSlot.innerHTML = "";
     if (record) {
@@ -3502,10 +3656,9 @@
       menuSlot.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(record, repo, active)));
     }
 
-    // The title is a label. It says where you are; it does not also secretly open
-    // something. History and New are their own icons, in the order the VS Code
-    // top bar has always used them — the same two controls in the same two
-    // places, so the browser is not a second thing to learn.
+    // The title remains a quiet label for pointer users, but it is also the
+    // touch-sized rename target. History and New stay separate controls so a
+    // tap on the name never changes conversations by accident.
     const history = document.getElementById("session-history");
     if (history && !history.dataset.railWired) {
       history.dataset.railWired = "1";
@@ -3965,6 +4118,7 @@
     state.railSelectedRowsKnown = true;
     state.railSessionsStale = false;
     renderRail();
+    renderSessionHead();
   }
 
   function selectRailRepo(repo) {
@@ -4028,6 +4182,10 @@
     // later echo can't try to remove a node from the previous session.
     state.optimisticSendEl = null;
     state.isWorktree = false; // re-set by the incoming session's `session` message
+    state.sessionName = null;
+    state.sessionNameEditing = null;
+    renderSessionName();
+    if (IS_REMOTE) renderSessionHead();
     // The caret belongs in the box after any session swap — new session, a
     // history-row re-focus, a disk restore (all funnel through here via the
     // host's clearMessages). Guarded on document.hasFocus(): user-initiated
@@ -4078,7 +4236,7 @@
     state.suppressReplayTurn = false;
     state.skipUserBubble = false;
     cancelPendingSpeech();
-    state.stickToBottom = true; // a fresh/loaded session starts pinned
+    setStickToBottom(true); // a fresh/loaded session starts pinned
     updateScrollBtn();
     hideGrokking();
     hideThinkingIndicator();
@@ -4833,7 +4991,7 @@
       details.hidden = !details.hidden;
       rowEl.classList.toggle("expanded", !details.hidden); // › ↔ v
       if (!details.hidden) {
-        details.querySelectorAll(".tool-cmd").forEach((pre) => pre._syncOverflowAffordance?.());
+        details.querySelectorAll(".cmd-io pre").forEach((pre) => pre._syncOverflowAffordance?.());
       }
     });
   }
@@ -4841,60 +4999,88 @@
   const MAX_COMMAND_PREVIEW_LINES = 6;
 
   function makeInlineExpandToggle(collapsedText, className, onToggle) {
+    let currentCollapsedText = collapsedText;
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = className;
-    toggle.textContent = collapsedText;
+    toggle.textContent = currentCollapsedText;
     toggle.setAttribute("aria-expanded", "false");
+    toggle._setCollapsedText = (text) => {
+      currentCollapsedText = text;
+      if (toggle.getAttribute("aria-expanded") !== "true") toggle.textContent = text;
+    };
     toggle.onclick = (e) => {
       e.stopPropagation();
       const expanding = toggle.getAttribute("aria-expanded") !== "true";
       onToggle(expanding);
-      toggle.textContent = expanding ? "Show less" : collapsedText;
+      toggle.textContent = expanding ? "Show less" : currentCollapsedText;
       toggle.setAttribute("aria-expanded", String(expanding));
     };
     return toggle;
   }
 
-  function appendCommandPreview(container, text, className, language) {
+  function appendCommandPreview(container, text, className, language, maxLines = MAX_COMMAND_PREVIEW_LINES) {
     const fullText = text == null ? "" : String(text);
-    const preview = commandTextPreview(fullText, MAX_COMMAND_PREVIEW_LINES);
+    const logicalPreview = commandTextPreview(fullText, maxLines);
     const pre = document.createElement("pre");
     pre.className = className;
-    pre.textContent = preview.text;
-    if (className === "tool-cmd") pre.title = fullText;
+    // Keep the CSS bound in place before the first layout pass. The observer
+    // can then compare this element's full scrollHeight with its clamped
+    // clientHeight without cloning the text or guessing a line-height.
+    pre.classList.add("command-preview-capped");
+    pre.textContent = fullText;
+    pre.style.setProperty("--command-preview-lines", String(maxLines));
+    pre.title = fullText;
     container.appendChild(pre);
-    const label = preview.truncated ? `View all (${preview.lineCount} lines) →` : "View all →";
     let viewAll = null;
+    let expanded = false;
+    let previewLabel = logicalPreview.truncated
+      ? `View all (${logicalPreview.lineCount} lines) →`
+      : "View all →";
     const ensureViewAll = () => {
-      if (viewAll) return viewAll;
+      if (viewAll) {
+        viewAll._setCollapsedText?.(previewLabel);
+        if (!IS_REMOTE) viewAll.textContent = previewLabel;
+        return viewAll;
+      }
       viewAll = IS_REMOTE
-        ? makeInlineExpandToggle(label, "msg-collapse-btn command-view-all", (expanding) => {
-            pre.textContent = expanding ? fullText : preview.text;
+        ? makeInlineExpandToggle(previewLabel, "msg-collapse-btn command-view-all", (expanding) => {
+            expanded = expanding;
             pre.classList.toggle("command-full", expanding);
+            pre.classList.toggle("command-preview-capped", !expanding);
           })
         : document.createElement("button");
       if (!IS_REMOTE) {
         viewAll.type = "button";
         viewAll.className = "preview-link command-view-all";
-        viewAll.textContent = label;
+        viewAll.textContent = previewLabel;
         viewAll.onclick = (e) => {
           e.stopPropagation();
-          vscode.postMessage({ type: "openText", content: fullText, language });
+          const message = { type: "openText", content: fullText };
+          if (language) message.language = language;
+          vscode.postMessage(message);
         };
       }
       container.appendChild(viewAll);
       return viewAll;
     };
-    if (preview.truncated) {
-      ensureViewAll();
-      return;
-    }
-    if (className !== "tool-cmd") return;
 
     const syncOverflowAffordance = () => {
-      const overflowing = pre.clientWidth > 0 && pre.scrollWidth > pre.clientWidth;
-      if (overflowing) ensureViewAll();
+      const visible = pre.isConnected && !pre.closest("[hidden]");
+      const hasLayout = pre.clientWidth > 0 && pre.clientHeight > 0 && visible;
+      const logicalTruncated = logicalPreview.truncated;
+      if (!expanded) pre.classList.add("command-preview-capped");
+      const renderedTruncated = hasLayout && pre.scrollHeight > pre.clientHeight;
+      const truncated = logicalTruncated || renderedTruncated;
+      previewLabel = truncated ? `View all (${logicalPreview.lineCount} lines) →` : "View all →";
+      if (!expanded) {
+        if (hasLayout && !truncated) pre.classList.remove("command-preview-capped");
+        pre.classList.remove("command-full");
+      } else {
+        pre.classList.remove("command-preview-capped");
+      }
+      const overflowing = visible && className === "tool-cmd" && pre.clientWidth > 0 && pre.scrollWidth > pre.clientWidth;
+      if (truncated || overflowing) ensureViewAll();
       else if (viewAll && viewAll.getAttribute("aria-expanded") !== "true") {
         viewAll.remove();
         viewAll = null;
@@ -4905,6 +5091,10 @@
       const observer = new ResizeObserver(syncOverflowAffordance);
       observer.observe(pre);
     }
+    // Run once immediately so purely logical truncation can expose its control.
+    // The later animation-frame/ResizeObserver pass supplies real layout
+    // measurements after a card or tool row has been attached and painted.
+    syncOverflowAffordance();
     requestAnimationFrame(syncOverflowAffordance);
   }
 
@@ -4930,7 +5120,9 @@
     inRow.appendChild(inTag);
     const body = document.createElement("div");
     body.className = "cmd-in-body";
-    appendCommandPreview(body, command, "tool-cmd", "shellscript");
+    // Leave the language unset so VS Code can run its untitled-editor language
+    // detection (a Python command should not be forced into shellscript).
+    appendCommandPreview(body, command, "tool-cmd");
     inRow.appendChild(body);
     block.appendChild(inRow);
     details.appendChild(block);
@@ -6461,10 +6653,21 @@
   // user needs to see regardless of where they've scrolled: permission/question
   // cards and their own just-sent message.
   function forceScrollToBottom() {
-    state.stickToBottom = true;
+    setStickToBottom(true);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     updateScrollBtn();
   }
+
+  // Browser scroll anchoring is useful to a reader who has deliberately
+  // scrolled into history, but it produces a synthetic scroll event for a
+  // pinned reader when a detail block grows above the viewport. Keep anchoring
+  // disabled only while pinned; the unpinned reader keeps the native anchor and
+  // therefore keeps the same line in view while new content arrives (#92).
+  function setStickToBottom(stick) {
+    state.stickToBottom = !!stick;
+    messagesEl.classList.toggle("stick-to-bottom", state.stickToBottom);
+  }
+  setStickToBottom(state.stickToBottom);
 
   // Keep the reader's place when the scrollport HEIGHT changes — the mobile
   // keyboard or URL bar collapsing (dvh), or the VS Code panel resizing.
@@ -6511,14 +6714,15 @@
         return;
       }
     }
-    state.stickToBottom = shouldStickToBottom(
-      messagesEl.scrollTop, messagesEl.scrollHeight, messagesEl.clientHeight);
+    setStickToBottom(shouldStickToBottom(
+      messagesEl.scrollTop, messagesEl.scrollHeight, messagesEl.clientHeight,
+    ));
     updateScrollBtn();
   });
 
   scrollBottomBtn.onclick = () => {
     autoScrolling = true;
-    state.stickToBottom = true;
+    setStickToBottom(true);
     updateScrollBtn();
     messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: "smooth" });
   };
@@ -6651,10 +6855,7 @@
     // card replays as active on every re-focus.
     el.dataset.permReqId = String(req.id);
     el._permTitle = cardTitle;
-    const title = document.createElement("div");
-    title.className = "card-title";
-    title.textContent = cardTitle;
-    el.appendChild(title);
+    appendCommandPreview(el, cardTitle, "card-title command-card-title", undefined, 4);
 
     const diff = state.pendingDiffByToolCallId.get(req.toolCall?.toolCallId);
     if (diff) {
@@ -6684,6 +6885,7 @@
     const { buttons, defaultIndex } =
       renderPermissionActions(el, req.id, cardTitle, req.options);
     messagesEl.appendChild(el);
+    el.querySelectorAll("pre").forEach((pre) => pre._syncOverflowAffordance?.());
     forceScrollToBottom(); // a pending permission must be visible (#16)
 
     // Take the keyboard ONLY when there's nothing to take it from — an empty,
@@ -6792,7 +6994,18 @@
   function addQuestionCard(req) {
     clearWelcome();
     hideGrokking();
-    const questions = Array.isArray(req.questions) ? req.questions : [];
+    const questions = (Array.isArray(req.questions) ? req.questions : []).map((q) => {
+      const options = Array.isArray(q?.options) ? q.options : [];
+      if (options.some((opt) => isFreeTextOptionLabel(opt?.label))) return q;
+      // The tool contract promises every question carries a free-text "Other",
+      // but grok doesn't send one — so without this the card has no way to say
+      // anything the listed options don't cover (#85). The answer still travels
+      // through the existing `answers[question]` map, which is a plain
+      // string→string map on the CLI side, so the typed value simply takes the
+      // label's place. If grok ever starts sending its own — under whatever
+      // wording — isFreeTextOptionLabel is what keeps us from adding a second.
+      return { ...q, options: [...options, { label: "Other" }] };
+    });
     const el = document.createElement("div");
     el.className = "card question";
 
@@ -6804,7 +7017,7 @@
     const otherSelected = questions.map(() => false);
     const otherText = questions.map(() => "");
     const hasOther = questions.some((q) =>
-      (q.options || []).some((opt) => String(opt.label || "").trim().toLowerCase() === "other"));
+      (q.options || []).some((opt) => isFreeTextOptionLabel(opt.label)));
     const effectiveSelections = () => selections.map((picked, qi) => {
       const custom = otherSelected[qi] ? otherText[qi].trim() : "";
       return custom ? [...picked, custom] : [...picked];
@@ -6850,7 +7063,7 @@
       const opts = document.createElement("div");
       opts.className = "question-options";
       for (const opt of q.options || []) {
-        const isOther = String(opt.label || "").trim().toLowerCase() === "other";
+        const isOther = isFreeTextOptionLabel(opt.label);
         const btn = document.createElement("button");
         btn.className = "question-option";
         const lbl = document.createElement("span");
@@ -8571,6 +8784,17 @@
         reportRemotePreferences();
         break;
       }
+      case "sessionName": {
+        state.sessionName = {
+          sessionId: msg.sessionId,
+          name: String(msg.name || "New session"),
+          cwd: String(msg.cwd || ""),
+        };
+        state.activeSessionId = msg.sessionId;
+        renderSessionName();
+        renderSessionHead();
+        break;
+      }
       case "modelChanged": {
         state.currentModelId = msg.modelId;
         // The context window is model-specific (grok-build 512K vs Composer 200K).
@@ -9445,6 +9669,7 @@
         state.sessionNextOffset = typeof msg.nextOffset === "number" ? msg.nextOffset : null;
         state.sessionLoading = false;
         if (open) renderSessionRows();
+        renderSessionName();
         // The rail's selected-repo section reads this list directly, so every
         // host-driven refresh (rename, delete, new session) repaints it for free.
         // Skipped for a filtered/paged answer: those are the history popover's

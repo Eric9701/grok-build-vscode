@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -501,6 +501,25 @@ describe("trailingSendPhrase", () => {
 
   it("supports a custom phrase", () => {
     expect(trailingSendPhrase("do it now go", "go")).toEqual({ index: 10, length: 2 });
+  });
+});
+
+describe("isFreeTextOptionLabel", () => {
+  it("recognises the CLI's own free-text choice however it is worded", () => {
+    for (const label of [
+      "Other", "other", "  OTHER  ", "Other…", "Other...", "Other:",
+      "Other (describe)", "Other - tell me", "Something else", "None of these", "none of the above",
+    ]) {
+      expect(isFreeTextOptionLabel(label)).toBe(true);
+    }
+  });
+
+  it("does not mistake an ordinary option for one", () => {
+    // The cost of a false positive is a question with no free-text path at all,
+    // which is the bug this whole mechanism exists to fix (#85).
+    for (const label of ["Another approach", "Other repos should change", "Motherboard", "", null, undefined]) {
+      expect(isFreeTextOptionLabel(label as any)).toBe(false);
+    }
   });
 });
 
@@ -1032,6 +1051,7 @@ describe("commandTextPreview", () => {
       truncated: false,
     });
   });
+
 });
 
 describe("extractToolResultOutput (cursor/Composer self-executed command result)", () => {

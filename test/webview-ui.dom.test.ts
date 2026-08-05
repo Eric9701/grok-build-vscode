@@ -28,6 +28,89 @@ const clock = (timestampMs: number) => {
   return `${h}:${String(d.getMinutes()).padStart(2, "0")} ${ampm}`;
 };
 
+describe("focused conversation name chip", () => {
+  const row = (id: string, name: string, cwd = "/work/repo") => ({
+    id, cwd, displayName: name, rawSummary: "", updatedAt: Date.now(), createdAt: 1, numMessages: 2,
+  });
+
+  it("shows the host-provided full name, edits in place, and commits with Enter", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "sessions", entries: [row("s1", "A very long conversation title")], activeId: "s1", dots: {} });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "A very long conversation title", cwd: "/work/repo" });
+
+    const chip = doc.getElementById("session-name-chip") as HTMLElement;
+    const label = doc.getElementById("session-name-label") as HTMLElement;
+    expect(chip.hidden).toBe(false);
+    expect(label.textContent).toBe("A very long conversation title");
+    expect(label.title).toBe("A very long conversation title");
+
+    click(window, doc.getElementById("session-name-edit")!);
+    const input = doc.getElementById("session-name-label") as HTMLInputElement;
+    expect(input.value).toBe("A very long conversation title");
+    input.value = "Renamed from the header";
+    input.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+    expect(posted.filter((message) => message.type === "renameSession")).toEqual([
+      { type: "renameSession", id: "s1", name: "Renamed from the header", cwd: "/work/repo" },
+    ]);
+  });
+
+  it("cancels an unchanged edit and an Escape, but clearing the field drops the custom name", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "sessions", entries: [row("s1", "Keep this")], activeId: "s1", dots: {} });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Keep this", cwd: "/work/repo" });
+    const label = () => doc.getElementById("session-name-label")!;
+
+    click(window, label());
+    (label() as HTMLInputElement).dispatchEvent(new (window as any).FocusEvent("blur", { bubbles: true }));
+    click(window, label());
+    (label() as HTMLInputElement).value = "discard me";
+    label().dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+
+    expect(posted.filter((message) => message.type === "renameSession")).toEqual([]);
+    expect((label() as HTMLElement).textContent).toBe("Keep this");
+
+    // Emptying the field is the only route back to the title grok generated, so
+    // it is a rename to nothing rather than a no-op. Escape, above, is the cancel.
+    click(window, label());
+    (label() as HTMLInputElement).value = "   ";
+    (label() as HTMLInputElement).dispatchEvent(new (window as any).FocusEvent("blur", { bubbles: true }));
+    expect(posted.filter((message) => message.type === "renameSession")).toEqual([
+      { type: "renameSession", id: "s1", name: "", cwd: "/work/repo" },
+    ]);
+  });
+
+  it("adds the remote affordance only after sessionName arrives, and carries cwd", () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+    dispatch(window, { type: "sessions", entries: [row("s1", "Remote title", "/work/remote")], activeId: "s1", dots: {} });
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("Remote title");
+    expect(doc.getElementById("session-head-edit")).toBeNull();
+
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Remote title", cwd: "/work/remote" });
+    expect(doc.getElementById("session-head-title")!.getAttribute("title")).toBe("Remote title");
+    expect(doc.getElementById("session-head-edit")).not.toBeNull();
+    click(window, doc.getElementById("session-head-title")!);
+    const input = doc.getElementById("session-head-title") as HTMLInputElement;
+    input.value = "Remote renamed";
+    input.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(posted.filter((message) => message.type === "renameSession")).toEqual([
+      { type: "renameSession", id: "s1", name: "Remote renamed", cwd: "/work/remote" },
+    ]);
+  });
+
+  it("stays quiet against an older host that never sends the name frame", () => {
+    const local = bootWebview();
+    dispatch(local.window, { type: "sessions", entries: [row("s1", "Legacy title")], activeId: "s1", dots: {} });
+    expect((local.doc.getElementById("session-name-chip") as HTMLElement).hidden).toBe(true);
+
+    const remote = bootWebview({ remote: true });
+    dispatch(remote.window, { type: "sessions", entries: [row("s1", "Legacy title")], activeId: "s1", dots: {} });
+    expect(remote.doc.getElementById("session-head-title")!.getAttribute("title")).toBe("Legacy title");
+    expect(remote.doc.getElementById("session-head-edit")).toBeNull();
+    expect(remote.posted.filter((message) => message.type === "renameSession")).toEqual([]);
+  });
+});
+
 describe("history popover (regression: popover that never closed)", () => {
   it("opens on the history button and requests the session list", () => {
     const { window, posted, doc } = bootWebview();

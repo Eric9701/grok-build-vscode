@@ -78,9 +78,10 @@ restored than actually was.
 Published source deletes a file whose before-snapshot is missing and only then appends it to
 `reverted_files`. That fix is **SOURCE-ONLY**; the shipped result is still wrong.
 
-**Client cost/workaround:** our UI uses deliberately vague wording and cannot truthfully enumerate
-restored paths from the response. We also had to probe two undocumented semantics: the target prompt
-is discarded inclusively, and the current tip is a legal target.
+**Client cost/workaround:** our UI cannot state a restoration count or enumerate restored paths from
+the response, so when the array is non-empty it says files were rolled back and warns that anything
+created after that point may still be on disk. We also had to probe two undocumented semantics: the
+target prompt is discarded inclusively, and the current tip is a legal target.
 
 **Ask:** ship truthful created-file handling (or split `restored` from `createdLeftInPlace`),
 document the discard-inclusive boundary, and advertise the rewind capability and its schema.
@@ -294,6 +295,31 @@ stripping, task-id correlation, and separate live/replay lifecycle routing.
 **Ask:** keep internal reminders out of user replay; persist resolved interactions; make a
 background "completed" mean completed; stop duplicating structured output in text; document both
 lifecycle rails.
+
+---
+
+## 12. `ask_user_question` promises a free-text "Other" that never arrives (new)
+
+**LIVE-VERIFIED 0.2.117.** The agent-facing description of `ask_user_question` tells the model that
+every question automatically carries an "Other" choice accepting free text, and that the typed text —
+not the literal label — is what comes back. Over ACP, `x.ai/ask_user_question` requests carry only
+the options the model itself supplied. A user therefore has no way to answer anything the listed
+options do not cover, which is precisely when a clarifying question matters
+([#85](https://github.com/phuryn/grok-build-vscode/issues/85)).
+
+The response side is not the problem: `answers` is a `HashMap<String,String>` keyed by question
+text, so a client can put typed text where a label would go and it deserializes. The gap is that
+nothing tells the client the option should exist, and `annotations.notes` / `chat_about_this` are
+undocumented enough that neither reads as the sanctioned channel.
+
+**Client cost/workaround:** we append the missing option in the webview and send the typed text in
+place of the label. That leaves us guessing at a wording the CLI might one day use — the day grok
+starts sending its own, under any label we do not recognise, the user sees two of them.
+
+**Ask:** inject the promised "Other" server-side so it reaches clients with the request; failing
+that, document which of `answers`, `annotations.notes` and `chat_about_this` a free-text answer is
+supposed to travel in, and mark the option in the payload so clients can recognise it by structure
+rather than by label.
 
 ---
 

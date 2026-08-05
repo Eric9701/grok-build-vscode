@@ -156,4 +156,80 @@ describe("permission card diff preview (real chat.js in a DOM)", () => {
     expect(doc.querySelector(".card.permission .preview-link")).toBeNull();
     expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(0);
   });
+
+  it("clips a long permission command and keeps its View all path", () => {
+    const { window, doc } = bootWebview({
+      beforeScripts: (win) => {
+        Object.defineProperty(win.HTMLElement.prototype, "clientWidth", {
+          configurable: true,
+          get() { return this.classList?.contains("command-card-title") ? 120 : 0; },
+        });
+        Object.defineProperty(win.HTMLElement.prototype, "clientHeight", {
+          configurable: true,
+          get() { return this.classList?.contains("command-card-title") ? 52 : 0; },
+        });
+        Object.defineProperty(win.HTMLElement.prototype, "scrollHeight", {
+          configurable: true,
+          get() { return this.classList?.contains("command-card-title") ? 208 : 0; },
+        });
+      },
+    });
+    const command = `python -c "${"print('x');".repeat(300)}"`;
+    dispatch(window, {
+      type: "permissionRequest",
+      req: {
+        id: 13,
+        toolCall: { toolCallId: "tc-long", kind: "execute", title: command },
+        options: [
+          { optionId: "allow", name: "Allow once", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      },
+    });
+
+    const card = doc.querySelector(".card.permission")!;
+    const title = card.querySelector(".command-card-title") as HTMLElement;
+    expect(title.textContent).toBe(command);
+    expect(title.title).toBe(command);
+    expect(title.tagName).toBe("PRE");
+    expect(title.classList.contains("command-preview-capped")).toBe(true);
+    expect(card.querySelector(".command-view-all")!.textContent).toBe("View all (1 lines) →");
+    expect(card.querySelectorAll(".card-actions button")).toHaveLength(2);
+  });
+
+  it("expands a clipped permission command inline for the remote client", () => {
+    const { window, doc, posted } = bootWebview({
+      remote: true,
+      beforeScripts: (win) => {
+        Object.defineProperty(win.HTMLElement.prototype, "clientWidth", {
+          configurable: true,
+          get() { return this.classList?.contains("command-card-title") ? 120 : 0; },
+        });
+        Object.defineProperty(win.HTMLElement.prototype, "clientHeight", {
+          configurable: true,
+          get() { return this.classList?.contains("command-card-title") ? 52 : 0; },
+        });
+        Object.defineProperty(win.HTMLElement.prototype, "scrollHeight", {
+          configurable: true,
+          get() { return this.classList?.contains("command-card-title") ? 208 : 0; },
+        });
+      },
+    });
+    const command = `python -c "${"print('x');".repeat(300)}"`;
+    dispatch(window, {
+      type: "permissionRequest",
+      req: {
+        id: 14,
+        toolCall: { toolCallId: "tc-remote-long", kind: "execute", title: command },
+        options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+      },
+    });
+
+    const title = doc.querySelector(".command-card-title") as HTMLElement;
+    const viewAll = doc.querySelector(".command-view-all") as HTMLButtonElement;
+    expect(viewAll).not.toBeNull();
+    click(window, viewAll);
+    expect(title.classList.contains("command-full")).toBe(true);
+    expect(posted.filter((m: any) => m.type === "openText")).toHaveLength(0);
+  });
 });

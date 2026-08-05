@@ -20,6 +20,10 @@ const chatSrc = read("../media/chat.js");
 // Mirror of getHtml()'s <body> — only the ids chat.js queries at startup matter.
 export const BODY = `
   <header class="top-bar">
+    <div id="session-name-chip" class="session-name-chip" hidden>
+      <button id="session-name-label" class="session-name-label" type="button"></button>
+      <button id="session-name-edit" class="session-name-edit icon-btn" type="button" hidden></button>
+    </div>
     <button id="repo-btn" type="button"></button>
     <button id="remote-btn" hidden></button>
     <button id="history-btn"></button>
@@ -27,6 +31,10 @@ export const BODY = `
     <div id="repo-popover" hidden></div>
     <div id="history-popover" hidden></div>
   </header>
+  <div id="session-head">
+    <div id="session-head-main"><span id="session-head-title"></span><span id="session-head-sub"></span></div>
+    <div id="session-head-actions"></div>
+  </div>
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">
       <p id="welcome-version" class="loading-dots">Starting</p>

@@ -1547,18 +1547,18 @@ See design doc for the full state machine diagram.`;
         return void vscode.window.showErrorMessage(result.error || "Couldn't roll back that message.");
       }
 
-      const nFiles = result.revertedFiles.length;
+      const reportedFiles = result.revertedFiles.length;
       this.output.appendLine(
-        `[edit] rewound to prompt #${result.targetPromptIndex} (files=${nFiles}, bubble=${userBubbleIndex})`,
+        `[edit] rewound to prompt #${result.targetPromptIndex} (reported_files=${reportedFiles}, bubble=${userBubbleIndex})`,
       );
       const resumeId = session.activeSessionId;
       const surviving = survivingUserMessagesAfterRewind(points, target);
       await this.truncateSessionCardsAfterRewind(resumeId, surviving);
       this.applyRewindToView(session, surviving);
       this.emit(session, { type: "restoreComposer", text });
-      if (nFiles > 0) {
+      if (reportedFiles > 0) {
         void vscode.window.showInformationMessage(
-          `Message moved back to the composer. Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`,
+          "Message moved back to the composer. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
@@ -1670,9 +1670,9 @@ See design doc for the full state machine diagram.`;
         return void vscode.window.showErrorMessage(err);
       }
 
-      const nFiles = result.revertedFiles.length;
+      const reportedFiles = result.revertedFiles.length;
       this.output.appendLine(
-        `[rewind] → prompt #${result.targetPromptIndex} (mode=${result.mode}, files=${nFiles}` +
+        `[rewind] → prompt #${result.targetPromptIndex} (mode=${result.mode}, reported_files=${reportedFiles}` +
           (typeof userBubbleIndex === "number" ? `, bubble=${userBubbleIndex}` : "") +
           `)`,
       );
@@ -1697,9 +1697,9 @@ See design doc for the full state machine diagram.`;
       // The messages vanishing and the text landing in the composer are their
       // own feedback; a toast restating them is noise. Reverted files are NOT
       // visible in the chat, so those still get reported.
-      if (nFiles > 0) {
+      if (reportedFiles > 0) {
         void vscode.window.showInformationMessage(
-          `Rewound. Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`,
+          "Rewound. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
@@ -3620,6 +3620,7 @@ See design doc for the full state machine diagram.`;
         session.activeSessionId = client.sessionId;
       }
       if (gen !== session.gen) { client.dispose(); session.client = undefined; return undefined; }
+      this.postSessionName(session);
 
       if (defaultModel && client.currentModelId && client.currentModelId !== defaultModel) {
         const hasModel = client.availableModels.some((m) => m.modelId === defaultModel);
@@ -4441,6 +4442,7 @@ See design doc for the full state machine diagram.`;
     const localCwd = this.historyCwdFor("local");
     const local = this.buildSessionsList(localCwd, opts);
     this.postLocal(local);
+    this.postSessionName(this.focused);
     if (opts) return;
     // Pins ride along with every catalog mutation rather than being refreshed at
     // each site that can invalidate one. Deleting a session, clearing a repo and
@@ -4452,10 +4454,9 @@ See design doc for the full state machine diagram.`;
     for (const clientId of this.remoteClients.clients()) {
       const cwd = this.remoteClients.cwd(clientId);
       const activeId = this.remoteActiveSessionId(clientId);
-      this.sendRemoteClient(
-        clientId,
-        this.buildSessionsList(cwd, undefined, activeId),
-      );
+      this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, activeId));
+      const active = this.remoteClients.active(clientId);
+      if (active) this.postSessionName(active);
     }
   }
 
@@ -4616,6 +4617,9 @@ See design doc for the full state machine diagram.`;
     const override = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id];
     const custom = override?.customName?.trim();
     if (custom) return custom;
+    // A live empty session is deliberately shown as "New session" in the
+    // history list, even if grok has already left a summary file behind.
+    if (!session.hasHistory) return "New session";
     try {
       const cwd = this.sessionCwd(session);
       const raw = JSON.parse(fs.readFileSync(
@@ -4631,6 +4635,22 @@ See design doc for the full state machine diagram.`;
     // a nameless session reads like a row rather than a bare "(Fork)".
     const first = (session.firstUserMessageForTitle || "").trim() || (override?.autoName || "").trim();
     return fallbackName(first, Date.now());
+  }
+
+  /** Push the focused conversation's title independently of history pagination.
+   *  The VS Code webview must not depend on the history popover having been
+   *  opened, while remote tabs need the same live update after a rename or turn. */
+  private postSessionName(session: Session, name = this.sessionDisplayName(session)): void {
+    const id = session.activeSessionId;
+    if (!id) return;
+    const message: HostMsg = {
+      type: "sessionName",
+      sessionId: id,
+      name,
+      cwd: this.sessionCwd(session),
+    };
+    if (session === this.focused) this.postLocal(message);
+    this.sendRemoteSession(session, message);
   }
 
   private liveSessionEntry(
@@ -4844,7 +4864,11 @@ See design doc for the full state machine diagram.`;
     // A rename changes displayName but not summary.json's mtime, so the mtime-keyed cache would
     // otherwise keep serving the old name. Drop it so the next read rebuilds the entry.
     this.sessionCache.delete(id);
+    const live = [...this.pool].find((session) => session.activeSessionId === id);
     this.postSessionsList();
+    // Recompute rather than echoing `trimmed`: an empty rename DROPS the custom
+    // name, and the view then has to be told the title it falls back to.
+    if (live) this.postSessionName(live);
     this.refreshRemoteRepoPreview(clientId, authorizedCwd);
   }
 
@@ -6763,6 +6787,7 @@ See design doc for the full state machine diagram.`;
       this.setStatus(session, "done");
       session.authRecoveryTried = false; // a clean turn re-arms token auto-recovery
       this.maybeGenerateTitle(session);
+      this.postSessionName(session);
     } catch (err) {
       if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
       // Same rule as the success path: if a cancel recovery already ended this
@@ -6857,6 +6882,7 @@ See design doc for the full state machine diagram.`;
       this.setStatus(session, "done");
       session.authRecoveryTried = false; // recovered — re-arm for a future expiry
       this.maybeGenerateTitle(session);
+      this.postSessionName(session);
     } catch (err2) {
       if (gen !== session.gen) return true;
       if (!endTurn(session, turn)) return true;
@@ -6918,7 +6944,7 @@ See design doc for the full state machine diagram.`;
       const entry = current[sid];
       if (entry?.customName || entry?.autoName) return null;
       return { ...current, [sid]: { ...(entry ?? {}), autoName: title } };
-    });
+    }).then(() => this.postSessionName(session));
     // An override changes the row without touching summary.json's mtime, so the
     // mtime-keyed cache would keep serving the un-named entry (same reason rename
     // and pin invalidate here).
@@ -8018,6 +8044,11 @@ See design doc for the full state machine diagram.`;
     for (const msg of sessionUiSnapshot(session, this.displayMode(session))) this.sendRemoteClient(clientId, msg);
     if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
+    // `clearMessages` above drops the client's latched name, and this path builds
+    // its own targeted list instead of going through postSessionsList — so the
+    // name has to be re-announced here or the header loses its rename affordance
+    // until something unrelated refreshes it.
+    this.postSessionName(session);
   }
 
   private async newRemoteSession(clientId: string, notifyCatalog = true): Promise<void> {
@@ -8861,6 +8892,14 @@ See design doc for the full state machine diagram.`;
       activeCwd: this.sessionCwd(session),
     });
     snap.push(this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
+    if (session.activeSessionId) {
+      snap.push({
+        type: "sessionName",
+        sessionId: session.activeSessionId,
+        name: this.sessionDisplayName(session),
+        cwd: sessionCwd,
+      });
+    }
     // Pins belong in the snapshot, not behind a `ready` handler: `ready` from a
     // remote is answered HERE and never reaches onMessage's switch, so anything
     // pushed from there would simply never arrive on a fresh tab or a reconnect.
@@ -8901,6 +8940,10 @@ See design doc for the full state machine diagram.`;
 <body class="${this.showThinking() ? "" : "thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
 
   <header class="top-bar">
+    <div id="session-name-chip" class="session-name-chip" hidden>
+      <button id="session-name-label" class="session-name-label" type="button"></button>
+      <button id="session-name-edit" class="session-name-edit icon-btn" type="button" hidden></button>
+    </div>
     <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>
     <button id="remote-btn" class="icon-btn remote-btn" title="Continue remotely" hidden></button>
     <button id="history-btn" class="icon-btn" title="Session history"></button>

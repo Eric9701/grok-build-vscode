@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build for VS Code (Community)",
   "description": "GUI for Grok Build CLI (incl. Grok 4.5). Voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT — becomes MIT after two years). Not affiliated with or endorsed by xAI.",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -307,7 +307,7 @@
         "grok.expandCommandOutputs": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Expand tool details by default — each shell command's IN/OUT block (full command text + captured output) and each edit's inline diff (useful for auditing Auto-accept sessions). Tool groups (\"Ran N commands\", \"Edited N files\") still need to be expanded first; a single command outside a group shows its details immediately. Off: click a row (›) to expand just that one — edit rows always show a `+N −M` change count regardless. Also toggleable live from the gear menu → **Config & debug → Expand tool details**."
+          "markdownDescription": "Expand tool details by default — each shell command's IN/OUT block (full command text + captured output) and each edit's inline diff (useful for auditing Auto-accept sessions). With this setting on, groups containing command or edit details (such as \"Ran N commands\" or \"Edited N files\") open too; read/explore-only groups stay collapsed, and a lone command outside a group opens its details. Off: click a row or group header (›) to expand it — edit rows always show a `+N −M` change count, even when their diff is closed. Also toggleable live from the gear menu → **Config & debug → Expand tool details**."
         },
         "grok.steerByDefault": {
           "type": "boolean",
