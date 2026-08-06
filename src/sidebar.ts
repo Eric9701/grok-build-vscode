@@ -150,7 +150,11 @@ import {
   resolveGrokHome,
   sessionsDirFor,
 } from "./sessions";
-import { isTrustedGeneratedMediaPath } from "./media-serve";
+import {
+  isRefusedMediaBasename,
+  isTrustedGeneratedMediaPath,
+  MAX_INLINE_MEDIA_BYTES,
+} from "./media-serve";
 import {
   gitRootForPath,
   isGitRepo,
@@ -2731,9 +2735,14 @@ See design doc for the full state machine diagram.`;
    * to the webview. Remote URLs pass through as a link. File paths — how grok
    * writes media into its session dir — are served via `asWebviewUri` when they
    * are **trusted** generated media under the Grok home (canonical containment
-   * + sessions/…/images|videos/ shape). Paths outside that provenance are
-   * dropped — never read into a data: URI (that would leak arbitrary files to
-   * the webview and to remote clients via {@link inlineMediaForRemote}).
+   * + sessions/…/images|videos/ shape), so big videos stream from disk.
+   *
+   * Paths outside that provenance still render via a size-capped base64 data:
+   * URI (v3.1.0 behaviour restored). Reachable only from ACP `mediaContent`
+   * (agent over stdio); the agent already has full filesystem access, so
+   * showing the picture to the same authenticated user adds no capability.
+   * Still refuse `auth.json` by name, and never weaken renderer-facing
+   * `app-resource://` registry containment.
    * Best-effort: a failure just drops the media rather than breaking the turn.
    */
   private async postGeneratedMedia(m: MediaRef, session: Session, gen: number): Promise<void> {
@@ -2746,24 +2755,29 @@ See design doc for the full state machine diagram.`;
         this.emit(session, { type: "media", media: m.media, url: m.uri });
         return;
       }
-      const mime = m.mimeType || guessMediaMime(m.path);
-      if (!this.isServableFromDisk(m.path)) {
-        this.host.appendLine(
-          `[media] refused untrusted media path (not canonical session media under grok home)`,
-        );
+      if (isRefusedMediaBasename(m.path)) {
+        this.host.appendLine(`[media] refused media path named auth.json`);
         return;
       }
-      // Served from disk when trusted: the webview pulls bytes lazily, so even
-      // a big video renders. Data-URI fallback is only for the same trusted set
-      // when asWebviewUri is unavailable (should not happen for real media).
+      const mime = m.mimeType || guessMediaMime(m.path);
+      // Trusted session media: stream from disk when the webview can.
       const webview = this.view?.webview;
-      if (webview) {
+      if (webview && this.isServableFromDisk(m.path)) {
         const src = webview.asWebviewUri(Uri.file(m.path));
         this.emit(session, { type: "media", media: m.media, src, mimeType: mime, path: m.path });
         return;
       }
+      // Outside the served roots (or no asWebviewUri) — inline as base64 so a
+      // workspace chart the agent wrote still appears. Size-capped so a huge
+      // file cannot balloon the DOM / relay frame.
       const bytes = await this.host.fs.readFile(Uri.file(m.path));
       if (gen !== session.gen) return;
+      if (bytes.byteLength > MAX_INLINE_MEDIA_BYTES) {
+        this.host.appendLine(
+          `[media] refused oversized media for data: inline (${bytes.byteLength} > ${MAX_INLINE_MEDIA_BYTES}): ${m.path}`,
+        );
+        return;
+      }
       const b64 = Buffer.from(bytes).toString("base64");
       this.emit(session, { type: "media", media: m.media, src: `data:${mime};base64,${b64}`, path: m.path });
     } catch (e) {

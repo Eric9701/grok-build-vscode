@@ -7,6 +7,11 @@
  * Lexical containment under `~/.grok` is **not** enough: a symlink that
  * starts inside the home and resolves outside must not be served or inlined
  * to remotes.
+ *
+ * Agent-reported paths outside that provenance may still be inlined as a
+ * size-capped data: URI for the authenticated user (postGeneratedMedia) —
+ * the agent already has full filesystem access. Renderer-named
+ * `app-resource://` paths remain registry-contained.
  */
 import * as path from "node:path";
 
@@ -21,6 +26,19 @@ const GENERATED_MEDIA_EXT = new Set([
   ".mov",
   ".m4v",
 ]);
+
+/**
+ * Cap for base64-inlining agent media into the DOM (and remote frames).
+ * 8 MiB covers charts / screenshots / typical /imagine stills without
+ * stuffing multi-dozen-MB videos into a data: string. Trusted session media
+ * under grok home prefers asWebviewUri and is not bound by this for streaming.
+ */
+export const MAX_INLINE_MEDIA_BYTES = 8 * 1024 * 1024;
+
+/** Free refuse: nothing legitimate reports the CLI credential as an image. */
+export function isRefusedMediaBasename(fsPath: string): boolean {
+  return /(^|[/\\])auth\.json$/i.test(fsPath || "");
+}
 
 /** Injectable realpath so tests can simulate symlink targets without OS privileges. */
 export type RealpathFn = (p: string) => string;

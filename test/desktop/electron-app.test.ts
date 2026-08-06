@@ -515,6 +515,36 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     const labels = await page.locator(".rail-repo-label").allTextContents();
     expect(labels.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("rail draws styled chrome from chat.css (folder-open on expanded project)", async () => {
+    // Proves Step 0: rail rules live in shared media/chat.css, not only the
+    // web client's page shell — so the desktop column is not bare layout.
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll(".rail-repo").length >= 1,
+      { timeout: 45_000 },
+    );
+
+    const style = await page.evaluate(() => {
+      const sessionPad = getComputedStyle(
+        document.querySelector(".rail-sessions") || document.createElement("div"),
+      ).paddingLeft;
+      // If no sessions list yet, still check group head + project twisty styling.
+      const head = document.querySelector(".rail-head");
+      const headLetter = head ? getComputedStyle(head).textTransform : "";
+      const twisty = document.querySelector(".rail-twisty") as HTMLElement | null;
+      const twistyHtml = twisty?.innerHTML || "";
+      const twistyW = twisty ? getComputedStyle(twisty).width : "";
+      return { sessionPad, headLetter, twistyHtml, twistyW, hasRepo: !!document.querySelector(".rail-repo") };
+    });
+
+    expect(style.hasRepo).toBe(true);
+    // Shared CSS: sticky uppercase group heads + non-zero twisty box.
+    expect(style.headLetter).toBe("uppercase");
+    expect(style.twistyW).not.toBe("0px");
+    // Expanded project uses folder-open (Lucide path starts m6 14…).
+    expect(style.twistyHtml).toMatch(/m6 14/);
+  });
 });
 
 /**

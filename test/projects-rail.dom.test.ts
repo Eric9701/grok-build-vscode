@@ -305,9 +305,15 @@ describe("projects rail", () => {
     expect(sessionNames(doc, alphaIndex)).toEqual(["one", "two", "three"]);
 
     const more = doc.querySelectorAll(".rail-repo")[alphaIndex].querySelector(".rail-more") as HTMLElement;
-    expect(more.textContent).toBe("Show 1 more");
+    // One step, no counters — never "Show N more" (three disagreeing totals).
+    expect(more.textContent).toBe("Show more");
+    expect(more.textContent).not.toMatch(/\d/);
     click(window, more);
     expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["one", "two", "three", "four"]);
+    const less = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
+      .querySelector(".rail-more") as HTMLElement;
+    expect(less.textContent).toBe("Show less");
+    expect(less.textContent).not.toMatch(/\d/);
   });
 
   it("reopens a session in its own repo, carrying that session's cwd", () => {
@@ -389,16 +395,17 @@ describe("projects rail", () => {
   });
 
   // Two caps deep: the host's `total` counts hidden subagent rows, and expansion
-  // itself stops at RAIL_EXPANDED. Either one alone makes the label a lie.
-  it("promises only the rows expanding can actually reveal", () => {
+  // itself stops at RAIL_EXPANDED. The control never prints a count (scar: a
+  // "Show 25 more" once revealed 17 and stranded 8).
+  it("reveals up to the expand cap with an unnumbered Show more", () => {
     const { doc, window } = boot();
     dispatch(window, sessionsFrame(
       Array.from({ length: 28 }, (_, i) => row(`a${i}`, "/work/alpha", `s${i}`, 100 - i)),
     ));
     const more = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
       .querySelector(".rail-more") as HTMLElement;
-    // 20 reachable, 3 shown — not 25.
-    expect(more.textContent).toBe("Show 17 more");
+    expect(more.textContent).toBe("Show more");
+    expect(more.textContent).not.toMatch(/\d/);
     click(window, more);
     expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toHaveLength(20);
   });
@@ -507,7 +514,10 @@ describe("projects rail", () => {
         pinned("a1", "/work/alpha", "alpha thing", 10),
       ]));
       const heads = [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
-      expect(heads).toEqual(["Pinned", "Projects"]);
+      // RECENT also lists pinned rows (duplication intentional).
+      expect(heads[0]).toBe("Pinned");
+      expect(heads).toContain("Projects");
+      expect(heads).toContain("Recent");
       expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
         .toEqual(["beta thing", "alpha thing"]);
     });
@@ -595,10 +605,34 @@ describe("projects rail", () => {
       ]);
     });
 
-    it("shows no pin glyph on any row — the Pinned group carries that", () => {
-      const { doc, window } = boot();
+    it("shows a filled pin on pinned rows and outline on others (hover control)", () => {
+      const { doc, window } = boot("/work/alpha");
       dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
-      expect(doc.querySelectorAll(".rail-pin-mark")).toHaveLength(0);
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const pinnedBtn = doc.querySelector(".rail-pinned .rail-pin-btn") as HTMLElement;
+      expect(pinnedBtn).toBeTruthy();
+      expect(pinnedBtn.classList.contains("active")).toBe(true);
+      // Filled variant uses fill="currentColor" on the pin head path.
+      expect(pinnedBtn.innerHTML).toMatch(/fill="currentColor"/);
+      const projectRow = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
+        .querySelector(".rail-pin-btn") as HTMLElement;
+      expect(projectRow).toBeTruthy();
+      expect(projectRow.classList.contains("active")).toBe(false);
+      expect(projectRow.innerHTML).not.toMatch(/fill="currentColor"/);
+    });
+
+    it("pins from the session-row hover control in one click", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha/wt", "alpha one", 9)]));
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const pinBtn = section.querySelector(".rail-pin-btn") as HTMLElement;
+      click(window, pinBtn);
+      expect(posted.filter((p) => p.type === "toggleSessionPin")).toEqual([
+        { type: "toggleSessionPin", id: "a1", cwd: "/work/alpha/wt", pinned: true },
+      ]);
+      // Row click is not fired by the pin control.
+      expect(posted.filter((p) => p.type === "resumeSession")).toEqual([]);
     });
 
     // The menu button is a real <button> inside a row that also answers
@@ -725,8 +759,8 @@ describe("projects rail", () => {
 
     const heads = (doc: Document) =>
       [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
-    const sectionRepos = (doc: Document, index: number) =>
-      [...doc.querySelectorAll(".rail-list")[index].querySelectorAll(".rail-repo-label")]
+    const sectionRepos = (doc: Document, which: "projects" | "archived") =>
+      [...(doc.querySelector(`.rail-list.rail-${which}`)?.querySelectorAll(".rail-repo-label") ?? [])]
         .map((e) => e.textContent);
 
     /** Five projects: one selected, three recent (which the floor would protect
@@ -759,22 +793,28 @@ describe("projects rail", () => {
 
     it("drops long-idle projects into a folded Archived section", () => {
       const { doc } = bootArchive();
-      expect(heads(doc)).toEqual(["Projects", "Archived"]);
-      expect(sectionRepos(doc, 0)).toEqual(["home", "one", "two", "three"]);
-      // Folded by default — the section exists to be out of the way — so the
-      // count is the only thing it can say about itself.
-      expect(doc.querySelectorAll(".rail-list")).toHaveLength(1);
-      expect(doc.querySelector(".rail-head-count")?.textContent).toBe("2");
+      // RECENT is present once sessions load; Archived is folded (no list).
+      expect(heads(doc)).toContain("Projects");
+      expect(heads(doc)).toContain("Archived");
+      expect(heads(doc)).toContain("Recent");
+      expect(sectionRepos(doc, "projects")).toEqual(["home", "one", "two", "three"]);
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      // No count badge on the group header (styled like the others).
+      expect(doc.querySelector(".rail-head-count")).toBe(null);
     });
 
     it("opens and remembers the Archived section", () => {
       const { doc, window } = bootArchive();
-      click(window, doc.querySelector(".rail-head-btn") as HTMLElement);
-      expect(sectionRepos(doc, 1)).toEqual(["stale", "ancient"]);
+      const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Archived")) as HTMLElement;
+      click(window, archivedBtn);
+      expect(sectionRepos(doc, "archived")).toEqual(["stale", "ancient"]);
       // Whether it is open is the same kind of answer as a project fold, so it
       // keeps the same company and survives a reload.
       const key = Object.keys(window.localStorage).find((k) => k.startsWith("grok.remote.railShape"));
-      expect(JSON.parse(window.localStorage.getItem(key as string)).archiveOpen).toBe(true);
+      const saved = JSON.parse(window.localStorage.getItem(key as string));
+      expect(saved.groupCollapsed.archived).toBe(false);
+      expect(saved.archiveOpen).toBe(true);
     });
 
     // Coming back from three weeks away must not archive everything at once and
@@ -802,8 +842,12 @@ describe("projects rail", () => {
         });
       }
       // The three newest besides the one you are in, plus the one you are in.
-      expect(sectionRepos(h.doc, 0)).toEqual(["home", "a", "b", "c"]);
-      expect(h.doc.querySelector(".rail-head-count")?.textContent).toBe("1");
+      expect(sectionRepos(h.doc, "projects")).toEqual(["home", "a", "b", "c"]);
+      expect(h.doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      // One age-archived project remains folded under Archived.
+      const archivedBtn = [...h.doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Archived"));
+      expect(archivedBtn).toBeTruthy();
     });
 
     // The age rule needs to know when a project was last worked in, and the only
@@ -827,15 +871,16 @@ describe("projects rail", () => {
 
       // No `repoSessions` ever answers — the whole point. Not even the projects
       // past the floor may be archived.
-      expect(h.doc.querySelector(".rail-head-fold")).toBe(null);
-      expect(sectionRepos(h.doc, 0)).toHaveLength(5);
+      expect([...h.doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent))
+        .not.toContain("Archived");
+      expect(sectionRepos(h.doc, "projects")).toHaveLength(5);
     });
 
     // A rail that files the conversation on screen under "Archived" is
     // describing the screen wrongly, whatever the dates say.
     it("never archives the project you are reading", () => {
       const { doc } = bootArchive({ home: { archived: true, archivedAt: Date.now() } });
-      expect(sectionRepos(doc, 0)).toContain("home");
+      expect(sectionRepos(doc, "projects")).toContain("home");
     });
 
     it("archives on request, and asks the host to remember it", () => {
@@ -856,14 +901,15 @@ describe("projects rail", () => {
     // exactly where it is most likely to be used.
     it("honours an explicit archive on a project the floor protects", () => {
       const { doc } = bootArchive({ one: { archived: true, archivedAt: Date.now() } });
-      expect(sectionRepos(doc, 0)).toEqual(["home", "two", "three"]);
-      expect(doc.querySelector(".rail-head-count")?.textContent).toBe("3");
+      expect(sectionRepos(doc, "projects")).toEqual(["home", "two", "three"]);
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      expect(heads(doc)).toContain("Archived");
     });
 
     // The whole reason the choice is a timestamp rather than a flag.
     it("brings a project back the moment it is worked in again", () => {
       const { doc, window } = bootArchive({ stale: { archived: true, archivedAt: ago(10) } });
-      expect(sectionRepos(doc, 0)).not.toContain("stale");
+      expect(sectionRepos(doc, "projects")).not.toContain("stale");
 
       dispatch(window, {
         type: "repoSessions",
@@ -872,20 +918,22 @@ describe("projects rail", () => {
         dots: {},
         total: 1,
       });
-      expect(sectionRepos(doc, 0)).toContain("stale");
+      expect(sectionRepos(doc, "projects")).toContain("stale");
     });
 
     // "Keep showing me this one" is a real, stored answer — not the absence of
     // one. Without it the age rule would undo the unarchive on the next render.
     it("keeps an unarchived project visible however idle it is", () => {
       const { doc } = bootArchive({ ancient: { archived: false, archivedAt: Date.now() } });
-      expect(sectionRepos(doc, 0)).toContain("ancient");
+      expect(sectionRepos(doc, "projects")).toContain("ancient");
     });
 
     it("moves an archived project back from its own menu", () => {
       const { doc, window, posted } = bootArchive();
-      click(window, doc.querySelector(".rail-head-btn") as HTMLElement);
-      const archivedSection = doc.querySelectorAll(".rail-list")[1];
+      const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Archived")) as HTMLElement;
+      click(window, archivedBtn);
+      const archivedSection = doc.querySelector(".rail-list.rail-archived") as HTMLElement;
       const menu = openMenu(window, archivedSection.querySelector(".rail-repo-head") as HTMLElement);
       // The verb follows the SECTION, not the stored flag: these two were
       // archived by age and carry no flag at all, so reading the flag would
@@ -905,11 +953,13 @@ describe("projects rail", () => {
       search.value = "ancient";
       search.dispatchEvent(new (window as any).Event("input", { bubbles: true }));
 
-      expect(heads(doc)).toEqual(["Archived"]);
-      expect(sectionRepos(doc, 0)).toEqual(["ancient"]);
+      expect(heads(doc)).toEqual(["Recent", "Archived"]);
+      expect(sectionRepos(doc, "archived")).toEqual(["ancient"]);
       // …and says why it cannot be folded while the search is holding it open,
       // rather than offering a button whose click the next render undoes.
-      expect((doc.querySelector(".rail-head-btn") as HTMLButtonElement).disabled).toBe(true);
+      const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Archived")) as HTMLButtonElement;
+      expect(archivedBtn.disabled).toBe(true);
     });
 
     // Capability, never a version: a host that cannot record the choice must not
@@ -982,6 +1032,152 @@ describe("projects rail", () => {
       // Pinned group. The fold that was fine a moment ago now hides the answer.
       dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
       expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
+    });
+  });
+
+  // ---- Rail redesign: four groups, chevron-after, folder icons, collapse ----
+  describe("rail redesign (four groups)", () => {
+    const pinnedFrame = (entries: unknown[]) => ({ type: "pinnedSessions", entries, dots: {} });
+    const pinned = (id: string, cwd: string, name: string, at: number, updatedAt = at) =>
+      ({ ...row(id, cwd, name, updatedAt), pinnedAt: at });
+
+    it("renders PINNED, RECENT, PROJECTS, ARCHIVED in that order when all apply", () => {
+      // Explicit archive (not age): the always-visible floor keeps a lone
+      // idle project in Projects, so age alone cannot produce Archived here.
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: Date.now(), archived: false, archivedAt: 0 },
+        { cwd: "/work/old", label: "old", available: true, pinned: false, updatedAt: Date.now(), archived: true, archivedAt: Date.now() - 1000 },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", Date.now())]));
+      dispatch(h.window, {
+        type: "repoSessions",
+        cwd: "/work/old",
+        entries: [row("o1", "/work/old", "old one", Date.now() - 5000)],
+        dots: {},
+        total: 1,
+      });
+      dispatch(h.window, pinnedFrame([pinned("h1", "/work/home", "home one", 50, Date.now())]));
+
+      const titles = [...h.doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
+      expect(titles).toEqual(["Pinned", "Recent", "Projects", "Archived"]);
+    });
+
+    it("PINNED is not collapsible — no head button, no chevron", () => {
+      const { doc, window } = boot();
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
+      const pinnedHead = [...doc.querySelectorAll(".rail-head")]
+        .find((h) => h.querySelector(".rail-head-title")?.textContent === "Pinned") as HTMLElement;
+      expect(pinnedHead).toBeTruthy();
+      expect(pinnedHead.querySelector(".rail-head-btn")).toBe(null);
+      expect(pinnedHead.querySelector(".rail-head-twisty")).toBe(null);
+      expect(doc.querySelector(".rail-list.rail-pinned")).toBeTruthy();
+    });
+
+    it("group headers put the chevron after the label", () => {
+      const { doc, window } = boot();
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      expect(recentBtn).toBeTruthy();
+      const kids = [...recentBtn.children].map((c) => c.className);
+      const titleIdx = kids.findIndex((c) => c.includes("rail-head-title"));
+      const twistyIdx = kids.findIndex((c) => c.includes("rail-head-twisty"));
+      expect(titleIdx).toBeGreaterThanOrEqual(0);
+      expect(twistyIdx).toBeGreaterThan(titleIdx);
+    });
+
+    it("collapses and remembers RECENT / PROJECTS", () => {
+      const { doc, window } = boot();
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      expect(doc.querySelector(".rail-list.rail-recent")).toBeTruthy();
+      expect(doc.querySelector(".rail-list.rail-projects")).toBeTruthy();
+
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      click(window, recentBtn);
+      expect(doc.querySelector(".rail-list.rail-recent")).toBe(null);
+
+      const projectsBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Projects")) as HTMLElement;
+      click(window, projectsBtn);
+      expect(doc.querySelector(".rail-list.rail-projects")).toBe(null);
+
+      const key = Object.keys(window.localStorage).find((k) => k.startsWith("grok.remote.railShape"));
+      const saved = JSON.parse(window.localStorage.getItem(key as string));
+      expect(saved.groupCollapsed.recent).toBe(true);
+      expect(saved.groupCollapsed.projects).toBe(true);
+    });
+
+    it("RECENT merges sessions across projects, including pinned, newest first", () => {
+      const { doc, window } = boot();
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha recent", 100)]));
+      dispatch(window, {
+        type: "repoSessions",
+        cwd: "/work/beta",
+        entries: [row("b1", "/work/beta", "beta older", 50)],
+        dots: {},
+        total: 1,
+      });
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta older", 9, 50)]));
+
+      const recentNames = [...doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")]
+        .map((e) => e.textContent);
+      expect(recentNames).toEqual(["alpha recent", "beta older"]);
+      // Pinned still has its own copy.
+      expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
+        .toEqual(["beta older"]);
+      // And PROJECTS still lists alpha's row under the project.
+      expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toContain("alpha recent");
+    });
+
+    it("RECENT Show more / Show less has no digits", () => {
+      const { doc, window } = boot();
+      const many = Array.from({ length: 5 }, (_, i) =>
+        row(`a${i}`, "/work/alpha", `s${i}`, 100 - i),
+      );
+      dispatch(window, sessionsFrame(many));
+      const more = doc.querySelector(".rail-list.rail-recent .rail-more") as HTMLElement;
+      expect(more.textContent).toBe("Show more");
+      expect(more.textContent).not.toMatch(/\d/);
+      expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(3);
+      click(window, more);
+      expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(5);
+      const less = doc.querySelector(".rail-list.rail-recent .rail-more") as HTMLElement;
+      expect(less.textContent).toBe("Show less");
+      expect(less.textContent).not.toMatch(/\d/);
+    });
+
+    it("project rows use folder-closed when collapsed and folder-open when expanded", () => {
+      const { doc, window } = boot("/work/alpha");
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const twisty = () => alpha().querySelector(".rail-twisty") as HTMLElement;
+      // Expanded: folder-open path includes m6 14 (open flap).
+      expect(twisty().innerHTML).toMatch(/m6 14/);
+      expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
+      click(window, twisty());
+      // Collapsed: folder-closed has M2 10h20.
+      expect(twisty().innerHTML).toMatch(/M2 10h20/);
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+    });
+
+    it("a host that never mounts #projects-rail never renders the rail (VS Code property)", () => {
+      // Same guard as the top-level test — kept next to the redesign so a
+      // regression that lights the rail without a mount fails this suite hard.
+      const { doc, window } = bootWebview({});
+      dispatch(window, {
+        type: "repos",
+        entries: repos,
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      expect(doc.getElementById("projects-rail")).toBe(null);
+      expect(doc.body.classList.contains("has-rail")).toBe(false);
+      expect(doc.querySelectorAll(".rail-head-title")).toHaveLength(0);
+      expect(doc.querySelectorAll(".rail-session")).toHaveLength(0);
     });
   });
 });

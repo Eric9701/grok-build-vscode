@@ -76,7 +76,11 @@ import {
   registryIdFromUrlPath,
 } from "../src/desktop/resource-registry";
 import { parseWebviewMsg } from "../src/desktop/webview-msg-validate";
-import { isTrustedGeneratedMediaPath } from "../src/media-serve";
+import {
+  isRefusedMediaBasename,
+  isTrustedGeneratedMediaPath,
+  MAX_INLINE_MEDIA_BYTES,
+} from "../src/media-serve";
 import {
   buildInputBoxHtml,
   buildQuickPickHtml,
@@ -1322,6 +1326,20 @@ describe("media provenance + registry (A2)", () => {
     expect(
       isTrustedGeneratedMediaPath(loose, grokHome, (p) => fs.realpathSync(p)),
     ).toBe(false);
+  });
+
+  it("refuses auth.json by basename for agent media paths", () => {
+    expect(isRefusedMediaBasename(path.join(grokHome, "auth.json"))).toBe(true);
+    expect(isRefusedMediaBasename("/home/u/.grok/auth.json")).toBe(true);
+    expect(isRefusedMediaBasename("C:\\Users\\x\\.grok\\auth.json")).toBe(true);
+    expect(isRefusedMediaBasename(path.join(grokHome, "sessions", "c", "i", "images", "1.png"))).toBe(false);
+    expect(isRefusedMediaBasename(path.join(tmp, "out", "chart.png"))).toBe(false);
+  });
+
+  it("caps base64-inlined agent media at 8 MiB", () => {
+    // Revert of this constant (or raising it unboundedly) would re-allow huge
+    // data: URIs into the DOM; the number is the product decision under test.
+    expect(MAX_INLINE_MEDIA_BYTES).toBe(8 * 1024 * 1024);
   });
 
   it("refuses a symlink whose real target leaves the media root at register time", () => {

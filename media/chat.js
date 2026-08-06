@@ -410,8 +410,11 @@
      *  being refused outright. */
     railLiveRepoKey: "",
     railExpanded: {},
-    // Whether the Archived section is open. Closed by default and remembered
-    // per device, like the project folds.
+    // Collapsible group headers (PINNED is never collapsible). Defaults:
+    // Recent + Projects open; Archived folded away. Persisted in saveRailShape.
+    railGroupCollapsed: { recent: false, projects: false, archived: true },
+    // Compatibility alias for older railShape writes — mirrored from
+    // railGroupCollapsed.archived on load/save.
     railArchiveOpen: false,
     // True between a catalog naming a new selected repo and the session list for
     // that repo arriving — the window in which `state.sessions` still describes
@@ -625,7 +628,12 @@
     trash: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
     folder: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>`,
+    // Lucide folder-closed / folder-open — project expand/collapse (replaces chevron).
+    folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M2 10h20"/></svg>`,
+    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z"/></svg>`,
+    // Same Lucide pin path with a filled head (outline stroke kept for the needle).
+    pinFilled: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z" fill="currentColor"/></svg>`,
     archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>`,
     archiveRestore: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h4"/><path d="M20 8v11a2 2 0 0 1-2 2h-4"/><path d="m9 15 3-3 3 3"/><path d="M12 12v9"/></svg>`,
     mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
@@ -2943,8 +2951,10 @@
   // the selected repo's rows come from the ordinary `sessions` frame and the
   // other repos simply stay empty until you open them.
 
-  const RAIL_PREVIEW = 3;      // rows per repo before "Show all"
+  const RAIL_PREVIEW = 3;      // rows per list before "Show more"
   const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
+  // Synthetic expand key for the RECENT group (shares railExpanded with repos).
+  const RAIL_RECENT_KEY = "__recent__";
 
   // A project nobody has touched in a month is not one you are choosing between
   // today, so it drops to Archived on its own — the list stays a list of what you
@@ -3135,6 +3145,10 @@
     }
   }
 
+  function defaultRailGroupCollapsed() {
+    return { recent: false, projects: false, archived: true };
+  }
+
   function loadRailShape() {
     if (!railMount()) return;
     try {
@@ -3146,9 +3160,19 @@
       if (saved && typeof saved === "object") {
         if (saved.collapsed && typeof saved.collapsed === "object") state.railCollapsed = saved.collapsed;
         if (saved.expanded && typeof saved.expanded === "object") state.railExpanded = saved.expanded;
-        // Whether Archived is open is the same kind of answer, so it keeps the
-        // same company. Default closed: the section exists to be out of the way.
-        if (saved.archiveOpen === true) state.railArchiveOpen = true;
+        const groups = defaultRailGroupCollapsed();
+        if (saved.groupCollapsed && typeof saved.groupCollapsed === "object") {
+          for (const k of Object.keys(groups)) {
+            if (typeof saved.groupCollapsed[k] === "boolean") groups[k] = saved.groupCollapsed[k];
+          }
+        } else if (saved.archiveOpen === true) {
+          // Pre-redesign shape: only Archived remembered open/closed.
+          groups.archived = false;
+        } else if (saved.archiveOpen === false) {
+          groups.archived = true;
+        }
+        state.railGroupCollapsed = groups;
+        state.railArchiveOpen = !groups.archived;
       }
     } catch (_) { /* private mode, or a value we did not write */ }
   }
@@ -3156,12 +3180,31 @@
   function saveRailShape() {
     if (!railMount()) return;
     try {
+      const groups = state.railGroupCollapsed || defaultRailGroupCollapsed();
+      state.railArchiveOpen = !groups.archived;
       localStorage.setItem(railShapeKey(), JSON.stringify({
         collapsed: state.railCollapsed,
         expanded: state.railExpanded,
-        archiveOpen: !!state.railArchiveOpen,
+        groupCollapsed: groups,
+        // Keep the legacy key so an older page shell reading this store still
+        // understands Archived open/closed until it picks up the redesign.
+        archiveOpen: !groups.archived,
       }));
     } catch (_) { /* private mode, or quota */ }
+  }
+
+  function railGroupIsCollapsed(name) {
+    const groups = state.railGroupCollapsed || defaultRailGroupCollapsed();
+    if (typeof groups[name] === "boolean") return groups[name];
+    // Archived defaults folded; Recent / Projects default open.
+    return name === "archived";
+  }
+
+  function setRailGroupCollapsed(name, collapsed) {
+    if (!state.railGroupCollapsed) state.railGroupCollapsed = defaultRailGroupCollapsed();
+    state.railGroupCollapsed[name] = !!collapsed;
+    if (name === "archived") state.railArchiveOpen = !collapsed;
+    saveRailShape();
   }
 
 
@@ -3398,25 +3441,47 @@
     const q = railFilterText();
     let shownAnything = false;
 
-    // Pinned sits ABOVE Projects and spans every repo: a pin is only worth
-    // anything if it lifts a conversation OUT of the project you would otherwise
-    // have to open first. Rows name their repo, because out here that is the
-    // only thing telling two similarly-named conversations apart.
+    // Four groups: PINNED (always open) → RECENT → PROJECTS → ARCHIVED.
+    // PINNED is not collapsible — that is what pinning means.
     const pinned = state.pinnedSessions.filter(
       (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
     );
     if (pinned.length) {
-      const pinHead = document.createElement("div");
-      pinHead.className = "rail-head";
-      pinHead.innerHTML = `<span class="rail-head-title">Pinned</span>`;
-      root.appendChild(pinHead);
-
+      root.appendChild(railStaticGroupHead("Pinned"));
       const pinList = document.createElement("div");
       pinList.className = "rail-list rail-pinned";
       for (const s of pinned) {
         pinList.appendChild(renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }));
       }
       root.appendChild(pinList);
+      shownAnything = true;
+    }
+
+    // RECENT: most recent across every loaded project, including pinned rows.
+    // Duplication with PROJECTS / PINNED is intentional — a shortcut, not a partition.
+    const recentAll = railRecentRows().filter(
+      (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
+    );
+    if (recentAll.length) {
+      const forcedOpen = !!q;
+      const open = forcedOpen || !railGroupIsCollapsed("recent");
+      root.appendChild(railCollapsibleGroupHead({
+        title: "Recent",
+        group: "recent",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        openTitle: "Hide recent conversations",
+        closedTitle: "Show recent conversations",
+        searchTitle: "Open while your search matches a conversation",
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-recent";
+        appendRailSessionSlice(list, recentAll, RAIL_RECENT_KEY, (s) =>
+          renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }),
+        );
+        root.appendChild(list);
+      }
       shownAnything = true;
     }
 
@@ -3427,30 +3492,44 @@
     const sections = railSections();
     const repos = sections.active.filter((repo) => !q || railRepoHasMatch(repo));
     if (repos.length) {
-      const head = document.createElement("div");
-      head.className = "rail-head";
-      head.innerHTML = `<span class="rail-head-title">Projects</span>`;
-      root.appendChild(head);
-
-      const list = document.createElement("div");
-      list.className = "rail-list";
-      root.appendChild(list);
-
-      for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
+      const forcedOpen = !!q;
+      const open = forcedOpen || !railGroupIsCollapsed("projects");
+      root.appendChild(railCollapsibleGroupHead({
+        title: "Projects",
+        group: "projects",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        openTitle: "Hide projects",
+        closedTitle: "Show projects",
+        searchTitle: "Open while your search matches a project",
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-projects";
+        for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
+        root.appendChild(list);
+      }
       shownAnything = true;
     }
 
-    // Archived: everything you put away, plus everything that went quiet for a
-    // month. Folded by default — the whole point is that it is out of the way —
-    // but a search reaches inside, because a query answered with "No matches."
-    // while the project sits collapsed two inches below is simply wrong.
+    // Archived: put-away + age-quiet projects. Folded by default; search opens it.
     const archived = sections.archived.filter((repo) => !q || railRepoHasMatch(repo));
     if (archived.length) {
-      const open = q ? true : !!state.railArchiveOpen;
-      root.appendChild(railArchiveHead(archived.length, open, !!q));
+      const forcedOpen = !!q;
+      const open = forcedOpen || !railGroupIsCollapsed("archived");
+      root.appendChild(railCollapsibleGroupHead({
+        title: "Archived",
+        group: "archived",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        icon: ICON.archive,
+        openTitle: "Hide archived projects",
+        closedTitle: "Show archived projects",
+        searchTitle: "Open while your search matches an archived project",
+      }));
       if (open) {
         const list = document.createElement("div");
-        list.className = "rail-list";
+        list.className = "rail-list rail-archived";
         for (const repo of archived) list.appendChild(renderRailRepo(repo, true));
         root.appendChild(list);
       }
@@ -3461,36 +3540,110 @@
     renderSessionHead();
   }
 
-  /** The Archived heading, which is also its own disclosure control. A count
-   *  rather than a bare label: folded away, the number is the only thing saying
-   *  whether there is anything down there worth opening. */
-  function railArchiveHead(count, open, forcedOpenBySearch) {
+  /** Non-collapsible group label (PINNED). */
+  function railStaticGroupHead(title) {
+    const head = document.createElement("div");
+    head.className = "rail-head";
+    head.innerHTML = `<span class="rail-head-title"></span>`;
+    head.querySelector(".rail-head-title").textContent = title;
+    return head;
+  }
+
+  /**
+   * Collapsible group header: label first, chevron AFTER (not before).
+   * PINNED never uses this.
+   */
+  function railCollapsibleGroupHead(opts) {
     const head = document.createElement("div");
     head.className = "rail-head rail-head-fold";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "rail-head-btn";
-    btn.setAttribute("aria-expanded", String(open));
-    btn.innerHTML =
-      `<span class="rail-head-twisty">${open ? ICON.chevronDown : ICON.chevronRight}</span>` +
-      `<span class="rail-head-title">Archived</span>` +
-      `<span class="rail-head-count"></span>`;
-    btn.querySelector(".rail-head-count").textContent = String(count);
-    // While a search is holding it open, the button would otherwise appear to do
-    // nothing — the next render forces it back open. Say so instead.
-    btn.disabled = forcedOpenBySearch;
-    btn.title = forcedOpenBySearch
-      ? "Open while your search matches an archived project"
-      : (open ? "Hide archived projects" : "Show archived projects");
+    btn.setAttribute("aria-expanded", String(opts.open));
+    let html = "";
+    if (opts.icon) html += `<span class="rail-head-icon">${opts.icon}</span>`;
+    html += `<span class="rail-head-title"></span>`;
+    html += `<span class="rail-head-twisty">${opts.open ? ICON.chevronDown : ICON.chevronRight}</span>`;
+    btn.innerHTML = html;
+    btn.querySelector(".rail-head-title").textContent = opts.title;
+    btn.disabled = !!opts.forcedOpenBySearch;
+    btn.title = opts.forcedOpenBySearch
+      ? (opts.searchTitle || "Held open by search")
+      : (opts.open ? opts.openTitle : opts.closedTitle);
     btn.onclick = (e) => {
       e.stopPropagation();
-      if (state.railArchiveOpen) delete state.railArchiveOpen;
-      else state.railArchiveOpen = true;
-      saveRailShape();
+      // Toggle: currently open → collapse; currently closed → expand.
+      setRailGroupCollapsed(opts.group, opts.open);
       renderRail();
     };
     head.appendChild(btn);
     return head;
+  }
+
+  /**
+   * Most-recent conversations across every project whose preview (or selected
+   * page) has loaded, plus pinned sessions that may not be in those previews.
+   * Newest first. Within RECENT, ids are unique; the same row may still appear
+   * again under PINNED and under its PROJECT — that duplication is intentional.
+   */
+  function railRecentRows() {
+    const byId = new Map();
+    for (const repo of state.repos || []) {
+      const known = railKnownRows(repo);
+      if (!known) continue;
+      for (const s of known.entries) {
+        if (s && s.id) byId.set(s.id, s);
+      }
+    }
+    for (const s of state.pinnedSessions || []) {
+      if (!s || !s.id) continue;
+      // Prefer the pinned record when both exist (carries pinnedAt).
+      const prev = byId.get(s.id);
+      byId.set(s.id, prev ? { ...prev, ...s } : s);
+    }
+    return [...byId.values()].sort(
+      (a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)
+        || String(b.id || "").localeCompare(String(a.id || "")),
+    );
+  }
+
+  /**
+   * Preview / Show more / Show less for a flat session list (RECENT or a repo).
+   * Labels carry no digits — three disagreeing totals stranded rows behind a
+   * lying count (see the scar comment on renderRailSessions).
+   */
+  function appendRailSessionSlice(body, entries, expandKey, rowFactory) {
+    const expanded = !!state.railExpanded[expandKey];
+    const visible = expanded ? RAIL_EXPANDED : RAIL_PREVIEW;
+    const shown = entries.slice(0, visible);
+    for (const s of shown) body.appendChild(rowFactory(s));
+    const reachable = Math.min(entries.length, RAIL_EXPANDED);
+    const hidden = Math.max(0, reachable - shown.length);
+    if (hidden > 0 && !expanded) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "rail-more";
+      more.textContent = "Show more";
+      more.onclick = (e) => {
+        e.stopPropagation();
+        state.railExpanded[expandKey] = true;
+        saveRailShape();
+        renderRail();
+      };
+      body.appendChild(more);
+    } else if (expanded && entries.length > RAIL_PREVIEW) {
+      const less = document.createElement("button");
+      less.type = "button";
+      less.className = "rail-more";
+      less.textContent = "Show less";
+      less.onclick = (e) => {
+        e.stopPropagation();
+        delete state.railExpanded[expandKey];
+        saveRailShape();
+        renderRail();
+      };
+      body.appendChild(less);
+    }
   }
 
   /** The catalog's label for a cwd — repos that share a leaf name are only
@@ -3748,14 +3901,14 @@
     head.className = "rail-repo-head";
     head.title = repo.cwd;
 
-    // Collapse is its own control, so clicking the NAME can mean "work here"
-    // without also folding the rows away.
+    // Folder open/closed is the expand control (no leading chevron on project rows).
     const twisty = document.createElement("button");
     twisty.type = "button";
     twisty.className = "rail-twisty";
-    twisty.innerHTML = collapsed ? ICON.chevronRight : ICON.chevronDown;
+    twisty.innerHTML = collapsed ? ICON.folderClosed : ICON.folderOpen;
     twisty.title = collapsed ? "Expand" : "Collapse";
     twisty.setAttribute("aria-expanded", String(!collapsed));
+    twisty.setAttribute("aria-label", collapsed ? "Expand project" : "Collapse project");
     twisty.onclick = (e) => {
       e.stopPropagation();
       if (collapsed) delete state.railCollapsed[key];
@@ -3769,9 +3922,10 @@
     name.type = "button";
     name.className = "rail-repo-name";
     name.disabled = !repo.available || repoSwitcherLocked();
-    name.innerHTML =
-      `<span class="rail-repo-icon">${repo.worktreeLabel ? ICON.gitBranch : ICON.folder}</span>` +
-      `<span class="rail-repo-label"></span>`;
+    // Worktree keeps a branch glyph; ordinary projects rely on the folder twisty.
+    name.innerHTML = repo.worktreeLabel
+      ? `<span class="rail-repo-icon">${ICON.gitBranch}</span><span class="rail-repo-label"></span>`
+      : `<span class="rail-repo-label"></span>`;
     name.querySelector(".rail-repo-label").textContent = repo.label || cwdLeaf(repo.cwd);
     name.onclick = () => {
       if (!repo.available || repoSwitcherLocked() || selected) return;
@@ -3906,7 +4060,7 @@
       return body;
     }
 
-    // A search answers itself: showing three of five matches behind a "Show 2
+    // A search answers itself: showing three of five matches behind a "Show
     // more" would hide the very rows the query asked for. Matching by project
     // name instead means the whole project matched, so its list stays as it was.
     const q = railFilterText();
@@ -3917,48 +4071,15 @@
       return body;
     }
 
-    const visible = state.railExpanded[key] ? RAIL_EXPANDED : RAIL_PREVIEW;
-    const shown = rows.entries.slice(0, visible);
-    if (!shown.length) {
+    if (!rows.entries.length) {
       body.appendChild(railNote("No sessions yet"));
       return body;
     }
-    for (const s of shown) body.appendChild(renderRailSessionRow(s, repo));
 
-    // What expanding ACTUALLY reveals, which is two caps deep:
-    //   - never the host's `total` (it counts index slots, including subagent
-    //     sessions the list hides, so it promises rows that do not exist), and
-    //   - never the full loaded list either, because expanding stops at
-    //     RAIL_EXPANDED. A repo with 28 loaded sessions offered "Show 25 more"
-    //     and then revealed 17, stranding the last 8 behind no control at all.
-    // The rail is a jump list; history remains the place that holds everything.
-    const reachable = Math.min(rows.entries.length, RAIL_EXPANDED);
-    const hidden = Math.max(0, reachable - shown.length);
-    if (hidden > 0 && !state.railExpanded[key]) {
-      const more = document.createElement("button");
-      more.type = "button";
-      more.className = "rail-more";
-      more.textContent = `Show ${hidden} more`;
-      more.onclick = (e) => {
-        e.stopPropagation();
-        state.railExpanded[key] = true;
-        saveRailShape();
-        renderRail();
-      };
-      body.appendChild(more);
-    } else if (state.railExpanded[key] && rows.entries.length > RAIL_PREVIEW) {
-      const less = document.createElement("button");
-      less.type = "button";
-      less.className = "rail-more";
-      less.textContent = "Show less";
-      less.onclick = (e) => {
-        e.stopPropagation();
-        delete state.railExpanded[key];
-        saveRailShape();
-        renderRail();
-      };
-      body.appendChild(less);
-    }
+    // One-step reveal, no counters. Three numbers disagree (host total, loaded
+    // length, RAIL_EXPANDED cap); a count-labelled control stranded rows. Depth
+    // belongs in the history popover. See appendRailSessionSlice.
+    appendRailSessionSlice(body, rows.entries, key, (s) => renderRailSessionRow(s, repo));
     return body;
   }
 
@@ -4022,14 +4143,31 @@
       row.appendChild(where);
     }
 
-    // No pin mark. The Pinned section at the top of the rail already says which
-    // conversations are pinned — more plainly than a glyph could — and repeating
-    // it on the copy inside the project is a second answer to a question already
-    // answered. The menu still says Unpin wherever you open it.
-    if (typeof s.pinnedAt === "number") row.classList.add("pinned");
+    const isPinned = typeof s.pinnedAt === "number";
+    if (isPinned) row.classList.add("pinned");
 
     const actions = document.createElement("div");
     actions.className = "rail-session-actions";
+    // Hover pin control (one click). Hidden until :hover / :focus-within; forced
+    // visible on touch via @media (hover: none). Capability-gated like the menu.
+    if (state.pinnedSessionsKnown) {
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.className = "rail-action-btn rail-pin-btn" + (isPinned ? " active" : "");
+      pinBtn.innerHTML = isPinned ? ICON.pinFilled : ICON.pin;
+      pinBtn.title = isPinned ? "Unpin conversation" : "Pin conversation";
+      pinBtn.setAttribute("aria-label", pinBtn.title);
+      pinBtn.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({
+          type: "toggleSessionPin",
+          id: s.id,
+          cwd: s.cwd || repo.cwd,
+          pinned: !isPinned,
+        });
+      };
+      actions.appendChild(pinBtn);
+    }
     actions.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(s, repo, active)));
     row.appendChild(actions);
     row.onclick = railSessionOpener(s, repo, active);
