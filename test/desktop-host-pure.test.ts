@@ -77,10 +77,17 @@ import {
 } from "../src/desktop/resource-registry";
 import { parseWebviewMsg } from "../src/desktop/webview-msg-validate";
 import {
+  base64DecodedByteLength,
   isRefusedMediaBasename,
+  isRefusedMediaPath,
   isTrustedGeneratedMediaPath,
   MAX_INLINE_MEDIA_BYTES,
 } from "../src/media-serve";
+import {
+  findSessionCatalogCwd,
+  orderedResumeCwdCandidates,
+  sessionsDirFor,
+} from "../src/sessions";
 import {
   buildInputBoxHtml,
   buildQuickPickHtml,
@@ -353,6 +360,55 @@ describe("createSafeStorageSecrets", () => {
     await expect(secrets.get("k")).rejects.toBeInstanceOf(EncryptionUnavailableError);
     // Disk must still hold only ciphertext — never a silent plaintext rewrite.
     expect(fs.readFileSync(file, "utf8")).not.toContain("secret");
+  });
+
+  it("unlink can delete ciphertext when get throws (offline kill-switch)", async () => {
+    // Store a real ciphertext, then use a decryptor that throws (keychain
+    // unavailable / key rotated). Delete must still clear the entry so the
+    // user is not stuck linked forever.
+    await createSafeStorageSecrets(file, xorStorage()).store(
+      "grok.remoteControl.deviceToken",
+      "device-token",
+    );
+    const brokenDecrypt: SafeStorageLike = {
+      isEncryptionAvailable: () => true,
+      encryptString: (s) => Buffer.from(s, "utf8"),
+      decryptString: () => {
+        throw new Error("OS keychain refused decrypt");
+      },
+    };
+    const broken = createSafeStorageSecrets(file, brokenDecrypt);
+    await expect(broken.get("grok.remoteControl.deviceToken")).rejects.toThrow(/decrypt/i);
+    // delete does not need the OS key — this is the kill-switch property.
+    await broken.delete("grok.remoteControl.deviceToken");
+    expect(await createSafeStorageSecrets(file, xorStorage()).get("grok.remoteControl.deviceToken"))
+      .toBeUndefined();
+    // Sidebar must not require a successful get before delete.
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    expect(sidebar).toContain("readDeviceToken");
+    const unlinkStart = sidebar.indexOf("async unlinkRemoteDevice()");
+    const unlinkEnd = sidebar.indexOf("private async postRemoteStatus", unlinkStart);
+    const unlinkBody = sidebar.slice(unlinkStart, unlinkEnd);
+    expect(unlinkBody).toContain("readDeviceToken");
+    expect(unlinkBody).toContain("secrets.delete");
+    // get is only via the tolerant helper (never a bare throw-stopper before delete).
+    expect(unlinkBody).not.toMatch(/await this\.context\.secrets\.get\(/);
+  });
+
+  it("startup tolerates an undecryptable device token (no throw)", async () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    // readDeviceToken catches decrypt failures; callers use it instead of bare get.
+    expect(sidebar).toMatch(
+      /private async readDeviceToken\(\)[\s\S]*?catch[\s\S]*?return undefined/,
+    );
+    expect(sidebar).toMatch(/maybeStartUplink[\s\S]*?readDeviceToken/);
+    expect(sidebar).toMatch(/postRemoteStatus[\s\S]*?readDeviceToken/);
   });
 
   it("mutation: a plaintext fallback would be detectable", async () => {
@@ -1336,10 +1392,65 @@ describe("media provenance + registry (A2)", () => {
     expect(isRefusedMediaBasename(path.join(tmp, "out", "chart.png"))).toBe(false);
   });
 
+  it("refuses a media path whose canonical target is auth.json (symlink dodge)", () => {
+    const secret = path.join(grokHome, "auth.json");
+    const innocuous = path.join(tmp, "workspace", "chart.png");
+    fs.mkdirSync(path.dirname(innocuous), { recursive: true });
+    // Injectable realpath: reported chart.png resolves to auth.json.
+    const realpath = (p: string) =>
+      path.resolve(p) === path.resolve(innocuous) ? secret : path.resolve(p);
+    expect(isRefusedMediaBasename(innocuous)).toBe(false);
+    expect(isRefusedMediaPath(innocuous, realpath)).toBe(true);
+    expect(isRefusedMediaPath(secret, realpath)).toBe(true);
+    // Legitimate chart stays allowed.
+    const realChart = path.join(tmp, "workspace", "real-chart.png");
+    expect(isRefusedMediaPath(realChart, (p) => path.resolve(p))).toBe(false);
+  });
+
+  it("mutation: basename-only refuse would miss the symlink dodge", () => {
+    const secret = path.join(grokHome, "auth.json");
+    const link = path.join(tmp, "out", "chart.png");
+    const realpath = (p: string) =>
+      path.resolve(p) === path.resolve(link) ? secret : path.resolve(p);
+    // The pre-fix check (basename only) is what this asserts would fail open.
+    expect(isRefusedMediaBasename(link)).toBe(false);
+    expect(isRefusedMediaPath(link, realpath)).toBe(true);
+  });
+
   it("caps base64-inlined agent media at 8 MiB", () => {
     // Revert of this constant (or raising it unboundedly) would re-allow huge
     // data: URIs into the DOM; the number is the product decision under test.
     expect(MAX_INLINE_MEDIA_BYTES).toBe(8 * 1024 * 1024);
+  });
+
+  it("caps ACP inline (kind:data) media by decoded base64 length", () => {
+    // ~12 bytes decoded from "AAAAAAAAAAAA" (9 chars → floor*3/4); scale up.
+    const over = Buffer.alloc(MAX_INLINE_MEDIA_BYTES + 1).toString("base64");
+    expect(base64DecodedByteLength(over)).toBeGreaterThan(MAX_INLINE_MEDIA_BYTES);
+    const under = Buffer.alloc(16).toString("base64");
+    expect(base64DecodedByteLength(under)).toBeLessThanOrEqual(MAX_INLINE_MEDIA_BYTES);
+    // Source gate: postGeneratedMedia must apply this before emit.
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    expect(sidebar).toContain("base64DecodedByteLength");
+    expect(sidebar).toMatch(
+      /kind === "data"[\s\S]*base64DecodedByteLength[\s\S]*MAX_INLINE_MEDIA_BYTES/,
+    );
+  });
+
+  it("mutation: skipping the inline size check would re-admit oversized data: media", () => {
+    // If postGeneratedMedia only checked the file-path branch, this gate is gone.
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const dataBranch = sidebar.match(
+      /if \(m\.kind === "data"\) \{[\s\S]*?\n      \}/,
+    )?.[0] ?? "";
+    expect(dataBranch).toContain("base64DecodedByteLength");
+    expect(dataBranch).toContain("MAX_INLINE_MEDIA_BYTES");
   });
 
   it("refuses a symlink whose real target leaves the media root at register time", () => {
@@ -1926,6 +2037,78 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
       { allowedRoots: [worktree, workspace] },
     );
     expect("refused" in bad).toBe(true);
+  });
+
+  it("forged resumeSession cwd cannot become process cwd or widen auth roots", () => {
+    // Property under test (both halves of the HIGH finding):
+    // 1) process cwd is findSessionCatalogCwd over trusted candidates only
+    // 2) desktopAuthRoots is built from that host-owned session cwd
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-resume-auth-"));
+    const grokHome = path.join(base, "fake-grok");
+    const repo = path.join(base, "repo");
+    const evil = path.join(base, "evil-outside");
+    const sessionId = "resume-id-1";
+    try {
+      fs.mkdirSync(repo, { recursive: true });
+      fs.mkdirSync(evil, { recursive: true });
+      // Real session only under repo.
+      const realDir = path.join(sessionsDirFor(grokHome, repo), sessionId);
+      fs.mkdirSync(realDir, { recursive: true });
+      fs.writeFileSync(path.join(realDir, "summary.json"), "{}");
+      // Attacker also plants a fake session under evil.
+      const evilDir = path.join(sessionsDirFor(grokHome, evil), sessionId);
+      fs.mkdirSync(evilDir, { recursive: true });
+      fs.writeFileSync(path.join(evilDir, "summary.json"), "{}");
+
+      const candidates = orderedResumeCwdCandidates({
+        messageCwd: evil, // forged by renderer
+        trustedCwds: [repo],
+      });
+      expect(candidates).not.toContain(evil);
+      const resolved = findSessionCatalogCwd({
+        fs,
+        grokHome,
+        id: sessionId,
+        candidates,
+      });
+      expect(resolved).toBe(repo);
+
+      // Half 2: auth roots follow the resolved session cwd, not the message.
+      const roots = desktopAuthRoots({
+        workspaceRoot: repo,
+        allowedRoots: [resolved!],
+      });
+      expect(roots.some((r) => path.resolve(r) === path.resolve(repo))).toBe(true);
+      expect(roots.some((r) => path.resolve(r) === path.resolve(evil))).toBe(false);
+
+      // Mutation: the old assignment `cwd = sessionCwd || workspace` would pick evil
+      // and widen openFile/openDiff authorization to that tree.
+      const buggyCwd = evil || repo;
+      expect(buggyCwd).toBe(evil);
+      const buggyRoots = desktopAuthRoots({
+        workspaceRoot: repo,
+        allowedRoots: [buggyCwd],
+      });
+      expect(buggyRoots.some((r) => path.resolve(r) === path.resolve(evil))).toBe(true);
+
+      // Source gate: openSessionReserved must resolve via catalog helpers, not
+      // `sessionCwd || …` assignment.
+      const sidebar = fs.readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+        "utf8",
+      );
+      expect(sidebar).toContain("findSessionCatalogCwd");
+      expect(sidebar).toContain("orderedResumeCwdCandidates");
+      const openStart = sidebar.indexOf("private async openSessionReserved(");
+      const openEnd = sidebar.indexOf("private revealAndFocusComposer", openStart);
+      const openBody = sidebar.slice(openStart, openEnd);
+      expect(openBody).toContain("findSessionCatalogCwd");
+      expect(openBody).not.toMatch(
+        /const cwd\s*=\s*\n?\s*sessionCwd\s*\|\|/,
+      );
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it("desktopAuthRoots dedupes workspaceRoot + allowedRoots", () => {

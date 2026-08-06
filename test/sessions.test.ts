@@ -12,11 +12,13 @@ import {
   deleteSessionDir,
   extractUserQueries,
   fallbackName,
+  findSessionCatalogCwd,
   indexSessions,
   isEmptySession,
   isPathInside,
   listSessions,
   mostRecentSession,
+  orderedResumeCwdCandidates,
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
@@ -294,6 +296,105 @@ describe("sessionsDirFor", () => {
     ["..", "%2E%2E"],
   ])("keeps a non-canonical cwd catalog inside the sessions root: %j", (badCwd, leaf) => {
     expect(sessionsDirFor(grokHome, badCwd)).toBe(path.join(grokHome, "sessions", leaf));
+  });
+});
+
+describe("orderedResumeCwdCandidates / findSessionCatalogCwd (resume cwd trust)", () => {
+  const workspace = "/work/repo";
+  const evil = "/etc/evil";
+  const sessionId = "sess-real-1";
+
+  it("never includes an untrusted message cwd among candidates", () => {
+    const cands = orderedResumeCwdCandidates({
+      messageCwd: evil,
+      trustedCwds: [workspace],
+      cachedCwd: workspace,
+    });
+    expect(cands).toEqual([workspace]);
+    expect(cands).not.toContain(evil);
+  });
+
+  it("looks first at a message cwd that is already trusted", () => {
+    const other = "/work/other";
+    const cands = orderedResumeCwdCandidates({
+      messageCwd: other,
+      trustedCwds: [workspace, other],
+      cachedCwd: workspace,
+    });
+    expect(cands[0]).toBe(other);
+    expect(cands).toContain(workspace);
+  });
+
+  it("resolves the catalog cwd that actually holds the session id", () => {
+    const dir = path.join(sessionsDirFor(grokHome, workspace), sessionId);
+    const fs: FsLike = buildFs({
+      [path.join(dir, "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({ info: { id: sessionId, cwd: workspace } }),
+      },
+      [dir]: { isDir: true },
+      [sessionsDirFor(grokHome, workspace)]: { isDir: true },
+    });
+    // Forged message cwd must not win even when it would be preferred in order —
+    // it is filtered out of candidates entirely when untrusted.
+    const candidates = orderedResumeCwdCandidates({
+      messageCwd: evil,
+      trustedCwds: [workspace],
+    });
+    expect(findSessionCatalogCwd({ fs, grokHome, id: sessionId, candidates })).toBe(workspace);
+  });
+
+  it("returns undefined when the id only exists under an untrusted path", () => {
+    // Attacker planted a session dir under /etc/evil; host must not adopt it.
+    const evilDir = path.join(sessionsDirFor(grokHome, evil), sessionId);
+    const fs: FsLike = buildFs({
+      [path.join(evilDir, "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({ info: { id: sessionId, cwd: evil } }),
+      },
+      [evilDir]: { isDir: true },
+      [sessionsDirFor(grokHome, evil)]: { isDir: true },
+    });
+    const candidates = orderedResumeCwdCandidates({
+      messageCwd: evil,
+      trustedCwds: [workspace],
+    });
+    expect(candidates).not.toContain(evil);
+    expect(findSessionCatalogCwd({ fs, grokHome, id: sessionId, candidates })).toBeUndefined();
+  });
+
+  it("mutation: trusting messageCwd unconditionally would adopt an evil catalog", () => {
+    const evilDir = path.join(sessionsDirFor(grokHome, evil), sessionId);
+    const fs: FsLike = buildFs({
+      [path.join(evilDir, "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({ info: { id: sessionId, cwd: evil } }),
+      },
+      [evilDir]: { isDir: true },
+      [sessionsDirFor(grokHome, evil)]: { isDir: true },
+    });
+    // The buggy pattern from openSessionReserved: sessionCwd || workspace.
+    const buggyCandidates = [evil, workspace];
+    expect(findSessionCatalogCwd({ fs, grokHome, id: sessionId, candidates: buggyCandidates }))
+      .toBe(evil);
+    // Fixed path: ordered candidates drop evil → no match → no spawn in evil.
+    const fixed = orderedResumeCwdCandidates({
+      messageCwd: evil,
+      trustedCwds: [workspace],
+    });
+    expect(findSessionCatalogCwd({ fs, grokHome, id: sessionId, candidates: fixed }))
+      .toBeUndefined();
+  });
+
+  it("rejects an invalid session id without touching candidates", () => {
+    expect(
+      findSessionCatalogCwd({
+        fs: buildFs({}),
+        grokHome,
+        id: "../escape",
+        candidates: [workspace],
+      }),
+    ).toBeUndefined();
   });
 });
 

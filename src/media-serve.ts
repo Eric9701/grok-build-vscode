@@ -44,6 +44,39 @@ export function isRefusedMediaBasename(fsPath: string): boolean {
 export type RealpathFn = (p: string) => string;
 
 /**
+ * Refuse when the reported path **or** its canonical target is a secret name
+ * (e.g. `chart.png` → symlink → `auth.json`). Missing/unresolvable paths fall
+ * back to the reported basename only.
+ */
+export function isRefusedMediaPath(
+  fsPath: string,
+  realpath: RealpathFn = (p) => path.resolve(p),
+): boolean {
+  if (!fsPath) return false;
+  if (isRefusedMediaBasename(fsPath)) return true;
+  try {
+    return isRefusedMediaBasename(realpath(fsPath));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decoded byte length of a base64 payload (padding-aware). Used to gate
+ * ACP-inline media before it is emitted into the webview / relay.
+ */
+export function base64DecodedByteLength(b64: string): number {
+  if (!b64 || typeof b64 !== "string") return 0;
+  // Strip whitespace the wire sometimes inserts; count only payload chars.
+  const s = b64.replace(/\s+/g, "");
+  if (!s) return 0;
+  let padding = 0;
+  if (s.endsWith("==")) padding = 2;
+  else if (s.endsWith("=")) padding = 1;
+  return Math.floor((s.length * 3) / 4) - padding;
+}
+
+/**
  * Generated media path shape under a Grok home / sessions tree.
  * `…/sessions/<anything>/images|videos/<file.ext>`
  */
@@ -77,7 +110,7 @@ export function isTrustedGeneratedMediaPath(
   realpath: RealpathFn = (p) => path.resolve(p),
 ): boolean {
   if (!fsPath || !mediaRoot) return false;
-  if (/(^|[/\\])auth\.json$/i.test(fsPath)) return false;
+  if (isRefusedMediaPath(fsPath, realpath)) return false;
   if (!isGeneratedSessionMediaPath(fsPath)) return false;
 
   try {
@@ -89,7 +122,7 @@ export function isTrustedGeneratedMediaPath(
       // Not on disk yet — lexical only.
       return isLexicallyInside(mediaRoot, fsPath);
     }
-    if (/(^|[/\\])auth\.json$/i.test(realFile)) return false;
+    if (isRefusedMediaBasename(realFile)) return false;
     // Real target must stay under the media root (strictly inside).
     if (!isLexicallyInside(realRoot, realFile)) return false;
     const ext = path.extname(realFile).toLowerCase();

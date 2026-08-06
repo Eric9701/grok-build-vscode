@@ -480,6 +480,75 @@ export interface IndexDeps {
   log?: (msg: string) => void;
 }
 
+/**
+ * Order of directories to search when resuming a session by id.
+ *
+ * A renderer may *name* a session id and optionally suggest a cwd (history-row
+ * convenience). Host-owned inputs (`metaWorktreePath`, `cachedCwd`, every
+ * entry of `trustedCwds`) are the only directories that may ever appear.
+ * `messageCwd` is included **only** when it already equals a trusted catalog
+ * cwd — never as an unauthenticated process root.
+ */
+export function orderedResumeCwdCandidates(opts: {
+  messageCwd?: string;
+  trustedCwds: readonly string[];
+  metaWorktreePath?: string;
+  cachedCwd?: string;
+  sameCwd?: (a: string, b: string) => boolean;
+}): string[] {
+  const same = opts.sameCwd ?? ((a, b) => normalizeRepoPath(a) === normalizeRepoPath(b));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (cwd: string | undefined) => {
+    if (!cwd || typeof cwd !== "string") return;
+    const key = normalizeRepoPath(cwd);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(cwd);
+  };
+  // UI convenience: look first where the row claimed, but only if host-trusted.
+  if (
+    opts.messageCwd &&
+    opts.trustedCwds.some((t) => same(t, opts.messageCwd!))
+  ) {
+    add(opts.messageCwd);
+  }
+  add(opts.metaWorktreePath);
+  add(opts.cachedCwd);
+  for (const t of opts.trustedCwds) add(t);
+  return out;
+}
+
+/**
+ * Resolve the process cwd for a resume by finding which **catalog** directory
+ * actually holds `id` on disk. Returns undefined when no candidate contains
+ * the session — callers must not fall back to a renderer-supplied path.
+ */
+export function findSessionCatalogCwd(deps: {
+  fs: Pick<FsLike, "existsSync">;
+  grokHome: string;
+  id: string;
+  candidates: readonly string[];
+}): string | undefined {
+  const { fs, grokHome, id, candidates } = deps;
+  if (!isValidSessionId(id)) return undefined;
+  const seen = new Set<string>();
+  for (const cwd of candidates) {
+    if (!cwd || typeof cwd !== "string") continue;
+    const key = normalizeRepoPath(cwd);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const dir = sessionDirFor(grokHome, cwd, id);
+    if (!dir) continue;
+    try {
+      if (fs.existsSync(path.join(dir, "summary.json"))) return cwd;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return undefined;
+}
+
 /** Cheap ordering pass: every session id newest-first by `summary.json` mtime, WITHOUT reading or
  *  parsing any summary content. One `stat` per dir instead of a `stat` + `read` + `JSON.parse`, so
  *  it stays fast even with thousands of sessions. The caller reads (via `readSessionEntries`) only

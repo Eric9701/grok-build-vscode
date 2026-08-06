@@ -139,19 +139,22 @@ import {
   deleteSessionDir,
   discoverRepos,
   fallbackName,
+  findSessionCatalogCwd,
   forkDisplayName,
   indexSessions,
   isEmptySession,
   isPathInside,
   mostRecentSession,
   normalizeRepoPath,
+  orderedResumeCwdCandidates,
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
   sessionsDirFor,
 } from "./sessions";
 import {
-  isRefusedMediaBasename,
+  base64DecodedByteLength,
+  isRefusedMediaPath,
   isTrustedGeneratedMediaPath,
   MAX_INLINE_MEDIA_BYTES,
 } from "./media-serve";
@@ -2748,6 +2751,15 @@ See design doc for the full state machine diagram.`;
   private async postGeneratedMedia(m: MediaRef, session: Session, gen: number): Promise<void> {
     try {
       if (m.kind === "data") {
+        // Same 8 MiB bound as the file-path fallback — ACP inline blocks used
+        // to bypass it and could still balloon the DOM / relay.
+        const decoded = base64DecodedByteLength(m.data);
+        if (decoded > MAX_INLINE_MEDIA_BYTES) {
+          this.host.appendLine(
+            `[media] refused oversized inline media (${decoded} > ${MAX_INLINE_MEDIA_BYTES})`,
+          );
+          return;
+        }
         this.emit(session, { type: "media", media: m.media, src: `data:${m.mimeType};base64,${m.data}` });
         return;
       }
@@ -2755,8 +2767,9 @@ See design doc for the full state machine diagram.`;
         this.emit(session, { type: "media", media: m.media, url: m.uri });
         return;
       }
-      if (isRefusedMediaBasename(m.path)) {
-        this.host.appendLine(`[media] refused media path named auth.json`);
+      // Canonical refuse: symlink chart.png → auth.json must not inline secrets.
+      if (isRefusedMediaPath(m.path, (p) => fs.realpathSync(p))) {
+        this.host.appendLine(`[media] refused media path whose canonical target is a secret name`);
         return;
       }
       const mime = m.mimeType || guessMediaMime(m.path);
@@ -8565,15 +8578,20 @@ See design doc for the full state machine diagram.`;
       }
     }
     const cachedCwd = this.sessionCache.get(id)?.entry.cwd;
-    const candidates = [...new Set([
-      ...(sessionCwd ? [sessionCwd] : []),
-      ...(cachedCwd ? [cachedCwd] : []),
-      ...allowedCwds,
-    ])].filter((cwd) => sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual));
-    const actualCwd = candidates.find((cwd) =>
-      indexSessions({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd })
-        .some((entry) => entry.id === id),
-    );
+    // Same property as local resume: message cwd is only a look-first among
+    // already-authorized repo catalogs; process root comes from disk.
+    const actualCwd = findSessionCatalogCwd({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      id,
+      candidates: orderedResumeCwdCandidates({
+        messageCwd: sessionCwd,
+        trustedCwds: allowedCwds,
+        metaWorktreePath: overrides[id]?.worktreePath,
+        cachedCwd,
+        sameCwd: pathsEqual,
+      }),
+    });
     if (!actualCwd) {
       this.host.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
       this.sendRemoteClient(clientId, {
@@ -8656,6 +8674,33 @@ See design doc for the full state machine diagram.`;
     this.sweepEmptySessions(this.sessionCwd(this.focused));
   }
 
+  /**
+   * Host-trusted directories that may hold a session catalog for local resume.
+   * Renderer-supplied paths never appear here — only workspace / open folders
+   * and their worktree catalogs the host already discovered.
+   */
+  private localTrustedSessionCwds(overrides: SessionMetaOverrides): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (cwd: string | undefined) => {
+      if (!cwd) return;
+      const key = normalizeRepoPath(cwd);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(cwd);
+    };
+    add(this.workspaceRoot());
+    if (this.selectedRepoCwd) add(this.selectedRepoCwd);
+    for (const repo of this.localRepoCatalogEntries()) {
+      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c);
+    }
+    // Full catalog too (VS Code history can span discovered repos under grok home).
+    for (const repo of this.repoCatalog()) {
+      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c);
+    }
+    return out;
+  }
+
   private async openSessionReserved(id: string, sessionCwd?: string): Promise<void> {
     // A session held by a remote tab is not off-limits here: the desk JOINS it
     // — focusSession replays the shared buffer into the webview and already
@@ -8677,18 +8722,49 @@ See design doc for the full state machine diagram.`;
     const held = this.remoteClients.clients()
       .map((clientId) => this.remoteClients.active(clientId))
       .find((s): s is Session => !!s && s.activeSessionId === id);
-    this.focused = held ?? this.newLocalSession();
+    if (held) {
+      // Keep the host-owned cwd on the held object. A forged resumeSession.cwd
+      // must not re-home an existing process or widen desktopAuthRoots.
+      this.focused = held;
+      this.pool.add(this.focused);
+      await this.startSession(id);
+      this.markRead(this.focused);
+      this.postRepoCatalog();
+      return;
+    }
+    this.focused = this.newLocalSession();
     this.pool.add(this.focused);
-    // Resolve cwd: explicit (history row) → meta worktree → cache → workspace.
+    // Session cwd is resolved host-side from the on-disk catalog. The message
+    // may name an id (and optionally a look-first cwd that must already be
+    // trusted); it never supplies the process root.
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const o = overrides[id];
-    const cwd =
-      sessionCwd ||
-      o?.worktreePath ||
-      this.sessionCache.get(id)?.entry.cwd ||
-      this.workspaceRoot();
+    const candidates = orderedResumeCwdCandidates({
+      messageCwd: sessionCwd,
+      trustedCwds: this.localTrustedSessionCwds(overrides),
+      metaWorktreePath: o?.worktreePath,
+      cachedCwd: this.sessionCache.get(id)?.entry.cwd,
+      sameCwd: pathsEqual,
+    });
+    const cwd = findSessionCatalogCwd({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      id,
+      candidates,
+    });
+    if (!cwd) {
+      this.host.appendLine(
+        `[sessions] refused resumeSession (session ${id} not found under any trusted catalog cwd)`,
+      );
+      void this.host.showInformationMessage(
+        "Could not restore this conversation. It may have been deleted. Starting a new session.",
+      );
+      await this.startSession();
+      this.postRepoCatalog();
+      return;
+    }
     this.focused.cwd = cwd;
-    if (o?.worktreePath) {
+    if (o?.worktreePath && pathsEqual(o.worktreePath, cwd)) {
       this.focused.worktree = {
         path: o.worktreePath,
         label: o.worktreeLabel || path.basename(o.worktreePath),
@@ -9039,7 +9115,7 @@ See design doc for the full state machine diagram.`;
    *  Idempotent. */
   private async maybeStartUplink(): Promise<void> {
     if (this.uplink) return;
-    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    const token = await this.readDeviceToken();
     if (!token) return; // not linked yet — the link command starts the uplink itself
     const uplink = new RemoteUplink({
       relayUrl: REMOTE_RELAY_URL,
@@ -9062,6 +9138,22 @@ See design doc for the full state machine diagram.`;
     this.refreshKeepAwake();
   }
 
+  /**
+   * Read the stored device token without failing startup when ciphertext is
+   * undecryptable (keychain unavailable / key rotated). Returns undefined and
+   * logs — treat as "not linked".
+   */
+  private async readDeviceToken(): Promise<string | undefined> {
+    try {
+      return await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    } catch (e) {
+      this.host.appendLine(
+        `[remote] stored device token unreadable (treating as unlinked): ${(e as Error)?.message ?? e}`,
+      );
+      return undefined;
+    }
+  }
+
   private async handleRemoteCredentialRevoked(
     revokedToken: string,
     revokedUplink: RemoteUplink,
@@ -9069,7 +9161,7 @@ See design doc for the full state machine diagram.`;
     // A replaced/disposed uplink may deliver a late close event. Only the
     // currently-owned connection is allowed to clear the credential it used.
     if (this.uplink !== revokedUplink) return;
-    const storedToken = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    const storedToken = await this.readDeviceToken();
     if (this.uplink !== revokedUplink || storedToken !== revokedToken) return;
 
     this.clearRemoteRuntime();
@@ -9194,8 +9286,9 @@ See design doc for the full state machine diagram.`;
     // on the account and keeps counting against the relay's device cap (a
     // locally-unlinked machine used to block relinking at the free tier's
     // 1-device limit). Local unlink proceeds regardless — offline stays a
-    // working kill-switch.
-    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    // working kill-switch, including when the OS keychain cannot decrypt the
+    // stored ciphertext (get throws; delete still drops the bytes).
+    const token = await this.readDeviceToken();
     if (token) {
       try {
         await fetch(`${httpBaseFromRelayUrl(REMOTE_RELAY_URL)}/api/device/unlink`, {
@@ -9207,7 +9300,15 @@ See design doc for the full state machine diagram.`;
         this.host.appendLine(`[remote] server-side unlink failed (local unlink continues): ${(e as Error)?.message ?? e}`);
       }
     }
-    await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
+    try {
+      await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
+    } catch (e) {
+      this.host.appendLine(`[remote] failed to clear device token: ${(e as Error)?.message ?? e}`);
+      void this.host.showErrorMessage(
+        "Could not clear the stored device token. Try again, or remove it from OS secure storage.",
+      );
+      // Still tear the runtime down so the machine stops advertising.
+    }
     this.clearRemoteRuntime();
     this.post({ type: "remoteStatus", linked: false });
     void this.host.showInformationMessage("Remote device unlinked.");
@@ -9216,7 +9317,7 @@ See design doc for the full state machine diagram.`;
   /** Tell the webview whether this machine holds a relay device token (drives
    *  the gear "AFK Pilot" section's sign-in vs account/sign-out items). */
   private async postRemoteStatus(): Promise<void> {
-    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    const token = await this.readDeviceToken();
     this.post({ type: "remoteStatus", linked: !!token });
   }
 
