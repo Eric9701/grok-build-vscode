@@ -1,9 +1,10 @@
 /**
- * Desktop light/dark preference — file-backed under userData.
+ * Desktop light/dark preference — pure file helpers (legacy / optional host use).
  *
- * Chromium disables localStorage for `data:` URLs (our page load path), so the
- * AFK Pilot localStorage pattern cannot persist here. The renderer reads/writes
- * through preload IPC; main uses these pure helpers.
+ * The main renderer now loads over a real `app-resource://` origin and stores
+ * the theme in `localStorage` (`grok-desktop-theme`), same as rail shape and
+ * the file-tree panel. These helpers remain for unit tests and any host-side
+ * tooling that still wants a userData snapshot; they are not on the live path.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";

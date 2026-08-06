@@ -150,7 +150,23 @@ describe("desktop Electron app (real window + fake CLI)", () => {
   it("opens a window and boots chat.js without console errors", async () => {
     expect(page).toBeTruthy();
     const title = await page.title();
-    // data: documents often have empty title until set; body must still be the desk.
+    // Real app-resource origin — required for localStorage (not data:).
+    const loc = page.url();
+    expect(loc.startsWith("app-resource://vsc-resource/")).toBe(true);
+    expect(loc).toContain("__app__/index.html");
+    const originOk = await page.evaluate(() => {
+      try {
+        const k = "__grok_origin_probe__";
+        localStorage.setItem(k, "1");
+        const v = localStorage.getItem(k);
+        localStorage.removeItem(k);
+        return { ok: v === "1", origin: location.origin };
+      } catch (e) {
+        return { ok: false, origin: String(e) };
+      }
+    });
+    expect(originOk.ok, `localStorage unavailable: ${originOk.origin}`).toBe(true);
+    expect(originOk.origin).toBe("app-resource://vsc-resource");
     const hasComposer = await page.locator("#input").count();
     expect(hasComposer).toBe(1);
     const hasMessages = await page.locator("#messages").count();
@@ -579,21 +595,18 @@ describe("desktop Electron app (real window + fake CLI)", () => {
 
   it("theme toggle flips data-theme and persists across reload", async () => {
     // CSP is nonce-only (no unsafe-eval) — avoid waitForFunction(arg).
-    // Persistence is file-backed via preload grokDesktopTheme (data: disables localStorage).
+    // Theme is localStorage under the stable app-resource origin (same as rail shape).
     await page.waitForSelector("#desk-theme-toggle", { timeout: 45_000 });
     const ready = await page.evaluate(() => {
       const w = window as unknown as {
         __toggleDesktopTheme?: () => void;
-        grokDesktopTheme?: { get: () => string; set: (t: string) => void };
       };
       return {
         toggle: typeof w.__toggleDesktopTheme === "function",
-        api: typeof w.grokDesktopTheme?.get === "function",
         btn: !!document.getElementById("desk-theme-toggle"),
       };
     });
     expect(ready.toggle).toBe(true);
-    expect(ready.api).toBe(true);
     expect(ready.btn).toBe(true);
 
     const before = await page.evaluate(() =>
@@ -608,41 +621,162 @@ describe("desktop Electron app (real window + fake CLI)", () => {
       else (window as unknown as { __toggleDesktopTheme: () => void }).__toggleDesktopTheme();
     });
 
-    const afterClick = await page.evaluate(() => {
-      const w = window as unknown as {
-        grokDesktopTheme?: { get: () => string };
-      };
-      return {
-        theme: document.documentElement.getAttribute("data-theme"),
-        stored: w.grokDesktopTheme?.get() ?? null,
-        bodyLight: document.body.classList.contains("vscode-light"),
-      };
-    });
+    const afterClick = await page.evaluate(() => ({
+      theme: document.documentElement.getAttribute("data-theme"),
+      stored: localStorage.getItem("grok-desktop-theme"),
+      bodyLight: document.body.classList.contains("vscode-light"),
+    }));
     expect(afterClick.theme).toBe(target);
     expect(afterClick.stored).toBe(target);
     expect(afterClick.bodyLight).toBe(target === "light");
 
-    // File on disk (userData) must record the choice — survives reload.
-    const themeFile = path.join(userData, "desktop-theme.json");
-    expect(fs.existsSync(themeFile)).toBe(true);
-    expect(JSON.parse(fs.readFileSync(themeFile, "utf8")).theme).toBe(target);
-
-    // Reload the renderer; preference must survive (same userData).
+    // Reload the renderer; localStorage on the same origin must survive.
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("#input", { timeout: 45_000 });
-    const afterReload = await page.evaluate(() => {
-      const w = window as unknown as {
-        grokDesktopTheme?: { get: () => string };
-      };
-      return {
-        theme: document.documentElement.getAttribute("data-theme"),
-        stored: w.grokDesktopTheme?.get() ?? null,
-        bodyLight: document.body.classList.contains("vscode-light"),
-      };
-    });
+    const afterReload = await page.evaluate(() => ({
+      theme: document.documentElement.getAttribute("data-theme"),
+      stored: localStorage.getItem("grok-desktop-theme"),
+      bodyLight: document.body.classList.contains("vscode-light"),
+      origin: location.origin,
+    }));
+    expect(afterReload.origin).toBe("app-resource://vsc-resource");
     expect(afterReload.theme).toBe(target);
     expect(afterReload.stored).toBe(target);
     expect(afterReload.bodyLight).toBe(target === "light");
+  });
+
+  it("rail group collapse state survives reload (localStorage)", async () => {
+    // Owner requirement: client remembers rail collapse, same as archived projects.
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll(".rail-head-fold .rail-head-btn").length >= 1,
+      { timeout: 45_000 },
+    );
+
+    // Collapse the first currently-expanded group (Recent / Projects default open).
+    const collapsed = await page.evaluate(() => {
+      const btns = [
+        ...document.querySelectorAll(".rail-head-fold .rail-head-btn"),
+      ] as HTMLButtonElement[];
+      const openBtn = btns.find((b) => b.getAttribute("aria-expanded") === "true");
+      if (!openBtn) return { ok: false as const, reason: "no expanded group" };
+      const title =
+        openBtn.querySelector(".rail-head-title")?.textContent?.trim() || "";
+      openBtn.click();
+      // renderRail rebuilds the DOM — re-query after the click.
+      const again = [
+        ...document.querySelectorAll(".rail-head-fold .rail-head-btn"),
+      ].find(
+        (b) =>
+          (b.querySelector(".rail-head-title")?.textContent || "").trim() === title,
+      ) as HTMLButtonElement | undefined;
+      const key = "grok.remote.railShape:default";
+      let stored: string | null = null;
+      try {
+        stored = localStorage.getItem(key);
+      } catch {
+        return { ok: false as const, reason: "localStorage threw" };
+      }
+      return {
+        ok: true as const,
+        title,
+        expanded: again?.getAttribute("aria-expanded") ?? null,
+        stored,
+        origin: location.origin,
+      };
+    });
+    expect(collapsed.ok, collapsed.ok === false ? collapsed.reason : "").toBe(true);
+    if (!collapsed.ok) return;
+    expect(collapsed.origin).toBe("app-resource://vsc-resource");
+    expect(collapsed.expanded).toBe("false");
+    expect(collapsed.stored).toBeTruthy();
+    const shape = JSON.parse(collapsed.stored!);
+    expect(shape.groupCollapsed).toBeTruthy();
+    // At least one group is collapsed after the click.
+    const collapsedNames = Object.entries(shape.groupCollapsed as Record<string, boolean>)
+      .filter(([, v]) => v === true)
+      .map(([k]) => k);
+    expect(collapsedNames.length).toBeGreaterThanOrEqual(1);
+
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector("#input", { timeout: 45_000 });
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll(".rail-head-fold .rail-head-btn").length >= 1,
+      { timeout: 45_000 },
+    );
+
+    const after = await page.evaluate((wantTitle: string) => {
+      const key = "grok.remote.railShape:default";
+      let stored: string | null = null;
+      try {
+        stored = localStorage.getItem(key);
+      } catch (e) {
+        return { ok: false as const, reason: String(e) };
+      }
+      const btn = [
+        ...document.querySelectorAll(".rail-head-fold .rail-head-btn"),
+      ].find(
+        (b) =>
+          (b.querySelector(".rail-head-title")?.textContent || "").trim() === wantTitle,
+      ) as HTMLButtonElement | undefined;
+      return {
+        ok: true as const,
+        stored,
+        expanded: btn?.getAttribute("aria-expanded") ?? null,
+        title: wantTitle,
+        origin: location.origin,
+      };
+    }, collapsed.title);
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.origin).toBe("app-resource://vsc-resource");
+    expect(after.stored).toBeTruthy();
+    expect(after.expanded).toBe("false");
+  });
+
+  it("file-tree panel open state survives reload (localStorage)", async () => {
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 15_000 });
+    // Panel defaults closed; open it and assert the preference sticks.
+    const before = await page.evaluate(() =>
+      document.body.classList.contains("desk-ft-closed"),
+    );
+    if (before) {
+      await page.locator("#desk-ft-top-toggle").click();
+    }
+    await page.waitForFunction(
+      () => !document.body.classList.contains("desk-ft-closed"),
+      { timeout: 5_000 },
+    );
+    const storedOpen = await page.evaluate(() => {
+      try {
+        return {
+          open: localStorage.getItem("desk-ft-open"),
+          origin: location.origin,
+        };
+      } catch (e) {
+        return { open: null, origin: String(e) };
+      }
+    });
+    expect(storedOpen.origin).toBe("app-resource://vsc-resource");
+    expect(storedOpen.open).toBe("1");
+
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector("#input", { timeout: 45_000 });
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 15_000 });
+    // did-finish-load re-injects the panel and must re-read localStorage.
+    await page.waitForFunction(
+      () => !document.body.classList.contains("desk-ft-closed"),
+      { timeout: 15_000 },
+    );
+    const after = await page.evaluate(() => ({
+      closed: document.body.classList.contains("desk-ft-closed"),
+      open: localStorage.getItem("desk-ft-open"),
+      origin: location.origin,
+    }));
+    expect(after.origin).toBe("app-resource://vsc-resource");
+    expect(after.closed).toBe(false);
+    expect(after.open).toBe("1");
   });
 
   it("active session row uses selection token grey, not a hardcoded blue", async () => {

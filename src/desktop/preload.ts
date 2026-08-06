@@ -80,16 +80,8 @@ contextBridge.exposeInMainWorld("grokDesktopFileTree", {
   },
 });
 
-/**
- * Theme prefs — sync IPC so the early head boot can paint without flash.
- * File-backed in userData (localStorage is disabled for data: page loads).
- */
-contextBridge.exposeInMainWorld("grokDesktopTheme", {
-  get: (): "dark" | "light" => ipcRenderer.sendSync("desk-theme:get") as "dark" | "light",
-  set: (theme: "dark" | "light"): void => {
-    ipcRenderer.sendSync("desk-theme:set", theme);
-  },
-});
+// Theme preference lives in localStorage under the stable app-resource origin
+// (see APP_DOCUMENT_URL). No IPC bridge — same mechanism as rail shape / file panel.
 
 // Forward main→renderer posts into the same channel VS Code webviews use.
 ipcRenderer.on("host-to-webview", (_event, message: unknown) => {

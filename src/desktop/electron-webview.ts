@@ -33,28 +33,50 @@ const SCHEME = "app-resource";
 const AUTHORITY = "vsc-resource";
 
 /**
+ * Fixed document URL under the privileged `app-resource` scheme.
+ *
+ * The main window must load a **standard, secure** origin so Chromium grants
+ * `localStorage` (and friends). A `data:` document has an opaque origin and
+ * storage is unavailable — every chat.js preference helper then no-ops silently.
+ *
+ * Path is a narrow, non-filesystem capability: the protocol serves the in-memory
+ * HTML from {@link ElectronWebview}, never an arbitrary path. Origin is always
+ * {@link APP_ORIGIN} (`app-resource://vsc-resource`) across launches.
+ */
+export const APP_DOCUMENT_PATH = "/__app__/index.html";
+export const APP_DOCUMENT_URL = `${SCHEME}://${AUTHORITY}${APP_DOCUMENT_PATH}`;
+/** Stable origin for the main renderer (scheme + host; no port). */
+export const APP_ORIGIN = `${SCHEME}://${AUTHORITY}`;
+
+/** True when `url` is exactly the main app document (not a static/registry asset). */
+export function isAppDocumentUrl(url: string): boolean {
+  if (typeof url !== "string" || !url) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== `${SCHEME}:`) return false;
+    if (parsed.hostname !== AUTHORITY) return false;
+    return parsed.pathname === APP_DOCUMENT_PATH;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Desktop theme tokens — port of AFK Pilot `web/chat.html` palette (dark + light).
  * The extension has no equivalent shell; VS Code supplies its own tokens.
  * Active row grey: --vscode-list-activeSelectionBackground (#37373d / #e4e6f1),
  * not Dark+ blue (#094771).
  */
 /**
- * Persistence key for docs/tests. Real storage is userData via preload
- * `grokDesktopTheme` (localStorage is disabled for data: page loads).
+ * localStorage key for the desktop light/dark preference.
+ * Requires a real origin ({@link APP_DOCUMENT_URL}); no separate IPC store.
  */
 export const DESKTOP_THEME_STORAGE_KEY = "grok-desktop-theme";
 
-/** Early head boot: IPC prefs (userData) → OS matchMedia fallback; body.vscode-light sync. */
+/** Early head boot: localStorage → OS matchMedia fallback; body.vscode-light sync. */
 const DESKTOP_THEME_BOOT = `(function(){
   var root=document.documentElement;
   function readTheme(){
-    try{
-      var api=window.grokDesktopTheme;
-      if(api&&typeof api.get==="function"){
-        var t=api.get();
-        if(t==="light"||t==="dark")return t;
-      }
-    }catch(e){}
     try{
       var saved=localStorage.getItem(${JSON.stringify(DESKTOP_THEME_STORAGE_KEY)});
       if(saved==="light"||saved==="dark")return saved;
@@ -77,11 +99,7 @@ const DESKTOP_THEME_BOOT = `(function(){
   window.__toggleDesktopTheme=function(){
     var next=root.getAttribute("data-theme")==="dark"?"light":"dark";
     root.setAttribute("data-theme",next);
-    try{
-      var api=window.grokDesktopTheme;
-      if(api&&typeof api.set==="function")api.set(next);
-      else localStorage.setItem(${JSON.stringify(DESKTOP_THEME_STORAGE_KEY)},next);
-    }catch(e){}
+    try{localStorage.setItem(${JSON.stringify(DESKTOP_THEME_STORAGE_KEY)},next);}catch(e){}
     syncBodyTheme();
   };
   if(document.readyState!=="loading"){syncBodyTheme();wireThemeToggle();}
@@ -333,6 +351,8 @@ export function appResourceUrlToFsPath(url: string): string | undefined {
   }
   if (parsed.protocol !== `${SCHEME}:` || parsed.hostname !== AUTHORITY) return undefined;
   let p = decodeURIComponent(parsed.pathname);
+  // In-memory main document — not a filesystem path (served via getDocumentHtml).
+  if (p === APP_DOCUMENT_PATH || isAppDocumentUrl(url)) return undefined;
   // Registry handles are not filesystem paths.
   if (p.includes(`/${RESOURCE_REGISTRY_URL_SEGMENT}/`) || p.startsWith(`/${RESOURCE_REGISTRY_URL_SEGMENT}/`)) {
     return undefined;
@@ -382,12 +402,20 @@ export class ElectronWebview implements HostWebview {
   }
 
   set html(value: string) {
-    this._html = value;
+    // Store the served document (theme-injected). Reload re-fetches APP_DOCUMENT_URL
+    // from this buffer — raw getHtml alone would drop desktop chrome on reload.
+    this._html = injectTheme(value);
     const win = this.getWindow();
     if (!win || win.isDestroyed()) return;
-    const injected = injectTheme(value);
-    // data: URL keeps us free of a second HTML file; scripts still load via app-resource.
-    void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(injected)}`);
+    void win.loadURL(APP_DOCUMENT_URL);
+  }
+
+  /**
+   * HTML body for {@link APP_DOCUMENT_URL}. Empty until the sidebar assigns
+   * {@link html}. Protocol handler only — not a filesystem path.
+   */
+  getDocumentHtml(): string {
+    return this._html;
   }
 
   get options(): HostWebview["options"] {

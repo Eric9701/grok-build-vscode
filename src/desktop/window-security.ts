@@ -14,9 +14,10 @@ import type { BrowserWindow, HandlerDetails, IpcMainEvent, IpcMainInvokeEvent } 
 /** URL schemes the app document itself may use (initial load + reload). */
 export function isAllowedAppNavigationUrl(url: string): boolean {
   if (typeof url !== "string" || !url) return false;
-  // Electron loads our chat via data:text/html; assets use app-resource:.
-  if (url.startsWith("data:text/html")) return true;
+  // Main chat document + static/registry assets share the privileged scheme.
   if (url.startsWith("app-resource:")) return true;
+  // Secondary viewers/dialogs still load as data:text/html (no localStorage need).
+  if (url.startsWith("data:text/html")) return true;
   // about:blank can appear during teardown — allow, nothing sensitive.
   if (url === "about:blank") return true;
   return false;

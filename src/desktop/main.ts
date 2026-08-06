@@ -18,7 +18,6 @@ import {
   protocol,
   safeStorage,
   shell,
-  nativeTheme,
   type Menu as ElectronMenu,
   type MenuItemConstructorOptions,
   type ProtocolRequest,
@@ -35,6 +34,7 @@ import {
   APP_RESOURCE_SCHEME,
   desktopChromeBootSource,
   ElectronWebview,
+  isAppDocumentUrl,
 } from "./electron-webview";
 import {
   DESKTOP_APP_FULL_NAME,
@@ -52,13 +52,6 @@ import {
   installWindowSecurityLocks,
   isTrustedMainFrameIpc,
 } from "./window-security";
-import {
-  parseDesktopTheme,
-  readDesktopThemeFile,
-  resolveDesktopTheme,
-  writeDesktopThemeFile,
-  type DesktopTheme,
-} from "./theme-prefs";
 
 // Electron dies with launch-failed if sandbox is left at the platform default
 // in some setups; we set it explicitly on the BrowserWindow. Also strip the
@@ -310,10 +303,25 @@ async function createApp(): Promise<void> {
   };
 
   // Registry + canonical static roots — never free-form ~/.grok path serve.
+  // Narrow extra lane: exact APP_DOCUMENT_URL → in-memory HTML (real origin for
+  // localStorage). Not a path serve; does not widen static/registry policy.
   protocol.handle(APP_RESOURCE_SCHEME, async (request: Request | ProtocolRequest) => {
     const url = typeof request === "object" && "url" in request ? request.url : String(request);
     if (!webview) {
       return new Response("Forbidden", { status: 403 });
+    }
+    if (isAppDocumentUrl(url)) {
+      const html = webview.getDocumentHtml();
+      if (!html) {
+        return new Response("Document not ready", { status: 404 });
+      }
+      return new Response(html, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
     }
     const fsPath = webview.resolveResourceUrl(url);
     if (!fsPath) {
@@ -375,36 +383,6 @@ async function createApp(): Promise<void> {
       }
     }
     return handles;
-  });
-
-  // Theme prefs (sync): data: pages cannot use localStorage; file lives in userData.
-  // Default follows nativeTheme.shouldUseDarkColors (OS preference).
-  const themeUserData = app.getPath("userData");
-  ipcMain.on("desk-theme:get", (event) => {
-    if (!isTrustedMainFrameIpc(event, () => mainWindow)) {
-      event.returnValue = resolveDesktopTheme(undefined, nativeTheme.shouldUseDarkColors);
-      return;
-    }
-    const saved = readDesktopThemeFile(themeUserData);
-    event.returnValue = resolveDesktopTheme(saved, nativeTheme.shouldUseDarkColors);
-  });
-  ipcMain.on("desk-theme:set", (event, raw: unknown) => {
-    if (!isTrustedMainFrameIpc(event, () => mainWindow)) {
-      event.returnValue = false;
-      return;
-    }
-    const theme = parseDesktopTheme(raw) ?? parseDesktopTheme({ theme: raw });
-    if (!theme) {
-      event.returnValue = false;
-      return;
-    }
-    try {
-      writeDesktopThemeFile(themeUserData, theme as DesktopTheme);
-      event.returnValue = true;
-    } catch (e) {
-      log(`theme save failed: ${(e as Error).message}`);
-      event.returnValue = false;
-    }
   });
 
   // Full product name for About / OS app identity; window title uses short name.

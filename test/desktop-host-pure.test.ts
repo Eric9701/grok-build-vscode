@@ -23,8 +23,12 @@ import {
   asAppResourceRegistryUrl,
   asAppResourceUrl,
   appResourceUrlToFsPath,
+  APP_DOCUMENT_PATH,
+  APP_DOCUMENT_URL,
+  APP_ORIGIN,
   APP_RESOURCE_CSP_SOURCE,
   desktopChromeBootSource,
+  isAppDocumentUrl,
 } from "../src/desktop/electron-webview";
 import { Uri } from "../src/host";
 import { findFilesUnder } from "../src/desktop/find-files";
@@ -210,6 +214,19 @@ describe("app-resource URI mapping", () => {
     expect(back).toBeTruthy();
     // Path separators normalized by path module on the host platform.
     expect(back!.toLowerCase().replace(/\\/g, "/")).toContain("media/chat.js");
+  });
+
+  it("main document URL is a stable app-resource origin (not data:)", () => {
+    expect(APP_DOCUMENT_URL).toBe("app-resource://vsc-resource/__app__/index.html");
+    expect(APP_ORIGIN).toBe("app-resource://vsc-resource");
+    expect(APP_DOCUMENT_PATH).toBe("/__app__/index.html");
+    expect(isAppDocumentUrl(APP_DOCUMENT_URL)).toBe(true);
+    expect(isAppDocumentUrl(`${APP_DOCUMENT_URL}?x=1`)).toBe(true);
+    expect(isAppDocumentUrl("app-resource://vsc-resource/media/chat.js")).toBe(false);
+    expect(isAppDocumentUrl("app-resource://other/__app__/index.html")).toBe(false);
+    expect(isAppDocumentUrl("data:text/html,hi")).toBe(false);
+    // Document path must never look like a serveable filesystem asset.
+    expect(appResourceUrlToFsPath(APP_DOCUMENT_URL)).toBeUndefined();
   });
 });
 
@@ -975,13 +992,18 @@ describe("webview message schema validation", () => {
 
 describe("window navigation and open locks", () => {
   it("allows only app document navigation URLs", () => {
-    expect(isAllowedAppNavigationUrl("data:text/html;charset=utf-8,x")).toBe(true);
+    // Main document + assets share the privileged scheme.
+    expect(isAllowedAppNavigationUrl(APP_DOCUMENT_URL)).toBe(true);
     expect(isAllowedAppNavigationUrl("app-resource://vsc-resource/media/chat.js")).toBe(
       true,
     );
+    // Secondary viewers/dialogs still use data: HTML.
+    expect(isAllowedAppNavigationUrl("data:text/html;charset=utf-8,x")).toBe(true);
     expect(shouldBlockNavigation("https://evil.example/phish")).toBe(true);
     expect(shouldBlockNavigation("file:///etc/passwd")).toBe(true);
+    expect(shouldBlockNavigation("javascript:alert(1)")).toBe(true);
     expect(shouldBlockNavigation("data:text/html,ok")).toBe(false);
+    expect(shouldBlockNavigation(APP_DOCUMENT_URL)).toBe(false);
   });
 
   it("denies window.open; may hand http(s) to openExternal", () => {
@@ -1129,11 +1151,12 @@ describe("desktop branding and menu", () => {
     expect(chatCss).toMatch(
       /\.rail-session\.active\s*\{[^}]*background:\s*var\(--vscode-list-activeSelectionBackground\)/s,
     );
-    // Theme boot uses data-theme + preload API (not data:-blocked localStorage alone).
+    // Theme boot: localStorage under real app-resource origin (not IPC/file).
     expect(theme).toContain("data-theme");
-    expect(theme).toContain("grokDesktopTheme");
+    expect(theme).toContain("localStorage");
     expect(theme).toContain("prefers-color-scheme");
     expect(theme).toContain("__toggleDesktopTheme");
+    expect(theme).not.toContain("grokDesktopTheme");
   });
 
   it("auto-hides the native menu bar so it does not paint light over dark chrome", () => {
@@ -1142,8 +1165,32 @@ describe("desktop branding and menu", () => {
       "utf8",
     );
     expect(main).toContain("autoHideMenuBar: true");
-    expect(main).toContain("desk-theme:get");
-    expect(main).toContain("nativeTheme.shouldUseDarkColors");
+    // Main document is served over app-resource (real origin), not data:.
+    expect(main).toContain("isAppDocumentUrl");
+    expect(main).not.toContain("desk-theme:get");
+  });
+
+  it("main document loads via APP_DOCUMENT_URL (source gate)", () => {
+    const webview = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-webview.ts",
+      ),
+      "utf8",
+    );
+    expect(webview).toContain("APP_DOCUMENT_URL");
+    expect(webview).toMatch(/loadURL\(\s*APP_DOCUMENT_URL\s*\)/);
+    expect(webview).not.toMatch(/loadURL\(`data:text\/html/);
+    expect(webview).toContain("getDocumentHtml");
+    const main = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
+      "utf8",
+    );
+    expect(main).toMatch(/isAppDocumentUrl[\s\S]*getDocumentHtml/);
+    expect(main).toContain('Content-Type": "text/html');
   });
 });
 
