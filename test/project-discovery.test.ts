@@ -7,6 +7,9 @@
  *  3. Deliberate empty after seed does NOT re-seed
  *  4. withoutArchiveFields removes the wire capability signal
  *  5. ensureWorkspaceRoot seeds only those paths (trust set = opened folders)
+ *  6. Future-dated sessions do not count (floor <= t <= now)
+ *  7. Non-git-root directories are not seeded
+ *  8. Mtime-only (empty/malformed summary) sessions do not count
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
@@ -15,6 +18,7 @@ import * as path from "node:path";
 import {
   PROJECT_DISCOVERY_MIN_SESSIONS,
   PROJECT_DISCOVERY_WINDOW_MS,
+  canonicalizeSeedProjectPath,
   meetsProjectDiscoveryThreshold,
   selectProjectsToSeed,
   shouldSeedProjectDiscovery,
@@ -25,7 +29,7 @@ import {
   discoverSeedProjectPaths,
   ensureWorkspaceRoot,
 } from "../src/desktop/electron-host";
-import { sessionsDirFor } from "../src/sessions";
+import { indexWellFormedSessions, isWellFormedSessionSummary, sessionsDirFor } from "../src/sessions";
 
 const DAY = 24 * 60 * 60 * 1000;
 const now = Date.UTC(2026, 7, 1); // fixed clock
@@ -51,9 +55,121 @@ describe("meetsProjectDiscoveryThreshold", () => {
     expect(meetsProjectDiscoveryThreshold(enough, now)).toBe(true);
   });
 
+  it("does not count future-dated sessions (t > now)", () => {
+    // Planted mtimes in the future used to pass `t >= floor` alone.
+    const future = Array.from({ length: 12 }, () => now + 7 * DAY);
+    expect(meetsProjectDiscoveryThreshold(future, now)).toBe(false);
+    // Nine valid + many future still fails.
+    const mixed = [...stamps(9, 1), ...future];
+    expect(meetsProjectDiscoveryThreshold(mixed, now)).toBe(false);
+    // Ten valid + future still passes (future ignored).
+    expect(meetsProjectDiscoveryThreshold([...stamps(10, 1), ...future], now)).toBe(true);
+  });
+
+  it("mutation: open upper bound (t >= floor only) would accept future stamps", () => {
+    const future = Array.from({ length: 12 }, () => now + DAY);
+    const buggy = (ts: number[], nowMs: number) => {
+      const floor = nowMs - PROJECT_DISCOVERY_WINDOW_MS;
+      let count = 0;
+      for (const t of ts) {
+        if (t >= floor) {
+          count++;
+          if (count >= 10) return true;
+        }
+      }
+      return false;
+    };
+    expect(buggy(future, now)).toBe(true);
+    expect(meetsProjectDiscoveryThreshold(future, now)).toBe(false);
+  });
+
   it("exposes the constants tests and call sites share", () => {
     expect(PROJECT_DISCOVERY_MIN_SESSIONS).toBe(10);
     expect(PROJECT_DISCOVERY_WINDOW_MS).toBe(90 * DAY);
+  });
+});
+
+describe("canonicalizeSeedProjectPath / well-formed sessions", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-seed-canon-"));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("rejects a directory that is not a Git root", () => {
+    const plain = path.join(tmp, "not-git");
+    fs.mkdirSync(plain, { recursive: true });
+    expect(
+      canonicalizeSeedProjectPath(plain, {
+        existsSync: (p) => fs.existsSync(p),
+        realpathSync: (p) => fs.realpathSync(p),
+        statSync: (p) => fs.statSync(p),
+      }),
+    ).toBeUndefined();
+  });
+
+  it("accepts a verified Git root after realpath", () => {
+    const repo = path.join(tmp, "repo");
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+    const real = canonicalizeSeedProjectPath(repo, {
+      existsSync: (p) => fs.existsSync(p),
+      realpathSync: (p) => fs.realpathSync(p),
+      statSync: (p) => fs.statSync(p),
+    });
+    expect(real && path.resolve(real)).toBe(path.resolve(repo));
+  });
+
+  it("rejects nested dirs inside a git repo (must be the root itself)", () => {
+    const repo = path.join(tmp, "repo");
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+    const nested = path.join(repo, "packages", "app");
+    fs.mkdirSync(nested, { recursive: true });
+    expect(
+      canonicalizeSeedProjectPath(nested, {
+        existsSync: (p) => fs.existsSync(p),
+        realpathSync: (p) => fs.realpathSync(p),
+        statSync: (p) => fs.statSync(p),
+      }),
+    ).toBeUndefined();
+  });
+
+  it("isWellFormedSessionSummary rejects empty and mtime-shaped junk", () => {
+    expect(isWellFormedSessionSummary(null)).toBe(false);
+    expect(isWellFormedSessionSummary({})).toBe(false);
+    expect(isWellFormedSessionSummary({ random: 1 })).toBe(false);
+    expect(isWellFormedSessionSummary({ info: { id: "x" } })).toBe(true);
+    expect(isWellFormedSessionSummary({ updated_at: "2026-01-01T00:00:00Z" })).toBe(true);
+  });
+
+  it("indexWellFormedSessions ignores mtime-only empty summaries", () => {
+    const grokHome = path.join(tmp, "grok");
+    const cwd = path.join(tmp, "proj");
+    fs.mkdirSync(cwd, { recursive: true });
+    // Ten empty summaries with recent mtimes — must NOT count.
+    for (let i = 0; i < 12; i++) {
+      const dir = path.join(sessionsDirFor(grokHome, cwd), `empty-${i}`);
+      fs.mkdirSync(dir, { recursive: true });
+      const summary = path.join(dir, "summary.json");
+      fs.writeFileSync(summary, "{}");
+      fs.utimesSync(summary, new Date(now), new Date(now));
+    }
+    // Two well-formed — not enough alone.
+    for (let i = 0; i < 2; i++) {
+      const dir = path.join(sessionsDirFor(grokHome, cwd), `real-${i}`);
+      fs.mkdirSync(dir, { recursive: true });
+      const summary = path.join(dir, "summary.json");
+      fs.writeFileSync(
+        summary,
+        JSON.stringify({ info: { id: `real-${i}`, cwd }, updated_at: new Date(now).toISOString() }),
+      );
+      fs.utimesSync(summary, new Date(now), new Date(now));
+    }
+    const well = indexWellFormedSessions({ fs: fs as any, grokHome, cwd });
+    expect(well).toHaveLength(2);
+    expect(meetsProjectDiscoveryThreshold(well.map((e) => e.mtimeMs), now)).toBe(false);
   });
 });
 
@@ -135,12 +251,19 @@ describe("ensureWorkspaceRoot seeding (host-side)", () => {
     fs.utimesSync(summary, new Date(mtimeMs), new Date(mtimeMs));
   }
 
+  /** Seed path requires a verified Git root — mark the checkout. */
+  function initGitRoot(cwd: string): void {
+    fs.mkdirSync(path.join(cwd, ".git"), { recursive: true });
+  }
+
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-seed-"));
     prefsFile = path.join(tmp, "config.json");
     grokHome = path.join(tmp, "grok-home");
     hot = fs.mkdtempSync(path.join(tmp, "hot-"));
     cold = fs.mkdtempSync(path.join(tmp, "cold-"));
+    initGitRoot(hot);
+    initGitRoot(cold);
     for (let i = 0; i < 12; i++) touchSession(hot, `hot-${i}`, now - i * DAY);
     for (let i = 0; i < 3; i++) touchSession(cold, `cold-${i}`, now - i * DAY);
   });
@@ -231,5 +354,38 @@ describe("ensureWorkspaceRoot seeding (host-side)", () => {
     });
     expect(calls).toBe(0);
     expect(store.getWorkspaceRoots()).toEqual([]);
+  });
+
+  it("does not seed a non-git directory even with 12 well-formed sessions", () => {
+    const plain = fs.mkdtempSync(path.join(tmp, "plain-"));
+    // No .git — threshold met, git-root check must refuse.
+    for (let i = 0; i < 12; i++) touchSession(plain, `p-${i}`, now - i * DAY);
+    const seeded = discoverSeedProjectPaths({
+      fs: fs as any,
+      grokHome,
+      tmpDir: path.join(tmp, "tmp"),
+      nowMs: now,
+    });
+    expect(seeded.some((p) => path.resolve(p) === path.resolve(plain))).toBe(false);
+    expect(seeded.some((p) => path.resolve(p) === path.resolve(hot))).toBe(true);
+  });
+
+  it("does not seed when sessions are only mtime-shaped empty summaries", () => {
+    const decoy = fs.mkdtempSync(path.join(tmp, "decoy-"));
+    initGitRoot(decoy);
+    for (let i = 0; i < 12; i++) {
+      const dir = path.join(sessionsDirFor(grokHome, decoy), `empty-${i}`);
+      fs.mkdirSync(dir, { recursive: true });
+      const summary = path.join(dir, "summary.json");
+      fs.writeFileSync(summary, "{}");
+      fs.utimesSync(summary, new Date(now - i * DAY), new Date(now - i * DAY));
+    }
+    const seeded = discoverSeedProjectPaths({
+      fs: fs as any,
+      grokHome,
+      tmpDir: path.join(tmp, "tmp"),
+      nowMs: now,
+    });
+    expect(seeded.some((p) => path.resolve(p) === path.resolve(decoy))).toBe(false);
   });
 });

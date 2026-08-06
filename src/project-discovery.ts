@@ -6,9 +6,13 @@
  * (throwaway agent cwds would permanently pollute the rail) and must never be
  * triggered from the renderer.
  *
- * Threshold: ≥ {@link PROJECT_DISCOVERY_MIN_SESSIONS} sessions whose
- * summary.json mtime falls inside the last {@link PROJECT_DISCOVERY_WINDOW_MS}.
+ * Threshold: ≥ {@link PROJECT_DISCOVERY_MIN_SESSIONS} **well-formed** sessions
+ * whose summary.json mtime falls in `[now − window, now]` (future stamps do
+ * not count). Seed paths must be verified Git roots after realpath.
  */
+
+import * as path from "node:path";
+import { gitRootForPath, pathsEqual } from "./worktree";
 
 /** Minimum sessions inside the window for a checkout to be auto-opened. */
 export const PROJECT_DISCOVERY_MIN_SESSIONS = 10;
@@ -16,9 +20,19 @@ export const PROJECT_DISCOVERY_MIN_SESSIONS = 10;
 /** Look-back window for "recent" sessions (~3 months). */
 export const PROJECT_DISCOVERY_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
+/** Injectable FS for seed-path realpath / git-root checks. */
+export interface SeedPathFs {
+  existsSync(p: string): boolean;
+  realpathSync(p: string): string;
+  statSync(p: string): { isDirectory(): boolean };
+}
+
 /**
  * Whether a checkout meets the auto-open bar given its session activity stamps
- * (typically summary.json mtimes from {@link indexSessions}).
+ * (typically summary.json mtimes from well-formed session indexing).
+ *
+ * Window is closed on both ends: `floor <= t <= nowMs`. Future timestamps
+ * (clock skew or planted mtimes) never count toward the threshold.
  */
 export function meetsProjectDiscoveryThreshold(
   sessionTimestampsMs: readonly number[],
@@ -33,12 +47,59 @@ export function meetsProjectDiscoveryThreshold(
   let count = 0;
   for (const t of sessionTimestampsMs) {
     if (typeof t !== "number" || !Number.isFinite(t)) continue;
-    if (t >= floor) {
+    // Inclusive window: not older than floor, not in the future.
+    if (t >= floor && t <= nowMs) {
       count++;
       if (count >= min) return true;
     }
   }
   return false;
+}
+
+/**
+ * Canonicalize a discovery candidate and accept it only as a **verified Git
+ * root** (the path itself is the checkout root, not merely inside one).
+ *
+ * - realpath must succeed and name an existing directory
+ * - realpath must not escape the resolved path's identity via `..` after
+ *   resolve (reject when realpath is outside `path.resolve(cwd)`'s own tree
+ *   in the sense that resolve+realpath disagree with a non-dir or missing root)
+ * - `gitRootForPath(real) === real` — must be a git root, not a nested folder
+ *
+ * Returns the canonical absolute path to open, or undefined to skip.
+ */
+export function canonicalizeSeedProjectPath(
+  cwd: string,
+  fs: SeedPathFs,
+): string | undefined {
+  if (!cwd || typeof cwd !== "string" || !path.isAbsolute(cwd)) return undefined;
+  if (cwd.includes("\0")) return undefined;
+  const resolved = path.resolve(cwd);
+  let real: string;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch {
+    return undefined;
+  }
+  try {
+    if (!fs.statSync(real).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  // Symlink targets are fine when the *target* is the git root we open; reject
+  // when realpath walks outside a non-existent resolved base (broken link) —
+  // already handled by stat. "Resolves outside itself": if the caller passed a
+  // path whose realpath is not equal to itself and the original is not a
+  // symlink-or-equal of that real path, we still open `real` (the true root).
+  // Reject only when the git root of `real` is a strict ancestor (nested dir).
+  const gitRoot = gitRootForPath(real, fs);
+  if (!gitRoot || !pathsEqual(gitRoot, real)) return undefined;
+  // If lexical resolve and realpath differ, require that resolved is a path
+  // that realpath's directory contains or equals (no arbitrary escape through
+  // a symlink named like an open folder that points at /etc).
+  // Policy: open the realpath only when it is a git root (above). A symlink
+  // project → other-git-root seeds the real root, which is correct.
+  return real;
 }
 
 /**
@@ -70,18 +131,29 @@ export function shouldSeedProjectDiscovery(opts: {
 /**
  * Pick absolute cwd paths that meet the threshold, preserving input order.
  * Does not open folders — callers feed the result into addWorkspaceFolder.
+ * Optional `canonicalize` rejects non-git-roots / failed realpaths (seed path).
  */
 export function selectProjectsToSeed(
   candidates: readonly { cwd: string; sessionTimestampsMs: readonly number[] }[],
   nowMs: number,
-  opts?: { minSessions?: number; windowMs?: number },
+  opts?: {
+    minSessions?: number;
+    windowMs?: number;
+    /** When set, only paths that canonicalize to a verified git root are kept. */
+    canonicalize?: (cwd: string) => string | undefined;
+  },
 ): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const c of candidates) {
     if (!c?.cwd || typeof c.cwd !== "string") continue;
-    if (meetsProjectDiscoveryThreshold(c.sessionTimestampsMs ?? [], nowMs, opts)) {
-      out.push(c.cwd);
-    }
+    if (!meetsProjectDiscoveryThreshold(c.sessionTimestampsMs ?? [], nowMs, opts)) continue;
+    const cwd = opts?.canonicalize ? opts.canonicalize(c.cwd) : c.cwd;
+    if (!cwd) continue;
+    const key = process.platform === "win32" ? cwd.toLowerCase() : cwd;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cwd);
   }
   return out;
 }

@@ -41,12 +41,13 @@ import type {
 } from "../host";
 import { isFsPathInWorkspace } from "../host";
 import {
+  canonicalizeSeedProjectPath,
   selectProjectsToSeed,
   shouldSeedProjectDiscovery,
 } from "../project-discovery";
 import {
   discoverRepos,
-  indexSessions,
+  indexWellFormedSessions,
   resolveGrokHome,
   type FsLike,
 } from "../sessions";
@@ -940,7 +941,8 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
 
 /**
  * Host-side discovery: folders under ~/.grok that meet the 10-in-3-months bar.
- * Pure selection + cheap indexSessions mtimes; does not open folders itself.
+ * Uses well-formed session summaries (not mtime-only), requires a verified Git
+ * root after realpath, and clamps activity to `[now−window, now]`.
  * Injectable `fs` / `grokHome` / `now` for tests.
  */
 export function discoverSeedProjectPaths(opts?: {
@@ -964,7 +966,8 @@ export function discoverSeedProjectPaths(opts?: {
   });
   const candidates = discovered.map((repo) => ({
     cwd: repo.cwd,
-    sessionTimestampsMs: indexSessions({
+    // Well-formed only — empty `{}` summary files do not count.
+    sessionTimestampsMs: indexWellFormedSessions({
       fs: nodeFs,
       grokHome,
       cwd: repo.cwd,
@@ -972,8 +975,20 @@ export function discoverSeedProjectPaths(opts?: {
     }).map((e) => e.mtimeMs),
   }));
   // discoverRepos sorts newest-first; keep that order so the active root is
-  // the most recently used qualifying project.
-  return selectProjectsToSeed(candidates, nowMs);
+  // the most recently used qualifying project. Canonicalize to verified Git
+  // roots so history alone cannot open an arbitrary directory.
+  return selectProjectsToSeed(candidates, nowMs, {
+    canonicalize: (cwd) =>
+      canonicalizeSeedProjectPath(cwd, {
+        existsSync: (p) => nodeFs.existsSync(p),
+        realpathSync: (p) => {
+          // FsLike may not expose realpath — fall through to node when needed.
+          const r = (nodeFs as { realpathSync?: (p: string) => string }).realpathSync;
+          return r ? r.call(nodeFs, p) : fs.realpathSync(p);
+        },
+        statSync: (p) => nodeFs.statSync(p),
+      }),
+  });
 }
 
 /**

@@ -49,6 +49,7 @@ import {
 } from "./telemetry";
 import { randomUUID } from "node:crypto";
 import { execGrokCli } from "./cli-process";
+import { listGitWorktreePaths } from "./git-worktree-list";
 import {
   locateGrokCli,
   extensionWasUpgraded,
@@ -160,6 +161,7 @@ import {
   MAX_INLINE_MEDIA_BYTES,
 } from "./media-serve";
 import {
+  filterWorktreesForSourceRepo,
   gitRootForPath,
   isGitRepo,
   matchWorktreeForCwd,
@@ -168,12 +170,21 @@ import {
   normalizeFsPath,
   pathsEqual,
   sanitizeWorktreeLabel,
+  worktreePathAuthorizedForRepo,
   type WorktreeParentRef,
   type WorktreeRecord,
   worktreeCwdsForRepo,
   worktreeDisplayName,
   worktreesForRepo,
 } from "./worktree";
+import {
+  cwdIsAuthorized,
+  imageHandlesToRevoke,
+  imagePathStillAuthorized,
+  pathBoundToClosedFolder,
+  remoteBoundCwdStillAuthorized,
+  sessionBoundToClosedFolder,
+} from "./workspace-auth";
 import {
   formatRewindPointDetail,
   formatRewindPointLabel,
@@ -1881,7 +1892,46 @@ See design doc for the full state machine diagram.`;
           const wtPath = created.worktreePath;
           const wtLabel = label || path.basename(wtPath);
           this.host.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
-          // Refresh cache so history can see sessions under this path.
+
+          // create is ASYNC — the RPC returns "creating" before git writes the
+          // checkout (its dir + `.git` pointer appear a beat later). Spawning a
+          // session in a not-yet-existing cwd hangs the whole flow, so wait for
+          // the checkout to land before validating or starting the session.
+          const ready = await this.waitForWorktreeReady(wtPath, 30000);
+          if (!ready) {
+            return void this.host.showErrorMessage(
+              `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
+            );
+          }
+
+          // Validate against an authoritative worktree list before cache /
+          // overrides / auth roots. A compromised or malformed ACP path must
+          // not become a trusted session cwd.
+          const sourceGitRoot =
+            created.sourceGitRoot || gitRootForPath(sourcePath, defaultFs) || sourcePath;
+          const listedPaths = await this.listAuthoritativeWorktreePaths(
+            client,
+            sourcePath,
+            sourceGitRoot,
+          );
+          if (
+            !worktreePathAuthorizedForRepo({
+              worktreePath: wtPath,
+              sourceRepo: sourcePath,
+              listedWorktreePaths: listedPaths,
+              claimedSourceGitRoot: created.sourceGitRoot || undefined,
+              sourceGitRoot,
+            })
+          ) {
+            this.host.appendLine(
+              `[worktree] refused unlisted/unauthorized path from create: ${wtPath}`,
+            );
+            return void this.host.showErrorMessage(
+              `Worktree path was not accepted as part of this repository (not in git worktree list). Session not started.`,
+            );
+          }
+
+          // Refresh cache only after validation.
           this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wtPath));
           this.worktreeCache.push({
             id: wtLabel,
@@ -1897,17 +1947,6 @@ See design doc for the full state machine diagram.`;
             userProvidedLabel: !!label,
           });
 
-          // create is ASYNC — the RPC returns "creating" before git writes the
-          // checkout (its dir + `.git` pointer appear a beat later). Spawning a
-          // session in a not-yet-existing cwd hangs the whole flow, so wait for
-          // the checkout to land before starting the session.
-          const ready = await this.waitForWorktreeReady(wtPath, 30000);
-          if (!ready) {
-            return void this.host.showErrorMessage(
-              `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
-            );
-          }
-
           // Open a brand-new session whose process cwd is the worktree.
           this.parkFocused();
           this.focused = this.newLocalSession();
@@ -1916,7 +1955,7 @@ See design doc for the full state machine diagram.`;
           this.focused.worktree = {
             path: wtPath,
             label: wtLabel,
-            sourceGitRoot: created.sourceGitRoot || sourcePath,
+            sourceGitRoot,
           };
           await this.startSession();
           const id = this.focused.activeSessionId;
@@ -1929,7 +1968,7 @@ See design doc for the full state machine diagram.`;
                 customName: worktreeDisplayName(wtLabel),
                 worktreePath: wtPath,
                 worktreeLabel: wtLabel,
-                sourceGitRoot: created.sourceGitRoot || sourcePath,
+                sourceGitRoot,
               },
             });
             this.sessionCache.delete(id);
@@ -2144,13 +2183,53 @@ See design doc for the full state machine diagram.`;
     const client = session?.client;
     if (!client) return;
     const sourceRepo = session.worktree?.sourceGitRoot || this.sessionCwd(session);
+    const sourceGitRoot = gitRootForPath(sourceRepo, defaultFs) ?? sourceRepo;
     try {
       const list = await client.listWorktrees({});
       if (list === "unsupported") return;
-      this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, list);
+      // mergeWorktreeRefresh filters unattributed / wrong-repo rows.
+      this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, list, {
+        sourceGitRoot,
+      });
     } catch (e: any) {
       this.host.appendLine(`[worktree] list failed: ${e?.message ?? e}`);
     }
+  }
+
+  /**
+   * Authoritative worktree paths for `sourcePath`: prefer the CLI list RPC
+   * (scoped to that client's repo), fall back to `git worktree list --porcelain`.
+   */
+  private async listAuthoritativeWorktreePaths(
+    client: AcpClient,
+    sourcePath: string,
+    sourceGitRoot: string,
+  ): Promise<string[]> {
+    try {
+      const list = await client.listWorktrees({});
+      if (list !== "unsupported" && Array.isArray(list)) {
+        const trusted = filterWorktreesForSourceRepo(list, sourcePath, { sourceGitRoot });
+        const paths = trusted.map((r) => r.path);
+        // list may omit sourceRepo on some builds — also accept raw paths that
+        // git itself reports for this checkout.
+        if (paths.length) return paths;
+        const allListed = list.map((r) => r.path).filter(Boolean);
+        if (allListed.length) {
+          // Cross-check with git so we do not trust unattributed ACP rows alone.
+          const gitPaths = await listGitWorktreePaths(sourceGitRoot || sourcePath, {
+            log: (m) => this.host.appendLine(m),
+          });
+          return allListed.filter((p) =>
+            gitPaths.some((g) => pathsEqual(g, p)),
+          );
+        }
+      }
+    } catch (e: any) {
+      this.host.appendLine(`[worktree] listWorktrees for validate failed: ${e?.message ?? e}`);
+    }
+    return listGitWorktreePaths(sourceGitRoot || sourcePath, {
+      log: (m) => this.host.appendLine(m),
+    });
   }
 
   /** Every open workspace folder root (desktop multi-folder, or VS Code folders). */
@@ -2282,20 +2361,39 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Every cwd a remote client may legitimately name. Follows the same catalog
-   * the host ships on the wire: open folders (+ their worktrees) on desktop,
-   * full historical discoverRepos on VS Code. Never widens past that set.
+   * Authorization epoch — bumped on open/close of a project folder so any
+   * capability that cached "was authorized" can detect revocation. The live
+   * check is always {@link isAuthorizedCwd} against the current open set.
+   */
+  private authEpoch = 0;
+
+  /**
+   * **Single authorization query** for session/process/remote/image use:
+   * is this cwd currently in the host-trusted set?
+   *
+   * Desktop: open folders + worktrees authorized for sessions within them
+   * (`localTrustedSessionCwds`). VS Code: full historical catalog (v3.1.0).
+   * All call sites (remote target, start/resume, image handles, desktop auth
+   * roots via the same trusted set) consult this rather than re-deriving.
+   */
+  private isAuthorizedCwd(cwd: string | undefined): boolean {
+    if (!cwd) return false;
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    return cwdIsAuthorized(cwd, this.localTrustedSessionCwds(overrides), pathsEqual);
+  }
+
+  /** Snapshot of currently authorized session cwds (same set as isAuthorizedCwd). */
+  private authorizedSessionCwds(): string[] {
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    return this.localTrustedSessionCwds(overrides);
+  }
+
+  /**
+   * Every cwd a remote client may legitimately name. Delegates to the shared
+   * authorization query — never a separate recomputation of the open set.
    */
   private remoteTargetableCwd(cwd: string): boolean {
-    const wanted = normalizeRepoPath(cwd);
-    if (!wanted) return false;
-    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    for (const repo of this.localRepoCatalogEntries()) {
-      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) {
-        if (normalizeRepoPath(c) === wanted) return true;
-      }
-    }
-    return false;
+    return this.isAuthorizedCwd(cwd);
   }
 
   private postRepoCatalog(): void {
@@ -2568,13 +2666,15 @@ See design doc for the full state machine diagram.`;
       void this.host.showWarningMessage(`Could not open folder:\n${folder}`);
       return;
     }
+    this.authEpoch++;
     await this.switchLocalWorkspaceFolder(path.resolve(folder));
   }
 
   /**
-   * Public: close a project folder from the desktop File menu. Closing the last
-   * remaining folder leaves an empty rail (discovery will not re-seed). Switches
-   * away first when closing the active one among several.
+   * Public: close a project folder from the desktop File menu. Closing is a
+   * **revocation**, not a catalog filter: sessions bound to the folder end,
+   * remote ownership on that cwd is released, and image handles under it are
+   * dropped. Closing the last folder leaves an empty rail (no re-seed).
    */
   async removeProjectFolder(cwd?: string): Promise<void> {
     if (!this.host.canSwitchWorkspaceFolder) return;
@@ -2586,20 +2686,140 @@ See design doc for the full state machine diagram.`;
       void this.host.showWarningMessage(`Could not close folder:\n${target}`);
       return;
     }
+    // Revoke first so a concurrent remote send cannot still route to a doomed
+    // session after the folder is gone from the open set.
+    this.revokeClosedProjectFolder(target);
+
     const next = this.host.workspaceRoot();
     if (wasActive && next) {
       await this.switchLocalWorkspaceFolder(next);
     } else if (!next) {
-      // Empty open set — park any live session and show an empty rail.
-      this.parkFocused();
+      // Empty open set — focused may already have been disposed by revoke.
+      if (this.pool.has(this.focused) || this.focused.client) {
+        this.parkFocused();
+      }
       this.focused = this.newLocalSession();
       this.selectedRepoCwd = "";
       this.postRepoCatalog();
       this.postSessionsList();
       this.emit(this.focused, { type: "clearMessages" });
     } else {
+      // Revoke may have disposed the focused session when it lived in the closed
+      // folder even though another folder remains active.
+      if (!this.pool.has(this.focused) && !this.focused.client) {
+        this.focused = this.newLocalSession();
+      }
       this.postRepoCatalog();
       this.postSessionsList();
+    }
+  }
+
+  /**
+   * Revoke all live capabilities that belonged to a just-closed project folder.
+   * Bumps {@link authEpoch}. Idempotent for a given path once the open set has
+   * already dropped it (isAuthorizedCwd is false for that cwd).
+   */
+  private revokeClosedProjectFolder(closedCwd: string): void {
+    this.authEpoch++;
+    const doomed: Session[] = [];
+    const seen = new Set<Session>();
+    const consider = (s: Session | undefined) => {
+      if (!s || seen.has(s)) return;
+      seen.add(s);
+      if (
+        sessionBoundToClosedFolder(
+          this.sessionCwd(s),
+          s.worktree?.path,
+          s.worktree?.sourceGitRoot,
+          closedCwd,
+          pathsEqual,
+        )
+      ) {
+        doomed.push(s);
+      }
+    };
+    for (const s of this.pool) consider(s);
+    consider(this.focused);
+
+    for (const s of doomed) {
+      const remoteHolders = this.remoteClients.clientsForActiveValue(s);
+      this.disposeSession(s);
+      for (const clientId of remoteHolders) {
+        this.rehomeRemoteClientAfterFolderClose(clientId, closedCwd);
+      }
+    }
+
+    // Clients whose selected repo was the closed folder (even with no session).
+    for (const clientId of this.remoteClients.clients()) {
+      const cwd = this.remoteClients.cwdIfPresent(clientId);
+      if (cwd && pathBoundToClosedFolder(cwd, closedCwd, pathsEqual)) {
+        this.remoteClients.deleteActive(clientId);
+        this.rehomeRemoteClientAfterFolderClose(clientId, closedCwd);
+      }
+    }
+
+    this.invalidateImageHandlesUnder(closedCwd);
+
+    this.worktreeCache = this.worktreeCache.filter(
+      (w) =>
+        !pathsEqual(w.sourceRepo, closedCwd) &&
+        !pathBoundToClosedFolder(w.path, closedCwd, pathsEqual),
+    );
+
+    // Drop worktree meta that pointed at the closed folder so a later resume
+    // cannot re-authorize via overrides alone (trusted set no longer includes it).
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    let metaChanged = false;
+    const nextMeta: SessionMetaOverrides = { ...overrides };
+    for (const [id, o] of Object.entries(overrides)) {
+      if (
+        (o.worktreePath && pathBoundToClosedFolder(o.worktreePath, closedCwd, pathsEqual)) ||
+        (o.sourceGitRoot && pathsEqual(o.sourceGitRoot, closedCwd))
+      ) {
+        const { worktreePath: _wp, worktreeLabel: _wl, sourceGitRoot: _sg, ...rest } = o;
+        nextMeta[id] = rest;
+        metaChanged = true;
+      }
+    }
+    if (metaChanged) void this.state.update(SESSION_META_KEY, nextMeta);
+
+    this.host.appendLine(`[auth] revoked project folder ${closedCwd} (epoch=${this.authEpoch})`);
+  }
+
+  /** Re-point a remote tab at a remaining open folder, or leave it unbound. */
+  private rehomeRemoteClientAfterFolderClose(clientId: string, closedCwd: string): void {
+    const next =
+      this.openWorkspaceFolders().find((c) => !pathsEqual(c, closedCwd)) ||
+      this.host.workspaceRoot() ||
+      "";
+    try {
+      if (next && this.isAuthorizedCwd(next)) {
+        this.remoteClients.select(clientId, next);
+      } else if (this.remoteClients.cwdIfPresent(clientId)) {
+        // Keep the client alive but clear the active session; bound-cwd checks
+        // refuse ops until the tab selects an authorized repo.
+        this.remoteClients.deleteActive(clientId);
+        // Leave cwd pointing at the closed path so selectRepo is required —
+        // isAuthorizedCwd(closed) is false, so send/cancel are refused.
+      }
+      this.sendRemoteRepoCatalog(clientId);
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: "That project folder was closed on the desktop. Select another project to continue.",
+      });
+    } catch (e) {
+      this.host.appendLine(
+        `[auth] rehome remote client failed: ${(e as Error)?.message ?? e}`,
+      );
+    }
+  }
+
+  private invalidateImageHandlesUnder(closedCwd: string): void {
+    const handles = imageHandlesToRevoke(this.fullImagePaths, closedCwd, pathsEqual);
+    for (const handle of handles) {
+      const p = this.fullImagePaths.get(handle);
+      this.fullImagePaths.delete(handle);
+      if (p && this.fullImageHandles.get(p) === handle) this.fullImageHandles.delete(p);
     }
   }
 
@@ -3368,6 +3588,22 @@ See design doc for the full state machine diagram.`;
       !resumeId &&
       !target.cwd
     ) {
+      this.postRepoCatalog();
+      this.postSessionsList();
+      return undefined;
+    }
+    // Resume / held-session paths set target.cwd before start. A closed folder
+    // must not restart just because resumeId is set (empty-open-set guard above
+    // only covers the no-cwd case).
+    if (
+      this.host.canSwitchWorkspaceFolder &&
+      target.cwd &&
+      !this.isAuthorizedCwd(target.cwd)
+    ) {
+      this.host.appendLine(
+        `[sessions] refused startSession (cwd not authorized): ${target.cwd}` +
+          (resumeId ? ` resumeId=${resumeId}` : ""),
+      );
       this.postRepoCatalog();
       this.postSessionsList();
       return undefined;
@@ -4201,6 +4437,12 @@ See design doc for the full state machine diagram.`;
         // Unknown handle: say nothing. The overlay keeps showing the thumbnail,
         // and a probe learns nothing about what does or does not exist on disk.
         if (!source) break;
+        // Revalidate against the current open set — a handle minted while a
+        // folder was open must not survive closing that folder.
+        if (!this.isImagePathAuthorizedNow(source)) {
+          this.host.appendLine(`[remote] refused imageFull (path no longer authorized)`);
+          break;
+        }
         const src = await this.renderFullImage(source);
         this.sendRemoteRequester(requester, { type: "imageFull", fullId: msg.fullId, src });
         break;
@@ -8826,6 +9068,23 @@ See design doc for the full state machine diagram.`;
     if (held) {
       // Keep the host-owned cwd on the held object. A forged resumeSession.cwd
       // must not re-home an existing process or widen desktopAuthRoots.
+      // A held session whose folder was closed is no longer authorized — do not
+      // adopt/restart it (startSession would also refuse; fail closed here).
+      if (
+        this.host.canSwitchWorkspaceFolder &&
+        held.cwd &&
+        !this.isAuthorizedCwd(held.cwd)
+      ) {
+        this.host.appendLine(
+          `[sessions] refused held-session adopt (cwd not authorized): ${held.cwd}`,
+        );
+        void this.host.showInformationMessage(
+          "Could not restore this conversation — its project folder is no longer open.",
+        );
+        await this.startSession();
+        this.postRepoCatalog();
+        return;
+      }
       this.focused = held;
       this.pool.add(this.focused);
       await this.startSession(id);
@@ -9061,6 +9320,28 @@ See design doc for the full state machine diagram.`;
     return handle;
   }
 
+  /** Fetch-time revalidation for remote image handles (open-set + session media). */
+  private isImagePathAuthorizedNow(imagePath: string): boolean {
+    const authorized = this.authorizedSessionCwds();
+    let home: string | undefined;
+    try {
+      home = resolveGrokHome(process.env);
+    } catch {
+      home = undefined;
+    }
+    return imagePathStillAuthorized(imagePath, authorized, {
+      grokHome: home,
+      sameCwd: pathsEqual,
+      isTrustedGeneratedMedia: (p) => {
+        try {
+          return !!home && isTrustedGeneratedMediaPath(p, home, (c) => fs.realpathSync(c));
+        } catch {
+          return false;
+        }
+      },
+    });
+  }
+
   /** Render a bigger version for a remote's tap. Undefined when the source is
    *  gone (the seven-day sweep, or a deleted original) or will not fit — the
    *  browser then keeps the thumbnail it already has rather than blanking. */
@@ -9127,6 +9408,31 @@ See design doc for the full state machine diagram.`;
       if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
         this.host.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
         return;
+      }
+      // Messages with no cwd still act on a bound session / client-selected
+      // repo. A closed folder must revoke those ops even when allowRemoteRepoTarget
+      // returns true (its default branch). selectRepo is the escape hatch to a
+      // still-authorized target and is gated only by the message cwd above.
+      if (m.type !== "selectRepo") {
+        const active = this.remoteClients.active(clientId);
+        const boundCwd = active
+          ? this.sessionCwd(active)
+          : this.remoteClients.cwdIfPresent(clientId);
+        // Fresh tab with no binding yet may still only call ready / list — if
+        // it has a client cwd (after ready), that cwd must remain authorized.
+        if (
+          boundCwd !== undefined &&
+          !remoteBoundCwdStillAuthorized(boundCwd, this.authorizedSessionCwds(), pathsEqual)
+        ) {
+          this.host.appendLine(
+            `[remote] dropped ${m.type} (bound cwd no longer authorized: ${boundCwd})`,
+          );
+          this.sendRemoteClient(clientId, {
+            type: "error",
+            text: "That project folder is no longer open on the desktop. Select another project to continue.",
+          });
+          return;
+        }
       }
       if (!this.remoteClients.isCurrent(clientId)) {
         this.host.appendLine(`[remote] dropped ${m.type} from a superseded tab connection`);

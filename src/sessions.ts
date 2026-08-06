@@ -588,6 +588,67 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
   return out;
 }
 
+/**
+ * True when a parsed `summary.json` is minimally well-formed for discovery
+ * seeding. Mtime-only dirs (empty/`{}`/non-JSON) must not count toward the
+ * auto-open threshold — otherwise a planted tree of empty summaries would
+ * open an arbitrary directory as a trusted root.
+ */
+export function isWellFormedSessionSummary(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  // Real grok summaries carry info and/or activity fields. Require at least one.
+  if (o.info && typeof o.info === "object") return true;
+  if (typeof o.updated_at === "string" && o.updated_at.length > 0) return true;
+  if (typeof o.created_at === "string" && o.created_at.length > 0) return true;
+  if (typeof o.num_messages === "number" && Number.isFinite(o.num_messages)) return true;
+  if (typeof o.session_summary === "string") return true;
+  if (typeof o.generated_title === "string") return true;
+  return false;
+}
+
+/**
+ * Like {@link indexSessions}, but only counts sessions whose `summary.json`
+ * parses as a minimally well-formed object. Used by desktop discovery seeding
+ * so mtime-shaped empty files cannot satisfy the threshold.
+ */
+export function indexWellFormedSessions(deps: IndexDeps): SessionIndexEntry[] {
+  const { fs, grokHome, cwd, log } = deps;
+  const dir = sessionsDirFor(grokHome, cwd);
+  if (!fs.existsSync(dir)) return [];
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch (e) {
+    log?.(`[sessions] failed to read ${dir}: ${(e as Error).message}`);
+    return [];
+  }
+  const out: SessionIndexEntry[] = [];
+  for (const name of names) {
+    const resolvedSessionDir = sessionDirFor(grokHome, cwd, name);
+    if (!resolvedSessionDir) continue;
+    const summaryPath = path.join(resolvedSessionDir, "summary.json");
+    let st: { mtimeMs: number };
+    let rawText: string;
+    try {
+      st = fs.statSync(summaryPath);
+      rawText = fs.readFileSync(summaryPath, "utf8");
+    } catch {
+      continue;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(rawText);
+    } catch {
+      continue;
+    }
+    if (!isWellFormedSessionSummary(raw)) continue;
+    out.push({ id: name, mtimeMs: st.mtimeMs });
+  }
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
 export interface ReadEntriesDeps {
   fs: FsLike;
   grokHome: string;
