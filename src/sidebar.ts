@@ -7,7 +7,7 @@ import type {
   HostWebview,
   HostWebviewView,
 } from "./host";
-import { Uri, disposeAll } from "./host";
+import { Uri, disposeAll, formatRemoteInstallId, shouldRehydrateOnWebviewReady } from "./host";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,6 +23,8 @@ import {
   finishQueuedSendCommit,
   pendingPermissionOptions,
   preferredPermissionAllowOption,
+  rehydrateBusyChrome,
+  sessionReadyForPrompt,
   sessionUiSnapshot,
   turnIsInFlight,
 } from "./session";
@@ -1318,7 +1320,8 @@ See design doc for the full state machine diagram.`;
    */
   private queuedSendReadyText(session: Session): string | undefined {
     if (!session.queuedSends.length) return undefined;
-    if (!session.client || session.priming) return undefined;
+    // Same readiness as handleSend — client without sessionId is still priming.
+    if (!sessionReadyForPrompt(session)) return undefined;
     if (session.status === "working" || session.status === "needs-you") return undefined;
     return session.queuedSends.join("\n\n");
   }
@@ -6622,8 +6625,20 @@ See design doc for the full state machine diagram.`;
       if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
       return;
     }
+    // Priming window (spawn → session/new|load): the client object may exist
+    // while sessionId is still unset. A prompt then throws "no session" after
+    // consuming chips — work loss. Queue until startSession flushes on ready.
+    if (session.client && !sessionReadyForPrompt(session)) {
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
+      return;
+    }
     const client = session.client ?? await this.ensureClient(session);
     if (!client) return;
+    // ensureClient may return mid-startSession; re-check before committing work.
+    if (!sessionReadyForPrompt(session)) {
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
+      return;
+    }
     const gen = session.gen;
 
     // An attachment posted before send has started staging (message ordering),
@@ -6971,12 +6986,55 @@ See design doc for the full state machine diagram.`;
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     void this.postRemoteStatus();
+    // Host-declared capability (not incidental focused.client): only Electron
+    // sets webviewReloadsUnderLiveSession. VS Code is false by construction, so
+    // a view move / "Reload Webviews" that recreates the webview under a live
+    // client still takes the v3.1.0 startSession path below.
+    if (shouldRehydrateOnWebviewReady(this.host.webviewReloadsUnderLiveSession, !!this.focused.client)) {
+      this.rehydrateWebviewFromFocused();
+      return;
+    }
     // Sweep abandoned empty sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep). This is the run that
     // collects what the last window left behind when it closed without a prompt.
     void this.startSession().then(() => {
       this.sweepEmptySessions();
     });
+  }
+
+  /**
+   * Replay the focused session into a freshly-booted webview without restarting
+   * the ACP process. Used when the document reloads (Electron) but the sidebar
+   * controller still holds a live pool member.
+   */
+  private rehydrateWebviewFromFocused(): void {
+    const session = this.focused;
+    const wv = this.view?.webview;
+    if (!wv) return;
+    this.touch(session);
+    this.markRead(session);
+    void wv.postMessage({ type: "clearMessages" });
+    void wv.postMessage({ type: "historyReplay", active: true });
+    for (const m of session.buffer) {
+      void wv.postMessage(this.localizeHistoryMessage(m, wv));
+    }
+    void wv.postMessage({ type: "historyReplay", active: false });
+    for (const m of sessionUiSnapshot(
+      session,
+      this.displayMode(session),
+      this.localPreviewChips(session, wv),
+    )) {
+      void wv.postMessage(m);
+    }
+    // Restore turn chrome the buffer does not carry (busy is event-sourced live).
+    // During priming the client exists but has no session id yet — keep the
+    // startup lock so a reload cannot unlock the composer into a lost prompt.
+    const chrome = rehydrateBusyChrome(session);
+    void wv.postMessage({ type: "setBusy", value: chrome.value, locked: chrome.locked });
+    this.postMode();
+    this.postRepoCatalog();
+    this.postSessionsList();
+    this.postSessionName(session);
   }
 
   private postChips(session: Session = this.focused): void {
@@ -7190,7 +7248,8 @@ See design doc for the full state machine diagram.`;
         const session = new Session();
         session.cwd = cwd;
         session.activeSessionId = id;
-        session.client = { dispose() {} } as AcpClient;
+        // sessionId is required for sessionReadyForPrompt (flush + send).
+        session.client = { dispose() {}, sessionId: id } as AcpClient;
         session.hasHistory = hasHistory;
         session.chips = chips;
         session.buffer.push(...messages);
@@ -7201,7 +7260,7 @@ See design doc for the full state machine diagram.`;
         const session = this.newLocalSession();
         session.cwd = cwd;
         session.activeSessionId = id;
-        session.client = { dispose() {} } as AcpClient;
+        session.client = { dispose() {}, sessionId: id } as AcpClient;
         session.hasHistory = true;
         this.pool.add(session);
       },
@@ -7226,6 +7285,7 @@ See design doc for the full state machine diagram.`;
         const session = new Session();
         session.cwd = cwd;
         session.activeSessionId = id;
+        // Priming: client may exist without a session id (spawn window).
         session.client = { dispose() {} } as AcpClient;
         session.priming = true;
         session.queuedSends = [queuedText];
@@ -7241,6 +7301,7 @@ See design doc for the full state machine diagram.`;
         session.cwd = cwd;
         session.activeSessionId = id;
         session.client = {
+          sessionId: id,
           availableCommands: [],
           dispose() {},
           prompt: async (_blocks: Parameters<AcpClient["prompt"]>[0]) => {
@@ -8776,8 +8837,9 @@ See design doc for the full state machine diagram.`;
       // Already persisted by the time this returns — getOrCreate writes the file
       // synchronously — so a first-ever link cannot outrun persistence and needs
       // no second write. Re-writing it would only add a way to mark the key
-      // degraded on a link.
-      const installId = this.installId();
+      // degraded on a link. Desktop appends `:desktop` (host capability) so the
+      // relay shares one device-cap slot with the same machine's VS Code install.
+      const installId = formatRemoteInstallId(this.installId(), this.host.remoteInstallIdSuffix);
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
         headers: { "content-type": "application/json" },

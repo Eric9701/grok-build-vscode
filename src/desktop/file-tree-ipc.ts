@@ -1,0 +1,170 @@
+/**
+ * Main-process IPC for the desktop file-tree panel.
+ * Renderer is less trusted: every path is re-resolved and containment-checked
+ * (canonical / realpath — see file-tree.ts), and only the main BrowserWindow
+ * may invoke these channels.
+ */
+import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { interpretOpenPathResult } from "./document-view";
+import { listTreeDir, resolveTreePath } from "./file-tree";
+import { fileTreePanelBootSource } from "./file-tree-panel";
+
+const CH_LIST = "desk-ft:list";
+const CH_OPEN = "desk-ft:open";
+const CH_ROOT = "desk-ft:root";
+const CH_LAST_OPEN = "desk-ft:lastOpen";
+
+export interface FileTreeIpcOptions {
+  getWorkspaceRoot: () => string | undefined;
+  log: (line: string) => void;
+  /** Main window — handlers refuse invokes from any other webContents. */
+  getMainWindow: () => BrowserWindow | null;
+  /**
+   * When set (tests), open writes the absolute path as a line instead of
+   * calling the OS handler — so e2e can assert the open path without a GUI app.
+   */
+  openSinkPath?: string;
+}
+
+let lastOpenedPath: string | undefined;
+let handlersRegistered = false;
+
+export function getLastOpenedTreePath(): string | undefined {
+  return lastOpenedPath;
+}
+
+/** True when the IPC event came from the desktop app's main window. */
+export function isIpcFromMainWindow(
+  event: Pick<IpcMainInvokeEvent, "sender">,
+  getMainWindow: () => BrowserWindow | null,
+): boolean {
+  const win = getMainWindow();
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return false;
+  if (event.sender.isDestroyed()) return false;
+  return event.sender.id === win.webContents.id;
+}
+
+/** Register invoke handlers once per process. */
+export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
+  if (handlersRegistered) {
+    // Allow re-binding workspace getter when createApp restarts in the same process.
+    unregisterFileTreeIpc();
+  }
+  handlersRegistered = true;
+
+  const deny = (channel: string) => {
+    opts.log(`[desk-ft] refused ${channel}: sender is not the main window`);
+    return { ok: false as const, reason: "forbidden", error: "forbidden" };
+  };
+
+  ipcMain.handle(CH_ROOT, (e) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_ROOT);
+    const root = opts.getWorkspaceRoot();
+    if (!root) return { ok: false as const, reason: "no workspace root" };
+    return {
+      ok: true as const,
+      root,
+      name: path.basename(root) || root,
+    };
+  });
+
+  ipcMain.handle(CH_LIST, (e, relPath: unknown) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_LIST);
+    const root = opts.getWorkspaceRoot();
+    if (!root) return { ok: false as const, reason: "no workspace root" };
+    const rel = typeof relPath === "string" ? relPath : "";
+    return listTreeDir(root, rel);
+  });
+
+  ipcMain.handle(CH_OPEN, async (e, relPath: unknown) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_OPEN);
+    const root = opts.getWorkspaceRoot();
+    if (!root) return { ok: false as const, error: "no workspace root" };
+    if (typeof relPath !== "string") {
+      return { ok: false as const, error: "invalid path" };
+    }
+    const resolved = resolveTreePath(root, relPath);
+    if (!resolved.ok) {
+      opts.log(`[desk-ft] open rejected: ${resolved.reason} (${relPath})`);
+      return { ok: false as const, error: resolved.reason };
+    }
+    // Open files only — directories stay expand-only in the panel.
+    // resolveTreePath already refused outbound symlinks/junctions; open the
+    // path the user sees (link path when it is an in-tree link).
+    try {
+      const st = fs.statSync(resolved.absPath);
+      if (!st.isFile()) {
+        return { ok: false as const, error: "not a file" };
+      }
+    } catch {
+      return { ok: false as const, error: "not found" };
+    }
+
+    lastOpenedPath = resolved.absPath;
+    const sink = opts.openSinkPath || process.env.GROK_DESKTOP_OPEN_SINK;
+    if (sink) {
+      try {
+        fs.appendFileSync(sink, resolved.absPath + "\n", "utf8");
+      } catch (err) {
+        opts.log(`[desk-ft] open sink write failed: ${(err as Error).message}`);
+        return { ok: false as const, error: "sink write failed" };
+      }
+      return { ok: true as const, path: resolved.absPath, sink: true as const };
+    }
+
+    const err = await shell.openPath(resolved.absPath);
+    const result = interpretOpenPathResult(err);
+    if (!result.ok) {
+      opts.log(`[desk-ft] openPath failed: ${result.error}`);
+      return { ok: false as const, error: result.error };
+    }
+    return { ok: true as const, path: resolved.absPath };
+  });
+
+  // Test/diagnostic: last path the panel asked to open (after guard).
+  ipcMain.handle(CH_LAST_OPEN, (e) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_LAST_OPEN);
+    return { path: lastOpenedPath ?? null };
+  });
+}
+
+export function unregisterFileTreeIpc(): void {
+  if (!handlersRegistered) return;
+  for (const ch of [CH_LIST, CH_OPEN, CH_ROOT, CH_LAST_OPEN]) {
+    ipcMain.removeHandler(ch);
+  }
+  handlersRegistered = false;
+}
+
+/**
+ * Inject (or re-inject) the file-tree panel into the chat document.
+ * Safe to call on every did-finish-load.
+ */
+export async function injectFileTreePanel(win: BrowserWindow | null): Promise<void> {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  const src = fileTreePanelBootSource();
+  try {
+    await win.webContents.executeJavaScript(src, true);
+  } catch (e) {
+    // Log-only: chat still works without the panel.
+    // Callers pass log separately; swallow here if injection races dispose.
+    void e;
+  }
+}
+
+export async function injectFileTreePanelLogged(
+  win: BrowserWindow | null,
+  log: (line: string) => void,
+): Promise<void> {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  try {
+    const result = await win.webContents.executeJavaScript(fileTreePanelBootSource(), true);
+    if (result && result.ok === false) {
+      log(`[desk-ft] inject: ${result.reason || "failed"}`);
+    }
+  } catch (e) {
+    log(`[desk-ft] inject failed: ${(e as Error).message}`);
+  }
+}

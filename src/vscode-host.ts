@@ -467,6 +467,11 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     get isTelemetryEnabled() {
       return vscode.env.isTelemetryEnabled;
     },
+
+    // VS Code: webview moves / Reload Webviews recreate the document under a
+    // live session — still startSession (v3.1.0), never rehydrate.
+    webviewReloadsUnderLiveSession: false,
+    remoteInstallIdSuffix: "",
   };
 }
 

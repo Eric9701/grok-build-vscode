@@ -627,4 +627,42 @@ export interface Host {
   readonly appName: string;
   readonly language: string;
   readonly isTelemetryEnabled: boolean;
+
+  // ── Host-kind capabilities (declared at the ownership boundary) ────────
+  /**
+   * When true, a second webview `ready` rehydrates from the live session buffer
+   * instead of starting a new session process. True only for hosts whose
+   * document can reload under a live process (Electron). **False for VS Code**
+   * — view moves / "Reload Webviews" dispose and recreate the webview and must
+   * keep the v3.1.0 startSession path (never rehydrate by construction).
+   */
+  readonly webviewReloadsUnderLiveSession: boolean;
+  /**
+   * Suffix appended to the install id when talking to the AFK Pilot relay on
+   * device link. Empty for VS Code; `":desktop"` for the desktop app so the
+   * relay shares one device-cap slot with the same machine's VS Code install.
+   * Anything other than a bare id or `<id>:desktop` is rejected by the relay.
+   */
+  readonly remoteInstallIdSuffix: string;
+}
+
+/**
+ * Decide whether a webview `ready` should rehydrate a live session instead of
+ * startSession. Capability is host-declared; `hasLiveClient` is only "is there
+ * something to reattach" on hosts that allow reload — never a proxy for host kind.
+ */
+export function shouldRehydrateOnWebviewReady(
+  webviewReloadsUnderLiveSession: boolean,
+  hasLiveClient: boolean,
+): boolean {
+  return webviewReloadsUnderLiveSession && hasLiveClient;
+}
+
+/**
+ * Form the install id sent to the AFK Pilot relay. Bare UUID for VS Code;
+ * `<uuid>:desktop` for the desktop app.
+ */
+export function formatRemoteInstallId(baseId: string, suffix: string): string {
+  if (!suffix) return baseId;
+  return baseId.endsWith(suffix) ? baseId : baseId + suffix;
 }

@@ -402,6 +402,8 @@
     "compile:integration": "tsc -p integration/tsconfig.json",
     "test:integration": "npm run compile && npm run compile:integration && vscode-test",
     "test:live": "tsc -p . && node scripts/live-tests.cjs",
+    "desktop": "npm run compile && node scripts/run-desktop.cjs",
+    "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",
     "prepackage": "node -e \"for (const f of require('fs').readdirSync('.')) if (f.endsWith('.vsix')) require('fs').unlinkSync(f)\"",
     "package": "npx @vscode/vsce package",
@@ -414,7 +416,9 @@
     "@types/ws": "^8.18.1",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.5.2",
+    "electron": "^33.2.1",
     "happy-dom": "^20.9.0",
+    "playwright": "^1.49.1",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0"
   },

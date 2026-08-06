@@ -319,6 +319,32 @@ export function turnIsInFlight(session: Session): boolean {
   return session.turnToken !== undefined;
 }
 
+/**
+ * True when the ACP session can accept `session/prompt` (spawn finished and
+ * session/new|load returned an id). During the priming window the client object
+ * may already exist while `sessionId` is still unset — a prompt then throws
+ * "no session" after consuming chips. Callers must queue instead.
+ */
+export function sessionReadyForPrompt(session: Session): boolean {
+  return !!session.client && !session.priming && !!session.client.sessionId;
+}
+
+/**
+ * Busy chrome restored after a webview reload reattaches to a live session.
+ * Keeps the startup lock while priming (or while the client has no session id
+ * yet) so a rehydrate cannot unlock the composer into a work-losing send.
+ */
+export function rehydrateBusyChrome(session: Session): { value: boolean; locked: boolean } {
+  if (!sessionReadyForPrompt(session)) {
+    return { value: true, locked: true };
+  }
+  const busy =
+    session.status === "working" ||
+    session.status === "needs-you" ||
+    session.turnToken !== undefined;
+  return { value: busy, locked: false };
+}
+
 export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
   if (session.queuedSendCommit) return undefined;
   const queued = session.queuedSends[0] ?? "";

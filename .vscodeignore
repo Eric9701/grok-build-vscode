@@ -22,6 +22,11 @@ node_modules/**
 **/*.map
 **/*.ts
 !out/**/*.js
+# Desktop Electron app — never ship in the VS Code extension vsix.
+out/desktop/**
+src/desktop/**
+vitest.desktop.config.ts
+scripts/run-desktop.cjs
 grok-session-preview.html
 # Private/untracked working docs (git-excluded via .gitignore / .git/info/exclude)
 # must never ship in the public vsix — vsce doesn't read those files.
