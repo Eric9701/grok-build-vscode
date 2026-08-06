@@ -351,6 +351,36 @@ export type ReadTreeFileResult =
   | { ok: false; reason: string; openExternal?: boolean };
 
 /**
+ * Re-resolve immediately before a read so a symlink swap between the first
+ * containment check and the open cannot escape the workspace (same property
+ * as the open-path TOCTOU rechecks in file-tree-ipc).
+ */
+function recheckTreePathForRead(
+  root: string,
+  relPath: string,
+  expectedAbs: string,
+  expectedReal: string,
+  platform: NodeJS.Platform,
+  pathFs: TreePathFs,
+): ResolveTreePathResult {
+  const again = resolveTreePath(root, relPath, platform, pathFs);
+  if (!again.ok) return again;
+  if (again.absPath !== expectedAbs) {
+    return { ok: false, reason: "path changed since check" };
+  }
+  const realNow = canonicalPath(again.absPath, pathFs);
+  const a = platform === "win32" ? realNow.toLowerCase() : realNow;
+  const b = platform === "win32" ? expectedReal.toLowerCase() : expectedReal;
+  if (a !== b) {
+    return { ok: false, reason: "path escaped workspace (symlink swap)" };
+  }
+  if (!isCanonicallyInsideRoot(root, again.absPath, platform, pathFs)) {
+    return { ok: false, reason: "path escapes workspace (symlink)" };
+  }
+  return again;
+}
+
+/**
  * Read a workspace file for the in-panel viewer. Containment matches
  * {@link resolveTreePath}. Oversized or binary-looking files return
  * `{ openExternal: true }` so the panel can hand off to the OS.
@@ -364,6 +394,7 @@ export function readTreeFile(
 ): ReadTreeFileResult {
   const resolved = resolveTreePath(root, relPath, platform, pathFs);
   if (!resolved.ok) return { ok: false, reason: resolved.reason };
+  const realAtCheck = canonicalPath(resolved.absPath, pathFs);
 
   let st: fs.Stats;
   try {
@@ -384,13 +415,22 @@ export function readTreeFile(
     if (st.size > FILE_PREVIEW_MAX_IMAGE_BYTES) {
       return { ok: false, reason: "image too large", openExternal: true };
     }
+    const rechecked = recheckTreePathForRead(
+      root,
+      relPath,
+      resolved.absPath,
+      realAtCheck,
+      platform,
+      pathFs,
+    );
+    if (!rechecked.ok) return { ok: false, reason: rechecked.reason };
     let buf: Buffer;
     try {
-      buf = readFileSync(resolved.absPath);
+      buf = readFileSync(rechecked.absPath);
     } catch (e) {
       return { ok: false, reason: (e as Error).message || "unreadable" };
     }
-    const ext = path.extname(resolved.absPath).toLowerCase();
+    const ext = path.extname(rechecked.absPath).toLowerCase();
     const mime =
       ext === ".png"
         ? "image/png"
@@ -406,8 +446,8 @@ export function readTreeFile(
     return {
       ok: true,
       kind: "image",
-      relPath: resolved.relPath,
-      absPath: resolved.absPath,
+      relPath: rechecked.relPath,
+      absPath: rechecked.absPath,
       dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
     };
   }
@@ -416,9 +456,19 @@ export function readTreeFile(
     return { ok: false, reason: "file too large", openExternal: true };
   }
 
+  const rechecked = recheckTreePathForRead(
+    root,
+    relPath,
+    resolved.absPath,
+    realAtCheck,
+    platform,
+    pathFs,
+  );
+  if (!rechecked.ok) return { ok: false, reason: rechecked.reason };
+
   let buf: Buffer;
   try {
-    buf = readFileSync(resolved.absPath);
+    buf = readFileSync(rechecked.absPath);
   } catch (e) {
     return { ok: false, reason: (e as Error).message || "unreadable" };
   }
@@ -442,8 +492,8 @@ export function readTreeFile(
   return {
     ok: true,
     kind,
-    relPath: resolved.relPath,
-    absPath: resolved.absPath,
+    relPath: rechecked.relPath,
+    absPath: rechecked.absPath,
     text,
     pretty,
   };

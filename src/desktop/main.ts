@@ -327,13 +327,47 @@ async function createApp(): Promise<void> {
     getWindow: () => mainWindow,
     log,
     remoteActions,
+    onWorkspaceRootChanged: (root) => {
+      // File-tree panel boots once against api.root(); rebind so the visible
+      // tree matches the active project (otherwise reads resolve against B
+      // while rows still show A's layout).
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send("desk-ft:root-changed", { root });
+      }
+    },
   });
 
   sidebar = new GrokSidebar(hostContext, host);
+  // Session-aware roots for openFile/openDiff (worktree cwd, not only the
+  // selected project folder). Wired after sidebar exists.
+  webview.getAuthContext = () => ({
+    workspaceRoot: config.getWorkspaceRoot(),
+    allowedRoots: sidebar!.desktopAuthRoots(),
+  });
   remoteActions.current = {
     link: () => sidebar!.linkRemoteDevice(),
     unlink: () => sidebar!.unlinkRemoteDevice(),
   };
+
+  // Host-minted file-selection handles for genuine OS drops (preload only —
+  // never exposed as a free-form path API to page script).
+  ipcMain.handle("desk-file-sel:register", (event, rawPaths: unknown) => {
+    if (!isTrustedMainFrameIpc(event, () => mainWindow)) {
+      log("refused desk-file-sel:register from non-main sender/frame");
+      return [] as string[];
+    }
+    if (!webview || !Array.isArray(rawPaths)) return [] as string[];
+    const handles: string[] = [];
+    for (const p of rawPaths) {
+      if (typeof p !== "string" || !p.trim()) continue;
+      try {
+        handles.push(webview.fileSelection.register(p));
+      } catch (e) {
+        log(`file selection register failed: ${(e as Error).message}`);
+      }
+    }
+    return handles;
+  });
 
   // Full product name for About / OS app identity; window title uses short name.
   app.setName(DESKTOP_APP_FULL_NAME);

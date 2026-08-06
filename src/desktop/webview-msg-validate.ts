@@ -107,9 +107,15 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       if (!isString(raw.id)) return null;
       break;
     case "openFile":
-    case "dropFile":
       if (!isString(raw.path)) return null;
-      if (type === "dropFile" && !isBoolean(raw.shift)) return null;
+      break;
+    case "dropFile":
+      // VS Code: path (file URI / abs). Desktop: host-minted handle only.
+      // Schema allows either; authorization decides which is accepted.
+      if (!isBoolean(raw.shift)) return null;
+      if (!isString(raw.path) && !isString(raw.handle)) return null;
+      if (raw.path !== undefined && !isString(raw.path)) return null;
+      if (raw.handle !== undefined && !isString(raw.handle)) return null;
       break;
     case "openUrl":
       if (!isString(raw.url)) return null;

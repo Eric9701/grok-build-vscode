@@ -290,7 +290,12 @@ export type WebviewMsg =
   | { type: "composerFocus"; focused: boolean }
   | { type: "setExpandCommandOutputs"; value: boolean }
   | { type: "setSteerByDefault"; value: boolean }
-  | { type: "dropFile"; path: string; shift: boolean }
+  /**
+   * Attach a user-selected file. VS Code posts a `path` (file URI or absolute)
+   * from the webview drag-drop surface. Desktop posts only a host-minted
+   * `handle` (see file-selection-registry) — a renderer-invented path is refused.
+   */
+  | { type: "dropFile"; path?: string; handle?: string; shift: boolean }
   | { type: "permissionAnswer"; requestId: number | string; optionId: string }
   | { type: "exitPlanAnswer"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected"; comment?: string }
   | { type: "questionAnswer"; requestId: number | string; answers?: Record<string, string>; annotations?: Record<string, { notes?: string; preview?: string }> }

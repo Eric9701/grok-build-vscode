@@ -18,7 +18,11 @@ import {
   resolveAppResourceServe,
   rootServePolicy,
 } from "./app-resource-policy";
-import { authorizeDesktopWebviewMsg } from "./desktop-policy";
+import {
+  authorizeDesktopWebviewMsg,
+  type DesktopOpenFileContext,
+} from "./desktop-policy";
+import { FileSelectionRegistry } from "./file-selection-registry";
 import {
   RESOURCE_REGISTRY_URL_SEGMENT,
   ResourceRegistry,
@@ -233,13 +237,24 @@ export class ElectronWebview implements HostWebview {
   private allowedRoots: string[] = [];
   /** Host-issued media handles — only these resolve under media-only roots. */
   readonly registry = new ResourceRegistry();
+  /**
+   * Host-issued handles for OS picker / genuine file drops. `dropFile` carries
+   * only these ids — never a renderer-invented path.
+   */
+  readonly fileSelection = new FileSelectionRegistry();
   /** Optional log for dropped IPC (wired from main). */
   onDroppedMessage?: (reason: string, raw: unknown) => void;
   /**
    * Workspace root for desktop openFile policy. Wired from main after the
    * folder is chosen; when unset, openFile is refused.
+   * Prefer {@link getAuthContext} when session roots (worktrees) matter.
    */
   getWorkspaceRoot?: () => string | undefined;
+  /**
+   * Full desktop auth context (session roots + drop-handle resolver). Wired
+   * from main after the sidebar exists so worktree sessions authorize correctly.
+   */
+  getAuthContext?: () => DesktopOpenFileContext;
 
   constructor(private readonly getWindow: () => BrowserWindow | null) {}
 
@@ -321,7 +336,8 @@ export class ElectronWebview implements HostWebview {
   /**
    * Called from main when the renderer posts a webview message.
    * Schema-invalid / unknown types are dropped (never cast through).
-   * Well-formed `openFile` / `openUrl` still pass through {@link authorizeDesktopWebviewMsg}.
+   * Path-bearing ops pass through {@link authorizeDesktopWebviewMsg} with the
+   * active session's roots (not merely the selected project folder).
    */
   dispatchMessage(message: unknown): void {
     const parsed = parseWebviewMsg(message);
@@ -329,8 +345,13 @@ export class ElectronWebview implements HostWebview {
       this.onDroppedMessage?.("invalid WebviewMsg", message);
       return;
     }
-    const auth = authorizeDesktopWebviewMsg(parsed, {
+    const base = this.getAuthContext?.() ?? {
       workspaceRoot: this.getWorkspaceRoot?.(),
+    };
+    const auth = authorizeDesktopWebviewMsg(parsed, {
+      ...base,
+      requireDropFileHandle: true,
+      resolveDropFileHandle: (id) => this.fileSelection.take(id),
     });
     if ("refused" in auth) {
       this.onDroppedMessage?.(

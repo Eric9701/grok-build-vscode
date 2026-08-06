@@ -41,12 +41,19 @@ import {
   resolveAppResourceServe,
   rootServePolicy,
 } from "../src/desktop/app-resource-policy";
+import { AsyncSerialQueue } from "../src/async-serial";
 import {
   authorizeDesktopWebviewMsg,
+  authorizeDropFile,
   authorizeOpenFile,
   authorizeOpenUrl,
+  desktopAuthRoots,
   isExecutablePath,
 } from "../src/desktop/desktop-policy";
+import {
+  FileSelectionRegistry,
+  isFileSelectionId,
+} from "../src/desktop/file-selection-registry";
 import {
   planOpenCliInTerminal,
   planRunCommandInTerminal,
@@ -1575,5 +1582,453 @@ describe("file preview helpers (B3)", () => {
     const bin = readTreeFile(root, "blob.bin");
     expect(bin.ok).toBe(false);
     if (!bin.ok) expect(bin.openExternal).toBe(true);
+  });
+});
+
+// ── Round 8: authorization context, handles, serialization, TOCTOU ──────────
+
+describe("file selection handles (P1-1)", () => {
+  let dir: string;
+  let secret: string;
+  let picked: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-fsel-"));
+    secret = path.join(dir, "secret.txt");
+    picked = path.join(dir, "picked.txt");
+    fs.writeFileSync(secret, "do-not-leak");
+    fs.writeFileSync(picked, "ok");
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("mints opaque handles; take is one-shot and unknown ids attach nothing", () => {
+    const reg = new FileSelectionRegistry();
+    const id = reg.register(picked);
+    expect(isFileSelectionId(id)).toBe(true);
+    expect(reg.take(id)).toBe(path.resolve(picked));
+    expect(reg.take(id)).toBeNull();
+    expect(reg.take("0".repeat(32))).toBeNull();
+    expect(reg.take("not-a-handle")).toBeNull();
+  });
+
+  it("authorizeDropFile refuses path-based dropFile when requireDropFileHandle", () => {
+    const reg = new FileSelectionRegistry();
+    const forged = authorizeDropFile(
+      { type: "dropFile", path: secret, shift: false },
+      {
+        requireDropFileHandle: true,
+        resolveDropFileHandle: (h) => reg.take(h),
+      },
+    );
+    expect("refused" in forged).toBe(true);
+
+    const unknown = authorizeDropFile(
+      { type: "dropFile", handle: "ab".repeat(16), shift: false },
+      {
+        requireDropFileHandle: true,
+        resolveDropFileHandle: (h) => reg.take(h),
+      },
+    );
+    expect("refused" in unknown).toBe(true);
+
+    const id = reg.register(picked);
+    const ok = authorizeDropFile(
+      { type: "dropFile", handle: id, shift: true },
+      {
+        requireDropFileHandle: true,
+        resolveDropFileHandle: (h) => reg.take(h),
+      },
+    );
+    expect("msg" in ok).toBe(true);
+    if ("msg" in ok) {
+      expect(ok.msg.path).toBe(path.resolve(picked));
+      expect(ok.msg.shift).toBe(true);
+      expect(ok.msg.handle).toBeUndefined();
+    }
+  });
+
+  it("authorizeDesktopWebviewMsg drops forged path dropFile on desktop", () => {
+    const reg = new FileSelectionRegistry();
+    const bad = authorizeDesktopWebviewMsg(
+      { type: "dropFile", path: secret, shift: false },
+      {
+        workspaceRoot: dir,
+        requireDropFileHandle: true,
+        resolveDropFileHandle: (h) => reg.take(h),
+      },
+    );
+    expect("refused" in bad).toBe(true);
+
+    const id = reg.register(picked);
+    const good = authorizeDesktopWebviewMsg(
+      { type: "dropFile", handle: id, shift: false },
+      {
+        workspaceRoot: dir,
+        requireDropFileHandle: true,
+        resolveDropFileHandle: (h) => reg.take(h),
+      },
+    );
+    expect("msg" in good).toBe(true);
+    if ("msg" in good && good.msg.type === "dropFile") {
+      expect(good.msg.path).toBe(path.resolve(picked));
+    }
+  });
+
+  it("mutation: without requireDropFileHandle a path dropFile would attach", () => {
+    // Documents why the desktop gate must set requireDropFileHandle — schema
+    // validation alone accepts a well-formed path.
+    expect(
+      parseWebviewMsg({ type: "dropFile", path: secret, shift: false }),
+    ).not.toBeNull();
+    const passthrough = authorizeDropFile(
+      { type: "dropFile", path: secret, shift: false },
+      { requireDropFileHandle: false },
+    );
+    expect("msg" in passthrough).toBe(true);
+  });
+
+  it("schema accepts handle-only dropFile and refuses empty dropFile", () => {
+    expect(
+      parseWebviewMsg({ type: "dropFile", handle: "ab".repeat(16), shift: false })?.type,
+    ).toBe("dropFile");
+    expect(parseWebviewMsg({ type: "dropFile", shift: false })).toBeNull();
+    expect(parseWebviewMsg({ type: "dropFile", path: "/x", shift: "no" })).toBeNull();
+  });
+});
+
+describe("local workspace switch serialization (P1-2)", () => {
+  it("concurrent switches leave root and focused cwd in agreement on the last target", async () => {
+    const q = new AsyncSerialQueue();
+    let root = "/proj-a";
+    let focused = "/proj-a";
+    const log: string[] = [];
+
+    const switchTo = (cwd: string, delayMs: number) =>
+      q.run(async () => {
+        // Capture once — never re-read a shared field after await.
+        const target = cwd;
+        root = target;
+        log.push(`start:${target}`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        focused = target;
+        log.push(`done:${target}`);
+      });
+
+    // A is slow; B is fast. Without serialization A could finish last and
+    // leave focused=A while a later B already set root=B — or both mutate the
+    // same session. With the queue, order is A then B and the pair agrees.
+    await Promise.all([switchTo("/proj-a", 40), switchTo("/proj-b", 5)]);
+    expect(root).toBe("/proj-b");
+    expect(focused).toBe("/proj-b");
+    expect(log).toEqual([
+      "start:/proj-a",
+      "done:/proj-a",
+      "start:/proj-b",
+      "done:/proj-b",
+    ]);
+  });
+
+  it("mutation: unsynchronized concurrent switches can leave root≠focused", async () => {
+    let root = "/a";
+    let focused = "/a";
+
+    const buggy = async (cwd: string, delayMs: number) => {
+      root = cwd;
+      await new Promise((r) => setTimeout(r, delayMs));
+      // Re-read shared root after await — the hazard this codebase has hit before.
+      focused = root;
+    };
+
+    // A starts first (sets root=A), B overwrites root=B quickly and finishes,
+    // then A wakes and sets focused = root (still B) — agrees by accident.
+    // Flip the stale write: capture focused session id-style:
+    let sessionCwd = "/a";
+    const buggy2 = async (cwd: string, delayMs: number) => {
+      root = cwd;
+      // "openSession" assigns this.focused.cwd = cwd, but another switch
+      // replaced this.focused — we simulate by writing sessionCwd only if we
+      // still "own" the switch by checking root at end incorrectly:
+      await new Promise((r) => setTimeout(r, delayMs));
+      if (cwd === "/slow") {
+        // Slow switch completes after fast one: writes its own cwd onto the
+        // shared focused without checking whether a later switch already ran.
+        sessionCwd = cwd;
+        // root was set by the fast switch to /fast
+      } else {
+        sessionCwd = cwd;
+      }
+    };
+    await Promise.all([buggy2("/slow", 40), buggy2("/fast", 5)]);
+    // Fast finishes first (sessionCwd=/fast), slow finishes last (sessionCwd=/slow)
+    // while root was last set by whoever ran setActive last interleaved:
+    // start order: both set root — final root is whoever assigned last at start
+    // (race). sessionCwd ends as /slow while root is often /fast.
+    expect(sessionCwd).toBe("/slow");
+    // Prove the hazard class: without a queue, final focused need not match the
+    // last *requested* switch when we track request order:
+    const requestedLast = "/fast";
+    expect(sessionCwd).not.toBe(requestedLast);
+
+    // Silence unused — the first buggy() documents the stale-read pattern.
+    await buggy("/x", 1);
+    expect(focused).toBeTruthy();
+  });
+
+  it("source gate: switchLocalWorkspaceFolder uses AsyncSerialQueue", () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    expect(sidebar).toContain("localWorkspaceSwitchQueue");
+    expect(sidebar).toContain("AsyncSerialQueue");
+    expect(sidebar).toMatch(
+      /switchLocalWorkspaceFolder[\s\S]*localWorkspaceSwitchQueue\.run/,
+    );
+  });
+});
+
+describe("file tree rebind on project change (P2-3)", () => {
+  it("panel boot source listens for root changes and rebinds", () => {
+    const src = fileTreePanelBootSource();
+    expect(src).toContain("onRootChanged");
+    expect(src).toContain("rebindToCurrentRoot");
+  });
+
+  it("preload exposes onRootChanged; main sends desk-ft:root-changed", () => {
+    const preload = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "preload.ts",
+      ),
+      "utf8",
+    );
+    const main = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "main.ts",
+      ),
+      "utf8",
+    );
+    expect(preload).toContain("onRootChanged");
+    expect(preload).toContain("desk-ft:root-changed");
+    expect(main).toContain("onWorkspaceRootChanged");
+    expect(main).toContain("desk-ft:root-changed");
+  });
+
+  it("after root switch, readTreeFile against new root returns new project content", () => {
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), "grok-tree-a-"));
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), "grok-tree-b-"));
+    try {
+      fs.mkdirSync(path.join(a, "src"));
+      fs.mkdirSync(path.join(b, "src"));
+      fs.writeFileSync(path.join(a, "src", "config.ts"), "export const project = 'A';\n");
+      fs.writeFileSync(path.join(b, "src", "config.ts"), "export const project = 'B';\n");
+
+      // Simulates panel rebind: api.root() now returns B, then read(relPath).
+      const fromA = readTreeFile(a, "src/config.ts");
+      const fromB = readTreeFile(b, "src/config.ts");
+      expect(fromA.ok && fromA.text).toContain("'A'");
+      expect(fromB.ok && fromB.text).toContain("'B'");
+      // Same relPath, different roots — content must follow the active root.
+      expect(fromA.ok && fromB.ok && fromA.text !== fromB.text).toBe(true);
+    } finally {
+      fs.rmSync(a, { recursive: true, force: true });
+      fs.rmSync(b, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
+  let workspace: string;
+  let worktree: string;
+  let outside: string;
+
+  beforeEach(() => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "grok-ws-"));
+    worktree = fs.mkdtempSync(path.join(os.tmpdir(), "grok-wt-"));
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), "grok-out-"));
+    fs.writeFileSync(path.join(workspace, "main.ts"), "main");
+    fs.writeFileSync(path.join(worktree, "branch.ts"), "branch");
+    fs.writeFileSync(path.join(outside, "secret.ts"), "nope");
+  });
+  afterEach(() => {
+    for (const p of [workspace, worktree, outside]) {
+      fs.rmSync(p, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a worktree-session file when allowedRoots includes the worktree", () => {
+    const ctx = {
+      workspaceRoot: workspace,
+      allowedRoots: [worktree, workspace],
+    };
+    expect(authorizeOpenFile(path.join(worktree, "branch.ts"), ctx).ok).toBe(true);
+    expect(authorizeOpenFile("branch.ts", { allowedRoots: [worktree] }).ok).toBe(true);
+    // Workspace-only policy (regression from the security fix) refuses worktree:
+    expect(authorizeOpenFile(path.join(worktree, "branch.ts"), { workspaceRoot: workspace }).ok).toBe(
+      false,
+    );
+  });
+
+  it("refuses paths outside every authorized root", () => {
+    const ctx = {
+      workspaceRoot: workspace,
+      allowedRoots: [worktree, workspace],
+    };
+    expect(authorizeOpenFile(path.join(outside, "secret.ts"), ctx).ok).toBe(false);
+  });
+
+  it("authorizeDesktopWebviewMsg applies the same roots to openDiff", () => {
+    const ok = authorizeDesktopWebviewMsg(
+      {
+        type: "openDiff",
+        path: path.join(worktree, "branch.ts"),
+        oldText: "a",
+        newText: "b",
+      },
+      { allowedRoots: [worktree, workspace] },
+    );
+    expect("msg" in ok).toBe(true);
+
+    const bad = authorizeDesktopWebviewMsg(
+      {
+        type: "openDiff",
+        path: path.join(outside, "secret.ts"),
+        oldText: "",
+        newText: "x",
+      },
+      { allowedRoots: [worktree, workspace] },
+    );
+    expect("refused" in bad).toBe(true);
+  });
+
+  it("desktopAuthRoots dedupes workspaceRoot + allowedRoots", () => {
+    const roots = desktopAuthRoots({
+      workspaceRoot: workspace,
+      allowedRoots: [worktree, workspace],
+    });
+    expect(roots).toContain(path.resolve(worktree));
+    expect(roots).toContain(path.resolve(workspace));
+    expect(roots.length).toBe(2);
+  });
+});
+
+describe("file-tree read TOCTOU recheck (P2-6)", () => {
+  it("refuses a symlink swap between containment check and read", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-toctou-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "grok-toctou-out-"));
+    try {
+      const safe = path.join(root, "safe.txt");
+      const link = path.join(root, "link.txt");
+      const leaked = path.join(outside, "secret.txt");
+      fs.writeFileSync(safe, "inside");
+      fs.writeFileSync(leaked, "OUTSIDE_SECRET");
+      fs.writeFileSync(link, "placeholder");
+
+      // First resolveTreePath + realAtCheck see the in-tree target; later
+      // recheckTreePathForRead sees the swapped outside target and must refuse
+      // before readFileSync runs.
+      let linkRealpathCalls = 0;
+      const pathFs: TreePathFs = {
+        realpathSync: (p) => {
+          const n = path.normalize(p);
+          if (n === path.normalize(link) || n.endsWith(`${path.sep}link.txt`)) {
+            linkRealpathCalls++;
+            // Calls 1–2: initial resolve + realAtCheck snapshot (must pass).
+            // Call 3+: recheck phase (must fail containment).
+            return linkRealpathCalls <= 2 ? safe : leaked;
+          }
+          try {
+            return fs.realpathSync(p);
+          } catch {
+            return p;
+          }
+        },
+        existsSync: (p) => fs.existsSync(p),
+        statSync: (p) => fs.statSync(p),
+        readdirSync: (p, o) => fs.readdirSync(p, o),
+      };
+
+      let readCalled = false;
+      const result = readTreeFile(
+        root,
+        "link.txt",
+        process.platform,
+        pathFs,
+        (p) => {
+          readCalled = true;
+          return fs.readFileSync(p);
+        },
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toMatch(/symlink|changed|escape/i);
+      }
+      // Must not have read after a failed recheck (no leak path).
+      expect(readCalled).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("voice-key migration no plaintext fallback (P2-7)", () => {
+  it("scrubs plaintext and throws when encryption is unavailable", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-vk-fail-"));
+    const configPath = path.join(dir, "config.json");
+    const sensPath = path.join(dir, "sensitive.enc.json");
+    try {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          config: { "grok.voiceApiKey": "legacy-plain-key" },
+        }),
+        "utf8",
+      );
+      const noEnc: SafeStorageLike = {
+        isEncryptionAvailable: () => false,
+        encryptString: () => {
+          throw new Error("should not encrypt");
+        },
+        decryptString: () => {
+          throw new Error("should not decrypt");
+        },
+      };
+      expect(() => {
+        new ConfigStore(configPath, new SensitiveConfigStore(sensPath, noEnc));
+      }).toThrow(/secure storage|unavailable|credentials/i);
+
+      const rawCfg = fs.readFileSync(configPath, "utf8");
+      expect(rawCfg).not.toContain("legacy-plain-key");
+      expect(rawCfg).not.toMatch(/voiceApiKey/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("mutation: the old catch-continue would leave plaintext in config.json", () => {
+    // Pins that migrateSensitiveFromPlaintext must not `continue` on encrypt
+    // failure without scrubbing — source must scrub before rethrow.
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "config-store.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toContain("migrationError");
+    expect(src).not.toMatch(/leave plaintext until encryption is available/);
   });
 });

@@ -961,17 +961,38 @@ export function fileTreePanelBootSource(): string {
     }
   }
 
-  async function boot() {
+  async function rebindToCurrentRoot() {
+    // Drop any open preview so we do not show B's file under A's breadcrumb.
+    showTree();
+    body.textContent = "";
     try {
       const rootInfo = await api.root();
       if (rootInfo && rootInfo.name) {
         rootLabel = rootInfo.name;
         title.textContent = rootInfo.name;
         title.title = rootInfo.root || rootInfo.name;
+      } else if (rootInfo && rootInfo.root) {
+        rootLabel = rootInfo.root;
+        title.textContent = rootInfo.root;
+        title.title = rootInfo.root;
       }
     } catch (_) { /* */ }
     await fillDir(body, "");
     applyFilter(body);
+  }
+
+  async function boot() {
+    await rebindToCurrentRoot();
+  }
+
+  // Project switch changes api.root() but the tree was built once — rebind so
+  // visible rows and subsequent read/open stay on the same project.
+  if (typeof api.onRootChanged === "function") {
+    try {
+      api.onRootChanged(() => {
+        void rebindToCurrentRoot();
+      });
+    } catch (_) { /* older host without the channel */ }
   }
 
   void boot();

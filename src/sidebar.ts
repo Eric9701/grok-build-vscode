@@ -115,6 +115,7 @@ import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, sh
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { isPrimerText } from "./grok-primer";
+import { AsyncSerialQueue } from "./async-serial";
 import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
@@ -441,6 +442,13 @@ export class GrokSidebar {
   private cliPath?: string;
   /** History browsing scope. Deliberately independent of the live session cwd. */
   private selectedRepoCwd?: string;
+  /**
+   * Serializes local project-folder switches (desktop multi-folder). Renderer
+   * `repoSwitchPending` is not a trust boundary — two concurrent `selectRepo`
+   * messages must not interleave host-side openSession against a mutated
+   * focused session (cross-repo bleed).
+   */
+  private readonly localWorkspaceSwitchQueue = new AsyncSerialQueue();
   // The original update trigger: at most once per activation, and only after an
   // extension-version change (never on the fresh-install baseline).
   private cliUpdateChecked = false;
@@ -2387,23 +2395,34 @@ See design doc for the full state machine diagram.`;
    * Desktop multi-folder: switch the host's active folder and open that
    * project's newest conversation (or start a blank one). Reuses the session
    * pool + openSession path — no parallel multi-cwd machinery.
+   *
+   * Serialized on {@link localWorkspaceSwitchQueue} so concurrent `selectRepo`
+   * cannot interleave. The target cwd is captured once for the whole action —
+   * never re-read from a shared active-root field after an await.
    */
   private async switchLocalWorkspaceFolder(cwd: string): Promise<void> {
+    const target = cwd;
+    return this.localWorkspaceSwitchQueue.run(() =>
+      this.switchLocalWorkspaceFolderExclusive(target),
+    );
+  }
+
+  private async switchLocalWorkspaceFolderExclusive(target: string): Promise<void> {
     const prevRoot = this.workspaceRoot();
-    if (!pathsEqual(cwd, prevRoot)) {
-      this.host.setActiveWorkspaceFolder(cwd);
+    if (!pathsEqual(target, prevRoot)) {
+      this.host.setActiveWorkspaceFolder(target);
     }
-    this.selectedRepoCwd = cwd;
+    this.selectedRepoCwd = target;
     this.postRepoCatalog();
 
     // Already focused on this folder's live conversation — just refresh chrome.
-    if (pathsEqual(this.sessionCwd(this.focused), cwd) && this.focused.client) {
+    if (pathsEqual(this.sessionCwd(this.focused), target) && this.focused.client) {
       this.postSessionsList();
       return;
     }
 
     const history = this.buildSessionsList(
-      cwd,
+      target,
       { limit: Number.MAX_SAFE_INTEGER },
       undefined,
     );
@@ -2420,12 +2439,39 @@ See design doc for the full state machine diagram.`;
       : undefined;
 
     if (newest) {
+      // newest.cwd is the conversation's own checkout (may be a worktree); it
+      // was resolved against `target` above, not a shared field that could
+      // change mid-flight.
       await this.openSession(newest.id, newest.cwd);
     } else {
       await this.newFocusedSession("local");
     }
     this.postRepoCatalog();
     this.postSessionsList();
+  }
+
+  /**
+   * Roots the desktop trust boundary may open files under for the focused
+   * local session: session cwd (worktree when isolated), worktree source git
+   * root, and the active workspace folder. Used by ElectronWebview policy —
+   * not the generic message schema gate.
+   */
+  desktopAuthRoots(session: Session = this.focused): string[] {
+    const roots: string[] = [];
+    const seen = new Set<string>();
+    const add = (p: string | undefined) => {
+      if (!p || typeof p !== "string") return;
+      const abs = path.resolve(p);
+      const key = process.platform === "win32" ? abs.toLowerCase() : abs;
+      if (seen.has(key)) return;
+      seen.add(key);
+      roots.push(abs);
+    };
+    add(this.sessionCwd(session));
+    if (session.worktree?.path) add(session.worktree.path);
+    if (session.worktree?.sourceGitRoot) add(session.worktree.sourceGitRoot);
+    add(this.workspaceRoot());
+    return roots;
   }
 
   /**
@@ -4268,7 +4314,12 @@ See design doc for the full state machine diagram.`;
         await this.exportExpr(msg, session);
         break;
       case "dropFile":
-        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, attachmentOwner));
+        // Desktop rewrites a host-minted handle to path before this runs; VS Code
+        // still posts a path from drag-drop. Missing path is a no-op (forged
+        // handle already refused at the Electron gate).
+        if (typeof msg.path === "string" && msg.path.length > 0) {
+          await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, attachmentOwner));
+        }
         break;
       case "pasteImage":
         await this.trackAttach(this.addPastedImage(
@@ -6225,7 +6276,24 @@ See design doc for the full state machine diagram.`;
    */
   private readFileForDiff(filePath: string): string | undefined {
     try {
-      const abs = path.isAbsolute(filePath) ? filePath : path.join(this.sessionCwd(), filePath);
+      const session = this.focused;
+      const abs = path.isAbsolute(filePath)
+        ? filePath
+        : path.join(this.sessionCwd(session), filePath);
+      // Desktop already refuses out-of-root openDiff at the message gate; this
+      // is defense-in-depth for any host that still lands here with a path.
+      if (this.host.canSwitchWorkspaceFolder) {
+        const roots = this.desktopAuthRoots(session);
+        const inside = roots.some((root) => {
+          try {
+            const rel = path.relative(root, abs);
+            return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+          } catch {
+            return false;
+          }
+        });
+        if (!inside) return undefined;
+      }
       const stat = fs.statSync(abs);
       if (!stat.isFile() || stat.size > MAX_DIFF_EXPAND_BYTES) return undefined;
       return fs.readFileSync(abs, "utf8");

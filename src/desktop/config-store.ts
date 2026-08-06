@@ -203,7 +203,11 @@ export class ConfigStore {
 
   private load(): void {
     try {
-      if (!fs.existsSync(this.filePath)) return;
+      if (!fs.existsSync(this.filePath)) {
+        // Still run migration (no-op) when a sensitive store was injected.
+        this.migrateSensitiveFromPlaintext();
+        return;
+      }
       const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<DesktopAppPrefs>;
       const rootsRaw = Array.isArray(raw.workspaceRoots)
         ? raw.workspaceRoots.filter((r): r is string => typeof r === "string")
@@ -235,19 +239,27 @@ export class ConfigStore {
         workspaceRoots: listed.length ? listed : undefined,
         config: raw.config && typeof raw.config === "object" ? { ...raw.config } : {},
       };
-      this.migrateSensitiveFromPlaintext();
     } catch {
       this.prefs = { config: {} };
     }
+    // Migration must not share the parse catch — a failed encrypt should scrub
+    // the credential and rethrow, not wipe the whole prefs object.
+    this.migrateSensitiveFromPlaintext();
   }
 
   /**
    * One-shot: if a sensitive key still sits in plaintext config (older builds),
    * move it into the encrypted bag and scrub config.json.
+   *
+   * When encryption fails there is **no** plaintext fallback (same guarantee as
+   * safe-secrets): the key is scrubbed from config.json so it is not left at
+   * rest indefinitely, and the error is rethrown so startup can fail visibly
+   * (user re-enters the key once OS storage works).
    */
   private migrateSensitiveFromPlaintext(): void {
     if (!this.sensitive) return;
     let dirty = false;
+    let migrationError: unknown;
     for (const key of SENSITIVE_CONFIG_KEYS) {
       if (!Object.prototype.hasOwnProperty.call(this.prefs.config, key)) continue;
       const plain = this.prefs.config[key];
@@ -257,8 +269,11 @@ export class ConfigStore {
           if (this.sensitive.get(key) === undefined) {
             this.sensitive.set(key, plain);
           }
-        } catch {
-          /* leave plaintext until encryption is available */
+        } catch (e) {
+          // Scrub plaintext either way — never leave credentials in config.json.
+          delete this.prefs.config[key];
+          dirty = true;
+          migrationError = e;
           continue;
         }
       }
@@ -266,6 +281,7 @@ export class ConfigStore {
       dirty = true;
     }
     if (dirty) this.save();
+    if (migrationError) throw migrationError;
   }
 
   private save(): void {
