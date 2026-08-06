@@ -82,6 +82,7 @@ describe("source gates — capability at the ownership boundary", () => {
     expect(src).toMatch(/canRelocateView:\s*true/);
     expect(src).toMatch(/canShowOutput:\s*true/);
     expect(src).toMatch(/canSwitchWorkspaceFolder:\s*false/);
+    expect(src).toMatch(/canArchiveRepos:\s*true/);
   });
 
   it("Electron host declares rehydrate capability true and :desktop suffix", () => {
@@ -91,6 +92,7 @@ describe("source gates — capability at the ownership boundary", () => {
     expect(src).toMatch(/canRelocateView:\s*false/);
     expect(src).toMatch(/canShowOutput:\s*false/);
     expect(src).toMatch(/canSwitchWorkspaceFolder:\s*true/);
+    expect(src).toMatch(/canArchiveRepos:\s*false/);
   });
 
   it("link flow formats installId through the host suffix helper", () => {

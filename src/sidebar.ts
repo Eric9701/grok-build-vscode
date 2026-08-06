@@ -117,6 +117,7 @@ import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { isPrimerText } from "./grok-primer";
 import { AsyncSerialQueue } from "./async-serial";
 import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
+import { withoutArchiveFields } from "./project-discovery";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
@@ -1782,7 +1783,12 @@ See design doc for the full state machine diagram.`;
 
   /** Workspace folder root (the main checkout for worktree ops). */
   private workspaceRoot(): string {
-    return this.host.workspaceRoot() ?? process.cwd();
+    const root = this.host.workspaceRoot();
+    if (root) return root;
+    // Desktop with an empty open set has no root — do not fall back to the
+    // process cwd (that would create sessions under the install directory).
+    if (this.host.canSwitchWorkspaceFolder) return "";
+    return process.cwd();
   }
 
   /** Effective cwd for a session (worktree path or workspace root). */
@@ -2174,7 +2180,11 @@ See design doc for the full state machine diagram.`;
       fs: defaultFs,
       grokHome: resolveGrokHome(process.env),
       pins,
-      archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
+      // Desktop ignores shared repo-archives.json (canArchiveRepos false);
+      // VS Code still applies stored choices.
+      archives: this.host.canArchiveRepos
+        ? this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {})
+        : undefined,
       tmpDir: os.tmpdir(),
       // Open folders remain selectable before Grok creates a catalog row (and
       // bypass managed-worktree exclusion when the user opened a worktree).
@@ -2185,36 +2195,51 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Local multi-folder desktop: the rail lists only open project folders, not
-   * every historical checkout under ~/.grok. Remote clients still get the full
-   * discoverRepos catalog.
+   * Project rows for the local rail (and, on desktop, for remotes attached to
+   * this host). Desktop multi-folder: only open project folders. VS Code: the
+   * full discoverRepos catalog. Archive fields are stripped when the host
+   * cannot archive ({@link Host.canArchiveRepos}) so the client hides Project
+   * Archive without an `IS_DESKTOP` flag.
    */
   private localRepoCatalogEntries(): RepoListEntry[] {
     const full = this.repoCatalog();
-    if (!this.host.canSwitchWorkspaceFolder) return full;
-    const open = this.openWorkspaceFolders();
-    if (!open.length) return full;
-    const byKey = new Map(full.map((r) => [normalizeRepoPath(r.cwd), r]));
-    const out: RepoListEntry[] = [];
-    for (const cwd of open) {
-      const key = normalizeRepoPath(cwd);
-      const hit = byKey.get(key);
-      if (hit) {
-        out.push(hit);
-        continue;
+    let entries: RepoListEntry[];
+    if (!this.host.canSwitchWorkspaceFolder) {
+      entries = full;
+    } else {
+      const open = this.openWorkspaceFolders();
+      // Empty open set → empty rail (user may Add Project Folder). Never fall
+      // back to the historical catalog — that reopened the trust hole.
+      if (!open.length) {
+        entries = [];
+      } else {
+        const byKey = new Map(full.map((r) => [normalizeRepoPath(r.cwd), r]));
+        entries = [];
+        for (const cwd of open) {
+          const key = normalizeRepoPath(cwd);
+          const hit = byKey.get(key);
+          if (hit) {
+            entries.push(hit);
+            continue;
+          }
+          // Trusted open folder with no catalog row yet — still show it.
+          entries.push({
+            cwd,
+            label: path.basename(cwd) || cwd,
+            available: true,
+            pinned: false,
+            updatedAt: 0,
+          });
+        }
       }
-      // Trusted open folder with no catalog row yet — still show it.
-      out.push({
-        cwd,
-        label: path.basename(cwd) || cwd,
-        available: true,
-        pinned: false,
-        updatedAt: 0,
-        archived: false,
-        archivedAt: 0,
-      });
     }
-    return out;
+    return this.applyArchiveCapability(entries);
+  }
+
+  /** Drop archive fields when the host does not support archiving. */
+  private applyArchiveCapability(entries: RepoListEntry[]): RepoListEntry[] {
+    if (this.host.canArchiveRepos) return entries;
+    return entries.map((e) => withoutArchiveFields(e) as RepoListEntry);
   }
 
   private selectedHistoryCwd(): string {
@@ -2256,15 +2281,16 @@ See design doc for the full state machine diagram.`;
     return cwds;
   }
 
-  /** Every cwd a remote client may legitimately name: the discovered repos plus
-   *  their worktree catalogs (a worktree session is listed, so it must open).
-   *  Built on demand — `repoCatalog()` walks `<grokHome>/sessions` on disk, and
-   *  the remote gate consults this for `mentionQuery`-rate traffic. */
+  /**
+   * Every cwd a remote client may legitimately name. Follows the same catalog
+   * the host ships on the wire: open folders (+ their worktrees) on desktop,
+   * full historical discoverRepos on VS Code. Never widens past that set.
+   */
   private remoteTargetableCwd(cwd: string): boolean {
     const wanted = normalizeRepoPath(cwd);
     if (!wanted) return false;
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    for (const repo of this.repoCatalog()) {
+    for (const repo of this.localRepoCatalogEntries()) {
       for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) {
         if (normalizeRepoPath(c) === wanted) return true;
       }
@@ -2273,24 +2299,26 @@ See design doc for the full state machine diagram.`;
   }
 
   private postRepoCatalog(): void {
-    const fullEntries = this.repoCatalog();
-    // Local: multi-folder desktop emits open folders only (the rail's job);
-    // VS Code still receives the full catalog for clear-all naming (chip/rail
-    // stay off because getHtml has no `#projects-rail`).
+    // Both local and remote attached clients see the host's catalog: curated
+    // open folders on desktop, full discovery on VS Code. Archive fields only
+    // when canArchiveRepos (already applied inside localRepoCatalogEntries).
     const localEntries = this.localRepoCatalogEntries();
     const activeCwd = this.sessionCwd(this.focused);
     const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
-    const selected = localEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey)
-      ?? fullEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
+    const selected = localEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
     // The selection MUST name a row in the catalog. `clearAllSessions` and
     // `selectRepo` both resolve through it and bail when the lookup misses, so
     // a selection that isn't there turns a confirmed "Delete All" into a silent
-    // no-op. Falling back to the workspace root is always valid — it's a
-    // trusted cwd, so it is always a row.
+    // no-op. Falling back to the workspace root is always valid when a root is
+    // open — it's a trusted cwd. Empty desktop rail: clear the selection.
     const inLocal = (cwd: string) =>
       !!cwd && localEntries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
     if (selected && inLocal(selected.cwd)) this.selectedRepoCwd = selected.cwd;
-    else this.selectedRepoCwd = inLocal(activeCwd) ? activeCwd : this.workspaceRoot();
+    else if (inLocal(activeCwd)) this.selectedRepoCwd = activeCwd;
+    else {
+      const root = this.host.workspaceRoot();
+      this.selectedRepoCwd = root && inLocal(root) ? root : (localEntries[0]?.cwd ?? "");
+    }
     // Same split as the history list: remote clients see (and drive) the global
     // selection, the VS Code webview always reads its own workspace. The chip is
     // hidden locally, but this frame still feeds Clear-all's target and the name
@@ -2299,7 +2327,7 @@ See design doc for the full state machine diagram.`;
     // Desktop multi-folder: selectedCwd tracks the open folder the user chose
     // (may equal active session cwd once switch settles).
     const localSelected = this.host.canSwitchWorkspaceFolder
-      ? (this.selectedRepoCwd || this.workspaceRoot())
+      ? (this.selectedRepoCwd || this.host.workspaceRoot() || "")
       : this.workspaceRoot();
     this.postLocal({
       type: "repos",
@@ -2312,7 +2340,7 @@ See design doc for the full state machine diagram.`;
       const remoteActive = this.remoteClients.active(clientId);
       this.sendRemoteClient(clientId, {
         type: "repos",
-        entries: fullEntries,
+        entries: localEntries,
         selectedCwd: cwd,
         activeCwd: remoteActive ? this.sessionCwd(remoteActive) : cwd,
       });
@@ -2324,7 +2352,8 @@ See design doc for the full state machine diagram.`;
     const active = this.remoteClients.active(clientId);
     this.sendRemoteClient(clientId, {
       type: "repos",
-      entries: this.repoCatalog(),
+      // Same catalog as local — remote follows the host's open/discovered set.
+      entries: this.localRepoCatalogEntries(),
       selectedCwd: cwd,
       activeCwd: active ? this.sessionCwd(active) : cwd,
     });
@@ -2346,17 +2375,16 @@ See design doc for the full state machine diagram.`;
    *  making it the client's selection. `cwd` is matched against the catalog the
    *  client was already sent — an unknown or unavailable path is dropped in
    *  silence rather than answered, so a remote can never turn this into a probe
-   *  for which arbitrary paths exist on the host. Local desk uses the open-
-   *  folder set; remote uses the full historical catalog. */
+   *  for which arbitrary paths exist on the host. Both local and remote use
+   *  {@link localRepoCatalogEntries} (open folders on desktop, full catalog on
+   *  VS Code) so the preview scope cannot exceed the trust set. */
   private buildRepoSessionsPreview(
     cwd: string,
     limit: number | undefined,
     activeId: string | null | undefined,
-    scope: "local" | "remote" = "local",
+    _scope: "local" | "remote" = "local",
   ): HostMsg | undefined {
-    const hit = scope === "remote"
-      ? this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))
-      : this.resolveLocalRepoTarget(cwd);
+    const hit = this.resolveLocalRepoTarget(cwd);
     if (!hit || !hit.available) return undefined;
     // Clamp: the rail wants a handful, and an unbounded limit would make every
     // repo row a full history read.
@@ -2544,26 +2572,31 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Public: close a project folder from the desktop File menu. Refuses the last
-   * remaining folder. Switches away first when closing the active one.
+   * Public: close a project folder from the desktop File menu. Closing the last
+   * remaining folder leaves an empty rail (discovery will not re-seed). Switches
+   * away first when closing the active one among several.
    */
   async removeProjectFolder(cwd?: string): Promise<void> {
     if (!this.host.canSwitchWorkspaceFolder) return;
-    const target = cwd || this.workspaceRoot();
+    const target = cwd || this.host.workspaceRoot();
     if (!target) return;
-    const roots = this.openWorkspaceFolders();
-    if (roots.length <= 1) {
-      void this.host.showInformationMessage("At least one project folder must stay open.");
-      return;
-    }
-    const wasActive = pathsEqual(target, this.workspaceRoot());
+    const activeRoot = this.host.workspaceRoot();
+    const wasActive = !!activeRoot && pathsEqual(target, activeRoot);
     if (!this.host.removeWorkspaceFolder(target)) {
       void this.host.showWarningMessage(`Could not close folder:\n${target}`);
       return;
     }
-    if (wasActive) {
-      const next = this.workspaceRoot();
-      if (next) await this.switchLocalWorkspaceFolder(next);
+    const next = this.host.workspaceRoot();
+    if (wasActive && next) {
+      await this.switchLocalWorkspaceFolder(next);
+    } else if (!next) {
+      // Empty open set — park any live session and show an empty rail.
+      this.parkFocused();
+      this.focused = this.newLocalSession();
+      this.selectedRepoCwd = "";
+      this.postRepoCatalog();
+      this.postSessionsList();
+      this.emit(this.focused, { type: "clearMessages" });
     } else {
       this.postRepoCatalog();
       this.postSessionsList();
@@ -2571,7 +2604,8 @@ See design doc for the full state machine diagram.`;
   }
 
   private async selectRemoteRepo(clientId: string, cwd: string): Promise<void> {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    // Same catalog the client was sent (open folders on desktop, full on VS Code).
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit || !hit.available) return;
     if (this.remoteVoice.has(clientId)) void this.handleRemoteVoiceStop(clientId, true);
     this.parkRemoteSession(clientId);
@@ -2607,7 +2641,7 @@ See design doc for the full state machine diagram.`;
   }
 
   private async toggleRepoPin(cwd: string, pinned: boolean): Promise<void> {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) return;
     const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
     const key = normalizeRepoPath(hit.cwd);
@@ -2618,12 +2652,15 @@ See design doc for the full state machine diagram.`;
     this.postRepoCatalog();
   }
 
-  /** Record where a project belongs in the remote rail. Both answers are stored,
+  /** Record where a project belongs in the rail. Both answers are stored,
    *  including "not archived" — that one exists to hold a long-idle project in
    *  view against the rail's own age rule, so forgetting it is not the same as
-   *  storing it (see RepoArchiveChoice). Nothing here changes what VS Code
-   *  shows; the catalog reports the choice and the browser client acts on it. */
+   *  storing it (see RepoArchiveChoice). No-op when the host cannot archive
+   *  (desktop curated open/close) — the shared repo-archives.json file is
+   *  simply ignored, so a project archived in VS Code and then opened on the
+   *  desktop still shows. */
   private async setRepoArchived(cwd: string, archived: boolean): Promise<void> {
+    if (!this.host.canArchiveRepos) return;
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) return;
     const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
@@ -3323,6 +3360,18 @@ See design doc for the full state machine diagram.`;
   }
 
   private async startSession(resumeId?: string, target: Session = this.focused): Promise<AcpClient | undefined> {
+    // Desktop with no open folder: empty rail is valid — do not spawn grok
+    // against process.cwd(). Adding a folder starts a session via select/switch.
+    if (
+      this.host.canSwitchWorkspaceFolder &&
+      !this.openWorkspaceFolders().length &&
+      !resumeId &&
+      !target.cwd
+    ) {
+      this.postRepoCatalog();
+      this.postSessionsList();
+      return undefined;
+    }
     // The session this start (re)builds. Today always the focused one (pool-of-1);
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
@@ -5080,7 +5129,8 @@ See design doc for the full state machine diagram.`;
    *  and then act, so the selection only ever added a step to the same reach. */
   private remoteRepoScope(clientId: string, requestedCwd?: string): string | undefined {
     if (requestedCwd) {
-      const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, requestedCwd));
+      // Host catalog the client was told about (open folders on desktop).
+      const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, requestedCwd));
       // The host's own spelling, never the client's.
       if (hit?.available) return hit.cwd;
       return undefined;
@@ -5093,9 +5143,10 @@ See design doc for the full state machine diagram.`;
    *  as its cwd, because that is where its transcript lives, and a worktree is
    *  deliberately not a catalog row (see sessionCwdsForRepo) — so scoping by
    *  catalog alone refused every action on one. The catalog is still the whole
-   *  boundary: the parent has to be a repo this host discovered for itself. */
+   *  boundary: the parent has to be a repo this host exposes (open on desktop,
+   *  discovered on VS Code). */
   private repoOwningSessionCwd(cwd: string, overrides: SessionMetaOverrides): string | undefined {
-    return this.repoCatalog().find(
+    return this.localRepoCatalogEntries().find(
       (r) => r.available && this.sessionCwdsForRepo(r.cwd, overrides).some((c) => pathsEqual(c, cwd)),
     )?.cwd;
   }
@@ -5388,7 +5439,7 @@ See design doc for the full state machine diagram.`;
       this.host.appendLine("[remote] dropped clearAllSessions (cwd is not a known repository)");
       return;
     }
-    const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, selectedCwd));
+    const repo = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, selectedCwd));
     if (!repo) return;
     const cwd = repo.cwd;
     const grokHome = resolveGrokHome(process.env);
@@ -9375,7 +9426,7 @@ See design doc for the full state machine diagram.`;
   private buildRemoteSnapshot(clientId: string): HostMsg[] {
     const cwd = this.remoteClients.cwd(clientId);
     const session = this.remoteSessionFor(clientId);
-    const entries = this.repoCatalog();
+    const entries = this.localRepoCatalogEntries();
     const initial = { ...this.buildInitialStateMsg(), cwd };
     const sessionCwd = this.sessionCwd(session);
     const phrase = this.voiceSetting(sessionCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);

@@ -684,6 +684,15 @@ export interface Host {
    * multi-folder only; **false for VS Code** (window already is the repo).
    */
   readonly canSwitchWorkspaceFolder: boolean;
+  /**
+   * When true, project rows carry archive fields and the rail may show Project
+   * Archive + per-project archive actions. Meaningful only where the list is
+   * discovered and cannot be closed (VS Code). **False for desktop** — the
+   * open set is curated via Add/Close Project Folder; archive would duplicate
+   * that. Capability, not host-name: a remote client follows whatever host it
+   * is attached to (field presence on `repos` rows is the wire signal).
+   */
+  readonly canArchiveRepos: boolean;
 }
 
 /**

@@ -1103,6 +1103,43 @@ describe("projects rail", () => {
       expect(css).toMatch(/\.rail-head-btn\s*\{[^}]*text-transform:\s*uppercase/s);
     });
 
+    it("omits Project Archive and archive actions when the host omits archive fields (desktop)", () => {
+      // Capability = presence of `archived` on rows. Desktop strips the fields;
+      // age rule and Archive menu must not run.
+      const day = 24 * 60 * 60 * 1000;
+      const t = (days: number) => Date.now() - days * day;
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: t(0) },
+        { cwd: "/work/stale", label: "stale", available: true, pinned: false, updatedAt: t(80) },
+        { cwd: "/work/ancient", label: "ancient", available: true, pinned: false, updatedAt: t(400) },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", t(0))]));
+      for (const r of catalog.slice(1)) {
+        dispatch(h.window, {
+          type: "repoSessions",
+          cwd: r.cwd,
+          entries: [row(`${r.label}1`, r.cwd, `${r.label} one`, r.updatedAt)],
+          dots: {},
+          total: 1,
+        });
+      }
+      const { doc, window } = h;
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      expect([...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent)).not.toContain(
+        "Project Archive",
+      );
+      // All three stay under Projects (age rule disabled).
+      const projectLabels = [
+        ...(doc.querySelector(".rail-list.rail-projects")?.querySelectorAll(".rail-repo-label") ?? []),
+      ].map((e) => e.textContent).sort();
+      expect(projectLabels).toEqual(["ancient", "home", "stale"]);
+      const menu = openMenu(window, doc.querySelector(".rail-repo-head") as HTMLElement);
+      const labels = [...menu.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
+      expect(labels.some((l) => /archive/i.test(l))).toBe(false);
+    });
+
     it("omits Project Archive when no project is archived (deliberate, not a bug)", () => {
       // All projects active — no empty archive band.
       const { doc } = boot();

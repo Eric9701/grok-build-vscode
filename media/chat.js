@@ -3242,6 +3242,12 @@
    *  outranks it, and there is no flag left behind to go stale. */
   function railSections() {
     const ordered = railRepos();
+    // Host without archive capability (desktop curated open/close): no Project
+    // Archive group and no age rule. Presence of `archived` on rows is the
+    // signal — see railArchiveSupported.
+    if (!railArchiveSupported()) {
+      return { active: ordered, archived: [] };
+    }
     const now = Date.now();
     // The floor, and it is a REQUIREMENT rather than a rounding error: however
     // quiet things have been, the newest few projects stay in view. Coming back

@@ -157,7 +157,7 @@ describe("desktop ConfigStore", () => {
     }
   });
 
-  it("multi-folder: add / switch / refuse last remove / reload", () => {
+  it("multi-folder: add / switch / allow last remove / reload", () => {
     const a = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-a-"));
     const b = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-b-"));
     try {
@@ -172,14 +172,14 @@ describe("desktop ConfigStore", () => {
       expect(store.getWorkspaceRoot()).toBe(path.resolve(b));
       expect(store.setActiveWorkspaceRoot(a)).toBe(true);
       expect(store.getWorkspaceRoot()).toBe(path.resolve(a));
-      // Last remaining folder cannot be closed.
+      // Closing the last folder is allowed — empty open set is user-owned.
       expect(store.removeWorkspaceRoot(b)).toBe(true);
-      expect(store.removeWorkspaceRoot(a)).toBe(false);
-      expect(store.getWorkspaceRoots()).toEqual([path.resolve(a)]);
+      expect(store.removeWorkspaceRoot(a)).toBe(true);
+      expect(store.getWorkspaceRoots()).toEqual([]);
+      expect(store.getWorkspaceRoot()).toBeUndefined();
 
       const reloaded = new ConfigStore(file);
-      expect(reloaded.getWorkspaceRoots()).toEqual([path.resolve(a)]);
-      expect(reloaded.getWorkspaceRoot()).toBe(path.resolve(a));
+      expect(reloaded.getWorkspaceRoots()).toEqual([]);
     } finally {
       fs.rmSync(a, { recursive: true, force: true });
       fs.rmSync(b, { recursive: true, force: true });
@@ -2391,13 +2391,18 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     expect(selectBody).toContain("resolveLocalRepoTarget");
     expect(selectBody).not.toContain("this.repoCatalog()");
 
-    // Local listRepoSessions scope is "local"; remote stays full catalog.
+    // Both local and remote previews use resolveLocalRepoTarget (host catalog).
     expect(sidebar).toMatch(
       /buildRepoSessionsPreview\(\s*cwd,\s*limit,\s*this\.focused\.activeSessionId,\s*"local"/,
     );
     expect(sidebar).toMatch(
       /buildRepoSessionsPreview\(\s*cwd,\s*limit,\s*this\.remoteActiveSessionId\(clientId\),\s*"remote"/,
     );
+    const previewStart = sidebar.indexOf("private buildRepoSessionsPreview(");
+    const previewEnd = sidebar.indexOf("private sendRepoSessionsPreview(", previewStart);
+    const previewBody = sidebar.slice(previewStart, previewEnd);
+    expect(previewBody).toContain("resolveLocalRepoTarget");
+    expect(previewBody).not.toContain("this.repoCatalog()");
 
     // Rejected setActiveWorkspaceFolder aborts — no history open / session spawn.
     const switchStart = sidebar.indexOf("private async switchLocalWorkspaceFolderExclusive(");
@@ -2439,11 +2444,12 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
       "utf8",
     );
-    // localRepoCatalogEntries: when !canSwitchWorkspaceFolder, return full catalog.
+    // localRepoCatalogEntries: when !canSwitchWorkspaceFolder, use full catalog.
     const localCatStart = sidebar.indexOf("private localRepoCatalogEntries(");
     const localCatEnd = sidebar.indexOf("private selectedHistoryCwd(", localCatStart);
     const localCatBody = sidebar.slice(localCatStart, localCatEnd);
-    expect(localCatBody).toMatch(/if\s*\(\s*!this\.host\.canSwitchWorkspaceFolder\s*\)\s*return full/);
+    expect(localCatBody).toMatch(/if\s*\(\s*!this\.host\.canSwitchWorkspaceFolder\s*\)/);
+    expect(localCatBody).toContain("entries = full");
 
     // VS Code host never switches folders and reports success on setActive.
     const vscodeHost = fs.readFileSync(
@@ -2451,11 +2457,28 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
       "utf8",
     );
     expect(vscodeHost).toMatch(/canSwitchWorkspaceFolder:\s*false/);
+    expect(vscodeHost).toMatch(/canArchiveRepos:\s*true/);
     const setActive = vscodeHost.slice(
       vscodeHost.indexOf("setActiveWorkspaceFolder"),
       vscodeHost.indexOf("addWorkspaceFolder"),
     );
     expect(setActive).toContain("return true");
+
+    // Desktop: empty open set must NOT fall back to the historical catalog
+    // (that reopened closed repos into the trust set).
+    expect(localCatBody).toMatch(/if\s*\(\s*!open\.length\s*\)/);
+    // The empty branch assigns [] — not `full` (a full-catalog fallback reopens
+    // every discovered cwd into the rail / remote target set).
+    const emptyBranch = localCatBody.slice(
+      localCatBody.search(/if\s*\(\s*!open\.length\s*\)/),
+      localCatBody.search(/const byKey/),
+    );
+    expect(emptyBranch).toMatch(/entries\s*=\s*\[\s*\]/);
+    expect(emptyBranch).not.toMatch(/entries\s*=\s*full/);
+    // Archive fields stripped when canArchiveRepos is false.
+    expect(sidebar).toContain("applyArchiveCapability");
+    expect(sidebar).toContain("withoutArchiveFields");
+    expect(sidebar).toMatch(/if\s*\(\s*!this\.host\.canArchiveRepos\s*\)\s*return/);
   });
 
   it("desktopAuthRoots dedupes workspaceRoot + allowedRoots", () => {

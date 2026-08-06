@@ -16,6 +16,7 @@ import {
   type SaveDialogOptions,
 } from "electron";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import type {
@@ -39,6 +40,16 @@ import type {
   Uri,
 } from "../host";
 import { isFsPathInWorkspace } from "../host";
+import {
+  selectProjectsToSeed,
+  shouldSeedProjectDiscovery,
+} from "../project-discovery";
+import {
+  discoverRepos,
+  indexSessions,
+  resolveGrokHome,
+  type FsLike,
+} from "../sessions";
 import type { ConfigStore } from "./config-store";
 import { authorizeOpenUrl } from "./desktop-policy";
 import {
@@ -923,35 +934,106 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     canRelocateView: false,
     canShowOutput: false,
     canSwitchWorkspaceFolder: true,
+    canArchiveRepos: false,
   };
 }
 
-/** Ensure a workspace folder exists; prompt if missing. Returns absolute path or undefined if cancelled. */
-export async function ensureWorkspaceRoot(
+/**
+ * Host-side discovery: folders under ~/.grok that meet the 10-in-3-months bar.
+ * Pure selection + cheap indexSessions mtimes; does not open folders itself.
+ * Injectable `fs` / `grokHome` / `now` for tests.
+ */
+export function discoverSeedProjectPaths(opts?: {
+  fs?: FsLike;
+  grokHome?: string;
+  tmpDir?: string;
+  nowMs?: number;
+  log?: (msg: string) => void;
+}): string[] {
+  const nodeFs = opts?.fs ?? (fs as unknown as FsLike);
+  const grokHome = opts?.grokHome ?? resolveGrokHome(process.env);
+  const tmpDir = opts?.tmpDir ?? os.tmpdir();
+  const nowMs = opts?.nowMs ?? Date.now();
+  const discovered = discoverRepos({
+    fs: nodeFs,
+    grokHome,
+    pins: {},
+    tmpDir,
+    // No archives on the seed path — desktop never archives.
+    log: opts?.log,
+  });
+  const candidates = discovered.map((repo) => ({
+    cwd: repo.cwd,
+    sessionTimestampsMs: indexSessions({
+      fs: nodeFs,
+      grokHome,
+      cwd: repo.cwd,
+      log: opts?.log,
+    }).map((e) => e.mtimeMs),
+  }));
+  // discoverRepos sorts newest-first; keep that order so the active root is
+  // the most recently used qualifying project.
+  return selectProjectsToSeed(candidates, nowMs);
+}
+
+/**
+ * Establish the open-folder set before the sidebar starts.
+ *
+ * - `--workspace=` / forced path: open that folder (test / CLI launch).
+ * - Existing prefs: keep the user's open set.
+ * - Empty set on first seed: run host-side discovery — **no folder picker**.
+ * - Empty after seed completed: stay empty (user-owned).
+ *
+ * Returns the active root when one exists; undefined when the rail is empty.
+ * Never blocks on a dialog. Seeding runs before the window is needed.
+ */
+export function ensureWorkspaceRoot(
   config: ConfigStore,
-  getWindow: () => BrowserWindow | null,
+  _getWindow: () => BrowserWindow | null,
   forced?: string,
-): Promise<string | undefined> {
+  seed?: {
+    /** Override discovery (tests). Default: {@link discoverSeedProjectPaths}. */
+    runDiscoverySeed?: () => string[];
+  },
+): string | undefined {
   if (forced && fs.existsSync(forced)) {
     config.setWorkspaceRoot(path.resolve(forced));
+    // Forced open is user/test intent — never follow with a discovery overwrite.
+    config.markDiscoverySeedCompleted();
     return path.resolve(forced);
   }
-  const existing = config.getWorkspaceRoot();
-  if (existing && fs.existsSync(existing)) return existing;
 
-  const win = parentWindow(getWindow);
-  const result = win
-    ? await dialog.showOpenDialog(win, {
-        title: "Choose workspace folder",
-        message: "Select a folder for Grok to work in",
-        properties: ["openDirectory", "createDirectory"],
-      })
-    : await dialog.showOpenDialog({
-        title: "Choose workspace folder",
-        properties: ["openDirectory", "createDirectory"],
-      });
-  if (result.canceled || !result.filePaths[0]) return undefined;
-  const root = result.filePaths[0];
-  config.setWorkspaceRoot(root);
-  return root;
+  const open = config.getWorkspaceRoots();
+  if (open.length > 0) {
+    // Restored prefs (or a prior seed) already own the set. Mark complete so a
+    // later deliberate empty list is not re-seeded on the next launch.
+    if (!config.isDiscoverySeedCompleted()) config.markDiscoverySeedCompleted();
+    const existing = config.getWorkspaceRoot();
+    if (existing && fs.existsSync(existing)) return existing;
+    return open[0];
+  }
+
+  // Empty open set. Seed only when the one-shot flag says we never have.
+  if (
+    shouldSeedProjectDiscovery({
+      discoverySeedCompleted: config.isDiscoverySeedCompleted(),
+      openFolderCount: 0,
+    })
+  ) {
+    const seeded = (seed?.runDiscoverySeed ?? (() => discoverSeedProjectPaths()))();
+    for (const cwd of seeded) {
+      config.addWorkspaceRoot(cwd, false);
+    }
+    if (seeded.length) {
+      if (!config.setActiveWorkspaceRoot(seeded[0])) {
+        config.setWorkspaceRoot(seeded[0]);
+      }
+    }
+    config.markDiscoverySeedCompleted();
+  }
+
+  const root = config.getWorkspaceRoot();
+  if (root && fs.existsSync(root)) return root;
+  const roots = config.getWorkspaceRoots();
+  return roots[0];
 }

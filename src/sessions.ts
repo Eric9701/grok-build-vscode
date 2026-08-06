@@ -133,13 +133,17 @@ export interface RepoListEntry {
   pinnedAt?: number;
   updatedAt: number;
   worktreeLabel?: string;
-  /** The stored choice above, flattened for the wire. Always present — a host
-   *  that knows about archiving says so on every row, which is how the browser
-   *  client tells "nothing archived" from "this host cannot archive" without
-   *  asking a version number. Ordering here deliberately ignores both: the VS
-   *  Code repo picker reads this same list and must not change. */
-  archived: boolean;
-  archivedAt: number;
+  /**
+   * Archive choice flattened for the wire. **Present when the host supports
+   * archiving** (VS Code / discovered list) — even when nothing is archived,
+   * which is how the client tells "nothing archived" from "this host cannot
+   * archive" without a version number. **Omitted** when the host's project
+   * list is curated open/close (desktop): close already removes a row, so
+   * archive would be a second weaker mechanism. Ordering in
+   * {@link discoverRepos} deliberately ignores these fields.
+   */
+  archived?: boolean;
+  archivedAt?: number;
 }
 
 /** Move a renamed session's `customName` from one id to another and drop the source entry. Used when

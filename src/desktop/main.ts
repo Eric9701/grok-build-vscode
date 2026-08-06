@@ -443,14 +443,11 @@ async function createApp(): Promise<void> {
     webview?.dispatchMessage(message);
   });
 
-  // Workspace must be set before the sidebar starts a session (ready → startSession).
-  const workspace = await ensureWorkspaceRoot(config, () => mainWindow, args.workspace);
-  if (!workspace) {
-    log("no workspace selected — quitting");
-    app.quit();
-    return;
-  }
-  log(`workspace: ${workspace}`);
+  // Open-folder set: restore prefs or one-shot discovery seed — never a folder
+  // picker. Empty is valid (user adds via File → Add Project Folder).
+  const workspace = ensureWorkspaceRoot(config, () => mainWindow, args.workspace);
+  if (workspace) log(`workspace: ${workspace}`);
+  else log("workspace: (none — empty project rail; use Add Project Folder)");
   log(`extension root: ${extensionRoot}`);
   log(`cliPath config: ${String(config.getValue("grok.cliPath") || "(auto)")}`);
 

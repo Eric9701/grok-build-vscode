@@ -489,6 +489,7 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     canRelocateView: true,
     canShowOutput: true,
     canSwitchWorkspaceFolder: false,
+    canArchiveRepos: true,
   };
 }
 

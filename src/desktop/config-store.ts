@@ -143,6 +143,12 @@ export interface DesktopAppPrefs {
    * {@link workspaceRoot} alone so a single-folder prefs file still works.
    */
   workspaceRoots?: string[];
+  /**
+   * One-shot discovery seed completed. Once true, an empty open set is left
+   * empty on subsequent launches (the user owns it). See
+   * `shouldSeedProjectDiscovery` in project-discovery.ts.
+   */
+  discoverySeedCompleted?: boolean;
   /** Dotted config overrides (e.g. `grok.cliPath`). */
   config: Record<string, unknown>;
 }
@@ -237,6 +243,7 @@ export class ConfigStore {
       this.prefs = {
         workspaceRoot: active,
         workspaceRoots: listed.length ? listed : undefined,
+        discoverySeedCompleted: raw.discoverySeedCompleted === true,
         config: raw.config && typeof raw.config === "object" ? { ...raw.config } : {},
       };
     } catch {
@@ -371,13 +378,14 @@ export class ConfigStore {
   }
 
   /**
-   * Remove a project folder. Refuses to remove the last remaining folder.
-   * When the active folder is removed, the next open folder becomes active.
+   * Remove a project folder. Closing the last remaining folder leaves an empty
+   * open set (user-owned; discovery will not re-seed — see
+   * {@link markDiscoverySeedCompleted}). When the active folder is removed,
+   * the next open folder becomes active, or active is cleared when empty.
    */
   removeWorkspaceRoot(root: string): boolean {
     const abs = path.resolve(root);
     const roots = this.getWorkspaceRoots();
-    if (roots.length <= 1) return false;
     const next = roots.filter((r) => !pathsEqualRoot(r, abs));
     if (next.length === roots.length) return false;
     this.prefs.workspaceRoots = next;
@@ -387,6 +395,18 @@ export class ConfigStore {
     this.save();
     this.fireChange("grok.desktop.workspaceFolders");
     return true;
+  }
+
+  /** Whether the one-shot discovery seed has already run (or been migrated). */
+  isDiscoverySeedCompleted(): boolean {
+    return this.prefs.discoverySeedCompleted === true;
+  }
+
+  /** Persist that discovery seeding must not run again. */
+  markDiscoverySeedCompleted(): void {
+    if (this.prefs.discoverySeedCompleted === true) return;
+    this.prefs.discoverySeedCompleted = true;
+    this.save();
   }
 
   getValue(fullKey: string): unknown {
