@@ -2,6 +2,11 @@
  * Desktop-only file-tree panel: CSS + boot script injected into the chat
  * document after load (does not touch getHtml / chat.js).
  *
+ * Layout:
+ *   - Full-width `.top-bar` stays outside the chat/file shell (edge-to-edge).
+ *   - Panel toggle lives in the top bar (right end); closed = panel takes no space.
+ *   - Opening a file replaces the tree with a read-only viewer + breadcrumb.
+ *
  * Class prefix `desk-ft-` keeps styles from colliding with chat.css.
  * Runs via webContents.executeJavaScript (bypasses CSP nonce) after each
  * HTML load so renderer reloads re-mount the panel.
@@ -9,15 +14,44 @@
 
 /** Styles scoped under `.desk-ft-*` — never bare element rules that could hit chat. */
 export const FILE_TREE_PANEL_CSS = `
-/* body is still chat.css's column flex; the shell is the only layout child. */
-body.desk-with-ft > .desk-ft-shell {
+/* body is still chat.css's column flex; shell sits under the full-width top bar.
+   With the projects rail (body.has-rail), body is row: rail | .app-main column. */
+body.desk-with-ft:not(.has-rail) {
+  display: flex;
+  flex-direction: column;
+}
+body.desk-with-ft.has-rail {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+body.desk-with-ft .top-bar {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+  z-index: 30;
+}
+body.desk-with-ft > .desk-ft-shell,
+body.desk-with-ft .app-main > .desk-ft-shell {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+  display: flex;
+  flex-direction: row;
 }
 body.desk-with-ft > script {
-  /* Already executed — keep them out of the flex layout. */
   display: none;
+}
+body.desk-with-ft.has-rail > .app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 .desk-ft-shell {
   display: flex;
@@ -36,25 +70,30 @@ body.desk-with-ft > script {
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  /* Main chat surface — panel uses a different fill so the open panel
+     reads as its own region rather than continuing this column. */
+  background: var(--vscode-sideBar-background, #252526);
+}
+/* Panel hidden entirely when closed — takes no space. */
+body.desk-ft-closed .desk-ft-panel {
+  display: none !important;
 }
 .desk-ft-panel {
-  flex: 0 0 240px;
-  width: 240px;
+  flex: 0 0 280px;
+  width: 280px;
   max-width: 45%;
   min-width: 0;
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--vscode-editorWidget-border, #454545);
-  background: var(--vscode-sideBar-background, #252526);
+  /* Distinct from the chat column (sideBar) so the open panel reads as its
+     own region — editor-background is darker under the desktop theme tokens. */
+  background: var(--vscode-editor-background, #1e1e1e);
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.04);
   color: var(--vscode-foreground, #ccc);
   font-family: var(--vscode-font-family, system-ui, sans-serif);
   font-size: 12px;
   z-index: 20;
-}
-body.desk-ft-collapsed .desk-ft-panel {
-  flex-basis: 28px;
-  width: 28px;
-  max-width: 28px;
 }
 .desk-ft-header {
   display: flex;
@@ -78,30 +117,6 @@ body.desk-ft-collapsed .desk-ft-panel {
   letter-spacing: 0.04em;
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }
-body.desk-ft-collapsed .desk-ft-title,
-body.desk-ft-collapsed .desk-ft-filter,
-body.desk-ft-collapsed .desk-ft-body {
-  display: none !important;
-}
-.desk-ft-toggle {
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--vscode-foreground, #ccc);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.desk-ft-toggle:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
-}
 .desk-ft-filter {
   margin: 6px 6px 0;
   padding: 4px 8px;
@@ -118,11 +133,17 @@ body.desk-ft-collapsed .desk-ft-body {
 .desk-ft-filter:focus {
   border-color: var(--vscode-focusBorder, #007fd4);
 }
+body.desk-ft-viewing .desk-ft-filter {
+  display: none !important;
+}
 .desk-ft-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 4px 0 8px;
+}
+body.desk-ft-viewing .desk-ft-body {
+  display: none !important;
 }
 .desk-ft-row {
   display: flex;
@@ -183,8 +204,212 @@ body.desk-ft-collapsed .desk-ft-body {
 .desk-ft-node.desk-ft-open > .desk-ft-children {
   display: block;
 }
-.desk-ft-node.desk-ft-open > .desk-ft-row .desk-ft-twist {
-  transform: none;
+/* Top-bar panel toggle (Lucide panel-right) */
+.desk-ft-top-toggle {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.desk-ft-top-toggle svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.desk-ft-top-toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
+/* Rail collapse toggle (Lucide panel-left) — desktop shell only */
+.desk-rail-toggle {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.desk-rail-toggle svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.desk-rail-toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
+.rail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.rail-toolbar .rail-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+body.desk-rail-collapsed #projects-rail {
+  display: none !important;
+}
+/* When the rail is collapsed, body is no longer a two-column host. */
+body.desk-rail-collapsed.has-rail {
+  flex-direction: column;
+}
+body.desk-rail-collapsed.has-rail .app-main {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+/* Re-open control on the left of the top bar while the rail is collapsed. */
+.desk-rail-open-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.desk-rail-open-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+.desk-rail-open-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
+body.desk-rail-collapsed .desk-rail-open-btn {
+  display: inline-flex;
+}
+/* File viewer (replaces tree — not side-by-side) */
+.desk-ft-viewer {
+  display: none;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+body.desk-ft-viewing .desk-ft-viewer {
+  display: flex;
+}
+.desk-ft-crumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+  flex-shrink: 0;
+  font-size: 11px;
+  min-height: 28px;
+  box-sizing: border-box;
+}
+.desk-ft-crumb-back {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--vscode-textLink-foreground, #3794ff);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 6px 2px 0;
+  margin-right: 4px;
+}
+.desk-ft-crumb-back:hover {
+  text-decoration: underline;
+}
+.desk-ft-crumb-seg {
+  border: none;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  cursor: pointer;
+  font: inherit;
+  padding: 2px 2px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desk-ft-crumb-seg:hover {
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+.desk-ft-crumb-seg.desk-ft-crumb-current {
+  color: var(--vscode-foreground, #ccc);
+  cursor: default;
+  font-weight: 600;
+}
+.desk-ft-crumb-sep {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  opacity: 0.6;
+  user-select: none;
+}
+.desk-ft-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--vscode-editor-background, #1e1e1e);
+}
+.desk-ft-viewer-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--vscode-foreground, #ccc);
+}
+.desk-ft-viewer-body .desk-ft-md {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--vscode-foreground, #ccc);
+}
+.desk-ft-viewer-body .desk-ft-md h1,
+.desk-ft-viewer-body .desk-ft-md h2,
+.desk-ft-viewer-body .desk-ft-md h3 {
+  margin: 0.8em 0 0.4em;
+  font-weight: 600;
+}
+.desk-ft-viewer-body .desk-ft-md p {
+  margin: 0.4em 0;
+}
+.desk-ft-viewer-body .desk-ft-md code {
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 0.92em;
+  background: var(--vscode-textCodeBlock-background, #1e1e1e);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.desk-ft-viewer-body .desk-ft-md pre {
+  background: var(--vscode-textCodeBlock-background, #1e1e1e);
+  padding: 8px;
+  border-radius: 4px;
+  overflow: auto;
+}
+.desk-ft-viewer-body img {
+  max-width: 100%;
+  height: auto;
+  display: block;
 }
 `;
 
@@ -199,20 +424,28 @@ export function fileTreePanelBootSource(): string {
   const api = window.grokDesktopFileTree;
   if (!api || typeof api.list !== "function") return { ok: false, reason: "no bridge" };
 
-  const COLLAPSE_KEY = "desk-ft-collapsed";
+  const OPEN_KEY = "desk-ft-open";
   const FILTER_KEY = "desk-ft-filter";
+  const RAIL_OPEN_KEY = "desk-rail-open";
+  // Lucide panel-left / panel-right — same convention as AFK Pilot + Codex.
+  const ICON_PANEL_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
+  const ICON_PANEL_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>';
 
   // Tear down a previous mount (reload / re-inject).
   const prevShell = document.getElementById("desk-ft-shell");
   if (prevShell) {
     const chat = prevShell.querySelector(".desk-ft-chat");
+    const host = prevShell.parentElement || document.body;
     if (chat) {
-      while (chat.firstChild) document.body.insertBefore(chat.firstChild, prevShell);
+      while (chat.firstChild) host.insertBefore(chat.firstChild, prevShell);
     }
     prevShell.remove();
   }
   document.getElementById("desk-ft-style")?.remove();
-  document.body.classList.remove("desk-ft-collapsed", "desk-with-ft");
+  document.getElementById("desk-ft-top-toggle")?.remove();
+  document.getElementById("desk-rail-toggle")?.remove();
+  document.getElementById("desk-rail-open-btn")?.remove();
+  document.body.classList.remove("desk-ft-closed", "desk-with-ft", "desk-ft-viewing", "desk-ft-collapsed", "desk-rail-collapsed");
 
   const style = document.createElement("style");
   style.id = "desk-ft-style";
@@ -226,13 +459,21 @@ export function fileTreePanelBootSource(): string {
   const chatCol = document.createElement("div");
   chatCol.className = "desk-ft-chat";
 
-  // Move non-script body children into the chat column (preserves chat.js nodes).
+  // Host for chat+panel shell: .app-main when the projects rail is present
+  // (desktop multi-folder), otherwise body. Never absorb #projects-rail.
+  const layoutHost = document.querySelector(".app-main") || document.body;
+
+  // Top bar stays in the host (full width of the chat column); everything else
+  // in the host moves into the chat column beside the file panel.
   const toMove = [];
-  for (const child of Array.from(document.body.childNodes)) {
+  for (const child of Array.from(layoutHost.childNodes)) {
     if (child.nodeType === 1) {
       const el = child;
       if (el.tagName === "SCRIPT") continue;
       if (el.id === "desk-ft-style") continue;
+      if (el.id === "projects-rail") continue;
+      if (el.classList && el.classList.contains("top-bar")) continue;
+      if (el.id === "desk-ft-shell") continue;
       toMove.push(el);
     }
   }
@@ -251,16 +492,7 @@ export function fileTreePanelBootSource(): string {
   title.id = "desk-ft-title";
   title.textContent = "Files";
 
-  const toggle = document.createElement("button");
-  toggle.type = "button";
-  toggle.className = "desk-ft-toggle";
-  toggle.id = "desk-ft-toggle";
-  toggle.title = "Collapse file tree";
-  toggle.setAttribute("aria-expanded", "true");
-  toggle.textContent = "›";
-
   header.appendChild(title);
-  header.appendChild(toggle);
 
   const filter = document.createElement("input");
   filter.type = "search";
@@ -274,34 +506,134 @@ export function fileTreePanelBootSource(): string {
   body.className = "desk-ft-body";
   body.id = "desk-ft-body";
 
+  // Viewer replaces the tree (not side-by-side).
+  const viewer = document.createElement("div");
+  viewer.className = "desk-ft-viewer";
+  viewer.id = "desk-ft-viewer";
+  viewer.setAttribute("aria-label", "File preview");
+
+  const crumb = document.createElement("div");
+  crumb.className = "desk-ft-crumb";
+  crumb.id = "desk-ft-crumb";
+
+  const viewerBody = document.createElement("div");
+  viewerBody.className = "desk-ft-viewer-body";
+  viewerBody.id = "desk-ft-viewer-body";
+
+  viewer.appendChild(crumb);
+  viewer.appendChild(viewerBody);
+
   panel.appendChild(header);
   panel.appendChild(filter);
   panel.appendChild(body);
+  panel.appendChild(viewer);
 
   shell.appendChild(chatCol);
   shell.appendChild(panel);
-  // Insert shell before any remaining scripts.
-  const firstScript = document.body.querySelector("script");
-  if (firstScript) document.body.insertBefore(shell, firstScript);
-  else document.body.appendChild(shell);
+  // Insert shell after the top bar (or at start of host).
+  const topBarEl = layoutHost.querySelector(":scope > .top-bar") || layoutHost.querySelector(".top-bar");
+  if (topBarEl && topBarEl.parentElement === layoutHost) {
+    if (topBarEl.nextSibling) layoutHost.insertBefore(shell, topBarEl.nextSibling);
+    else layoutHost.appendChild(shell);
+  } else {
+    const firstScript = layoutHost.querySelector("script") || document.body.querySelector("script");
+    if (firstScript && firstScript.parentElement === layoutHost) {
+      layoutHost.insertBefore(shell, firstScript);
+    } else {
+      layoutHost.appendChild(shell);
+    }
+  }
 
   document.body.classList.add("desk-with-ft");
 
-  function applyCollapsed(collapsed) {
-    document.body.classList.toggle("desk-ft-collapsed", collapsed);
-    toggle.textContent = collapsed ? "‹" : "›";
-    toggle.title = collapsed ? "Expand file tree" : "Collapse file tree";
-    toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
-    try { localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0"); } catch (_) { /* */ }
+  // Panel toggle in the top bar (right end).
+  const topBar = document.querySelector(".top-bar");
+  let topToggle = document.getElementById("desk-ft-top-toggle");
+  if (!topToggle && topBar) {
+    topToggle = document.createElement("button");
+    topToggle.type = "button";
+    topToggle.id = "desk-ft-top-toggle";
+    topToggle.className = "desk-ft-top-toggle";
+    topToggle.setAttribute("aria-label", "Toggle file panel");
+    topBar.appendChild(topToggle);
   }
 
-  try {
-    if (localStorage.getItem(COLLAPSE_KEY) === "1") applyCollapsed(true);
-  } catch (_) { /* */ }
+  let rootLabel = "Files";
+  let viewRelPath = null; // null = tree mode
 
-  toggle.addEventListener("click", () => {
-    applyCollapsed(!document.body.classList.contains("desk-ft-collapsed"));
-  });
+  function applyOpen(open) {
+    document.body.classList.toggle("desk-ft-closed", !open);
+    if (topToggle) {
+      topToggle.innerHTML = ICON_PANEL_RIGHT;
+      topToggle.title = open ? "Hide file panel" : "Show file panel";
+      topToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    try { localStorage.setItem(OPEN_KEY, open ? "1" : "0"); } catch (_) { /* */ }
+  }
+
+  // Default closed (takes no space). Legacy "collapsed" key treated as closed.
+  let startOpen = false;
+  try {
+    const v = localStorage.getItem(OPEN_KEY);
+    if (v === "1") startOpen = true;
+    if (v === null && localStorage.getItem("desk-ft-collapsed") === "0") startOpen = true;
+  } catch (_) { /* */ }
+  applyOpen(startOpen);
+
+  if (topToggle) {
+    topToggle.addEventListener("click", () => {
+      applyOpen(document.body.classList.contains("desk-ft-closed"));
+    });
+  }
+
+  // Projects rail collapse — Lucide panel-left (mirrors AFK Pilot rail-toggle).
+  const rail = document.getElementById("projects-rail");
+  const topBarForRail = document.querySelector(".top-bar");
+  if (rail && topBarForRail) {
+    let railToggle = document.getElementById("desk-rail-toggle");
+    const toolbar = rail.querySelector(".rail-toolbar");
+    if (!railToggle && toolbar) {
+      railToggle = document.createElement("button");
+      railToggle.type = "button";
+      railToggle.id = "desk-rail-toggle";
+      railToggle.className = "desk-rail-toggle";
+      railToggle.innerHTML = ICON_PANEL_LEFT;
+      railToggle.setAttribute("aria-label", "Hide projects");
+      toolbar.insertBefore(railToggle, toolbar.firstChild);
+    }
+    let railOpenBtn = document.getElementById("desk-rail-open-btn");
+    if (!railOpenBtn) {
+      railOpenBtn = document.createElement("button");
+      railOpenBtn.type = "button";
+      railOpenBtn.id = "desk-rail-open-btn";
+      railOpenBtn.className = "desk-rail-open-btn";
+      railOpenBtn.innerHTML = ICON_PANEL_LEFT;
+      railOpenBtn.title = "Show projects";
+      railOpenBtn.setAttribute("aria-label", "Show projects");
+      topBarForRail.insertBefore(railOpenBtn, topBarForRail.firstChild);
+    }
+    function applyRailOpen(open) {
+      document.body.classList.toggle("desk-rail-collapsed", !open);
+      if (railToggle) {
+        railToggle.title = open ? "Hide projects" : "Show projects";
+        railToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+      try { localStorage.setItem(RAIL_OPEN_KEY, open ? "1" : "0"); } catch (_) { /* */ }
+    }
+    let railStartOpen = true;
+    try {
+      if (localStorage.getItem(RAIL_OPEN_KEY) === "0") railStartOpen = false;
+    } catch (_) { /* */ }
+    applyRailOpen(railStartOpen);
+    if (railToggle && !railToggle.dataset.wired) {
+      railToggle.dataset.wired = "1";
+      railToggle.addEventListener("click", () => applyRailOpen(false));
+    }
+    if (railOpenBtn && !railOpenBtn.dataset.wired) {
+      railOpenBtn.dataset.wired = "1";
+      railOpenBtn.addEventListener("click", () => applyRailOpen(true));
+    }
+  }
 
   try {
     const saved = localStorage.getItem(FILTER_KEY);
@@ -350,8 +682,187 @@ export function fileTreePanelBootSource(): string {
     return open ? "▼" : "▶";
   }
 
-  function iconFor(kind) {
-    return kind === "dir" ? "📁" : "📄";
+  function iconFor(kind, name) {
+    if (kind === "dir") return "📁";
+    const ext = (name || "").includes(".")
+      ? "." + name.split(".").pop().toLowerCase()
+      : "";
+    const map = {
+      ".md": "📝",
+      ".ts": "🔷",
+      ".tsx": "🔷",
+      ".js": "🟨",
+      ".jsx": "🟨",
+      ".json": "{ }",
+      ".css": "🎨",
+      ".html": "🌐",
+      ".png": "🖼",
+      ".jpg": "🖼",
+      ".jpeg": "🖼",
+      ".gif": "🖼",
+      ".webp": "🖼",
+      ".yml": "⚙",
+      ".yaml": "⚙",
+      ".env": "🔑",
+    };
+    return map[ext] || "📄";
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Minimal markdown for read-only preview (not a full parser).
+  function renderMarkdown(src) {
+    const lines = String(src).split(/\\r?\\n/);
+    const out = [];
+    let inCode = false;
+    let code = [];
+    for (const line of lines) {
+      if (line.startsWith("\`\`\`")) {
+        if (inCode) {
+          out.push("<pre><code>" + escapeHtml(code.join("\\n")) + "</code></pre>");
+          code = [];
+          inCode = false;
+        } else {
+          inCode = true;
+        }
+        continue;
+      }
+      if (inCode) { code.push(line); continue; }
+      if (/^###\\s+/.test(line)) {
+        out.push("<h3>" + escapeHtml(line.replace(/^###\\s+/, "")) + "</h3>");
+      } else if (/^##\\s+/.test(line)) {
+        out.push("<h2>" + escapeHtml(line.replace(/^##\\s+/, "")) + "</h2>");
+      } else if (/^#\\s+/.test(line)) {
+        out.push("<h1>" + escapeHtml(line.replace(/^#\\s+/, "")) + "</h1>");
+      } else if (line.trim() === "") {
+        out.push("");
+      } else {
+        let t = escapeHtml(line);
+        t = t.replace(/\`([^\`]+)\`/g, "<code>$1</code>");
+        t = t.replace(/\\*\\*([^*]+)\\*\\*/g, "<strong>$1</strong>");
+        out.push("<p>" + t + "</p>");
+      }
+    }
+    if (inCode) out.push("<pre><code>" + escapeHtml(code.join("\\n")) + "</code></pre>");
+    return out.join("");
+  }
+
+  function breadcrumbSegments(relPath, label) {
+    const segs = [{ label: label || "Files", relPath: "" }];
+    const trimmed = (relPath || "").replace(/\\\\/g, "/").replace(/^\\/+|\\/+$/g, "");
+    if (!trimmed) return segs;
+    const parts = trimmed.split("/").filter(Boolean);
+    let acc = "";
+    for (const part of parts) {
+      acc = acc ? acc + "/" + part : part;
+      segs.push({ label: part, relPath: acc });
+    }
+    return segs;
+  }
+
+  function showTree() {
+    viewRelPath = null;
+    document.body.classList.remove("desk-ft-viewing");
+    viewerBody.textContent = "";
+    crumb.textContent = "";
+  }
+
+  function renderCrumb(relPath) {
+    crumb.textContent = "";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "desk-ft-crumb-back";
+    back.textContent = "← Back";
+    back.title = "Back to file tree";
+    back.addEventListener("click", () => showTree());
+    crumb.appendChild(back);
+
+    const segs = breadcrumbSegments(relPath, rootLabel);
+    segs.forEach((seg, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "desk-ft-crumb-sep";
+        sep.textContent = "/";
+        crumb.appendChild(sep);
+      }
+      const isLast = i === segs.length - 1;
+      const btn = document.createElement(isLast ? "span" : "button");
+      if (!isLast) btn.type = "button";
+      btn.className = "desk-ft-crumb-seg" + (isLast ? " desk-ft-crumb-current" : "");
+      btn.textContent = seg.label;
+      btn.title = seg.relPath || rootLabel;
+      if (!isLast) {
+        btn.addEventListener("click", async () => {
+          if (seg.relPath === "") {
+            showTree();
+            return;
+          }
+          // Ancestor directory → return to tree (file view is one-file-at-a-time).
+          showTree();
+        });
+      }
+      crumb.appendChild(btn);
+    });
+  }
+
+  async function openFileView(relPath) {
+    if (!api.read) {
+      // Older host without read channel — fall back to OS open.
+      try { await api.open(relPath); } catch (_) { /* */ }
+      return;
+    }
+    let result;
+    try {
+      result = await api.read(relPath);
+    } catch (e) {
+      console.warn("[desk-ft] read error", e);
+      return;
+    }
+    if (result && result.openExternal) {
+      try { await api.open(relPath); } catch (_) { /* */ }
+      return;
+    }
+    if (!result || result.ok === false) {
+      if (result && result.reason === "open externally") {
+        try { await api.open(relPath); } catch (_) { /* */ }
+      } else {
+        console.warn("[desk-ft] read failed:", result && (result.reason || result.error));
+      }
+      return;
+    }
+
+    viewRelPath = relPath;
+    document.body.classList.add("desk-ft-viewing");
+    // Ensure panel is open when viewing a file.
+    applyOpen(true);
+    renderCrumb(relPath);
+    viewerBody.textContent = "";
+
+    if (result.kind === "image" && result.dataUrl) {
+      const img = document.createElement("img");
+      img.src = result.dataUrl;
+      img.alt = relPath;
+      viewerBody.appendChild(img);
+      return;
+    }
+
+    if (result.kind === "markdown") {
+      const wrap = document.createElement("div");
+      wrap.className = "desk-ft-md";
+      wrap.innerHTML = renderMarkdown(result.text || "");
+      viewerBody.appendChild(wrap);
+      return;
+    }
+
+    const pre = document.createElement("pre");
+    pre.textContent = result.text || "";
+    viewerBody.appendChild(pre);
   }
 
   function makeNode(entry) {
@@ -374,7 +885,7 @@ export function fileTreePanelBootSource(): string {
 
     const icon = document.createElement("span");
     icon.className = "desk-ft-icon";
-    icon.textContent = iconFor(entry.kind);
+    icon.textContent = iconFor(entry.kind, entry.name);
 
     const name = document.createElement("span");
     name.className = "desk-ft-name";
@@ -401,14 +912,7 @@ export function fileTreePanelBootSource(): string {
       });
     } else {
       row.addEventListener("click", async () => {
-        try {
-          const r = await api.open(entry.relPath);
-          if (r && r.ok === false) {
-            console.warn("[desk-ft] open failed:", r.error || r.reason);
-          }
-        } catch (e) {
-          console.warn("[desk-ft] open error", e);
-        }
+        await openFileView(entry.relPath);
       });
     }
     return node;
@@ -461,6 +965,7 @@ export function fileTreePanelBootSource(): string {
     try {
       const rootInfo = await api.root();
       if (rootInfo && rootInfo.name) {
+        rootLabel = rootInfo.name;
         title.textContent = rootInfo.name;
         title.title = rootInfo.root || rootInfo.name;
       }

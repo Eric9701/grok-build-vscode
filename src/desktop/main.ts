@@ -13,9 +13,13 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  Menu,
   net,
   protocol,
   safeStorage,
+  shell,
+  type Menu as ElectronMenu,
+  type MenuItemConstructorOptions,
   type ProtocolRequest,
 } from "electron";
 import * as fs from "node:fs";
@@ -24,13 +28,18 @@ import { pathToFileURL } from "node:url";
 import { GrokSidebar } from "../sidebar";
 import { Uri } from "../host";
 import type { HostContext, HostDisposable } from "../host";
-import { ConfigStore } from "./config-store";
+import { ConfigStore, SensitiveConfigStore } from "./config-store";
 import { createElectronHost, ensureWorkspaceRoot, type ElectronRemoteActions } from "./electron-host";
 import {
   APP_RESOURCE_SCHEME,
-  appResourceUrlToFsPath,
+  desktopChromeBootSource,
   ElectronWebview,
 } from "./electron-webview";
+import {
+  DESKTOP_APP_FULL_NAME,
+  DESKTOP_APP_SHORT_NAME,
+  DESKTOP_PUBLIC_REPO_URL,
+} from "./host-dialogs";
 import { createFileMemento } from "./memento";
 import { resolveExtensionRoot, resolveUserDataDir } from "./paths";
 import { createSafeStorageSecrets } from "./safe-secrets";
@@ -38,6 +47,10 @@ import {
   injectFileTreePanelLogged,
   registerFileTreeIpc,
 } from "./file-tree-ipc";
+import {
+  installWindowSecurityLocks,
+  isTrustedMainFrameIpc,
+} from "./window-security";
 
 // Electron dies with launch-failed if sandbox is left at the platform default
 // in some setups; we set it explicitly on the BrowserWindow. Also strip the
@@ -112,6 +125,108 @@ function log(line: string): void {
   process.stdout.write(`[desktop ${stamp}] ${line}\n`);
 }
 
+/**
+ * Application menu: no stock Electron Help links; public repo only.
+ * File → Add/Close Project Folder drive multi-folder (rail + config store).
+ */
+export function buildDesktopAppMenu(actions?: {
+  addProjectFolder?: () => void;
+  removeProjectFolder?: () => void;
+}): ElectronMenu {
+  const isMac = process.platform === "darwin";
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: DESKTOP_APP_FULL_NAME,
+            submenu: [
+              { role: "about" as const, label: `About ${DESKTOP_APP_FULL_NAME}` },
+              { type: "separator" as const },
+              { role: "services" as const },
+              { type: "separator" as const },
+              { role: "hide" as const },
+              { role: "hideOthers" as const },
+              { role: "unhide" as const },
+              { type: "separator" as const },
+              { role: "quit" as const },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "Add Project Folder…",
+          click: () => {
+            try {
+              actions?.addProjectFolder?.();
+            } catch {
+              /* best-effort */
+            }
+          },
+        },
+        {
+          label: "Close Project Folder",
+          click: () => {
+            try {
+              actions?.removeProjectFolder?.();
+            } catch {
+              /* best-effort */
+            }
+          },
+        },
+        { type: "separator" },
+        isMac ? { role: "close" } : { role: "quit", label: "Quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "GitHub Repository",
+          click: () => {
+            void shell.openExternal(DESKTOP_PUBLIC_REPO_URL);
+          },
+        },
+        {
+          label: `About ${DESKTOP_APP_FULL_NAME}`,
+          click: () => {
+            void shell.openExternal(DESKTOP_PUBLIC_REPO_URL);
+          },
+        },
+      ],
+    },
+  ];
+  return Menu.buildFromTemplate(template);
+}
+
 let mainWindow: BrowserWindow | null = null;
 let sidebar: GrokSidebar | null = null;
 let webview: ElectronWebview | null = null;
@@ -129,6 +244,14 @@ async function createApp(): Promise<void> {
   const pkg = readPackageMeta(extensionRoot);
   const configPath = path.join(userData, "config.json");
   const config = new ConfigStore(configPath);
+  // Voice API key and other credentials: OS-encrypted bag, never config.json.
+  try {
+    config.setSensitiveStore(
+      new SensitiveConfigStore(path.join(userData, "sensitive.enc.json"), safeStorage),
+    );
+  } catch (e) {
+    log(`sensitive config store init: ${(e as Error).message}`);
+  }
 
   if (args.configJson && fs.existsSync(args.configJson)) {
     try {
@@ -169,15 +292,24 @@ async function createApp(): Promise<void> {
   };
 
   webview = new ElectronWebview(() => mainWindow);
+  webview.getWorkspaceRoot = () => config.getWorkspaceRoot();
+  webview.onDroppedMessage = (reason, raw) => {
+    const t =
+      raw && typeof raw === "object" && "type" in raw
+        ? String((raw as { type: unknown }).type)
+        : typeof raw;
+    log(`dropped renderer message (${reason}): ${t}`);
+  };
 
+  // Registry + canonical static roots — never free-form ~/.grok path serve.
   protocol.handle(APP_RESOURCE_SCHEME, async (request: Request | ProtocolRequest) => {
     const url = typeof request === "object" && "url" in request ? request.url : String(request);
-    const fsPath = appResourceUrlToFsPath(url);
-    if (!fsPath) {
-      return new Response("Bad request", { status: 400 });
+    if (!webview) {
+      return new Response("Forbidden", { status: 403 });
     }
-    if (webview && !webview.isPathAllowed(fsPath)) {
-      log(`blocked resource outside roots: ${fsPath}`);
+    const fsPath = webview.resolveResourceUrl(url);
+    if (!fsPath) {
+      log(`blocked resource: ${url}`);
       return new Response("Forbidden", { status: 403 });
     }
     try {
@@ -203,14 +335,31 @@ async function createApp(): Promise<void> {
     unlink: () => sidebar!.unlinkRemoteDevice(),
   };
 
+  // Full product name for About / OS app identity; window title uses short name.
+  app.setName(DESKTOP_APP_FULL_NAME);
+  Menu.setApplicationMenu(
+    buildDesktopAppMenu({
+      addProjectFolder: () => {
+        void sidebar?.addProjectFolder();
+      },
+      removeProjectFolder: () => {
+        void sidebar?.removeProjectFolder();
+      },
+    }),
+  );
+
+  const iconPath = path.join(extensionRoot, "resources", "grok-icon.png");
+  const iconOpt = fs.existsSync(iconPath) ? iconPath : undefined;
+
   mainWindow = new BrowserWindow({
     // Wider default so chat + file tree both have room; collapse shrinks the panel.
     width: 720,
     height: 800,
     minWidth: 400,
     minHeight: 480,
-    title: "Grok Build",
+    title: DESKTOP_APP_SHORT_NAME,
     backgroundColor: "#252526",
+    icon: iconOpt,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -222,14 +371,19 @@ async function createApp(): Promise<void> {
     },
   });
 
+  installWindowSecurityLocks(mainWindow, {
+    log,
+    openExternal: (url) => shell.openExternal(url),
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 
   ipcMain.on("webview-to-host", (event, message: unknown) => {
-    // Ambient authority: only the main BrowserWindow may post host messages.
-    if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
-      log("refused webview-to-host from non-main sender");
+    // Ambient authority: only the main BrowserWindow main frame may post.
+    if (!isTrustedMainFrameIpc(event, () => mainWindow)) {
+      log("refused webview-to-host from non-main sender/frame");
       return;
     }
     webview?.dispatchMessage(message);
@@ -255,9 +409,18 @@ async function createApp(): Promise<void> {
   });
 
   // Inject after every document load (initial + renderer reload) so the panel
-  // remounts without touching getHtml() / chat.js.
+  // remounts without touching getHtml() / chat.js. Chrome fades run after the
+  // panel so #messages is in its final parent.
   mainWindow.webContents.on("did-finish-load", () => {
-    void injectFileTreePanelLogged(mainWindow, log);
+    void (async () => {
+      await injectFileTreePanelLogged(mainWindow, log);
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+      try {
+        await mainWindow.webContents.executeJavaScript(desktopChromeBootSource(), true);
+      } catch (e) {
+        log(`[desk-chrome] inject failed: ${(e as Error).message}`);
+      }
+    })();
   });
 
   sidebar.resolveWebviewView({

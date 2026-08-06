@@ -129,6 +129,7 @@ import {
   SessionListEntry,
   SessionMetaOverrides,
   RepoArchives,
+  RepoListEntry,
   RepoPins,
   carrySessionName,
   clearSessions,
@@ -148,6 +149,7 @@ import {
   resolveGrokHome,
   sessionsDirFor,
 } from "./sessions";
+import { isTrustedGeneratedMediaPath } from "./media-serve";
 import {
   gitRootForPath,
   isGitRepo,
@@ -2130,6 +2132,18 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  /** Every open workspace folder root (desktop multi-folder, or VS Code folders). */
+  private openWorkspaceFolders(): string[] {
+    try {
+      const folders = this.host.workspaceFolders?.() ?? [];
+      if (folders.length) return folders;
+    } catch {
+      /* fall through */
+    }
+    const root = this.workspaceRoot();
+    return root ? [root] : [];
+  }
+
   private repoCatalog() {
     const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
     const worktreeLabels = new Map<string, string>();
@@ -2147,12 +2161,45 @@ See design doc for the full state machine diagram.`;
       pins,
       archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
       tmpDir: os.tmpdir(),
-      // The primary workspace is already the extension's local execution scope;
-      // keep it as the one trusted return target before its first catalog lands.
-      trustedCwds: [this.workspaceRoot()],
+      // Open folders remain selectable before Grok creates a catalog row (and
+      // bypass managed-worktree exclusion when the user opened a worktree).
+      trustedCwds: this.openWorkspaceFolders(),
       worktreeLabels,
       log: (m) => this.host.appendLine(m),
     });
+  }
+
+  /**
+   * Local multi-folder desktop: the rail lists only open project folders, not
+   * every historical checkout under ~/.grok. Remote clients still get the full
+   * discoverRepos catalog.
+   */
+  private localRepoCatalogEntries(): RepoListEntry[] {
+    const full = this.repoCatalog();
+    if (!this.host.canSwitchWorkspaceFolder) return full;
+    const open = this.openWorkspaceFolders();
+    if (!open.length) return full;
+    const byKey = new Map(full.map((r) => [normalizeRepoPath(r.cwd), r]));
+    const out: RepoListEntry[] = [];
+    for (const cwd of open) {
+      const key = normalizeRepoPath(cwd);
+      const hit = byKey.get(key);
+      if (hit) {
+        out.push(hit);
+        continue;
+      }
+      // Trusted open folder with no catalog row yet — still show it.
+      out.push({
+        cwd,
+        label: path.basename(cwd) || cwd,
+        available: true,
+        pinned: false,
+        updatedAt: 0,
+        archived: false,
+        archivedAt: 0,
+      });
+    }
+    return out;
   }
 
   private selectedHistoryCwd(): string {
@@ -2211,28 +2258,38 @@ See design doc for the full state machine diagram.`;
   }
 
   private postRepoCatalog(): void {
-    const entries = this.repoCatalog();
+    const fullEntries = this.repoCatalog();
+    // Local: multi-folder desktop emits open folders only (the rail's job);
+    // VS Code still receives the full catalog for clear-all naming (chip/rail
+    // stay off because getHtml has no `#projects-rail`).
+    const localEntries = this.localRepoCatalogEntries();
     const activeCwd = this.sessionCwd(this.focused);
     const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
-    const selected = entries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
+    const selected = localEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey)
+      ?? fullEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
     // The selection MUST name a row in the catalog. `clearAllSessions` and
     // `selectRepo` both resolve through it and bail when the lookup misses, so
     // a selection that isn't there turns a confirmed "Delete All" into a silent
     // no-op. Falling back to the workspace root is always valid — it's a
     // trusted cwd, so it is always a row.
-    const inCatalog = (cwd: string) =>
-      !!cwd && entries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
-    if (selected) this.selectedRepoCwd = selected.cwd;
-    else this.selectedRepoCwd = inCatalog(activeCwd) ? activeCwd : this.workspaceRoot();
+    const inLocal = (cwd: string) =>
+      !!cwd && localEntries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
+    if (selected && inLocal(selected.cwd)) this.selectedRepoCwd = selected.cwd;
+    else this.selectedRepoCwd = inLocal(activeCwd) ? activeCwd : this.workspaceRoot();
     // Same split as the history list: remote clients see (and drive) the global
     // selection, the VS Code webview always reads its own workspace. The chip is
     // hidden locally, but this frame still feeds Clear-all's target and the name
     // in its confirm dialog — so pointing it at a remotely-selected repo would
     // aim a destructive action somewhere the user cannot see.
+    // Desktop multi-folder: selectedCwd tracks the open folder the user chose
+    // (may equal active session cwd once switch settles).
+    const localSelected = this.host.canSwitchWorkspaceFolder
+      ? (this.selectedRepoCwd || this.workspaceRoot())
+      : this.workspaceRoot();
     this.postLocal({
       type: "repos",
-      entries,
-      selectedCwd: this.workspaceRoot(),
+      entries: localEntries,
+      selectedCwd: localSelected,
       activeCwd,
     });
     for (const clientId of this.remoteClients.clients()) {
@@ -2240,7 +2297,7 @@ See design doc for the full state machine diagram.`;
       const remoteActive = this.remoteClients.active(clientId);
       this.sendRemoteClient(clientId, {
         type: "repos",
-        entries,
+        entries: fullEntries,
         selectedCwd: cwd,
         activeCwd: remoteActive ? this.sessionCwd(remoteActive) : cwd,
       });
@@ -2263,19 +2320,24 @@ See design doc for the full state machine diagram.`;
    *  client was already sent — an unknown or unavailable path is dropped in
    *  silence rather than answered, so a remote can never turn this into a probe
    *  for which arbitrary paths exist on the host. */
-  private sendRepoSessionsPreview(clientId: string, cwd: string, limit?: number): void {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
-    if (!hit || !hit.available) return;
+  private buildRepoSessionsPreview(
+    cwd: string,
+    limit: number | undefined,
+    activeId: string | null | undefined,
+  ): HostMsg | undefined {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))
+      ?? this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit || !hit.available) return undefined;
     // Clamp: the rail wants a handful, and an unbounded limit would make every
     // repo row a full history read.
     const size = Math.max(1, Math.min(20, Math.trunc(Number(limit)) || REPO_PREVIEW_SIZE));
     const list = this.buildSessionsList(
       hit.cwd,
       { offset: 0, limit: size },
-      this.remoteActiveSessionId(clientId),
+      activeId,
     );
-    if (list.type !== "sessions") return;
-    this.sendRemoteClient(clientId, {
+    if (list.type !== "sessions") return undefined;
+    return {
       type: "repoSessions",
       // The host's own spelling, not the one the client sent — the rail keys its
       // rows on this, and echoing an arbitrary casing would split one repo into
@@ -2284,15 +2346,137 @@ See design doc for the full state machine diagram.`;
       entries: list.entries,
       dots: list.dots,
       total: list.total,
-    });
+    };
   }
 
-  private selectRepo(cwd: string): void {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+  private sendRepoSessionsPreview(clientId: string, cwd: string, limit?: number): void {
+    const msg = this.buildRepoSessionsPreview(
+      cwd,
+      limit,
+      this.remoteActiveSessionId(clientId),
+    );
+    if (msg) this.sendRemoteClient(clientId, msg);
+  }
+
+  private sendLocalRepoSessionsPreview(cwd: string, limit?: number): void {
+    const msg = this.buildRepoSessionsPreview(cwd, limit, this.focused.activeSessionId);
+    if (msg) this.postLocal(msg);
+  }
+
+  /**
+   * Local repo selection. VS Code: history-scope only (workspace does not move).
+   * Desktop multi-folder: re-homes the active folder and conversation — same
+   * "newest real session or new" rule as {@link selectRemoteRepo}.
+   */
+  private async selectRepo(cwd: string): Promise<void> {
+    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))
+      ?? this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit || !hit.available) return;
+
+    if (this.host.canSwitchWorkspaceFolder) {
+      await this.switchLocalWorkspaceFolder(hit.cwd);
+      return;
+    }
+
     this.selectedRepoCwd = hit.cwd;
     this.postRepoCatalog();
     this.postSessionsList();
+  }
+
+  /**
+   * Desktop multi-folder: switch the host's active folder and open that
+   * project's newest conversation (or start a blank one). Reuses the session
+   * pool + openSession path — no parallel multi-cwd machinery.
+   */
+  private async switchLocalWorkspaceFolder(cwd: string): Promise<void> {
+    const prevRoot = this.workspaceRoot();
+    if (!pathsEqual(cwd, prevRoot)) {
+      this.host.setActiveWorkspaceFolder(cwd);
+    }
+    this.selectedRepoCwd = cwd;
+    this.postRepoCatalog();
+
+    // Already focused on this folder's live conversation — just refresh chrome.
+    if (pathsEqual(this.sessionCwd(this.focused), cwd) && this.focused.client) {
+      this.postSessionsList();
+      return;
+    }
+
+    const history = this.buildSessionsList(
+      cwd,
+      { limit: Number.MAX_SAFE_INTEGER },
+      undefined,
+    );
+    const live = new Map(
+      [...this.pool]
+        .filter((session) => session.activeSessionId)
+        .map((session) => [session.activeSessionId!, session]),
+    );
+    const newest = history.type === "sessions"
+      ? mostRecentSession(history.entries.filter((entry) => {
+          const session = live.get(entry.id);
+          return !session || session.hasHistory;
+        }))
+      : undefined;
+
+    if (newest) {
+      await this.openSession(newest.id, newest.cwd);
+    } else {
+      await this.newFocusedSession("local");
+    }
+    this.postRepoCatalog();
+    this.postSessionsList();
+  }
+
+  /**
+   * Public: desktop File menu / host asks the sidebar to open another folder.
+   * Picks a directory when `cwd` is omitted.
+   */
+  async addProjectFolder(cwd?: string): Promise<void> {
+    if (!this.host.canSwitchWorkspaceFolder) return;
+    let folder = cwd;
+    if (!folder) {
+      const picked = await this.host.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        openLabel: "Add Project",
+      });
+      folder = picked?.[0];
+    }
+    if (!folder) return;
+    if (!this.host.addWorkspaceFolder(folder)) {
+      void this.host.showWarningMessage(`Could not open folder:\n${folder}`);
+      return;
+    }
+    await this.switchLocalWorkspaceFolder(path.resolve(folder));
+  }
+
+  /**
+   * Public: close a project folder from the desktop File menu. Refuses the last
+   * remaining folder. Switches away first when closing the active one.
+   */
+  async removeProjectFolder(cwd?: string): Promise<void> {
+    if (!this.host.canSwitchWorkspaceFolder) return;
+    const target = cwd || this.workspaceRoot();
+    if (!target) return;
+    const roots = this.openWorkspaceFolders();
+    if (roots.length <= 1) {
+      void this.host.showInformationMessage("At least one project folder must stay open.");
+      return;
+    }
+    const wasActive = pathsEqual(target, this.workspaceRoot());
+    if (!this.host.removeWorkspaceFolder(target)) {
+      void this.host.showWarningMessage(`Could not close folder:\n${target}`);
+      return;
+    }
+    if (wasActive) {
+      const next = this.workspaceRoot();
+      if (next) await this.switchLocalWorkspaceFolder(next);
+    } else {
+      this.postRepoCatalog();
+      this.postSessionsList();
+    }
   }
 
   private async selectRemoteRepo(clientId: string, cwd: string): Promise<void> {
@@ -2462,10 +2646,16 @@ See design doc for the full state machine diagram.`;
   }
 
   private postPinnedSessions(clientId?: string): void {
-    if (!clientId && !this.remoteClients.clients().length) return;
+    const hasRemote = this.remoteClients.clients().length > 0;
+    const hasLocalRail = this.host.canSwitchWorkspaceFolder;
+    if (!clientId && !hasRemote && !hasLocalRail) return;
     const msg: HostMsg = { type: "pinnedSessions", ...this.buildPinnedSessions() };
-    if (clientId) this.sendRemoteClient(clientId, msg);
-    else for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, msg);
+    if (clientId) {
+      this.sendRemoteClient(clientId, msg);
+      return;
+    }
+    if (hasLocalRail) this.postLocal(msg);
+    for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, msg);
   }
 
   private annotateWorktreeLabels(
@@ -2494,12 +2684,11 @@ See design doc for the full state machine diagram.`;
    * Forward generated media (grok's `/imagine` image or `/imagine-video` video)
    * to the webview. Remote URLs pass through as a link. File paths — how grok
    * writes media into its session dir — are served via `asWebviewUri` when they
-   * live under a `localResourceRoots` entry (the grok home is one), so the
-   * webview streams the file straight from disk. That matters for video: a
-   * multi-MB clip base64-inlined into a single `postMessage` was silently
-   * dropped, which is why `/imagine-video` never rendered. Files outside the
-   * served roots fall back to a base64 `data:` URI. Best-effort: a failure just
-   * drops the media rather than breaking the turn.
+   * are **trusted** generated media under the Grok home (canonical containment
+   * + sessions/…/images|videos/ shape). Paths outside that provenance are
+   * dropped — never read into a data: URI (that would leak arbitrary files to
+   * the webview and to remote clients via {@link inlineMediaForRemote}).
+   * Best-effort: a failure just drops the media rather than breaking the turn.
    */
   private async postGeneratedMedia(m: MediaRef, session: Session, gen: number): Promise<void> {
     try {
@@ -2512,16 +2701,21 @@ See design doc for the full state machine diagram.`;
         return;
       }
       const mime = m.mimeType || guessMediaMime(m.path);
-      // Served from disk when the file is under a localResourceRoot (grok home):
-      // the webview pulls bytes lazily, so even a big video renders.
+      if (!this.isServableFromDisk(m.path)) {
+        this.host.appendLine(
+          `[media] refused untrusted media path (not canonical session media under grok home)`,
+        );
+        return;
+      }
+      // Served from disk when trusted: the webview pulls bytes lazily, so even
+      // a big video renders. Data-URI fallback is only for the same trusted set
+      // when asWebviewUri is unavailable (should not happen for real media).
       const webview = this.view?.webview;
-      if (webview && this.isServableFromDisk(m.path)) {
-        // Grok home is a genuine local-disk path (localResourceRoots uses Uri.file).
+      if (webview) {
         const src = webview.asWebviewUri(Uri.file(m.path));
         this.emit(session, { type: "media", media: m.media, src, mimeType: mime, path: m.path });
         return;
       }
-      // Outside the served roots — inline as base64 so it still renders.
       const bytes = await this.host.fs.readFile(Uri.file(m.path));
       if (gen !== session.gen) return;
       const b64 = Buffer.from(bytes).toString("base64");
@@ -2531,11 +2725,15 @@ See design doc for the full state machine diagram.`;
     }
   }
 
-  /** True when `p` resolves inside the grok home — the localResourceRoot grok
-   * generated media lives under, so `asWebviewUri` can serve it from disk. */
+  /**
+   * True when `p` is trusted generated media under the Grok home: realpath
+   * stays inside `~/.grok` and the path matches sessions/…/images|videos/.
+   * Lexical-only checks would let a symlink escape and still pass.
+   */
   private isServableFromDisk(p: string): boolean {
     try {
-      return isPathInside(resolveGrokHome(), p);
+      const home = resolveGrokHome();
+      return isTrustedGeneratedMediaPath(p, home, (candidate) => fs.realpathSync(candidate));
     } catch {
       return false;
     }
@@ -4303,24 +4501,23 @@ See design doc for the full state machine diagram.`;
         break;
       case "listRepoSessions":
         // Preview rows for a repo WITHOUT selecting it (the projects rail).
-        // Remote-only: the VS Code webview has no rail and is locked to its own
-        // workspace, so answering it locally would be the one path that hands
-        // the local view another repo's history.
+        // Local answers when the host can switch folders (desktop rail); VS Code
+        // never posts this (no rail mount), so the local branch is inert there.
         if (origin === "remote" && clientId) {
           this.sendRepoSessionsPreview(clientId, msg.cwd, msg.limit);
+        } else {
+          this.sendLocalRepoSessionsPreview(msg.cwd, msg.limit);
         }
         break;
       case "toggleSessionPin":
-        // Rail-only affordance, so remote-only: the VS Code history popover
-        // offers no pin, and answering it locally would write state no local
-        // surface can show or undo.
-        if (origin === "remote" && clientId) {
+        // Rail pin. Remote always; local when multi-folder desktop has a rail.
+        if (origin === "remote" || this.host.canSwitchWorkspaceFolder) {
           await this.toggleSessionPin(msg.id, msg.cwd, msg.pinned);
         }
         break;
       case "selectRepo":
-        if (origin === "remote" && clientId) this.selectRemoteRepo(clientId, msg.cwd);
-        else this.selectRepo(msg.cwd);
+        if (origin === "remote" && clientId) await this.selectRemoteRepo(clientId, msg.cwd);
+        else await this.selectRepo(msg.cwd);
         break;
       case "setRepoArchived":
         await this.setRepoArchived(msg.cwd, msg.archived);
@@ -6971,7 +7168,12 @@ See design doc for the full state machine diagram.`;
       soundNotifications: cfg.get("soundNotifications", false),
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
-      capabilities: HOST_CAPABILITIES,
+      // Wire baseline + host-kind UI affordances (gear Move view / Show logs).
+      capabilities: {
+        ...HOST_CAPABILITIES,
+        relocateView: this.host.canRelocateView,
+        showOutput: this.host.canShowOutput,
+      },
     };
   }
 
@@ -7924,6 +8126,16 @@ See design doc for the full state machine diagram.`;
       this.setMetaUnread(session.activeSessionId, true, status === "error");
     }
     this.pushDot(session);
+    // Wake lock: a turn starting or ending can change turnInFlight.
+    this.refreshKeepAwake();
+  }
+
+  /** True when any live pool member is mid-turn or waiting on the user. */
+  private anyTurnInFlight(): boolean {
+    for (const s of this.pool) {
+      if (s.status === "working" || s.status === "needs-you") return true;
+    }
+    return false;
   }
 
   /** Push just this session's recomputed dot to the webview (cheap — no disk read
@@ -8811,16 +9023,24 @@ See design doc for the full state machine diagram.`;
     this.refreshKeepAwake();
   }
 
-  /** Re-assert the wake lock against the current (setting, linked) state. Called
-   *  after every event that can change either; both start and stop are
+  /** Re-assert the wake lock against linked / turn-in-flight / setting. Called
+   *  after every event that can change those; both start and stop are
    *  idempotent, so callers never have to know the previous state. Wrapped
    *  because keeping the machine awake is never worth failing a link/unlink or a
-   *  config change over. */
+   *  config change over. The opt-out key remains `grok.remote.keepAwake` (ships
+   *  today) even though local turns are now covered too. */
   private refreshKeepAwake(): void {
     try {
       const enabled = this.host.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
-      if (shouldKeepAwake({ enabled, linked: !!this.uplink })) this.keepAwake.start();
-      else this.keepAwake.stop();
+      if (shouldKeepAwake({
+        enabled,
+        linked: !!this.uplink,
+        turnInFlight: this.anyTurnInFlight(),
+      })) {
+        this.keepAwake.start();
+      } else {
+        this.keepAwake.stop();
+      }
     } catch (e) {
       this.host.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
     }
@@ -8983,6 +9203,21 @@ See design doc for the full state machine diagram.`;
     const resourceUri = (file: string) =>
       webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "resources", file));
 
+    // Desktop multi-folder: host ships the rail mount. VS Code never does —
+    // absence of `#projects-rail` is the property that keeps the extension's
+    // UI single-column even when a `repos` frame arrives for clear-all.
+    const railMount = this.host.canSwitchWorkspaceFolder
+      ? `
+  <aside id="projects-rail" class="projects-rail" hidden aria-label="Projects">
+    <div class="rail-toolbar">
+      <input id="rail-search" class="rail-search" type="search" placeholder="Filter projects…" autocomplete="off" spellcheck="false" />
+    </div>
+    <div id="rail-scroll" class="rail-scroll"></div>
+  </aside>`
+      : "";
+    const openMain = this.host.canSwitchWorkspaceFolder ? `<div class="app-main">` : "";
+    const closeMain = this.host.canSwitchWorkspaceFolder ? `</div>` : "";
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9002,7 +9237,8 @@ See design doc for the full state machine diagram.`;
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
 </head>
 <body class="desk${this.showThinking() ? "" : " thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
-
+${railMount}
+${openMain}
   <header class="top-bar">
     <div id="session-name-chip" class="session-name-chip" hidden>
       <button id="session-name-label" class="session-name-label" type="button"></button>
@@ -9061,6 +9297,7 @@ See design doc for the full state machine diagram.`;
     <div id="slash-popover" class="slash-popover" hidden></div>
     <div id="mention-popover" class="slash-popover mention-popover" hidden></div>
   </footer>
+${closeMain}
 
   <script nonce="${nonce}">
     // Configure MathJax before its bundle loads. We drive typesetting manually

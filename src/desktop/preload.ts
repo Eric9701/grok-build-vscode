@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld("acquireVsCodeApi", () => api);
 contextBridge.exposeInMainWorld("grokDesktopFileTree", {
   list: (relPath: string) => ipcRenderer.invoke("desk-ft:list", relPath),
   open: (relPath: string) => ipcRenderer.invoke("desk-ft:open", relPath),
+  read: (relPath: string) => ipcRenderer.invoke("desk-ft:read", relPath),
   root: () => ipcRenderer.invoke("desk-ft:root"),
   lastOpen: () => ipcRenderer.invoke("desk-ft:lastOpen"),
 });

@@ -2368,17 +2368,20 @@
         vscode.postMessage({ type: "runMcpList" });
         closePopovers();
       });
-      addGearItem("<span>Show extension logs</span>", () => {
-        vscode.postMessage({ type: "showLogs" });
-        closePopovers();
-      });
+      // showOutput: existing gear item (ungated before desktop). Absent flag
+      // means an older host that still supports logs — default ON, opt out with
+      // false (desktop). Positive-gating would hide working controls on v3.1.0.
+      if (!(state.hostCaps && state.hostCaps.showOutput === false)) {
+        addGearItem("<span>Show extension logs</span>", () => {
+          vscode.postMessage({ type: "showLogs" });
+          closePopovers();
+        });
+      }
     }
-    // One-click view relocation (each destination is a direct move into an
-    // extension-owned container — see src/view-move.ts). Our own mover because
-    // Cursor's primary-side-bar context menu hides the built-in "Move To".
-    // Relocating the VS Code view is host-local (the moveView messages are
-    // policy-dropped on remotes) — hide the whole section in the browser client.
-    if (!IS_REMOTE) {
+    // Move view: same polarity as showOutput — existed before the capability
+    // flag, so missing flags must still show it; only explicit false hides
+    // (desktop has no view containers).
+    if (!(state.hostCaps && state.hostCaps.relocateView === false)) {
       // No addGearSep() here: .popover-section draws its own border-top, so a
       // separator in front of a section header renders two rules.
       addSection("Move view");
@@ -2919,24 +2922,26 @@
   }
 
   function railHistoryAnchor() {
-    if (!IS_REMOTE || !document.body.classList.contains("has-rail")) return null;
+    if (!railAvailable() || !document.body.classList.contains("has-rail")) return null;
     return document.getElementById("session-history") || document.getElementById("session-head-main");
   }
 
   // ---------- projects rail ----------
   //
-  // A persistent left rail: every repo with Grok history, each showing its
-  // newest few sessions. It exists ONLY in the browser client — `#projects-rail`
-  // is part of the relay's own page, so in the VS Code webview every function
-  // here finds no mount and returns. That element lookup is the entire gate;
-  // there is no second copy of this UI to keep in sync, and VS Code (where the
-  // window already IS the repo) renders nothing new.
+  // A persistent left rail: every open project (or every repo with Grok history
+  // on remote), each showing its newest few sessions.
+  //
+  // Gate (capability, not IS_REMOTE / not a host flag):
+  //   1. The host shipped a `#projects-rail` mount (desktop getHtml / AFK Pilot
+  //      page). VS Code getHtml does not — that absence alone keeps the extension
+  //      single-column even when a `repos` frame arrives for clear-all naming.
+  //   2. The host has sent a `repos` frame (`state.reposKnown`). An older host
+  //      that never sends one gets the plain chat, not an empty sidebar.
   //
   // Rows for a repo the client is NOT currently in arrive on `repoSessions`, a
   // frame older hosts never send. When it never arrives the rail still works:
   // the selected repo's rows come from the ordinary `sessions` frame and the
-  // other repos simply stay empty until you open them. Capability detection,
-  // never a version check — same rule as the repo chip above.
+  // other repos simply stay empty until you open them.
 
   const RAIL_PREVIEW = 3;      // rows per repo before "Show all"
   const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
@@ -2956,6 +2961,19 @@
   let railResolved = false;
   let railProbeTimer = null;
 
+  /** Host shipped a rail surface (desktop multi-folder / AFK Pilot page). */
+  function railMount() {
+    return document.getElementById("projects-rail");
+  }
+
+  /**
+   * Rail is live when the mount exists AND the host has proven it feeds a
+   * multi-repo catalog (`repos` frame). Never gated on IS_REMOTE.
+   */
+  function railAvailable() {
+    return !!railMount() && state.reposKnown;
+  }
+
   /** The list body. The browser page wraps the rail in fixed chrome (brand,
    *  search, account) and gives the scrolling middle its own element, so the
    *  only thing this file may empty is that middle — clearing the whole aside
@@ -2964,8 +2982,9 @@
   function rail() {
     if (!railResolved) {
       railResolved = true;
-      railEl = IS_REMOTE
-        ? document.getElementById("rail-scroll") || document.getElementById("projects-rail")
+      const panel = railMount();
+      railEl = panel
+        ? (document.getElementById("rail-scroll") || panel)
         : null;
       // Once, before anything reads the fold state — renderRail() resolves the
       // mount before it renders a row, so this always lands first.
@@ -2977,7 +2996,7 @@
   /** The whole panel, chrome included — what gets hidden, and what the drawer
    *  slides. `rail()` is only its scrolling middle. */
   function railPanel() {
-    return IS_REMOTE ? document.getElementById("projects-rail") : null;
+    return railMount();
   }
 
   /** Live filter over what the rail already holds: repo labels and the session
@@ -3070,15 +3089,15 @@
   }
   openRailMenu.seq = 0;
 
-  if (IS_REMOTE) {
-    document.addEventListener("click", (e) => {
-      if (railMenuEl && !railMenuEl.contains(e.target)) closeRailMenu();
-    }, true);
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeRailMenu();
-    });
-    window.addEventListener("resize", closeRailMenu);
-  }
+  // Rail menus are fixed-position under <body>; close on outside click / Esc /
+  // resize regardless of remote vs desktop once a rail mount exists (or may).
+  document.addEventListener("click", (e) => {
+    if (railMenuEl && !railMenuEl.contains(e.target)) closeRailMenu();
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeRailMenu();
+  });
+  window.addEventListener("resize", closeRailMenu);
 
   /** The ⋯ button itself — same shape for a project row, a conversation row and
    *  the conversation header, so one class carries all three. */
@@ -3117,7 +3136,7 @@
   }
 
   function loadRailShape() {
-    if (!IS_REMOTE) return;
+    if (!railMount()) return;
     try {
       const raw = localStorage.getItem(railShapeKey());
       if (!raw) return;
@@ -3135,7 +3154,7 @@
   }
 
   function saveRailShape() {
-    if (!IS_REMOTE) return;
+    if (!railMount()) return;
     try {
       localStorage.setItem(railShapeKey(), JSON.stringify({
         collapsed: state.railCollapsed,
@@ -3363,10 +3382,10 @@
     const root = rail();
     if (!root) return;
     railFollowLiveRepo();
-    // The rail is the repo switcher in another shape: it appears under exactly
-    // the same condition, so a host that never sends `repos` gets the plain
-    // single-column chat instead of an empty sidebar.
-    const on = repoSwitcherAvailable() && state.repos.length > 0;
+    // Mount + `repos` frame (+ non-empty catalog). A host that never sends
+    // `repos` keeps the plain single-column chat; no mount (VS Code) never
+    // lights the rail even when repos arrives for clear-all.
+    const on = railAvailable() && state.repos.length > 0;
     const panel = railPanel();
     if (panel) panel.hidden = !on;
     root.hidden = !on;

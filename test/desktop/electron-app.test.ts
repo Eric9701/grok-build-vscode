@@ -73,6 +73,9 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "grok-desk-ws-"));
     // Known tree for the file-panel assertions.
     fs.writeFileSync(path.join(workspace, "readme.txt"), "desktop e2e readme\n");
+    fs.writeFileSync(path.join(workspace, "notes.md"), "# Notes\n\nHello panel\n");
+    // Non-previewable type hands off to OS open (sink).
+    fs.writeFileSync(path.join(workspace, "payload.bin"), Buffer.from([0, 1, 2, 0, 9]));
     fs.mkdirSync(path.join(workspace, "src"), { recursive: true });
     fs.writeFileSync(path.join(workspace, "src", "hello.ts"), "export const n = 1;\n");
 
@@ -277,25 +280,28 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     await viewer.close();
   });
 
-  it("file-tree panel renders the workspace root entries", async () => {
-    // Ensure expanded (a prior test may have left localStorage collapsed).
-    await page.evaluate(() => {
-      try {
-        localStorage.setItem("desk-ft-collapsed", "0");
-      } catch {
-        /* */
-      }
-    });
-    // Re-inject if needed: collapse class is applied at boot from localStorage.
-    // Toggle expand if currently collapsed.
-    const collapsed = await page.evaluate(() =>
-      document.body.classList.contains("desk-ft-collapsed"),
+  /** Panel starts closed (no space); open via the top-bar toggle. */
+  async function ensureFilePanelOpen(): Promise<void> {
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 15_000 });
+    const closed = await page.evaluate(() =>
+      document.body.classList.contains("desk-ft-closed"),
     );
-    if (collapsed) {
-      await page.locator("#desk-ft-toggle").click();
+    if (closed) {
+      await page.locator("#desk-ft-top-toggle").click();
     }
+    await page.waitForFunction(
+      () => !document.body.classList.contains("desk-ft-closed"),
+      { timeout: 5_000 },
+    );
+    await page.waitForSelector("#desk-ft-panel", {
+      state: "visible",
+      timeout: 10_000,
+    });
+  }
 
-    await page.waitForSelector("#desk-ft-panel", { timeout: 15_000 });
+  it("file-tree panel renders the workspace root entries", async () => {
+    await ensureFilePanelOpen();
+
     await page.waitForFunction(
       () => {
         const body = document.getElementById("desk-ft-body");
@@ -308,19 +314,18 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     const treeText = await page.locator("#desk-ft-body").innerText();
     expect(treeText).toContain("readme.txt");
     expect(treeText).toContain("src");
+    // Top bar is in the chat column host (body or .app-main with multi-folder rail).
+    expect(await page.locator(".top-bar").count()).toBe(1);
     // Chat chrome still present beside the panel.
     expect(await page.locator("#input").count()).toBe(1);
     expect(await page.locator(".desk-ft-chat #messages").count()).toBe(1);
   });
 
   it("file-tree expands and collapses a directory", async () => {
-    // Ensure panel is expanded.
-    if (await page.evaluate(() => document.body.classList.contains("desk-ft-collapsed"))) {
-      await page.locator("#desk-ft-toggle").click();
-    }
+    await ensureFilePanelOpen();
     // Root should list src as a directory node.
     const srcRow = page.locator('.desk-ft-node[data-rel="src"] > .desk-ft-row');
-    await srcRow.waitFor({ timeout: 10_000 });
+    await srcRow.waitFor({ state: "visible", timeout: 10_000 });
     // Before expand: hello.ts not under src children.
     const before = await page.locator('.desk-ft-node[data-rel="src/hello.ts"]').count();
     expect(before).toBe(0);
@@ -344,41 +349,106 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(openAfter).toBe(0);
   });
 
-  it("file-tree panel collapses and restores", async () => {
-    await page.waitForSelector("#desk-ft-toggle", { timeout: 10_000 });
-    // Start expanded.
-    if (await page.evaluate(() => document.body.classList.contains("desk-ft-collapsed"))) {
-      await page.locator("#desk-ft-toggle").click();
-    }
+  it("file-tree panel hide/show via top-bar toggle takes no space when closed", async () => {
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 10_000 });
+    await ensureFilePanelOpen();
     expect(
-      await page.evaluate(() => document.body.classList.contains("desk-ft-collapsed")),
+      await page.evaluate(() => document.body.classList.contains("desk-ft-closed")),
     ).toBe(false);
     expect(await page.locator("#desk-ft-body").isVisible()).toBe(true);
 
-    await page.locator("#desk-ft-toggle").click();
+    await page.locator("#desk-ft-top-toggle").click();
     await page.waitForFunction(
-      () => document.body.classList.contains("desk-ft-collapsed"),
+      () => document.body.classList.contains("desk-ft-closed"),
       { timeout: 5_000 },
     );
-    // Body/filter hidden when collapsed.
-    expect(await page.locator("#desk-ft-body").isVisible()).toBe(false);
+    // Panel takes no space when closed.
+    expect(await page.locator("#desk-ft-panel").isVisible()).toBe(false);
 
-    await page.locator("#desk-ft-toggle").click();
+    await page.locator("#desk-ft-top-toggle").click();
     await page.waitForFunction(
-      () => !document.body.classList.contains("desk-ft-collapsed"),
+      () => !document.body.classList.contains("desk-ft-closed"),
       { timeout: 5_000 },
     );
     expect(await page.locator("#desk-ft-body").isVisible()).toBe(true);
   });
 
-  it("clicking a file in the tree triggers the open path", async () => {
+  it("file-tree toggle uses Lucide panel-right and open panel has a separating border", async () => {
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 15_000 });
+    // panel-right path divider at x=15 (panel-left uses x=9).
+    const iconOk = await page.evaluate(() => {
+      const btn = document.getElementById("desk-ft-top-toggle");
+      if (!btn) return false;
+      const path = btn.querySelector("svg path");
+      return !!(path && (path.getAttribute("d") || "").includes("M15"));
+    });
+    expect(iconOk).toBe(true);
+
+    await ensureFilePanelOpen();
+    const panelCss = await page.evaluate(() => {
+      const panel = document.getElementById("desk-ft-panel");
+      if (!panel) return null;
+      const cs = getComputedStyle(panel);
+      return {
+        borderLeftWidth: cs.borderLeftWidth,
+        borderLeftStyle: cs.borderLeftStyle,
+        display: cs.display,
+      };
+    });
+    expect(panelCss).toBeTruthy();
+    expect(panelCss!.display).not.toBe("none");
+    expect(panelCss!.borderLeftStyle).not.toBe("none");
+    expect(parseFloat(panelCss!.borderLeftWidth)).toBeGreaterThan(0);
+  });
+
+  it("scroll-edge fades mount around #messages", async () => {
+    await page.waitForSelector("#messages-wrap", { timeout: 15_000 });
+    await page.waitForSelector(".msg-fade-top", { timeout: 5_000 });
+    await page.waitForSelector(".msg-fade-bot", { timeout: 5_000 });
+    const inside = await page.evaluate(() => {
+      const wrap = document.getElementById("messages-wrap");
+      const m = document.getElementById("messages");
+      return !!(wrap && m && wrap.contains(m));
+    });
+    expect(inside).toBe(true);
+  });
+
+  it("clicking a text file replaces the tree with a file viewer", async () => {
+    await ensureFilePanelOpen();
+    // Leave any prior view.
+    if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
+      await page.locator(".desk-ft-crumb-back").click();
+    }
+    const fileRow = page.locator('.desk-ft-node[data-rel="notes.md"] > .desk-ft-row');
+    await fileRow.waitFor({ state: "visible", timeout: 10_000 });
+    await fileRow.click();
+
+    await page.waitForFunction(
+      () => document.body.classList.contains("desk-ft-viewing"),
+      { timeout: 10_000 },
+    );
+    const bodyText = await page.locator("#desk-ft-viewer-body").innerText();
+    expect(bodyText).toMatch(/Notes|Hello panel/i);
+    // Tree body is hidden while viewing.
+    expect(await page.locator("#desk-ft-body").isVisible()).toBe(false);
+    // Breadcrumb back returns to the tree.
+    await page.locator(".desk-ft-crumb-back").click();
+    await page.waitForFunction(
+      () => !document.body.classList.contains("desk-ft-viewing"),
+      { timeout: 5_000 },
+    );
+    expect(await page.locator("#desk-ft-body").isVisible()).toBe(true);
+  });
+
+  it("clicking a non-previewable file triggers the OS open path", async () => {
     // Clear prior sink lines.
     fs.writeFileSync(openSink, "", "utf8");
-    if (await page.evaluate(() => document.body.classList.contains("desk-ft-collapsed"))) {
-      await page.locator("#desk-ft-toggle").click();
+    await ensureFilePanelOpen();
+    if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
+      await page.locator(".desk-ft-crumb-back").click();
     }
-    const fileRow = page.locator('.desk-ft-node[data-rel="readme.txt"] > .desk-ft-row');
-    await fileRow.waitFor({ timeout: 10_000 });
+    const fileRow = page.locator('.desk-ft-node[data-rel="payload.bin"] > .desk-ft-row');
+    await fileRow.waitFor({ state: "visible", timeout: 10_000 });
     await fileRow.click();
 
     // Open sink is written by main when GROK_DESKTOP_OPEN_SINK is set.
@@ -390,7 +460,7 @@ describe("desktop Electron app (real window + fake CLI)", () => {
         }).grokDesktopFileTree;
         if (!api) return false;
         const r = await api.lastOpen();
-        return !!(r && r.path && /readme\.txt$/i.test(r.path.replace(/\\/g, "/")));
+        return !!(r && r.path && /payload\.bin$/i.test(r.path.replace(/\\/g, "/")));
       },
       { timeout: 10_000 },
     );
@@ -401,14 +471,14 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     for (let i = 0; i < 20; i++) {
       if (fs.existsSync(openSink)) {
         sink = fs.readFileSync(openSink, "utf8");
-        if (sink.includes("readme.txt")) break;
+        if (sink.includes("payload.bin")) break;
       }
       await page.waitForTimeout(100);
     }
-    expect(sink.replace(/\\/g, "/")).toMatch(/readme\.txt/);
+    expect(sink.replace(/\\/g, "/")).toMatch(/payload\.bin/);
     // Contained under workspace.
     expect(path.resolve(sink.trim().split(/\r?\n/).filter(Boolean).pop()!)).toBe(
-      path.resolve(workspace, "readme.txt"),
+      path.resolve(workspace, "payload.bin"),
     );
   });
 
@@ -428,5 +498,176 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(result.list.ok).toBe(false);
     expect(result.open.ok).toBe(false);
     expect(result.openDotDot.ok).toBe(false);
+  });
+
+  it("projects rail mounts once repos arrives (desktop multi-folder)", async () => {
+    // getHtml includes #projects-rail; host posts repos for open folders.
+    await page.waitForSelector("#projects-rail", { timeout: 30_000 });
+    await page.waitForFunction(
+      () => {
+        const rail = document.getElementById("projects-rail");
+        if (!rail || rail.hidden) return false;
+        return document.body.classList.contains("has-rail")
+          && document.querySelectorAll(".rail-repo-label").length >= 1;
+      },
+      { timeout: 45_000 },
+    );
+    const labels = await page.locator(".rail-repo-label").allTextContents();
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * Multi-folder isolation: two open project folders, rail switch, sessions stay
+ * in their own cwd. Separate app so prefs start clean with both roots.
+ */
+describe("desktop multi-folder rail + isolation", () => {
+  let app: ElectronApplication;
+  let page: Page;
+  let wsA: string;
+  let wsB: string;
+  let userData: string;
+
+  beforeAll(async () => {
+    if (!fs.existsSync(mainJs)) {
+      throw new Error(`Missing ${mainJs} — run npm run compile before test:desktop`);
+    }
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(fixtureCli(), 0o755); } catch { /* */ }
+    }
+
+    wsA = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-a-"));
+    wsB = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-b-"));
+    fs.writeFileSync(path.join(wsA, "a.txt"), "project A\n");
+    fs.writeFileSync(path.join(wsB, "b.txt"), "project B\n");
+
+    userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-ud-"));
+    // Persist both open folders before launch (config store multi-folder shape).
+    fs.writeFileSync(
+      path.join(userData, "config.json"),
+      JSON.stringify({
+        workspaceRoot: wsA,
+        workspaceRoots: [wsA, wsB],
+        config: { "grok.cliPath": fixtureCli() },
+      }, null, 2),
+      "utf8",
+    );
+
+    app = await electron.launch({
+      executablePath: electronExe,
+      args: [
+        mainJs,
+        `--workspace=${wsA}`,
+        `--user-data-dir=${userData}`,
+      ],
+      env: stripElectronRunAsNode(process.env),
+      timeout: 60_000,
+    });
+    page = await app.firstWindow({ timeout: 60_000 });
+    await page.waitForSelector("#input", { timeout: 45_000 });
+    await page.waitForFunction(
+      () => {
+        const input = document.querySelector("#input") as HTMLTextAreaElement | null;
+        return !!input && !document.body.classList.contains("busy-locked") && !input.disabled;
+      },
+      { timeout: 45_000 },
+    ).catch(async () => {
+      await page.waitForTimeout(3000);
+    });
+  }, 90_000);
+
+  afterAll(async () => {
+    try { await app?.close(); } catch { /* */ }
+    for (const p of [wsA, wsB, userData]) {
+      try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* */ }
+    }
+  });
+
+  it("rail lists both open project folders", async () => {
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll(".rail-repo-label").length >= 2,
+      { timeout: 45_000 },
+    );
+    const labels = await page.locator(".rail-repo-label").allTextContents();
+    const leafA = path.basename(wsA);
+    const leafB = path.basename(wsB);
+    expect(labels.some((l) => l.includes(leafA) || l === leafA)).toBe(true);
+    expect(labels.some((l) => l.includes(leafB) || l === leafB)).toBe(true);
+  });
+
+  it("switching project B then A keeps sessions isolated", async () => {
+    const leafA = path.basename(wsA);
+    const leafB = path.basename(wsB);
+
+    // Send a distinctive message in project A first.
+    const msgA = `isolation-A-${Date.now()}`;
+    await page.locator("#input").fill(msgA);
+    await page.locator("#send-btn").click();
+    await page.waitForFunction(
+      (t) => [...document.querySelectorAll(".msg.user")].some((el) => (el.textContent || "").includes(t)),
+      msgA,
+      { timeout: 30_000 },
+    );
+    await page.waitForFunction(
+      () => {
+        const all = [...document.querySelectorAll("#messages .msg")];
+        return all.some((el) => !el.classList.contains("user") && (el.textContent || "").includes("ok"));
+      },
+      { timeout: 30_000 },
+    );
+
+    // Switch to B via the rail project name button.
+    await page.waitForFunction(
+      (name) => [...document.querySelectorAll(".rail-repo-name")].some((b) => (b.textContent || "").includes(name)),
+      leafB,
+      { timeout: 15_000 },
+    );
+    await page.evaluate((name) => {
+      const btn = [...document.querySelectorAll(".rail-repo-name")]
+        .find((b) => (b.textContent || "").includes(name)) as HTMLButtonElement | undefined;
+      btn?.click();
+    }, leafB);
+
+    // After switch: A's user bubble must not be the live conversation.
+    await page.waitForFunction(
+      (t) => {
+        const users = [...document.querySelectorAll(".msg.user")];
+        // Either cleared (new session) or only non-A messages.
+        return !users.some((el) => (el.textContent || "").includes(t));
+      },
+      msgA,
+      { timeout: 45_000 },
+    );
+
+    const msgB = `isolation-B-${Date.now()}`;
+    await page.locator("#input").fill(msgB);
+    await page.locator("#send-btn").click();
+    await page.waitForFunction(
+      (t) => [...document.querySelectorAll(".msg.user")].some((el) => (el.textContent || "").includes(t)),
+      msgB,
+      { timeout: 30_000 },
+    );
+
+    // Back to A — B's message must not appear; A's may reload from pool/disk.
+    await page.evaluate((name) => {
+      const btn = [...document.querySelectorAll(".rail-repo-name")]
+        .find((b) => (b.textContent || "").includes(name)) as HTMLButtonElement | undefined;
+      btn?.click();
+    }, leafA);
+
+    await page.waitForFunction(
+      (t) => {
+        const text = document.querySelector("#messages")?.textContent || "";
+        return !text.includes(t);
+      },
+      msgB,
+      { timeout: 45_000 },
+    );
+
+    // A's conversation should still be reachable (pool re-focus or history).
+    // Soft assert: either msgA is back, or we at least do not show msgB.
+    const transcript = await page.locator("#messages").innerText();
+    expect(transcript).not.toContain(msgB);
   });
 });

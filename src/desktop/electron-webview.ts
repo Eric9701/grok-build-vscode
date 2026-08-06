@@ -2,12 +2,28 @@
  * HostWebview over Electron IPC + a custom `app-resource://` protocol.
  *
  * The sidebar sets `html` (built by `getHtml`) and never hand-writes a page.
- * Scripts/styles/media resolve through {@link asWebviewUri} → `app-resource://`.
+ * Scripts/styles resolve through {@link asWebviewUri} → `app-resource://` path
+ * URLs under full-serve roots (canonical containment). Generated media and
+ * other host-chosen files go through a {@link ResourceRegistry} opaque handle
+ * so the renderer cannot invent paths into `~/.grok`.
+ *
+ * Renderer → host messages are schema-validated ({@link parseWebviewMsg})
+ * before any sidebar listener runs.
  */
 import type { BrowserWindow } from "electron";
 import * as path from "node:path";
 import type { HostDisposable, HostWebview, Uri } from "../host";
-import { appResourceMayServe } from "./app-resource-policy";
+import {
+  appResourceMayServeStaticPath,
+  resolveAppResourceServe,
+  rootServePolicy,
+} from "./app-resource-policy";
+import { authorizeDesktopWebviewMsg } from "./desktop-policy";
+import {
+  RESOURCE_REGISTRY_URL_SEGMENT,
+  ResourceRegistry,
+} from "./resource-registry";
+import { parseWebviewMsg } from "./webview-msg-validate";
 
 const SCHEME = "app-resource";
 const AUTHORITY = "vsc-resource";
@@ -69,6 +85,97 @@ const DESKTOP_THEME_CSS = `
 }
 html, body { margin: 0; height: 100%; overflow: hidden; }
 body { background: var(--vscode-sideBar-background); color: var(--vscode-foreground); }
+
+/* Reading measure — desktop shell only (mirrors AFK Pilot web/chat.html).
+   Shared chat.css is left alone so VS Code's narrow panel is unchanged.
+   Top bar fills the chat column (rail edge → panel edge); only messages +
+   composer are width-capped. */
+body.desk > #messages,
+body.desk > .composer,
+body.desk > #messages-wrap,
+body.desk .desk-ft-chat > #messages,
+body.desk .desk-ft-chat > .composer,
+body.desk .desk-ft-chat > #messages-wrap {
+  max-width: 800px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+/* Without the file-tree shell, a slightly wider reading column is fine. */
+body.desk:not(.desk-with-ft) > #messages,
+body.desk:not(.desk-with-ft) > .composer,
+body.desk:not(.desk-with-ft) > #messages-wrap {
+  max-width: 1120px;
+}
+/* Top bar: full width of the chat column (not the reading measure). */
+body.desk > .top-bar,
+body.desk .app-main > .top-bar {
+  max-width: none;
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+  flex-shrink: 0;
+}
+
+/* Spacing rhythm — match AFK Pilot (web/chat.html), not chat.css body.desk's
+   4px VS Code-panel pad. Desktop shell only; chat.css is untouched. */
+body.desk {
+  --pad: 8px;
+}
+body.desk > #messages,
+body.desk > .composer,
+body.desk .desk-ft-chat > #messages,
+body.desk .desk-ft-chat > .composer {
+  padding-left: calc(var(--pad) + 5px);
+  padding-right: calc(var(--pad) + 5px);
+}
+/* Room under typed text before the toolbar (AFK Pilot: 11px). */
+body.desk textarea#input,
+body.desk .input-highlight {
+  padding-bottom: 11px;
+}
+/* Extra air under the composer card vs the window edge. */
+body.desk > .composer,
+body.desk .desk-ft-chat > .composer {
+  padding-bottom: max(12px, var(--pad));
+}
+
+/* Scroll-edge fades — port of AFK Pilot web/chat.html (not shared chat.css). */
+#messages-wrap {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+#messages-wrap > #messages {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.msg-fade {
+  position: absolute;
+  left: 0;
+  right: 8px; /* clear the 8px scrollbar so it stays crisp */
+  height: 18px;
+  z-index: 4;
+  pointer-events: none;
+}
+.msg-fade-top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--vscode-sideBar-background), transparent);
+  opacity: var(--fade-top-op, 0);
+}
+.msg-fade-bot {
+  bottom: 0;
+  background: linear-gradient(to top, var(--vscode-sideBar-background), transparent);
+  opacity: var(--fade-bot-op, 0);
+}
 `;
 
 export function asAppResourceUrl(uri: Uri): string {
@@ -88,7 +195,12 @@ export function asAppResourceUrl(uri: Uri): string {
   return `${SCHEME}://${AUTHORITY}${encPath.startsWith("/") ? encPath : `/${encPath || "/"}`}`;
 }
 
-/** Decode an app-resource URL back to an absolute filesystem path. */
+/** Build a registry-handle app-resource URL for an opaque media id. */
+export function asAppResourceRegistryUrl(id: string): string {
+  return `${SCHEME}://${AUTHORITY}/${RESOURCE_REGISTRY_URL_SEGMENT}/${id}`;
+}
+
+/** Decode an app-resource URL back to an absolute filesystem path (path-shaped only). */
 export function appResourceUrlToFsPath(url: string): string | undefined {
   let parsed: URL;
   try {
@@ -98,6 +210,10 @@ export function appResourceUrlToFsPath(url: string): string | undefined {
   }
   if (parsed.protocol !== `${SCHEME}:` || parsed.hostname !== AUTHORITY) return undefined;
   let p = decodeURIComponent(parsed.pathname);
+  // Registry handles are not filesystem paths.
+  if (p.includes(`/${RESOURCE_REGISTRY_URL_SEGMENT}/`) || p.startsWith(`/${RESOURCE_REGISTRY_URL_SEGMENT}/`)) {
+    return undefined;
+  }
   // Windows: /C:/Users/... → C:\Users\...
   if (/^\/[A-Za-z]:/.test(p)) {
     p = p.slice(1).replace(/\//g, path.sep);
@@ -115,6 +231,15 @@ export class ElectronWebview implements HostWebview {
   private _options: HostWebview["options"] = {};
   private listeners = new Set<(message: unknown) => unknown>();
   private allowedRoots: string[] = [];
+  /** Host-issued media handles — only these resolve under media-only roots. */
+  readonly registry = new ResourceRegistry();
+  /** Optional log for dropped IPC (wired from main). */
+  onDroppedMessage?: (reason: string, raw: unknown) => void;
+  /**
+   * Workspace root for desktop openFile policy. Wired from main after the
+   * folder is chosen; when unset, openFile is refused.
+   */
+  getWorkspaceRoot?: () => string | undefined;
 
   constructor(private readonly getWindow: () => BrowserWindow | null) {}
 
@@ -147,14 +272,27 @@ export class ElectronWebview implements HostWebview {
   }
 
   /**
-   * Whether the app-resource protocol may serve this absolute path.
-   * Uses the webview's localResourceRoots, then narrows media-only roots
-   * (Grok home) to generated session media — never auth.json / history.
-   * @see appResourceMayServe
+   * Resolve an app-resource request URL to a serveable absolute path, or null.
+   * Registry handles and static full-serve paths only — never free-form Grok home.
+   */
+  resolveResourceUrl(url: string): string | null {
+    const fsPath = appResourceUrlToFsPath(url);
+    const result = resolveAppResourceServe({
+      urlOrPath: url,
+      fsPath,
+      allowedRoots: this.allowedRoots,
+      registry: this.registry,
+    });
+    return result.ok ? result.fsPath : null;
+  }
+
+  /**
+   * Whether a path-shaped URL may be served (static full-serve only).
+   * @deprecated Prefer {@link resolveResourceUrl}; kept for diagnostics.
    */
   isPathAllowed(fsPath: string): boolean {
     if (!this.allowedRoots.length) return false;
-    return appResourceMayServe(fsPath, this.allowedRoots);
+    return appResourceMayServeStaticPath(fsPath, this.allowedRoots);
   }
 
   /** Absolute roots currently registered (tests / diagnostics). */
@@ -180,11 +318,30 @@ export class ElectronWebview implements HostWebview {
     };
   }
 
-  /** Called from main when the renderer posts a webview message. */
+  /**
+   * Called from main when the renderer posts a webview message.
+   * Schema-invalid / unknown types are dropped (never cast through).
+   * Well-formed `openFile` / `openUrl` still pass through {@link authorizeDesktopWebviewMsg}.
+   */
   dispatchMessage(message: unknown): void {
+    const parsed = parseWebviewMsg(message);
+    if (!parsed) {
+      this.onDroppedMessage?.("invalid WebviewMsg", message);
+      return;
+    }
+    const auth = authorizeDesktopWebviewMsg(parsed, {
+      workspaceRoot: this.getWorkspaceRoot?.(),
+    });
+    if ("refused" in auth) {
+      this.onDroppedMessage?.(
+        `desktop policy refused ${auth.type}: ${auth.reason}`,
+        message,
+      );
+      return;
+    }
     for (const listener of this.listeners) {
       try {
-        void listener(message);
+        void listener(auth.msg);
       } catch {
         /* best-effort — sidebar wraps handlers itself */
       }
@@ -192,7 +349,31 @@ export class ElectronWebview implements HostWebview {
   }
 
   asWebviewUri(uri: Uri): string {
-    return asAppResourceUrl(uri);
+    if (uri.scheme !== "file") {
+      return asAppResourceUrl(uri);
+    }
+    const fsPath = path.normalize(uri.fsPath);
+    // Static full-serve roots (extension media/resources, staging): path URL
+    // with canonical containment at serve time.
+    for (const root of this.allowedRoots) {
+      if (rootServePolicy(root) !== "full") continue;
+      if (appResourceMayServeStaticPath(fsPath, [root])) {
+        return asAppResourceUrl(uri);
+      }
+    }
+    // Everything else (Grok home media, unlisted paths the host still wants
+    // to stream): opaque registry handle only — and only when provenance
+    // allows (canonical target under an approved root).
+    try {
+      const id = this.registry.register(fsPath, {
+        allowedRoots: this.allowedRoots,
+      });
+      return asAppResourceRegistryUrl(id);
+    } catch {
+      // File not yet on disk, unreadable, or outside approved roots — path
+      // URL still refuses at serve time unless it lands under a full-serve root.
+      return asAppResourceUrl(uri);
+    }
   }
 }
 
@@ -202,4 +383,64 @@ function injectTheme(html: string): string {
     return html.replace("</head>", `${tag}</head>`);
   }
   return tag + html;
+}
+
+/**
+ * Desktop chrome boot: wrap #messages for scroll-edge fades and wire the
+ * opacity ramp (port of AFK Pilot web/chat.html — shell-only, not chat.js).
+ * Idempotent; safe after file-tree remounts that reparent #messages.
+ */
+export function desktopChromeBootSource(): string {
+  return `(() => {
+  const m = document.getElementById("messages");
+  if (!m) return { ok: false, reason: "no messages" };
+
+  let wrap = document.getElementById("messages-wrap");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "messages-wrap";
+    const parent = m.parentElement;
+    if (!parent) return { ok: false, reason: "no parent" };
+    parent.insertBefore(wrap, m);
+    wrap.appendChild(m);
+  }
+  if (!wrap.querySelector(".msg-fade-top")) {
+    const top = document.createElement("div");
+    top.className = "msg-fade msg-fade-top";
+    top.setAttribute("aria-hidden", "true");
+    const bot = document.createElement("div");
+    bot.className = "msg-fade msg-fade-bot";
+    bot.setAttribute("aria-hidden", "true");
+    wrap.appendChild(top);
+    wrap.appendChild(bot);
+  }
+
+  const FADE_RAMP = 16;
+  function ramp(px) {
+    const v = px / FADE_RAMP;
+    return v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+  let raf = 0;
+  function apply() {
+    raf = 0;
+    const msg = document.getElementById("messages");
+    const w = document.getElementById("messages-wrap");
+    if (!msg || !w) return;
+    w.style.setProperty("--fade-top-op", String(ramp(msg.scrollTop)));
+    w.style.setProperty(
+      "--fade-bot-op",
+      String(ramp(msg.scrollHeight - msg.clientHeight - msg.scrollTop)),
+    );
+  }
+  function schedule() {
+    if (!raf) raf = requestAnimationFrame(apply);
+  }
+  if (!m.dataset.deskFadeWired) {
+    m.dataset.deskFadeWired = "1";
+    m.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+  }
+  apply();
+  return { ok: true };
+})()`;
 }

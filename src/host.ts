@@ -534,8 +534,29 @@ export interface Host {
   readonly fs: HostFileSystem;
 
   // ── Workspace ──────────────────────────────────────────────────────────
-  /** Absolute path of the first workspace folder, if any. */
+  /** Absolute path of the active workspace folder, if any. */
   workspaceRoot(): string | undefined;
+  /**
+   * Every open workspace folder root. Desktop multi-folder returns several;
+   * VS Code returns the window's folders (often one). Empty when none open.
+   */
+  workspaceFolders(): string[];
+  /**
+   * Make `cwd` the active workspace folder. Must already be open (see
+   * {@link workspaceFolders}). No-op when the host does not switch folders
+   * (VS Code: the window *is* the workspace).
+   */
+  setActiveWorkspaceFolder(cwd: string): void;
+  /**
+   * Open an additional folder (desktop multi-folder). Returns false when the
+   * host cannot add folders or the path is invalid.
+   */
+  addWorkspaceFolder(cwd: string): boolean;
+  /**
+   * Close an open folder. Returns false when refused (last folder, unknown
+   * path, or host does not manage folders).
+   */
+  removeWorkspaceFolder(cwd: string): boolean;
   /**
    * Relative path from the workspace (multi-root-aware).
    * Pass a portable {@link Uri} so remote schemes (`vscode-remote://…`) keep
@@ -644,6 +665,23 @@ export interface Host {
    * Anything other than a bare id or `<id>:desktop` is rejected by the relay.
    */
   readonly remoteInstallIdSuffix: string;
+  /**
+   * Gear → Move view. Wired into `initialState.capabilities.relocateView`.
+   * Client treats absent/true as supported (older extensions); only false
+   * hides the item — desktop has no view containers.
+   */
+  readonly canRelocateView: boolean;
+  /**
+   * Gear → Show extension logs. Same opt-out polarity as canRelocateView;
+   * desktop is false (stdout only).
+   */
+  readonly canShowOutput: boolean;
+  /**
+   * When true, the local webview may switch the active workspace folder via
+   * the projects rail (`selectRepo` re-homes the local session). Desktop
+   * multi-folder only; **false for VS Code** (window already is the repo).
+   */
+  readonly canSwitchWorkspaceFolder: boolean;
 }
 
 /**

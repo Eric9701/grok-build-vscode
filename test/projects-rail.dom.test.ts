@@ -65,14 +65,25 @@ const menuItem = (menu: Element, label: string) =>
     .find((b) => (b.textContent || "").includes(label)) as HTMLElement | undefined;
 
 describe("projects rail", () => {
-  it("never mounts in VS Code, even if the element is present", () => {
-    // `IS_REMOTE` is the gate, not the element — so a stray mount cannot switch
-    // the rail on in a webview where the window already IS the repo.
-    const { doc, window, posted } = bootWebview({ beforeScripts: withRail });
+  it("does not mount without a #projects-rail element, even when repos arrives", () => {
+    // Regression guard for VS Code: getHtml never includes the mount, so a
+    // `repos` frame (sent for clear-all naming) must not light a rail column.
+    const { doc, window, posted } = bootWebview({});
     dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
-    expect(rail(doc).hidden).toBe(true);
+    expect(doc.body.classList.contains("has-rail")).toBe(false);
     expect(doc.querySelectorAll(".rail-repo")).toHaveLength(0);
     expect(posted.filter((p) => p.type === "listRepoSessions")).toEqual([]);
+  });
+
+  it("mounts for a non-remote host when the rail element exists and repos arrives", () => {
+    // Desktop multi-folder: no IS_REMOTE, but host shipped the mount + catalog.
+    // Capability gate is mount + reposKnown — not the remote flag.
+    const { doc, window } = bootWebview({ beforeScripts: withRail });
+    expect(rail(doc).hidden).toBe(true);
+    dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    expect(rail(doc).hidden).toBe(false);
+    expect(doc.body.classList.contains("has-rail")).toBe(true);
+    expect(repoNames(doc)).toContain("alpha");
   });
 
   it("stays hidden until the host proves it speaks `repos`", () => {

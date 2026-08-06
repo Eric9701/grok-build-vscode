@@ -13,6 +13,38 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isFsPathInWorkspace } from "../host";
 
+/**
+ * Walk ancestors of `dir` until an existing directory is found (or the root).
+ * Used by the bound file watcher so a missing custom Grok home can still be
+ * supervised via the nearest living parent.
+ */
+export function nearestExistingAncestor(
+  dir: string,
+  existsSync: (p: string) => boolean = (p) => fs.existsSync(p),
+  isDirectory: (p: string) => boolean = (p) => {
+    try {
+      return fs.statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  },
+): string | undefined {
+  let current = path.resolve(dir);
+  for (let i = 0; i < 64; i++) {
+    try {
+      if (existsSync(current) && isDirectory(current)) {
+        return current;
+      }
+    } catch {
+      /* continue walking */
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+  return undefined;
+}
+
 /** Cap per directory so a huge folder cannot freeze the panel. */
 export const FILE_TREE_MAX_ENTRIES = 2000;
 
@@ -235,4 +267,206 @@ export function listTreeDir(
 
   entries.sort(entrySort);
   return { ok: true, entries, truncated };
+}
+
+/** In-panel preview kinds (read-only). Everything else hands off to the OS. */
+export type FilePreviewKind = "markdown" | "json" | "image" | "text" | "external";
+
+const PREVIEW_IMAGE_EXT = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+  ".svg",
+]);
+const PREVIEW_TEXT_EXT = new Set([
+  ".txt",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".css",
+  ".html",
+  ".htm",
+  ".yml",
+  ".yaml",
+  ".toml",
+  ".xml",
+  ".csv",
+  ".log",
+  ".env",
+  ".sh",
+  ".ps1",
+  ".py",
+  ".rs",
+  ".go",
+  ".java",
+  ".c",
+  ".h",
+  ".cpp",
+  ".hpp",
+  ".jsonc",
+  ".mdx",
+  ".svg",
+]);
+
+/** Cap for in-panel text/json previews (bytes). */
+export const FILE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+/** Cap for in-panel image previews (bytes). */
+export const FILE_PREVIEW_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Classify a workspace-relative path for the desktop file panel viewer.
+ * `.md` → markdown, `.json` → json, images → image, common source/text → text,
+ * everything else → external (OS open).
+ */
+export function classifyFilePreview(relOrName: string): FilePreviewKind {
+  const ext = path.extname(relOrName).toLowerCase();
+  if (ext === ".md" || ext === ".markdown") return "markdown";
+  if (ext === ".json") return "json";
+  if (PREVIEW_IMAGE_EXT.has(ext)) return "image";
+  if (PREVIEW_TEXT_EXT.has(ext)) return "text";
+  // Dotfiles like `.env` have ext "" when basename is `.env` — treat as text.
+  if (ext === "" || /^\./.test(path.basename(relOrName))) return "text";
+  return "external";
+}
+
+export type ReadTreeFileResult =
+  | {
+      ok: true;
+      kind: Exclude<FilePreviewKind, "external">;
+      relPath: string;
+      absPath: string;
+      /** UTF-8 text for markdown/json/text; empty for image. */
+      text?: string;
+      /** data: URL for images. */
+      dataUrl?: string;
+      /** Pretty-printed when kind is json. */
+      pretty?: boolean;
+    }
+  | { ok: false; reason: string; openExternal?: boolean };
+
+/**
+ * Read a workspace file for the in-panel viewer. Containment matches
+ * {@link resolveTreePath}. Oversized or binary-looking files return
+ * `{ openExternal: true }` so the panel can hand off to the OS.
+ */
+export function readTreeFile(
+  root: string,
+  relPath: string,
+  platform: NodeJS.Platform = process.platform,
+  pathFs: TreePathFs = defaultTreeFs,
+  readFileSync: (p: string) => Buffer = (p) => fs.readFileSync(p),
+): ReadTreeFileResult {
+  const resolved = resolveTreePath(root, relPath, platform, pathFs);
+  if (!resolved.ok) return { ok: false, reason: resolved.reason };
+
+  let st: fs.Stats;
+  try {
+    st = pathFs.statSync(resolved.absPath);
+  } catch {
+    return { ok: false, reason: "not found" };
+  }
+  if (!st.isFile()) {
+    return { ok: false, reason: "not a file" };
+  }
+
+  const kind = classifyFilePreview(resolved.relPath || path.basename(resolved.absPath));
+  if (kind === "external") {
+    return { ok: false, reason: "open externally", openExternal: true };
+  }
+
+  if (kind === "image") {
+    if (st.size > FILE_PREVIEW_MAX_IMAGE_BYTES) {
+      return { ok: false, reason: "image too large", openExternal: true };
+    }
+    let buf: Buffer;
+    try {
+      buf = readFileSync(resolved.absPath);
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message || "unreadable" };
+    }
+    const ext = path.extname(resolved.absPath).toLowerCase();
+    const mime =
+      ext === ".png"
+        ? "image/png"
+        : ext === ".gif"
+          ? "image/gif"
+          : ext === ".webp"
+            ? "image/webp"
+            : ext === ".svg"
+              ? "image/svg+xml"
+              : ext === ".bmp"
+                ? "image/bmp"
+                : "image/jpeg";
+    return {
+      ok: true,
+      kind: "image",
+      relPath: resolved.relPath,
+      absPath: resolved.absPath,
+      dataUrl: `data:${mime};base64,${buf.toString("base64")}`,
+    };
+  }
+
+  if (st.size > FILE_PREVIEW_MAX_BYTES) {
+    return { ok: false, reason: "file too large", openExternal: true };
+  }
+
+  let buf: Buffer;
+  try {
+    buf = readFileSync(resolved.absPath);
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message || "unreadable" };
+  }
+  // Reject obvious binary (NUL in first 8k).
+  const sample = buf.subarray(0, Math.min(buf.length, 8192));
+  if (sample.includes(0)) {
+    return { ok: false, reason: "binary file", openExternal: true };
+  }
+
+  let text = buf.toString("utf8");
+  let pretty = false;
+  if (kind === "json") {
+    try {
+      text = JSON.stringify(JSON.parse(text), null, 2);
+      pretty = true;
+    } catch {
+      /* show raw */
+    }
+  }
+
+  return {
+    ok: true,
+    kind,
+    relPath: resolved.relPath,
+    absPath: resolved.absPath,
+    text,
+    pretty,
+  };
+}
+
+/**
+ * Breadcrumb segments for a workspace-relative path.
+ * Root is always the first segment with relPath "".
+ */
+export function breadcrumbSegments(
+  relPath: string,
+  rootLabel: string,
+): { label: string; relPath: string }[] {
+  const segs: { label: string; relPath: string }[] = [
+    { label: rootLabel || "Files", relPath: "" },
+  ];
+  const trimmed = (relPath || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!trimmed) return segs;
+  const parts = trimmed.split("/").filter(Boolean);
+  let acc = "";
+  for (const part of parts) {
+    acc = acc ? `${acc}/${part}` : part;
+    segs.push({ label: part, relPath: acc });
+  }
+  return segs;
 }

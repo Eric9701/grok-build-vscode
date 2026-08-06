@@ -8,11 +8,13 @@ import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from "ele
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { interpretOpenPathResult } from "./document-view";
-import { listTreeDir, resolveTreePath } from "./file-tree";
+import { listTreeDir, readTreeFile, resolveTreePath } from "./file-tree";
 import { fileTreePanelBootSource } from "./file-tree-panel";
+import { isTrustedMainFrameIpc } from "./window-security";
 
 const CH_LIST = "desk-ft:list";
 const CH_OPEN = "desk-ft:open";
+const CH_READ = "desk-ft:read";
 const CH_ROOT = "desk-ft:root";
 const CH_LAST_OPEN = "desk-ft:lastOpen";
 
@@ -35,15 +37,14 @@ export function getLastOpenedTreePath(): string | undefined {
   return lastOpenedPath;
 }
 
-/** True when the IPC event came from the desktop app's main window. */
+/** True when the IPC event came from the desktop app's main window main frame. */
 export function isIpcFromMainWindow(
-  event: Pick<IpcMainInvokeEvent, "sender">,
+  event: Pick<IpcMainInvokeEvent, "sender"> & {
+    senderFrame?: { url?: string } | null;
+  },
   getMainWindow: () => BrowserWindow | null,
 ): boolean {
-  const win = getMainWindow();
-  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return false;
-  if (event.sender.isDestroyed()) return false;
-  return event.sender.id === win.webContents.id;
+  return isTrustedMainFrameIpc(event, getMainWindow);
 }
 
 /** Register invoke handlers once per process. */
@@ -85,9 +86,16 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     if (typeof relPath !== "string") {
       return { ok: false as const, error: "invalid path" };
     }
+    // Validate, then re-resolve immediately before use (cheap TOCTOU close:
+    // a same-user process could swap a link between the two checks).
+    const first = resolveTreePath(root, relPath);
+    if (!first.ok) {
+      opts.log(`[desk-ft] open rejected: ${first.reason} (${relPath})`);
+      return { ok: false as const, error: first.reason };
+    }
     const resolved = resolveTreePath(root, relPath);
     if (!resolved.ok) {
-      opts.log(`[desk-ft] open rejected: ${resolved.reason} (${relPath})`);
+      opts.log(`[desk-ft] open rejected on re-check: ${resolved.reason} (${relPath})`);
       return { ok: false as const, error: resolved.reason };
     }
     // Open files only — directories stay expand-only in the panel.
@@ -114,13 +122,31 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
       return { ok: true as const, path: resolved.absPath, sink: true as const };
     }
 
-    const err = await shell.openPath(resolved.absPath);
+    // Final containment re-check immediately before the OS open.
+    const finalCheck = resolveTreePath(root, relPath);
+    if (!finalCheck.ok || finalCheck.absPath !== resolved.absPath) {
+      opts.log(`[desk-ft] open rejected at use-time re-resolve (${relPath})`);
+      return { ok: false as const, error: "path escaped workspace" };
+    }
+
+    const err = await shell.openPath(finalCheck.absPath);
     const result = interpretOpenPathResult(err);
     if (!result.ok) {
       opts.log(`[desk-ft] openPath failed: ${result.error}`);
       return { ok: false as const, error: result.error };
     }
-    return { ok: true as const, path: resolved.absPath };
+    return { ok: true as const, path: finalCheck.absPath };
+  });
+
+  /** In-panel read for markdown/json/image/text preview (containment-checked). */
+  ipcMain.handle(CH_READ, (e, relPath: unknown) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_READ);
+    const root = opts.getWorkspaceRoot();
+    if (!root) return { ok: false as const, reason: "no workspace root" };
+    if (typeof relPath !== "string") {
+      return { ok: false as const, reason: "invalid path" };
+    }
+    return readTreeFile(root, relPath);
   });
 
   // Test/diagnostic: last path the panel asked to open (after guard).
@@ -132,7 +158,7 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
 
 export function unregisterFileTreeIpc(): void {
   if (!handlersRegistered) return;
-  for (const ch of [CH_LIST, CH_OPEN, CH_ROOT, CH_LAST_OPEN]) {
+  for (const ch of [CH_LIST, CH_OPEN, CH_READ, CH_ROOT, CH_LAST_OPEN]) {
     ipcMain.removeHandler(ch);
   }
   handlersRegistered = false;

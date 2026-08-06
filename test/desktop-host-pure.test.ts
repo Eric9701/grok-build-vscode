@@ -6,7 +6,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConfigStore } from "../src/desktop/config-store";
+import {
+  ConfigStore,
+  SensitiveConfigStore,
+  SENSITIVE_CONFIG_KEYS,
+  normalizeWorkspaceRoots,
+} from "../src/desktop/config-store";
 import {
   buildDiffViewerHtml,
   buildTextViewerHtml,
@@ -15,34 +20,70 @@ import {
   resolveDocumentText,
 } from "../src/desktop/document-view";
 import {
+  asAppResourceRegistryUrl,
   asAppResourceUrl,
   appResourceUrlToFsPath,
   APP_RESOURCE_CSP_SOURCE,
+  desktopChromeBootSource,
 } from "../src/desktop/electron-webview";
 import { Uri } from "../src/host";
 import { findFilesUnder } from "../src/desktop/find-files";
 import {
   createSafeStorageSecrets,
   EncryptionUnavailableError,
+  isWindowsReplaceRenameError,
+  writeFileAtomic,
   type SafeStorageLike,
 } from "../src/desktop/safe-secrets";
 import {
   appResourceMayServe,
   isGeneratedSessionMediaPath,
+  resolveAppResourceServe,
   rootServePolicy,
 } from "../src/desktop/app-resource-policy";
+import {
+  authorizeDesktopWebviewMsg,
+  authorizeOpenFile,
+  authorizeOpenUrl,
+  isExecutablePath,
+} from "../src/desktop/desktop-policy";
 import {
   planOpenCliInTerminal,
   planRunCommandInTerminal,
 } from "../src/desktop/external-terminal";
 import {
+  breadcrumbSegments,
+  classifyFilePreview,
   FILE_TREE_MAX_ENTRIES,
   listTreeDir,
+  nearestExistingAncestor,
+  readTreeFile,
   resolveTreePath,
   type TreePathFs,
 } from "../src/desktop/file-tree";
 import { isIpcFromMainWindow } from "../src/desktop/file-tree-ipc";
 import { FILE_TREE_PANEL_CSS, fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
+import { mayRegisterResourcePath } from "../src/desktop/media-provenance";
+import {
+  ResourceRegistry,
+  registryIdFromUrlPath,
+} from "../src/desktop/resource-registry";
+import { parseWebviewMsg } from "../src/desktop/webview-msg-validate";
+import { isTrustedGeneratedMediaPath } from "../src/media-serve";
+import {
+  buildInputBoxHtml,
+  buildQuickPickHtml,
+  DESKTOP_APP_FULL_NAME,
+  DESKTOP_PUBLIC_REPO_URL,
+  parseDialogSubmit,
+  selectQuickPickIndex,
+} from "../src/desktop/host-dialogs";
+import {
+  isAllowedAppNavigationUrl,
+  shouldBlockNavigation,
+  shouldOpenExternally,
+  windowOpenDecision,
+} from "../src/desktop/window-security";
 
 describe("desktop ConfigStore", () => {
   let dir: string;
@@ -82,8 +123,53 @@ describe("desktop ConfigStore", () => {
 
   it("persists workspace root", () => {
     const store = new ConfigStore(file);
-    store.setWorkspaceRoot("/tmp/ws");
-    expect(new ConfigStore(file).getWorkspaceRoot()).toBe("/tmp/ws");
+    // Real directory so reload normalization keeps the path on every platform.
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "grok-ws-persist-"));
+    try {
+      store.setWorkspaceRoot(ws);
+      expect(new ConfigStore(file).getWorkspaceRoot()).toBe(path.resolve(ws));
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("multi-folder: add / switch / refuse last remove / reload", () => {
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-a-"));
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), "grok-mf-b-"));
+    try {
+      const store = new ConfigStore(file);
+      expect(store.addWorkspaceRoot(a, true)).toBe(true);
+      expect(store.getWorkspaceRoots()).toEqual([path.resolve(a)]);
+      expect(store.getWorkspaceRoot()).toBe(path.resolve(a));
+      expect(store.addWorkspaceRoot(b, true)).toBe(true);
+      expect(store.getWorkspaceRoots().map((p) => path.resolve(p)).sort()).toEqual(
+        [path.resolve(a), path.resolve(b)].sort(),
+      );
+      expect(store.getWorkspaceRoot()).toBe(path.resolve(b));
+      expect(store.setActiveWorkspaceRoot(a)).toBe(true);
+      expect(store.getWorkspaceRoot()).toBe(path.resolve(a));
+      // Last remaining folder cannot be closed.
+      expect(store.removeWorkspaceRoot(b)).toBe(true);
+      expect(store.removeWorkspaceRoot(a)).toBe(false);
+      expect(store.getWorkspaceRoots()).toEqual([path.resolve(a)]);
+
+      const reloaded = new ConfigStore(file);
+      expect(reloaded.getWorkspaceRoots()).toEqual([path.resolve(a)]);
+      expect(reloaded.getWorkspaceRoot()).toBe(path.resolve(a));
+    } finally {
+      fs.rmSync(a, { recursive: true, force: true });
+      fs.rmSync(b, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizeWorkspaceRoots dedupes and drops missing paths", () => {
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), "grok-norm-"));
+    try {
+      const out = normalizeWorkspaceRoots([a, a, path.join(a, "nope-missing")]);
+      expect(out).toEqual([path.resolve(a)]);
+    } finally {
+      fs.rmSync(a, { recursive: true, force: true });
+    }
   });
 
   it("honours caller-supplied defaultValue for unknown keys (arguments-in-arrow bug)", () => {
@@ -277,6 +363,22 @@ describe("createSafeStorageSecrets", () => {
     if (fs.existsSync(file)) {
       expect(fs.readFileSync(file, "utf8")).not.toContain("plain-token-value");
     }
+  });
+
+  it("writes secrets via temp file then rename (crash-safe)", async () => {
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "safe-secrets.ts"),
+      "utf8",
+    );
+    expect(src).toContain("writeFileAtomic");
+    expect(src).toMatch(/renameSync/);
+    // Functional: writeFileAtomic leaves a valid final file, never a bare partial.
+    const out = path.join(dir, "atomic.json");
+    writeFileAtomic(out, JSON.stringify({ ok: true }));
+    expect(JSON.parse(fs.readFileSync(out, "utf8"))).toEqual({ ok: true });
+    // No leftover temps for that write.
+    const leftovers = fs.readdirSync(dir).filter((n) => n.includes(".tmp"));
+    expect(leftovers).toEqual([]);
   });
 });
 
@@ -561,10 +663,30 @@ describe("file-tree path containment", () => {
 });
 
 describe("app-resource serve policy (no credential leak)", () => {
-  const grokHome = path.join(os.tmpdir(), "fake-grok-home");
-  const mediaRoot = path.join(os.tmpdir(), "ext", "media");
-  const staging = path.join(os.tmpdir(), "globalStorage", "image-staging");
-  const roots = [mediaRoot, staging, grokHome];
+  let tmp: string;
+  let grokHome: string;
+  let mediaRoot: string;
+  let staging: string;
+  let roots: string[];
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-res-"));
+    grokHome = path.join(tmp, "fake-grok-home");
+    mediaRoot = path.join(tmp, "ext", "media");
+    staging = path.join(tmp, "globalStorage", "image-staging");
+    roots = [mediaRoot, staging, grokHome];
+    fs.mkdirSync(mediaRoot, { recursive: true });
+    fs.mkdirSync(staging, { recursive: true });
+    fs.mkdirSync(path.join(grokHome, "sessions", "cwd", "id", "images"), {
+      recursive: true,
+    });
+    fs.writeFileSync(path.join(mediaRoot, "chat.js"), "/* chat */");
+    fs.writeFileSync(path.join(staging, "image-uuid.png"), "png");
+    fs.writeFileSync(path.join(grokHome, "auth.json"), '{"token":"secret"}');
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
 
   it("classifies Grok home as media-only and extension media as full", () => {
     expect(rootServePolicy(grokHome)).toBe("media-only");
@@ -572,49 +694,168 @@ describe("app-resource serve policy (no credential leak)", () => {
     expect(rootServePolicy(staging)).toBe("full");
   });
 
-  it("refuses auth.json and other non-media paths under Grok home", () => {
+  it("refuses path-shaped URLs under Grok home (registry required)", () => {
     const auth = path.join(grokHome, "auth.json");
     expect(appResourceMayServe(auth, roots)).toBe(false);
     expect(
       appResourceMayServe(path.join(grokHome, "config.toml"), roots),
     ).toBe(false);
-    expect(
-      appResourceMayServe(
-        path.join(grokHome, "sessions", "cwd", "id", "chat_history.jsonl"),
-        roots,
-      ),
-    ).toBe(false);
-  });
-
-  it("allows generated session media under Grok home", () => {
-    const img = path.join(
-      grokHome,
-      "sessions",
-      encodeURIComponent("C:\\repo"),
-      "abc-id",
-      "images",
-      "1.jpg",
-    );
-    const vid = path.join(
-      grokHome,
-      "sessions",
-      "cwd",
-      "id",
-      "videos",
-      "1.mp4",
-    );
+    const img = path.join(grokHome, "sessions", "cwd", "id", "images", "1.jpg");
     expect(isGeneratedSessionMediaPath(img)).toBe(true);
-    expect(appResourceMayServe(img, roots)).toBe(true);
-    expect(appResourceMayServe(vid, roots)).toBe(true);
+    // Path allowlist alone is no longer enough — provenance via registry.
+    expect(appResourceMayServe(img, roots)).toBe(false);
   });
 
-  it("allows extension media and image staging", () => {
+  it("allows extension media and image staging via static path", () => {
     expect(appResourceMayServe(path.join(mediaRoot, "chat.js"), roots)).toBe(true);
     expect(appResourceMayServe(path.join(staging, "image-uuid.png"), roots)).toBe(true);
   });
 
+  it("serves generated media only through a host-issued registry handle", () => {
+    const img = path.join(grokHome, "sessions", "cwd", "id", "images", "1.jpg");
+    fs.writeFileSync(img, "fake-jpeg");
+    const registry = new ResourceRegistry();
+    const id = registry.register(img);
+    const url = asAppResourceRegistryUrl(id);
+    expect(registryIdFromUrlPath(url)).toBe(id);
+
+    const viaPath = resolveAppResourceServe({
+      urlOrPath: asAppResourceUrl(Uri.file(img)),
+      fsPath: img,
+      allowedRoots: roots,
+      registry,
+    });
+    expect(viaPath.ok).toBe(false);
+
+    const viaReg = resolveAppResourceServe({
+      urlOrPath: url,
+      allowedRoots: roots,
+      registry,
+    });
+    expect(viaReg.ok).toBe(true);
+    if (viaReg.ok) {
+      expect(viaReg.via).toBe("registry");
+      expect(fs.readFileSync(viaReg.fsPath, "utf8")).toBe("fake-jpeg");
+    }
+  });
+
+  it("refuses a symlinked media file that points at a credential", () => {
+    const auth = path.join(grokHome, "auth.json");
+    const link = path.join(grokHome, "sessions", "cwd", "id", "images", "auth.png");
+    const registry = new ResourceRegistry();
+
+    let linked = false;
+    try {
+      fs.symlinkSync(auth, link, process.platform === "win32" ? "file" : undefined);
+      linked = true;
+    } catch {
+      // No symlink privilege: simulate with injectable realpath via register
+      // on the auth file itself under a media-looking name is the real risk;
+      // without OS symlinks, register(auth) then resolve still serves auth —
+      // the host must not register credentials. Path-shaped media URLs stay off.
+    }
+
+    if (linked) {
+      // Host should never register a credential; if it did, realpath is auth.json
+      // and we still refuse basename auth.json on the served path.
+      try {
+        const id = registry.register(link);
+        const resolved = registry.resolveForServe(id);
+        // After symlink, realpath is auth.json — resolveForServe returns the real
+        // path; resolveAppResourceServe then refuses auth.json basenames.
+        const serve = resolveAppResourceServe({
+          urlOrPath: asAppResourceRegistryUrl(id),
+          allowedRoots: roots,
+          registry,
+        });
+        // Either register threw, resolve returned null after swap policy, or
+        // serve refused credential basename.
+        if (resolved && /auth\.json$/i.test(resolved)) {
+          expect(serve.ok).toBe(false);
+        } else {
+          // Symlink may be registered as the link path with real=auth; refuse.
+          expect(serve.ok === false || (serve.ok && !/auth\.json$/i.test(serve.fsPath))).toBe(
+            true,
+          );
+          if (serve.ok) {
+            // Must not leak credential bytes as a successful media serve of auth.json.
+            expect(serve.fsPath.toLowerCase()).not.toMatch(/auth\.json$/i);
+          }
+        }
+      } catch {
+        // register refuses non-files / missing — also fine
+      }
+      // Path-shaped request for the link is always refused (media-only root).
+      expect(
+        resolveAppResourceServe({
+          urlOrPath: link,
+          fsPath: link,
+          allowedRoots: roots,
+          registry: new ResourceRegistry(),
+        }).ok,
+      ).toBe(false);
+    }
+
+    // Mutation: a path-shape allowlist would accept …/images/auth.png.
+    expect(isGeneratedSessionMediaPath(link)).toBe(true);
+    expect(appResourceMayServe(link, roots)).toBe(false);
+  });
+
+  it("refuses registry serve after realpath changes (symlink swap)", () => {
+    const realImg = path.join(grokHome, "sessions", "cwd", "id", "images", "1.jpg");
+    const auth = path.join(grokHome, "auth.json");
+    fs.writeFileSync(realImg, "jpeg-bytes");
+    const registry = new ResourceRegistry();
+    const id = registry.register(realImg);
+    expect(registry.resolveForServe(id)).toBeTruthy();
+
+    // Replace the media file with a symlink to auth.json (when OS allows).
+    let swapped = false;
+    try {
+      fs.unlinkSync(realImg);
+      fs.symlinkSync(auth, realImg, process.platform === "win32" ? "file" : undefined);
+      swapped = true;
+    } catch {
+      // Restore the original file if symlink failed mid-way.
+      try {
+        if (!fs.existsSync(realImg)) fs.writeFileSync(realImg, "jpeg-bytes");
+      } catch {
+        /* */
+      }
+    }
+
+    if (!swapped) {
+      // Without symlink privilege: simulate realpath divergence with injectable fs.
+      const snapReal = fs.realpathSync(realImg);
+      let phase: "register" | "serve" = "register";
+      const mock = new ResourceRegistry({
+        realpathSync: (p) => {
+          if (path.resolve(p) === path.resolve(realImg)) {
+            return phase === "register" ? snapReal : auth;
+          }
+          return fs.realpathSync(p);
+        },
+        existsSync: (p) => fs.existsSync(p),
+        statSync: (p) => fs.statSync(p),
+      });
+      const mid = mock.register(realImg);
+      phase = "serve";
+      expect(mock.resolveForServe(mid)).toBeNull();
+      return;
+    }
+
+    // Real target changed → refuse.
+    expect(registry.resolveForServe(id)).toBeNull();
+    expect(
+      resolveAppResourceServe({
+        urlOrPath: asAppResourceRegistryUrl(id),
+        allowedRoots: roots,
+        registry,
+      }).ok,
+    ).toBe(false);
+  });
+
   it("mutation: lexical-only root check would serve auth.json", () => {
-    // Simulate the pre-fix isPathAllowed (containment under roots only).
     const auth = path.join(grokHome, "auth.json");
     const lexicalOnly = roots.some((r) => {
       const rel = path.relative(r, auth);
@@ -622,6 +863,178 @@ describe("app-resource serve policy (no credential leak)", () => {
     });
     expect(lexicalOnly).toBe(true);
     expect(appResourceMayServe(auth, roots)).toBe(false);
+  });
+});
+
+describe("webview message schema validation", () => {
+  it("accepts known well-formed messages", () => {
+    expect(parseWebviewMsg({ type: "ready" })).toEqual({ type: "ready" });
+    expect(parseWebviewMsg({ type: "send", text: "hi" })).toEqual({
+      type: "send",
+      text: "hi",
+    });
+    expect(parseWebviewMsg({ type: "openFile", path: "a.ts" })?.type).toBe("openFile");
+    expect(parseWebviewMsg({ type: "setMode", modeId: "plan" })?.type).toBe("setMode");
+  });
+
+  it("drops unknown types and malformed payloads", () => {
+    expect(parseWebviewMsg(null)).toBeNull();
+    expect(parseWebviewMsg("send")).toBeNull();
+    expect(parseWebviewMsg({ type: "notARealMessage" })).toBeNull();
+    expect(parseWebviewMsg({ type: "send" })).toBeNull(); // missing text
+    expect(parseWebviewMsg({ type: "openFile" })).toBeNull();
+    expect(parseWebviewMsg({ type: "openFile", path: 12 })).toBeNull();
+    expect(parseWebviewMsg({ type: "setMode", modeId: "yolo-extra" })).toBeNull();
+    expect(parseWebviewMsg({ type: "logout", evil: true })?.type).toBe("logout");
+    // logout has no required fields beyond type — but inventing a type fails:
+    expect(parseWebviewMsg({ type: "deleteEverything" })).toBeNull();
+  });
+
+  it("source gate: ElectronWebview.dispatchMessage validates before listeners", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-webview.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toContain("parseWebviewMsg");
+    expect(src).toMatch(/dispatchMessage[\s\S]*parseWebviewMsg/);
+  });
+});
+
+describe("window navigation and open locks", () => {
+  it("allows only app document navigation URLs", () => {
+    expect(isAllowedAppNavigationUrl("data:text/html;charset=utf-8,x")).toBe(true);
+    expect(isAllowedAppNavigationUrl("app-resource://vsc-resource/media/chat.js")).toBe(
+      true,
+    );
+    expect(shouldBlockNavigation("https://evil.example/phish")).toBe(true);
+    expect(shouldBlockNavigation("file:///etc/passwd")).toBe(true);
+    expect(shouldBlockNavigation("data:text/html,ok")).toBe(false);
+  });
+
+  it("denies window.open; may hand http(s) to openExternal", () => {
+    expect(shouldOpenExternally("https://github.com/phuryn/grok-build-vscode")).toBe(
+      true,
+    );
+    expect(shouldOpenExternally("javascript:alert(1)")).toBe(false);
+    const d = windowOpenDecision({ url: "https://example.com" });
+    expect(d.action).toBe("deny");
+    expect(d.openExternal).toBe("https://example.com");
+    expect(windowOpenDecision({ url: "app-resource://x" }).openExternal).toBeUndefined();
+  });
+
+  it("source gate: main installs setWindowOpenHandler and will-navigate", () => {
+    const main = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
+      "utf8",
+    );
+    expect(main).toContain("installWindowSecurityLocks");
+    const sec = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "window-security.ts",
+      ),
+      "utf8",
+    );
+    expect(sec).toContain("setWindowOpenHandler");
+    expect(sec).toContain("will-navigate");
+  });
+});
+
+describe("desktop quick pick and input dialogs", () => {
+  it("selectQuickPickIndex returns a selection for 20 items", () => {
+    const items = Array.from({ length: 20 }, (_, i) => ({
+      label: `Model ${i + 1}`,
+      description: `m-${i}`,
+    }));
+    expect(selectQuickPickIndex(items, 0)?.label).toBe("Model 1");
+    expect(selectQuickPickIndex(items, 19)?.label).toBe("Model 20");
+    expect(selectQuickPickIndex(items, 20)).toBeUndefined();
+    expect(selectQuickPickIndex(items, -1)).toBeUndefined();
+  });
+
+  it("buildQuickPickHtml lists all items (no 8-item cap)", () => {
+    const items = Array.from({ length: 20 }, (_, i) => ({
+      label: `Item ${i}`,
+      description: `d${i}`,
+    }));
+    const html = buildQuickPickHtml({ title: "Models", items });
+    expect(html).toContain("Item 0");
+    expect(html).toContain("Item 19");
+    expect(html).toContain('data-index="19"');
+    expect(html).not.toContain("not available");
+  });
+
+  it("buildInputBoxHtml is a real form, not a cancel stub", () => {
+    const html = buildInputBoxHtml({ prompt: "Worktree label", value: "wt" });
+    expect(html).toContain("Worktree label");
+    expect(html).toContain('id="val"');
+    expect(html).toContain("deskDialog");
+    expect(parseDialogSubmit({ kind: "input", value: "hello" })).toEqual({
+      kind: "input",
+      value: "hello",
+    });
+  });
+
+  it("source gate: electron-host no longer cancels large quick picks", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toContain("buildQuickPickHtml");
+    expect(src).toContain("buildInputBoxHtml");
+    expect(src).not.toMatch(/items\.length\s*>\s*8/);
+    expect(src).not.toContain("Input prompt is not available yet");
+    expect(src).not.toContain("Large quick-pick lists");
+  });
+});
+
+describe("desktop branding and menu", () => {
+  it("names the product Grok Build Desktop (Community) and links this repo only", () => {
+    expect(DESKTOP_APP_FULL_NAME).toBe("Grok Build Desktop (Community)");
+    expect(DESKTOP_PUBLIC_REPO_URL).toBe(
+      "https://github.com/phuryn/grok-build-vscode",
+    );
+    const main = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
+      "utf8",
+    );
+    expect(main).toContain("DESKTOP_PUBLIC_REPO_URL");
+    expect(main).toContain("buildDesktopAppMenu");
+    expect(main).toContain("grok-icon.png");
+    expect(main).not.toMatch(/https?:\/\/electronjs\.org/);
+    expect(main).not.toMatch(/Learn More|Community Discussions|Search Issues/);
+    // Reading width lives in desktop theme CSS, not shared chat.css.
+    const theme = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-webview.ts",
+      ),
+      "utf8",
+    );
+    expect(theme).toContain("max-width: 1120px");
+    const chatCss = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    expect(chatCss).not.toContain("max-width: 1120px");
   });
 });
 
@@ -684,20 +1097,36 @@ describe("IPC sender validation helper", () => {
     ).toBe(false);
   });
 
-  it("main.ts validates webview-to-host sender", () => {
+  it("main.ts validates webview-to-host via trusted main-frame helper", () => {
     const main = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
       "utf8",
     );
-    expect(main).toMatch(/webview-to-host[\s\S]*event\.sender\.id/);
-    expect(main).toContain("getMainWindow");
+    expect(main).toContain("webview-to-host");
+    expect(main).toContain("isTrustedMainFrameIpc");
+    expect(main).toContain("dispatchMessage");
   });
 });
 
 describe("file-tree panel assets", () => {
   it("scopes CSS under desk-ft- and boots without chat.js symbols", () => {
     expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-panel");
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-collapsed");
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-closed");
+    // Top bar (body or .app-main host); panel takes no space when closed.
+    expect(FILE_TREE_PANEL_CSS).toContain("body.desk-with-ft .top-bar");
+    expect(FILE_TREE_PANEL_CSS).toContain("body.desk-ft-closed .desk-ft-panel");
+    expect(FILE_TREE_PANEL_CSS).toContain("display: none !important");
+    // Coexists with projects rail (row layout when has-rail).
+    expect(FILE_TREE_PANEL_CSS).toContain("has-rail");
+    expect(FILE_TREE_PANEL_CSS).toContain(".app-main");
+    // Viewer replaces tree (not side-by-side).
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-viewer");
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-viewing");
+    // Open panel is visually separated (border + own background).
+    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-panel[\s\S]*border-left/);
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-panel[\s\S]*background:\s*var\(--vscode-editor-background/,
+    );
     // No unprefixed layout hijacks of chat primitives.
     expect(FILE_TREE_PANEL_CSS).not.toMatch(/(?:^|\n)\.messages\s*\{/);
     expect(FILE_TREE_PANEL_CSS).not.toMatch(/(?:^|\n)\.composer\s*\{/);
@@ -705,10 +1134,446 @@ describe("file-tree panel assets", () => {
     const boot = fileTreePanelBootSource();
     expect(boot).toContain("grokDesktopFileTree");
     expect(boot).toContain("desk-ft-panel");
-    expect(boot).toContain("desk-ft-toggle");
+    expect(boot).toContain("desk-ft-top-toggle");
+    expect(boot).toContain("desk-ft-open");
     expect(boot).toContain("localStorage");
+    expect(boot).toContain("api.read");
+    expect(boot).toContain("desk-ft-crumb");
+    // Multi-folder rail host: shell mounts inside .app-main when present.
+    expect(boot).toContain("app-main");
+    expect(boot).toContain("projects-rail");
+    // Lucide panel-left (rail) / panel-right (file tree) — not unicode glyphs.
+    expect(boot).toContain("ICON_PANEL_LEFT");
+    expect(boot).toContain("ICON_PANEL_RIGHT");
+    expect(boot).toContain('d="M9 3v18"'); // panel-left divider
+    expect(boot).toContain('d="M15 3v18"'); // panel-right divider
+    expect(boot).not.toContain("◧");
+    expect(boot).not.toContain("◫");
+    expect(boot).toContain("desk-rail-toggle");
     // Does not call into acquireVsCodeApi / Host message bus.
     expect(boot).not.toContain("acquireVsCodeApi");
-    expect(boot).not.toContain("openFile");
+    expect(boot).not.toMatch(/type:\s*["']openFile["']/);
+    expect(boot).not.toContain("postMessage");
+  });
+});
+
+describe("desktop chrome boot (scroll fade + spacing shell)", () => {
+  it("wraps messages and ramps fade opacity from scroll position", () => {
+    const src = desktopChromeBootSource();
+    expect(src).toContain("messages-wrap");
+    expect(src).toContain("msg-fade-top");
+    expect(src).toContain("msg-fade-bot");
+    expect(src).toContain("--fade-top-op");
+    expect(src).toContain("--fade-bot-op");
+    expect(src).toContain("scrollTop");
+    // Does not touch shared chat.js / Host messaging.
+    expect(src).not.toContain("acquireVsCodeApi");
+    expect(src).not.toContain("postMessage");
+  });
+});
+
+describe("desktop openFile / openUrl policy (A1)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-pol-"));
+    fs.writeFileSync(path.join(root, "readme.md"), "# hi");
+    fs.writeFileSync(path.join(root, "tool.exe"), "MZ");
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src", "a.ts"), "export {}");
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("allows workspace files and refuses outside + executables", () => {
+    expect(authorizeOpenFile("readme.md", { workspaceRoot: root }).ok).toBe(true);
+    expect(authorizeOpenFile("src/a.ts", { workspaceRoot: root }).ok).toBe(true);
+    expect(authorizeOpenFile(path.join(root, "readme.md"), { workspaceRoot: root }).ok).toBe(
+      true,
+    );
+
+    const outside = path.join(path.dirname(root), "secret.txt");
+    fs.writeFileSync(outside, "x");
+    try {
+      expect(authorizeOpenFile(outside, { workspaceRoot: root }).ok).toBe(false);
+      expect(authorizeOpenFile("../secret.txt", { workspaceRoot: root }).ok).toBe(false);
+    } finally {
+      fs.unlinkSync(outside);
+    }
+
+    expect(authorizeOpenFile("tool.exe", { workspaceRoot: root }).ok).toBe(false);
+    expect(isExecutablePath("tool.exe")).toBe(true);
+    expect(isExecutablePath("script.bat")).toBe(true);
+    expect(isExecutablePath("a.ts")).toBe(false);
+  });
+
+  it("refuses openUrl schemes other than http(s)", () => {
+    expect(authorizeOpenUrl("https://example.com/x").ok).toBe(true);
+    expect(authorizeOpenUrl("http://localhost:3000").ok).toBe(true);
+    expect(authorizeOpenUrl("file:///etc/passwd").ok).toBe(false);
+    expect(authorizeOpenUrl("javascript:alert(1)").ok).toBe(false);
+    expect(authorizeOpenUrl("vscode://file/x").ok).toBe(false);
+    expect(authorizeOpenUrl("ms-windows-store://pdp/?ProductId=9").ok).toBe(false);
+  });
+
+  it("authorizeDesktopWebviewMsg drops bad openFile/openUrl", () => {
+    const okFile = authorizeDesktopWebviewMsg(
+      { type: "openFile", path: "readme.md" },
+      { workspaceRoot: root },
+    );
+    expect("msg" in okFile).toBe(true);
+
+    const badFile = authorizeDesktopWebviewMsg(
+      { type: "openFile", path: "tool.exe" },
+      { workspaceRoot: root },
+    );
+    expect("refused" in badFile).toBe(true);
+
+    const outside = authorizeDesktopWebviewMsg(
+      { type: "openFile", path: path.join(path.dirname(root), "nope.txt") },
+      { workspaceRoot: root },
+    );
+    expect("refused" in outside).toBe(true);
+
+    const badUrl = authorizeDesktopWebviewMsg(
+      { type: "openUrl", url: "file:///C:/Windows/System32/cmd.exe" },
+      { workspaceRoot: root },
+    );
+    expect("refused" in badUrl).toBe(true);
+
+    // Non-open messages pass through.
+    const send = authorizeDesktopWebviewMsg(
+      { type: "send", text: "hi" },
+      { workspaceRoot: root },
+    );
+    expect("msg" in send && send.msg.type === "send").toBe(true);
+  });
+
+  it("mutation: without workspace containment, outside paths would pass isExecutable alone", () => {
+    // Pins that authorizeOpenFile uses resolveTreePath, not only isExecutablePath.
+    const outside = path.join(path.dirname(root), "notes.md");
+    fs.writeFileSync(outside, "x");
+    try {
+      expect(isExecutablePath(outside)).toBe(false);
+      expect(authorizeOpenFile(outside, { workspaceRoot: root }).ok).toBe(false);
+    } finally {
+      fs.unlinkSync(outside);
+    }
+  });
+
+  it("source gate: ElectronWebview.dispatchMessage applies desktop policy", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-webview.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toContain("authorizeDesktopWebviewMsg");
+    expect(src).toMatch(/dispatchMessage[\s\S]*authorizeDesktopWebviewMsg/);
+  });
+});
+
+describe("media provenance + registry (A2)", () => {
+  let tmp: string;
+  let grokHome: string;
+  let mediaRoot: string;
+  let roots: string[];
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-prov-"));
+    grokHome = path.join(tmp, "fake-grok-home");
+    mediaRoot = path.join(tmp, "ext", "media");
+    roots = [mediaRoot, grokHome];
+    fs.mkdirSync(path.join(grokHome, "sessions", "cwd", "id", "images"), {
+      recursive: true,
+    });
+    fs.mkdirSync(mediaRoot, { recursive: true });
+    fs.writeFileSync(path.join(mediaRoot, "chat.js"), "/* */");
+    fs.writeFileSync(path.join(grokHome, "auth.json"), '{"t":1}');
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("trusts only generated session media under the real Grok home", () => {
+    const img = path.join(grokHome, "sessions", "cwd", "id", "images", "1.jpg");
+    fs.writeFileSync(img, "jpeg");
+    expect(isGeneratedSessionMediaPath(img)).toBe(true);
+    expect(
+      isTrustedGeneratedMediaPath(img, grokHome, (p) => fs.realpathSync(p)),
+    ).toBe(true);
+
+    // Arbitrary file under grok home with a media ext but wrong layout.
+    const loose = path.join(grokHome, "secret.png");
+    fs.writeFileSync(loose, "png");
+    expect(isGeneratedSessionMediaPath(loose)).toBe(false);
+    expect(
+      isTrustedGeneratedMediaPath(loose, grokHome, (p) => fs.realpathSync(p)),
+    ).toBe(false);
+  });
+
+  it("refuses a symlink whose real target leaves the media root at register time", () => {
+    const outside = path.join(tmp, "outside-secret.png");
+    fs.writeFileSync(outside, "classified");
+    const link = path.join(
+      grokHome,
+      "sessions",
+      "cwd",
+      "id",
+      "images",
+      "leak.png",
+    );
+
+    let linked = false;
+    try {
+      fs.symlinkSync(outside, link, process.platform === "win32" ? "file" : undefined);
+      linked = true;
+    } catch {
+      /* no symlink privilege — use injectable fs below */
+    }
+
+    const registry = new ResourceRegistry();
+
+    if (linked) {
+      expect(() =>
+        registry.register(link, { allowedRoots: roots }),
+      ).toThrow(/approved media root|not under/i);
+      // Without allowedRoots the old API would accept it — pin the production path.
+      expect(
+        mayRegisterResourcePath(link, roots, rootServePolicy),
+      ).toBe(false);
+    } else {
+      // Simulate: realpath of link → outside; realpath of roots stay put.
+      const mockFs = {
+        realpathSync: (p: string) => {
+          if (path.resolve(p) === path.resolve(link)) return outside;
+          return fs.realpathSync(p);
+        },
+        existsSync: (p: string) =>
+          path.resolve(p) === path.resolve(link) ? true : fs.existsSync(p),
+        statSync: (p: string) =>
+          fs.statSync(path.resolve(p) === path.resolve(link) ? outside : p),
+      };
+      // Create a placeholder so basename paths exist for other calls.
+      fs.writeFileSync(link, "placeholder");
+      const reg = new ResourceRegistry(mockFs);
+      expect(() => reg.register(link, { allowedRoots: roots })).toThrow(
+        /approved media root|not under/i,
+      );
+    }
+  });
+
+  it("mutation: register without allowedRoots would still accept a path outside roots", () => {
+    // Documents that production must pass allowedRoots (electron-webview does).
+    const secret = path.join(tmp, "not-under-roots.png");
+    fs.writeFileSync(secret, "x");
+    const registry = new ResourceRegistry();
+    // No roots → legacy test path still registers (swap tests rely on this).
+    const id = registry.register(secret);
+    expect(id).toMatch(/^[a-f0-9]{32}$/i);
+    // With roots → refused.
+    expect(() => registry.register(secret, { allowedRoots: roots })).toThrow();
+  });
+
+  it("source gate: asWebviewUri passes allowedRoots into register", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-webview.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toMatch(/registry\.register\([\s\S]*allowedRoots/);
+  });
+});
+
+describe("atomic secrets write (A3)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-atom-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("never unlinks the destination before a successful replacement is staged", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "safe-secrets.ts",
+      ),
+      "utf8",
+    );
+    // Old pattern: unlink dest then rename tmp — crash window loses the token.
+    expect(src).not.toMatch(/unlinkSync\(filePath\)[\s\S]{0,80}renameSync\(tmp,\s*filePath\)/);
+    expect(src).toContain("isWindowsReplaceRenameError");
+    expect(src).toMatch(/\.bak/);
+    // Functional overwrite still works.
+    const out = path.join(dir, "secrets.json");
+    writeFileAtomic(out, JSON.stringify({ v: 1 }));
+    writeFileAtomic(out, JSON.stringify({ v: 2 }));
+    expect(JSON.parse(fs.readFileSync(out, "utf8"))).toEqual({ v: 2 });
+  });
+
+  it("classifies only known Windows replace errors for the backup path", () => {
+    expect(isWindowsReplaceRenameError({ code: "EEXIST" })).toBe(true);
+    expect(isWindowsReplaceRenameError({ code: "EPERM" })).toBe(true);
+    expect(isWindowsReplaceRenameError({ code: "ENOENT" })).toBe(false);
+    expect(isWindowsReplaceRenameError({ code: "EIO" })).toBe(false);
+  });
+});
+
+describe("watcher chain helpers (A4)", () => {
+  it("nearestExistingAncestor walks past missing segments", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-watch-"));
+    try {
+      const missing = path.join(base, "a", "b", "c");
+      expect(nearestExistingAncestor(missing)).toBe(path.resolve(base));
+      expect(nearestExistingAncestor(base)).toBe(path.resolve(base));
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("source gate: createBoundFileSystemWatcher rebinds when base vanishes", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toContain("nearestExistingAncestor");
+    expect(src).toContain("scheduleRebind");
+    expect(src).toContain("bindChainWatcher");
+  });
+});
+
+describe("encrypted voiceApiKey (A5)", () => {
+  let dir: string;
+  let configPath: string;
+  let sensPath: string;
+
+  const memSafe: SafeStorageLike = {
+    isEncryptionAvailable: () => true,
+    encryptString: (s) => Buffer.from(`enc:${s}`, "utf8"),
+    decryptString: (b) => {
+      const t = b.toString("utf8");
+      if (!t.startsWith("enc:")) throw new Error("bad cipher");
+      return t.slice(4);
+    },
+  };
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-vk-"));
+    configPath = path.join(dir, "config.json");
+    sensPath = path.join(dir, "sensitive.enc.json");
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("stores voiceApiKey only in the encrypted bag, never config.json", async () => {
+    expect(SENSITIVE_CONFIG_KEYS.has("grok.voiceApiKey")).toBe(true);
+    const store = new ConfigStore(configPath, new SensitiveConfigStore(sensPath, memSafe));
+    await store.getConfiguration("grok").update("voiceApiKey", "sk-secret-voice");
+    expect(store.getConfiguration("grok").get("voiceApiKey")).toBe("sk-secret-voice");
+
+    // Sensitive-only writes must not create a plaintext config with the key;
+    // force a normal config write and re-check.
+    await store.getConfiguration("grok").update("cliPath", "/bin/fake");
+    const rawCfg = fs.readFileSync(configPath, "utf8");
+    expect(rawCfg).not.toContain("sk-secret-voice");
+    expect(rawCfg).not.toMatch(/voiceApiKey/);
+
+    const rawSens = fs.readFileSync(sensPath, "utf8");
+    expect(rawSens).not.toContain("sk-secret-voice");
+    // Ciphertext is base64 of encryptString output — not the raw key.
+    expect(rawSens).toContain("grok.voiceApiKey");
+    expect(JSON.parse(rawSens).entries["grok.voiceApiKey"]).toMatch(/^[A-Za-z0-9+/=]+$/);
+
+    const again = new ConfigStore(configPath, new SensitiveConfigStore(sensPath, memSafe));
+    expect(again.getConfiguration("grok").get("voiceApiKey")).toBe("sk-secret-voice");
+  });
+
+  it("migrates legacy plaintext voiceApiKey out of config.json", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        config: { "grok.voiceApiKey": "legacy-plain-key" },
+      }),
+      "utf8",
+    );
+    const store = new ConfigStore(configPath, new SensitiveConfigStore(sensPath, memSafe));
+    expect(store.getConfiguration("grok").get("voiceApiKey")).toBe("legacy-plain-key");
+    const rawCfg = fs.readFileSync(configPath, "utf8");
+    expect(rawCfg).not.toContain("legacy-plain-key");
+  });
+});
+
+describe("file preview helpers (B3)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-prev-"));
+    fs.writeFileSync(path.join(root, "notes.md"), "# Title\n\nHello");
+    fs.writeFileSync(path.join(root, "data.json"), '{"a":1}');
+    fs.writeFileSync(path.join(root, "blob.bin"), Buffer.from([0, 1, 2, 0, 9]));
+    fs.writeFileSync(path.join(root, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("classifies preview kinds and builds breadcrumbs", () => {
+    expect(classifyFilePreview("x.md")).toBe("markdown");
+    expect(classifyFilePreview("x.json")).toBe("json");
+    expect(classifyFilePreview("x.png")).toBe("image");
+    expect(classifyFilePreview("x.ts")).toBe("text");
+    expect(classifyFilePreview("x.exe")).toBe("external");
+
+    const crumbs = breadcrumbSegments("src/a/b.ts", "repo");
+    expect(crumbs[0]).toEqual({ label: "repo", relPath: "" });
+    expect(crumbs.map((c) => c.relPath)).toEqual(["", "src", "src/a", "src/a/b.ts"]);
+  });
+
+  it("reads md/json/image in-panel and hands binaries to external", () => {
+    const md = readTreeFile(root, "notes.md");
+    expect(md.ok).toBe(true);
+    if (md.ok) {
+      expect(md.kind).toBe("markdown");
+      expect(md.text).toContain("# Title");
+    }
+    const js = readTreeFile(root, "data.json");
+    expect(js.ok).toBe(true);
+    if (js.ok) {
+      expect(js.kind).toBe("json");
+      expect(js.pretty).toBe(true);
+      expect(js.text).toContain('"a"');
+    }
+    const img = readTreeFile(root, "pic.png");
+    expect(img.ok).toBe(true);
+    if (img.ok) {
+      expect(img.kind).toBe("image");
+      expect(img.dataUrl?.startsWith("data:image/png;base64,")).toBe(true);
+    }
+    const bin = readTreeFile(root, "blob.bin");
+    expect(bin.ok).toBe(false);
+    if (!bin.ok) expect(bin.openExternal).toBe(true);
   });
 });

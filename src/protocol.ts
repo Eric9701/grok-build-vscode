@@ -62,8 +62,25 @@ export const HOST_CAPABILITIES = {
   deleteActiveSession: true,
 } as const;
 
+/** Host-kind affordances merged into `initialState.capabilities` at post time. */
+export type HostUiCapabilities = {
+  uploadFile: boolean;
+  remoteVoice: boolean;
+  deleteActiveSession?: boolean;
+  /**
+   * Gear → Move view. Opt-out: absent/true = show (older VS Code hosts never
+   * sent this flag but always supported the control); false = hide (desktop).
+   */
+  relocateView?: boolean;
+  /**
+   * Gear → Show extension logs. Same opt-out polarity as relocateView —
+   * absent/true = show; false = hide (desktop logs to stdout only).
+   */
+  showOutput?: boolean;
+};
+
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean; remoteVoice: boolean; deleteActiveSession?: boolean } }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: HostUiCapabilities }
   | { type: "planModeAvailability"; available: boolean; reason?: string }
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).

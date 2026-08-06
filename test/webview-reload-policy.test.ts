@@ -79,12 +79,18 @@ describe("source gates — capability at the ownership boundary", () => {
     const src = readFileSync(path.join(root, "src", "vscode-host.ts"), "utf8");
     expect(src).toMatch(/webviewReloadsUnderLiveSession:\s*false/);
     expect(src).toMatch(/remoteInstallIdSuffix:\s*""/);
+    expect(src).toMatch(/canRelocateView:\s*true/);
+    expect(src).toMatch(/canShowOutput:\s*true/);
+    expect(src).toMatch(/canSwitchWorkspaceFolder:\s*false/);
   });
 
   it("Electron host declares rehydrate capability true and :desktop suffix", () => {
     const src = readFileSync(path.join(root, "src", "desktop", "electron-host.ts"), "utf8");
     expect(src).toMatch(/webviewReloadsUnderLiveSession:\s*true/);
     expect(src).toMatch(/remoteInstallIdSuffix:\s*":desktop"/);
+    expect(src).toMatch(/canRelocateView:\s*false/);
+    expect(src).toMatch(/canShowOutput:\s*false/);
+    expect(src).toMatch(/canSwitchWorkspaceFolder:\s*true/);
   });
 
   it("link flow formats installId through the host suffix helper", () => {

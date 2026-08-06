@@ -315,6 +315,18 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     workspaceRoot() {
       return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     },
+    workspaceFolders() {
+      return (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    },
+    setActiveWorkspaceFolder(_cwd: string) {
+      // VS Code: the window is the workspace — no folder switch surface.
+    },
+    addWorkspaceFolder(_cwd: string) {
+      return false;
+    },
+    removeWorkspaceFolder(_cwd: string) {
+      return false;
+    },
     asRelativePath(uri: Uri) {
       // Must pass a real vscode.Uri so remote workspace folders match.
       return vscode.workspace.asRelativePath(toVsCodeUri(uri));
@@ -472,6 +484,9 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     // live session — still startSession (v3.1.0), never rehydrate.
     webviewReloadsUnderLiveSession: false,
     remoteInstallIdSuffix: "",
+    canRelocateView: true,
+    canShowOutput: true,
+    canSwitchWorkspaceFolder: false,
   };
 }
 

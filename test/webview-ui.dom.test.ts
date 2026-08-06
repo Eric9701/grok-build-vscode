@@ -1313,7 +1313,21 @@ describe("send button startup state (spinner by default until the session is rea
 describe("gear menu — Other group + About / Config & debug sub-views", () => {
   function boot() {
     const h = bootWebview();
-    dispatch(h.window, { type: "initialState", useCtrlEnter: false, effort: "", cwd: "/x", extVersion: "1.4.0" });
+    dispatch(h.window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      effort: "",
+      cwd: "/x",
+      extVersion: "1.4.0",
+      // VS Code host affordances — gear gates logs / Move view on these.
+      capabilities: {
+        uploadFile: true,
+        remoteVoice: true,
+        deleteActiveSession: true,
+        relocateView: true,
+        showOutput: true,
+      },
+    });
     dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });
     dispatch(h.window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
     h.posted.length = 0;
@@ -2239,8 +2253,13 @@ describe("gear entry: Move view (Config & debug)", () => {
       el.textContent!.includes(label),
     ) as HTMLElement | undefined;
 
-  it("offers the three destinations, each posting moveView with its location", () => {
+  it("offers the three destinations when the host advertises relocateView", () => {
     const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { uploadFile: true, remoteVoice: true, relocateView: true, showOutput: true },
+    });
     const destinations: Array<[string, string]> = [
       ["To Secondary Side Bar", "auxiliarybar"],
       ["To Primary Side Bar", "sidebar"],
@@ -2253,6 +2272,54 @@ describe("gear entry: Move view (Config & debug)", () => {
       click(window, item!);
       expect(posted).toContainEqual({ type: "moveView", location });
     }
+  });
+
+  it("still shows Move view + Show logs when the host sends no capability flags (v3.1.0)", () => {
+    // Compatibility contract: the web client is always new; the extension may
+    // be an older install that never emitted relocateView/showOutput. Those
+    // gear items existed ungated before the flags — absent must mean supported.
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      // No relocateView / showOutput — mirrors released v3.1.0 hosts.
+      capabilities: { uploadFile: true, remoteVoice: true },
+    });
+    openConfigDebug(window, doc);
+    expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
+    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeTruthy();
+    expect(itemByLabel(doc, "To Primary Side Bar")).toBeTruthy();
+    expect(itemByLabel(doc, "To Panel")).toBeTruthy();
+    click(window, itemByLabel(doc, "Show extension logs")!);
+    expect(posted).toContainEqual({ type: "showLogs" });
+  });
+
+  it("still shows Move view + Show logs when capabilities is omitted entirely", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      // No capabilities object at all (hostCaps stays {}).
+    });
+    openConfigDebug(window, doc);
+    expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
+    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeTruthy();
+  });
+
+  it("hides Move view and Show logs only when the host opts out with false (desktop)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { uploadFile: true, remoteVoice: true, relocateView: false, showOutput: false },
+    });
+    openConfigDebug(window, doc);
+    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeUndefined();
+    expect(itemByLabel(doc, "To Primary Side Bar")).toBeUndefined();
+    expect(itemByLabel(doc, "To Panel")).toBeUndefined();
+    expect(itemByLabel(doc, "Show extension logs")).toBeUndefined();
+    // Config paths still work on desktop.
+    expect(itemByLabel(doc, "Open global config")).toBeTruthy();
   });
 });
 
