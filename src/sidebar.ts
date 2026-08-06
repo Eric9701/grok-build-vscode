@@ -1,4 +1,13 @@
-import * as vscode from "vscode";
+import type {
+  Host,
+  HostCancellationToken,
+  HostContext,
+  HostDisposable,
+  HostTextDocumentContentProvider,
+  HostWebview,
+  HostWebviewView,
+} from "./host";
+import { Uri, disposeAll } from "./host";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -280,17 +289,18 @@ const GROK_DIFF_SCHEME = "grok-diff";
 /**
  * Read-only content provider for the diff-preview virtual documents. Content is
  * stored per-URI and served verbatim; the documents are never editable or dirty,
- * so the diff tab closes without a save prompt. Pure VS Code glue.
+ * so the diff tab closes without a save prompt. Host-registered via
+ * {@link Host.registerTextDocumentContentProvider}.
  */
-class GrokDiffContentProvider implements vscode.TextDocumentContentProvider {
+class GrokDiffContentProvider implements HostTextDocumentContentProvider {
   private readonly contents = new Map<string, string>();
-  provideTextDocumentContent(uri: vscode.Uri): string {
+  provideTextDocumentContent(uri: Uri): string {
     return this.contents.get(uri.toString()) ?? "";
   }
-  set(uri: vscode.Uri, content: string): void {
+  set(uri: Uri, content: string): void {
     this.contents.set(uri.toString(), content);
   }
-  delete(...uris: vscode.Uri[]): void {
+  delete(...uris: Uri[]): void {
     for (const uri of uris) this.contents.delete(uri.toString());
   }
 }
@@ -313,9 +323,9 @@ function guessMediaMime(p: string): string {
   }
 }
 
-export class GrokSidebar implements vscode.WebviewViewProvider {
+export class GrokSidebar {
   public static readonly viewId = "grok.chat";
-  private view?: vscode.WebviewView;
+  private view?: HostWebviewView;
   /** The session currently shown in the chat — one member of {@link pool}. */
   private focused = this.newLocalSession();
   /**
@@ -360,7 +370,6 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly SWEEP_MIN_AGE_MS = 30 * 60 * 1000;
   private reaper?: ReturnType<typeof setInterval>;
   private oauthShadowWarningShown = false;
-  private output: vscode.OutputChannel;
   private get chips(): FileChip[] { return this.focused.chips; }
   private set chips(value: FileChip[]) { this.focused.chips = value; }
   /** Attachment-staging ops still in flight — see trackAttach. */
@@ -375,7 +384,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     rels: string[];
     absByRel: Map<string, string>;
   }>();
-  private editorWatcher?: vscode.Disposable;
+  private editorWatcher?: HostDisposable;
   private terminalManager = new TerminalManager();
   private voiceRecorder = new VoiceRecorder();
   private voiceTempPath?: string;
@@ -399,7 +408,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly remoteVoice = new Map<string, RemoteVoiceEntry>();
   private static readonly MAX_REMOTE_PCM_BYTES = MAX_RECORDING_SECONDS * 16_000 * 2;
   private static readonly MAX_REMOTE_PCM_CHUNK_BYTES = 256 * 1024;
-  private configWatcher?: vscode.Disposable;
+  private configWatcher?: HostDisposable;
   // Remote uplink — outbound wss to the relay (REMOTE_RELAY_URL), active only
   // when a device token is stored (the "AFK Pilot: Link this device" / gear
   // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
@@ -420,7 +429,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // OS wake lock, held for exactly as long as the uplink is (linked device token
   // + live extension host) so an AFK machine can't idle-suspend out from under a
   // remote turn. `grok.remote.keepAwake` is the opt-out. See src/keep-awake.ts.
-  private readonly keepAwake = new KeepAwake((l) => this.output.appendLine(l), process.platform, process.pid, os.release());
+  private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "fontScale", "grokUpdateStatus", "cliUpdating",
     "onboarding", "expandCommandOutputs", "steerByDefault", "soundNotifications",
@@ -449,7 +458,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly diffProvider = new GrokDiffContentProvider();
   private diffSeq = 0;
   private readonly openDiffsByRequest =
-    new SessionRequestState<Session, { left: vscode.Uri; right: vscode.Uri }>();
+    new SessionRequestState<Session, { left: Uri; right: Uri }>();
   /** In-flight in-chat confirms, keyed by request id — see confirmInChat. */
   private readonly pendingConfirms = new Map<string, (ok: boolean) => void>();
   private confirmSeq = 0;
@@ -460,24 +469,24 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly state: PersistedState;
 
   constructor(
-    private context: vscode.ExtensionContext,
-    output: vscode.OutputChannel,
+    private context: HostContext,
+    /** Effectful host surface — VS Code supplies createVsCodeHost; a desktop app injects its own. */
+    private readonly host: Host,
   ) {
-    this.output = output;
     // Before anything can read it: the loss case is an empty read followed by a
     // write, so this must not be deferred to an async init.
     this.state = new PersistedState(
       context.globalState,
       path.join(resolveGrokHome(process.env), "client-state"),
       fs,
-      (line) => output.appendLine(line),
+      (line) => this.host.appendLine(line),
     );
     this.remoteClients = new RemoteClientState<Session, RemoteBrowserPreferences>(
       this.workspaceRoot(),
       normalizeRepoPath,
     );
     context.subscriptions.push(
-      vscode.workspace.registerTextDocumentContentProvider(GROK_DIFF_SCHEME, this.diffProvider),
+      this.host.registerTextDocumentContentProvider(GROK_DIFF_SCHEME, this.diffProvider),
     );
     // Apply the terminal-shell preference at construction, BEFORE any command
     // (e.g. grok.newSession) can spawn a session — otherwise the first
@@ -488,29 +497,32 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     void this.sweepFileStaging();
   }
 
-  resolveWebviewView(view: vscode.WebviewView): void {
+  resolveWebviewView(view: HostWebviewView): void {
     this.view = view;
     view.webview.options = {
       enableScripts: true,
+      // Extension assets keep extensionUri identity (vscode-remote on remote hosts).
+      // Staging + grok home are genuinely local disk paths → Uri.file.
       localResourceRoots: [
-        vscode.Uri.joinPath(this.context.extensionUri, "media"),
-        vscode.Uri.joinPath(this.context.extensionUri, "resources"),
-        vscode.Uri.file(this.imageStagingDir()),
+        Uri.joinPath(this.context.extensionUri, "media"),
+        Uri.joinPath(this.context.extensionUri, "resources"),
+        Uri.file(this.imageStagingDir()),
         // grok writes generated media under ~/.grok/sessions/<cwd>/<id>/{images,videos};
         // serving it via asWebviewUri (instead of a base64 data: URI) lets the
         // webview stream a multi-MB video from disk — see postGeneratedMedia.
-        vscode.Uri.file(resolveGrokHome()),
+        Uri.file(resolveGrokHome()),
       ],
     };
     view.webview.html = this.getHtml(view.webview);
     // Message handlers run async; without this catch a throw (e.g. an fs error
     // in an image-attach path) becomes a silent unhandled rejection and the
     // user's action just... does nothing.
-    view.webview.onDidReceiveMessage((m: WebviewMsg) => {
+    view.webview.onDidReceiveMessage((raw) => {
+      const m = raw as WebviewMsg;
       void this.onMessage(m, "local").catch((e) => {
         const msg = (e as Error)?.message ?? String(e);
-        this.output.appendLine(`[webview] ${m.type} failed: ${msg}`);
-        void vscode.window.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
+        this.host.appendLine(`[webview] ${m.type} failed: ${msg}`);
+        void this.host.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
       });
     });
     this.watchActiveEditor();
@@ -522,7 +534,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // Re-tell the webview whether voice is set up when the relevant settings
     // change, so the mic button's "needs setup" hint updates without a reload.
     this.configWatcher?.dispose();
-    const configChanges = vscode.workspace.onDidChangeConfiguration((e) => {
+    const configChanges = this.host.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("grok.voiceApiKey") ||
         e.affectsConfiguration("grok.ffmpegPath") ||
@@ -539,37 +551,37 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       if (e.affectsConfiguration("grok.expandCommandOutputs")) {
         this.post({
           type: "expandCommandOutputs",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("expandCommandOutputs", false),
+          value: this.host.getConfiguration("grok").get<boolean>("expandCommandOutputs", false),
         });
       }
       if (e.affectsConfiguration("grok.steerByDefault")) {
         this.post({
           type: "steerByDefault",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("steerByDefault", false),
+          value: this.host.getConfiguration("grok").get<boolean>("steerByDefault", false),
         });
       }
       if (e.affectsConfiguration("grok.soundNotifications")) {
         this.post({
           type: "soundNotifications",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("soundNotifications", false),
+          value: this.host.getConfiguration("grok").get<boolean>("soundNotifications", false),
         });
       }
       if (e.affectsConfiguration("grok.processingSound")) {
         this.post({
           type: "processingSound",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("processingSound", false),
+          value: this.host.getConfiguration("grok").get<boolean>("processingSound", false),
         });
       }
       if (e.affectsConfiguration("grok.readRepliesAloud")) {
         this.post({
           type: "readRepliesAloud",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("readRepliesAloud", false),
+          value: this.host.getConfiguration("grok").get<boolean>("readRepliesAloud", false),
         });
       }
       if (e.affectsConfiguration("grok.summarizeRepliesAloud")) {
         this.post({
           type: "summarizeRepliesAloud",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
+          value: this.host.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
         });
       }
       if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
@@ -590,14 +602,15 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.refreshKeepAwake();
       }
     });
-    const authWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(resolveGrokHome(process.env), "auth.json"),
+    const authWatcher = this.host.createFileSystemWatcher(
+      resolveGrokHome(process.env),
+      "auth.json",
     );
     const refreshVoiceConfigured = () => this.postVoiceConfigured();
     authWatcher.onDidCreate(refreshVoiceConfigured);
     authWatcher.onDidChange(refreshVoiceConfigured);
     authWatcher.onDidDelete(refreshVoiceConfigured);
-    this.configWatcher = vscode.Disposable.from(configChanges, authWatcher);
+    this.configWatcher = disposeAll(configChanges, authWatcher);
     this.applyTerminalShellPref();
     void this.maybeStartUplink();
   }
@@ -605,14 +618,18 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   /** Push the `grok.terminalShell` preference (#46) into the shared shell
    *  resolver so the next agent command re-resolves cmd vs PowerShell. */
   private applyTerminalShellPref(): void {
-    const pref = vscode.workspace.getConfiguration("grok").get<ShellPreference>("terminalShell", "auto");
+    const pref = this.host.getConfiguration("grok").get<ShellPreference>("terminalShell", "auto");
     setTerminalShellPreference(pref === "cmd" ? "cmd" : "auto");
   }
 
-  insertActiveMention(opts?: { selection?: boolean; uri?: vscode.Uri; pickIfMissing?: boolean }): void {
-    const editor = vscode.window.activeTextEditor;
-    const uri = opts?.uri ?? editor?.document.uri;
-    if (!uri) {
+  insertActiveMention(opts?: { selection?: boolean; uri?: Uri; pickIfMissing?: boolean }): void {
+    const editor = this.host.getActiveTextEditor();
+    // Prefer a full Uri end-to-end (scheme + authority) so asRelativePath matches
+    // remote workspace folders. Explorer Send File passes the explorer Uri via
+    // the adapter; never flatten to fsPath and rebuild with Uri.file.
+    const pathUri = opts?.uri ?? editor?.document.uri;
+    const absPath = pathUri?.fsPath;
+    if (!absPath || !pathUri) {
       // Invoked from the Command Palette with no file editor active — no target
       // to attach. Degrade gracefully instead of a silent no-op that also drops
       // focus (#43): Send File opens the file picker; the selection/@-mention
@@ -621,13 +638,13 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       if (opts?.pickIfMissing) {
         void this.trackAttach(this.pickFileFromComputer());
       } else {
-        void vscode.window.showInformationMessage(
+        void this.host.showInformationMessage(
           "Grok: open a file in the editor first, then run this command.",
         );
       }
       return;
     }
-    const relPath = vscode.workspace.asRelativePath(uri);
+    const relPath = this.host.asRelativePath(pathUri);
     let selStart: number | undefined;
     let selEnd: number | undefined;
     if (opts?.selection && editor && !editor.selection.isEmpty) {
@@ -635,7 +652,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       selStart = range.startLine;
       selEnd = range.endLine;
     }
-    this.chips.push(makeExplicitChip(uri.fsPath, relPath, selStart, selEnd));
+    this.chips.push(makeExplicitChip(absPath, relPath, selStart, selEnd));
     this.postChips();
     this.revealAndFocusComposer();
   }
@@ -646,7 +663,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
 
   async pickModel(): Promise<void> {
     if (!this.focused.client || !this.focused.client.availableModels.length) {
-      vscode.window.showInformationMessage("Start a session first.");
+      this.host.showInformationMessage("Start a session first.");
       return;
     }
     const items = this.focused.client.availableModels.map((m) => ({
@@ -655,7 +672,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       detail: m.description,
       modelId: m.modelId,
     }));
-    const picked = await vscode.window.showQuickPick(items, {
+    const picked = await this.host.showQuickPick(items, {
       placeHolder: "Pick a Grok model",
     });
     if (picked) await this.switchModel(picked.modelId);
@@ -678,10 +695,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // Ignore switches fired during session startup. The webview disables the
     // control while busy; this is the backstop for a click already in flight.
     if (!client || session.priming || modelId === client.currentModelId) return;
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     try {
       await client.setModel(modelId);
-      await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
+      await cfg.update("defaultModel", modelId, "global");
     } catch (e) {
       if (!isIncompatibleAgentError(e)) {
         this.reportRequester(requester, "error", `Failed to set model: ${(e as Error).message}`);
@@ -692,7 +709,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         // with a fresh grok id. There is nothing to summarize or preserve.
         // Drop it after the restart, carrying over any rename the user made.
         const discardId = session.activeSessionId;
-        await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
+        await cfg.update("defaultModel", modelId, "global");
         await this.startSession(undefined, session);
         this.discardRestartedEmptySession(discardId, session);
         return;
@@ -707,7 +724,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       const mode = await this.pickRestartMode("Switching to this model requires a new session.");
       if (!mode) return; // dismissed — keep the current model
-      await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
+      await cfg.update("defaultModel", modelId, "global");
       await this.restartSession(mode, session);
     }
   }
@@ -808,20 +825,15 @@ See design doc for the full state machine diagram.`;
     if (this.alwaysApproveNoticeShown) return;
     this.alwaysApproveNoticeShown = true;
     const OPEN = "Open config.toml";
-    void vscode.window
-      .showInformationMessage(
-        'Grok: "always-approve" is set in your grok config.toml, so tool actions are auto-approved for every session (CLI and extension). The mode shows "Auto accept" to reflect this — the extension can\'t override a global config setting per-session.',
-        OPEN,
-      )
-      .then((pick) => {
-        if (pick !== OPEN) return;
-        const home = process.env.HOME || process.env.USERPROFILE || "";
-        if (!home) return;
-        void vscode.commands.executeCommand(
-          "vscode.open",
-          vscode.Uri.file(path.join(home, ".grok", "config.toml")),
-        );
-      });
+    void this.host.showInformationMessage(
+      'Grok: "always-approve" is set in your grok config.toml, so tool actions are auto-approved for every session (CLI and extension). The mode shows "Auto accept" to reflect this — the extension can\'t override a global config setting per-session.',
+      OPEN,
+    ).then((pick) => {
+      if (pick !== OPEN) return;
+      const home = process.env.HOME || process.env.USERPROFILE || "";
+      if (!home) return;
+      void this.host.openResource(path.join(home, ".grok", "config.toml"));
+    });
   }
 
   /** Toggle the client-enforced plan gate and keep the live client in sync. Only
@@ -877,9 +889,8 @@ See design doc for the full state machine diagram.`;
     // directly). `modeToRemember` drops Plan (a transient per-task choice).
     const remember = modeToRemember(modeId);
     if (remember) {
-      void vscode.workspace
-        .getConfiguration("grok")
-        .update("defaultMode", remember, vscode.ConfigurationTarget.Global);
+      void this.host.getConfiguration("grok")
+        .update("defaultMode", remember, "global");
     }
     if (modeId === "yolo") {
       session.autoApprove = true;
@@ -935,7 +946,7 @@ See design doc for the full state machine diagram.`;
     if (verdict === "approved") {
       // Restore the mode chosen before Plan (#64) before native implementation
       // can raise a permission request in this same turn.
-      session.autoApprove = vscode.workspace.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
+      session.autoApprove = this.host.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
       this.setPlanActive(session, false);
     } else if (verdict === "rejected") {
       session.autoApprove = false;
@@ -1001,7 +1012,7 @@ See design doc for the full state machine diagram.`;
       if (gen !== session.gen || session.client !== client) return;
       if (result === "ok") {
         this.emit(session, { type: "userMessage", text: feedback, chips: [], steer: true });
-        this.output.appendLine(`[plan-verdict] interjected ${feedback.length} comment chars`);
+        this.host.appendLine(`[plan-verdict] interjected ${feedback.length} comment chars`);
       } else {
         if (session.inFlightPlanComments.get(requestId) === inFlightComment) {
           session.inFlightPlanComments.delete(requestId);
@@ -1207,7 +1218,7 @@ See design doc for the full state machine diagram.`;
       usageLog,
       surviving,
     );
-    this.output.appendLine(
+    this.host.appendLine(
       `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
     );
     await this.state.update(SESSION_META_KEY, {
@@ -1383,7 +1394,7 @@ See design doc for the full state machine diagram.`;
         );
         return;
       }
-      this.output.appendLine(`[steer] interjected ${body.length} chars into the running turn`);
+      this.host.appendLine(`[steer] interjected ${body.length} chars into the running turn`);
     } catch (e: any) {
       this.emit(session, { type: "agentReset" });
       session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
@@ -1429,7 +1440,7 @@ See design doc for the full state machine diagram.`;
         );
         return;
       }
-      this.output.appendLine(`[fork] ${session.activeSessionId} → ${r.newSessionId} ("${forkName}")`);
+      this.host.appendLine(`[fork] ${session.activeSessionId} → ${r.newSessionId} ("${forkName}")`);
       // Stamp the name before focusing, so neither the history list nor the
       // toolbar ever flashes grok's own generated title for the fork.
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -1500,16 +1511,16 @@ See design doc for the full state machine diagram.`;
   private async editLastMessage(userBubbleIndex: number, text: string, totalUserBubbles?: number): Promise<void> {
     const session = this.focused;
     if (!session.client || !session.activeSessionId) {
-      return void vscode.window.showWarningMessage("Start a session before editing a message.");
+      return void this.host.showWarningMessage("Start a session before editing a message.");
     }
     if (session.status === "working" || session.status === "needs-you") {
       // Name the state. "Wait for the current turn" is useless when the turn
       // already finished and the status is merely stale — the user can't tell
       // those apart, and neither could I without this line.
-      this.output.appendLine(
+      this.host.appendLine(
         `[edit] refused: session.status=${session.status} bubble=${userBubbleIndex}`,
       );
-      return void vscode.window.showWarningMessage(
+      return void this.host.showWarningMessage(
         session.status === "needs-you"
           ? "Answer the pending permission or plan card first, then edit your last message."
           : "Wait for the current turn to finish (or Stop it) before editing your last message.",
@@ -1518,7 +1529,7 @@ See design doc for the full state machine diagram.`;
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
@@ -1526,17 +1537,17 @@ See design doc for the full state machine diagram.`;
       // bubble->point map can't be trusted — refuse instead of reverting a turn
       // we may have mis-identified. See bubbleMapIsConsistent.
       if (!bubbleMapIsConsistent(points, totalUserBubbles)) {
-        this.output.appendLine(
+        this.host.appendLine(
           `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
         );
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
         );
       }
       const target = resolveEditRewindTarget(points, userBubbleIndex);
       if (!target) {
         const copy = "Copy text to composer";
-        const pick = await vscode.window.showInformationMessage(
+        const pick = await this.host.showInformationMessage(
           "Grok has no restore point for this message, so it can't be rolled back. You can still copy the text and send it again.",
           copy,
         );
@@ -1563,17 +1574,17 @@ See design doc for the full state machine diagram.`;
         mode: "all",
       });
       if (result === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       if (!result.success) {
         // Surface the CLI's own words — e.g. rewinding past a compaction point.
-        return void vscode.window.showErrorMessage(result.error || "Couldn't roll back that message.");
+        return void this.host.showErrorMessage(result.error || "Couldn't roll back that message.");
       }
 
       const reportedFiles = result.revertedFiles.length;
-      this.output.appendLine(
+      this.host.appendLine(
         `[edit] rewound to prompt #${result.targetPromptIndex} (reported_files=${reportedFiles}, bubble=${userBubbleIndex})`,
       );
       const resumeId = session.activeSessionId;
@@ -1582,32 +1593,32 @@ See design doc for the full state machine diagram.`;
       this.applyRewindToView(session, surviving);
       this.emit(session, { type: "restoreComposer", text });
       if (reportedFiles > 0) {
-        void vscode.window.showInformationMessage(
+        void this.host.showInformationMessage(
           "Message moved back to the composer. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
-      vscode.window.showErrorMessage(`Couldn't edit that message: ${e?.message ?? e}`);
+      this.host.showErrorMessage(`Couldn't edit that message: ${e?.message ?? e}`);
     }
   }
 
   async rewindFocusedSession(userBubbleIndex?: number, bubbleText?: string, totalUserBubbles?: number): Promise<void> {
     const session = this.focused;
     if (!session.client || !session.activeSessionId) {
-      return void vscode.window.showWarningMessage("Start a session before rewinding it.");
+      return void this.host.showWarningMessage("Start a session before rewinding it.");
     }
     if (session.status === "working" || session.status === "needs-you") {
-      return void vscode.window.showWarningMessage(
+      return void this.host.showWarningMessage(
         "Wait for the current turn to finish (or Stop it) before rewinding.",
       );
     }
     if (!session.hasHistory) {
-      return void vscode.window.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
+      return void this.host.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
     }
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
@@ -1616,10 +1627,10 @@ See design doc for the full state machine diagram.`;
       // bubble->point map can't be trusted — refuse instead of reverting a turn
       // we may have mis-identified. See bubbleMapIsConsistent.
       if (!bubbleMapIsConsistent(points, totalUserBubbles)) {
-        this.output.appendLine(
+        this.host.appendLine(
           `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
         );
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
         );
       }
@@ -1628,7 +1639,7 @@ See design doc for the full state machine diagram.`;
         // Bubble button: map visible user bubble → wire prompt_index (skips legacy hidden turns).
         target = resolveUserBubbleRewind(points, userBubbleIndex);
         if (!target) {
-          return void vscode.window.showInformationMessage(
+          return void this.host.showInformationMessage(
             "Can't rewind to this message — it's the latest turn, or the checkpoint is unavailable.",
           );
         }
@@ -1637,7 +1648,7 @@ See design doc for the full state machine diagram.`;
         const facing = userFacingRewindPoints(points);
         const selectable = selectableRewindPoints(facing.length ? facing : points);
         if (selectable.length === 0) {
-          return void vscode.window.showInformationMessage(
+          return void this.host.showInformationMessage(
             facing.length <= 1
               ? "Only one message so far — hover an earlier user message and click Rewind."
               : "No rewind points available.",
@@ -1656,7 +1667,7 @@ See design doc for the full state machine diagram.`;
             detail: formatRewindPointDetail(p),
             point: p,
           }));
-        const pick = await vscode.window.showQuickPick(items, {
+        const pick = await this.host.showQuickPick(items, {
           // Execute discards the chosen message too, not just what follows it.
           placeHolder: "Rewind past which message? (it and everything after it are discarded)",
           ignoreFocusOut: true,
@@ -1686,17 +1697,17 @@ See design doc for the full state machine diagram.`;
         mode: "all",
       });
       if (result === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       if (!result.success) {
         const err = result.error || "Rewind did not apply (no changes).";
-        return void vscode.window.showErrorMessage(err);
+        return void this.host.showErrorMessage(err);
       }
 
       const reportedFiles = result.revertedFiles.length;
-      this.output.appendLine(
+      this.host.appendLine(
         `[rewind] → prompt #${result.targetPromptIndex} (mode=${result.mode}, reported_files=${reportedFiles}` +
           (typeof userBubbleIndex === "number" ? `, bubble=${userBubbleIndex}` : "") +
           `)`,
@@ -1723,12 +1734,12 @@ See design doc for the full state machine diagram.`;
       // own feedback; a toast restating them is noise. Reverted files are NOT
       // visible in the chat, so those still get reported.
       if (reportedFiles > 0) {
-        void vscode.window.showInformationMessage(
+        void this.host.showInformationMessage(
           "Rewound. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
+      void this.host.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
     }
   }
 
@@ -1744,14 +1755,14 @@ See design doc for the full state machine diagram.`;
   ): Promise<void> {
     const cmd = workflowControlCommand(action, displayName);
     if (!cmd) {
-      return void vscode.window.showWarningMessage("Missing workflow display name.");
+      return void this.host.showWarningMessage("Missing workflow display name.");
     }
     await this.handleSend(cmd, true, session);
   }
 
   /** Workspace folder root (the main checkout for worktree ops). */
   private workspaceRoot(): string {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    return this.host.workspaceRoot() ?? process.cwd();
   }
 
   /** Effective cwd for a session (worktree path or workspace root). */
@@ -1797,17 +1808,17 @@ See design doc for the full state machine diagram.`;
     // No worktree-from-worktree — checkouts stay singular. The gear hides this
     // inside a worktree; guard the Command-Palette path too.
     if (this.focused.worktree) {
-      return void vscode.window.showInformationMessage(
+      return void this.host.showInformationMessage(
         "You're already in a worktree. Start a new worktree from a normal session — worktrees don't nest.",
       );
     }
     const sourcePath = this.workspaceRoot();
     if (!isGitRepo(sourcePath, fs)) {
-      return void vscode.window.showWarningMessage(
+      return void this.host.showWarningMessage(
         "Worktree sessions need a git repository. Open a folder that is a git checkout (or run git init).",
       );
     }
-    const rawLabel = await vscode.window.showInputBox({
+    const rawLabel = await this.host.showInputBox({
       prompt: "Worktree label (optional)",
       placeHolder: "e.g. feat-auth — leave blank for an auto name",
       ignoreFocusOut: true,
@@ -1815,8 +1826,8 @@ See design doc for the full state machine diagram.`;
     if (rawLabel === undefined) return; // cancelled
     const label = sanitizeWorktreeLabel(rawLabel);
 
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Creating git worktree…", cancellable: false },
+    await this.host.withProgress(
+      { title: "Creating git worktree…", cancellable: false },
       async () => {
         try {
           // Create needs a live sessionId. Prefer a workspace-cwd client so we
@@ -1824,7 +1835,7 @@ See design doc for the full state machine diagram.`;
           // otherwise spin a short-lived ACP client just for the create RPC.
           const creator = await this.clientForWorktreeCreate(sourcePath);
           if (!creator) {
-            return void vscode.window.showErrorMessage("Could not start Grok to create a worktree.");
+            return void this.host.showErrorMessage("Could not start Grok to create a worktree.");
           }
           const { client, disposeAfter } = creator;
           let created;
@@ -1837,13 +1848,13 @@ See design doc for the full state machine diagram.`;
             if (disposeAfter) await client.dispose();
           }
           if (created === "unsupported") {
-            return void vscode.window.showWarningMessage(
+            return void this.host.showWarningMessage(
               "Worktrees need a newer Grok Build CLI. Update via the gear menu → Version & about.",
             );
           }
           const wtPath = created.worktreePath;
           const wtLabel = label || path.basename(wtPath);
-          this.output.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
+          this.host.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
           // Refresh cache so history can see sessions under this path.
           this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wtPath));
           this.worktreeCache.push({
@@ -1866,7 +1877,7 @@ See design doc for the full state machine diagram.`;
           // the checkout to land before starting the session.
           const ready = await this.waitForWorktreeReady(wtPath, 30000);
           if (!ready) {
-            return void vscode.window.showErrorMessage(
+            return void this.host.showErrorMessage(
               `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
             );
           }
@@ -1898,11 +1909,11 @@ See design doc for the full state machine diagram.`;
             this.sessionCache.delete(id);
           }
           this.postSessionsList();
-          void vscode.window.showInformationMessage(
+          void this.host.showInformationMessage(
             `Worktree session ready: ${wtLabel}. Edits stay isolated until you Apply worktree.`,
           );
         } catch (e: any) {
-          void vscode.window.showErrorMessage(`Create worktree failed: ${e?.message ?? e}`);
+          void this.host.showErrorMessage(`Create worktree failed: ${e?.message ?? e}`);
         }
       },
     );
@@ -1941,14 +1952,14 @@ See design doc for the full state machine diagram.`;
       return { client: this.focused.client, disposeAfter: false };
     }
     // Temporary client: initialize + session/new, caller disposes after create.
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
     if (!cliPath) return undefined;
     const client = new AcpClient({
       cliPath,
       cwd: sourcePath,
       env: this.buildEnv(sourcePath),
-      log: (msg) => this.output.appendLine(msg),
+      log: (msg) => this.host.appendLine(msg),
     });
     // Minimal handlers so the handshake doesn't hang on server requests.
     client.fsRead = async (p) => fs.readFileSync(p, "utf8");
@@ -1965,15 +1976,15 @@ See design doc for the full state machine diagram.`;
     const session = this.focused;
     const wt = session.worktree;
     if (!wt) {
-      return void vscode.window.showInformationMessage(
+      return void this.host.showInformationMessage(
         "This session is not in a worktree. Start one with Grok: New Worktree Session.",
       );
     }
     if (!session.client?.sessionId) {
-      return void vscode.window.showWarningMessage("Start the session before applying its worktree.");
+      return void this.host.showWarningMessage("Start the session before applying its worktree.");
     }
     if (!skipConfirm) {
-      const ok = await vscode.window.showWarningMessage(
+      const ok = await this.host.showWarningMessage(
         `Apply worktree "${wt.label}" into the main checkout?\n\n${wt.path}\n→ ${wt.sourceGitRoot || this.workspaceRoot()}`,
         { modal: true },
         "Apply",
@@ -1983,17 +1994,17 @@ See design doc for the full state machine diagram.`;
     try {
       const r = await session.client.applyWorktree(wt.path);
       if (r === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Apply worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       const n = r.files?.length ?? 0;
-      this.output.appendLine(`[worktree] apply ${wt.path}: ${n} file(s), status=${r.status}`);
-      void vscode.window.showInformationMessage(
+      this.host.appendLine(`[worktree] apply ${wt.path}: ${n} file(s), status=${r.status}`);
+      void this.host.showInformationMessage(
         n ? `Applied ${n} file${n === 1 ? "" : "s"} from worktree "${wt.label}".` : `Worktree "${wt.label}" applied (no file changes).`,
       );
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Apply worktree failed: ${e?.message ?? e}`);
+      void this.host.showErrorMessage(`Apply worktree failed: ${e?.message ?? e}`);
     }
   }
 
@@ -2003,10 +2014,10 @@ See design doc for the full state machine diagram.`;
     const session = this.focused;
     const wt = session.worktree;
     if (!wt) {
-      return void vscode.window.showInformationMessage("This session is not in a worktree.");
+      return void this.host.showInformationMessage("This session is not in a worktree.");
     }
     if (!skipConfirm) {
-      const ok = await vscode.window.showWarningMessage(
+      const ok = await this.host.showWarningMessage(
         `Remove worktree "${wt.label}"?\n\n${wt.path}\n\nThis deletes the isolated checkout. Unapplied edits are lost.`,
         { modal: true },
         "Remove",
@@ -2037,7 +2048,7 @@ See design doc for the full state machine diagram.`;
       if (!client) {
         const tmp = await this.clientForWorktreeCreate(this.workspaceRoot());
         if (!tmp) {
-          return void vscode.window.showErrorMessage("Could not start Grok to remove the worktree.");
+          return void this.host.showErrorMessage("Could not start Grok to remove the worktree.");
         }
         client = tmp.client;
         disposeAfter = tmp.disposeAfter;
@@ -2049,12 +2060,12 @@ See design doc for the full state machine diagram.`;
         if (disposeAfter) await client.dispose();
       }
       if (r === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Remove worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wt.path));
-      this.output.appendLine(`[worktree] removed ${wt.path} (removed=${r.removed})`);
+      this.host.appendLine(`[worktree] removed ${wt.path} (removed=${r.removed})`);
       // Clear worktree binding on meta for sessions that pointed here.
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       let changed = false;
@@ -2091,9 +2102,9 @@ See design doc for the full state machine diagram.`;
         });
         for (const message of this.buildRemoteSnapshot(holder)) this.sendRemoteClient(holder, message);
       }
-      void vscode.window.showInformationMessage(`Removed worktree "${wt.label}".`);
+      void this.host.showInformationMessage(`Removed worktree "${wt.label}".`);
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Remove worktree failed: ${e?.message ?? e}`);
+      void this.host.showErrorMessage(`Remove worktree failed: ${e?.message ?? e}`);
     }
   }
 
@@ -2112,7 +2123,7 @@ See design doc for the full state machine diagram.`;
       if (list === "unsupported") return;
       this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, list);
     } catch (e: any) {
-      this.output.appendLine(`[worktree] list failed: ${e?.message ?? e}`);
+      this.host.appendLine(`[worktree] list failed: ${e?.message ?? e}`);
     }
   }
 
@@ -2137,7 +2148,7 @@ See design doc for the full state machine diagram.`;
       // keep it as the one trusted return target before its first catalog lands.
       trustedCwds: [this.workspaceRoot()],
       worktreeLabels,
-      log: (m) => this.output.appendLine(m),
+      log: (m) => this.host.appendLine(m),
     });
   }
 
@@ -2417,7 +2428,7 @@ See design doc for the full state machine diagram.`;
   private buildPinnedSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const grokHome = resolveGrokHome(process.env);
-    const log = (m: string) => this.output.appendLine(m);
+    const log = (m: string) => this.host.appendLine(m);
     const byCwd = new Map<string, { cwd: string; ids: string[] }>();
     for (const [id, o] of Object.entries(overrides)) {
       if (typeof o?.pinnedAt !== "number" || !o.pinnedCwd) continue;
@@ -2502,17 +2513,18 @@ See design doc for the full state machine diagram.`;
       // the webview pulls bytes lazily, so even a big video renders.
       const webview = this.view?.webview;
       if (webview && this.isServableFromDisk(m.path)) {
-        const src = webview.asWebviewUri(vscode.Uri.file(m.path)).toString();
+        // Grok home is a genuine local-disk path (localResourceRoots uses Uri.file).
+        const src = webview.asWebviewUri(Uri.file(m.path));
         this.emit(session, { type: "media", media: m.media, src, mimeType: mime, path: m.path });
         return;
       }
       // Outside the served roots — inline as base64 so it still renders.
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(m.path));
+      const bytes = await this.host.fs.readFile(Uri.file(m.path));
       if (gen !== session.gen) return;
       const b64 = Buffer.from(bytes).toString("base64");
       this.emit(session, { type: "media", media: m.media, src: `data:${mime};base64,${b64}`, path: m.path });
     } catch (e) {
-      this.output.appendLine(`[media] failed to forward generated media: ${(e as Error).message}`);
+      this.host.appendLine(`[media] failed to forward generated media: ${(e as Error).message}`);
     }
   }
 
@@ -2549,12 +2561,14 @@ See design doc for the full state machine diagram.`;
 
       if (msg.action === "open") {
         const pngBytes = toBytes(msg.png);
+        // Node fs against globalStorage's fsPath — same as v3.1.0 (extension host
+        // sees the remote disk when running remotely).
         const dir = path.join(this.context.globalStorageUri.fsPath, "exports");
         fs.mkdirSync(dir, { recursive: true });
         const stamp = Date.now();
         const file = path.join(dir, `${base}-${stamp}.${pngBytes ? "png" : "svg"}`);
         fs.writeFileSync(file, pngBytes ?? (msg.svg ?? ""), pngBytes ? undefined : "utf8");
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(file));
+        await this.host.openResource(file);
         return;
       }
 
@@ -2566,29 +2580,29 @@ See design doc for the full state machine diagram.`;
         { label: `SVG — for dark background${mark("dark")}`, description: "transparent, light ink", fmt: "svgDark" },
         { label: `SVG — for light background${mark("light")}`, description: "transparent, dark ink", fmt: "svgLight" },
       ];
-      const pick = await vscode.window.showQuickPick(items, {
+      const pick = await this.host.showQuickPick(items, {
         placeHolder: `Export ${base} as…`,
       });
       if (!pick) return;
 
       const ext = pick.fmt === "png" ? "png" : "svg";
       const defaultName = `${base}.${ext}`;
-      const defaultUri = vscode.Uri.joinPath(vscode.Uri.file(this.sessionCwd(session)), defaultName);
+      const defaultPath = path.join(this.sessionCwd(session), defaultName);
       const filters: Record<string, string[]> =
         ext === "png" ? { "PNG image": ["png"] } : { "SVG image": ["svg"] };
-      const target = await vscode.window.showSaveDialog({ defaultUri, filters });
+      const target = await this.host.showSaveDialog({ defaultPath, filters });
       if (!target) return;
 
       if (pick.fmt === "png") {
         const pngBytes = toBytes(msg.png);
-        fs.writeFileSync(target.fsPath, pngBytes ?? Buffer.from(msg.svgDark ?? "", "utf8"));
+        fs.writeFileSync(target, pngBytes ?? Buffer.from(msg.svgDark ?? "", "utf8"));
       } else {
         const svg = pick.fmt === "svgDark" ? msg.svgDark : msg.svgLight;
-        fs.writeFileSync(target.fsPath, svg ?? "", "utf8");
+        fs.writeFileSync(target, svg ?? "", "utf8");
       }
     } catch (e) {
-      this.output.appendLine(`[export] failed: ${(e as Error).message}`);
-      void vscode.window.showErrorMessage(`Export failed: ${(e as Error).message}`);
+      this.host.appendLine(`[export] failed: ${(e as Error).message}`);
+      void this.host.showErrorMessage(`Export failed: ${(e as Error).message}`);
     }
   }
 
@@ -2599,13 +2613,13 @@ See design doc for the full state machine diagram.`;
    */
   async logout(): Promise<void> {
     const cliPath = this.cliPath || locateGrokCli(
-      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
       return;
     }
-    const choice = await vscode.window.showWarningMessage(
+    const choice = await this.host.showWarningMessage(
       "Sign out of Grok? This clears the CLI's cached credentials.",
       { modal: true },
       "Sign Out",
@@ -2618,13 +2632,13 @@ See design doc for the full state machine diagram.`;
     this.focused = this.newLocalSession();
     // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
     // is a parser error (see runMcpList).
-    vscode.window.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
+    this.host.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
     this.post({ type: "clearMessages" });
     this.post({ type: "onboarding", state: "auth-required" });
   }
 
   dispose(): void {
-    void vscode.commands.executeCommand("setContext", "grok.composerFocus", false);
+    void this.host.setContext("grok.composerFocus", false);
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
     this.uplink?.dispose();
     this.uplink = undefined;
@@ -2660,7 +2674,7 @@ See design doc for the full state machine diagram.`;
       const { stdout } = await execGrokCli(cliPath, ["--version"], { timeout });
       return stdout?.trim() ?? "";
     } catch (e) {
-      this.output.appendLine(`grok --version failed: ${(e as Error).message}`);
+      this.host.appendLine(`grok --version failed: ${(e as Error).message}`);
       return "";
     }
   }
@@ -2670,28 +2684,28 @@ See design doc for the full state machine diagram.`;
   private async maybeUpdateCliOnUpgrade(cliPath: string): Promise<void> {
     if (this.cliUpdateChecked) return;
     this.cliUpdateChecked = true;
-    const current = (this.context.extension.packageJSON as { version?: string })?.version ?? "";
+    const current = this.context.extensionVersion;
     const lastSeen = this.state.get<string>(CLI_UPDATE_VERSION_KEY);
     try {
       if (!extensionWasUpgraded(lastSeen, current)) return;
       const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
       if (!policy.allow) {
-        this.output.appendLine(
+        this.host.appendLine(
           `Extension upgraded ${lastSeen} → ${current}; skipping silent CLI update (${policy.note}).`,
         );
         return;
       }
       const args = policy.target ? ["update", "--version", policy.target] : ["update"];
-      this.output.appendLine(
+      this.host.appendLine(
         `Extension upgraded ${lastSeen} → ${current}; updating grok CLI (silent: ${args.join(" ")}).`,
       );
       this.post({ type: "cliUpdating" });
       try {
         const { stdout, stderr } = await execGrokCli(cliPath, args, { timeout: 180_000 });
-        if (stdout?.trim()) this.output.appendLine(stdout.trim());
-        if (stderr?.trim()) this.output.appendLine(stderr.trim());
+        if (stdout?.trim()) this.host.appendLine(stdout.trim());
+        if (stderr?.trim()) this.host.appendLine(stderr.trim());
       } catch (e) {
-        this.output.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
+        this.host.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
       }
     } finally {
       void this.state.update(CLI_UPDATE_VERSION_KEY, current);
@@ -2705,8 +2719,8 @@ See design doc for the full state machine diagram.`;
     const installed = parseGrokVersion(versionOutput)?.join(".");
     if (!installed) {
       const message = `Could not verify the grok CLI version; this extension requires grok ${GROK_REQUIRED_VERSION} or newer.`;
-      this.output.appendLine(`${message} Continuing best-effort with the current binary.`);
-      void vscode.window.showWarningMessage(message);
+      this.host.appendLine(`${message} Continuing best-effort with the current binary.`);
+      void this.host.showWarningMessage(message);
       return {
         planModeAvailable: false,
         planModeUnavailableReason:
@@ -2716,8 +2730,8 @@ See design doc for the full state machine diagram.`;
     }
     if (isGrokVersionBelowRequired(versionOutput)) {
       const message = `grok CLI ${installed} is below required version ${GROK_REQUIRED_VERSION}; Plan mode is unavailable.`;
-      this.output.appendLine(message);
-      void vscode.window.showWarningMessage(message);
+      this.host.appendLine(message);
+      void this.host.showWarningMessage(message);
       return {
         planModeAvailable: false,
         planModeUnavailableReason:
@@ -2751,7 +2765,7 @@ See design doc for the full state machine diagram.`;
     fromVersion: string,
     reason: "proactive" | "reactive",
   ): Promise<boolean> {
-    this.output.appendLine(
+    this.host.appendLine(
       `grok CLI ${fromVersion} has the stdio regression (issue #22, ${reason}); ` +
         `pinning to ${GROK_STDIO_DOWNGRADE_TARGET}.`,
     );
@@ -2762,15 +2776,15 @@ See design doc for the full state machine diagram.`;
         ["update", "--version", GROK_STDIO_DOWNGRADE_TARGET],
         { timeout: 180_000 },
       );
-      if (stdout?.trim()) this.output.appendLine(stdout.trim());
-      if (stderr?.trim()) this.output.appendLine(stderr.trim());
+      if (stdout?.trim()) this.host.appendLine(stdout.trim());
+      if (stderr?.trim()) this.host.appendLine(stderr.trim());
       const detail = reason === "proactive"
         ? `Grok CLI ${fromVersion} has a known Windows startup issue (issue #22). Switched to the supported version ${GROK_STDIO_DOWNGRADE_TARGET}.`
         : `Grok CLI ${fromVersion} failed to start a session (issue #22). Switched to the supported version ${GROK_STDIO_DOWNGRADE_TARGET} and retrying.`;
-      void vscode.window.showInformationMessage(detail);
+      void this.host.showInformationMessage(detail);
       return true;
     } catch (e) {
-      this.output.appendLine(`grok recovery update to ${GROK_STDIO_DOWNGRADE_TARGET} failed: ${(e as Error).message}`);
+      this.host.appendLine(`grok recovery update to ${GROK_STDIO_DOWNGRADE_TARGET} failed: ${(e as Error).message}`);
       return false;
     }
   }
@@ -2782,7 +2796,7 @@ See design doc for the full state machine diagram.`;
    */
   private async checkGrokUpdate(): Promise<void> {
     const cliPath = this.cliPath || locateGrokCli(
-      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
       this.post({ type: "grokUpdateStatus", error: "grok CLI not found" });
@@ -2807,7 +2821,7 @@ See design doc for the full state machine diagram.`;
         policy,
       });
     } catch (e) {
-      this.output.appendLine(`grok update --check failed: ${(e as Error).message}`);
+      this.host.appendLine(`grok update --check failed: ${(e as Error).message}`);
       this.post({ type: "grokUpdateStatus", error: (e as Error).message, policy });
     }
   }
@@ -2821,7 +2835,7 @@ See design doc for the full state machine diagram.`;
    */
   private async updateGrokCliOnDemand(): Promise<void> {
     const cliPath = this.cliPath || locateGrokCli(
-      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
@@ -2832,7 +2846,7 @@ See design doc for the full state machine diagram.`;
     // unsupported Windows build even if the message arrives some other way.
     const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
     if (!policy.allow) {
-      void vscode.window.showInformationMessage(
+      void this.host.showInformationMessage(
         policy.note ?? "Grok CLI updates are paused for compatibility.",
       );
       return;
@@ -2847,7 +2861,7 @@ See design doc for the full state machine diagram.`;
       (s) => s.status === "working" || s.status === "needs-you",
     ).length;
     if (busy > 0) {
-      const choice = await vscode.window.showWarningMessage(
+      const choice = await this.host.showWarningMessage(
         `Updating the Grok Build CLI will stop ${busy} session${busy === 1 ? "" : "s"} currently in progress. Continue?`,
         { modal: true },
         "Update Anyway",
@@ -2887,19 +2901,19 @@ See design doc for the full state machine diagram.`;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { stdout, stderr } = await execGrokCli(cliPath, updateArgs, { timeout: 180_000 });
-        if (stdout?.trim()) this.output.appendLine(stdout.trim());
-        if (stderr?.trim()) this.output.appendLine(stderr.trim());
+        if (stdout?.trim()) this.host.appendLine(stdout.trim());
+        if (stderr?.trim()) this.host.appendLine(stderr.trim());
         return true;
       } catch (e) {
         const msg = (e as Error).message;
         if (attempt === 0 && isLockedBinaryError(msg)) {
-          this.output.appendLine("grok update hit a locked binary; pausing then retrying once…");
+          this.host.appendLine("grok update hit a locked binary; pausing then retrying once…");
           await new Promise((r) => setTimeout(r, 2000));
           continue;
         }
-        this.output.appendLine(`grok update failed: ${msg}`);
+        this.host.appendLine(`grok update failed: ${msg}`);
         if (notifyFailure) {
-          void vscode.window.showWarningMessage(`Grok Build update failed: ${msg}`);
+          void this.host.showWarningMessage(`Grok Build update failed: ${msg}`);
         }
         return false;
       }
@@ -2911,7 +2925,7 @@ See design doc for the full state machine diagram.`;
    *  (reasoning effort, cross-agent model). Returns the chosen restart mode, or
    *  undefined if the user dismissed the dialog. */
   private async pickRestartMode(message: string): Promise<"clear" | "summarize" | undefined> {
-    const choice = await vscode.window.showInformationMessage(
+    const choice = await this.host.showInformationMessage(
       message,
       "Summarize & Restart",
       "Just Restart",
@@ -2973,7 +2987,7 @@ See design doc for the full state machine diagram.`;
     try {
       deleteSessionDir({ fs: defaultFs, grokHome, cwd, id: oldId });
     } catch (e) {
-      this.output.appendLine(`[sessions] could not discard empty session ${oldId}: ${(e as Error).message}`);
+      this.host.appendLine(`[sessions] could not discard empty session ${oldId}: ${(e as Error).message}`);
     }
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // carrySessionName only moves customName — also carry worktree binding so a
@@ -3040,7 +3054,7 @@ See design doc for the full state machine diagram.`;
     // flash while the session spins up and primes. Resumed sessions stay
     // verdict-driven (plan-restore decides), so they don't pre-apply it.
     const rememberedYolo = startsInYolo(
-      vscode.workspace.getConfiguration("grok").get<string>("defaultMode", ""),
+      this.host.getConfiguration("grok").get<string>("defaultMode", ""),
       !!resumeId,
     );
     // grok's own `permission_mode = "always-approve"` (config.toml, set via
@@ -3083,7 +3097,7 @@ See design doc for the full state machine diagram.`;
     // both clear this startup lock below.
     this.emit(session, { type: "setBusy", value: true, locked: true });
 
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
     this.cliPath = cliPath || undefined;
     if (!cliPath) {
@@ -3133,15 +3147,15 @@ See design doc for the full state machine diagram.`;
       cwd,
       env,
       effort,
-      log: (msg) => this.output.appendLine(msg),
+      log: (msg) => this.host.appendLine(msg),
     });
     session.client = client;
 
     // fs handlers (mandatory — the agent calls these to read/write files)
     client.fsRead = async (p: string) => {
       try {
-        const uri = vscode.Uri.file(p);
-        const bytes = await vscode.workspace.fs.readFile(uri);
+        // Agent paths are genuine workspace disk paths on the extension host.
+        const bytes = await this.host.fs.readFile(Uri.file(p));
         return Buffer.from(bytes).toString("utf8");
       } catch {
         return fs.readFileSync(p, "utf8");
@@ -3149,10 +3163,8 @@ See design doc for the full state machine diagram.`;
     };
     client.fsWrite = async (p: string, content: string) => {
       try {
-        const uri = vscode.Uri.file(p);
-        const dir = vscode.Uri.file(path.dirname(p));
-        await vscode.workspace.fs.createDirectory(dir);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+        await this.host.fs.createDirectory(Uri.file(path.dirname(p)));
+        await this.host.fs.writeFile(Uri.file(p), Buffer.from(content, "utf8"));
       } catch {
         fs.mkdirSync(path.dirname(p), { recursive: true });
         fs.writeFileSync(p, content, "utf8");
@@ -3296,7 +3308,7 @@ See design doc for the full state machine diagram.`;
     client.on("taskBackgrounded", (u: any) => {
       if (gen !== session.gen) return;
       const cmd = typeof u?.command === "string" ? u.command : "";
-      this.output.appendLine(`[task] backgrounded: ${cmd.slice(0, 200)}`);
+      this.host.appendLine(`[task] backgrounded: ${cmd.slice(0, 200)}`);
     });
     client.on("taskCompleted", (u: any) => {
       if (gen !== session.gen) return;
@@ -3311,9 +3323,9 @@ See design doc for the full state machine diagram.`;
       const ok = exit == null || exit === 0;
       const label = summarizeBackgroundCommand(cmd);
       const text = `Grok background task ${ok ? "completed" : `exited (code ${exit})`}${label ? `: ${label}` : ""}`;
-      this.output.appendLine(`[task] ${text}`);
-      void vscode.window.showInformationMessage(text, "Show Logs").then((choice) => {
-        if (choice === "Show Logs") this.output.show();
+      this.host.appendLine(`[task] ${text}`);
+      void this.host.showInformationMessage(text, "Show Logs").then((choice) => {
+        if (choice === "Show Logs") this.host.showOutput();
       });
     });
     client.on("toolCall", (u) => {
@@ -3336,7 +3348,7 @@ See design doc for the full state machine diagram.`;
         (typeof u?.planText === "string" ? u.planText : "") ||
         (typeof u?.content === "string" ? u.content : "") ||
         (typeof u?.content?.text === "string" ? u.content.text : "");
-      this.output.appendLine(`[plan] event payload keys: ${Object.keys(u ?? {}).join(", ")}`);
+      this.host.appendLine(`[plan] event payload keys: ${Object.keys(u ?? {}).join(", ")}`);
     });
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
@@ -3536,7 +3548,7 @@ See design doc for the full state machine diagram.`;
       this.detachClient(session);
       void client.dispose();
     });
-    client.on("stderr", (text: string) => this.output.append(text));
+    client.on("stderr", (text: string) => this.host.append(text));
 
     try {
       await client.start();
@@ -3576,7 +3588,7 @@ See design doc for the full state machine diagram.`;
               try {
                 snapshot = await this.createPlanReviewSnapshot(planText, resumeId);
               } catch (e) {
-                this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+                this.host.appendLine(`[plan-review] ${(e as Error).message}`);
               }
               this.emit(session, {
                 type: "planHistoryQueue",
@@ -3589,7 +3601,7 @@ See design doc for the full state machine diagram.`;
               });
               session.lastPlanText = planText;
             } catch (e) {
-              this.output.appendLine(`[plan-restore] ${(e as Error).message}`);
+              this.host.appendLine(`[plan-restore] ${(e as Error).message}`);
             }
           }
         }
@@ -3605,7 +3617,7 @@ See design doc for the full state machine diagram.`;
             // loaded and replayed; just keep its own model instead of letting the
             // whole resume crash with "Grok exited (code null)".
             if (!isIncompatibleAgentError(e)) throw e;
-            this.output.appendLine(
+            this.host.appendLine(
               `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
             );
           }
@@ -3655,17 +3667,17 @@ See design doc for the full state machine diagram.`;
           // so it stops being stale, and just log it; no popup nag. An EMPTY
           // default means "CLI default" and never reaches here (the `defaultModel &&`
           // guard above), so a fresh install's empty default is left untouched.
-          this.output.appendLine(
+          this.host.appendLine(
             `[startup] Default model '${defaultModel}' is not available; switching grok.defaultModel to '${client.currentModelId}'.`,
           );
-          const cfg = vscode.workspace.getConfiguration("grok");
+          const cfg = this.host.getConfiguration("grok");
           const scope = cfg.inspect<string>("defaultModel");
           const target =
             scope?.workspaceFolderValue !== undefined
-              ? vscode.ConfigurationTarget.WorkspaceFolder
+              ? "workspaceFolder"
               : scope?.workspaceValue !== undefined
-                ? vscode.ConfigurationTarget.Workspace
-                : vscode.ConfigurationTarget.Global;
+                ? "workspace"
+                : "global";
           void cfg.update("defaultModel", client.currentModelId, target);
         }
       }
@@ -3797,7 +3809,7 @@ See design doc for the full state machine diagram.`;
         break;
       case "composerFocus":
         if (origin === "local") {
-          await vscode.commands.executeCommand("setContext", "grok.composerFocus", !!msg.focused);
+          await this.host.setContext("grok.composerFocus", !!msg.focused);
         }
         break;
       case "summarizeSpeech": {
@@ -3813,7 +3825,7 @@ See design doc for the full state machine diagram.`;
         const text = await summarizeForSpeech(
           msg.text,
           this.resolveVoiceApiKey(session.cwd || this.workspaceRoot()),
-          (line) => this.output.appendLine(line),
+          (line) => this.host.appendLine(line),
         );
         const response: HostMsg = { type: "speechSummary", requestId: msg.requestId, text };
         if (requester) this.sendRemoteRequester(requester, response);
@@ -3836,7 +3848,7 @@ See design doc for the full state machine diagram.`;
         let queuedSendCommit: { text: string } | undefined;
         if (origin === "remote" && msg.queuedSendId) {
           if (session.completedQueuedSendIds.includes(msg.queuedSendId)) {
-            this.output.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
+            this.host.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
             break;
           }
           const dispatch = session.queuedSendDispatch;
@@ -3845,7 +3857,7 @@ See design doc for the full state machine diagram.`;
             dispatch.id !== msg.queuedSendId ||
             dispatch.text.trim() !== msg.text.trim()
           ) {
-            this.output.appendLine(`[queue] ignored stale or mismatched remote dequeue ${msg.queuedSendId}`);
+            this.host.appendLine(`[queue] ignored stale or mismatched remote dequeue ${msg.queuedSendId}`);
             break;
           }
           session.completedQueuedSendIds.push(dispatch.id);
@@ -3858,7 +3870,7 @@ See design doc for the full state machine diagram.`;
           origin === "remote" &&
           session.queuedSendDispatch?.text.trim() === msg.text.trim()
         ) {
-          this.output.appendLine("[queue] ignored an unidentifiable legacy dequeue echo");
+          this.host.appendLine("[queue] ignored an unidentifiable legacy dequeue echo");
           break;
         }
         try {
@@ -3937,9 +3949,7 @@ See design doc for the full state machine diagram.`;
         await this.unlinkRemoteDevice();
         break;
       case "openRemotePortal":
-        void vscode.env.openExternal(vscode.Uri.parse(
-          httpBaseFromRelayUrl(REMOTE_RELAY_URL) + (msg.withHint ? "/?remoteHint=1" : ""),
-        ));
+        void this.host.openExternal(httpBaseFromRelayUrl(REMOTE_RELAY_URL) + (msg.withHint ? "/?remoteHint=1" : ""));
         break;
       case "rewindSession":
         await this.rewindFocusedSession(
@@ -4017,32 +4027,29 @@ See design doc for the full state machine diagram.`;
         const ref = parseFileRef(msg.path);
         let p = ref.path;
         if (!path.isAbsolute(p)) p = path.join(this.sessionCwd(session), p);
-        const uri = vscode.Uri.file(p);
         if (ref.startLine != null) {
           const startLine = Math.max(0, ref.startLine - 1);
           const endLine = ref.endLine != null ? Math.max(startLine, ref.endLine - 1) : startLine;
           try {
-            const doc = await vscode.workspace.openTextDocument(uri);
-            await vscode.window.showTextDocument(doc, {
-              selection: new vscode.Range(startLine, 0, endLine, Number.MAX_SAFE_INTEGER),
+            await this.host.openTextFile(p, {
+              selection: {
+                start: { line: startLine, character: 0 },
+                end: { line: endLine, character: Number.MAX_SAFE_INTEGER },
+              },
             });
           } catch {
-            void vscode.commands.executeCommand("vscode.open", uri);
+            void this.host.openResource(p);
           }
         } else {
-          void vscode.commands.executeCommand("vscode.open", uri);
+          void this.host.openResource(p);
         }
         break;
       }
       case "openUrl":
-        void vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        void this.host.openExternal(msg.url);
         break;
       case "openText": {
-        const doc = await vscode.workspace.openTextDocument({
-          content: msg.content,
-          language: msg.language,
-        });
-        await vscode.window.showTextDocument(doc);
+        await this.host.openUntitledText(msg.content, msg.language);
         break;
       }
       case "openDiff":
@@ -4119,7 +4126,7 @@ See design doc for the full state machine diagram.`;
       case "setEffort": {
         if (session.priming) break; // ignore changes fired mid-session-start (see switchModel)
         const newLevel = msg.level;
-        const cfg2 = vscode.workspace.getConfiguration("grok");
+        const cfg2 = this.host.getConfiguration("grok");
 
         if (!session.hasHistory || !session.client) {
           // As with a model switch on an empty session: restart without the summarize-vs-restart
@@ -4127,7 +4134,7 @@ See design doc for the full state machine diagram.`;
           // history (a dead client on a session WITH history must keep that history).
           const wasEmpty = !session.hasHistory;
           const discardId = session.activeSessionId;
-          await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
+          await cfg2.update("defaultEffort", newLevel, "global");
           await this.startSession(undefined, session);
           if (wasEmpty) this.discardRestartedEmptySession(discardId, session);
           break;
@@ -4144,7 +4151,7 @@ See design doc for the full state machine diagram.`;
         if (newLevel && session.client.currentModelSupportsEffort()) {
           const applied = await session.client.setReasoningEffort(newLevel).catch(() => false);
           if (applied) {
-            await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
+            await cfg2.update("defaultEffort", newLevel, "global");
             break;
           }
         }
@@ -4159,7 +4166,7 @@ See design doc for the full state machine diagram.`;
         }
         const mode = await this.pickRestartMode("Changing reasoning effort requires restarting the session.");
         if (!mode) break; // dismissed — leave defaultEffort untouched
-        await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
+        await cfg2.update("defaultEffort", newLevel, "global");
         await this.restartSession(mode, session);
         break;
       }
@@ -4170,7 +4177,7 @@ See design doc for the full state machine diagram.`;
           fs.mkdirSync(path.dirname(globalCfg), { recursive: true });
           fs.writeFileSync(globalCfg, "# Grok global configuration\n");
         }
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(globalCfg));
+        await this.host.openResource(globalCfg);
         break;
       }
       case "openProjectConfig": {
@@ -4180,7 +4187,7 @@ See design doc for the full state machine diagram.`;
           fs.mkdirSync(path.dirname(projCfg), { recursive: true });
           fs.writeFileSync(projCfg, "# Grok project configuration\n# MCP servers here apply to this workspace only.\n");
         }
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(projCfg));
+        await this.host.openResource(projCfg);
         break;
       }
       case "runMcpList": {
@@ -4191,18 +4198,18 @@ See design doc for the full state machine diagram.`;
         // directly sidesteps shell quoting entirely and behaves the same on
         // PowerShell, cmd, and POSIX shells.
         const mcpCli = this.cliPath || locateGrokCli(
-          vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+          this.host.getConfiguration("grok").get<string>("cliPath", ""),
         );
         const mcpCwd = this.sessionCwd(session);
         const term = mcpCli
-          ? vscode.window.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
-          : vscode.window.createTerminal("Grok MCP");
+          ? this.host.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
+          : this.host.createTerminal("Grok MCP");
         term.show();
         if (!mcpCli) term.sendText("grok mcp list");
         break;
       }
       case "showLogs":
-        this.output.show();
+        this.host.showOutput();
         break;
       case "moveView": {
         // Gear -> Config & debug -> Move view. Each destination targets an
@@ -4210,57 +4217,41 @@ See design doc for the full state machine diagram.`;
         // unknown location falls back to the built-in destination picker
         // preselected on our view (the view-id argument also sidesteps the
         // focusedView context, which Cursor never sets for webview views).
-        const containerId = moveViewContainerFor(msg.location);
-        if (containerId) {
-          await vscode.commands.executeCommand("vscode.moveViews", {
-            viewIds: [GROK_VIEW_ID],
-            destinationId: containerId,
-          });
-          await vscode.commands.executeCommand(`${GROK_VIEW_ID}.focus`);
-        } else {
-          await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
-        }
+        await this.host.relocateView(GROK_VIEW_ID, moveViewContainerFor(msg.location));
         break;
       }
       case "setShowThinking":
         // Persist globally (like the other display prefs); the config watcher
         // re-posts the value, keeping every open webview in sync.
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("showThinking", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("showThinking", !!msg.value, "global");
         break;
       case "setExpandCommandOutputs":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("expandCommandOutputs", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("expandCommandOutputs", !!msg.value, "global");
         break;
       case "setSteerByDefault":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("steerByDefault", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("steerByDefault", !!msg.value, "global");
         break;
       case "setSoundNotifications":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("soundNotifications", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("soundNotifications", !!msg.value, "global");
         break;
       case "setProcessingSound":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("processingSound", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("processingSound", !!msg.value, "global");
         break;
       case "setReadRepliesAloud":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("readRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("readRepliesAloud", !!msg.value, "global");
         break;
       case "setSummarizeRepliesAloud":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("summarizeRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("summarizeRepliesAloud", !!msg.value, "global");
         break;
       case "runInstallCmd": {
-        const term = vscode.window.createTerminal("Install Grok");
+        const term = this.host.createTerminal("Install Grok");
         term.show();
         // Windows ships a native CLI installed via PowerShell; the default VS Code
         // terminal there is PowerShell, so use its syntax. Everything else is POSIX.
@@ -4274,7 +4265,7 @@ See design doc for the full state machine diagram.`;
       }
       case "runGrokLogin": {
         const cliPath = this.cliPath || locateGrokCli(
-          vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+          this.host.getConfiguration("grok").get<string>("cliPath", ""),
         );
         if (!cliPath) {
           this.post({ type: "onboarding", state: "missing-cli" });
@@ -4282,7 +4273,7 @@ See design doc for the full state machine diagram.`;
         }
         // shellPath/shellArgs, not sendText — a quoted path typed into
         // PowerShell is a parser error (see runMcpList).
-        const term = vscode.window.createTerminal({ name: "Grok Login", shellPath: cliPath, shellArgs: ["login"] });
+        const term = this.host.createTerminal({ name: "Grok Login", shellPath: cliPath, shellArgs: ["login"] });
         term.show();
         break;
       }
@@ -4360,7 +4351,7 @@ See design doc for the full state machine diagram.`;
           const index = await this.mentionFileIndexForCwd(this.sessionCwd(session));
           files = filterMentionFiles(index.rels, msg.query);
         } catch (e) {
-          this.output.appendLine(`[mention] index failed: ${(e as Error).message}`);
+          this.host.appendLine(`[mention] index failed: ${(e as Error).message}`);
         }
         if (requester) {
           this.sendRemoteRequester(requester, { type: "mentionResults", query: msg.query, files });
@@ -4381,7 +4372,7 @@ See design doc for the full state machine diagram.`;
           try {
             catalogMatch = (await this.mentionFileIndexForCwd(workspaceRoot)).absByRel.get(msg.relPath);
           } catch (e) {
-            this.output.appendLine(`[mention] index failed while validating remote pick: ${(e as Error).message}`);
+            this.host.appendLine(`[mention] index failed while validating remote pick: ${(e as Error).message}`);
           }
         } else {
           // Local picks preserve the #69 fallback for a result whose cached/open
@@ -4389,7 +4380,7 @@ See design doc for the full state machine diagram.`;
           try {
             catalogMatch = (await this.mentionFileIndexForCwd(workspaceRoot)).absByRel.get(msg.relPath);
           } catch (e) {
-            this.output.appendLine(`[mention] index failed while validating local pick: ${(e as Error).message}`);
+            this.host.appendLine(`[mention] index failed while validating local pick: ${(e as Error).message}`);
           }
           if (pathsEqual(workspaceRoot, this.workspaceRoot())) {
             openTabMatch = this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs;
@@ -4495,7 +4486,7 @@ See design doc for the full state machine diagram.`;
     const query = (opts?.query ?? "").trim().toLowerCase();
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const log = (m: string) => this.output.appendLine(m);
+    const log = (m: string) => this.host.appendLine(m);
 
     // Best-effort refresh so worktree sessions appear without a create this window.
     // Fire-and-forget: a late refresh just needs another list open to show up.
@@ -4839,7 +4830,7 @@ See design doc for the full state machine diagram.`;
     miss: { reason: "scope" | "gone"; repoCwd?: string },
   ): void {
     if (miss.reason === "gone") {
-      this.output.appendLine(`[remote] dropped ${action}Session for ${id} (no longer in ${miss.repoCwd})`);
+      this.host.appendLine(`[remote] dropped ${action}Session for ${id} (no longer in ${miss.repoCwd})`);
       // Refresh what the client is looking at rather than argue with it: the row
       // it acted on is stale, so the honest repair is to make the row disappear.
       this.postSessionsList();
@@ -4850,7 +4841,7 @@ See design doc for the full state machine diagram.`;
       });
       return;
     }
-    this.output.appendLine(`[remote] refused ${action}Session for ${id} (session is outside every known project)`);
+    this.host.appendLine(`[remote] refused ${action}Session for ${id} (session is outside every known project)`);
     this.sendRemoteClient(clientId, {
       type: "error",
       text: `Could not ${action} this conversation because it does not belong to a project this computer knows about.`,
@@ -4933,7 +4924,7 @@ See design doc for the full state machine diagram.`;
     if (origin === "remote" && clientId) {
       this.sendRemoteClient(clientId, { type: "error", text });
     } else {
-      void vscode.window.showInformationMessage(text);
+      void this.host.showInformationMessage(text);
     }
   }
 
@@ -4968,9 +4959,9 @@ See design doc for the full state machine diagram.`;
       );
       return;
     }
-    if (level === "error") void vscode.window.showErrorMessage(text);
-    else if (level === "warning") void vscode.window.showWarningMessage(text);
-    else void vscode.window.showInformationMessage(text);
+    if (level === "error") void this.host.showErrorMessage(text);
+    else if (level === "warning") void this.host.showWarningMessage(text);
+    else void this.host.showInformationMessage(text);
   }
 
   private async deleteSession(
@@ -4990,7 +4981,7 @@ See design doc for the full state machine diagram.`;
     }
     const authorizedRemoteCwd = target?.cwd;
     if (this.isSessionLoadReserved(id)) {
-      this.output.appendLine(`[sessions] refused delete of reserved session ${id}`);
+      this.host.appendLine(`[sessions] refused delete of reserved session ${id}`);
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
@@ -5008,7 +4999,7 @@ See design doc for the full state machine diagram.`;
         : live === this.focused
     );
     if (live && this.sessionHasLiveOwner(live) && !requesterWatches) {
-      this.output.appendLine(`[sessions] refused delete of live session ${id} owned elsewhere`);
+      this.host.appendLine(`[sessions] refused delete of live session ${id} owned elsewhere`);
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
@@ -5037,7 +5028,7 @@ See design doc for the full state machine diagram.`;
         id,
       });
     } catch (e) {
-      this.output.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
+      this.host.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
     }
     this.sessionCache.delete(id);
     this.removePlanReviews(id); // snapshots live outside grok's session dir
@@ -5078,7 +5069,7 @@ See design doc for the full state machine diagram.`;
       ? this.remoteRepoScope(clientId, requestedCwd)
       : requestedCwd;
     if (!selectedCwd) {
-      this.output.appendLine("[remote] dropped clearAllSessions (cwd is not a known repository)");
+      this.host.appendLine("[remote] dropped clearAllSessions (cwd is not a known repository)");
       return;
     }
     const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, selectedCwd));
@@ -5137,7 +5128,7 @@ See design doc for the full state machine diagram.`;
           exceptIds: protectedIds,
         })) removedIds.add(id);
       } catch (e) {
-        this.output.appendLine(
+        this.host.appendLine(
           `[sessions] clear-all failed for ${sessionCwd}: ${(e as Error).message}`,
         );
       }
@@ -5183,20 +5174,20 @@ See design doc for the full state machine diagram.`;
   }
 
   private async pickFileFromComputer(): Promise<void> {
-    const picked = await vscode.window.showOpenDialog({
+    const picked = await this.host.showOpenDialog({
       canSelectFiles: true,
       canSelectFolders: false,
       canSelectMany: true,
       openLabel: "Add to chat",
     });
     if (!picked || picked.length === 0) return;
-    for (const uri of picked) {
+    for (const filePath of picked) {
       try {
-        await this.addDroppedFile(uri.fsPath, false);
+        await this.addDroppedFile(filePath, false);
       } catch (e) {
         // Per-file: one unreadable pick must not abort the rest of a multi-select.
-        this.output.appendLine(`[image] could not attach ${uri.fsPath}: ${(e as Error).message}`);
-        void vscode.window.showErrorMessage(`Grok: could not attach ${path.basename(uri.fsPath)} — ${(e as Error).message}`);
+        this.host.appendLine(`[image] could not attach ${filePath}: ${(e as Error).message}`);
+        void this.host.showErrorMessage(`Grok: could not attach ${path.basename(filePath)} — ${(e as Error).message}`);
       }
     }
     this.revealAndFocusComposer();
@@ -5230,7 +5221,7 @@ See design doc for the full state machine diagram.`;
   }
 
   private async buildMentionIndex(): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
-    const cfg = vscode.workspace.getConfiguration();
+    const cfg = this.host.getConfiguration();
     // findFiles' default excludes are files.exclude ONLY — node_modules lives in
     // search.exclude, so both must be merged in or the index is dependency soup.
     const exclude = buildExcludeGlob([
@@ -5240,15 +5231,17 @@ See design doc for the full state machine diagram.`;
     // Cap is user-tunable (`grok.mentionIndexLimit`) — large monorepos that hit
     // the default 5000 can miss files from `@` autocomplete (#69).
     const limit = clampMentionIndexLimit(
-      vscode.workspace.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
+      this.host.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
     );
-    const uris = await vscode.workspace.findFiles("**/*", exclude, limit);
+    const uris = await this.host.findFiles("**/*", exclude, limit);
     const absByRel = new Map<string, string>();
     for (const uri of uris) {
       // Default asRelativePath prefixes the folder name only in a multi-root
-      // workspace — exactly when the prefix is needed to disambiguate.
-      const rel = normalizeRelPath(vscode.workspace.asRelativePath(uri));
-      if (!absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
+      // workspace — exactly when the prefix is needed to disambiguate. Pass the
+      // full Uri so remote schemes match workspace folders (path-only fails).
+      const rel = normalizeRelPath(this.host.asRelativePath(uri));
+      const abs = uri.fsPath;
+      if (!absByRel.has(rel)) absByRel.set(rel, abs);
     }
     return { rels: orderMentionIndex([...absByRel.keys()]), absByRel };
   }
@@ -5256,25 +5249,10 @@ See design doc for the full state machine diagram.`;
   /** Currently open workspace text tabs as `{rel, abs}` for mention merge.
    *  Non-file schemes and paths outside the workspace are skipped. */
   private openWorkspaceFileEntries(): Array<{ rel: string; abs: string }> {
-    const out: Array<{ rel: string; abs: string }> = [];
-    const seen = new Set<string>();
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        const input = tab.input;
-        if (!(input instanceof vscode.TabInputText)) continue;
-        const uri = input.uri;
-        if (uri.scheme !== "file") continue;
-        if (!vscode.workspace.getWorkspaceFolder(uri)) continue;
-        const abs = uri.fsPath;
-        if (seen.has(abs)) continue;
-        seen.add(abs);
-        out.push({
-          rel: normalizeRelPath(vscode.workspace.asRelativePath(uri)),
-          abs,
-        });
-      }
-    }
-    return out;
+    return this.host.openWorkspaceTextFiles().map((e) => ({
+      rel: normalizeRelPath(e.rel),
+      abs: e.abs,
+    }));
   }
 
   /** Resolve the xAI key for Speech-to-Text: the `grok.voiceApiKey` setting,
@@ -5283,7 +5261,7 @@ See design doc for the full state machine diagram.`;
    *  (`~/.grok/auth.json`) — so Voice works out of the box for a signed-in user,
    *  no separate console.x.ai key needed (#51). */
   private resolveVoiceApiKey(cwd: string): string | undefined {
-    const setting = vscode.workspace.getConfiguration("grok").get<string>("voiceApiKey", "");
+    const setting = this.host.getConfiguration("grok").get<string>("voiceApiKey", "");
     const env = { ...process.env, ...this.readDotEnv(cwd) } as Record<string, string | undefined>;
     // Explicit config wins and short-circuits — only touch the credential file
     // when nothing explicit is set (least-privilege; the login token is a
@@ -5300,7 +5278,7 @@ See design doc for the full state machine diagram.`;
    *  can show a "needs setup" hint up front instead of only failing on click. */
   /** Chat-panel zoom factor (1.0 = 100%). Clamped to the declared 60–300% range. */
   private chatFontScale(): number {
-    const pct = vscode.workspace.getConfiguration("grok").get<number>("chatFontScale", 100);
+    const pct = this.host.getConfiguration("grok").get<number>("chatFontScale", 100);
     const n = Number.isFinite(pct) ? (pct as number) : 100;
     return Math.min(300, Math.max(60, n)) / 100;
   }
@@ -5321,7 +5299,7 @@ See design doc for the full state machine diagram.`;
   /** grok.showThinking (#26) — whether grok's reasoning traces are shown. Off by
    *  default; hidden traces are replaced by a lightweight "Thinking…" indicator. */
   private showThinking(): boolean {
-    return vscode.workspace.getConfiguration("grok").get<boolean>("showThinking", false);
+    return this.host.getConfiguration("grok").get<boolean>("showThinking", false);
   }
 
   private postShowThinking(): void {
@@ -5349,13 +5327,13 @@ See design doc for the full state machine diagram.`;
     // installs included — only the probe script uses DEV).
     try {
       const enabled = shouldSendTelemetry(
-        vscode.env.isTelemetryEnabled,
-        vscode.workspace.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
-        this.context.extension.id === OFFICIAL_EXTENSION_ID,
+        this.host.isTelemetryEnabled,
+        this.host.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
+        this.context.extensionId === OFFICIAL_EXTENSION_ID,
       );
       if (!enabled) return;
-      const cfg = vscode.workspace.getConfiguration("grok");
-      const appVersion = (this.context.extension.packageJSON as { version?: string })?.version ?? "";
+      const cfg = this.host.getConfiguration("grok");
+      const appVersion = this.context.extensionVersion;
       const remoteClientId = origin === "remote"
         ? this.remoteClients.clientsForActiveValue(session)[0]
         : undefined;
@@ -5379,14 +5357,14 @@ See design doc for the full state machine diagram.`;
           remoteFontScale: remotePreferences?.fontScale,
           remoteReadRepliesAloud: remotePreferences?.readRepliesAloud,
           ...sessionStartSurface(origin, remotePreferences?.usesTouch),
-          host: vscode.env.appName || undefined,
+          host: this.host.appName || undefined,
         },
         {
           appVersion,
           osName: osNameFromPlatform(process.platform),
           osVersion: os.release(),
-          locale: vscode.env.language || "",
-          isDebug: this.context.extensionMode !== vscode.ExtensionMode.Production,
+          locale: this.host.language || "",
+          isDebug: !this.context.isProduction,
         },
         randomUUID(),
         new Date().toISOString(),
@@ -5416,12 +5394,11 @@ See design doc for the full state machine diagram.`;
   }
 
   private voiceSetting<T>(cwd: string, key: string, fallback: T): T {
-    const resource = vscode.Uri.file(cwd);
-    const cfg = vscode.workspace.getConfiguration("grok", resource);
+    const cfg = this.host.getConfiguration("grok", cwd);
     return voiceSettingForRepo(
       cfg.get<T>(key),
       cfg.inspect<T>(key),
-      !!vscode.workspace.getWorkspaceFolder(resource),
+      this.host.isInWorkspace(cwd),
       fallback,
     );
   }
@@ -5431,19 +5408,20 @@ See design doc for the full state machine diagram.`;
     const key = normalizeRepoPath(cwd);
     const cached = this.remoteMentionIndexes.get(key);
     if (cached && Date.now() - cached.at < MENTION_INDEX_TTL_MS) return cached;
-    const cfg = vscode.workspace.getConfiguration();
+    const cfg = this.host.getConfiguration();
     const exclude = buildExcludeGlob([
       cfg.get<Record<string, unknown>>("files.exclude"),
       cfg.get<Record<string, unknown>>("search.exclude"),
     ]);
     const limit = clampMentionIndexLimit(
-      vscode.workspace.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
+      this.host.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
     );
-    const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(cwd, "**/*"), exclude, limit);
+    const uris = await this.host.findFiles({ base: cwd, pattern: "**/*" }, exclude, limit);
     const absByRel = new Map<string, string>();
     for (const uri of uris) {
-      const rel = normalizeRelPath(path.relative(cwd, uri.fsPath));
-      if (rel && !absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
+      const abs = uri.fsPath;
+      const rel = normalizeRelPath(path.relative(cwd, abs));
+      if (rel && !absByRel.has(rel)) absByRel.set(rel, abs);
     }
     const value = { at: Date.now(), rels: orderMentionIndex([...absByRel.keys()]), absByRel };
     this.remoteMentionIndexes.set(key, value);
@@ -5452,15 +5430,15 @@ See design doc for the full state machine diagram.`;
 
   /** Show actionable guidance for setting up the voice API key. */
   private async promptVoiceKeySetup(): Promise<void> {
-    const pick = await vscode.window.showErrorMessage(
+    const pick = await this.host.showErrorMessage(
       "Voice control needs an xAI Speech-to-Text key. Sign in with `grok login` and it reuses that token automatically — or set grok.voiceApiKey, or GROK_VOICE_API_KEY / XAI_API_KEY in your workspace .env for a dedicated console.x.ai key.",
       "Open Settings",
       "Get a Key",
     );
     if (pick === "Open Settings") {
-      await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+      await this.host.openSettings("grok.voiceApiKey");
     } else if (pick === "Get a Key") {
-      await vscode.env.openExternal(vscode.Uri.parse("https://console.x.ai"));
+      await this.host.openExternal("https://console.x.ai");
     }
   }
 
@@ -5476,7 +5454,7 @@ See design doc for the full state machine diagram.`;
       this.sendRemoteClient(clientId, { type: "error", text: message });
     } else {
       this.postLocal({ type: "voiceError" });
-      void vscode.window.showWarningMessage(message);
+      void this.host.showWarningMessage(message);
     }
   }
 
@@ -5505,7 +5483,7 @@ See design doc for the full state machine diagram.`;
       return;
     }
     this.localVoiceCredentialCwd = credentialCwd;
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const ffmpegPath = cfg.get<string>("ffmpegPath", "") || "ffmpeg";
     const device = cfg.get<string>("voiceInputDevice", "") || undefined;
 
@@ -5518,7 +5496,7 @@ See design doc for the full state machine diagram.`;
 
     const tmp = path.join(os.tmpdir(), `grok-voice-${Date.now()}.wav`);
     try {
-      await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.output.appendLine(m) });
+      await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.host.appendLine(m) });
       if (generation !== this.voiceGeneration) {
         this.voiceRecorder.cancel();
         try { fs.unlinkSync(tmp); } catch { /* best effort */ }
@@ -5532,15 +5510,15 @@ See design doc for the full state machine diagram.`;
         return;
       }
       const msg = (e as Error).message;
-      this.output.appendLine(`[voice] start failed: ${msg}`);
+      this.host.appendLine(`[voice] start failed: ${msg}`);
       // ffmpeg-missing is the common, fixable case — offer a jump to its setting.
       if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        const pick = await this.host.showErrorMessage(msg, "Open Settings");
         if (pick === "Open Settings") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
+          await this.host.openSettings("grok.ffmpegPath");
         }
       } else {
-        vscode.window.showErrorMessage(msg);
+        this.host.showErrorMessage(msg);
       }
       this.releaseVoice(cwd);
       this.localVoiceCwd = undefined;
@@ -5568,7 +5546,7 @@ See design doc for the full state machine diagram.`;
     // Resolve the Windows mic once so per-message restarts don't re-enumerate.
     let resolved = device;
     if (process.platform === "win32" && !resolved) {
-      try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.output.appendLine(m)); } catch { /* streamer surfaces it */ }
+      try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.host.appendLine(m)); } catch { /* streamer surfaces it */ }
     }
     if (generation !== this.voiceGeneration) return;
     this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms, language, generation };
@@ -5610,14 +5588,14 @@ See design doc for the full state machine diagram.`;
     streamer.on("error", (e: Error) => {
       if (!isCurrent()) return;
       streamer.cancel();
-      this.output.appendLine(`[voice] stream error: ${e.message}`);
+      this.host.appendLine(`[voice] stream error: ${e.message}`);
       if (!this.voiceFinalizing) {
         if (/\b(401|403)\b|rejected/i.test(e.message)) {
-          void vscode.window.showErrorMessage(e.message, "Open Settings").then((pick) => {
-            if (pick === "Open Settings") void vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+          void this.host.showErrorMessage(e.message, "Open Settings").then((pick) => {
+            if (pick === "Open Settings") void this.host.openSettings("grok.voiceApiKey");
           });
         } else {
-          vscode.window.showErrorMessage(`Voice transcription failed: ${e.message}`);
+          this.host.showErrorMessage(`Voice transcription failed: ${e.message}`);
         }
         this.postLocal({ type: "voiceError" });
       }
@@ -5635,7 +5613,7 @@ See design doc for the full state machine diagram.`;
         device: ctx.device,
         keyterms: ctx.keyterms,
         language: ctx.language,
-        log: (m) => this.output.appendLine(m),
+        log: (m) => this.host.appendLine(m),
       });
       if (!isCurrent()) { streamer.cancel(); return; }
       this.postLocal({ type: "voiceState", status: "listening" });
@@ -5644,21 +5622,21 @@ See design doc for the full state machine diagram.`;
       this.voiceStreamer = undefined;
       this.voiceStreamCtx = undefined;
       const msg = (e as Error).message;
-      this.output.appendLine(`[voice] stream start failed: ${msg}`);
+      this.host.appendLine(`[voice] stream start failed: ${msg}`);
       if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        const pick = await this.host.showErrorMessage(msg, "Open Settings");
         if (pick === "Open Settings") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
+          await this.host.openSettings("grok.ffmpegPath");
         }
       } else if (/\b(401|403)\b|rejected/i.test(msg)) {
         // Auth handshake rejection — msg is already the source-aware guidance
         // (re-login or set a dedicated key); offer the settings shortcut.
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        const pick = await this.host.showErrorMessage(msg, "Open Settings");
         if (pick === "Open Settings") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+          await this.host.openSettings("grok.voiceApiKey");
         }
       } else {
-        vscode.window.showErrorMessage(msg);
+        this.host.showErrorMessage(msg);
       }
       this.releaseVoice(this.localVoiceCwd);
       this.localVoiceCwd = undefined;
@@ -5773,8 +5751,8 @@ See design doc for the full state machine diagram.`;
       }
     } catch (e) {
       if (generation !== this.voiceGeneration) return;
-      this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
+      this.host.appendLine(`[voice] stop failed: ${(e as Error).message}`);
+      this.host.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
       this.releaseVoice(this.localVoiceCwd);
       this.localVoiceCwd = undefined;
       this.localVoiceCredentialCwd = undefined;
@@ -5784,22 +5762,22 @@ See design doc for the full state machine diagram.`;
     const tempPath = this.voiceTempPath;
     this.postLocal({ type: "voiceState", status: "transcribing" });
     try {
-      const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
+      const raw = await transcribeAudio(wavPath, key, (m) => this.host.appendLine(m));
       if (generation !== this.voiceGeneration) return;
       // Strip a trailing "grok send" (configurable) so dictation can submit
       // hands-free. The webview inserts `text` and, if `send`, fires the send.
       const sendPhrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
       const { text, send } = parseVoiceCommand(raw, sendPhrase);
       if (!text && !send) {
-        vscode.window.showInformationMessage("Voice control: nothing was transcribed (silence?).");
+        this.host.showInformationMessage("Voice control: nothing was transcribed (silence?).");
         this.postLocal({ type: "voiceError" });
         return;
       }
       this.postLocal({ type: "voiceTranscript", text, send });
     } catch (e) {
       if (generation !== this.voiceGeneration) return;
-      this.output.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage((e as Error).message);
+      this.host.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
+      this.host.showErrorMessage((e as Error).message);
       this.postLocal({ type: "voiceError" });
     } finally {
       try { if (tempPath) fs.unlinkSync(tempPath); } catch { /* best effort */ }
@@ -5832,14 +5810,14 @@ See design doc for the full state machine diagram.`;
     });
     streamer.on("error", (e: Error) => {
       if (!current() || entry.finalizing) return;
-      this.output.appendLine(`[remote-voice] stream error: ${e.message}`);
+      this.host.appendLine(`[remote-voice] stream error: ${e.message}`);
       this.failRemoteVoice(clientId, e.message);
     });
     await streamer.start({
       apiKey: key,
       keyterms: entry.keyterms,
       language: entry.language,
-      log: (m) => this.output.appendLine(`[remote] ${m}`),
+      log: (m) => this.host.appendLine(`[remote] ${m}`),
     });
     if (!current()) {
       streamer.cancel();
@@ -6014,8 +5992,8 @@ See design doc for the full state machine diagram.`;
     // Unique key per diff so sequential edits to the same file don't collide on
     // the content map. The trailing real filename gives VS Code the language.
     const key = String(this.diffSeq++);
-    const left = vscode.Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/before/${base}` });
-    const right = vscode.Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/after/${base}` });
+    const left = Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/before/${base}` });
+    const right = Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/after/${base}` });
     this.diffProvider.set(left, sides.oldText);
     this.diffProvider.set(right, sides.newText);
     if (requestId !== undefined) {
@@ -6029,17 +6007,14 @@ See design doc for the full state machine diagram.`;
     // immediately clickable. `selection` opens a whole-file diff on the edit
     // instead of at line 1 (#66) — harmless at 0 when expansion fell back.
     const at = sides.firstChangedLine;
-    await vscode.commands.executeCommand(
-      "vscode.diff",
-      left,
-      right,
-      `Grok proposed: ${base}`,
-      {
-        preview: true,
-        preserveFocus: true,
-        selection: new vscode.Range(at, 0, at, 0),
-      } as vscode.TextDocumentShowOptions,
-    );
+    await this.host.openDiff(left, right, `Grok proposed: ${base}`, {
+      preview: true,
+      preserveFocus: true,
+      selection: {
+        start: { line: at, character: 0 },
+        end: { line: at, character: 0 },
+      },
+    });
   }
 
   /**
@@ -6067,19 +6042,8 @@ See design doc for the full state machine diagram.`;
     this.closeDiffUris(uris);
   }
 
-  private closeDiffUris(uris: { left: vscode.Uri; right: vscode.Uri }): void {
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        const input = tab.input;
-        if (
-          input instanceof vscode.TabInputTextDiff &&
-          input.original.toString() === uris.left.toString() &&
-          input.modified.toString() === uris.right.toString()
-        ) {
-          void vscode.window.tabGroups.close(tab);
-        }
-      }
-    }
+  private closeDiffUris(uris: { left: Uri; right: Uri }): void {
+    this.host.closeDiffTabs(uris.left, uris.right);
     this.diffProvider.delete(uris.left, uris.right);
   }
 
@@ -6089,7 +6053,7 @@ See design doc for the full state machine diagram.`;
     try {
       snapshot = await this.createPlanReviewSnapshot(plan);
     } catch (e) {
-      this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+      this.host.appendLine(`[plan-review] ${(e as Error).message}`);
     }
     if (gen !== session.gen) return;
     // Host ownership begins only after the snapshot's generation check. Re-focus
@@ -6113,7 +6077,7 @@ See design doc for the full state machine diagram.`;
         const snapshot = await this.createPlanReviewSnapshot(plan.text, sessionId);
         out.push({ ...plan, planPath: snapshot.path, planName: snapshot.name });
       } catch (e) {
-        this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+        this.host.appendLine(`[plan-review] ${(e as Error).message}`);
         out.push(plan);
       }
     }
@@ -6125,12 +6089,13 @@ See design doc for the full state machine diagram.`;
    *  every deleted session left its plan Markdown behind forever. Best-effort:
    *  losing a scratch snapshot is never worth failing a delete over. */
   private removePlanReviews(sessionId: string): void {
-    const dir = vscode.Uri.joinPath(
+    // Keep globalStorageUri identity so remote storage stays on the remote fs.
+    const dir = Uri.joinPath(
       this.context.globalStorageUri,
       "plan-reviews",
       sanitizePlanReviewFilePart(sessionId).slice(0, 80),
     );
-    void vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false }).then(
+    void this.host.fs.delete(dir, { recursive: true, useTrash: false }).then(
       undefined,
       () => { /* never existed, or already gone */ },
     );
@@ -6184,38 +6149,40 @@ See design doc for the full state machine diagram.`;
     const sessionPart = sanitizePlanReviewFilePart(
       sessionId ?? this.focused.activeSessionId ?? this.focused.client?.sessionId ?? "session",
     ).slice(0, 80);
-    const dir = vscode.Uri.joinPath(this.context.globalStorageUri, "plan-reviews", sessionPart);
-    await vscode.workspace.fs.createDirectory(dir);
+    // Join under globalStorageUri so workspace.fs targets the same scheme VS Code
+    // gave us (vscode-remote on remote hosts — never rebuild with Uri.file).
+    const dir = Uri.joinPath(this.context.globalStorageUri, "plan-reviews", sessionPart);
+    await this.host.fs.createDirectory(dir);
     // Content-addressed, so re-snapshotting the same plan on every restore
     // reuses one file instead of writing a new one forever.
-    const uri = vscode.Uri.joinPath(dir, planReviewFileName(content));
+    const fileUri = Uri.joinPath(dir, planReviewFileName(content));
     let existing: string | undefined;
     try {
-      existing = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+      existing = Buffer.from(await this.host.fs.readFile(fileUri)).toString("utf8");
     } catch { /* first time for this plan */ }
     if (existing !== content) {
       // Different content under the same name means a hash collision — fall back
       // to a unique name rather than overwriting someone else's plan.
-      const target = existing === undefined ? uri : await this.uniquePlanReviewUri(dir, planReviewFileName(content));
-      await vscode.workspace.fs.writeFile(target, Buffer.from(content, "utf8"));
+      const target = existing === undefined ? fileUri : await this.uniquePlanReviewUri(dir, planReviewFileName(content));
+      await this.host.fs.writeFile(target, Buffer.from(content, "utf8"));
       return { path: target.fsPath, name: path.basename(target.fsPath) };
     }
-    return { path: uri.fsPath, name: path.basename(uri.fsPath) };
+    return { path: fileUri.fsPath, name: path.basename(fileUri.fsPath) };
   }
 
-  private async uniquePlanReviewUri(dir: vscode.Uri, fileName: string): Promise<vscode.Uri> {
+  private async uniquePlanReviewUri(dir: Uri, fileName: string): Promise<Uri> {
     const ext = path.extname(fileName);
     const stem = path.basename(fileName, ext);
     for (let i = 0; i < 100; i += 1) {
       const suffix = i === 0 ? "" : `-${i + 1}`;
-      const uri = vscode.Uri.joinPath(dir, `${stem}${suffix}${ext}`);
+      const candidate = Uri.joinPath(dir, `${stem}${suffix}${ext}`);
       try {
-        await vscode.workspace.fs.stat(uri);
+        await this.host.fs.stat(candidate);
       } catch {
-        return uri;
+        return candidate;
       }
     }
-    return vscode.Uri.joinPath(dir, `${stem}-${Date.now()}${ext}`);
+    return Uri.joinPath(dir, `${stem}-${Date.now()}${ext}`);
   }
 
   /** Track an in-flight attachment-staging op (paste / drop / pick). Message
@@ -6262,6 +6229,8 @@ See design doc for the full state machine diagram.`;
    * with no live session at all (paste during startup/onboarding just works).
    */
   private imageStagingDir(): string {
+    // Node-fs staging path — genuine local disk on the extension host (v3.1.0
+    // also used globalStorageUri.fsPath here; not a workspace.fs address).
     return path.join(this.context.globalStorageUri.fsPath, "image-staging");
   }
 
@@ -6328,7 +6297,7 @@ See design doc for the full state machine diagram.`;
           : prepared.reason === "empty"
             ? "the file is empty"
             : "the file data is invalid";
-      this.output.appendLine(`[upload] rejected ${suppliedName}: ${detail}`);
+      this.host.appendLine(`[upload] rejected ${suppliedName}: ${detail}`);
       this.reportRequester(requester, "error", `Could not attach document — ${detail}.`);
       return;
     }
@@ -6342,7 +6311,7 @@ See design doc for the full state machine diagram.`;
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       void fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
-      this.output.appendLine(`[upload] staging failed for ${prepared.name}: ${(e as Error).message}`);
+      this.host.appendLine(`[upload] staging failed for ${prepared.name}: ${(e as Error).message}`);
       this.reportRequester(requester, "error", `Could not attach document — ${(e as Error).message}`);
     }
   }
@@ -6379,7 +6348,7 @@ See design doc for the full state machine diagram.`;
       try {
         await fs.promises.rm(dir, { recursive: true, force: true });
       } catch (e) {
-        this.output.appendLine(`[upload] could not remove staged document directory: ${(e as Error).message}`);
+        this.host.appendLine(`[upload] could not remove staged document directory: ${(e as Error).message}`);
       }
     }
   }
@@ -6444,7 +6413,7 @@ See design doc for the full state machine diagram.`;
       const session = await this.stageImageAttachment(bytes, mimeType, undefined, owner, previewId);
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
-      this.output.appendLine(`[image] paste failed: ${(e as Error).message}`);
+      this.host.appendLine(`[image] paste failed: ${(e as Error).message}`);
       this.reportRequester(requester, "error", `Grok: could not attach the pasted image — ${(e as Error).message}`);
     }
   }
@@ -6488,7 +6457,7 @@ See design doc for the full state machine diagram.`;
         if (imported === undefined) return undefined; // tab gone — not a path chip either
         if (imported) return imported;
       } catch (e) {
-        this.output.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
+        this.host.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
       }
       // Oversized / unreadable-as-image → fall through to a plain path chip,
       // the pre-vision behavior (grok decides how to consume the path).
@@ -6565,7 +6534,7 @@ See design doc for the full state machine diagram.`;
       endTurn(session, token);
       return;
     }
-    this.output.appendLine("[turn] cancel went unanswered; restarting this session's CLI");
+    this.host.appendLine("[turn] cancel went unanswered; restarting this session's CLI");
     // Said BEFORE the restart, deliberately. startSession unlocks the composer
     // and flushes any queued sends itself, so a notice emitted afterwards could
     // land behind that queued turn's userMessage/agentStart — reading as if the
@@ -6878,7 +6847,7 @@ See design doc for the full state machine diagram.`;
     if (!isAuthErrorText(errorText) && !isCredentialError(err)) return false;
     const resumeId = beginAuthRecovery(session);
     if (!resumeId) return false;
-    this.output.appendLine(`[auth] recoverable token error — reloading session + resending: ${errorText}`);
+    this.host.appendLine(`[auth] recoverable token error — reloading session + resending: ${errorText}`);
 
     // Fresh process, current disk token. Rebuild this same pool member and replay
     // its history from disk. Its generation + authRecoveryTried guards are both
@@ -6973,14 +6942,14 @@ See design doc for the full state machine diagram.`;
   }
 
   private buildInitialStateMsg(): HostMsg {
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const cwd = this.workspaceRoot();
     return {
       type: "initialState",
       effort: cfg.get("defaultEffort", ""),
       cwd,
       useCtrlEnter: cfg.get("useCtrlEnterToSend", false),
-      extVersion: (this.context.extension.packageJSON as { version?: string })?.version ?? "",
+      extVersion: this.context.extensionVersion,
       showThinking: cfg.get("showThinking", false),
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       steerByDefault: cfg.get("steerByDefault", false),
@@ -6995,7 +6964,7 @@ See design doc for the full state machine diagram.`;
     this.post(this.buildInitialStateMsg());
     this.post({
       type: "summarizeRepliesAloud",
-      value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
+      value: this.host.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
     });
     // Sync the active-editor context chip into the fresh webview (the config
     // gate + no-editor case live inside refreshImplicitChip).
@@ -7020,17 +6989,18 @@ See design doc for the full state machine diagram.`;
     this.sendRemoteSession(session, remoteMessage);
   }
 
-  private localPreviewChips(session: Session, webview: vscode.Webview): FileChip[] {
+  private localPreviewChips(session: Session, webview: HostWebview): FileChip[] {
     return session.chips.map((chip) => isImageChip(chip)
-      ? { ...chip, previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+      // Staging paths are genuine local disk (Uri.file roots).
+      ? { ...chip, previewSrc: webview.asWebviewUri(Uri.file(chip.path)) }
       : chip);
   }
 
-  private localizeHistoryMessage(message: HostMsg, webview: vscode.Webview): HostMsg {
+  private localizeHistoryMessage(message: HostMsg, webview: HostWebview): HostMsg {
     if (message.type === "userMessage" && message.chips) {
       return { ...message, chips: message.chips.map((chip) => isImageChip(chip)
         ? { ...chip, ...(fs.existsSync(chip.path)
-          ? { previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+          ? { previewSrc: webview.asWebviewUri(Uri.file(chip.path)) }
           : {}) }
         : chip) };
     }
@@ -7038,7 +7008,7 @@ See design doc for the full state machine diagram.`;
       return {
         ...message,
         images: message.images.map((image) => image.path && fs.existsSync(image.path)
-          ? { ...image, previewSrc: webview.asWebviewUri(vscode.Uri.file(image.path)).toString() }
+          ? { ...image, previewSrc: webview.asWebviewUri(Uri.file(image.path)) }
           : image),
       };
     }
@@ -7680,7 +7650,7 @@ See design doc for the full state machine diagram.`;
     try {
       deleteSessionDir({ fs: defaultFs, grokHome, cwd, id });
     } catch (e) {
-      this.output.appendLine(`[sessions] could not remove empty session ${id}: ${(e as Error).message}`);
+      this.host.appendLine(`[sessions] could not remove empty session ${id}: ${(e as Error).message}`);
     }
     if (overrides[id]) {
       void this.removeUploadsForSessions([id], overrides);
@@ -7718,7 +7688,7 @@ See design doc for the full state machine diagram.`;
   private sweepEmptySessions(cwd: string = this.workspaceRoot()): void {
     if (!cwd) return;
     const grokHome = resolveGrokHome(process.env);
-    const log = (m: string) => this.output.appendLine(m);
+    const log = (m: string) => this.host.appendLine(m);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // A session with a live process re-persists itself the moment it is touched,
     // so deleting one is at best pointless and at worst races the CLI. The same
@@ -8109,7 +8079,7 @@ See design doc for the full state machine diagram.`;
     const claim = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
     if (!claim) {
       const selectedCwd = this.remoteClients.cwd(clientId);
-      this.output.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
+      this.host.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
       this.sendRemoteClient(clientId, {
         type: "error",
         text: "Could not restore this conversation because it is already being opened in another tab or the VS Code view.",
@@ -8125,7 +8095,7 @@ See design doc for the full state machine diagram.`;
       return;
     }
     if (claim.joined) {
-      this.output.appendLine(`[remote] joined in-flight session load for the same logical tab`);
+      this.host.appendLine(`[remote] joined in-flight session load for the same logical tab`);
       await claim.reservation.completion;
       return;
     }
@@ -8200,7 +8170,7 @@ See design doc for the full state machine diagram.`;
     // refused: emit() fans every frame of a session to the focused webview and
     // to each remote holder, so the desk and the phone stay in sync.
     if (conflictingOwner) {
-      this.output.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
+      this.host.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
       this.sendRemoteClient(clientId, {
         type: "error",
         text: "Could not restore this conversation because it is already open in another tab.",
@@ -8218,7 +8188,7 @@ See design doc for the full state machine diagram.`;
     for (const session of this.pool) {
       if (session.activeSessionId === id && session.client) {
         if (!sessionCwdBelongsToRepo(this.sessionCwd(session), allowedCwds, pathsEqual)) {
-          this.output.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
+          this.host.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
           this.sendRemoteClient(clientId, {
             type: "error",
             text: "Could not restore this tab's conversation because its repository is no longer selected or available.",
@@ -8250,7 +8220,7 @@ See design doc for the full state machine diagram.`;
         .some((entry) => entry.id === id),
     );
     if (!actualCwd) {
-      this.output.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
+      this.host.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
       this.sendRemoteClient(clientId, {
         type: "error",
         text: "Could not restore this tab's previous conversation. It may have been deleted, or its repository may no longer be available. Start a new session explicitly to continue.",
@@ -8310,8 +8280,8 @@ See design doc for the full state machine diagram.`;
   private async openSession(id: string, sessionCwd?: string): Promise<void> {
     const claim = this.reserveSessionLoad(id);
     if (!claim) {
-      this.output.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
-      void vscode.window.showInformationMessage(
+      this.host.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
+      void this.host.showInformationMessage(
         "This conversation is already being opened in another tab or view.",
       );
       return;
@@ -8399,14 +8369,11 @@ See design doc for the full state machine diagram.`;
 
   private watchActiveEditor(): void {
     this.editorWatcher?.dispose();
-    this.editorWatcher = vscode.Disposable.from(
-      vscode.window.onDidChangeActiveTextEditor(() => this.refreshImplicitChip()),
-      vscode.window.onDidChangeTextEditorSelection((e) => {
-        // Split editors can hold several TextEditors on one document — only the
-        // active one's selection drives the context chip.
-        if (e.textEditor !== vscode.window.activeTextEditor) return;
-        this.refreshImplicitChip();
-      }),
+    this.editorWatcher = disposeAll(
+      this.host.onDidChangeActiveTextEditor(() => this.refreshImplicitChip()),
+      // Host already filters to the active editor (split editors that are not
+      // active must not drive the context chip).
+      this.host.onDidChangeActiveTextEditorSelection(() => this.refreshImplicitChip()),
     );
   }
 
@@ -8423,11 +8390,10 @@ See design doc for the full state machine diagram.`;
    *  `forcePost` is for a fresh webview, which needs the current state even
    *  when it hasn't changed. */
   private refreshImplicitChip(forcePost = false): void {
-    const includeActive = vscode.workspace
-      .getConfiguration("grok")
+    const includeActive = this.host.getConfiguration("grok")
       .get<boolean>("includeActiveFileByDefault", true);
     const prev = this.chips.find(isImplicitChip);
-    const editor = vscode.window.activeTextEditor;
+    const editor = this.host.getActiveTextEditor();
 
     if (!includeActive || !editor || editor.document.uri.scheme !== "file") {
       // No chip to show — and if one is lingering, the webview must hear about
@@ -8438,7 +8404,7 @@ See design doc for the full state machine diagram.`;
     }
 
     const absPath = editor.document.uri.fsPath;
-    const relPath = vscode.workspace.asRelativePath(editor.document.uri);
+    const relPath = this.host.asRelativePath(editor.document.uri);
     let selStart: number | undefined;
     let selEnd: number | undefined;
     if (!editor.selection.isEmpty) {
@@ -8489,7 +8455,7 @@ See design doc for the full state machine diagram.`;
     if (this.oauthShadowWarningShown || this.state.get<boolean>(OAUTH_SHADOW_WARNING_KEY, false)) return;
     this.oauthShadowWarningShown = true;
     void this.state.update(OAUTH_SHADOW_WARNING_KEY, true);
-    void vscode.window.showWarningMessage(
+    void this.host.showWarningMessage(
       "Grok is using its cached OAuth session, so XAI_API_KEY is currently ignored. To use the API key, run `grok logout`, then start a new session.",
     );
   }
@@ -8517,7 +8483,7 @@ See design doc for the full state machine diagram.`;
     }
 
     if (Object.keys(dotEnv).length > 0) {
-      this.output.appendLine(`[env] loaded ${Object.keys(dotEnv).length} var(s) from .env`);
+      this.host.appendLine(`[env] loaded ${Object.keys(dotEnv).length} var(s) from .env`);
     }
     return env;
   }
@@ -8623,15 +8589,15 @@ See design doc for the full state machine diagram.`;
         return;
       }
       if (!allowFromRemote(m.type, GrokSidebar.REMOTE_TIER)) {
-        this.output.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
+        this.host.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
         return;
       }
       if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
-        this.output.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
+        this.host.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
         return;
       }
       if (!this.remoteClients.isCurrent(clientId)) {
-        this.output.appendLine(`[remote] dropped ${m.type} from a superseded tab connection`);
+        this.host.appendLine(`[remote] dropped ${m.type} from a superseded tab connection`);
         this.sendRemoteClient(clientId, {
           type: "error",
           text: "This page's remote connection was replaced by another tab. Open AFK Pilot in a new tab to reconnect independently.",
@@ -8663,14 +8629,14 @@ See design doc for the full state machine diagram.`;
           : this.onMessage(m, "remote", clientId);
       void operation.catch((e) => {
         const detail = (e as Error)?.message ?? String(e);
-        this.output.appendLine(`[remote] ${m.type} failed: ${detail}`);
+        this.host.appendLine(`[remote] ${m.type} failed: ${detail}`);
         this.sendRemoteRequester(requester, {
           type: "error",
           text: `Grok: ${m.type} failed — ${detail}`,
         });
       });
     } catch (e) {
-      this.output.appendLine(`[remote] dropped malformed frame: ${(e as Error)?.message ?? String(e)}`);
+      this.host.appendLine(`[remote] dropped malformed frame: ${(e as Error)?.message ?? String(e)}`);
     }
   }
 
@@ -8683,7 +8649,7 @@ See design doc for the full state machine diagram.`;
           type: "error",
           text: "This page's remote connection was replaced by another tab. Open AFK Pilot in a new tab to reconnect independently.",
         });
-        this.output.appendLine(`[remote] handed tab ownership from ${superseded} to ${clientId}`);
+        this.host.appendLine(`[remote] handed tab ownership from ${superseded} to ${clientId}`);
       }
     }
     if (!this.remoteClients.isCurrent(clientId)) return;
@@ -8734,7 +8700,7 @@ See design doc for the full state machine diagram.`;
         void this.handleRemoteCredentialRevoked(token, uplink);
       },
       onClientMessage: (clientId, m) => this.handleRemoteMessage(clientId, m),
-      log: (l) => this.output.appendLine(l),
+      log: (l) => this.host.appendLine(l),
     });
     this.uplink = uplink;
     uplink.start();
@@ -8756,23 +8722,23 @@ See design doc for the full state machine diagram.`;
     try {
       await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
     } catch (e) {
-      this.output.appendLine(`[remote] failed to clear revoked device token: ${(e as Error)?.message ?? e}`);
+      this.host.appendLine(`[remote] failed to clear revoked device token: ${(e as Error)?.message ?? e}`);
       const retry = "Retry unlink";
-      void vscode.window.showErrorMessage(
+      void this.host.showErrorMessage(
         "AFK Pilot access was revoked, but the stored device token could not be cleared.",
         retry,
       ).then((choice) => {
-        if (choice === retry) void vscode.commands.executeCommand("grok.unlinkRemote");
+        if (choice === retry) void this.host.unlinkRemote();
       });
       return;
     }
 
     const relink = "Link this device again";
-    void vscode.window.showWarningMessage(
+    void this.host.showWarningMessage(
       "AFK Pilot access for this device was revoked, so it has been unlinked. Link it again to continue remotely.",
       relink,
     ).then((choice) => {
-      if (choice === relink) void vscode.commands.executeCommand("grok.linkRemote");
+      if (choice === relink) void this.host.linkRemote();
     });
   }
 
@@ -8791,11 +8757,11 @@ See design doc for the full state machine diagram.`;
    *  config change over. */
   private refreshKeepAwake(): void {
     try {
-      const enabled = vscode.workspace.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
+      const enabled = this.host.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
       if (shouldKeepAwake({ enabled, linked: !!this.uplink })) this.keepAwake.start();
       else this.keepAwake.stop();
     } catch (e) {
-      this.output.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
+      this.host.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
     }
   }
 
@@ -8821,10 +8787,10 @@ See design doc for the full state machine diagram.`;
       });
       if (!startRes.ok) throw new Error(`link/start ${startRes.status}`);
       const { code } = (await startRes.json()) as { code: string };
-      void vscode.env.openExternal(vscode.Uri.parse(`${base}/link?code=${encodeURIComponent(code)}`));
-      const token = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Approve this device in the browser (code ${code})…`, cancellable: true },
-        (_p, cancel) => this.pollLinkApproval(base, code, cancel),
+      void this.host.openExternal(`${base}/link?code=${encodeURIComponent(code)}`);
+      const token = await this.host.withProgress(
+        { title: `Approve this device in the browser (code ${code})…`, cancellable: true },
+        (cancel) => this.pollLinkApproval(base, code, cancel),
       );
       if (!token) return; // cancelled / expired — poll loop already surfaced why
       await this.context.secrets.store(GrokSidebar.DEVICE_TOKEN_SECRET, token);
@@ -8832,13 +8798,13 @@ See design doc for the full state machine diagram.`;
       this.uplink = undefined;
       await this.maybeStartUplink();
       this.post({ type: "remoteStatus", linked: true });
-      void vscode.window.showInformationMessage("Remote device linked — this workspace is now reachable from the web client.");
+      void this.host.showInformationMessage("Remote device linked — this workspace is now reachable from the web client.");
     } catch (e) {
-      void vscode.window.showErrorMessage(`Remote link failed: ${(e as Error)?.message ?? String(e)}`);
+      void this.host.showErrorMessage(`Remote link failed: ${(e as Error)?.message ?? String(e)}`);
     }
   }
 
-  private async pollLinkApproval(base: string, code: string, cancel: vscode.CancellationToken): Promise<string | undefined> {
+  private async pollLinkApproval(base: string, code: string, cancel: HostCancellationToken): Promise<string | undefined> {
     const deadline = Date.now() + 5 * 60_000;
     while (Date.now() < deadline && !cancel.isCancellationRequested) {
       await new Promise((r) => setTimeout(r, 2000));
@@ -8851,7 +8817,7 @@ See design doc for the full state machine diagram.`;
       const body = (await res.json()) as { status: string; token?: string };
       if (body.status === "approved" && body.token) return body.token;
       if (body.status === "expired" || body.status === "unknown") {
-        void vscode.window.showErrorMessage("Remote link code expired — run the link command again.");
+        void this.host.showErrorMessage("Remote link code expired — run the link command again.");
         return undefined;
       }
     }
@@ -8874,13 +8840,13 @@ See design doc for the full state machine diagram.`;
           signal: AbortSignal.timeout(5000),
         });
       } catch (e) {
-        this.output.appendLine(`[remote] server-side unlink failed (local unlink continues): ${(e as Error)?.message ?? e}`);
+        this.host.appendLine(`[remote] server-side unlink failed (local unlink continues): ${(e as Error)?.message ?? e}`);
       }
     }
     await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
     this.clearRemoteRuntime();
     this.post({ type: "remoteStatus", linked: false });
-    void vscode.window.showInformationMessage("Remote device unlinked.");
+    void this.host.showInformationMessage("Remote device unlinked.");
   }
 
   /** Tell the webview whether this machine holds a relay device token (drives
@@ -8946,12 +8912,14 @@ See design doc for the full state machine diagram.`;
     return out;
   }
 
-  private getHtml(webview: vscode.Webview): string {
+  private getHtml(webview: HostWebview): string {
     const nonce = getNonce();
+    // Join under extensionUri so remote hosts keep vscode-remote:// (Uri.file
+    // on extensionPath.fsPath would point the webview at a missing local path).
     const mediaUri = (file: string) =>
-      webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", file));
+      webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "media", file));
     const resourceUri = (file: string) =>
-      webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "resources", file));
+      webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "resources", file));
 
     return `<!DOCTYPE html>
 <html lang="en">

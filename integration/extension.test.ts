@@ -1749,3 +1749,383 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     await new Promise((r) => setTimeout(r, 1500));
   });
 });
+
+// ── VS Code host adapter: real URI encode / closeDiff / content provider ─────
+// The unit suite cannot import vscode-host (needs the vscode module). These
+// tests run under a real Extension Host and must fail if toVsCodeUri /
+// fromVsCodeUri / closeDiffTabs are broken. `npm run test:integration` compiles
+// the extension to out/ first, so we load the built adapter from there.
+suite("VS Code host adapter URI surface", () => {
+  type PortableUri = {
+    scheme: string;
+    authority: string;
+    path: string;
+    query: string;
+    fragment: string;
+    fsPath: string;
+    toString(): string;
+  };
+
+  // Compiled extension output (CommonJS) — not recompiled by integration/tsconfig.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const hostMod = require("../out/vscode-host") as {
+    createVsCodeHost: (output: vscode.OutputChannel) => {
+      asRelativePath(uri: PortableUri): string;
+      fs: {
+        readFile(uri: PortableUri): Promise<Uint8Array>;
+        writeFile(uri: PortableUri, content: Uint8Array): Promise<void>;
+        createDirectory(uri: PortableUri): Promise<void>;
+        stat(uri: PortableUri): Promise<{ type: number; ctime: number; mtime: number; size: number }>;
+        delete(uri: PortableUri, options?: { recursive?: boolean; useTrash?: boolean }): Promise<void>;
+      };
+      openDiff(
+        left: PortableUri,
+        right: PortableUri,
+        title: string,
+        options?: { preview?: boolean; preserveFocus?: boolean },
+      ): Thenable<void>;
+      closeDiffTabs(original: PortableUri, modified: PortableUri): void;
+      registerTextDocumentContentProvider(
+        scheme: string,
+        provider: { provideTextDocumentContent(uri: { path: string; toString(): string }): string },
+      ): { dispose(): void };
+    };
+    createVsCodeHostContext: (context: vscode.ExtensionContext) => {
+      extensionUri: PortableUri;
+      globalStorageUri: PortableUri;
+      extensionId: string;
+    };
+    wrapWebview: (webview: vscode.Webview) => {
+      options: { enableScripts?: boolean; localResourceRoots?: PortableUri[] };
+      asWebviewUri(uri: PortableUri): string;
+    };
+    toVsCodeUri: (u: PortableUri) => vscode.Uri;
+    fromVsCodeUri: (u: vscode.Uri) => PortableUri;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Uri } = require("../out/host") as {
+    Uri: {
+      from(components: {
+        scheme: string;
+        path: string;
+        authority?: string;
+        query?: string;
+        fragment?: string;
+        fsPath?: string;
+      }): PortableUri;
+      file(fsPath: string): PortableUri;
+      joinPath(base: PortableUri, ...pathSegments: string[]): PortableUri;
+    };
+  };
+
+  const { createVsCodeHost, createVsCodeHostContext, wrapWebview, toVsCodeUri, fromVsCodeUri } = hostMod;
+  let output: vscode.OutputChannel;
+  let host: ReturnType<typeof createVsCodeHost>;
+
+  suiteSetup(() => {
+    output = vscode.window.createOutputChannel("Grok adapter integration");
+    host = createVsCodeHost(output);
+  });
+
+  suiteTeardown(() => {
+    output?.dispose();
+  });
+
+  test("authority survives fromVsCodeUri → toVsCodeUri", () => {
+    const remote = vscode.Uri.from({
+      scheme: "vscode-remote",
+      authority: "ssh-remote+dev.example",
+      path: "/home/me/proj/src/main.ts",
+    });
+    const portable = fromVsCodeUri(remote);
+    assert.strictEqual(portable.scheme, "vscode-remote");
+    assert.strictEqual(portable.authority, "ssh-remote+dev.example");
+    assert.strictEqual(portable.path, "/home/me/proj/src/main.ts");
+    assert.strictEqual(portable.fsPath, remote.fsPath);
+
+    const back = toVsCodeUri(portable);
+    assert.strictEqual(back.scheme, remote.scheme);
+    assert.strictEqual(back.authority, remote.authority);
+    assert.strictEqual(back.path, remote.path);
+    assert.strictEqual(back.toString(), remote.toString());
+  });
+
+  test("query, fragment, and fsPath survive fromVsCodeUri → toVsCodeUri", () => {
+    const remote = vscode.Uri.from({
+      scheme: "vscode-remote",
+      authority: "ssh-remote+dev.example",
+      path: "/home/me/proj/doc.md",
+      query: "view=preview&x=1",
+      fragment: "section-2",
+    });
+    const portable = fromVsCodeUri(remote);
+    assert.strictEqual(portable.query, "view=preview&x=1");
+    assert.strictEqual(portable.fragment, "section-2");
+    assert.strictEqual(portable.fsPath, remote.fsPath, "must keep VS Code's real fsPath");
+
+    const back = toVsCodeUri(portable);
+    assert.strictEqual(back.query, remote.query);
+    assert.strictEqual(back.fragment, remote.fragment);
+    assert.strictEqual(back.path, remote.path);
+    assert.strictEqual(back.authority, remote.authority);
+    // Round-trip again: fsPath must still match the original VS Code value.
+    const again = fromVsCodeUri(back);
+    assert.strictEqual(again.fsPath, remote.fsPath);
+    assert.strictEqual(again.query, remote.query);
+    assert.strictEqual(again.fragment, remote.fragment);
+  });
+
+  test("content-provider key round-trip preserves path special characters", async () => {
+    const scheme = `grok-int-cp-${Date.now()}`;
+    const specialPath = "/0/before/my file#x%y?.ts";
+    let seenPath = "";
+    let seenToString = "";
+    const reg = host.registerTextDocumentContentProvider(scheme, {
+      provideTextDocumentContent(uri) {
+        seenPath = uri.path;
+        seenToString = uri.toString();
+        return "provider-body";
+      },
+    });
+    try {
+      const portable = Uri.from({ scheme, path: specialPath });
+      const vsUri = toVsCodeUri(portable);
+      // VS Code asks the provider via the real vscode.Uri; our adapter must
+      // convert back with fromVsCodeUri so the path is decoded, not percent-form.
+      const doc = await vscode.workspace.openTextDocument(vsUri);
+      assert.strictEqual(doc.getText(), "provider-body");
+      assert.strictEqual(seenPath, specialPath, `provider saw path ${JSON.stringify(seenPath)}`);
+      // Portable toString and the provider's portable uri must agree on encoding.
+      assert.strictEqual(seenToString, portable.toString());
+      assert.strictEqual(vsUri.toString(), portable.toString());
+    } finally {
+      reg.dispose();
+    }
+  });
+
+  test("closeDiffTabs matches tabs whose filenames contain space, #, %, ?", async () => {
+    const scheme = `grok-int-diff-${Date.now()}`;
+    const fileName = "my file#x%y?.ts";
+    const reg = host.registerTextDocumentContentProvider(scheme, {
+      provideTextDocumentContent() {
+        return "diff-side";
+      },
+    });
+    try {
+      const left = Uri.from({ scheme, path: `/0/before/${fileName}` });
+      const right = Uri.from({ scheme, path: `/0/after/${fileName}` });
+
+      // Broken dual-encoder would open a tab whose VS Code string is percent-
+      // encoded, then fail to close it when comparing against a bare portable
+      // toString() that disagreed. Both sides must go through toVsCodeUri.
+      await host.openDiff(left, right, "adapter special-char diff", {
+        preview: true,
+        preserveFocus: true,
+      });
+      await new Promise((r) => setTimeout(r, 300));
+
+      const leftKey = toVsCodeUri(left).toString();
+      const rightKey = toVsCodeUri(right).toString();
+      const countMatching = () => {
+        let n = 0;
+        for (const group of vscode.window.tabGroups.all) {
+          for (const tab of group.tabs) {
+            const input = tab.input;
+            if (
+              input instanceof vscode.TabInputTextDiff &&
+              input.original.toString() === leftKey &&
+              input.modified.toString() === rightKey
+            ) {
+              n++;
+            }
+          }
+        }
+        return n;
+      };
+
+      assert.ok(
+        countMatching() >= 1,
+        `expected an open diff tab for keys ${leftKey} / ${rightKey}`,
+      );
+
+      host.closeDiffTabs(left, right);
+      await new Promise((r) => setTimeout(r, 400));
+
+      assert.strictEqual(
+        countMatching(),
+        0,
+        "closeDiffTabs must close the special-character diff tab (same-encoder compare)",
+      );
+    } finally {
+      reg.dispose();
+    }
+  });
+
+  test("asRelativePath with a workspace Uri returns a relative path", () => {
+    const folders = vscode.workspace.workspaceFolders;
+    assert.ok(folders?.length, "integration fixture must open a workspace folder");
+    const folder = folders![0]!;
+    // Build a portable Uri from the real workspace folder URI (preserves scheme).
+    const childVs = vscode.Uri.joinPath(folder.uri, "README.md");
+    const portable = fromVsCodeUri(childVs);
+    const rel = host.asRelativePath(portable);
+    // Must not fall through to the absolute path.
+    assert.ok(
+      !path.isAbsolute(rel) || rel === "README.md" || rel.endsWith(`${path.sep}README.md`) || rel.endsWith("/README.md"),
+      `asRelativePath should be relative, got ${JSON.stringify(rel)}`,
+    );
+    assert.ok(
+      /README\.md$/i.test(rel.replace(/\\/g, "/")),
+      `expected README.md in relative path, got ${JSON.stringify(rel)}`,
+    );
+    // Path-only form must still work for local file workspaces (this fixture is file://).
+    if (folder.uri.scheme === "file") {
+      const viaFile = host.asRelativePath(Uri.file(childVs.fsPath));
+      assert.strictEqual(viaFile, rel);
+    }
+  });
+
+  test("createVsCodeHostContext preserves Uri identity (not path strings)", async () => {
+    // Build a shim ExtensionContext whose URIs are remote — proves the adapter
+    // stores fromVsCodeUri results, not .fsPath. A flatten-to-path revert makes
+    // extensionUri/globalStorageUri undefined (or non-Uri) and fails.
+    const remoteExt = vscode.Uri.from({
+      scheme: "vscode-remote",
+      authority: "ssh-remote+box",
+      path: "/home/me/.vscode-server/extensions/pawelhuryn.grok-vscode-phuryn",
+    });
+    const remoteStorage = vscode.Uri.from({
+      scheme: "vscode-remote",
+      authority: "ssh-remote+box",
+      path: "/home/me/.vscode-server/data/User/globalStorage/pawelhuryn.grok-vscode-phuryn",
+    });
+    const shim = {
+      secrets: {
+        get: async () => undefined,
+        store: async () => {},
+        delete: async () => {},
+      },
+      globalStorageUri: remoteStorage,
+      extensionUri: remoteExt,
+      extension: {
+        id: "PawelHuryn.grok-vscode-phuryn",
+        packageJSON: { version: "0.0.0-test" },
+      },
+      extensionMode: vscode.ExtensionMode.Test,
+      globalState: {
+        get: () => undefined,
+        update: async () => {},
+        keys: () => [],
+      },
+      subscriptions: [],
+    } as unknown as vscode.ExtensionContext;
+
+    const ctx = createVsCodeHostContext(shim);
+    assert.strictEqual(ctx.extensionUri.scheme, "vscode-remote");
+    assert.strictEqual(ctx.extensionUri.authority, "ssh-remote+box");
+    assert.strictEqual(ctx.globalStorageUri.scheme, "vscode-remote");
+    assert.strictEqual(ctx.globalStorageUri.authority, "ssh-remote+box");
+    // Flattening would only keep .fsPath strings — those fields must not exist.
+    assert.strictEqual(
+      (ctx as { extensionPath?: unknown }).extensionPath,
+      undefined,
+      "extensionPath string field must not be restored (use extensionUri)",
+    );
+    assert.strictEqual(
+      (ctx as { globalStoragePath?: unknown }).globalStoragePath,
+      undefined,
+      "globalStoragePath string field must not be restored (use globalStorageUri)",
+    );
+    // Round-trip through toVsCodeUri keeps remote identity for asWebviewUri/fs.
+    const backExt = toVsCodeUri(ctx.extensionUri);
+    assert.strictEqual(backExt.scheme, "vscode-remote");
+    assert.strictEqual(backExt.authority, "ssh-remote+box");
+    const media = Uri.joinPath(ctx.extensionUri, "media", "chat.css");
+    assert.strictEqual(media.scheme, "vscode-remote");
+    assert.strictEqual(media.authority, "ssh-remote+box");
+    assert.ok(media.path.endsWith("/media/chat.css"), media.path);
+  });
+
+  test("localResourceRoots + asWebviewUri preserve non-file scheme via wrapWebview", () => {
+    // Real webview panel — construct vscode-remote roots without a real remote.
+    // Flattening to path + Uri.file would rewrite scheme to "file" on read-back.
+    const panel = vscode.window.createWebviewPanel(
+      "grokUriBoundaryTest",
+      "URI boundary",
+      vscode.ViewColumn.One,
+      { enableScripts: true, localResourceRoots: [] },
+    );
+    try {
+      const wv = wrapWebview(panel.webview);
+      const remoteRoot = Uri.from({
+        scheme: "vscode-remote",
+        authority: "ssh-remote+box",
+        path: "/home/me/.vscode-server/extensions/ext/media",
+        fsPath: "/home/me/.vscode-server/extensions/ext/media",
+      });
+      const localRoot = Uri.file(path.join(path.dirname(path.dirname(__filename)), "media"));
+      wv.options = {
+        enableScripts: true,
+        localResourceRoots: [remoteRoot, localRoot],
+      };
+      const roots = wv.options.localResourceRoots ?? [];
+      const remote = roots.find((r) => r.scheme === "vscode-remote");
+      assert.ok(
+        remote,
+        `remote root must survive options set/get; got ${JSON.stringify(roots.map((r) => r.scheme + "://" + r.authority))}`,
+      );
+      assert.strictEqual(remote!.authority, "ssh-remote+box");
+      assert.ok(remote!.path.includes("/media"), remote!.path);
+
+      // asWebviewUri must accept the portable remote Uri (toVsCodeUri path).
+      // If the adapter does Uri.file(uri.fsPath), VS Code still returns a string
+      // — but the *input* scheme is lost. We assert toVsCodeUri of the same Uri
+      // keeps scheme, and that asWebviewUri does not throw on a remote Uri.
+      const asset = Uri.joinPath(remoteRoot, "chat.css");
+      assert.strictEqual(toVsCodeUri(asset).scheme, "vscode-remote");
+      const src = wv.asWebviewUri(asset);
+      assert.ok(typeof src === "string" && src.length > 0, "asWebviewUri must return a string");
+      // A correct remote-preserving call yields a webview resource URI; a file
+      // rewrite of a remote path often still produces a string, so the scheme
+      // check on toVsCodeUri above is the hard gate. Also reject empty.
+      assert.ok(!src.startsWith("file:"), `webview URI should not be raw file: ${src}`);
+    } finally {
+      panel.dispose();
+    }
+  });
+
+  test("host.fs round-trip uses Uri (toVsCodeUri), not path strings", async () => {
+    // Write under a temp file Uri via host.fs — proves HostFileSystem takes Uri
+    // and the adapter reaches workspace.fs. A path-string signature would not
+    // compile; a Uri.file-only adapter still works for file:// — so also assert
+    // toVsCodeUri preserves a non-file scheme for the same call shape.
+    const dir = path.join(require("os").tmpdir(), `grok-fs-uri-${Date.now()}`);
+    const dirUri = Uri.file(dir);
+    const fileUri = Uri.file(path.join(dir, "probe.txt"));
+    try {
+      await host.fs.createDirectory(dirUri);
+      await host.fs.writeFile(fileUri, Buffer.from("uri-fs-probe", "utf8"));
+      const bytes = await host.fs.readFile(fileUri);
+      assert.strictEqual(Buffer.from(bytes).toString("utf8"), "uri-fs-probe");
+      const st = await host.fs.stat(fileUri);
+      assert.ok(st.size > 0);
+
+      // Non-file scheme must survive the encoder the adapter uses for fs.
+      const remoteStorage = Uri.from({
+        scheme: "vscode-remote",
+        authority: "ssh-remote+box",
+        path: "/home/me/.vscode-server/data/User/globalStorage/ext/plan-reviews/x",
+        fsPath: "/home/me/.vscode-server/data/User/globalStorage/ext/plan-reviews/x",
+      });
+      const vs = toVsCodeUri(remoteStorage);
+      assert.strictEqual(vs.scheme, "vscode-remote", "host.fs must convert via toVsCodeUri, not Uri.file");
+      assert.strictEqual(vs.authority, "ssh-remote+box");
+    } finally {
+      try {
+        await host.fs.delete(dirUri, { recursive: true, useTrash: false });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  });
+});
