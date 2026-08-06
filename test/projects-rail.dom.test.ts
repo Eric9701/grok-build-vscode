@@ -1201,13 +1201,25 @@ describe("projects rail", () => {
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
       const twisty = () => alpha().querySelector(".rail-twisty") as HTMLElement;
+      // Expanded: ONE flag drives icon + session list (data-expanded + folder-open).
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
       // Expanded: folder-open path includes m6 14 (open flap).
       expect(twisty().innerHTML).toMatch(/m6 14/);
+      expect(twisty().innerHTML).not.toMatch(/M2 10h20/);
       expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
+      // Icon and list cannot disagree: sessions present ⇒ open icon path.
+      expect(!!alpha().querySelector(".rail-sessions")).toBe(
+        /m6 14/.test(twisty().innerHTML),
+      );
       click(window, twisty());
-      // Collapsed: folder-closed has M2 10h20.
+      // Collapsed: folder-closed has M2 10h20; no sessions; data-expanded=0.
+      expect(alpha().getAttribute("data-expanded")).toBe("0");
       expect(twisty().innerHTML).toMatch(/M2 10h20/);
+      expect(twisty().innerHTML).not.toMatch(/m6 14/);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
+      expect(!!alpha().querySelector(".rail-sessions")).toBe(
+        /m6 14/.test(twisty().innerHTML),
+      );
     });
 
     it("a host that never mounts #projects-rail never renders the rail (VS Code property)", () => {

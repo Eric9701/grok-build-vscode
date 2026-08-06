@@ -3890,7 +3890,12 @@
     // forever meant the one section you most often want out of the way was the
     // one you could not fold. Only in Projects — down in Archived the section is
     // already closed, so holding one open inside it would be noise.
-    const collapsed = !!state.railCollapsed[key];
+    //
+    // ONE flag drives both the session list and the folder icon. `expanded` is
+    // the positive form so the icon cannot drift from the list (closed icon on
+    // an open section was a real screenshot bug when the two read different
+    // shapes of the same store).
+    const expanded = !state.railCollapsed[key];
 
     // No marker for the selected or the live project. The conversation you are
     // reading is highlighted where it sits, which says which project you are in
@@ -3898,24 +3903,27 @@
     const sec = document.createElement("section");
     sec.className = "rail-repo" +
       (repo.available ? "" : " unavailable") +
-      (collapsed ? " collapsed" : "");
+      (expanded ? "" : " collapsed");
+    // Mirror for CSS/tests: data-expanded is the same boolean that controls the list.
+    sec.dataset.expanded = expanded ? "1" : "0";
 
     const head = document.createElement("div");
     head.className = "rail-repo-head";
     head.title = repo.cwd;
 
     // Folder open/closed is the expand control (no leading chevron on project rows).
+    // Icon is derived from `expanded` — the same flag that decides whether sessions render.
     const twisty = document.createElement("button");
     twisty.type = "button";
     twisty.className = "rail-twisty";
-    twisty.innerHTML = collapsed ? ICON.folderClosed : ICON.folderOpen;
-    twisty.title = collapsed ? "Expand" : "Collapse";
-    twisty.setAttribute("aria-expanded", String(!collapsed));
-    twisty.setAttribute("aria-label", collapsed ? "Expand project" : "Collapse project");
+    twisty.innerHTML = expanded ? ICON.folderOpen : ICON.folderClosed;
+    twisty.title = expanded ? "Collapse" : "Expand";
+    twisty.setAttribute("aria-expanded", String(expanded));
+    twisty.setAttribute("aria-label", expanded ? "Collapse project" : "Expand project");
     twisty.onclick = (e) => {
       e.stopPropagation();
-      if (collapsed) delete state.railCollapsed[key];
-      else state.railCollapsed[key] = true;
+      if (expanded) state.railCollapsed[key] = true;
+      else delete state.railCollapsed[key];
       saveRailShape();
       renderRail();
     };
@@ -4031,7 +4039,8 @@
     head.appendChild(actions);
     sec.appendChild(head);
 
-    if (!collapsed) sec.appendChild(renderRailSessions(repo, key));
+    // Same `expanded` as the folder icon — never a second, independent flag.
+    if (expanded) sec.appendChild(renderRailSessions(repo, key));
     return sec;
   }
 

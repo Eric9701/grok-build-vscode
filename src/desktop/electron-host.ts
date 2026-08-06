@@ -739,8 +739,9 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     },
     setActiveWorkspaceFolder(cwd: string) {
       const prev = config.getWorkspaceRoot();
-      if (!config.setActiveWorkspaceRoot(cwd)) return;
+      if (!config.setActiveWorkspaceRoot(cwd)) return false;
       notifyFolders(prev);
+      return true;
     },
     addWorkspaceFolder(cwd: string) {
       const prev = config.getWorkspaceRoot();

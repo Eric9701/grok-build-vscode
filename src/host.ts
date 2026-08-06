@@ -543,10 +543,12 @@ export interface Host {
   workspaceFolders(): string[];
   /**
    * Make `cwd` the active workspace folder. Must already be open (see
-   * {@link workspaceFolders}). No-op when the host does not switch folders
-   * (VS Code: the window *is* the workspace).
+   * {@link workspaceFolders}). Returns false when the host refuses (unknown /
+   * not-open path). VS Code no-ops and returns true (the window *is* the
+   * workspace — folder switching is not a surface). Callers must **abort**
+   * on false rather than treating the call as advisory.
    */
-  setActiveWorkspaceFolder(cwd: string): void;
+  setActiveWorkspaceFolder(cwd: string): boolean;
   /**
    * Open an additional folder (desktop multi-folder). Returns false when the
    * host cannot add folders or the path is invalid.

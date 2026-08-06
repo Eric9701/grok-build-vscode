@@ -2330,18 +2330,33 @@ See design doc for the full state machine diagram.`;
     });
   }
 
+  /**
+   * Resolve a renderer/local `cwd` against the host-owned local catalog only.
+   * Desktop: open folders (via {@link localRepoCatalogEntries}). VS Code: the
+   * full historical catalog (same helper returns the full list when the host
+   * cannot switch folders). Never the remote full-catalog-or-fallback probe.
+   */
+  private resolveLocalRepoTarget(cwd: string): RepoListEntry | undefined {
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit || !hit.available) return undefined;
+    return hit;
+  }
+
   /** Answer `listRepoSessions`: the newest few sessions for ONE repo, without
    *  making it the client's selection. `cwd` is matched against the catalog the
    *  client was already sent — an unknown or unavailable path is dropped in
    *  silence rather than answered, so a remote can never turn this into a probe
-   *  for which arbitrary paths exist on the host. */
+   *  for which arbitrary paths exist on the host. Local desk uses the open-
+   *  folder set; remote uses the full historical catalog. */
   private buildRepoSessionsPreview(
     cwd: string,
     limit: number | undefined,
     activeId: string | null | undefined,
+    scope: "local" | "remote" = "local",
   ): HostMsg | undefined {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))
-      ?? this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
+    const hit = scope === "remote"
+      ? this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))
+      : this.resolveLocalRepoTarget(cwd);
     if (!hit || !hit.available) return undefined;
     // Clamp: the rail wants a handful, and an unbounded limit would make every
     // repo row a full history read.
@@ -2369,12 +2384,18 @@ See design doc for the full state machine diagram.`;
       cwd,
       limit,
       this.remoteActiveSessionId(clientId),
+      "remote",
     );
     if (msg) this.sendRemoteClient(clientId, msg);
   }
 
   private sendLocalRepoSessionsPreview(cwd: string, limit?: number): void {
-    const msg = this.buildRepoSessionsPreview(cwd, limit, this.focused.activeSessionId);
+    const msg = this.buildRepoSessionsPreview(
+      cwd,
+      limit,
+      this.focused.activeSessionId,
+      "local",
+    );
     if (msg) this.postLocal(msg);
   }
 
@@ -2382,11 +2403,11 @@ See design doc for the full state machine diagram.`;
    * Local repo selection. VS Code: history-scope only (workspace does not move).
    * Desktop multi-folder: re-homes the active folder and conversation — same
    * "newest real session or new" rule as {@link selectRemoteRepo}.
+   * Desktop only accepts open folders; a closed historical catalog path is refused.
    */
   private async selectRepo(cwd: string): Promise<void> {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))
-      ?? this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
-    if (!hit || !hit.available) return;
+    const hit = this.resolveLocalRepoTarget(cwd);
+    if (!hit) return;
 
     if (this.host.canSwitchWorkspaceFolder) {
       await this.switchLocalWorkspaceFolder(hit.cwd);
@@ -2417,7 +2438,17 @@ See design doc for the full state machine diagram.`;
   private async switchLocalWorkspaceFolderExclusive(target: string): Promise<void> {
     const prevRoot = this.workspaceRoot();
     if (!pathsEqual(target, prevRoot)) {
-      this.host.setActiveWorkspaceFolder(target);
+      // A rejected host call must abort — never treat setActive as advisory
+      // and then open history / spawn an agent against the refused path.
+      if (!this.host.setActiveWorkspaceFolder(target)) {
+        this.host.appendLine(
+          `[workspace] refused setActiveWorkspaceFolder (not an open folder): ${target}`,
+        );
+        void this.host.showWarningMessage(
+          `That folder is not open in this app:\n${target}`,
+        );
+        return;
+      }
     }
     this.selectedRepoCwd = target;
     this.postRepoCatalog();
@@ -2458,10 +2489,10 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Roots the desktop trust boundary may open files under for the focused
-   * local session: session cwd (worktree when isolated), worktree source git
-   * root, and the active workspace folder. Used by ElectronWebview policy —
-   * not the generic message schema gate.
+   * Roots the desktop trust boundary may open files under. On desktop this is
+   * exactly the host-owned open-folder set (plus worktrees authorized for
+   * sessions within those folders) — never a historical catalog cwd the user
+   * has not opened. Used by ElectronWebview policy, not the message schema gate.
    */
   desktopAuthRoots(session: Session = this.focused): string[] {
     const roots: string[] = [];
@@ -2474,6 +2505,13 @@ See design doc for the full state machine diagram.`;
       seen.add(key);
       roots.push(abs);
     };
+    if (this.host.canSwitchWorkspaceFolder) {
+      // Same set resume / list / select consult — one host-owned open-folder
+      // property. Session cwd outside that set must not widen openFile/openDiff.
+      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      for (const c of this.localTrustedSessionCwds(overrides)) add(c);
+      return roots;
+    }
     add(this.sessionCwd(session));
     if (session.worktree?.path) add(session.worktree.path);
     if (session.worktree?.sourceGitRoot) add(session.worktree.sourceGitRoot);
@@ -8675,9 +8713,16 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Host-trusted directories that may hold a session catalog for local resume.
-   * Renderer-supplied paths never appear here — only workspace / open folders
-   * and their worktree catalogs the host already discovered.
+   * Host-trusted directories that may hold a session catalog for local resume,
+   * list, select, and desktop file authorization.
+   *
+   * **Desktop** (`canSwitchWorkspaceFolder`): exactly the configured open
+   * folders plus worktrees authorized for sessions within them. The full
+   * historical `discoverRepos` catalog is deliberately excluded — a closed
+   * repo must not become a process cwd or widen {@link desktopAuthRoots}.
+   *
+   * **VS Code**: the full historical catalog (history can span any discovered
+   * checkout under grok home). That is the v3.1.0 behaviour and must not regress.
    */
   private localTrustedSessionCwds(overrides: SessionMetaOverrides): string[] {
     const out: string[] = [];
@@ -8689,12 +8734,17 @@ See design doc for the full state machine diagram.`;
       seen.add(key);
       out.push(cwd);
     };
+    if (this.host.canSwitchWorkspaceFolder) {
+      for (const repoCwd of this.openWorkspaceFolders()) {
+        for (const c of this.sessionCwdsForRepo(repoCwd, overrides)) add(c);
+      }
+      // Active root as a backstop if the folders list is empty mid-init.
+      add(this.workspaceRoot());
+      return out;
+    }
+    // VS Code: full historical catalog.
     add(this.workspaceRoot());
     if (this.selectedRepoCwd) add(this.selectedRepoCwd);
-    for (const repo of this.localRepoCatalogEntries()) {
-      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c);
-    }
-    // Full catalog too (VS Code history can span discovered repos under grok home).
     for (const repo of this.repoCatalog()) {
       for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c);
     }

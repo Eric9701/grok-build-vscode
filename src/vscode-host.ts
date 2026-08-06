@@ -320,6 +320,8 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     },
     setActiveWorkspaceFolder(_cwd: string) {
       // VS Code: the window is the workspace — no folder switch surface.
+      // Report success so callers do not abort; nothing moved.
+      return true;
     },
     addWorkspaceFolder(_cwd: string) {
       return false;

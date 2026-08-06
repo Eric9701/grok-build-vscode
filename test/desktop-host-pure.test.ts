@@ -17,6 +17,8 @@ import {
   buildTextViewerHtml,
   escapeHtml,
   interpretOpenPathResult,
+  MAX_DOCUMENT_VIEW_CHARS,
+  prepareDocumentViewText,
   resolveDocumentText,
 } from "../src/desktop/document-view";
 import {
@@ -315,6 +317,53 @@ describe("document-view helpers", () => {
     expect(html).toContain('id="focus-line"');
     expect(html).toContain("row diff");
     expect(html).toContain(">a</div>");
+  });
+
+  it("prepareDocumentViewText truncates at the 8 MiB media-aligned bound", () => {
+    expect(MAX_DOCUMENT_VIEW_CHARS).toBe(8 * 1024 * 1024);
+    const under = "x".repeat(100);
+    expect(prepareDocumentViewText(under)).toEqual({
+      text: under,
+      truncated: false,
+    });
+    const over = "y".repeat(MAX_DOCUMENT_VIEW_CHARS + 50);
+    const prepared = prepareDocumentViewText(over);
+    expect(prepared.truncated).toBe(true);
+    expect(prepared.text.length).toBe(MAX_DOCUMENT_VIEW_CHARS);
+    expect(prepared.notice).toMatch(/truncated/i);
+    expect(prepared.notice).toMatch(/50/);
+    // Mutation: without the cap, over would pass through whole.
+    expect(over.length).toBeGreaterThan(MAX_DOCUMENT_VIEW_CHARS);
+  });
+
+  it("oversized openText / openDiff HTML shows a visible truncation notice", () => {
+    // Use a small test cap so we don't allocate multi-MiB HTML in unit tests;
+    // production callers omit maxChars and get MAX_DOCUMENT_VIEW_CHARS (8 MiB).
+    const cap = 64;
+    const huge = "Z".repeat(cap + 10);
+    const textHtml = buildTextViewerHtml("Untitled", huge, undefined, cap);
+    expect(textHtml).toContain('class="trunc"');
+    expect(textHtml).toMatch(/truncated/i);
+    expect(textHtml).toContain("· truncated");
+    // Body holds only the cap, not the full payload.
+    expect(textHtml).not.toContain("Z".repeat(cap + 1));
+    // Mutation: without prepareDocumentViewText the full string would appear.
+    expect(huge.length).toBe(cap + 10);
+
+    const diffHtml = buildDiffViewerHtml(
+      "Grok proposed: big.ts",
+      "before",
+      huge,
+      "after",
+      "small",
+      undefined,
+      cap,
+    );
+    expect(diffHtml).toContain('class="trunc"');
+    expect(diffHtml).toMatch(/truncated/i);
+    // Mutation: pre-cap buildDiffViewerHtml would embed the full side —
+    // the notice is the user-visible proof.
+    expect(diffHtml).toContain("Before:");
   });
 });
 
@@ -2225,6 +2274,188 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     } finally {
       fs.rmSync(base, { recursive: true, force: true });
     }
+  });
+
+  it("desktop open-folder trust excludes closed historical repos (resume + auth roots)", () => {
+    // Round 10: trust set is open folders only — NOT the full discoverRepos catalog.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-open-folder-"));
+    const grokHome = path.join(base, "fake-grok");
+    const openRepo = path.join(base, "open-proj");
+    const closedRepo = path.join(base, "closed-hist");
+    const sessionId = "closed-sess-1";
+    try {
+      fs.mkdirSync(openRepo, { recursive: true });
+      fs.mkdirSync(closedRepo, { recursive: true });
+      // Session exists only under the closed historical checkout.
+      const closedDir = path.join(sessionsDirFor(grokHome, closedRepo), sessionId);
+      fs.mkdirSync(closedDir, { recursive: true });
+      fs.writeFileSync(path.join(closedDir, "summary.json"), "{}");
+
+      // Desktop trust = open folders only (mirrors localTrustedSessionCwds desktop branch).
+      const desktopTrusted = [openRepo];
+      const desktopCandidates = orderedResumeCwdCandidates({
+        messageCwd: closedRepo,
+        trustedCwds: desktopTrusted,
+      });
+      expect(desktopCandidates).not.toContain(closedRepo);
+      expect(
+        findSessionCatalogCwd({
+          fs,
+          grokHome,
+          id: sessionId,
+          candidates: desktopCandidates,
+        }),
+      ).toBeUndefined();
+
+      // Auth roots built from desktop trust do not include the closed repo.
+      const roots = desktopAuthRoots({
+        workspaceRoot: openRepo,
+        allowedRoots: desktopTrusted,
+      });
+      expect(roots.some((r) => path.resolve(r) === path.resolve(closedRepo))).toBe(false);
+      expect(roots.some((r) => path.resolve(r) === path.resolve(openRepo))).toBe(true);
+
+      // Mutation: using the full historical catalog as trustedCwds reopens the hole —
+      // resume finds the closed session and auth widens to it.
+      const fullCatalogTrusted = [openRepo, closedRepo];
+      const buggyCandidates = orderedResumeCwdCandidates({
+        messageCwd: closedRepo,
+        trustedCwds: fullCatalogTrusted,
+      });
+      expect(buggyCandidates).toContain(closedRepo);
+      expect(
+        findSessionCatalogCwd({
+          fs,
+          grokHome,
+          id: sessionId,
+          candidates: buggyCandidates,
+        }),
+      ).toBe(closedRepo);
+      const buggyRoots = desktopAuthRoots({
+        workspaceRoot: openRepo,
+        allowedRoots: [closedRepo],
+      });
+      expect(buggyRoots.some((r) => path.resolve(r) === path.resolve(closedRepo))).toBe(true);
+
+      // Source: desktop branch of localTrustedSessionCwds uses openWorkspaceFolders,
+      // not repoCatalog(). VS Code branch still walks repoCatalog().
+      const sidebar = fs.readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+        "utf8",
+      );
+      const trustStart = sidebar.indexOf("private localTrustedSessionCwds(");
+      expect(trustStart).toBeGreaterThan(0);
+      const trustEnd = sidebar.indexOf("private async openSessionReserved(", trustStart);
+      const trustBody = sidebar.slice(trustStart, trustEnd);
+      expect(trustBody).toContain("canSwitchWorkspaceFolder");
+      expect(trustBody).toContain("openWorkspaceFolders");
+      // Desktop branch must not walk the full historical catalog.
+      const desktopBranch = trustBody.slice(
+        trustBody.indexOf("if (this.host.canSwitchWorkspaceFolder)"),
+        trustBody.indexOf("// VS Code"),
+      );
+      expect(desktopBranch).toContain("openWorkspaceFolders");
+      expect(desktopBranch).not.toContain("this.repoCatalog()");
+      // VS Code branch keeps full-catalog behaviour.
+      expect(trustBody).toContain("// VS Code");
+      expect(trustBody.slice(trustBody.indexOf("// VS Code"))).toContain("this.repoCatalog()");
+
+      // desktopAuthRoots on desktop reuses localTrustedSessionCwds (one set).
+      const authStart = sidebar.indexOf("desktopAuthRoots(session");
+      const authEnd = sidebar.indexOf("async addProjectFolder", authStart);
+      const authBody = sidebar.slice(authStart, authEnd);
+      expect(authBody).toContain("localTrustedSessionCwds");
+      expect(authBody).toContain("canSwitchWorkspaceFolder");
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("local listRepoSessions/selectRepo refuse non-open roots; setActive abort is mandatory", () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    // resolveLocalRepoTarget is the single local gate — open-folder catalog only.
+    expect(sidebar).toContain("resolveLocalRepoTarget");
+    const resolveStart = sidebar.indexOf("private resolveLocalRepoTarget(");
+    const resolveEnd = sidebar.indexOf("private buildRepoSessionsPreview(", resolveStart);
+    const resolveBody = sidebar.slice(resolveStart, resolveEnd);
+    expect(resolveBody).toContain("localRepoCatalogEntries");
+    expect(resolveBody).not.toContain("this.repoCatalog()");
+
+    // Local preview / selectRepo consult resolveLocalRepoTarget, not full catalog first.
+    const selectStart = sidebar.indexOf("private async selectRepo(");
+    const selectEnd = sidebar.indexOf("private async switchLocalWorkspaceFolder(", selectStart);
+    const selectBody = sidebar.slice(selectStart, selectEnd);
+    expect(selectBody).toContain("resolveLocalRepoTarget");
+    expect(selectBody).not.toContain("this.repoCatalog()");
+
+    // Local listRepoSessions scope is "local"; remote stays full catalog.
+    expect(sidebar).toMatch(
+      /buildRepoSessionsPreview\(\s*cwd,\s*limit,\s*this\.focused\.activeSessionId,\s*"local"/,
+    );
+    expect(sidebar).toMatch(
+      /buildRepoSessionsPreview\(\s*cwd,\s*limit,\s*this\.remoteActiveSessionId\(clientId\),\s*"remote"/,
+    );
+
+    // Rejected setActiveWorkspaceFolder aborts — no history open / session spawn.
+    const switchStart = sidebar.indexOf("private async switchLocalWorkspaceFolderExclusive(");
+    const switchEnd = sidebar.indexOf("desktopAuthRoots(session", switchStart);
+    const switchBody = sidebar.slice(switchStart, switchEnd);
+    expect(switchBody).toMatch(/if\s*\(\s*!this\.host\.setActiveWorkspaceFolder\(target\)\s*\)/);
+    expect(switchBody).toContain("return;");
+    // Mutation: ignoring the return and continuing would re-open the hole —
+    // prove the abort sits BEFORE selectedRepoCwd assignment / history read.
+    const refuseIdx = switchBody.indexOf("setActiveWorkspaceFolder(target)");
+    const selectedIdx = switchBody.indexOf("this.selectedRepoCwd = target");
+    const historyIdx = switchBody.indexOf("buildSessionsList");
+    expect(refuseIdx).toBeGreaterThan(0);
+    expect(selectedIdx).toBeGreaterThan(refuseIdx);
+    expect(historyIdx).toBeGreaterThan(selectedIdx);
+    // The return after refuse must appear before selectedRepoCwd is set.
+    const returnIdx = switchBody.indexOf("return;", refuseIdx);
+    expect(returnIdx).toBeGreaterThan(refuseIdx);
+    expect(returnIdx).toBeLessThan(selectedIdx);
+
+    // Host contract: setActive returns boolean (not void advisory).
+    const hostSrc = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "host.ts"),
+      "utf8",
+    );
+    expect(hostSrc).toMatch(/setActiveWorkspaceFolder\(cwd: string\):\s*boolean/);
+    const electronHost = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "electron-host.ts"),
+      "utf8",
+    );
+    const setActiveStart = electronHost.indexOf("setActiveWorkspaceFolder(cwd: string)");
+    const setActiveBody = electronHost.slice(setActiveStart, setActiveStart + 280);
+    expect(setActiveBody).toContain("return false");
+    expect(setActiveBody).toContain("return true");
+  });
+
+  it("VS Code keeps full-catalog local trust (must not regress to open-folders-only)", () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    // localRepoCatalogEntries: when !canSwitchWorkspaceFolder, return full catalog.
+    const localCatStart = sidebar.indexOf("private localRepoCatalogEntries(");
+    const localCatEnd = sidebar.indexOf("private selectedHistoryCwd(", localCatStart);
+    const localCatBody = sidebar.slice(localCatStart, localCatEnd);
+    expect(localCatBody).toMatch(/if\s*\(\s*!this\.host\.canSwitchWorkspaceFolder\s*\)\s*return full/);
+
+    // VS Code host never switches folders and reports success on setActive.
+    const vscodeHost = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "vscode-host.ts"),
+      "utf8",
+    );
+    expect(vscodeHost).toMatch(/canSwitchWorkspaceFolder:\s*false/);
+    const setActive = vscodeHost.slice(
+      vscodeHost.indexOf("setActiveWorkspaceFolder"),
+      vscodeHost.indexOf("addWorkspaceFolder"),
+    );
+    expect(setActive).toContain("return true");
   });
 
   it("desktopAuthRoots dedupes workspaceRoot + allowedRoots", () => {
