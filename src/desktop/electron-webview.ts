@@ -32,63 +32,182 @@ import { parseWebviewMsg } from "./webview-msg-validate";
 const SCHEME = "app-resource";
 const AUTHORITY = "vsc-resource";
 
-/** Minimal VS Code-like theme tokens so chat.css paints without a VS Code host. */
+/**
+ * Desktop theme tokens — port of AFK Pilot `web/chat.html` palette (dark + light).
+ * The extension has no equivalent shell; VS Code supplies its own tokens.
+ * Active row grey: --vscode-list-activeSelectionBackground (#37373d / #e4e6f1),
+ * not Dark+ blue (#094771).
+ */
+/**
+ * Persistence key for docs/tests. Real storage is userData via preload
+ * `grokDesktopTheme` (localStorage is disabled for data: page loads).
+ */
+export const DESKTOP_THEME_STORAGE_KEY = "grok-desktop-theme";
+
+/** Early head boot: IPC prefs (userData) → OS matchMedia fallback; body.vscode-light sync. */
+const DESKTOP_THEME_BOOT = `(function(){
+  var root=document.documentElement;
+  function readTheme(){
+    try{
+      var api=window.grokDesktopTheme;
+      if(api&&typeof api.get==="function"){
+        var t=api.get();
+        if(t==="light"||t==="dark")return t;
+      }
+    }catch(e){}
+    try{
+      var saved=localStorage.getItem(${JSON.stringify(DESKTOP_THEME_STORAGE_KEY)});
+      if(saved==="light"||saved==="dark")return saved;
+    }catch(e){}
+    return (window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark";
+  }
+  var initial=readTheme();
+  root.setAttribute("data-theme",initial);
+  function syncBodyTheme(){
+    if(document.body)document.body.classList.toggle("vscode-light",root.getAttribute("data-theme")==="light");
+  }
+  function wireThemeToggle(){
+    var btn=document.getElementById("desk-theme-toggle");
+    if(!btn||btn.dataset.themeWired)return;
+    btn.dataset.themeWired="1";
+    btn.addEventListener("click",function(){window.__toggleDesktopTheme();});
+  }
+  document.addEventListener("DOMContentLoaded",function(){syncBodyTheme();wireThemeToggle();});
+  syncBodyTheme();
+  window.__toggleDesktopTheme=function(){
+    var next=root.getAttribute("data-theme")==="dark"?"light":"dark";
+    root.setAttribute("data-theme",next);
+    try{
+      var api=window.grokDesktopTheme;
+      if(api&&typeof api.set==="function")api.set(next);
+      else localStorage.setItem(${JSON.stringify(DESKTOP_THEME_STORAGE_KEY)},next);
+    }catch(e){}
+    syncBodyTheme();
+  };
+  if(document.readyState!=="loading"){syncBodyTheme();wireThemeToggle();}
+})();`;
+
 const DESKTOP_THEME_CSS = `
 :root {
   color-scheme: dark;
-  --vscode-foreground: #cccccc;
-  --vscode-descriptionForeground: #9d9d9d;
-  --vscode-sideBar-background: #252526;
-  --vscode-editor-background: #1e1e1e;
-  --vscode-editorWidget-border: #454545;
-  --vscode-editorWidget-background: #252526;
-  --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* AFK Pilot dark palette (web/chat.html :root) */
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
   --vscode-font-size: 13px;
-  --vscode-editor-font-family: Consolas, "Courier New", monospace;
-  --vscode-textLink-foreground: #3794ff;
-  --vscode-textLink-activeForeground: #3794ff;
-  --vscode-textCodeBlock-background: #1e1e1e;
-  --vscode-textPreformat-foreground: #d7ba7d;
-  --vscode-input-background: #3c3c3c;
-  --vscode-input-foreground: #cccccc;
-  --vscode-input-border: #3c3c3c;
+  --vscode-editor-font-family: "SF Mono", Menlo, Consolas, monospace;
+  --vscode-foreground: #e6e6e6;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-sideBar-background: #1e1e1e;
+  --vscode-editorWidget-background: #252526;
+  --vscode-editorWidget-border: #454545;
+  --vscode-widget-border: #454545;
+  --vscode-panel-border: #2b2b2b;
   --vscode-focusBorder: #007fd4;
   --vscode-button-background: #0e639c;
   --vscode-button-foreground: #ffffff;
   --vscode-button-hoverBackground: #1177bb;
   --vscode-button-secondaryBackground: #3a3d41;
-  --vscode-button-secondaryForeground: #cccccc;
+  --vscode-button-secondaryForeground: #e6e6e6;
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #e6e6e6;
+  --vscode-input-border: #3c3c3c;
+  --vscode-textLink-foreground: #3794ff;
+  --vscode-textLink-activeForeground: #3794ff;
+  --vscode-textCodeBlock-background: #0a0a0a;
+  --vscode-textPreformat-foreground: #d7ba7d;
   --vscode-list-hoverBackground: #2a2d2e;
-  --vscode-list-activeSelectionBackground: #094771;
+  /* Neutral selection grey (not Dark+ blue #094771) — active rail row. */
+  --vscode-list-activeSelectionBackground: #37373d;
   --vscode-list-activeSelectionForeground: #ffffff;
-  --vscode-toolbar-hoverBackground: rgba(255,255,255,0.08);
-  --vscode-scrollbarSlider-background: rgba(121,121,121,0.4);
-  --vscode-scrollbarSlider-hoverBackground: rgba(100,100,100,0.7);
-  --vscode-scrollbarSlider-activeBackground: rgba(191,191,191,0.4);
-  --vscode-charts-green: #4ec9b0;
-  --vscode-charts-blue: #3794ff;
-  --vscode-charts-yellow: #dcdcaa;
-  --vscode-errorForeground: #f48771;
-  --vscode-keybindingLabel-background: rgba(128,128,128,0.17);
-  --vscode-keybindingLabel-border: rgba(51,51,51,0.6);
-  --vscode-keybindingLabel-foreground: #cccccc;
+  --vscode-list-inactiveSelectionBackground: #37373d;
+  --vscode-toolbar-hoverBackground: #383b3d;
   --vscode-badge-background: #4d4d4d;
   --vscode-badge-foreground: #ffffff;
+  --vscode-errorForeground: #f48771;
+  --vscode-charts-green: #4ec9b0;
+  --vscode-charts-blue: #3794ff;
+  --vscode-charts-yellow: #d7ba7d;
+  --vscode-charts-red: #f48771;
+  --vscode-scrollbarSlider-background: rgba(121,121,121,0.4);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100,100,100,0.7);
+  --vscode-scrollbarSlider-activeBackground: rgba(191,191,191,0.5);
+  /* Desktop-only chrome (menus / keybindings) — keep usable defaults */
+  --vscode-keybindingLabel-background: rgba(128,128,128,0.17);
+  --vscode-keybindingLabel-border: rgba(51,51,51,0.6);
+  --vscode-keybindingLabel-foreground: #e6e6e6;
   --vscode-widget-shadow: rgba(0,0,0,0.36);
-  --vscode-dropdown-background: #3c3c3c;
-  --vscode-dropdown-foreground: #f0f0f0;
+  --vscode-dropdown-background: #313131;
+  --vscode-dropdown-foreground: #e6e6e6;
   --vscode-dropdown-border: #3c3c3c;
   --vscode-menu-background: #252526;
-  --vscode-menu-foreground: #cccccc;
-  --vscode-menu-selectionBackground: #094771;
+  --vscode-menu-foreground: #e6e6e6;
+  --vscode-menu-selectionBackground: #37373d;
   --vscode-menu-selectionForeground: #ffffff;
   --vscode-menu-border: #454545;
   --vscode-progressBar-background: #0e70c0;
   --vscode-inputValidation-errorBackground: #5a1d1d;
   --vscode-inputValidation-errorBorder: #be1100;
 }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --vscode-foreground: #3b3b3b;
+  --vscode-descriptionForeground: #6e6e6e;
+  --vscode-editor-background: #ffffff;
+  --vscode-sideBar-background: #ffffff;
+  --vscode-editorWidget-background: #f8f8f8;
+  --vscode-editorWidget-border: #d4d4d4;
+  --vscode-widget-border: #d4d4d4;
+  --vscode-panel-border: #e5e5e5;
+  --vscode-focusBorder: #005fb8;
+  --vscode-button-background: #005fb8;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #0258a8;
+  --vscode-button-secondaryBackground: #e5e5e5;
+  --vscode-button-secondaryForeground: #3b3b3b;
+  --vscode-input-background: #ffffff;
+  --vscode-input-foreground: #3b3b3b;
+  --vscode-input-border: #cecece;
+  --vscode-textLink-foreground: #005fb8;
+  --vscode-textLink-activeForeground: #005fb8;
+  --vscode-textCodeBlock-background: #f6f6f6;
+  --vscode-list-hoverBackground: #f2f2f2;
+  --vscode-list-activeSelectionBackground: #e4e6f1;
+  --vscode-list-activeSelectionForeground: #3b3b3b;
+  --vscode-list-inactiveSelectionBackground: #e4e6f1;
+  --vscode-toolbar-hoverBackground: #e5e5e5;
+  --vscode-badge-background: #cccccc;
+  --vscode-badge-foreground: #333333;
+  --vscode-errorForeground: #cd3131;
+  --vscode-charts-green: #388a34;
+  --vscode-charts-blue: #1a85ff;
+  --vscode-charts-yellow: #bf8803;
+  --vscode-charts-red: #cd3131;
+  --vscode-scrollbarSlider-background: rgba(100,100,100,0.35);
+  --vscode-scrollbarSlider-hoverBackground: rgba(100,100,100,0.55);
+  --vscode-scrollbarSlider-activeBackground: rgba(0,0,0,0.6);
+  --vscode-keybindingLabel-foreground: #3b3b3b;
+  --vscode-dropdown-background: #ffffff;
+  --vscode-dropdown-foreground: #3b3b3b;
+  --vscode-dropdown-border: #cecece;
+  --vscode-menu-background: #f8f8f8;
+  --vscode-menu-foreground: #3b3b3b;
+  --vscode-menu-selectionBackground: #e4e6f1;
+  --vscode-menu-selectionForeground: #3b3b3b;
+  --vscode-menu-border: #d4d4d4;
+  --vscode-progressBar-background: #005fb8;
+  --vscode-inputValidation-errorBackground: #f2dede;
+  --vscode-inputValidation-errorBorder: #be1100;
+}
+html { background: #1a1a1a; }
+:root[data-theme="light"] { background: #fbfbfc; }
 html, body { margin: 0; height: 100%; overflow: hidden; }
-body { background: var(--vscode-sideBar-background); color: var(--vscode-foreground); }
+body { background: #1a1a1a; color: var(--vscode-foreground); }
+:root[data-theme="light"] body { background: #fbfbfc; }
+/* Theme toggle sun/moon (rail footer) — same as AFK Pilot */
+:root[data-theme="dark"] .i-sun { display: block; }
+:root[data-theme="dark"] .i-moon { display: none; }
+:root[data-theme="light"] .i-sun { display: none; }
+:root[data-theme="light"] .i-moon { display: block; }
 
 /* Reading measure — desktop shell only (mirrors AFK Pilot web/chat.html).
    Shared chat.css is left alone so VS Code's narrow panel is unchanged.
@@ -399,11 +518,18 @@ export class ElectronWebview implements HostWebview {
 }
 
 function injectTheme(html: string): string {
-  const tag = `<style id="grok-desktop-theme">${DESKTOP_THEME_CSS}</style>`;
+  const styleTag = `<style id="grok-desktop-theme">${DESKTOP_THEME_CSS}</style>`;
+  // Match getHtml's CSP nonce so the early theme boot is allowed under script-src.
+  const nonceMatch = html.match(/script-src 'nonce-([^']+)'/);
+  const nonce = nonceMatch?.[1];
+  const scriptTag = nonce
+    ? `<script nonce="${nonce}" id="grok-desktop-theme-boot">${DESKTOP_THEME_BOOT}</script>`
+    : "";
+  const tags = styleTag + scriptTag;
   if (html.includes("</head>")) {
-    return html.replace("</head>", `${tag}</head>`);
+    return html.replace("</head>", `${tags}</head>`);
   }
-  return tag + html;
+  return tags + html;
 }
 
 /**
@@ -462,6 +588,8 @@ export function desktopChromeBootSource(): string {
     window.addEventListener("resize", schedule);
   }
   apply();
+  // Theme toggle is wired by the early head boot (grok-desktop-theme-boot) —
+  // do not attach a second listener here or a single click double-flips.
   return { ok: true };
 })()`;
 }

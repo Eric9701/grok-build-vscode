@@ -586,20 +586,23 @@ export function fileTreePanelBootSource(): string {
     });
   }
 
-  // Projects rail collapse — Lucide panel-left (mirrors AFK Pilot rail-toggle).
+  // Projects rail collapse — button lives in .rail-top (getHtml / AFK Pilot shape).
+  // Fall back to injecting into a legacy .rail-toolbar if an older shell is open.
   const rail = document.getElementById("projects-rail");
   const topBarForRail = document.querySelector(".top-bar");
   if (rail && topBarForRail) {
     let railToggle = document.getElementById("desk-rail-toggle");
-    const toolbar = rail.querySelector(".rail-toolbar");
-    if (!railToggle && toolbar) {
-      railToggle = document.createElement("button");
-      railToggle.type = "button";
-      railToggle.id = "desk-rail-toggle";
-      railToggle.className = "desk-rail-toggle";
-      railToggle.innerHTML = ICON_PANEL_LEFT;
-      railToggle.setAttribute("aria-label", "Hide projects");
-      toolbar.insertBefore(railToggle, toolbar.firstChild);
+    if (!railToggle) {
+      const host = rail.querySelector(".rail-top") || rail.querySelector(".rail-toolbar");
+      if (host) {
+        railToggle = document.createElement("button");
+        railToggle.type = "button";
+        railToggle.id = "desk-rail-toggle";
+        railToggle.className = "rail-icon-btn";
+        railToggle.innerHTML = ICON_PANEL_LEFT;
+        railToggle.setAttribute("aria-label", "Hide projects");
+        host.appendChild(railToggle);
+      }
     }
     let railOpenBtn = document.getElementById("desk-rail-open-btn");
     if (!railOpenBtn) {

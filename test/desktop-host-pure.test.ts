@@ -1103,6 +1103,75 @@ describe("desktop branding and menu", () => {
     );
     expect(chatCss).not.toContain("max-width: 1120px");
   });
+
+  it("ports AFK Pilot selection greys (not Dark+ blue) for active rail rows", () => {
+    const theme = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-webview.ts",
+      ),
+      "utf8",
+    );
+    // Active row uses the palette token — greys from AFK Pilot, not #094771 blue.
+    expect(theme).toContain("--vscode-list-activeSelectionBackground: #37373d");
+    expect(theme).toContain("--vscode-list-activeSelectionBackground: #e4e6f1");
+    expect(theme).not.toMatch(
+      /--vscode-list-activeSelectionBackground:\s*#094771/,
+    );
+    // Active session fill is token-based in shared CSS (not a hardcoded colour).
+    const chatCss = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    expect(chatCss).toMatch(
+      /\.rail-session\.active\s*\{[^}]*background:\s*var\(--vscode-list-activeSelectionBackground\)/s,
+    );
+    // Theme boot uses data-theme + preload API (not data:-blocked localStorage alone).
+    expect(theme).toContain("data-theme");
+    expect(theme).toContain("grokDesktopTheme");
+    expect(theme).toContain("prefers-color-scheme");
+    expect(theme).toContain("__toggleDesktopTheme");
+  });
+
+  it("auto-hides the native menu bar so it does not paint light over dark chrome", () => {
+    const main = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
+      "utf8",
+    );
+    expect(main).toContain("autoHideMenuBar: true");
+    expect(main).toContain("desk-theme:get");
+    expect(main).toContain("nativeTheme.shouldUseDarkColors");
+  });
+});
+
+describe("desktop theme prefs (userData file)", () => {
+  it("resolves saved preference over OS, else follows OS", async () => {
+    const {
+      resolveDesktopTheme,
+      parseDesktopTheme,
+      writeDesktopThemeFile,
+      readDesktopThemeFile,
+    } = await import("../src/desktop/theme-prefs");
+    expect(resolveDesktopTheme("light", true)).toBe("light");
+    expect(resolveDesktopTheme("dark", false)).toBe("dark");
+    expect(resolveDesktopTheme(undefined, true)).toBe("dark");
+    expect(resolveDesktopTheme(undefined, false)).toBe("light");
+    expect(parseDesktopTheme({ theme: "light" })).toBe("light");
+    expect(parseDesktopTheme("nope")).toBeUndefined();
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-theme-"));
+    try {
+      writeDesktopThemeFile(dir, "light");
+      expect(readDesktopThemeFile(dir)).toBe("light");
+      writeDesktopThemeFile(dir, "dark");
+      expect(readDesktopThemeFile(dir)).toBe("dark");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("external terminal plans (not silent no-ops)", () => {

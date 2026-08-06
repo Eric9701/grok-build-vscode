@@ -9389,13 +9389,37 @@ See design doc for the full state machine diagram.`;
     // Desktop multi-folder: host ships the rail mount. VS Code never does —
     // absence of `#projects-rail` is the property that keeps the extension's
     // UI single-column even when a `repos` frame arrives for clear-all.
+    // Chrome mirrors AFK Pilot: brand + panel toggle, search, scroll, footer
+    // theme toggle (no Clerk avatar). chat.js only empties #rail-scroll.
+    const railMark = this.host.canSwitchWorkspaceFolder
+      ? resourceUri("grok-icon.svg")
+      : "";
     const railMount = this.host.canSwitchWorkspaceFolder
       ? `
   <aside id="projects-rail" class="projects-rail" hidden aria-label="Projects">
-    <div class="rail-toolbar">
-      <input id="rail-search" class="rail-search" type="search" placeholder="Filter projects…" autocomplete="off" spellcheck="false" />
+    <div class="rail-top">
+      <span class="rail-brand" title="Grok Build Desktop">
+        <span class="mark" style="--rail-mark:url('${railMark}')" aria-hidden="true"></span>
+        <span class="wordmark"><b>Grok</b> <span class="dim">Build</span></span>
+      </span>
+      <button id="desk-rail-toggle" class="rail-icon-btn" type="button" title="Hide projects" aria-label="Hide projects" aria-expanded="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+      </button>
+    </div>
+    <div class="rail-search-wrap">
+      <span class="rail-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </span>
+      <input id="rail-search" class="rail-search" type="search" placeholder="Filter projects…" autocomplete="off" spellcheck="false" aria-label="Filter projects" />
     </div>
     <div id="rail-scroll" class="rail-scroll"></div>
+    <div class="rail-foot">
+      <div class="rail-user" aria-hidden="true"></div>
+      <button id="desk-theme-toggle" class="rail-icon-btn" type="button" title="Toggle theme" aria-label="Toggle light and dark theme">
+        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12H5M19 12h2.5M4.2 19.8L6 18M18 6l1.8-1.8"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.2 6.2 0 0 0 10.5 10.5z"/></svg>
+      </button>
+    </div>
   </aside>`
       : "";
     const openMain = this.host.canSwitchWorkspaceFolder ? `<div class="app-main">` : "";

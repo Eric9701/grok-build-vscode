@@ -135,8 +135,9 @@ body.has-rail .app-main {
 .rail-brand .mark {
   width: 22px; height: 22px; flex: none;
   background-color: currentColor;
-  -webkit-mask: url(/logo.svg) center / contain no-repeat;
-  mask: url(/logo.svg) center / contain no-repeat;
+  /* Desktop sets --rail-mark to the app icon; AFK Pilot page may set /logo.svg. */
+  -webkit-mask: var(--rail-mark, url(/logo.svg)) center / contain no-repeat;
+  mask: var(--rail-mark, url(/logo.svg)) center / contain no-repeat;
 }
 .rail-brand .wordmark { font-size: 15px; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-brand .wordmark b { font-weight: 600; }
@@ -217,7 +218,9 @@ body.has-rail .app-main {
   border-top: 1px solid var(--vscode-panel-border);
 }
 .rail-user { display: flex; align-items: center; min-width: 0; min-height: 30px; }
-/* Sticky section labels: full width so rows pass behind, not beside. */
+/* Sticky section labels: full width so rows pass behind, not beside.
+   All four groups (PINNED / RECENT / PROJECTS / PROJECT ARCHIVE) share this
+   bold uppercase treatment — static heads and collapsible .rail-head-btn alike. */
 .rail-head {
   position: sticky;
   top: 0;
@@ -235,7 +238,15 @@ body.has-rail .app-main {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-.rail-head-title { flex: 0 0 auto; white-space: nowrap; }
+.rail-head-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
 .rail-head-icon {
   display: inline-flex;
   flex: 0 0 auto;
@@ -251,12 +262,14 @@ body.has-rail .app-main {
   width: 100%;
   gap: 6px;
   padding: 10px 16px 6px;
-  color: inherit;
+  color: var(--vscode-descriptionForeground);
   background: transparent;
   border: 0;
   border-radius: 6px;
-  font: inherit;
-  letter-spacing: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
   text-align: left;
   cursor: pointer;
 }

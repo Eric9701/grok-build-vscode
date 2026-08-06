@@ -3441,8 +3441,11 @@
     const q = railFilterText();
     let shownAnything = false;
 
-    // Four groups: PINNED (always open) → RECENT → PROJECTS → ARCHIVED.
+    // Four groups: PINNED (always open) → RECENT → PROJECTS → PROJECT ARCHIVE.
+    // Labels are title-case in the DOM; CSS text-transform: uppercase paints them.
     // PINNED is not collapsible — that is what pinning means.
+    // PROJECT ARCHIVE only mounts when ≥1 project qualifies (put-away or age-quiet);
+    // an empty section is deliberately omitted rather than an always-on empty state.
     const pinned = state.pinnedSessions.filter(
       (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
     );
@@ -3512,13 +3515,13 @@
       shownAnything = true;
     }
 
-    // Archived: put-away + age-quiet projects. Folded by default; search opens it.
+    // Project archive: put-away + age-quiet projects. Folded by default; search opens it.
     const archived = sections.archived.filter((repo) => !q || railRepoHasMatch(repo));
     if (archived.length) {
       const forcedOpen = !!q;
       const open = forcedOpen || !railGroupIsCollapsed("archived");
       root.appendChild(railCollapsibleGroupHead({
-        title: "Archived",
+        title: "Project Archive",
         group: "archived",
         open,
         forcedOpenBySearch: forcedOpen,

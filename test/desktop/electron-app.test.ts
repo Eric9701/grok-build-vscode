@@ -545,6 +545,128 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     // Expanded project uses folder-open (Lucide path starts m6 14…).
     expect(style.twistyHtml).toMatch(/m6 14/);
   });
+
+  it("rail header chrome has brand + toggle above search (not crammed in one row)", async () => {
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
+    const chrome = await page.evaluate(() => {
+      const rail = document.getElementById("projects-rail");
+      if (!rail) return null;
+      const top = rail.querySelector(".rail-top");
+      const brand = rail.querySelector(".rail-brand .wordmark");
+      const toggle = document.getElementById("desk-rail-toggle");
+      const searchWrap = rail.querySelector(".rail-search-wrap");
+      const search = document.getElementById("rail-search");
+      const foot = rail.querySelector(".rail-foot");
+      const themeBtn = document.getElementById("desk-theme-toggle");
+      return {
+        hasTop: !!top,
+        brandText: brand?.textContent?.replace(/\s+/g, " ").trim() || "",
+        toggleInTop: !!(top && toggle && top.contains(toggle)),
+        searchInWrap: !!(searchWrap && search && searchWrap.contains(search)),
+        hasFoot: !!foot,
+        hasTheme: !!themeBtn,
+      };
+    });
+    expect(chrome).toEqual({
+      hasTop: true,
+      brandText: "Grok Build",
+      toggleInTop: true,
+      searchInWrap: true,
+      hasFoot: true,
+      hasTheme: true,
+    });
+  });
+
+  it("theme toggle flips data-theme and persists across reload", async () => {
+    // CSP is nonce-only (no unsafe-eval) — avoid waitForFunction(arg).
+    // Persistence is file-backed via preload grokDesktopTheme (data: disables localStorage).
+    await page.waitForSelector("#desk-theme-toggle", { timeout: 45_000 });
+    const ready = await page.evaluate(() => {
+      const w = window as unknown as {
+        __toggleDesktopTheme?: () => void;
+        grokDesktopTheme?: { get: () => string; set: (t: string) => void };
+      };
+      return {
+        toggle: typeof w.__toggleDesktopTheme === "function",
+        api: typeof w.grokDesktopTheme?.get === "function",
+        btn: !!document.getElementById("desk-theme-toggle"),
+      };
+    });
+    expect(ready.toggle).toBe(true);
+    expect(ready.api).toBe(true);
+    expect(ready.btn).toBe(true);
+
+    const before = await page.evaluate(() =>
+      document.documentElement.getAttribute("data-theme"),
+    );
+    expect(before === "dark" || before === "light").toBe(true);
+    const target = before === "dark" ? "light" : "dark";
+
+    await page.evaluate(() => {
+      const btn = document.getElementById("desk-theme-toggle");
+      if (btn) btn.click();
+      else (window as unknown as { __toggleDesktopTheme: () => void }).__toggleDesktopTheme();
+    });
+
+    const afterClick = await page.evaluate(() => {
+      const w = window as unknown as {
+        grokDesktopTheme?: { get: () => string };
+      };
+      return {
+        theme: document.documentElement.getAttribute("data-theme"),
+        stored: w.grokDesktopTheme?.get() ?? null,
+        bodyLight: document.body.classList.contains("vscode-light"),
+      };
+    });
+    expect(afterClick.theme).toBe(target);
+    expect(afterClick.stored).toBe(target);
+    expect(afterClick.bodyLight).toBe(target === "light");
+
+    // File on disk (userData) must record the choice — survives reload.
+    const themeFile = path.join(userData, "desktop-theme.json");
+    expect(fs.existsSync(themeFile)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(themeFile, "utf8")).theme).toBe(target);
+
+    // Reload the renderer; preference must survive (same userData).
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#input", { timeout: 45_000 });
+    const afterReload = await page.evaluate(() => {
+      const w = window as unknown as {
+        grokDesktopTheme?: { get: () => string };
+      };
+      return {
+        theme: document.documentElement.getAttribute("data-theme"),
+        stored: w.grokDesktopTheme?.get() ?? null,
+        bodyLight: document.body.classList.contains("vscode-light"),
+      };
+    });
+    expect(afterReload.theme).toBe(target);
+    expect(afterReload.stored).toBe(target);
+    expect(afterReload.bodyLight).toBe(target === "light");
+  });
+
+  it("active session row uses selection token grey, not a hardcoded blue", async () => {
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
+    // Ensure at least one session row if the catalog has history; otherwise
+    // assert the CSS variable on :root (the paint path for .rail-session.active).
+    const colors = await page.evaluate(() => {
+      const root = getComputedStyle(document.documentElement);
+      const sel = root.getPropertyValue("--vscode-list-activeSelectionBackground").trim();
+      const active = document.querySelector(".rail-session.active") as HTMLElement | null;
+      const activeBg = active ? getComputedStyle(active).backgroundColor : null;
+      return { sel, activeBg, theme: document.documentElement.getAttribute("data-theme") };
+    });
+    // Dark AFK Pilot grey #37373d → rgb(55, 55, 61); light #e4e6f1 → rgb(228, 230, 241).
+    if (colors.theme === "light") {
+      expect(colors.sel.toLowerCase()).toBe("#e4e6f1");
+    } else {
+      expect(colors.sel.toLowerCase()).toBe("#37373d");
+    }
+    // Must not be Dark+ selection blue (#094771 → rgb(9, 71, 113)).
+    if (colors.activeBg) {
+      expect(colors.activeBg).not.toMatch(/rgb\(\s*9,\s*71,\s*113\s*\)/);
+    }
+  });
 });
 
 /**

@@ -18,6 +18,7 @@ import {
   protocol,
   safeStorage,
   shell,
+  nativeTheme,
   type Menu as ElectronMenu,
   type MenuItemConstructorOptions,
   type ProtocolRequest,
@@ -51,6 +52,13 @@ import {
   installWindowSecurityLocks,
   isTrustedMainFrameIpc,
 } from "./window-security";
+import {
+  parseDesktopTheme,
+  readDesktopThemeFile,
+  resolveDesktopTheme,
+  writeDesktopThemeFile,
+  type DesktopTheme,
+} from "./theme-prefs";
 
 // Electron dies with launch-failed if sandbox is left at the platform default
 // in some setups; we set it explicitly on the BrowserWindow. Also strip the
@@ -369,6 +377,36 @@ async function createApp(): Promise<void> {
     return handles;
   });
 
+  // Theme prefs (sync): data: pages cannot use localStorage; file lives in userData.
+  // Default follows nativeTheme.shouldUseDarkColors (OS preference).
+  const themeUserData = app.getPath("userData");
+  ipcMain.on("desk-theme:get", (event) => {
+    if (!isTrustedMainFrameIpc(event, () => mainWindow)) {
+      event.returnValue = resolveDesktopTheme(undefined, nativeTheme.shouldUseDarkColors);
+      return;
+    }
+    const saved = readDesktopThemeFile(themeUserData);
+    event.returnValue = resolveDesktopTheme(saved, nativeTheme.shouldUseDarkColors);
+  });
+  ipcMain.on("desk-theme:set", (event, raw: unknown) => {
+    if (!isTrustedMainFrameIpc(event, () => mainWindow)) {
+      event.returnValue = false;
+      return;
+    }
+    const theme = parseDesktopTheme(raw) ?? parseDesktopTheme({ theme: raw });
+    if (!theme) {
+      event.returnValue = false;
+      return;
+    }
+    try {
+      writeDesktopThemeFile(themeUserData, theme as DesktopTheme);
+      event.returnValue = true;
+    } catch (e) {
+      log(`theme save failed: ${(e as Error).message}`);
+      event.returnValue = false;
+    }
+  });
+
   // Full product name for About / OS app identity; window title uses short name.
   app.setName(DESKTOP_APP_FULL_NAME);
   Menu.setApplicationMenu(
@@ -392,7 +430,11 @@ async function createApp(): Promise<void> {
     minWidth: 400,
     minHeight: 480,
     title: DESKTOP_APP_SHORT_NAME,
-    backgroundColor: "#252526",
+    // Match AFK Pilot dark page chrome; theme toggle may lighten the document.
+    backgroundColor: "#1a1a1a",
+    // Windows draws a light system menu strip over a dark app otherwise. Hide
+    // it by default; Alt reveals the File/Edit/View/Help menus when needed.
+    autoHideMenuBar: true,
     icon: iconOpt,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),

@@ -791,11 +791,11 @@ describe("projects rail", () => {
       return h;
     }
 
-    it("drops long-idle projects into a folded Archived section", () => {
+    it("drops long-idle projects into a folded Project Archive section", () => {
       const { doc } = bootArchive();
-      // RECENT is present once sessions load; Archived is folded (no list).
+      // RECENT is present once sessions load; Project Archive is folded (no list).
       expect(heads(doc)).toContain("Projects");
-      expect(heads(doc)).toContain("Archived");
+      expect(heads(doc)).toContain("Project Archive");
       expect(heads(doc)).toContain("Recent");
       expect(sectionRepos(doc, "projects")).toEqual(["home", "one", "two", "three"]);
       expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
@@ -803,10 +803,10 @@ describe("projects rail", () => {
       expect(doc.querySelector(".rail-head-count")).toBe(null);
     });
 
-    it("opens and remembers the Archived section", () => {
+    it("opens and remembers the Project Archive section", () => {
       const { doc, window } = bootArchive();
       const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
-        .find((b) => (b.textContent || "").includes("Archived")) as HTMLElement;
+        .find((b) => (b.textContent || "").includes("Project Archive")) as HTMLElement;
       click(window, archivedBtn);
       expect(sectionRepos(doc, "archived")).toEqual(["stale", "ancient"]);
       // Whether it is open is the same kind of answer as a project fold, so it
@@ -844,9 +844,9 @@ describe("projects rail", () => {
       // The three newest besides the one you are in, plus the one you are in.
       expect(sectionRepos(h.doc, "projects")).toEqual(["home", "a", "b", "c"]);
       expect(h.doc.querySelector(".rail-list.rail-archived")).toBe(null);
-      // One age-archived project remains folded under Archived.
+      // One age-archived project remains folded under Project Archive.
       const archivedBtn = [...h.doc.querySelectorAll(".rail-head-btn")]
-        .find((b) => (b.textContent || "").includes("Archived"));
+        .find((b) => (b.textContent || "").includes("Project Archive"));
       expect(archivedBtn).toBeTruthy();
     });
 
@@ -872,7 +872,7 @@ describe("projects rail", () => {
       // No `repoSessions` ever answers — the whole point. Not even the projects
       // past the floor may be archived.
       expect([...h.doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent))
-        .not.toContain("Archived");
+        .not.toContain("Project Archive");
       expect(sectionRepos(h.doc, "projects")).toHaveLength(5);
     });
 
@@ -903,7 +903,7 @@ describe("projects rail", () => {
       const { doc } = bootArchive({ one: { archived: true, archivedAt: Date.now() } });
       expect(sectionRepos(doc, "projects")).toEqual(["home", "two", "three"]);
       expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
-      expect(heads(doc)).toContain("Archived");
+      expect(heads(doc)).toContain("Project Archive");
     });
 
     // The whole reason the choice is a timestamp rather than a flag.
@@ -931,13 +931,13 @@ describe("projects rail", () => {
     it("moves an archived project back from its own menu", () => {
       const { doc, window, posted } = bootArchive();
       const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
-        .find((b) => (b.textContent || "").includes("Archived")) as HTMLElement;
+        .find((b) => (b.textContent || "").includes("Project Archive")) as HTMLElement;
       click(window, archivedBtn);
       const archivedSection = doc.querySelector(".rail-list.rail-archived") as HTMLElement;
       const menu = openMenu(window, archivedSection.querySelector(".rail-repo-head") as HTMLElement);
       // The verb follows the SECTION, not the stored flag: these two were
       // archived by age and carry no flag at all, so reading the flag would
-      // offer "Archive" on a row already sitting under Archived.
+      // offer "Archive" on a row already sitting under Project Archive.
       expect(menuItem(menu, "Archive project")).toBe(undefined);
       click(window, menuItem(menu, "Move to Projects") as HTMLElement);
       expect(posted.filter((p) => p.type === "setRepoArchived")).toEqual([
@@ -947,18 +947,18 @@ describe("projects rail", () => {
 
     // A query answered with "No matches." while the project sits collapsed two
     // inches below is simply wrong.
-    it("reaches into Archived when searching, and opens it", () => {
+    it("reaches into Project Archive when searching, and opens it", () => {
       const { doc, window } = bootArchive();
       const search = doc.getElementById("rail-search") as HTMLInputElement;
       search.value = "ancient";
       search.dispatchEvent(new (window as any).Event("input", { bubbles: true }));
 
-      expect(heads(doc)).toEqual(["Recent", "Archived"]);
+      expect(heads(doc)).toEqual(["Recent", "Project Archive"]);
       expect(sectionRepos(doc, "archived")).toEqual(["ancient"]);
       // …and says why it cannot be folded while the search is holding it open,
       // rather than offering a button whose click the next render undoes.
       const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
-        .find((b) => (b.textContent || "").includes("Archived")) as HTMLButtonElement;
+        .find((b) => (b.textContent || "").includes("Project Archive")) as HTMLButtonElement;
       expect(archivedBtn.disabled).toBe(true);
     });
 
@@ -1041,9 +1041,9 @@ describe("projects rail", () => {
     const pinned = (id: string, cwd: string, name: string, at: number, updatedAt = at) =>
       ({ ...row(id, cwd, name, updatedAt), pinnedAt: at });
 
-    it("renders PINNED, RECENT, PROJECTS, ARCHIVED in that order when all apply", () => {
+    it("renders PINNED, RECENT, PROJECTS, PROJECT ARCHIVE in that order when all apply", () => {
       // Explicit archive (not age): the always-visible floor keeps a lone
-      // idle project in Projects, so age alone cannot produce Archived here.
+      // idle project in Projects, so age alone cannot produce archive here.
       const catalog = [
         { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: Date.now(), archived: false, archivedAt: 0 },
         { cwd: "/work/old", label: "old", available: true, pinned: false, updatedAt: Date.now(), archived: true, archivedAt: Date.now() - 1000 },
@@ -1061,7 +1061,54 @@ describe("projects rail", () => {
       dispatch(h.window, pinnedFrame([pinned("h1", "/work/home", "home one", 50, Date.now())]));
 
       const titles = [...h.doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
-      expect(titles).toEqual(["Pinned", "Recent", "Projects", "Archived"]);
+      expect(titles).toEqual(["Pinned", "Recent", "Projects", "Project Archive"]);
+    });
+
+    it("all group labels use .rail-head and share bold uppercase CSS treatment", async () => {
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: Date.now(), archived: false, archivedAt: 0 },
+        { cwd: "/work/old", label: "old", available: true, pinned: false, updatedAt: Date.now(), archived: true, archivedAt: Date.now() - 1000 },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", Date.now())]));
+      dispatch(h.window, {
+        type: "repoSessions",
+        cwd: "/work/old",
+        entries: [row("o1", "/work/old", "old one", Date.now() - 5000)],
+        dots: {},
+        total: 1,
+      });
+      dispatch(h.window, pinnedFrame([pinned("h1", "/work/home", "home one", 50, Date.now())]));
+
+      const groupHeads = [...h.doc.querySelectorAll(".rail-head")] as HTMLElement[];
+      expect(groupHeads).toHaveLength(4);
+      for (const head of groupHeads) {
+        // Static PINNED is .rail-head alone; the others are .rail-head.rail-head-fold.
+        expect(head.classList.contains("rail-head")).toBe(true);
+        const title = head.querySelector(".rail-head-title") as HTMLElement;
+        expect(title).toBeTruthy();
+        // Applied styles live on the shared class (and .rail-head-title / btn).
+        // happy-dom may not load chat.css, so assert the class contract + source.
+        expect(title.className).toBe("rail-head-title");
+      }
+      // Source-level: chat.css forces uppercase + 700 on every group path.
+      // (happy-dom may not apply the stylesheet; this still fails if the rule is removed.)
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const css = readFileSync(join(__dirname, "..", "media", "chat.css"), "utf8");
+      expect(css).toMatch(/\.rail-head-title\s*\{[^}]*font-weight:\s*700/s);
+      expect(css).toMatch(/\.rail-head-title\s*\{[^}]*text-transform:\s*uppercase/s);
+      expect(css).toMatch(/\.rail-head-btn\s*\{[^}]*font-weight:\s*700/s);
+      expect(css).toMatch(/\.rail-head-btn\s*\{[^}]*text-transform:\s*uppercase/s);
+    });
+
+    it("omits Project Archive when no project is archived (deliberate, not a bug)", () => {
+      // All projects active — no empty archive band.
+      const { doc } = boot();
+      const titles = [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
+      expect(titles).not.toContain("Project Archive");
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
     });
 
     it("PINNED is not collapsible — no head button, no chevron", () => {

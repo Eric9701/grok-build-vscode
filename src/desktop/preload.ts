@@ -80,6 +80,17 @@ contextBridge.exposeInMainWorld("grokDesktopFileTree", {
   },
 });
 
+/**
+ * Theme prefs — sync IPC so the early head boot can paint without flash.
+ * File-backed in userData (localStorage is disabled for data: page loads).
+ */
+contextBridge.exposeInMainWorld("grokDesktopTheme", {
+  get: (): "dark" | "light" => ipcRenderer.sendSync("desk-theme:get") as "dark" | "light",
+  set: (theme: "dark" | "light"): void => {
+    ipcRenderer.sendSync("desk-theme:set", theme);
+  },
+});
+
 // Forward main→renderer posts into the same channel VS Code webviews use.
 ipcRenderer.on("host-to-webview", (_event, message: unknown) => {
   // Prefer a real MessageEvent when the DOM constructor exists (always in Electron preload).
