@@ -449,7 +449,13 @@ async function createApp(): Promise<void> {
     }),
   );
 
-  const iconPath = path.join(extensionRoot, "resources", "grok-icon.png");
+  // Round icon first — same one the installers use, so a dev run and an
+  // installed build look identical in the taskbar and dock. Falls back to the
+  // square marketplace icon if it is somehow missing.
+  const roundIcon = path.join(extensionRoot, "resources", "grok-icon-round-512.png");
+  const iconPath = fs.existsSync(roundIcon)
+    ? roundIcon
+    : path.join(extensionRoot, "resources", "grok-icon.png");
   const iconOpt = fs.existsSync(iconPath) ? iconPath : undefined;
 
   mainWindow = new BrowserWindow({

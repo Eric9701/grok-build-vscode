@@ -42,9 +42,16 @@ artifactName: Grok-Build-Desktop-${version}-${os}-${arch}.${ext}
 # No auto-update publish channel yet (see docs/desktop.md).
 publish: null
 
-# App icon for installers (VS Code marketplace still uses resources/grok-icon.png at 128).
+# App icon for installers. Round, with transparency outside the disc: the square
+# version sat on an opaque white tile, which reads as a sticker on a dark Windows
+# taskbar and does not match how macOS masks dock icons either. A plain
+# transparent background was not an option — the mark itself is dark, so it would
+# vanish in dark mode.
+#
+# NOT resources/grok-icon.png: that one is the VS Code marketplace listing icon
+# and is deliberately left alone.
 # electron-builder requires >=256 for NSIS / macOS targets.
-icon: resources/grok-icon-512.png
+icon: resources/grok-icon-round-512.png
 
 mac:
   category: public.app-category.developer-tools
