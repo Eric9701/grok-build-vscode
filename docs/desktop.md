@@ -83,10 +83,22 @@ On first open of a signed-but-not-notarised download, macOS shows:
 
 > “Grok Build Desktop” cannot be opened because it is from an unidentified developer.
 
-**Workaround for users:**
+**Workaround for users — and NOT "right-click → Open" any more.** macOS 15
+removed that shortcut; the block dialog offers only *Move to Trash* and *Done*.
+The override lives in Settings:
 
-1. Right-click (or Control-click) the app → **Open** → **Open**, or
-2. System Settings → **Privacy & Security** → scroll to the blocked-app message → **Open Anyway**.
+1. Click **Done** on the warning (not *Move to Trash*).
+2. System Settings → **Privacy & Security** → scroll to **Security**.
+3. **Open Anyway** beside the blocked-app message, then authenticate. The button
+   is only offered for about an hour after the blocked launch, so if it is not
+   there, try opening the app again first.
+
+Or clear the quarantine flag and skip the dance:
+`xattr -dr com.apple.quarantine "/Applications/Grok Build Desktop.app"`.
+
+Keep this in step with the same steps on `/desktop` in the relay repo — they are
+the two places a user reads it, and stale unblock instructions read as "you did
+it wrong" rather than "we are out of date".
 
 **The failure mode one step worse than that**, and what 3.2.2 shipped:
 
