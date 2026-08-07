@@ -4307,10 +4307,17 @@
     menuSlot.innerHTML = "";
     if (record) {
       const repo = state.repos.find((r) => sameCwd(r.cwd, cwd)) || { cwd, available: true };
-      const active = record.id === state.activeSessionId && sameCwd(cwd, state.activeRepoCwd);
+      // This menu hangs off the conversation NAME at the top of the panel, so
+      // its record is the conversation you are in, by construction. Deriving
+      // "active" by comparing ids was redundant here and quietly wrong: a
+      // session whose id the host has not assigned yet compares false, and the
+      // whole Session group — Continue in a new chat, worktree apply/remove —
+      // vanished from the one menu where it always applies. The row menus below
+      // still compute it, because there the record really can be some other
+      // conversation.
       menuSlot.appendChild(railMenuButton(
         "Session actions",
-        () => railSessionMenuItems(record, repo, active, { inlineRename: true }),
+        () => railSessionMenuItems(record, repo, true, { inlineRename: true }),
       ));
     }
 

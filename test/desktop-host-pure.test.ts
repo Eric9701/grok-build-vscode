@@ -1746,12 +1746,30 @@ describe("desktop openFile / openUrl policy (A1)", () => {
     // Must run before the OS open, not only document in comments.
     const openHandler = ipcSrc.indexOf("ipcMain.handle(CH_OPEN");
     expect(openHandler).toBeGreaterThan(0);
-    const openBody = ipcSrc.slice(openHandler, ipcSrc.indexOf("ipcMain.handle(CH_READ", openHandler));
-    const refuse = openBody.indexOf("isExecutableOpenTarget(resolved.absPath)");
+    const openBody = ipcSrc.slice(openHandler, ipcSrc.indexOf("ipcMain.handle(CH_REVEAL", openHandler));
+    // The refusal must sit on the RE-RESOLVED path and run before the OS call:
+    // checking the path resolved earlier would leave the window a symlink swap
+    // needs. Asserted per-handler rather than "somewhere in the file", because
+    // a shared validator that one handler forgets to call is exactly the shape
+    // this is guarding against.
+    const refuse = openBody.indexOf("isExecutableOpenTarget(finalCheck.absPath)");
     const openCall = openBody.indexOf("await shell.openPath(");
     expect(refuse).toBeGreaterThan(0);
     expect(openCall).toBeGreaterThan(0);
     expect(refuse).toBeLessThan(openCall);
+
+    // Reveal is weaker than open — it does not launch anything — but it still
+    // confirms a file's existence and location to whoever asked, so it gets the
+    // same gate rather than a shorter one.
+    const revealHandler = ipcSrc.indexOf("ipcMain.handle(CH_REVEAL");
+    expect(revealHandler).toBeGreaterThan(0);
+    const revealBody = ipcSrc.slice(revealHandler, ipcSrc.indexOf("ipcMain.handle(CH_READ", revealHandler));
+    const revealRefuse = revealBody.indexOf("isExecutableOpenTarget(finalCheck.absPath)");
+    const revealCall = revealBody.indexOf("shell.showItemInFolder(");
+    expect(revealRefuse).toBeGreaterThan(0);
+    expect(revealCall).toBeGreaterThan(0);
+    expect(revealRefuse).toBeLessThan(revealCall);
+    expect(revealBody).toContain("isIpcFromMainWindow");
   });
 });
 

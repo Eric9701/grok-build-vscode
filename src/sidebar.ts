@@ -10239,6 +10239,7 @@ ${openMain}
       <button id="session-name-label" class="session-name-label" type="button"></button>
       <button id="session-name-edit" class="session-name-edit icon-btn" type="button" hidden></button>
     </div>
+    ${this.host.canSwitchWorkspaceFolder ? `<div id="session-head-actions"></div>` : ""}
     <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>
     <button id="remote-btn" class="icon-btn remote-btn" title="Continue remotely" hidden></button>
     <button id="history-btn" class="icon-btn" title="Session history"></button>

@@ -472,10 +472,41 @@ body.rail-resizing * {
   padding-left: 14px;
   border-radius: 4px;
 }
-.rail-repo:hover .rail-repo-actions,
-.rail-repo:focus-within .rail-repo-actions,
+/* The HEAD, not the whole group. `.rail-repo` contains the session list, so
+   hovering any session inside it also revealed the project's + and ⋯ — two sets
+   of controls lighting up for one pointer, and the ones under the cursor were
+   not the ones that appeared. */
+.rail-repo-head:hover .rail-repo-actions,
+.rail-repo-head:focus-within .rail-repo-actions,
 .rail-session:hover .rail-session-actions,
 .rail-session:focus-within .rail-session-actions { opacity: 1; pointer-events: auto; }
+
+/* The scrim exists to make the icons sit on the row's own surface rather than a
+   second chip floating over it — so it has to follow whichever surface the row
+   is actually painting. It was pinned to the hover colour, which is wrong on a
+   SELECTED row: that row paints list-activeSelectionBackground, and the actions
+   patched hover-grey over it. */
+.rail-session.active .rail-session-actions {
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--vscode-list-activeSelectionBackground) 28%
+  );
+}
+/* The conversation's own overflow menu, beside its name in the top bar. Only
+   rail hosts render the slot: VS Code has no session header, so its gear still
+   carries the Session group and a second copy here would offer Continue in a
+   new chat twice. The trailing border separates it from the panel toggles that
+   follow -- acting on this conversation and showing/hiding a panel are
+   different jobs, and they were reading as one undifferentiated run of icons. */
+#session-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-right: 6px;
+  padding-right: 6px;
+  border-right: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.35));
+}
 .rail-action-btn { width: 25px; height: 27px; }
 .rail-action-btn svg { width: 13px; height: 13px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; }

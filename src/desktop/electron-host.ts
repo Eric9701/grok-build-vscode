@@ -11,6 +11,7 @@
  * Device credentials: never stored by this module (see main.ts + safe-secrets).
  */
 import {
+  app,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -753,11 +754,42 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
       return true;
     },
 
-    async openSettings(section?: string) {
-      const msg = section
-        ? `Settings UI is not available yet.\n\nEdit config.json in the app data folder (key: ${section}).`
-        : "Settings UI is not available yet.\n\nEdit config.json in the app data folder.";
-      await messageBox(getWindow, "info", msg, ["OK"]);
+    async openSettings(_section?: string) {
+      // No settings UI on the desktop yet — everything a VS Code user adjusts in
+      // the Settings editor lives in this one JSON file. This used to pop a
+      // dialog saying exactly that and then leave you to find the file, which is
+      // worse than having no menu item: it names the solution and withholds it.
+      // Open the file. Raw, but it works, and a real panel can replace it later
+      // without the entry point moving.
+      const configPath = path.join(app.getPath("userData"), "config.json");
+      try {
+        if (!fs.existsSync(configPath)) {
+          // Not written until something is changed, and openPath on a missing
+          // file fails with an unhelpful message. Seed valid JSON so the editor
+          // opens on an empty object rather than nothing.
+          fs.mkdirSync(path.dirname(configPath), { recursive: true });
+          fs.writeFileSync(configPath, "{}\n", "utf8");
+        }
+      } catch (e) {
+        await messageBox(
+          getWindow,
+          "warning",
+          `Could not create the settings file.\n\n${configPath}\n\n${(e as Error).message}`,
+          ["OK"],
+        );
+        return;
+      }
+      const err = await shell.openPath(configPath);
+      if (err) {
+        // Usually no handler registered for .json. The path is the only
+        // actionable thing left to give them.
+        await messageBox(
+          getWindow,
+          "info",
+          `Settings are stored in this file:\n\n${configPath}\n\nOpen it in any text editor.`,
+          ["OK"],
+        );
+      }
     },
 
     async linkRemote() {

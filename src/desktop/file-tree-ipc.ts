@@ -21,6 +21,7 @@ import { isTrustedMainFrameIpc } from "./window-security";
 
 const CH_LIST = "desk-ft:list";
 const CH_OPEN = "desk-ft:open";
+const CH_REVEAL = "desk-ft:reveal";
 const CH_READ = "desk-ft:read";
 const CH_SAVE = "desk-ft:save";
 const CH_ROOT = "desk-ft:root";
@@ -37,6 +38,11 @@ export interface FileTreeIpcOptions {
    * path would leak across project switches.
    */
   openSinkPath?: string;
+  /**
+   * When set (tests), reveal writes the absolute path as a line instead of
+   * calling showItemInFolder — same e2e rationale as openSinkPath.
+   */
+  revealSinkPath?: string;
 }
 
 let handlersRegistered = false;
@@ -51,6 +57,54 @@ export function isIpcFromMainWindow(
   getMainWindow: () => BrowserWindow | null,
 ): boolean {
   return isTrustedMainFrameIpc(event, getMainWindow);
+}
+
+/**
+ * Shared containment + policy gate for open and reveal.
+ *
+ * Order is load-bearing and identical for both channels:
+ * invalid path → resolve → re-resolve → isFile → executable refuse.
+ * Callers that invoke the OS must still re-resolve immediately before use.
+ */
+export function resolveTreeOpenTarget(
+  root: string,
+  relPath: unknown,
+  log?: (line: string) => void,
+  logVerb: "open" | "reveal" = "open",
+): { ok: true; absPath: string } | { ok: false; error: string } {
+  if (typeof relPath !== "string") {
+    return { ok: false, error: "invalid path" };
+  }
+  // Validate, then re-resolve immediately before use (cheap TOCTOU close:
+  // a same-user process could swap a link between the two checks).
+  const first = resolveTreePath(root, relPath);
+  if (!first.ok) {
+    log?.(`[desk-ft] ${logVerb} rejected: ${first.reason} (${relPath})`);
+    return { ok: false, error: first.reason };
+  }
+  const resolved = resolveTreePath(root, relPath);
+  if (!resolved.ok) {
+    log?.(`[desk-ft] ${logVerb} rejected on re-check: ${resolved.reason} (${relPath})`);
+    return { ok: false, error: resolved.reason };
+  }
+  // Open/reveal files only — directories stay expand-only in the panel.
+  // resolveTreePath already refused outbound symlinks/junctions; use the
+  // path the user sees (link path when it is an in-tree link).
+  try {
+    const st = fs.statSync(resolved.absPath);
+    if (!st.isFile()) {
+      return { ok: false, error: "not a file" };
+    }
+  } catch {
+    return { ok: false, error: "not found" };
+  }
+  // Same executable refusal as chat openFile (desktop-policy): extension,
+  // symlink target, launcher format, and POSIX +x on the canonical file.
+  if (isExecutableOpenTarget(resolved.absPath)) {
+    log?.(`[desk-ft] ${logVerb} rejected: executable path refused (${relPath})`);
+    return { ok: false, error: "executable path refused" };
+  }
+  return { ok: true, absPath: resolved.absPath };
 }
 
 /** Register invoke handlers once per process. */
@@ -89,53 +143,23 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_OPEN);
     const root = opts.getWorkspaceRoot();
     if (!root) return { ok: false as const, error: "no workspace root" };
-    if (typeof relPath !== "string") {
-      return { ok: false as const, error: "invalid path" };
-    }
-    // Validate, then re-resolve immediately before use (cheap TOCTOU close:
-    // a same-user process could swap a link between the two checks).
-    const first = resolveTreePath(root, relPath);
-    if (!first.ok) {
-      opts.log(`[desk-ft] open rejected: ${first.reason} (${relPath})`);
-      return { ok: false as const, error: first.reason };
-    }
-    const resolved = resolveTreePath(root, relPath);
-    if (!resolved.ok) {
-      opts.log(`[desk-ft] open rejected on re-check: ${resolved.reason} (${relPath})`);
-      return { ok: false as const, error: resolved.reason };
-    }
-    // Open files only — directories stay expand-only in the panel.
-    // resolveTreePath already refused outbound symlinks/junctions; open the
-    // path the user sees (link path when it is an in-tree link).
-    try {
-      const st = fs.statSync(resolved.absPath);
-      if (!st.isFile()) {
-        return { ok: false as const, error: "not a file" };
-      }
-    } catch {
-      return { ok: false as const, error: "not found" };
-    }
-    // Same executable refusal as chat openFile (desktop-policy): extension,
-    // symlink target, launcher format, and POSIX +x on the canonical file.
-    if (isExecutableOpenTarget(resolved.absPath)) {
-      opts.log(`[desk-ft] open rejected: executable path refused (${relPath})`);
-      return { ok: false as const, error: "executable path refused" };
-    }
+    const target = resolveTreeOpenTarget(root, relPath, opts.log, "open");
+    if (!target.ok) return { ok: false as const, error: target.error };
 
     const sink = opts.openSinkPath || process.env.GROK_DESKTOP_OPEN_SINK;
     if (sink) {
       try {
-        fs.appendFileSync(sink, resolved.absPath + "\n", "utf8");
+        fs.appendFileSync(sink, target.absPath + "\n", "utf8");
       } catch (err) {
         opts.log(`[desk-ft] open sink write failed: ${(err as Error).message}`);
         return { ok: false as const, error: "sink write failed" };
       }
-      return { ok: true as const, path: resolved.absPath, sink: true as const };
+      return { ok: true as const, path: target.absPath, sink: true as const };
     }
 
     // Final containment + executable re-check immediately before the OS open.
-    const finalCheck = resolveTreePath(root, relPath);
-    if (!finalCheck.ok || finalCheck.absPath !== resolved.absPath) {
+    const finalCheck = resolveTreePath(root, relPath as string);
+    if (!finalCheck.ok || finalCheck.absPath !== target.absPath) {
       opts.log(`[desk-ft] open rejected at use-time re-resolve (${relPath})`);
       return { ok: false as const, error: "path escaped workspace" };
     }
@@ -149,6 +173,49 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     if (!result.ok) {
       opts.log(`[desk-ft] openPath failed: ${result.error}`);
       return { ok: false as const, error: result.error };
+    }
+    return { ok: true as const, path: finalCheck.absPath };
+  });
+
+  /**
+   * Reveal a workspace file in the OS file manager (Finder / Explorer / …).
+   * Same trust gates as open — revealing confirms existence + location.
+   */
+  ipcMain.handle(CH_REVEAL, (e, relPath: unknown) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_REVEAL);
+    const root = opts.getWorkspaceRoot();
+    if (!root) return { ok: false as const, error: "no workspace root" };
+    const target = resolveTreeOpenTarget(root, relPath, opts.log, "reveal");
+    if (!target.ok) return { ok: false as const, error: target.error };
+
+    const sink = opts.revealSinkPath || process.env.GROK_DESKTOP_REVEAL_SINK;
+    if (sink) {
+      try {
+        fs.appendFileSync(sink, target.absPath + "\n", "utf8");
+      } catch (err) {
+        opts.log(`[desk-ft] reveal sink write failed: ${(err as Error).message}`);
+        return { ok: false as const, error: "sink write failed" };
+      }
+      return { ok: true as const, path: target.absPath, sink: true as const };
+    }
+
+    // Final containment + executable re-check immediately before the OS reveal.
+    const finalCheck = resolveTreePath(root, relPath as string);
+    if (!finalCheck.ok || finalCheck.absPath !== target.absPath) {
+      opts.log(`[desk-ft] reveal rejected at use-time re-resolve (${relPath})`);
+      return { ok: false as const, error: "path escaped workspace" };
+    }
+    if (isExecutableOpenTarget(finalCheck.absPath)) {
+      opts.log(`[desk-ft] reveal rejected at use-time: executable (${relPath})`);
+      return { ok: false as const, error: "executable path refused" };
+    }
+
+    try {
+      shell.showItemInFolder(finalCheck.absPath);
+    } catch (err) {
+      const msg = (err as Error).message || String(err);
+      opts.log(`[desk-ft] showItemInFolder failed: ${msg}`);
+      return { ok: false as const, error: msg };
     }
     return { ok: true as const, path: finalCheck.absPath };
   });
@@ -233,7 +300,7 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
 
 export function unregisterFileTreeIpc(): void {
   if (!handlersRegistered) return;
-  for (const ch of [CH_LIST, CH_OPEN, CH_READ, CH_SAVE, CH_ROOT]) {
+  for (const ch of [CH_LIST, CH_OPEN, CH_REVEAL, CH_READ, CH_SAVE, CH_ROOT]) {
     ipcMain.removeHandler(ch);
   }
   if (closeBoundWindow && closeBoundHandler) {

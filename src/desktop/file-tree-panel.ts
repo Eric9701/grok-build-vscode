@@ -5,16 +5,58 @@
  * Layout:
  *   - Full-width `.top-bar` stays outside the chat/file shell (edge-to-edge).
  *   - Panel toggle lives in the top bar (right end); closed = panel takes no space.
- *   - Opening a file replaces the tree with a viewer + breadcrumb; editing is
- *     opt-in and text-only.
+ *   - Opening files replaces the tree with a tabbed viewer; editing is
+ *     opt-in and text-only. Multiple files can be open at once (one tab each).
  *
  * Class prefix `desk-ft-` keeps styles from colliding with chat.css.
  * Runs via webContents.executeJavaScript (bypasses CSP nonce) after each
  * HTML load so renderer reloads re-mount the panel.
  *
  * File-type glyphs: Seti UI (MIT) via {@link buildFileIconDataUrlMap}.
+ *
+ * Pure helpers below (`anyTabDirty`, `revertTabEdits`, `revealInFolderLabel`,
+ * `tabFileName`) are unit-tested; keep them free of DOM / Electron.
  */
 import { buildFileIconDataUrlMap, fileIconId, monochromeIconIds } from "./file-icons";
+
+/** Minimal open-tab fields the pure helpers need. */
+export interface DeskFtTabLike {
+  dirty: boolean;
+  text: string;
+  originalText: string;
+}
+
+/** True when any open tab has unsaved edits (window-close / leave gate). */
+export function anyTabDirty(tabs: Iterable<DeskFtTabLike>): boolean {
+  for (const t of tabs) {
+    if (t.dirty) return true;
+  }
+  return false;
+}
+
+/**
+ * Restore a tab's editor text to the last loaded/saved snapshot and clear dirty.
+ * Mutates and returns the same object (panel boot script style).
+ */
+export function revertTabEdits<T extends DeskFtTabLike>(tab: T): T {
+  tab.text = tab.originalText;
+  tab.dirty = false;
+  return tab;
+}
+
+/** OS-local label for "reveal this file in the system file manager". */
+export function revealInFolderLabel(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") return "Reveal in Finder";
+  if (platform === "win32") return "Reveal in Explorer";
+  return "Show in file manager";
+}
+
+/** Basename for a tab label (posix + win separators). */
+export function tabFileName(relPath: string): string {
+  const norm = String(relPath || "").replace(/\\/g, "/");
+  const parts = norm.split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1]! : norm || "untitled";
+}
 
 /** Styles scoped under `.desk-ft-*` — never bare element rules that could hit chat.
  *  Row rhythm reuses the rail CSS custom properties defined on `body` in chat.css
@@ -104,6 +146,9 @@ body.desk-ft-closed .desk-ft-resizer {
   line-height: var(--rail-row-line-height, 1.5);
   z-index: 20;
   overflow: hidden;
+  /* Action labels respond to PANEL width (resizable), not the window. */
+  container-type: inline-size;
+  container-name: desk-ft;
 }
 /* The border between chat column and file panel IS the drag handle: it
    occupies exactly the 1px a divider would, has no fill of its own, and only
@@ -148,15 +193,18 @@ body.desk-ft-resizing * {
 .desk-ft-header {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 6px;
+  gap: 0;
+  padding: 0;
   border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
   flex-shrink: 0;
   min-height: var(--rail-row-min-height, 30px);
   box-sizing: border-box;
+  overflow: hidden;
 }
+/* Project name at the left of the tab strip — not a tab; click → tree. */
 .desk-ft-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  max-width: 40%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -166,6 +214,117 @@ body.desk-ft-resizing * {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--vscode-descriptionForeground, #9d9d9d);
+  padding: 4px 8px;
+  margin: 0;
+  border: none;
+  border-right: 1px solid var(--vscode-editorWidget-border, #454545);
+  background: transparent;
+  font-family: inherit;
+  line-height: var(--rail-row-line-height, 1.5);
+  cursor: default;
+  text-align: left;
+  box-sizing: border-box;
+}
+button.desk-ft-title {
+  cursor: pointer;
+}
+button.desk-ft-title:hover {
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.06));
+}
+button.desk-ft-title:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+}
+.desk-ft-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.desk-ft-tab {
+  flex: 0 1 auto;
+  max-width: 160px;
+  min-width: 56px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  border: none;
+  border-right: 1px solid var(--vscode-editorWidget-border, #454545);
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  box-sizing: border-box;
+  position: relative;
+}
+.desk-ft-tab:hover {
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.06));
+}
+/* Selected tab must read as selected at a glance — not only a border tint. */
+.desk-ft-tab.desk-ft-tab-active {
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-tab-activeBackground, var(--vscode-editor-background, #1e1e1e));
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--vscode-focusBorder, #007fd4);
+}
+.desk-ft-tab:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
+  z-index: 1;
+}
+.desk-ft-tab-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.desk-ft-tab-dirty {
+  flex: 0 0 auto;
+  width: 8px;
+  color: var(--vscode-charts-yellow, #cca700);
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+}
+.desk-ft-tab-dirty:empty {
+  display: none;
+}
+.desk-ft-tab-close {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  font: inherit;
+  line-height: 1;
+}
+.desk-ft-tab-close:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.12));
+  color: var(--vscode-foreground, #ccc);
+}
+.desk-ft-tab-close svg {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
 .desk-ft-filter {
   margin: 6px 6px 0;
@@ -464,27 +623,81 @@ body.desk-ft-viewing .desk-ft-viewer {
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: 1px;
 }
-/* External-open affordance while a file is previewed in-panel. */
-.desk-ft-open-ext {
+/* Overflow (⋯) host for Open / Reveal — stays icon-only. */
+.desk-ft-overflow {
   flex: 0 0 auto;
   margin-left: auto;
+  position: relative;
+  display: inline-flex;
+}
+.desk-ft-overflow-btn {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 26px;
   height: 24px;
   padding: 0;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   cursor: pointer;
   font: inherit;
 }
-.desk-ft-open-ext svg { display: block; }
-.desk-ft-open-ext:hover {
+.desk-ft-overflow-btn svg { display: block; }
+.desk-ft-overflow-btn:hover,
+.desk-ft-overflow-btn[aria-expanded="true"] {
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
+.desk-ft-overflow-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 40;
+  min-width: 200px;
+  padding: 4px;
+  margin: 0;
+  list-style: none;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+}
+.desk-ft-overflow-menu.desk-ft-open {
+  display: block;
+}
+.desk-ft-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  box-sizing: border-box;
+}
+.desk-ft-overflow-item svg {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  display: block;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+.desk-ft-overflow-item:hover {
+  background: var(--vscode-list-hoverBackground, #2a2d2e);
+}
+.desk-ft-overflow-item:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: -1px;
 }
 .desk-ft-crumb-seg {
   border: none;
@@ -511,30 +724,40 @@ body.desk-ft-viewing .desk-ft-viewer {
   opacity: 0.6;
   user-select: none;
 }
-.desk-ft-dirty-dot {
-  color: var(--vscode-charts-yellow, #cca700);
-  font-size: 16px;
-  line-height: 0;
-  margin-left: 2px;
-}
 .desk-ft-viewer-action {
-  /* Icon-only: a square target rather than text padding, so the four actions
-     read as one control group instead of four differently-sized chips. */
+  /* Icon + optional label; narrow panel drops the label via container query. */
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
+  gap: 4px;
+  min-width: 26px;
   height: 24px;
-  padding: 0;
+  padding: 0 6px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   cursor: pointer;
   font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
 }
-.desk-ft-viewer-action svg { display: block; }
+.desk-ft-viewer-action svg { display: block; flex-shrink: 0; }
+.desk-ft-action-label {
+  display: none;
+  line-height: 1;
+}
+/* Labels when the panel is wide enough — panel width, not window width. */
+@container desk-ft (min-width: 340px) {
+  .desk-ft-viewer-action .desk-ft-action-label {
+    display: inline;
+  }
+  .desk-ft-viewer-action {
+    padding: 0 8px;
+  }
+}
 .desk-ft-viewer-action:hover:not(:disabled) {
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
@@ -551,7 +774,7 @@ body.desk-ft-viewing .desk-ft-viewer {
   border-color: var(--vscode-editorWidget-border, #454545);
 }
 .desk-ft-viewer-action:focus-visible,
-.desk-ft-open-ext:focus-visible {
+.desk-ft-overflow-btn:focus-visible {
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: 1px;
 }
@@ -694,6 +917,8 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   // Compact extension → Seti id table for the renderer (mirrors fileIconId).
   // Keep in sync with src/desktop/file-icons.ts fileIconId().
   const iconIdFn = fileIconId.toString();
+  // Platform-local "Reveal in …" wording baked at inject time (no process in renderer).
+  const revealLabel = revealInFolderLabel();
   return `(() => {
   // Lucide (ISC), inlined rather than fetched: the panel is injected into an
   // already-loaded document and must not depend on another network or disk read
@@ -712,10 +937,23 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     // save
     save:
       '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg>',
+    // rotate-ccw — cancel / discard edits
+    cancel:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
     // app-window
     openExternal:
       '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>',
+    // folder-open — reveal in file manager
+    reveal:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>',
+    // ellipsis
+    more:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>',
+    // x — tab close
+    close:
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
   };
+  const REVEAL_LABEL = ${JSON.stringify(revealLabel)};
 
   const api = window.grokDesktopFileTree;
   if (!api || typeof api.list !== "function") return { ok: false, reason: "no bridge" };
@@ -799,12 +1037,23 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   const header = document.createElement("div");
   header.className = "desk-ft-header";
 
-  const title = document.createElement("div");
+  // Project name is NOT a tab — click returns to the tree (keeps open tabs).
+  const title = document.createElement("button");
+  title.type = "button";
   title.className = "desk-ft-title";
   title.id = "desk-ft-title";
   title.textContent = "Files";
+  title.title = "Show file tree";
+  title.setAttribute("aria-label", "Show file tree");
+
+  const tabsEl = document.createElement("div");
+  tabsEl.className = "desk-ft-tabs";
+  tabsEl.id = "desk-ft-tabs";
+  tabsEl.setAttribute("role", "tablist");
+  tabsEl.setAttribute("aria-label", "Open files");
 
   header.appendChild(title);
+  header.appendChild(tabsEl);
 
   const filter = document.createElement("input");
   filter.type = "search";
@@ -885,9 +1134,29 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   }
 
   let rootLabel = "Files";
-  let viewRelPath = null; // null = tree mode
-  let currentFile = null;
+  let viewRelPath = null; // null = tree mode (viewer hidden)
+  // Open files keyed by relPath; stamp/dirty/originalText are per tab.
+  const openTabs = new Map();
+  let activeRelPath = null;
   let confirmSeq = 0;
+  let tabOrder = [];
+
+  function currentFile() {
+    return activeRelPath ? openTabs.get(activeRelPath) || null : null;
+  }
+
+  function tabFileName(relPath) {
+    const norm = String(relPath || "").replace(/\\\\/g, "/");
+    const parts = norm.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : norm || "untitled";
+  }
+
+  function anyDirty() {
+    for (const t of openTabs.values()) {
+      if (t.dirty) return true;
+    }
+    return false;
+  }
 
   function clampPanelWidth(px) {
     const shellW = shell.getBoundingClientRect().width || window.innerWidth || 800;
@@ -979,8 +1248,11 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     });
   }
 
+  title.addEventListener("click", () => { void showTree(); });
+
   panel.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && currentFile && currentFile.editing) {
+    const file = currentFile();
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && file && file.editing) {
       event.preventDefault();
       event.stopPropagation();
       void saveFile();
@@ -1259,18 +1531,27 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   }
 
   function dirtyNow() {
-    return !!(currentFile && currentFile.dirty);
+    const file = currentFile();
+    return !!(file && file.dirty);
   }
 
   function updateDirtyUi() {
-    const dot = crumb.querySelector(".desk-ft-dirty-dot");
-    if (dot) dot.textContent = dirtyNow() ? "•" : "";
+    // In-place dirty dots — do not rebuild tabs on every keystroke.
+    for (const tab of tabsEl.querySelectorAll(".desk-ft-tab")) {
+      const rel = tab.getAttribute("data-rel");
+      const file = rel ? openTabs.get(rel) : null;
+      const dirty = tab.querySelector(".desk-ft-tab-dirty");
+      if (dirty) dirty.textContent = file && file.dirty ? "•" : "";
+    }
     const save = crumb.querySelector(".desk-ft-save");
     if (save) save.disabled = !dirtyNow();
+    const cancel = crumb.querySelector(".desk-ft-cancel");
+    if (cancel) cancel.hidden = !dirtyNow();
   }
 
   async function confirmLeaveDirty() {
-    if (!dirtyNow()) return true;
+    // Window close / panel hide / project rebind: any dirty tab blocks.
+    if (!anyDirty()) return true;
     return askConfirm({
       title: "Discard changes?",
       body: "Your edits have not been saved.",
@@ -1279,16 +1560,143 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     });
   }
 
+  async function confirmDiscardTab(file) {
+    if (!file || !file.dirty) return true;
+    return askConfirm({
+      title: "Discard changes?",
+      body: "Your edits have not been saved.",
+      confirmLabel: "Discard",
+      danger: true,
+    });
+  }
+
+  // Main process close hook: dirty if ANY tab has unsaved work.
   window.__grokDeskFtBeforeClose = () => confirmLeaveDirty();
 
+  function renderTabs() {
+    tabsEl.textContent = "";
+    for (const rel of tabOrder) {
+      const file = openTabs.get(rel);
+      if (!file) continue;
+      const tab = document.createElement("div");
+      tab.className = "desk-ft-tab" + (rel === activeRelPath && viewRelPath ? " desk-ft-tab-active" : "");
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", rel === activeRelPath && !!viewRelPath ? "true" : "false");
+      tab.setAttribute("data-rel", rel);
+      tab.title = rel;
+      tab.tabIndex = 0;
+
+      const name = document.createElement("span");
+      name.className = "desk-ft-tab-name";
+      name.textContent = tabFileName(rel);
+
+      const dirty = document.createElement("span");
+      dirty.className = "desk-ft-tab-dirty";
+      dirty.setAttribute("aria-label", "Unsaved changes");
+      dirty.textContent = file.dirty ? "•" : "";
+
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "desk-ft-tab-close";
+      close.innerHTML = FT_ICON.close;
+      close.title = "Close";
+      close.setAttribute("aria-label", "Close " + tabFileName(rel));
+      close.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void closeTab(rel);
+      });
+
+      tab.appendChild(name);
+      tab.appendChild(dirty);
+      tab.appendChild(close);
+      tab.addEventListener("click", () => { void activateTab(rel); });
+      tab.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          void activateTab(rel);
+        }
+      });
+      tabsEl.appendChild(tab);
+    }
+  }
+
+  async function activateTab(relPath) {
+    if (!openTabs.has(relPath)) return false;
+    // Flush editor text into the outgoing tab before switching.
+    syncEditorIntoActive();
+    activeRelPath = relPath;
+    viewRelPath = relPath;
+    document.body.classList.add("desk-ft-viewing");
+    applyOpen(true);
+    setViewerNotice("");
+    renderCrumb(relPath);
+    renderViewerBody();
+    renderTabs();
+    return true;
+  }
+
+  function syncEditorIntoActive() {
+    const file = currentFile();
+    if (!file) return;
+    const editor = viewerBody.querySelector(".desk-ft-editor");
+    if (editor) {
+      file.text = editor.value;
+      file.dirty = editor.value !== file.originalText;
+    }
+  }
+
+  async function closeTab(relPath) {
+    const file = openTabs.get(relPath);
+    if (!file) return false;
+    if (relPath === activeRelPath) syncEditorIntoActive();
+    if (!(await confirmDiscardTab(openTabs.get(relPath)))) return false;
+    openTabs.delete(relPath);
+    tabOrder = tabOrder.filter((r) => r !== relPath);
+    if (activeRelPath === relPath) {
+      activeRelPath = tabOrder.length ? tabOrder[tabOrder.length - 1] : null;
+      if (activeRelPath) {
+        viewRelPath = activeRelPath;
+        setViewerNotice("");
+        renderCrumb(activeRelPath);
+        renderViewerBody();
+        renderTabs();
+      } else {
+        viewRelPath = null;
+        document.body.classList.remove("desk-ft-viewing");
+        viewerBody.textContent = "";
+        viewerNotice.textContent = "";
+        crumb.textContent = "";
+        renderTabs();
+      }
+    } else {
+      renderTabs();
+    }
+    return true;
+  }
+
   async function showTree() {
-    if (!(await confirmLeaveDirty())) return false;
-    currentFile = null;
+    // Return to tree without closing tabs — nothing discarded, no confirm.
+    syncEditorIntoActive();
     viewRelPath = null;
     document.body.classList.remove("desk-ft-viewing");
     viewerBody.textContent = "";
     viewerNotice.textContent = "";
     crumb.textContent = "";
+    renderTabs();
+    return true;
+  }
+
+  async function clearAllTabs() {
+    if (!(await confirmLeaveDirty())) return false;
+    openTabs.clear();
+    tabOrder = [];
+    activeRelPath = null;
+    viewRelPath = null;
+    document.body.classList.remove("desk-ft-viewing");
+    viewerBody.textContent = "";
+    viewerNotice.textContent = "";
+    crumb.textContent = "";
+    renderTabs();
     return true;
   }
 
@@ -1298,36 +1706,38 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
 
   function editorValue() {
     const editor = viewerBody.querySelector(".desk-ft-editor");
-    return editor ? editor.value : (currentFile ? currentFile.text : "");
+    const file = currentFile();
+    return editor ? editor.value : (file ? file.text : "");
   }
 
   function renderViewerBody() {
-    if (!currentFile) return;
+    const file = currentFile();
+    if (!file) return;
     viewerBody.textContent = "";
-    const source = editorValue();
-    if (currentFile.kind === "image" && currentFile.dataUrl) {
+    const source = file.text;
+    if (file.kind === "image" && file.dataUrl) {
       const img = document.createElement("img");
-      img.src = currentFile.dataUrl;
-      img.alt = currentFile.relPath;
+      img.src = file.dataUrl;
+      img.alt = file.relPath;
       viewerBody.appendChild(img);
       return;
     }
-    const code = currentFile.kind === "markdown" ? currentFile.mode === "code" : currentFile.editing;
+    const code = file.kind === "markdown" ? file.mode === "code" : file.editing;
     if (code) {
       const editor = document.createElement("textarea");
       editor.className = "desk-ft-editor";
       editor.value = source;
       editor.spellcheck = false;
-      editor.setAttribute("aria-label", "Edit " + currentFile.relPath);
+      editor.setAttribute("aria-label", "Edit " + file.relPath);
       editor.addEventListener("input", () => {
-        currentFile.text = editor.value;
-        currentFile.dirty = editor.value !== currentFile.originalText;
+        file.text = editor.value;
+        file.dirty = editor.value !== file.originalText;
         updateDirtyUi();
       });
       viewerBody.appendChild(editor);
       return;
     }
-    if (currentFile.kind === "markdown" && currentFile.mode === "preview") {
+    if (file.kind === "markdown" && file.mode === "preview") {
       const wrap = document.createElement("div");
       wrap.className = "desk-ft-md";
       wrap.innerHTML = renderMarkdown(source);
@@ -1340,20 +1750,49 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   }
 
   function setViewerMode(mode, editing) {
-    if (!currentFile) return;
-    currentFile.mode = mode;
-    currentFile.editing = !!editing;
-    renderCrumb(currentFile.relPath);
+    const file = currentFile();
+    if (!file) return;
+    syncEditorIntoActive();
+    file.mode = mode;
+    file.editing = !!editing;
+    renderCrumb(file.relPath);
     renderViewerBody();
     updateDirtyUi();
-    if (currentFile.editing) {
+    if (file.editing) {
       const editor = viewerBody.querySelector(".desk-ft-editor");
       if (editor) editor.focus();
     }
   }
 
+  async function cancelChanges() {
+    const file = currentFile();
+    if (!file || !file.dirty) return false;
+    const ok = await askConfirm({
+      title: "Cancel changes?",
+      body: "This discards your unsaved edits and restores the last loaded version.",
+      confirmLabel: "Discard",
+      danger: true,
+    });
+    if (!ok) return false;
+    file.text = file.originalText;
+    file.dirty = false;
+    renderViewerBody();
+    updateDirtyUi();
+    return true;
+  }
+
+  function closeOverflowMenu() {
+    const menu = crumb.querySelector(".desk-ft-overflow-menu");
+    const btn = crumb.querySelector(".desk-ft-overflow-btn");
+    if (menu) menu.classList.remove("desk-ft-open");
+    if (btn) btn.setAttribute("aria-expanded", "false");
+  }
+
   function renderCrumb(relPath) {
     crumb.textContent = "";
+    const file = currentFile();
+
+    // Back → tree (tabs stay open). Also used by e2e / keyboard users.
     const back = document.createElement("button");
     back.type = "button";
     back.className = "desk-ft-crumb-back";
@@ -1363,6 +1802,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     back.addEventListener("click", () => { void showTree(); });
     crumb.appendChild(back);
 
+    // Path segments (project → ancestors). Click → tree.
     const segs = breadcrumbSegments(relPath, rootLabel);
     segs.forEach((seg, i) => {
       if (i > 0) {
@@ -1378,27 +1818,20 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       btn.textContent = seg.label;
       btn.title = seg.relPath || rootLabel;
       if (!isLast) {
-        btn.addEventListener("click", async () => {
-          if (seg.relPath === "") {
-            showTree();
-            return;
-          }
-          // Ancestor directory → return to tree (file view is one-file-at-a-time).
-          showTree();
-        });
+        btn.addEventListener("click", () => { void showTree(); });
       }
       crumb.appendChild(btn);
     });
 
-    if (currentFile && (currentFile.kind === "markdown" || currentFile.kind === "text" || currentFile.kind === "json")) {
+    if (file && (file.kind === "markdown" || file.kind === "text" || file.kind === "json")) {
       const action = (icon, label, onClick, extraClass) => {
         const b = document.createElement("button");
         b.type = "button";
         b.className = "desk-ft-viewer-action" + (extraClass ? " " + extraClass : "");
-        b.innerHTML = icon;
-        // Icon-only, so the accessible name and the tooltip are the only label
-        // there is — both, not one: title alone is invisible to a screen reader
-        // and aria-label alone shows nothing on hover.
+        // Icon + responsive text label (hidden by container query when narrow).
+        // title + aria-label stay in both states.
+        const labelText = label === "Save (Ctrl+S)" ? "Save" : label;
+        b.innerHTML = icon + '<span class="desk-ft-action-label">' + escapeHtml(labelText) + "</span>";
         b.title = label;
         b.setAttribute("aria-label", label);
         b.addEventListener("click", onClick);
@@ -1406,63 +1839,127 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
         return b;
       };
 
-      if (currentFile.kind === "markdown") {
+      if (file.kind === "markdown") {
         // Markdown gets Preview/Code and NOT Edit: switching to Code already
         // makes the source editable, so an Edit button beside it would be a
         // second control for the thing you just did.
         action(
           FT_ICON.preview,
           "Preview",
-          () => setViewerMode("preview", currentFile.editing),
-          currentFile.mode === "preview" ? "desk-ft-active" : "",
+          () => setViewerMode("preview", file.editing),
+          file.mode === "preview" ? "desk-ft-active" : "",
         );
         action(
           FT_ICON.code,
           "Edit source",
           () => setViewerMode("code", true),
-          currentFile.mode === "code" ? "desk-ft-active" : "",
+          file.mode === "code" ? "desk-ft-active" : "",
         );
-      } else if (!currentFile.editing) {
+      } else if (!file.editing) {
         // Plain text and JSON have no rendered form to toggle against, so Edit
         // is the only way in.
         action(FT_ICON.edit, "Edit", () => setViewerMode("code", true));
       }
 
-      if (currentFile.editing) {
-        action(
+      if (file.editing) {
+        const saveBtn = action(
           FT_ICON.save,
           "Save (Ctrl+S)",
           () => { void saveFile(); },
           "desk-ft-save",
         );
+        saveBtn.disabled = !file.dirty;
       }
-      const dot = document.createElement("span");
-      dot.className = "desk-ft-dirty-dot";
-      dot.setAttribute("aria-label", "Unsaved changes");
-      crumb.appendChild(dot);
+
+      // Cancel only while dirty — reverts to originalText after confirm.
+      const cancelBtn = action(
+        FT_ICON.cancel,
+        "Cancel",
+        () => { void cancelChanges(); },
+        "desk-ft-cancel",
+      );
+      cancelBtn.hidden = !file.dirty;
     }
 
-    // Explicit OS hand-off while previewing (fallback affordance).
-    const openExt = document.createElement("button");
-    openExt.type = "button";
-    openExt.className = "desk-ft-open-ext";
-    openExt.innerHTML = FT_ICON.openExternal;
-    openExt.title = "Open in default app";
-    openExt.setAttribute("aria-label", "Open in default app");
-    openExt.addEventListener("click", async () => {
+    // ⋯ overflow: Open in default app + Reveal in Finder/Explorer/file manager.
+    const overflow = document.createElement("div");
+    overflow.className = "desk-ft-overflow";
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "desk-ft-overflow-btn";
+    moreBtn.innerHTML = FT_ICON.more;
+    moreBtn.title = "More actions";
+    moreBtn.setAttribute("aria-label", "More actions");
+    moreBtn.setAttribute("aria-haspopup", "menu");
+    moreBtn.setAttribute("aria-expanded", "false");
+    const menu = document.createElement("div");
+    menu.className = "desk-ft-overflow-menu";
+    menu.setAttribute("role", "menu");
+
+    const mkItem = (cls, icon, label, onClick) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "desk-ft-overflow-item" + (cls ? " " + cls : "");
+      item.setAttribute("role", "menuitem");
+      item.innerHTML = icon + "<span>" + escapeHtml(label) + "</span>";
+      item.title = label;
+      item.setAttribute("aria-label", label);
+      item.addEventListener("click", async () => {
+        closeOverflowMenu();
+        await onClick();
+      });
+      menu.appendChild(item);
+      return item;
+    };
+
+    // desk-ft-open-ext kept for e2e / contract that still look for this affordance.
+    mkItem("desk-ft-open-ext", FT_ICON.openExternal, "Open in default app", async () => {
       try { await api.open(relPath); } catch (_) { /* */ }
     });
-    crumb.appendChild(openExt);
+    if (typeof api.reveal === "function") {
+      mkItem("desk-ft-reveal", FT_ICON.reveal, REVEAL_LABEL, async () => {
+        try { await api.reveal(relPath); } catch (_) { /* */ }
+      });
+    }
+
+    moreBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = !menu.classList.contains("desk-ft-open");
+      closeOverflowMenu();
+      if (open) {
+        menu.classList.add("desk-ft-open");
+        moreBtn.setAttribute("aria-expanded", "true");
+      }
+    });
+    overflow.appendChild(moreBtn);
+    overflow.appendChild(menu);
+    crumb.appendChild(overflow);
     updateDirtyUi();
   }
 
+  // Dismiss overflow on outside click / Escape.
+  document.addEventListener("click", (event) => {
+    const t = event.target;
+    if (t && t.closest && t.closest(".desk-ft-overflow")) return;
+    closeOverflowMenu();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeOverflowMenu();
+  }, true);
+
   async function openFileView(relPath, force) {
-    if (!force && currentFile && currentFile.relPath !== relPath && !(await confirmLeaveDirty())) return { ok: false, reason: "cancelled" };
+    // Already open: just activate (unless force-reload after conflict).
+    if (!force && openTabs.has(relPath)) {
+      await activateTab(relPath);
+      return { ok: true, kind: openTabs.get(relPath).kind || "text" };
+    }
     if (!api.read) {
       // Older host without read channel — fall back to OS open.
       try { await api.open(relPath); } catch (_) { /* */ }
       return { ok: false, reason: "no read channel", openExternal: true };
     }
+    // Flush outgoing editor before replacing/adding a tab.
+    syncEditorIntoActive();
     let result;
     try {
       result = await api.read(relPath);
@@ -1483,30 +1980,36 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       return { ok: false, reason: (result && (result.reason || result.error)) || "read failed" };
     }
 
-    viewRelPath = relPath;
-    currentFile = {
+    const state = {
       relPath,
       kind: result.kind,
       text: result.text || "",
       originalText: result.text || "",
-       stamp: result.stamp || (result.details && result.details.stamp),
+      // Per-tab conflict stamp — never share across files.
+      stamp: result.stamp || (result.details && result.details.stamp),
       dataUrl: result.dataUrl,
       mode: result.kind === "markdown" ? "preview" : "read",
       editing: false,
       dirty: false,
     };
+    const existed = openTabs.has(relPath);
+    openTabs.set(relPath, state);
+    if (!existed) tabOrder.push(relPath);
+    activeRelPath = relPath;
+    viewRelPath = relPath;
     document.body.classList.add("desk-ft-viewing");
     // Ensure panel is open when viewing a file.
     applyOpen(true);
     setViewerNotice("");
     renderCrumb(relPath);
     renderViewerBody();
+    renderTabs();
     return { ok: true, kind: result.kind || "text" };
   }
 
   async function saveFile() {
-    if (!currentFile || !currentFile.editing || !api.save || !currentFile.stamp) return false;
-    const file = currentFile;
+    const file = currentFile();
+    if (!file || !file.editing || !api.save || !file.stamp) return false;
     const text = editorValue();
     setViewerNotice("");
     let result;
@@ -1542,6 +2045,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
           setViewerNotice("Could not reload the current file version.");
           return false;
         }
+        // Stamp is still per-file — only refresh THIS tab's version.
         file.stamp = fresh.stamp || fresh.details.stamp;
         let overwrite;
         try { overwrite = await api.save({ relPath: file.relPath, text, stamp: file.stamp }); } catch (_) { overwrite = null; }
@@ -1690,8 +2194,8 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   }
 
   async function rebindToCurrentRoot() {
-    // Drop any open preview so we do not show B's file under A's breadcrumb.
-    if (!(await showTree())) return;
+    // Drop every open tab so we do not show B's files under A's project.
+    if (!(await clearAllTabs())) return;
     body.textContent = "";
     try {
       const rootInfo = await api.root();

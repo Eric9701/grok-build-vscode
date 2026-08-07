@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld("grokDesktopShell", true);
 contextBridge.exposeInMainWorld("grokDesktopFileTree", {
   list: (relPath: string) => ipcRenderer.invoke("desk-ft:list", relPath),
   open: (relPath: string) => ipcRenderer.invoke("desk-ft:open", relPath),
+  reveal: (relPath: string) => ipcRenderer.invoke("desk-ft:reveal", relPath),
   read: (relPath: string) => ipcRenderer.invoke("desk-ft:read", relPath),
   save: (request: { relPath: string; text: string; stamp: { mtimeMs: number; size: number } }) =>
     ipcRenderer.invoke("desk-ft:save", request),
