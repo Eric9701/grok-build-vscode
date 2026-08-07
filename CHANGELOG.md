@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.2 — 2026-08-07
+
+### Fixed
+
+- **The Marketplace and Open VSX listing shows its screenshot again.** A screenshot removed in 3.2.1 was still referenced by the store page, which renders from its own copy of the README, so the listing showed alt text where the picture should be.
+
 ## 3.2.1 — 2026-08-07
 
 ### Fixed
