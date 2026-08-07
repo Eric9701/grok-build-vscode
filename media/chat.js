@@ -2070,9 +2070,9 @@
 
   /**
    * Client-owned text size slider (AFK Pilot + desktop). VS Code keeps host
-   * `chatFontScale` and never sets CLIENT_OWNS_FONT_SCALE. Leads the APP
-   * surface — the rail gear, where the other settings are — not the composer's
-   * conversation surface. Ctrl/Cmd +/−/0 stay in sync via setClientFontScale.
+   * `chatFontScale` and never sets CLIENT_OWNS_FONT_SCALE. Leads Basic
+   * settings under the rail gear — not the composer's conversation surface, and
+   * not the gear root. Ctrl/Cmd +/−/0 stay in sync via setClientFontScale.
    */
   function appendClientFontScaleRow() {
     if (!CLIENT_OWNS_FONT_SCALE) return;
@@ -2197,13 +2197,6 @@
 
   /** The app itself: account, what it is used for, settings, about. */
   function renderGearApp() {
-    // ── Text size ─────────────────────────────────────────────────────────
-    // Leads the app surface, not the composer's. The composer popover is about
-    // THIS CONVERSATION — model, effort, where it continues — and how big the
-    // text is on this device is none of those. It is a setting, so it belongs
-    // where the settings are.
-    appendClientFontScaleRow();
-
     // ── Remote Control ────────────────────────────────────────────────────
     // The hosted relay account, on the machine that links itself — above
     // Session on purpose (it's about reaching this machine at all). Hidden in
@@ -2349,6 +2342,10 @@
     state.gearView = "basic";
     gearPopover.innerHTML = "";
     addGearItem('<span class="popover-back">← Basic settings</span>', renderGearMain);
+    // Leads Basic settings. It is a per-device display preference, which is
+    // exactly what this panel is for — on the gear root it sat above the
+    // account and purpose entries, which are not settings at all.
+    appendClientFontScaleRow();
     appendSharedPreferenceSwitches();
   }
 
@@ -4046,7 +4043,12 @@
     // Mount + `repos` frame (+ non-empty catalog). A host that never sends
     // `repos` keeps the plain single-column chat; no mount (VS Code) never
     // lights the rail even when repos arrives for clear-all.
-    const on = railAvailable() && state.repos.length > 0;
+    // An empty catalog normally means "this host has nothing to show" — but on a
+    // host that can ADD a project, an empty rail is the one screen where the
+    // user most needs the rail, because it is where the only useful control
+    // lives. Hiding it made the empty-state action unreachable and left the
+    // File menu — which the desktop hides — as the sole route in.
+    const on = railAvailable() && (state.repos.length > 0 || canAddProjectFolder());
     const panel = railPanel();
     if (panel) panel.hidden = !on;
     root.hidden = !on;

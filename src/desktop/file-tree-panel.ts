@@ -128,7 +128,24 @@ body.desk-ft-closed .desk-ft-resizer {
   display: none !important;
 }
 .desk-ft-panel {
-  /* Width driven by --desk-ft-width (JS + localStorage); defaults below. */
+  /* Width driven by --desk-ft-width (JS + localStorage); defaults below.
+     Shrinkable rather than rigid: the stored width is the width it WANTS, not a
+     width it insists on. Refusing to shrink meant that as the window narrowed,
+     rail + chat + panel eventually exceeded the viewport and the whole row
+     reflowed at once — which is what read as the panels jumping. Now it gives
+     ground gradually and returns to the stored width when there is room again,
+     because the flex basis never changed.
+     The floor stops it collapsing into a useless sliver; the ceiling stops a
+     width dragged out on a wide monitor from swallowing the conversation when
+     the same window is later made small. */
+  /* RIGID on purpose. A shrinkable panel looks like the right answer for a
+     narrowing window and is the wrong one: flex distributes shrinkage across
+     every shrinkable item, so dragging THIS panel made the browser re-shrink
+     the rail, and part of each drag was absorbed as shrink instead of becoming
+     width — the panel lagged the cursor and the other panel moved on its own.
+     The real fix for a too-small window is to clamp the stored widths in JS on
+     resize, so the conversation keeps a floor; that is not done yet, and until
+     it is, rigid is the behaviour people were not complaining about. */
   flex: 0 0 var(--desk-ft-width, 280px);
   width: var(--desk-ft-width, 280px);
   max-width: none;
@@ -2050,12 +2067,25 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     }
   }
 
+  // Bumped by every rebind. Switching projects quickly starts a second rebind
+  // while the first is still awaiting clearAllTabs, api.root() and fillDir — and
+  // whichever finished LAST won the DOM, not whichever project you actually
+  // ended on. The result was the previous project's rows, or one of its files,
+  // sitting under the new project's name. The save path is already bound to the
+  // absolute path a tab was read at, so nothing could be written to the wrong
+  // place; this is about not showing the wrong thing in the first place.
+  let rebindGen = 0;
+
   async function rebindToCurrentRoot() {
+    const gen = ++rebindGen;
+    const stale = () => gen !== rebindGen;
     // Drop every open tab so we do not show B's files under A's project.
     if (!(await clearAllTabs())) return;
+    if (stale()) return;
     body.textContent = "";
     try {
       const rootInfo = await api.root();
+      if (stale()) return;
       if (rootInfo && rootInfo.name) {
         rootLabel = rootInfo.name;
         title.textContent = rootInfo.name;
@@ -2066,7 +2096,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
         title.title = rootInfo.root;
       }
     } catch (_) { /* */ }
+    if (stale()) return;
     await fillDir(body, "");
+    if (stale()) return;
     applyFilter(body);
   }
 

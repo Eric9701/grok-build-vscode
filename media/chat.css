@@ -110,7 +110,14 @@ body.has-rail .app-main {
 }
 #projects-rail,
 .projects-rail {
+  /* Same reasoning as the desktop file panel: the stored width is what the rail
+     WANTS. flex-shrink:0 meant that on a narrowing window rail + chat + panel
+     could exceed the viewport and the row reflowed all at once, which reads as
+     the panels jumping. Shrinking to a floor keeps the change gradual, and the
+     basis is untouched so the rail returns to its width when there is room. */
   width: var(--rail-width, min(260px, 38vw));
+  /* Rigid — see the desktop file panel for why a shrinkable panel makes drags
+     fight each other. */
   flex-shrink: 0;
   height: 100%;
   display: flex;

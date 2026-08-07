@@ -2701,18 +2701,21 @@ Only continue if you trust this code.`,
       return;
     }
 
-    // Selecting a project shows you what is in it. It does NOT resume a
-    // conversation: this used to open the project's newest one, so a glance at
-    // another project silently moved you into it, spawned an agent there, and
-    // left the conversation you were reading. Picking a project and picking a
-    // conversation are separate intentions and now take separate clicks — a
-    // session opens when you click a session, or start a new one.
+    // Selecting a project shows you what is in it, and touches NOTHING else.
     //
-    // A blank session for the target folder rather than nothing: the chat pane
-    // must not keep showing the previous project's transcript while the rail
-    // says you are somewhere else, and anything typed needs a session in the
-    // right cwd to land in.
-    await this.newFocusedSession("local");
+    // It used to open that project's newest conversation, so a glance at
+    // another project silently moved you into it and spawned an agent there.
+    // The first fix replaced that with a blank session, which was the same
+    // mistake in a quieter form — the conversation you were reading still went
+    // away. Browsing the rail is not a decision to leave what you are doing:
+    // you must be able to open and fold projects freely while a turn runs, and
+    // come back to it untouched.
+    //
+    // So the focused session is deliberately left alone here. The host's active
+    // folder does move, which is what decides where NEW work lands and which
+    // files the panel lists — but file access is scoped to the asking session
+    // (see desktopAuthRoots), so a conversation in another project keeps
+    // reaching its own files and only its own.
     this.postRepoCatalog();
     this.postSessionsList();
   }
@@ -5905,6 +5908,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     for (const watcher of watchers) await this.newRemoteSession(watcher, false);
     if (watchers.length) this.postRepoCatalog();
     this.postSessionsList();
+    // The rail's per-project rows come from `repoSessions`, which is a separate
+    // frame from the selected repo's list that postSessionsList refreshes. Only
+    // the remote preview was being refreshed here, so on the desk the deleted
+    // conversation stayed on screen until something else happened to redraw it —
+    // a row you could click that no longer existed.
+    if (cwd) this.sendLocalRepoSessionsPreview(cwd);
     this.refreshRemoteRepoPreview(clientId, authorizedRemoteCwd);
   }
 

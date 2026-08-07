@@ -16,6 +16,16 @@ import { bootWebview, dispatch, click } from "./webview-harness";
  * conversation. VS Code has no rail, both halves render, and the composer gear
  * is the only one there is.
  */
+const withRail = (window: any) => {
+  const el = window.document.createElement("aside");
+  el.id = "projects-rail";
+  el.hidden = true;
+  window.document.body.appendChild(el);
+  const search = window.document.createElement("input");
+  search.id = "rail-search";
+  window.document.body.appendChild(search);
+};
+
 function openGearMain(window: any, doc: Document) {
   // The rail only mounts once a `repos` frame arrives, and the settings surface
   // lives on the rail gear — so a harness that never sent one would silently
@@ -28,6 +38,11 @@ function openGearMain(window: any, doc: Document) {
   } as never);
   const rail = doc.getElementById("rail-gear-btn");
   click(window, (rail || doc.getElementById("gear-btn"))!);
+  // Text size lives in the Basic settings sub-panel, not on the gear root: the
+  // root holds account and purpose, which are not settings.
+  const entry = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+    .find((el) => /Basic settings/.test(el.textContent || ""));
+  if (entry) click(window, entry as HTMLElement);
 }
 
 /**
@@ -38,11 +53,15 @@ function openGearMain(window: any, doc: Document) {
  * item states the actual requirement and does not depend on whether the
  * harness happens to have mounted a rail.
  */
-function leadsSettings(doc: Document, afterMarker: string): boolean {
-  const text = (doc.getElementById("gear-popover")!.textContent || "");
-  const size = text.indexOf("Text size");
-  const marker = text.indexOf(afterMarker);
-  return size >= 0 && marker > size;
+function leadsSettings(doc: Document): boolean {
+  // "Leads Basic settings" = the first thing under the back link, i.e. above
+  // every preference toggle in the panel. Stated against the toggles rather
+  // than a neighbouring label, so renaming a setting cannot silently retire the
+  // assertion.
+  const items = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")];
+  const size = items.findIndex((el) => /Text size/.test(el.textContent || ""));
+  const firstSwitch = items.findIndex((el) => el.querySelector(".popover-switch"));
+  return size >= 0 && (firstSwitch === -1 || size < firstSwitch);
 }
 
 function firstGearLabel(doc: Document): string {
@@ -54,16 +73,17 @@ function firstGearLabel(doc: Document): string {
 
 describe("client font scale (remote)", () => {
   it("puts Text size first on the settings surface", () => {
-    const { window, doc } = bootWebview({ remote: true });
+    const { window, doc } = bootWebview({ remote: true, beforeScripts: withRail });
     openGearMain(window, doc);
     expect(doc.getElementById("remote-font-scale")).toBeTruthy();
-    expect(leadsSettings(doc, "Version")).toBe(true);
+    expect(leadsSettings(doc)).toBe(true);
   });
 
   it("steps, resets, persists, and is bounded", () => {
     const { window, doc } = bootWebview({
       remote: true,
       beforeScripts: (w) => {
+        withRail(w);
         (w as any).localStorage.removeItem("grok.remote.fontScale");
       },
     });
@@ -94,6 +114,7 @@ describe("client font scale (remote)", () => {
     const { doc } = bootWebview({
       remote: true,
       beforeScripts: (w) => {
+        withRail(w);
         (w as any).localStorage.setItem("grok.remote.fontScale", "1.4");
       },
     });
@@ -101,7 +122,7 @@ describe("client font scale (remote)", () => {
   });
 
   it("Ctrl/Cmd + +/- /0 and wheel adjust zoom", () => {
-    const { window } = bootWebview({ remote: true });
+    const { window } = bootWebview({ remote: true, beforeScripts: withRail });
     const api = (window as any).__grokFontScale;
     api.set(1);
 
@@ -159,10 +180,13 @@ describe("client font scale (desktop bridge)", () => {
     const { window, doc } = bootWebview({
       beforeScripts: (w) => {
         (w as any).grokDesktopShell = true;
+        // The settings entry points are gated on the rail mount existing, and
+        // the desktop shell ships one.
+        withRail(w);
       },
     });
     openGearMain(window, doc);
-    expect(leadsSettings(doc, "Version")).toBe(true);
+    expect(leadsSettings(doc)).toBe(true);
     const slider = doc.getElementById("remote-font-scale") as HTMLInputElement;
     expect(slider).toBeTruthy();
     expect(slider.value).toBe("100");
