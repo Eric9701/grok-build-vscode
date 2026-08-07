@@ -420,6 +420,8 @@
     // that drops `toggleSessionPin`, which is a control that looks broken
     // rather than absent (the same trap the repo chip avoids).
     pinnedSessionsKnown: false,
+    /** Desktop update notice — set only when host posts `updateAvailable`. */
+    appUpdate: null,
     repoPreviews: {},
     repoPreviewsAsked: {},
     repoPreviewsSupported: false,
@@ -2765,6 +2767,91 @@
     return btn;
   }
 
+  /**
+   * "Update available" in the rail footer. Renders only because the host sent
+   * `updateAvailable` — same capability pattern as pin control + `pinnedSessions`.
+   * VS Code never posts it; no IS_DESKTOP gate.
+   */
+  function renderAppUpdateAffordance() {
+    const foot = document.querySelector("#projects-rail .rail-foot");
+    if (!foot) return;
+    let btn = document.getElementById("rail-update-btn");
+    let panel = document.getElementById("rail-update-panel");
+    if (!state.appUpdate) {
+      if (btn) btn.hidden = true;
+      if (panel) panel.hidden = true;
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "rail-update-btn";
+      btn.type = "button";
+      btn.className = "rail-update-btn";
+      // After gear (first child), before theme toggle (last → margin-left auto).
+      const gear = document.getElementById("rail-gear-btn");
+      if (gear && gear.nextSibling) foot.insertBefore(btn, gear.nextSibling);
+      else if (gear) foot.appendChild(btn);
+      else foot.insertBefore(btn, foot.firstChild);
+    }
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "rail-update-panel";
+      panel.className = "rail-update-panel";
+      panel.hidden = true;
+      // Sit above the foot so it does not push the scroll region.
+      foot.parentElement?.insertBefore(panel, foot);
+    }
+    const ver = state.appUpdate.version;
+    const url = state.appUpdate.url;
+    btn.hidden = false;
+    btn.textContent = "Update available";
+    btn.title = `Version ${ver} is available`;
+    btn.setAttribute("aria-label", `Update available: version ${ver}`);
+    btn.setAttribute("aria-expanded", panel.hidden ? "false" : "true");
+    if (!btn.dataset.wired) {
+      btn.dataset.wired = "1";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const p = document.getElementById("rail-update-panel");
+        if (!p) return;
+        p.hidden = !p.hidden;
+        btn.setAttribute("aria-expanded", p.hidden ? "false" : "true");
+      });
+    }
+    panel.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "rail-update-title";
+    title.textContent = `Version ${ver} is available`;
+    const body = document.createElement("p");
+    body.className = "rail-update-body";
+    body.textContent =
+      "Download the new installer and run it over the top of this app. Your settings and conversations are kept.";
+    const actions = document.createElement("div");
+    actions.className = "rail-update-actions";
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "rail-update-open";
+    openBtn.textContent = "Open release page";
+    openBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "openUpdateRelease", url });
+    });
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "rail-update-dismiss";
+    dismiss.textContent = "Not now";
+    dismiss.addEventListener("click", (e) => {
+      e.stopPropagation();
+      panel.hidden = true;
+      btn.setAttribute("aria-expanded", "false");
+    });
+    actions.appendChild(openBtn);
+    actions.appendChild(dismiss);
+    panel.appendChild(title);
+    panel.appendChild(body);
+    panel.appendChild(actions);
+  }
+
   // ---------- draggable rail edge ----------
   //
   // The rail's own border, made draggable. Mounted here rather than in either
@@ -4227,6 +4314,58 @@
     };
   }
 
+  function beginNewSession() {
+    saveRememberedRemoteSession(null);
+    resetForNewSession();
+    vscode.postMessage({ type: "newSession" });
+  }
+
+  /**
+   * Conversation overflow (⋯) beside the name. Present only when the host
+   * shipped `#session-head-actions` (desktop getHtml / AFK Pilot page) — VS Code
+   * has no session header, so its top-bar New and gear Session group stay.
+   * Capability = the slot exists, not a host flag.
+   */
+  function fillSessionHeadActions() {
+    const menuSlot = document.getElementById("session-head-actions");
+    // Hide the top-bar New wherever the overflow menu exists so New is not three
+    // similar icons in a row (top-bar + rail project + menu).
+    if (newBtn) newBtn.hidden = !!menuSlot;
+    const sessionNew = document.getElementById("session-new");
+    if (sessionNew) sessionNew.hidden = !!menuSlot;
+    if (!menuSlot) return;
+
+    menuSlot.innerHTML = "";
+    const record = activeSessionRecord();
+    const cwd = record?.cwd || state.selectedRepoCwd || state.activeRepoCwd;
+    const repo = state.repos.find((r) => sameCwd(r.cwd, cwd)) || { cwd: cwd || "", available: true };
+    // This menu hangs off the conversation NAME at the top of the panel, so
+    // its record is the conversation you are in, by construction. Deriving
+    // "active" by comparing ids was redundant here and quietly wrong: a
+    // session whose id the host has not assigned yet compares false, and the
+    // whole Session group — Continue in a new chat, worktree apply/remove —
+    // vanished from the one menu where it always applies. The row menus below
+    // still compute it, because there the record really can be some other
+    // conversation.
+    menuSlot.appendChild(railMenuButton(
+      "Session actions",
+      () => {
+        if (record) {
+          return railSessionMenuItems(record, repo, true, {
+            inlineRename: true,
+            includeNew: true,
+          });
+        }
+        // No live record yet (brand-new / still starting): still offer New.
+        return [{
+          label: "New session",
+          icon: ICON.squarePen,
+          onSelect: () => beginNewSession(),
+        }];
+      },
+    ));
+  }
+
   function renderSessionName() {
     if (IS_REMOTE) return;
     const chip = $("session-name-chip");
@@ -4235,6 +4374,8 @@
     if (!chip || !label || !editBtn) return;
     const data = activeSessionName();
     chip.hidden = !data;
+    // Desktop rail hosts: the overflow slot lives next to this chip.
+    fillSessionHeadActions();
     if (!data || state.sessionNameEditing?.surface === "local") return;
     const name = displayedSessionName(activeSessionRecord());
     label.textContent = name;
@@ -4254,8 +4395,7 @@
     if (!head) return;
     const titleEl = document.getElementById("session-head-title");
     const subEl = document.getElementById("session-head-sub");
-    const menuSlot = document.getElementById("session-head-actions");
-    if (!titleEl || !subEl || !menuSlot) return;
+    if (!titleEl || !subEl) return;
 
     const record = activeSessionRecord();
     // A brand-new conversation has no stored name until its first turn is
@@ -4304,26 +4444,10 @@
       titleEl.onkeydown = null;
     }
 
-    menuSlot.innerHTML = "";
-    if (record) {
-      const repo = state.repos.find((r) => sameCwd(r.cwd, cwd)) || { cwd, available: true };
-      // This menu hangs off the conversation NAME at the top of the panel, so
-      // its record is the conversation you are in, by construction. Deriving
-      // "active" by comparing ids was redundant here and quietly wrong: a
-      // session whose id the host has not assigned yet compares false, and the
-      // whole Session group — Continue in a new chat, worktree apply/remove —
-      // vanished from the one menu where it always applies. The row menus below
-      // still compute it, because there the record really can be some other
-      // conversation.
-      menuSlot.appendChild(railMenuButton(
-        "Session actions",
-        () => railSessionMenuItems(record, repo, true, { inlineRename: true }),
-      ));
-    }
+    fillSessionHeadActions();
 
-    // The title remains a quiet label for pointer users, but it is also the
-    // touch-sized rename target. History and New stay separate controls so a
-    // tap on the name never changes conversations by accident.
+    // History stays a separate control; New lives in the overflow menu when
+    // #session-head-actions is present (fillSessionHeadActions hides session-new).
     const history = document.getElementById("session-history");
     if (history && !history.dataset.railWired) {
       history.dataset.railWired = "1";
@@ -4337,7 +4461,7 @@
       add.onclick = (e) => {
         e.stopPropagation();
         closePopovers();
-        vscode.postMessage({ type: "newSession" });
+        beginNewSession();
       };
     }
   }
@@ -4699,6 +4823,16 @@
         onSelect: () => railRenameSession(s, cwd),
       },
     ];
+    // Header overflow only: New is folded out of the top bar on rail hosts so
+    // the bar is not three similar icons. Rail ROWS keep their own project-level
+    // New (+ on the project head) and must not gain a second one here.
+    if (opts?.includeNew) {
+      items.unshift({
+        label: "New session",
+        icon: ICON.squarePen,
+        onSelect: () => beginNewSession(),
+      });
+    }
     // "Continue in a new chat" belongs with the other things you do TO a
     // conversation (rename, pin, delete), not in the composer's settings beside
     // model and effort — those adjust how the agent answers; this one makes a
@@ -9576,6 +9710,18 @@
         if (msg.current) state.cliVersion = msg.current;
         if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
         break;
+      case "updateAvailable": {
+        // Capability: the frame arrived. No host flag / IS_DESKTOP check.
+        // Host-local outbound — remotes never receive this (remote-policy).
+        const version = typeof msg.version === "string" ? msg.version.trim() : "";
+        const url = typeof msg.url === "string" ? msg.url.trim() : "";
+        if (version && url) {
+          state.appUpdate = { version, url };
+          ensureRailGear();
+          renderAppUpdateAffordance();
+        }
+        break;
+      }
       case "initialized": {
         // The ACP handshake is done, but session/new or session/load may still be
         // running. Keep showing Starting until the startup lock clears.
@@ -10597,11 +10743,10 @@
     micBtn.onclick = (e) => { e.stopPropagation(); toggleMic(); };
     renderMic();
   }
-  newBtn.onclick = () => {
-    saveRememberedRemoteSession(null);
-    resetForNewSession();
-    vscode.postMessage({ type: "newSession" });
-  };
+  newBtn.onclick = () => beginNewSession();
+  // Hide top-bar New immediately when the overflow slot is in the DOM (rail
+  // hosts). fillSessionHeadActions re-asserts this whenever the menu refreshes.
+  if (document.getElementById("session-head-actions") && newBtn) newBtn.hidden = true;
   modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busyLocked) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
 

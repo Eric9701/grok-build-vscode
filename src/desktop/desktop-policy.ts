@@ -427,7 +427,7 @@ export function authorizeDesktopWebviewMsg(
   msg: WebviewMsg,
   ctx: DesktopOpenFileContext,
 ): { msg: WebviewMsg } | { refused: true; reason: string; type: WebviewMsg["type"] } {
-  if (msg.type === "openUrl") {
+  if (msg.type === "openUrl" || msg.type === "openUpdateRelease") {
     const r = authorizeOpenUrl(msg.url);
     if (!r.ok) return { refused: true, reason: r.reason, type: msg.type };
     return { msg };

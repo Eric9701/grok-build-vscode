@@ -577,7 +577,9 @@ body.desk-rail-collapsed .desk-rail-open-btn {
 body.desk-ft-viewing .desk-ft-viewer {
   display: flex;
 }
-.desk-ft-crumb {
+/* Viewer action toolbar (Preview / Edit source / Save / Cancel / ⋯).
+   Tabs + the project name handle navigation; no Back or breadcrumb. */
+.desk-ft-toolbar {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -588,40 +590,6 @@ body.desk-ft-viewing .desk-ft-viewer {
   font-size: 11px;
   min-height: 28px;
   box-sizing: border-box;
-}
-/* Breadcrumb Back: toolbar button (not a text link) so it does not compete
-   with real anchors inside markdown previews. */
-.desk-ft-crumb-back {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--vscode-editorWidget-border, #454545);
-  border-radius: 4px;
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  color: var(--vscode-foreground, #ccc);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 8px 2px 6px;
-  margin-right: 6px;
-  line-height: 1.3;
-}
-.desk-ft-crumb-back svg {
-  width: 12px;
-  height: 12px;
-  flex-shrink: 0;
-  display: block;
-}
-.desk-ft-crumb-back:hover {
-  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
-  text-decoration: none;
-  color: var(--vscode-foreground, #ccc);
-}
-.desk-ft-crumb-back:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder, #007fd4);
-  outline-offset: 1px;
 }
 /* Overflow (⋯) host for Open / Reveal — stays icon-only. */
 .desk-ft-overflow {
@@ -698,31 +666,6 @@ body.desk-ft-viewing .desk-ft-viewer {
 .desk-ft-overflow-item:focus-visible {
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: -1px;
-}
-.desk-ft-crumb-seg {
-  border: none;
-  background: transparent;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-  cursor: pointer;
-  font: inherit;
-  padding: 2px 2px;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.desk-ft-crumb-seg:hover {
-  color: var(--vscode-textLink-foreground, #3794ff);
-}
-.desk-ft-crumb-seg.desk-ft-crumb-current {
-  color: var(--vscode-foreground, #ccc);
-  cursor: default;
-  font-weight: 600;
-}
-.desk-ft-crumb-sep {
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-  opacity: 0.6;
-  user-select: none;
 }
 .desk-ft-viewer-action {
   /* Icon + optional label; narrow panel drops the label via container query. */
@@ -820,81 +763,17 @@ body.desk-ft-viewing .desk-ft-viewer {
   line-height: 1.45;
   color: var(--vscode-foreground, #ccc);
 }
+/* Markdown preview: typography lives in chat.css under the shared
+   .msg.agent .body / .desk-ft-md selectors (links, code, tables, lists).
+   Only layout constraints that are panel-specific stay here. */
 .desk-ft-viewer-body .desk-ft-md {
-  font-size: 13px;
-  line-height: 1.5;
   color: var(--vscode-foreground, #ccc);
-}
-.desk-ft-viewer-body .desk-ft-md h1,
-.desk-ft-viewer-body .desk-ft-md h2,
-.desk-ft-viewer-body .desk-ft-md h3 {
-  margin: 0.8em 0 0.4em;
-  font-weight: 600;
-}
-.desk-ft-viewer-body .desk-ft-md p {
-  margin: 0.4em 0;
-}
-.desk-ft-viewer-body .desk-ft-md code {
-  font-family: var(--vscode-editor-font-family, Consolas, monospace);
-  font-size: 0.92em;
-  background: var(--vscode-textCodeBlock-background, #1e1e1e);
-  padding: 0 4px;
-  border-radius: 3px;
-}
-.desk-ft-viewer-body .desk-ft-md pre {
-  background: var(--vscode-textCodeBlock-background, #1e1e1e);
-  padding: 8px;
-  border-radius: 4px;
-  overflow: auto;
-}
-/* Blocks the SHARED renderer emits. chat.css styles these only under
-   .msg.agent .body, so the preview needs its own presentation — but from the
-   same markup, which is what stops the two drifting the way the old private
-   parser did (it simply dropped bullets and tables). */
-.desk-ft-viewer-body .desk-ft-md ul,
-.desk-ft-viewer-body .desk-ft-md ol {
-  margin: 0.4em 0;
-  padding-left: 1.5em;
-}
-.desk-ft-viewer-body .desk-ft-md ul { list-style-type: disc; }
-.desk-ft-viewer-body .desk-ft-md ol { list-style-type: decimal; }
-.desk-ft-viewer-body .desk-ft-md li { margin: 0.15em 0; }
-.desk-ft-viewer-body .desk-ft-md li > ul { margin: 0.15em 0; list-style-type: circle; }
-.desk-ft-viewer-body .desk-ft-md li > ul ul { list-style-type: square; }
-.desk-ft-viewer-body .desk-ft-md blockquote {
-  margin: 0.5em 0;
-  padding-left: 10px;
-  border-left: 2px solid var(--vscode-panel-border, #454545);
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-}
-.desk-ft-viewer-body .desk-ft-md hr {
-  border: none;
-  border-top: 1px solid var(--vscode-panel-border, #454545);
-  margin: 0.9em 0;
 }
 /* A table in a narrow panel scrolls INSIDE its own wrapper — letting it widen
    the preview would push the whole panel sideways. */
 .desk-ft-viewer-body .desk-ft-md .md-table-wrap {
-  overflow-x: auto;
-  margin: 0.5em 0;
   max-width: 100%;
 }
-.desk-ft-viewer-body .desk-ft-md table {
-  border-collapse: collapse;
-  font-size: 0.95em;
-}
-.desk-ft-viewer-body .desk-ft-md th,
-.desk-ft-viewer-body .desk-ft-md td {
-  border: 1px solid var(--vscode-panel-border, #454545);
-  padding: 3px 7px;
-  text-align: left;
-  vertical-align: top;
-}
-.desk-ft-viewer-body .desk-ft-md th {
-  font-weight: 600;
-  background: var(--vscode-textCodeBlock-background, #1e1e1e);
-}
-.desk-ft-viewer-body .desk-ft-md a { color: var(--vscode-textLink-foreground, #4daafc); }
 .desk-ft-viewer-body img {
   max-width: 100%;
   height: auto;
@@ -978,8 +857,6 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   // stroke-width 2.5 + 16px CSS box so the line glyph matches Seti icon weight.
   const ICON_CHEVRON_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
   const ICON_CHEVRON_DOWN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
-  // Lucide arrow-left for breadcrumb Back.
-  const ICON_ARROW_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>';
 
   // Tear down a previous mount (reload / re-inject).
   const prevShell = document.getElementById("desk-ft-shell");
@@ -1073,9 +950,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   viewer.id = "desk-ft-viewer";
   viewer.setAttribute("aria-label", "File preview");
 
-  const crumb = document.createElement("div");
-  crumb.className = "desk-ft-crumb";
-  crumb.id = "desk-ft-crumb";
+  const toolbar = document.createElement("div");
+  toolbar.className = "desk-ft-toolbar";
+  toolbar.id = "desk-ft-toolbar";
 
   const viewerBody = document.createElement("div");
   viewerBody.className = "desk-ft-viewer-body";
@@ -1085,7 +962,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   viewerNotice.className = "desk-ft-notice";
   viewerNotice.id = "desk-ft-notice";
 
-  viewer.appendChild(crumb);
+  viewer.appendChild(toolbar);
   viewer.appendChild(viewerBody);
   viewer.appendChild(viewerNotice);
 
@@ -1517,19 +1394,6 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     return requestSharedConfirm(opts).then((choice) => choice === "confirm");
   }
 
-  function breadcrumbSegments(relPath, label) {
-    const segs = [{ label: label || "Files", relPath: "" }];
-    const trimmed = (relPath || "").replace(/\\\\/g, "/").replace(/^\\/+|\\/+$/g, "");
-    if (!trimmed) return segs;
-    const parts = trimmed.split("/").filter(Boolean);
-    let acc = "";
-    for (const part of parts) {
-      acc = acc ? acc + "/" + part : part;
-      segs.push({ label: part, relPath: acc });
-    }
-    return segs;
-  }
-
   function dirtyNow() {
     const file = currentFile();
     return !!(file && file.dirty);
@@ -1543,10 +1407,16 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       const dirty = tab.querySelector(".desk-ft-tab-dirty");
       if (dirty) dirty.textContent = file && file.dirty ? "•" : "";
     }
-    const save = crumb.querySelector(".desk-ft-save");
+    const save = toolbar.querySelector(".desk-ft-save");
     if (save) save.disabled = !dirtyNow();
-    const cancel = crumb.querySelector(".desk-ft-cancel");
-    if (cancel) cancel.hidden = !dirtyNow();
+    // Cancel is mounted only while dirty — rebuild the toolbar when the flag flips.
+    const cancel = toolbar.querySelector(".desk-ft-cancel");
+    if (dirtyNow() && !cancel) {
+      const f = currentFile();
+      if (f) renderToolbar(f.relPath);
+    } else if (!dirtyNow() && cancel) {
+      cancel.remove();
+    }
   }
 
   async function confirmLeaveDirty() {
@@ -1629,7 +1499,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     document.body.classList.add("desk-ft-viewing");
     applyOpen(true);
     setViewerNotice("");
-    renderCrumb(relPath);
+    renderToolbar(relPath);
     renderViewerBody();
     renderTabs();
     return true;
@@ -1657,7 +1527,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       if (activeRelPath) {
         viewRelPath = activeRelPath;
         setViewerNotice("");
-        renderCrumb(activeRelPath);
+        renderToolbar(activeRelPath);
         renderViewerBody();
         renderTabs();
       } else {
@@ -1665,7 +1535,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
         document.body.classList.remove("desk-ft-viewing");
         viewerBody.textContent = "";
         viewerNotice.textContent = "";
-        crumb.textContent = "";
+        toolbar.textContent = "";
         renderTabs();
       }
     } else {
@@ -1676,12 +1546,13 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
 
   async function showTree() {
     // Return to tree without closing tabs — nothing discarded, no confirm.
+    // Project name button and closing the last tab both land here.
     syncEditorIntoActive();
     viewRelPath = null;
     document.body.classList.remove("desk-ft-viewing");
     viewerBody.textContent = "";
     viewerNotice.textContent = "";
-    crumb.textContent = "";
+    toolbar.textContent = "";
     renderTabs();
     return true;
   }
@@ -1695,7 +1566,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     document.body.classList.remove("desk-ft-viewing");
     viewerBody.textContent = "";
     viewerNotice.textContent = "";
-    crumb.textContent = "";
+    toolbar.textContent = "";
     renderTabs();
     return true;
   }
@@ -1755,7 +1626,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     syncEditorIntoActive();
     file.mode = mode;
     file.editing = !!editing;
-    renderCrumb(file.relPath);
+    renderToolbar(file.relPath);
     renderViewerBody();
     updateDirtyUi();
     if (file.editing) {
@@ -1777,51 +1648,22 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     file.text = file.originalText;
     file.dirty = false;
     renderViewerBody();
+    // Rebuild so Cancel is gone the moment the tab is clean (not merely hidden).
+    renderToolbar(file.relPath);
     updateDirtyUi();
     return true;
   }
 
   function closeOverflowMenu() {
-    const menu = crumb.querySelector(".desk-ft-overflow-menu");
-    const btn = crumb.querySelector(".desk-ft-overflow-btn");
+    const menu = toolbar.querySelector(".desk-ft-overflow-menu");
+    const btn = toolbar.querySelector(".desk-ft-overflow-btn");
     if (menu) menu.classList.remove("desk-ft-open");
     if (btn) btn.setAttribute("aria-expanded", "false");
   }
 
-  function renderCrumb(relPath) {
-    crumb.textContent = "";
+  function renderToolbar(relPath) {
+    toolbar.textContent = "";
     const file = currentFile();
-
-    // Back → tree (tabs stay open). Also used by e2e / keyboard users.
-    const back = document.createElement("button");
-    back.type = "button";
-    back.className = "desk-ft-crumb-back";
-    back.innerHTML = ICON_ARROW_LEFT + "<span>Back</span>";
-    back.title = "Back to file tree";
-    back.setAttribute("aria-label", "Back to file tree");
-    back.addEventListener("click", () => { void showTree(); });
-    crumb.appendChild(back);
-
-    // Path segments (project → ancestors). Click → tree.
-    const segs = breadcrumbSegments(relPath, rootLabel);
-    segs.forEach((seg, i) => {
-      if (i > 0) {
-        const sep = document.createElement("span");
-        sep.className = "desk-ft-crumb-sep";
-        sep.textContent = "/";
-        crumb.appendChild(sep);
-      }
-      const isLast = i === segs.length - 1;
-      const btn = document.createElement(isLast ? "span" : "button");
-      if (!isLast) btn.type = "button";
-      btn.className = "desk-ft-crumb-seg" + (isLast ? " desk-ft-crumb-current" : "");
-      btn.textContent = seg.label;
-      btn.title = seg.relPath || rootLabel;
-      if (!isLast) {
-        btn.addEventListener("click", () => { void showTree(); });
-      }
-      crumb.appendChild(btn);
-    });
 
     if (file && (file.kind === "markdown" || file.kind === "text" || file.kind === "json")) {
       const action = (icon, label, onClick, extraClass) => {
@@ -1835,7 +1677,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
         b.title = label;
         b.setAttribute("aria-label", label);
         b.addEventListener("click", onClick);
-        crumb.appendChild(b);
+        toolbar.appendChild(b);
         return b;
       };
 
@@ -1871,14 +1713,15 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
         saveBtn.disabled = !file.dirty;
       }
 
-      // Cancel only while dirty — reverts to originalText after confirm.
-      const cancelBtn = action(
-        FT_ICON.cancel,
-        "Cancel",
-        () => { void cancelChanges(); },
-        "desk-ft-cancel",
-      );
-      cancelBtn.hidden = !file.dirty;
+      // Cancel only exists while dirty — never mounted clean, removed on revert.
+      if (file.dirty) {
+        action(
+          FT_ICON.cancel,
+          "Cancel",
+          () => { void cancelChanges(); },
+          "desk-ft-cancel",
+        );
+      }
     }
 
     // ⋯ overflow: Open in default app + Reveal in Finder/Explorer/file manager.
@@ -1933,8 +1776,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     });
     overflow.appendChild(moreBtn);
     overflow.appendChild(menu);
-    crumb.appendChild(overflow);
-    updateDirtyUi();
+    toolbar.appendChild(overflow);
   }
 
   // Dismiss overflow on outside click / Escape.
@@ -2001,7 +1843,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     // Ensure panel is open when viewing a file.
     applyOpen(true);
     setViewerNotice("");
-    renderCrumb(relPath);
+    renderToolbar(relPath);
     renderViewerBody();
     renderTabs();
     return { ok: true, kind: result.kind || "text" };

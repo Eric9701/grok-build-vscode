@@ -1487,7 +1487,15 @@ describe("file-tree panel assets", () => {
     expect(boot).toContain("desk-ft-open");
     expect(boot).toContain("localStorage");
     expect(boot).toContain("api.read");
-    expect(boot).toContain("desk-ft-crumb");
+    expect(boot).toContain("desk-ft-toolbar");
+    expect(boot).toContain("desk-ft-tabs");
+    expect(boot).toContain("desk-ft-title");
+    // Navigation is tabs + project name — no Back control or breadcrumb path.
+    expect(boot).not.toContain("desk-ft-crumb-back");
+    expect(boot).not.toContain("ICON_ARROW_LEFT");
+    expect(boot).not.toContain("breadcrumbSegments");
+    expect(FILE_TREE_PANEL_CSS).not.toContain("desk-ft-crumb-back");
+    expect(FILE_TREE_PANEL_CSS).not.toContain("desk-ft-crumb-seg");
     // Multi-folder rail host: shell mounts inside .app-main when present.
     expect(boot).toContain("app-main");
     expect(boot).toContain("projects-rail");
@@ -1511,14 +1519,15 @@ describe("file-tree panel assets", () => {
     expect(boot).toContain("WIDTH_MIN");
     expect(boot).toContain("__grokDeskFtOpen");
     expect(boot).toContain("Open in default app");
-    // Back is a button with icon, not a blue text link.
-    expect(boot).toContain("desk-ft-crumb-back");
-    expect(boot).toContain("ICON_ARROW_LEFT");
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-crumb-back[\s\S]*button-secondaryBackground|border-radius/,
+    // Cancel is mounted only while dirty (not always-present + hidden).
+    expect(boot).toMatch(/if\s*\(\s*file\.dirty\s*\)[\s\S]*desk-ft-cancel/);
+    // Markdown preview defers typography to chat.css (shared tokens), not a
+    // private panel palette that drifted from message rendering.
+    expect(FILE_TREE_PANEL_CSS).not.toMatch(
+      /\.desk-ft-md\s+code[\s\S]*textCodeBlock-background/,
     );
     expect(FILE_TREE_PANEL_CSS).not.toMatch(
-      /\.desk-ft-crumb-back\s*\{[^}]*textLink-foreground/s,
+      /\.desk-ft-md\s+th[\s\S]*textCodeBlock-background/,
     );
     // Directory disclosure: SVG chevrons, never filled triangles.
     expect(boot).toContain("ICON_CHEVRON_RIGHT");

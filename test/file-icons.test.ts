@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -179,12 +180,23 @@ describe("markdown preview uses the conversation's renderer", () => {
     expect(boot).toContain("renderMarkdownFallback");
   });
 
-  it("styles the blocks that renderer emits (bullets and tables)", () => {
-    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-md ul[\s\S]*list-style-type: disc/);
-    expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-md .md-table-wrap");
-    // A wide table must scroll inside the panel, not widen it.
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-md \.md-table-wrap\s*\{[^}]*overflow-x: auto/s,
+  it("defers markdown typography to chat.css; keeps only panel layout bounds", () => {
+    // Shared with .msg.agent .body — do not restate list/table colours here.
+    const chatCss = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
     );
+    expect(chatCss).toMatch(/\.desk-ft-md\s+ul|\.desk-ft-md ul/);
+    expect(chatCss).toMatch(/\.msg\.agent \.body ul,\s*\n\.desk-ft-md ul|\.desk-ft-md ul \{ list-style-type: disc/);
+    expect(chatCss).toContain(".desk-ft-md th");
+    expect(chatCss).toMatch(
+      /\.desk-ft-md th[\s\S]*textBlockQuote-background|textBlockQuote-background[\s\S]*\.desk-ft-md th/,
+    );
+    // Panel only constrains table width so a wide table does not grow the column.
+    expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-md .md-table-wrap");
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-md \.md-table-wrap\s*\{[^}]*max-width:\s*100%/s,
+    );
+    expect(FILE_TREE_PANEL_CSS).not.toMatch(/textCodeBlock-background/);
   });
 });

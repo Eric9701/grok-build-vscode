@@ -59,6 +59,12 @@ import {
   installWindowSecurityLocks,
   isTrustedMainFrameIpc,
 } from "./window-security";
+import {
+  DESKTOP_RELEASES_API_URL,
+  DESKTOP_UPDATE_CHECK_INTERVAL_MS,
+  noticeIfUpdateAvailable,
+  type GithubReleaseLike,
+} from "./app-update";
 
 // Electron dies with launch-failed if sandbox is left at the platform default
 // in some setups; we set it explicitly on the BrowserWindow. Also strip the
@@ -536,6 +542,53 @@ async function createApp(): Promise<void> {
     show() {
       mainWindow?.show();
     },
+  });
+
+  // Update *notice* only — no auto-download. Failure is silence (offline,
+  // rate-limit, malformed). Re-check every 12h while the app stays open.
+  // In-memory only — no disk; re-post on reload so the rail button survives
+  // a document refresh without another network round-trip.
+  const appVersion = app.getVersion() || pkg.version;
+  let pendingUpdate: { version: string; url: string } | null = null;
+  const postUpdateNotice = (version: string, url: string): void => {
+    pendingUpdate = { version, url };
+    if (!webview) return;
+    void webview.postMessage({ type: "updateAvailable", version, url });
+  };
+  const checkForDesktopUpdate = async (): Promise<void> => {
+    try {
+      const res = await net.fetch(DESKTOP_RELEASES_API_URL, {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": `Grok-Build-Desktop/${appVersion}`,
+        },
+      });
+      if (!res.ok) return;
+      const body = (await res.json()) as unknown;
+      if (!Array.isArray(body)) return;
+      const notice = noticeIfUpdateAvailable(
+        appVersion,
+        body as GithubReleaseLike[],
+      );
+      if (notice) postUpdateNotice(notice.version, notice.url);
+    } catch {
+      /* offline / parse / network — stay silent */
+    }
+  };
+  // After first paint so a slow API never races the webview boot.
+  setTimeout(() => {
+    void checkForDesktopUpdate();
+  }, 4_000);
+  setInterval(() => {
+    void checkForDesktopUpdate();
+  }, DESKTOP_UPDATE_CHECK_INTERVAL_MS);
+  // Re-deliver an already-known notice after inject (reload wipes the button).
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (!pendingUpdate) return;
+    const n = pendingUpdate;
+    setTimeout(() => {
+      if (pendingUpdate) postUpdateNotice(n.version, n.url);
+    }, 500);
   });
 
   mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {

@@ -440,9 +440,9 @@ describe("desktop Electron app (real window + fake CLI)", () => {
 
   it("clicking a text file replaces the tree with a file viewer", async () => {
     await ensureFilePanelOpen();
-    // Leave any prior view.
+    // Leave any prior view via the project-name control (tabs stay open).
     if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
-      await page.locator(".desk-ft-crumb-back").click();
+      await page.locator("#desk-ft-title").click();
     }
     const fileRow = page.locator('.desk-ft-node[data-rel="notes.md"] > .desk-ft-row');
     await fileRow.waitFor({ state: "visible", timeout: 10_000 });
@@ -456,8 +456,11 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(bodyText).toMatch(/Notes|Hello panel/i);
     // Tree body is hidden while viewing.
     expect(await page.locator("#desk-ft-body").isVisible()).toBe(false);
-    // Breadcrumb back returns to the tree.
-    await page.locator(".desk-ft-crumb-back").click();
+    // Tab strip is present while viewing; project name returns to the tree.
+    expect(await page.locator("#desk-ft-tabs").count()).toBe(1);
+    expect(await page.locator('.desk-ft-tab[data-rel="notes.md"]').count()).toBe(1);
+    expect(await page.locator(".desk-ft-crumb-back").count()).toBe(0);
+    await page.locator("#desk-ft-title").click();
     await page.waitForFunction(
       () => !document.body.classList.contains("desk-ft-viewing"),
       { timeout: 5_000 },
@@ -470,7 +473,7 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     fs.writeFileSync(openSink, "", "utf8");
     await ensureFilePanelOpen();
     if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
-      await page.locator(".desk-ft-crumb-back").click();
+      await page.locator("#desk-ft-title").click();
     }
     const fileRow = page.locator('.desk-ft-node[data-rel="payload.bin"] > .desk-ft-row');
     await fileRow.waitFor({ state: "visible", timeout: 10_000 });
@@ -525,7 +528,7 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     fs.writeFileSync(openSink, "", "utf8");
     // Leave any prior view.
     if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
-      await page.locator(".desk-ft-crumb-back").click();
+      await page.locator("#desk-ft-title").click();
     }
     // Full chat openFile path: webview post → authorize → host openFsPath → panel.
     await page.evaluate(() => {
@@ -544,15 +547,10 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     // Must not have hit the OS open sink for a renderable type.
     const sink = fs.existsSync(openSink) ? fs.readFileSync(openSink, "utf8") : "";
     expect(sink).not.toMatch(/notes\.md/);
-    // Back is a button with icon, not a blue link.
-    const back = page.locator(".desk-ft-crumb-back");
-    expect(await back.count()).toBe(1);
-    expect(await back.isVisible()).toBe(true);
-    expect(await back.locator("svg").count()).toBeGreaterThan(0);
-    expect(await back.innerText()).toMatch(/Back/i);
-    const backColor = await back.evaluate((el) => getComputedStyle(el).color);
-    // Must not be the pure link-blue treatment (rgb of --vscode-textLink on dark ≈ 55,148,255).
-    expect(backColor).not.toMatch(/rgb\(\s*55,\s*148,\s*255\s*\)/);
+    // Tabs + project name replace Back/breadcrumb; open affordance still present.
+    expect(await page.locator(".desk-ft-crumb-back").count()).toBe(0);
+    expect(await page.locator("#desk-ft-tabs .desk-ft-tab").count()).toBeGreaterThan(0);
+    expect(await page.locator("#desk-ft-title").isVisible()).toBe(true);
     // "Open in default app" affordance present while viewing.
     expect(await page.locator(".desk-ft-open-ext").count()).toBe(1);
   });
@@ -560,7 +558,7 @@ describe("desktop Electron app (real window + fake CLI)", () => {
   it("chat openFile bare basename resolves under docs/ into the panel", async () => {
     fs.writeFileSync(openSink, "", "utf8");
     if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
-      await page.locator(".desk-ft-crumb-back").click();
+      await page.locator("#desk-ft-title").click();
     }
     // Agent-style bare link: product-decisions.md lives at docs/product-decisions.md.
     await page.evaluate(() => {

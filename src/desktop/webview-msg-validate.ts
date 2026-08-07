@@ -121,6 +121,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       if (raw.handle !== undefined && !isString(raw.handle)) return null;
       break;
     case "openUrl":
+    case "openUpdateRelease":
       if (!isString(raw.url)) return null;
       break;
     case "openText":

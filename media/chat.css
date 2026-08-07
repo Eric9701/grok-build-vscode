@@ -298,6 +298,89 @@ body.rail-resizing * {
 }
 .rail-foot > :last-child { margin-left: auto; }
 .rail-user { display: flex; align-items: center; min-width: 0; min-height: 30px; }
+/* Desktop update notice — only mounted when the host posts `updateAvailable`. */
+.rail-update-btn {
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vscode-focusBorder, #007fd4);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-update-btn:hover {
+  background: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 12%, transparent);
+  color: var(--vscode-foreground);
+}
+.rail-update-btn:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.rail-update-panel {
+  flex: 0 0 auto;
+  margin: 0 8px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 8px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.rail-update-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--vscode-foreground);
+}
+.rail-update-body {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--vscode-descriptionForeground);
+}
+.rail-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.rail-update-open {
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+.rail-update-open:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+.rail-update-dismiss {
+  border: none;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+}
+.rail-update-dismiss:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+}
 /* Sticky section labels: full width so rows pass behind, not beside.
    All four groups (PINNED / RECENT / PROJECTS / PROJECT ARCHIVE) share this
    bold uppercase treatment — static heads and collapsible .rail-head-btn alike. */
@@ -1928,32 +2011,43 @@ body.vscode-light {
   text-align: left;
 }
 
-/* ---- markdown in agent messages ---- */
+/* ---- markdown in agent messages (+ desktop file-panel preview) ----
+   `.desk-ft-md` shares these rules so a README preview matches chat — do not
+   restyle code/links/tables under the panel prefix; that drifts (see # follow-up). */
 
-.msg.agent .body { white-space: normal; line-height: 1.55; }
+.msg.agent .body,
+.desk-ft-md { white-space: normal; line-height: 1.55; }
 .msg.agent .body h1,
 .msg.agent .body h2,
-.msg.agent .body h3 {
+.msg.agent .body h3,
+.desk-ft-md h1,
+.desk-ft-md h2,
+.desk-ft-md h3 {
   margin: 16px 0 8px;
   font-weight: 600;
   line-height: 1.3;
 }
-.msg.agent .body h1 { font-size: 1.4em; }
-.msg.agent .body h2 { font-size: 1.25em; }
-.msg.agent .body h3 { font-size: 1.1em; }
+.msg.agent .body h1, .desk-ft-md h1 { font-size: 1.4em; }
+.msg.agent .body h2, .desk-ft-md h2 { font-size: 1.25em; }
+.msg.agent .body h3, .desk-ft-md h3 { font-size: 1.1em; }
 .msg.agent .body > h1:first-child,
 .msg.agent .body > h2:first-child,
-.msg.agent .body > h3:first-child { margin-top: 0; }
+.msg.agent .body > h3:first-child,
+.desk-ft-md > h1:first-child,
+.desk-ft-md > h2:first-child,
+.desk-ft-md > h3:first-child { margin-top: 0; }
 .msg.agent .body ul,
-.msg.agent .body ol {
+.msg.agent .body ol,
+.desk-ft-md ul,
+.desk-ft-md ol {
   margin: 6px 0;
   padding-inline-start: 22px; /* logical: indents from the right for RTL lists */
 }
-.msg.agent .body ul { list-style-type: disc; }
-.msg.agent .body ol { list-style-type: decimal; }
-.msg.agent .body li { margin: 3px 0; }
-.msg.agent .body li > ul { margin: 3px 0; list-style-type: circle; }
-.msg.agent .body li > ul ul { list-style-type: square; }
+.msg.agent .body ul, .desk-ft-md ul { list-style-type: disc; }
+.msg.agent .body ol, .desk-ft-md ol { list-style-type: decimal; }
+.msg.agent .body li, .desk-ft-md li { margin: 3px 0; }
+.msg.agent .body li > ul, .desk-ft-md li > ul { margin: 3px 0; list-style-type: circle; }
+.msg.agent .body li > ul ul, .desk-ft-md li > ul ul { list-style-type: square; }
 /* The wrapper owns the block surface (Codex-style): radius on the div,
    overflow clipped so full-width diff-line tints follow the rounded corners.
    Every fenced block renderMarkdown emits is wrapped in .code-block, in agent,
@@ -1965,9 +2059,10 @@ body.vscode-light {
   background: var(--chat-surface-code);
   overflow: clip;
 }
-/* Codex's roomier 14px block margin, in agent prose only — inside a compact
-   user bubble or plan card the 8px base reads better. */
-.msg.agent .body .code-block { margin: 14px 0; }
+/* Codex's roomier 14px block margin, in agent prose and the file preview —
+   inside a compact user bubble or plan card the 8px base reads better. */
+.msg.agent .body .code-block,
+.desk-ft-md .code-block { margin: 14px 0; }
 .code-block pre {
   margin: 0;
   padding: 8px;
@@ -2045,19 +2140,23 @@ body.vscode-light {
 .diff-line.diff-del { background: var(--tdiff-del-bg); border-left-color: var(--tdiff-del-line); }
 .diff-line.diff-hunk { color: var(--vscode-textLink-foreground); }
 .diff-line.diff-meta { color: var(--vscode-descriptionForeground); }
-.msg.agent .body strong { font-weight: 600; }
-.msg.agent .body em { font-style: italic; }
-.msg.agent .body .md-table-wrap {
+.msg.agent .body strong, .desk-ft-md strong { font-weight: 600; }
+.msg.agent .body em, .desk-ft-md em { font-style: italic; }
+.msg.agent .body .md-table-wrap,
+.desk-ft-md .md-table-wrap {
   overflow-x: auto;
   margin: 8px 0;
 }
-.msg.agent .body table {
+.msg.agent .body table,
+.desk-ft-md table {
   border-collapse: collapse;
   font-size: inherit;
   width: 100%;
 }
 .msg.agent .body th,
-.msg.agent .body td {
+.msg.agent .body td,
+.desk-ft-md th,
+.desk-ft-md td {
   border: 1px solid var(--vscode-editorWidget-border);
   padding: 5px 8px;
   text-align: start; /* follows the cell's dir="auto" (RTL cells right-align) */
@@ -2069,7 +2168,8 @@ body.vscode-light {
   word-break: normal;
   overflow-wrap: normal;
 }
-.msg.agent .body th {
+.msg.agent .body th,
+.desk-ft-md th {
   background: var(--vscode-textBlockQuote-background, var(--vscode-editorWidget-background));
   font-weight: 600;
 }

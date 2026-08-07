@@ -4876,6 +4876,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "openUrl":
+      case "openUpdateRelease":
         void this.host.openExternal(msg.url);
         break;
       case "openText": {

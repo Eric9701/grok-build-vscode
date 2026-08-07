@@ -98,6 +98,9 @@ export type HostMsg =
   | { type: "remoteStatus"; linked: boolean }
   | { type: "fontScale"; value: number }
   | { type: "grokUpdateStatus"; current?: string | null; latest?: string | null; updateAvailable?: boolean; policy?: unknown; error?: string }
+  /** Desktop app update notice (check only — no auto-update). Host-local; VS Code
+   *  never sends this. Capability = frame arrived; no host flag. */
+  | { type: "updateAvailable"; version: string; url: string }
   | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; init: { protocolVersion?: unknown } } }
   | { type: "cliUpdating" }
   // `worktree` gates the gear's Apply/Remove worktree items to worktree sessions.
@@ -396,14 +399,17 @@ export type WebviewMsg =
   // device-link flow / drop the device token / open the relay web portal.
   | { type: "remoteSignIn" }
   | { type: "remoteSignOut" }
-  | { type: "openRemotePortal"; withHint?: boolean };
+  | { type: "openRemotePortal"; withHint?: boolean }
+  /** Open the desktop release page from the update notice. Host-local — a phone
+   *  cannot update the desk. */
+  | { type: "openUpdateRelease"; url: string };
 
 // Exhaustive maps: `Record<Union["type"], true>` forces every discriminant to be
 // a key (missing -> tsc error) and forbids any extra (excess-property -> tsc
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true,
+  initialState: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -443,6 +449,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
   rewindSession: true, editLastMessage: true, uiConfirmAnswer: true, workflowControl: true,
   remoteSignIn: true, remoteSignOut: true, openRemotePortal: true,
+  openUpdateRelease: true,
 };
 
 export const HOST_MESSAGE_TYPES: readonly HostMsg["type"][] = Object.keys(HOST_MESSAGE_TYPE_MAP) as HostMsg["type"][];

@@ -322,6 +322,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   remoteSignIn: "host-local",
   remoteSignOut: "host-local",
   openRemotePortal: "host-local",
+  // Desktop update notice click-through — a phone cannot update the desk.
+  openUpdateRelease: "host-local",
 };
 
 const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full: 2 };
@@ -434,6 +436,8 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   appPurpose: "mirror",
   fontScale: "mirror",
   grokUpdateStatus: "mirror",
+  // Desk-only installer notice — a remote has nothing useful to do with it.
+  updateAvailable: "host-local",
   initialized: "mirror",
   cliUpdating: "mirror",
   session: "mirror",
@@ -544,6 +548,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   appPurpose: "none",
   fontScale: "none",
   grokUpdateStatus: "none",
+  updateAvailable: "none",
   cliUpdating: "none",
   onboarding: "none",
   expandCommandOutputs: "none",
