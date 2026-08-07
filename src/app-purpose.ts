@@ -5,8 +5,7 @@
  * archives). Absent or unrecognised values mean Knowledge work: the smaller
  * surface, matching the codebase's capability-detection default.
  *
- * Pure helpers only — no host I/O. See
- * grok-remote/docs/simplification-plan.md for the design.
+ * Pure helpers only — no host I/O.
  */
 
 export const APP_PURPOSE_KEY = "grok.appPurpose";

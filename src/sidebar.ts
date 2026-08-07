@@ -10065,7 +10065,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // absence of `#projects-rail` is the property that keeps the extension's
     // UI single-column even when a `repos` frame arrives for clear-all.
     // Chrome mirrors AFK Pilot: brand + panel toggle, search, scroll, footer
-    // theme toggle (no Clerk avatar). chat.js only empties #rail-scroll.
+    // theme toggle (no account avatar). chat.js only empties #rail-scroll.
     const railMark = this.host.canSwitchWorkspaceFolder
       ? resourceUri("grok-icon.svg")
       : "";
