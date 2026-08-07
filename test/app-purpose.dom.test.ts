@@ -271,6 +271,64 @@ describe("app purpose + session menu (DOM)", () => {
     expect(gearText(h)).not.toContain("Show thinking traces");
     expect(gearText(h)).not.toContain("Expand tool details");
   });
+
+  it("Advanced settings exposes the three display toggles on a remote client", async () => {
+    // Rail mount → Basic/Advanced (not Config & debug). Toggles are per-client
+    // display prefs, so they must appear on remote before the host-config note.
+    const withRail = (window: any) => {
+      const el = window.document.createElement("aside");
+      el.id = "projects-rail";
+      el.hidden = true;
+      const scroll = window.document.createElement("div");
+      scroll.id = "rail-scroll";
+      el.appendChild(scroll);
+      const foot = window.document.createElement("div");
+      foot.className = "rail-foot";
+      el.appendChild(foot);
+      window.document.body.appendChild(el);
+    };
+    const h = bootWebview({ ready: true, remote: true, beforeScripts: withRail });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    openGear(h);
+    expect(gearText(h)).toContain("Advanced settings");
+    click(h.window, findGearItem(h, /Advanced settings/)!);
+    await Promise.resolve();
+    expect(gearText(h)).toContain("Show thinking traces");
+    expect(gearText(h)).toContain("Expand tool details");
+    expect(gearText(h)).toContain("Steer by default");
+    expect(gearText(h)).toContain("Host config is managed on the desk");
+    // Display toggles must precede the host-config note (not inside its branch).
+    // Host note is popover-info; toggles are toolbar-popover-item.
+    const advancedChildren = [...h.doc.querySelectorAll(
+      "#gear-popover .toolbar-popover-item, #gear-popover .popover-info",
+    )].map((el) => (el.textContent || "").replace(/\s+/g, " ").trim());
+    const thinkingIdx = advancedChildren.findIndex((t) => /Show thinking traces/.test(t));
+    const hostIdx = advancedChildren.findIndex((t) => /Host config is managed/.test(t));
+    expect(thinkingIdx).toBeGreaterThanOrEqual(0);
+    expect(hostIdx).toBeGreaterThan(thinkingIdx);
+    // Basic settings must not still host these three.
+    click(h.window, findGearItem(h, /← Advanced settings/)!);
+    await Promise.resolve();
+    click(h.window, findGearItem(h, /Basic settings/)!);
+    await Promise.resolve();
+    expect(gearText(h)).not.toContain("Show thinking traces");
+    expect(gearText(h)).not.toContain("Expand tool details");
+    expect(gearText(h)).not.toContain("Steer by default");
+  });
 });
 
 describe("rail gear placement (DOM)", () => {

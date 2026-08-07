@@ -1398,3 +1398,38 @@ describe("continue-in-a-new-chat lives in the session ⋯ menu", () => {
     expect(menuItem(menu, "Delete")).toBeTruthy();
   });
 });
+
+describe("rail overflow menus toggle", () => {
+  // The dots opened but never closed on a second click. openRailMenu already had
+  // toggle logic; it compared an id stamped on the BUTTON, and the rail
+  // re-renders and recreates those buttons — so by the second click the element
+  // was new, carried no id, and the "is this already my menu?" test could not
+  // match. It closed and immediately reopened, which looks like nothing
+  // happening, and only clicking elsewhere dismissed it.
+  it("closes on a second click of the same button", () => {
+    const h = boot();
+    const dots = h.doc.querySelector(".rail-menu-btn") as HTMLElement | null;
+    expect(dots).toBeTruthy();
+
+    click(h.window, dots!);
+    expect(h.doc.querySelector(".rail-menu")).toBeTruthy();
+
+    // Same button again. Re-query rather than reusing the node, because the
+    // rail may have re-rendered — which is the whole point.
+    const again = h.doc.querySelector(".rail-menu-btn") as HTMLElement;
+    click(h.window, again);
+    expect(h.doc.querySelector(".rail-menu")).toBeFalsy();
+  });
+
+  it("keys the menu to what it acts on, not to the element", () => {
+    // A key derived from the project/conversation survives a re-render; an
+    // incrementing counter on a recreated node does not.
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.js"),
+      "utf8",
+    );
+    expect(src).toContain('"session-head"');
+    expect(src).toContain('"session:"');
+    expect(src).toContain('"repo:"');
+  });
+});

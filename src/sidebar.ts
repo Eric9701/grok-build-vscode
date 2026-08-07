@@ -4993,6 +4993,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.restartSession(mode, session);
         break;
       }
+      case "addProjectFolder":
+        await this.addProjectFolder();
+        break;
       case "openGlobalConfig": {
         // Intent only — host resolves ~/.grok/config.toml (never a renderer path).
         await this.host.openGlobalConfig();
@@ -7863,6 +7866,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         ...HOST_CAPABILITIES,
         relocateView: this.host.canRelocateView,
         showOutput: this.host.canShowOutput,
+        // Only a host that owns its own folder set can add one. VS Code's
+        // workspace is VS Code's to manage, so the extension never advertises
+        // this and the rail never draws the control — capability, not a flag.
+        addProjectFolder: this.host.canSwitchWorkspaceFolder,
       },
     };
   }

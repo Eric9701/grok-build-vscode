@@ -204,7 +204,11 @@ body.desk-ft-resizing * {
 /* Project name at the left of the tab strip — not a tab; click → tree. */
 .desk-ft-title {
   flex: 0 1 auto;
-  max-width: 40%;
+  /* Uncapped by default. The 40% cap below exists to stop a long project name
+     crowding out the tabs, which is only a problem when there ARE tabs — with
+     none open the strip is empty and truncating "GROK-REMOTE" to "GROK-REM..."
+     hides information for no one's benefit. */
+  max-width: none;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -224,6 +228,13 @@ body.desk-ft-resizing * {
   cursor: default;
   text-align: left;
   box-sizing: border-box;
+}
+/* Tabs present: the name yields to them. Scoped through the shared parent
+   because the title is the FIRST child and a sibling combinator only looks
+   forward. :has() rather than a class toggled from JS, so the rule cannot drift
+   out of sync with what is actually rendered. */
+.desk-ft-header:has(.desk-ft-tab) .desk-ft-title {
+  max-width: 40%;
 }
 button.desk-ft-title {
   cursor: pointer;

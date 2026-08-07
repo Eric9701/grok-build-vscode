@@ -591,6 +591,22 @@ body.rail-resizing * {
   border-right: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.35));
 }
 .rail-action-btn { width: 25px; height: 27px; }
+/* The empty rail's one actionable thing. Sits under the note rather than beside
+   it: on the screen where a user has nothing else to click, the next step
+   should read as a step, not as decoration on an error message. */
+.rail-empty-action {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.rail-empty-action:hover { text-decoration: underline; }
+.rail-empty-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .rail-action-btn svg { width: 13px; height: 13px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; }
 /* Session indent: no left pad on the list; rows and Show more share --rail-indent. */

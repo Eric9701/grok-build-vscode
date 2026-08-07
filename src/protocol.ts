@@ -77,6 +77,12 @@ export type HostUiCapabilities = {
    * absent/true = show; false = hide (desktop logs to stdout only).
    */
   showOutput?: boolean;
+  /**
+   * The rail's "add project folder" control. OPT-IN, unlike the two above:
+   * absent/false = hide. A host that never sent it cannot open a folder picker,
+   * and VS Code deliberately does not — its workspace is VS Code's to manage.
+   */
+  addProjectFolder?: boolean;
 };
 
 export type HostMsg =
@@ -276,6 +282,7 @@ export type WebviewMsg =
     }
   | { type: "exportExpr"; action: string; kind: string; current?: string; svg?: string; png?: string; svgDark?: string; svgLight?: string }
   | { type: "setEffort"; level: string }
+  | { type: "addProjectFolder" }
   | { type: "openGlobalConfig" }
   | { type: "openProjectConfig" }
   | { type: "runMcpList" }
@@ -432,6 +439,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
+  addProjectFolder: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, openSettings: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,

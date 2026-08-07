@@ -2068,11 +2068,35 @@
     if (showApp) renderGearApp();
   }
 
+  /**
+   * Client-owned text size slider (AFK Pilot + desktop). VS Code keeps host
+   * `chatFontScale` and never sets CLIENT_OWNS_FONT_SCALE. Leads the APP
+   * surface — the rail gear, where the other settings are — not the composer's
+   * conversation surface. Ctrl/Cmd +/−/0 stay in sync via setClientFontScale.
+   */
+  function appendClientFontScaleRow() {
+    if (!CLIENT_OWNS_FONT_SCALE) return;
+    const fontRow = document.createElement("div");
+    fontRow.className = "toolbar-popover-item remote-font-row";
+    fontRow.innerHTML =
+      `<label for="remote-font-scale" title="Chat text size on this client only. Independent of the VS Code extension setting. Ctrl/Cmd +/−/0 stay in sync with this slider.">Text size</label>` +
+      `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="Text size">` +
+      `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
+    const slider = fontRow.querySelector("input");
+    const output = fontRow.querySelector("output");
+    slider.oninput = () => { output.textContent = `${slider.value}%`; };
+    slider.onchange = () => { setClientFontScale(Number(slider.value) / 100); };
+    gearPopover.appendChild(fontRow);
+  }
+
   /** Model + effort, and where this conversation continues. */
   function renderGearConversation() {
     // ── Model + effort header ─────────────────────────────────────────────
     const modelEffortSection = document.createElement("div");
-    modelEffortSection.className = "popover-section popover-section-first";
+    // When Text size leads, Model and Effort is no longer the first row — keep
+    // the section rule so a separator appears under the slider.
+    modelEffortSection.className = "popover-section" +
+      (CLIENT_OWNS_FONT_SCALE ? "" : " popover-section-first");
     modelEffortSection.textContent = "Model and Effort";
     gearPopover.appendChild(modelEffortSection);
 
@@ -2173,6 +2197,13 @@
 
   /** The app itself: account, what it is used for, settings, about. */
   function renderGearApp() {
+    // ── Text size ─────────────────────────────────────────────────────────
+    // Leads the app surface, not the composer's. The composer popover is about
+    // THIS CONVERSATION — model, effort, where it continues — and how big the
+    // text is on this device is none of those. It is a setting, so it belongs
+    // where the settings are.
+    appendClientFontScaleRow();
+
     // ── Remote Control ────────────────────────────────────────────────────
     // The hosted relay account, on the machine that links itself — above
     // Session on purpose (it's about reaching this machine at all). Hidden in
@@ -2313,7 +2344,7 @@
     });
   }
 
-  /** Basic prefs for rail hosts (desktop / web): sounds, TTS, steer, coding toggles. */
+  /** Basic prefs for rail hosts (desktop / web): sounds + TTS. */
   function renderBasicSettingsPanel() {
     state.gearView = "basic";
     gearPopover.innerHTML = "";
@@ -2321,12 +2352,19 @@
     appendSharedPreferenceSwitches();
   }
 
-  /** Advanced prefs for rail hosts: config files, MCP, Logs (not "Extension logs"). */
+  /** Advanced prefs for rail hosts: display toggles, then config files / MCP / Logs. */
   function renderAdvancedSettingsPanel() {
     state.gearView = "advanced";
     gearPopover.innerHTML = "";
     addGearItem('<span class="popover-back">← Advanced settings</span>', renderGearMain);
-    // Host-local config openers — hide on remote (policy-dropped).
+    // Per-client display prefs first — visible on remote too (not host config).
+    appendAdvancedDisplaySwitches(() => renderAdvancedSettingsPanel());
+    // Host-local config openers — hide on remote (policy-dropped). Under a
+    // heading, because the two halves of this panel behave differently: the
+    // switches above change something here and now, while everything below
+    // leaves the app and opens a file or a log. Running them together read as
+    // one list where flipping and departing looked like the same kind of act.
+    addSection("Files & logs");
     if (!IS_REMOTE) {
       addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
         vscode.postMessage({ type: "openGlobalConfig" });
@@ -2446,15 +2484,15 @@
   }
 
   /**
-   * Shared preference switches used by Config & debug (VS Code) and Basic
-   * settings (rail hosts). `rerender` repaints the open panel after a toggle.
+   * Advanced display toggles: thinking traces, tool details, steer-by-default.
+   * Used by Advanced settings (rail hosts) and Config & debug (VS Code / no-rail).
+   * Not host config — must stay visible on remote. Coding-only where noted.
    */
-  function appendSharedPreferenceSwitches(rerender) {
+  function appendAdvancedDisplaySwitches(rerender) {
     const paint = typeof rerender === "function"
       ? rerender
       : () => {
-          if (state.gearView === "basic") renderBasicSettingsPanel();
-          else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+          if (state.gearView === "advanced") renderAdvancedSettingsPanel();
           else renderConfigDebugPanel();
         };
 
@@ -2482,22 +2520,6 @@
       );
     }
 
-    // Font size: remote keeps the slider; desktop owns zoom via Ctrl/Cmd +/−/0
-    // (spec: not ported into the menu). VS Code uses host chatFontScale.
-    if (CLIENT_OWNS_FONT_SCALE && IS_REMOTE) {
-      const fontRow = document.createElement("div");
-      fontRow.className = "toolbar-popover-item remote-font-row";
-      fontRow.innerHTML =
-        `<label for="remote-font-scale" title="Chat text size on this device only. Independent of VS Code's own zoom — the desktop's setting never affects AFK Pilot.">Text size</label>` +
-        `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="AFK Pilot text size">` +
-        `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
-      const slider = fontRow.querySelector("input");
-      const output = fontRow.querySelector("output");
-      slider.oninput = () => { output.textContent = `${slider.value}%`; };
-      slider.onchange = () => { setClientFontScale(Number(slider.value) / 100); };
-      gearPopover.appendChild(fontRow);
-    }
-
     if (state.steerSupported) {
       addGearItem(
         `<span title="Send straight into Grok's running turn instead of queueing until it finishes. Steering does not cancel the turn or discard work in progress. Plain text only — no attached files, editor context, or /commands.">Steer by default</span><span class="popover-switch${state.steerByDefault ? " on" : ""}" role="switch" aria-checked="${state.steerByDefault}"><span class="popover-switch-knob"></span></span>`,
@@ -2508,6 +2530,23 @@
         },
       );
     }
+  }
+
+  /**
+   * Shared preference switches used by Config & debug (VS Code) and Basic
+   * settings (rail hosts): sounds + TTS. Display toggles live in Advanced /
+   * Config & debug via appendAdvancedDisplaySwitches. Text size leads the main
+   * gear conversation panel when CLIENT_OWNS_FONT_SCALE.
+   */
+  function appendSharedPreferenceSwitches(rerender) {
+    const paint = typeof rerender === "function"
+      ? rerender
+      : () => {
+          if (state.gearView === "basic") renderBasicSettingsPanel();
+          else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+          else renderConfigDebugPanel();
+        };
+
     addGearItem(
       `<span title="Play a short sound when Grok finishes or errors — only when the Grok panel isn't focused. A rising chime for done, a lower tone for errors.">Sound notifications</span><span class="popover-switch${state.soundNotifications ? " on" : ""}" role="switch" aria-checked="${state.soundNotifications}"><span class="popover-switch-knob"></span></span>`,
       () => {
@@ -2587,11 +2626,15 @@
     }
   }
 
-  // Config & debug: VS Code composer-gear path (no rail). Host config + Move view.
+  // Config & debug: VS Code composer-gear path (no rail). Display toggles +
+  // sounds/TTS + host config + Move view. (Rail hosts split Basic / Advanced.)
   function renderConfigDebugPanel() {
     state.gearView = "config";
     gearPopover.innerHTML = "";
     addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
+    // Same advanced display toggles as Advanced settings — no-rail hosts have
+    // only this panel, so the three must stay reachable here too.
+    appendAdvancedDisplaySwitches(() => renderConfigDebugPanel());
     appendSharedPreferenceSwitches(() => renderConfigDebugPanel());
     // Opening host config files, the MCP list, and the extension log channel are
     // all host-local (the messages are policy-dropped on remotes) — hide the whole
@@ -3590,21 +3633,35 @@
   // would be clipped by the very rows it belongs to.
   let railMenuEl = null;
 
+  // The element the open menu hangs off, so the outside-click listener can tell
+  // a dismissal from a toggle. Deliberately the live node rather than a key: it
+  // only has to survive a single click, and identity is exactly the question.
+  let railMenuAnchorEl = null;
+
   function closeRailMenu() {
+    railMenuAnchorEl = null;
     if (railMenuEl) { railMenuEl.remove(); railMenuEl = null; }
   }
 
   /** items: [{ label, icon, danger, disabled, onSelect }] — a `null` entry is a
    *  separator, which is how the destructive tail is kept away from the thumb. */
-  function openRailMenu(anchor, items) {
-    const wasMine = railMenuEl && railMenuEl.dataset.anchorId === anchor.dataset.railMenuId;
+  function openRailMenu(anchor, items, menuKey) {
+    // Identify the menu by what it BELONGS to, not by the element it hangs off.
+    // The rail re-renders freely and recreates these buttons, so an id stamped
+    // on the node was gone by the second click: the toggle compared a fresh
+    // element against the open menu, decided it was a different menu, and
+    // reopened instead of closing. Clicking the same dots twice did nothing
+    // visible, and only clicking elsewhere dismissed it.
+    const key = menuKey || anchor.dataset.railMenuId || "";
+    const wasMine = !!railMenuEl && !!key && railMenuEl.dataset.anchorId === key;
     closeRailMenu();
     if (wasMine) return;
-    if (!anchor.dataset.railMenuId) anchor.dataset.railMenuId = String(++openRailMenu.seq);
+    if (!anchor.dataset.railMenuId) anchor.dataset.railMenuId = key || String(++openRailMenu.seq);
+    railMenuAnchorEl = anchor;
 
     const menu = document.createElement("div");
     menu.className = "rail-menu";
-    menu.dataset.anchorId = anchor.dataset.railMenuId;
+    menu.dataset.anchorId = key || anchor.dataset.railMenuId;
     menu.setAttribute("role", "menu");
     for (const item of items) {
       if (!item) {
@@ -3650,7 +3707,14 @@
   // Rail menus are fixed-position under <body>; close on outside click / Esc /
   // resize regardless of remote vs desktop once a rail mount exists (or may).
   document.addEventListener("click", (e) => {
-    if (railMenuEl && !railMenuEl.contains(e.target)) closeRailMenu();
+    if (!railMenuEl || railMenuEl.contains(e.target)) return;
+    // Not the button that owns this menu. That click is a TOGGLE, and this
+    // listener is on the capture phase — it runs before the button's own
+    // handler, so closing here would let the button reopen the menu it just
+    // closed. That is why clicking the same dots twice appeared to do nothing
+    // and only clicking elsewhere dismissed it.
+    if (railMenuAnchorEl && railMenuAnchorEl.contains(e.target)) return;
+    closeRailMenu();
   }, true);
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeRailMenu();
@@ -3659,7 +3723,7 @@
 
   /** The ⋯ button itself — same shape for a project row, a conversation row and
    *  the conversation header, so one class carries all three. */
-  function railMenuButton(label, items) {
+  function railMenuButton(label, items, menuKey) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "rail-action-btn rail-menu-btn";
@@ -3669,7 +3733,7 @@
     btn.setAttribute("aria-haspopup", "menu");
     btn.onclick = (e) => {
       e.stopPropagation();
-      openRailMenu(btn, typeof items === "function" ? items() : items);
+      openRailMenu(btn, typeof items === "function" ? items() : items, menuKey);
     };
     btn.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); };
     return btn;
@@ -4060,6 +4124,7 @@
         openTitle: "Hide projects",
         closedTitle: "Show projects",
         searchTitle: "Open while your search matches a project",
+        action: canAddProjectFolder() ? railAddProjectButton : undefined,
       }));
       if (open) {
         const list = document.createElement("div");
@@ -4094,7 +4159,22 @@
       shownAnything = true;
     }
 
-    if (!shownAnything) root.appendChild(railNote(q ? "No matches." : "No projects yet"));
+    if (!shownAnything) {
+      if (!q && canAddProjectFolder()) {
+        // An empty rail that only says "No projects yet" is a dead end on the
+        // one screen where the user has nothing else to click.
+        const empty = railNote("No projects yet");
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "rail-empty-action";
+        add.textContent = "Add a project folder";
+        add.onclick = () => vscode.postMessage({ type: "addProjectFolder" });
+        empty.appendChild(add);
+        root.appendChild(empty);
+      } else {
+        root.appendChild(railNote(q ? "No matches." : "No projects yet"));
+      }
+    }
     renderSessionHead();
   }
 
@@ -4135,7 +4215,33 @@
       renderRail();
     };
     head.appendChild(btn);
+    if (opts.action) head.appendChild(opts.action());
     return head;
+  }
+
+  /**
+   * "Add project" — capability, not a host flag: only a host that answers
+   * `addProjectFolder` gets the control, and the extension never does because a
+   * VS Code workspace is managed by VS Code. Opening the picker is host-local
+   * (a native dialog on the desk that a phone could not see or answer), so a
+   * remote never shows it either.
+   */
+  function railAddProjectButton() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-action-btn rail-add-project";
+    btn.innerHTML = ICON.plus;
+    btn.title = "Add project folder";
+    btn.setAttribute("aria-label", "Add project folder");
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "addProjectFolder" });
+    };
+    return btn;
+  }
+
+  function canAddProjectFolder() {
+    return !IS_REMOTE && !!(state.hostCaps && state.hostCaps.addProjectFolder);
   }
 
   /**
@@ -4375,6 +4481,7 @@
           onSelect: () => beginNewSession(),
         }];
       },
+      "session-head",
     ));
   }
 
@@ -4652,7 +4759,7 @@
           });
         },
       },
-    ]));
+    ], "repo:" + cwdKey(repo.cwd)));
 
     head.appendChild(actions);
     sec.appendChild(head);
@@ -4813,7 +4920,11 @@
       };
       actions.appendChild(pinBtn);
     }
-    actions.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(s, repo, active)));
+    actions.appendChild(railMenuButton(
+      "Session actions",
+      () => railSessionMenuItems(s, repo, active),
+      "session:" + (s.id || cwdKey(s.cwd || repo.cwd)),
+    ));
     row.appendChild(actions);
     row.onclick = railSessionOpener(s, repo, active);
     return row;
@@ -9543,8 +9654,10 @@
         break;
       case "steerByDefault":
         // Live toggle (grok.steerByDefault). Pure policy for the next send —
-        // nothing to re-render, the queued block's Steer button is unaffected.
+        // the queued block's Steer button is unaffected; refresh open gear.
         state.steerByDefault = !!msg.value;
+        if (state.gearView === "config") renderConfigDebugPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         break;
       case "soundNotifications":
         // Live toggle (grok.soundNotifications). Only affects future turn-end/
@@ -9604,7 +9717,7 @@
         state.showThinking = !!msg.value;
         applyThinkingVisibility();
         if (state.gearView === "config") renderConfigDebugPanel();
-        else if (state.gearView === "basic") renderBasicSettingsPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         break;
       case "appPurpose":
         // Live global disclosure preference (Knowledge work / Coding).
@@ -10302,7 +10415,9 @@
         state.expandCommandOutputs = !!msg.value;
         state.toolExpandOverride = null;
         applyExpandCommandOutputs();
-        if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        // Keep the switch in sync wherever it lives (Config or Advanced).
+        if (state.gearView === "config") renderConfigDebugPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         break;
       case "setAllToolDetails":
         // Command Palette: Grok: Expand/Collapse All Tool Details — one-shot,

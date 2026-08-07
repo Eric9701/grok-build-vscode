@@ -284,6 +284,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   openText: "host-local",
   openDiff: "host-local",
   exportExpr: "host-local",
+  // Opens a native directory picker on the machine running the host. A remote
+  // could neither see nor answer that dialog, so it would hang a phone on a
+  // control that never resolves.
+  addProjectFolder: "host-local",
   openGlobalConfig: "host-local",
   openProjectConfig: "host-local",
   runMcpList: "host-local",

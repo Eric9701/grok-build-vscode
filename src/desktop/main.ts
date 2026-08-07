@@ -114,6 +114,13 @@ function parseArgs(argv: string[]): {
 const earlyArgs = parseArgs(process.argv.slice(1));
 try {
   app.setName(DESKTOP_APP_SHORT_NAME);
+  // Windows groups taskbar buttons by AppUserModelID, and an unpackaged run
+  // without one inherits electron.exe's identity — so the taskbar showed
+  // Electron's atom whatever icon the window set. Installed builds were never
+  // affected (their shortcut carries an ID), which is why this only ever looked
+  // wrong while developing. Must match electron-builder.yml's appId, or a dev
+  // run and the installed app would occupy separate taskbar buttons.
+  app.setAppUserModelId("com.productcompass.grok-build-desktop");
 } catch {
   /* app module edge cases in tests */
 }

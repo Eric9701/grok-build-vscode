@@ -29,6 +29,7 @@
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "remotePreferences", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
     "toggleChip", "openFile", "openUrl", "openText", "openDiff", "exportExpr", "setEffort",
+    "addProjectFolder",
     "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "openSettings", "moveView",
     "setShowThinking", "setAppPurpose", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
