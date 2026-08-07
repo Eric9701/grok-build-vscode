@@ -7,6 +7,9 @@
  *  - Rewind confirm cancel answers ok:false (host must not revert)
  */
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { bootWebview, type Harness } from "./webview-harness";
 
 function dispatch(window: any, msg: object) {
@@ -524,5 +527,28 @@ describe("rewind confirm dismiss (DOM)", () => {
     });
     // No rewindSession was posted by the webview on cancel — only the answer.
     expect(h.posted.filter((m) => m.type === "rewindSession")).toHaveLength(0);
+  });
+});
+
+describe("continue-in-a-new-chat picker is visible from the session menu", () => {
+  // The picker's entry point moved from the gear to the conversation's overflow
+  // menu, but it still rendered straight into the gear popover — which is closed
+  // there. So it wrote into a hidden, unpositioned element: no visible response
+  // at all, and on the one occasion it did appear it sat in the corner of the
+  // window anchored to nothing.
+  it("unhides and positions the popover before rendering into it", () => {
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.js"),
+      "utf8",
+    );
+    const start = src.indexOf("function renderContinueDestinationPicker(");
+    expect(start).toBeGreaterThan(0);
+    const body = src.slice(start, start + 900);
+    expect(body).toContain("gearPopover.hidden");
+    expect(body).toContain("positionGearPopover");
+    // Positioned BEFORE it is shown, or it paints once in the wrong place.
+    expect(body.indexOf("positionGearPopover")).toBeLessThan(
+      body.indexOf("gearPopover.hidden = false"),
+    );
   });
 });

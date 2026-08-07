@@ -2314,6 +2314,15 @@
   function renderContinueDestinationPicker(dests) {
     state.gearView = "continue";
     gearPopover.innerHTML = "";
+    // This panel used to be reachable only from the gear, so it could assume the
+    // popover was already open and positioned. Its entry point moved to the
+    // conversation's overflow menu, where it is not — so the picker rendered
+    // into a hidden, unpositioned element: nothing happened at all, and when it
+    // did show it sat in the corner of the window with no anchor.
+    if (gearPopover.hidden) {
+      positionGearPopover(activeGearButton());
+      gearPopover.hidden = false;
+    }
     addGearItem('<span class="popover-back">← Continue in a new chat</span>', renderGearMain);
     addSection("Where?");
     dests.forEach((d, i) => {
