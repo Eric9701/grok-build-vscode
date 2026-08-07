@@ -1734,6 +1734,48 @@ describe("atomic secrets write (A3)", () => {
     expect(isWindowsReplaceRenameError({ code: "ENOENT" })).toBe(false);
     expect(isWindowsReplaceRenameError({ code: "EIO" })).toBe(false);
   });
+
+  it("config.json and globalState.json use writeFileAtomic (not bare writeFileSync)", () => {
+    // Profile now owns the open-folder set and session metadata — a mid-write
+    // crash must not truncate and silently reset preferences.
+    const cfg = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "config-store.ts",
+      ),
+      "utf8",
+    );
+    const saveStart = cfg.indexOf("private save(");
+    const saveBody = cfg.slice(saveStart, saveStart + 400);
+    expect(saveBody).toContain("writeFileAtomic");
+    expect(saveBody).not.toMatch(/writeFileSync\(this\.filePath/);
+
+    const mem = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "memento.ts",
+      ),
+      "utf8",
+    );
+    expect(mem).toContain("writeFileAtomic");
+    const writeMap = mem.slice(mem.indexOf("function writeJsonMap"), mem.indexOf("export function createFileMemento"));
+    expect(writeMap).toContain("writeFileAtomic");
+    expect(writeMap).not.toMatch(/writeFileSync\(/);
+
+    // Functional: ConfigStore round-trips via atomic write.
+    const configPath = path.join(dir, "config.json");
+    const store = new ConfigStore(configPath);
+    store.setWorkspaceRoot(dir);
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8")).workspaceRoot).toBe(
+      path.resolve(dir),
+    );
+  });
 });
 
 describe("watcher chain helpers (A4)", () => {
@@ -2384,10 +2426,14 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     const readyStart = sidebar.indexOf('case "ready":');
     expect(readyStart).toBeGreaterThan(0);
     const readyEnd = sidebar.indexOf("case \"remotePreferences\"", readyStart);
-    const readyBody = sidebar.slice(readyStart, readyEnd > readyStart ? readyEnd : readyStart + 400);
+    const readyBody = sidebar.slice(readyStart, readyEnd > readyStart ? readyEnd : readyStart + 800);
     expect(readyBody).toContain("postRepoCatalog");
     expect(readyBody).toContain("postSessionsList");
-    // Order: catalog first (sets selectedRepoCwd), then the list for that selection.
+    // Cold start only (rehydrate already posts catalog+sessions — skip duplicate).
+    expect(readyBody).toContain("shouldRehydrateOnWebviewReady");
+    // Disk scan is deferred so ready does not block activation on large histories.
+    expect(readyBody).toContain("setImmediate");
+    // Order: catalog first (sets selectedRepoCwd), then the deferred list.
     expect(readyBody.indexOf("postRepoCatalog")).toBeLessThan(readyBody.indexOf("postSessionsList"));
     // After agent start, re-post so a live empty "New session" row appears.
     const initialStart = sidebar.indexOf("private postInitialState(");
@@ -2583,8 +2629,10 @@ describe("file-tree read TOCTOU recheck (P2-6)", () => {
   });
 });
 
-describe("voice-key migration no plaintext fallback (P2-7)", () => {
-  it("scrubs plaintext and throws when encryption is unavailable", () => {
+describe("voice-key migration never deletes unencryptable credential (round 12)", () => {
+  it("production sequence leaves plaintext and throws when encryption is unavailable", () => {
+    // Real main.ts path: `new ConfigStore(path)` then `setSensitiveStore(...)`
+    // inside a catch — NOT `new ConfigStore(path, sensitive)`.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-vk-fail-"));
     const configPath = path.join(dir, "config.json");
     const sensPath = path.join(dir, "sensitive.enc.json");
@@ -2592,7 +2640,7 @@ describe("voice-key migration no plaintext fallback (P2-7)", () => {
       fs.writeFileSync(
         configPath,
         JSON.stringify({
-          config: { "grok.voiceApiKey": "legacy-plain-key" },
+          config: { "grok.voiceApiKey": "legacy-plain-key", "grok.cliPath": "/bin/x" },
         }),
         "utf8",
       );
@@ -2605,10 +2653,63 @@ describe("voice-key migration no plaintext fallback (P2-7)", () => {
           throw new Error("should not decrypt");
         },
       };
+      // Production construct-then-attach sequence.
+      const store = new ConfigStore(configPath);
       expect(() => {
-        new ConfigStore(configPath, new SensitiveConfigStore(sensPath, noEnc));
+        store.setSensitiveStore(new SensitiveConfigStore(sensPath, noEnc));
       }).toThrow(/secure storage|unavailable|credentials/i);
 
+      // Credential MUST still be on disk — never destroy what we cannot re-encrypt.
+      const rawCfg = fs.readFileSync(configPath, "utf8");
+      expect(rawCfg).toContain("legacy-plain-key");
+      expect(rawCfg).toMatch(/voiceApiKey/);
+      // Non-sensitive prefs still readable.
+      expect(store.getConfiguration("grok").get("cliPath")).toBe("/bin/x");
+      // Voice key still readable from the deferred plaintext until encrypt returns.
+      expect(store.getConfiguration("grok").get("voiceApiKey")).toBe("legacy-plain-key");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates on a later run once encryption becomes available", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-vk-later-"));
+    const configPath = path.join(dir, "config.json");
+    const sensPath = path.join(dir, "sensitive.enc.json");
+    try {
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ config: { "grok.voiceApiKey": "legacy-plain-key" } }),
+        "utf8",
+      );
+      const noEnc: SafeStorageLike = {
+        isEncryptionAvailable: () => false,
+        encryptString: () => {
+          throw new Error("no enc");
+        },
+        decryptString: () => {
+          throw new Error("no enc");
+        },
+      };
+      const first = new ConfigStore(configPath);
+      expect(() => {
+        first.setSensitiveStore(new SensitiveConfigStore(sensPath, noEnc));
+      }).toThrow();
+      expect(fs.readFileSync(configPath, "utf8")).toContain("legacy-plain-key");
+
+      const memSafe: SafeStorageLike = {
+        isEncryptionAvailable: () => true,
+        encryptString: (s) => Buffer.from(`enc:${s}`, "utf8"),
+        decryptString: (b) => {
+          const t = b.toString("utf8");
+          if (!t.startsWith("enc:")) throw new Error("bad cipher");
+          return t.slice(4);
+        },
+      };
+      // Next successful start: construct + attach with working encryption.
+      const second = new ConfigStore(configPath);
+      second.setSensitiveStore(new SensitiveConfigStore(sensPath, memSafe));
+      expect(second.getConfiguration("grok").get("voiceApiKey")).toBe("legacy-plain-key");
       const rawCfg = fs.readFileSync(configPath, "utf8");
       expect(rawCfg).not.toContain("legacy-plain-key");
       expect(rawCfg).not.toMatch(/voiceApiKey/);
@@ -2617,9 +2718,8 @@ describe("voice-key migration no plaintext fallback (P2-7)", () => {
     }
   });
 
-  it("mutation: the old catch-continue would leave plaintext in config.json", () => {
-    // Pins that migrateSensitiveFromPlaintext must not `continue` on encrypt
-    // failure without scrubbing — source must scrub before rethrow.
+  it("mutation: scrubbing on encrypt failure reopens credential destruction", () => {
+    // Old (wrong) path: delete prefs key in the catch before rethrow.
     const src = fs.readFileSync(
       path.join(
         path.dirname(fileURLToPath(import.meta.url)),
@@ -2630,7 +2730,29 @@ describe("voice-key migration no plaintext fallback (P2-7)", () => {
       ),
       "utf8",
     );
-    expect(src).toContain("migrationError");
-    expect(src).not.toMatch(/leave plaintext until encryption is available/);
+    const migrateStart = src.indexOf("private migrateSensitiveFromPlaintext(");
+    const migrateEnd = src.indexOf("private save(", migrateStart);
+    const body = src.slice(migrateStart, migrateEnd);
+    expect(body).toContain("migrationError");
+    // Catch must leave plaintext — no delete of the key in the failure path.
+    const catchStart = body.indexOf("} catch (e)");
+    expect(catchStart).toBeGreaterThan(0);
+    const catchBody = body.slice(catchStart, catchStart + 200);
+    expect(catchBody).not.toMatch(/delete this\.prefs\.config\[key\]/);
+    expect(catchBody).toContain("migrationError = e");
+    // main.ts production sequence must surface failure (dialog), not only log.
+    const main = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "main.ts",
+      ),
+      "utf8",
+    );
+    expect(main).toContain("setSensitiveStore");
+    expect(main).toContain("showErrorBox");
+    expect(main).toMatch(/new ConfigStore\(configPath\)/);
   });
 });

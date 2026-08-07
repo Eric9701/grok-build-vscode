@@ -24,6 +24,31 @@ export function cwdIsAuthorized(
 }
 
 /**
+ * History/list cwd a builder may scan for a recipient. Returns the cwd only when
+ * it is in the **current** authorized set; otherwise `undefined` so the builder
+ * emits an empty list instead of trusting stale per-tab state after a close.
+ */
+export function authorizedListCwd(
+  cwd: string | undefined,
+  authorizedCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean = pathsEqual,
+): string | undefined {
+  return cwdIsAuthorized(cwd, authorizedCwds, sameCwd) ? cwd : undefined;
+}
+
+/**
+ * Keep only entries whose `cwd` is currently authorized. Used for pinned lists
+ * and any multi-repo fan-out that must not surface closed projects.
+ */
+export function filterEntriesByAuthorizedCwd<T extends { cwd?: string }>(
+  entries: readonly T[],
+  authorizedCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean = pathsEqual,
+): T[] {
+  return entries.filter((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd));
+}
+
+/**
  * True when `filePath` is the closed folder or lives under it (segment-safe).
  * Used to revoke image handles and decide whether a session is bound to a
  * folder being closed.

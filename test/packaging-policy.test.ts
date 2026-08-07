@@ -57,6 +57,21 @@ describe("marketplace vs GitHub README", () => {
     expect(pkg.scripts.package).not.toBe("npx @vscode/vsce package");
     expect(pkg.scripts.publish).not.toBe("npx @vscode/vsce publish");
   });
+
+  it("pins @vscode/vsce in devDependencies (no floating npx fetch on package)", () => {
+    const full = JSON.parse(read("package.json")) as {
+      devDependencies?: Record<string, string>;
+      scripts: Record<string, string>;
+    };
+    // Clean CI/release builds must use the locked binary, not whatever
+    // `npx @vscode/vsce` resolves on the network that day.
+    // Exact pin (no caret/tilde) so lockfile + package.json agree on the tool.
+    expect(full.devDependencies?.["@vscode/vsce"]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(full.scripts.package).toMatch(/^vsce package\b/);
+    expect(full.scripts.publish).toMatch(/^vsce publish\b/);
+    // Mutation: dropping the dep while keeping `npx @vscode/vsce` reopens float.
+    expect(full.scripts.package).not.toMatch(/npx\s+@vscode\/vsce/);
+  });
 });
 
 describe("VSIX excludes desktop app", () => {
@@ -85,7 +100,7 @@ describe("VSIX excludes desktop app", () => {
     expect(pkg.scripts["dist:win"]).toMatch(/electron-builder/);
     expect(pkg.scripts["dist:mac"]).toMatch(/electron-builder/);
     expect(pkg.scripts.dist).toMatch(/electron-builder/);
-    expect(pkg.scripts.package).toMatch(/@vscode\/vsce package/);
+    expect(pkg.scripts.package).toMatch(/\bvsce package\b/);
   });
 });
 

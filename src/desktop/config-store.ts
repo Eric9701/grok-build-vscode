@@ -249,7 +249,7 @@ export class ConfigStore {
     } catch {
       this.prefs = { config: {} };
     }
-    // Migration must not share the parse catch — a failed encrypt should scrub
+    // Migration must not share the parse catch — a failed encrypt must leave
     // the credential and rethrow, not wipe the whole prefs object.
     this.migrateSensitiveFromPlaintext();
   }
@@ -258,10 +258,10 @@ export class ConfigStore {
    * One-shot: if a sensitive key still sits in plaintext config (older builds),
    * move it into the encrypted bag and scrub config.json.
    *
-   * When encryption fails there is **no** plaintext fallback (same guarantee as
-   * safe-secrets): the key is scrubbed from config.json so it is not left at
-   * rest indefinitely, and the error is rethrown so startup can fail visibly
-   * (user re-enters the key once OS storage works).
+   * When encryption is unavailable we **never destroy** the credential: leave
+   * it in config.json, rethrow so startup can report loudly, and migrate on a
+   * later run when OS secure storage returns. Scrub only after a successful
+   * encrypt (or when the bag already holds the value).
    */
   private migrateSensitiveFromPlaintext(): void {
     if (!this.sensitive) return;
@@ -276,14 +276,16 @@ export class ConfigStore {
           if (this.sensitive.get(key) === undefined) {
             this.sensitive.set(key, plain);
           }
-        } catch (e) {
-          // Scrub plaintext either way — never leave credentials in config.json.
+          // Scrub plaintext only after the bag holds the secret.
           delete this.prefs.config[key];
           dirty = true;
+        } catch (e) {
+          // Leave plaintext for the next successful encryption run.
           migrationError = e;
-          continue;
         }
+        continue;
       }
+      // Empty/non-string junk under a sensitive key — drop without encrypting.
       delete this.prefs.config[key];
       dirty = true;
     }
@@ -292,12 +294,12 @@ export class ConfigStore {
   }
 
   private save(): void {
-    // Never persist sensitive keys even if a caller stuffed them into config.
-    for (const key of SENSITIVE_CONFIG_KEYS) {
-      delete this.prefs.config[key];
-    }
+    // Write prefs as-is. Sensitive keys only appear in this.prefs.config while
+    // migration is deferred (encryption unavailable); successful encrypt scrub
+    // them first. setValue/applyOverrides never put live secrets here when a
+    // SensitiveConfigStore is attached.
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    fs.writeFileSync(this.filePath, JSON.stringify(this.prefs, null, 2), "utf8");
+    writeFileAtomic(this.filePath, JSON.stringify(this.prefs, null, 2));
   }
 
   getWorkspaceRoot(): string | undefined {
@@ -413,6 +415,11 @@ export class ConfigStore {
     if (SENSITIVE_CONFIG_KEYS.has(fullKey) && this.sensitive) {
       const s = this.sensitive.get(fullKey);
       if (s !== undefined) return s;
+      // Unmigrated legacy plaintext (encryption was unavailable) still wins
+      // over the empty default so Voice keeps working until the next encrypt.
+      if (Object.prototype.hasOwnProperty.call(this.prefs.config, fullKey)) {
+        return this.prefs.config[fullKey];
+      }
       return CONFIG_DEFAULTS[fullKey];
     }
     if (Object.prototype.hasOwnProperty.call(this.prefs.config, fullKey)) {
@@ -525,11 +532,18 @@ export class ConfigStore {
         const def = CONFIG_DEFAULTS[fullKey] as T | undefined;
         if (SENSITIVE_CONFIG_KEYS.has(fullKey) && store.sensitive) {
           const s = store.sensitive.get(fullKey);
-          return {
-            key: fullKey,
-            defaultValue: def,
-            globalValue: s !== undefined ? (s as T) : undefined,
-          };
+          if (s !== undefined) {
+            return { key: fullKey, defaultValue: def, globalValue: s as T };
+          }
+          // Legacy plaintext still in prefs while migration is deferred.
+          if (Object.prototype.hasOwnProperty.call(store.prefs.config, fullKey)) {
+            return {
+              key: fullKey,
+              defaultValue: def,
+              globalValue: store.prefs.config[fullKey] as T,
+            };
+          }
+          return { key: fullKey, defaultValue: def, globalValue: undefined };
         }
         const has = Object.prototype.hasOwnProperty.call(store.prefs.config, fullKey);
         return {

@@ -12,6 +12,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   net,
@@ -257,14 +258,25 @@ async function createApp(): Promise<void> {
   const extensionRoot = resolveExtensionRoot();
   const pkg = readPackageMeta(extensionRoot);
   const configPath = path.join(userData, "config.json");
+  // Construct first, then attach encryption — same production sequence tests pin.
+  // Never delete a legacy plaintext credential when encrypt is unavailable.
   const config = new ConfigStore(configPath);
-  // Voice API key and other credentials: OS-encrypted bag, never config.json.
   try {
     config.setSensitiveStore(
       new SensitiveConfigStore(path.join(userData, "sensitive.enc.json"), safeStorage),
     );
   } catch (e) {
-    log(`sensitive config store init: ${(e as Error).message}`);
+    const msg = (e as Error)?.message ?? String(e);
+    log(`sensitive config store init FAILED: ${msg}`);
+    // Leave the credential in config.json for a later run; surface loudly so a
+    // swallowed catch cannot silently destroy it (round 12).
+    dialog.showErrorBox(
+      "Secure storage unavailable",
+      "Could not encrypt stored credentials (for example the voice API key). " +
+        "They remain in config.json until OS secure storage is available, and " +
+        "will migrate automatically on the next successful start.\n\n" +
+        msg,
+    );
   }
 
   if (args.configJson && fs.existsSync(args.configJson)) {

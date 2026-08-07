@@ -1,11 +1,13 @@
 /**
  * File-backed MementoLike + secrets for the desktop host.
  * Synchronous reads (PersistedState requires it); async updates.
+ * Profile writes use the same atomic rename path as secrets/config.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { MementoLike } from "../persisted-state";
 import type { HostSecrets } from "../host";
+import { writeFileAtomic } from "./safe-secrets";
 
 function readJsonMap(filePath: string): Record<string, unknown> {
   try {
@@ -21,7 +23,7 @@ function readJsonMap(filePath: string): Record<string, unknown> {
 
 function writeJsonMap(filePath: string, data: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  writeFileAtomic(filePath, JSON.stringify(data, null, 2));
 }
 
 export function createFileMemento(filePath: string): MementoLike {

@@ -178,7 +178,9 @@ import {
   worktreesForRepo,
 } from "./worktree";
 import {
+  authorizedListCwd,
   cwdIsAuthorized,
+  filterEntriesByAuthorizedCwd,
   imageHandlesToRevoke,
   imagePathStillAuthorized,
   pathBoundToClosedFolder,
@@ -2962,11 +2964,15 @@ See design doc for the full state machine diagram.`;
    *  actually holds a pin — not one per repo in the catalog. */
   private buildPinnedSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    // Enforce authorization at build time — never trust pin metadata alone.
+    const authorized = this.authorizedSessionCwds();
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.host.appendLine(m);
     const byCwd = new Map<string, { cwd: string; ids: string[] }>();
     for (const [id, o] of Object.entries(overrides)) {
       if (typeof o?.pinnedAt !== "number" || !o.pinnedCwd) continue;
+      // Closed project: skip the whole bucket before any disk scan.
+      if (!authorizedListCwd(o.pinnedCwd, authorized, pathsEqual)) continue;
       const key = normalizeFsPath(o.pinnedCwd);
       const bucket = byCwd.get(key) ?? { cwd: o.pinnedCwd, ids: [] };
       bucket.ids.push(id);
@@ -2986,17 +2992,21 @@ See design doc for the full state machine diagram.`;
       ));
     }
     // Newest pin on top — the same rule the repo rows use, and the one that
-    // matches "I just pinned this, where did it go".
-    entries.sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
+    // matches "I just pinned this, where did it go". Defense in depth: drop
+    // any entry whose cwd slipped past the bucket gate.
+    const filtered = filterEntriesByAuthorizedCwd(entries, authorized, pathsEqual);
+    filtered.sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
     const dots: Record<string, Dot> = {};
-    for (const e of entries) dots[e.id] = this.dotForId(e.id);
-    return { entries, dots };
+    for (const e of filtered) dots[e.id] = this.dotForId(e.id);
+    return { entries: filtered, dots };
   }
 
   private postPinnedSessions(clientId?: string): void {
     const hasRemote = this.remoteClients.clients().length > 0;
     const hasLocalRail = this.host.canSwitchWorkspaceFolder;
     if (!clientId && !hasRemote && !hasLocalRail) return;
+    // Built against the live authorized set for every recipient (same open set
+    // on desktop; full catalog on VS Code).
     const msg: HostMsg = { type: "pinnedSessions", ...this.buildPinnedSessions() };
     if (clientId) {
       this.sendRemoteClient(clientId, msg);
@@ -4386,12 +4396,19 @@ See design doc for the full state machine diagram.`;
     switch (msg.type) {
       case "ready":
         this.postInitialState();
-        this.postRepoCatalog();
-        // Selected project on the desktop rail reads `sessions`, not `repoSessions`
-        // (previews skip the selection). History is disk-only — do not wait for
-        // the agent handshake or the rail stays on "No sessions yet" forever
-        // when startSession is slow, fails, or never reaches a caller that posts.
-        this.postSessionsList();
+        // Rehydrate already posts catalog + sessions. Cold start needs an early
+        // disk list so the rail is not empty while startSession runs — but the
+        // catalog scan is deferred so ready returns and the UI paints first
+        // (large histories must not block activation).
+        if (
+          !shouldRehydrateOnWebviewReady(
+            this.host.webviewReloadsUnderLiveSession,
+            !!this.focused.client,
+          )
+        ) {
+          this.postRepoCatalog();
+          setImmediate(() => this.postSessionsList());
+        }
         break;
       case "remotePreferences":
         if (origin === "remote" && clientId) {
@@ -5081,6 +5098,8 @@ See design doc for the full state machine diagram.`;
     // and reads no disk until a pin actually exists.
     this.postPinnedSessions();
     for (const clientId of this.remoteClients.clients()) {
+      // Per-tab cwd may still name a closed project after revoke leaves it for
+      // selectRepo — buildSessionsList enforces the live authorized set.
       const cwd = this.remoteClients.cwd(clientId);
       const activeId = this.remoteActiveSessionId(clientId);
       this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, activeId));
@@ -5097,6 +5116,23 @@ See design doc for the full state machine diagram.`;
     const offset = Math.max(0, opts?.offset ?? 0);
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const query = (opts?.query ?? "").trim().toLowerCase();
+    // Authorization at the point of build: stale per-tab / selected cwd must not
+    // scan a closed project's session catalog (round 12).
+    const listCwd = authorizedListCwd(cwd, this.authorizedSessionCwds(), pathsEqual);
+    if (!listCwd) {
+      return {
+        type: "sessions",
+        entries: [],
+        activeId: null,
+        dots: {},
+        offset,
+        total: 0,
+        hasMore: false,
+        nextOffset: offset,
+        query: opts?.query ?? "",
+      };
+    }
+    cwd = listCwd;
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const log = (m: string) => this.host.appendLine(m);
@@ -9743,26 +9779,41 @@ See design doc for the full state machine diagram.`;
   /** Ordered catch-up built from this client's cwd and active remote session. */
   private buildRemoteSnapshot(clientId: string): HostMsg[] {
     const cwd = this.remoteClients.cwd(clientId);
+    // Live authorized set for this host — not "whatever the tab last selected".
+    const authorized = this.authorizedSessionCwds();
+    const listCwd = authorizedListCwd(cwd, authorized, pathsEqual);
     const session = this.remoteSessionFor(clientId);
+    // Catalog is already open-folder-filtered on desktop; still the sole source.
     const entries = this.localRepoCatalogEntries();
-    const initial = { ...this.buildInitialStateMsg(), cwd };
+    const initial = { ...this.buildInitialStateMsg(), cwd: listCwd ?? cwd };
     const sessionCwd = this.sessionCwd(session);
-    const phrase = this.voiceSetting(sessionCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const sessionCwdOk = !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
+    const phrase = this.voiceSetting(
+      sessionCwdOk ? sessionCwd : this.workspaceRoot(),
+      "voiceSendPhrase",
+      DEFAULT_SEND_PHRASE,
+    );
     const snap: HostMsg[] = [];
     snap.push(initial);
     snap.push({ type: "clearMessages" });
-    if (!session.replaying) snap.push(...bracketRemoteSnapshot(session.buffer));
-    snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
-    if (session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
+    // Conversation buffer only when the bound session still lives under an
+    // authorized cwd (revoke disposes doomed sessions; this is the belt).
+    if (sessionCwdOk && !session.replaying) {
+      snap.push(...bracketRemoteSnapshot(session.buffer));
+    }
+    if (sessionCwdOk) {
+      snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
+    }
+    if (sessionCwdOk && session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
       const text = this.queuedSendReadyText(session);
       if (text) session.queuedSendDispatch = { id: randomUUID(), text };
     }
-    if (session.queuedSendDispatch) {
+    if (sessionCwdOk && session.queuedSendDispatch) {
       snap.push({ type: "submitQueuedSend", ...session.queuedSendDispatch });
     }
     snap.push({
       type: "voiceConfigured",
-      value: !!this.resolveVoiceApiKey(sessionCwd),
+      value: !!this.resolveVoiceApiKey(sessionCwdOk ? sessionCwd : this.workspaceRoot()),
       sendPhrase: phrase,
     });
     const activeVoice = this.remoteVoice.get(clientId);
@@ -9772,11 +9823,20 @@ See design doc for the full state machine diagram.`;
     snap.push({
       type: "repos",
       entries,
+      // selectedCwd may still name a closed path until the tab selectRepos;
+      // entries never include that path on desktop.
       selectedCwd: cwd,
-      activeCwd: this.sessionCwd(session),
+      activeCwd: sessionCwdOk ? this.sessionCwd(session) : (listCwd ?? cwd),
     });
-    snap.push(this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
-    if (session.activeSessionId) {
+    // buildSessionsList re-checks authorization (empty list if listCwd missing).
+    snap.push(
+      this.buildSessionsList(
+        listCwd ?? cwd,
+        undefined,
+        sessionCwdOk ? this.remoteActiveSessionId(clientId) : null,
+      ),
+    );
+    if (sessionCwdOk && session.activeSessionId) {
       snap.push({
         type: "sessionName",
         sessionId: session.activeSessionId,
@@ -9787,6 +9847,7 @@ See design doc for the full state machine diagram.`;
     // Pins belong in the snapshot, not behind a `ready` handler: `ready` from a
     // remote is answered HERE and never reaches onMessage's switch, so anything
     // pushed from there would simply never arrive on a fresh tab or a reconnect.
+    // buildPinnedSessions filters to the live authorized set.
     snap.push({ type: "pinnedSessions", ...this.buildPinnedSessions() });
     const out: HostMsg[] = [];
     for (const m of snap) {

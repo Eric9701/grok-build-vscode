@@ -12,7 +12,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  authorizedListCwd,
   cwdIsAuthorized,
+  filterEntriesByAuthorizedCwd,
   imageHandlesToRevoke,
   imagePathStillAuthorized,
   pathBoundToClosedFolder,
@@ -34,6 +36,41 @@ describe("cwdIsAuthorized", () => {
     expect(cwdIsAuthorized("/work/closed", authorized, pathsEqual)).toBe(false);
     expect(cwdIsAuthorized(undefined, authorized, pathsEqual)).toBe(false);
     expect(cwdIsAuthorized("/work/a", [], pathsEqual)).toBe(false);
+  });
+});
+
+describe("authorizedListCwd / filterEntriesByAuthorizedCwd (outbound send gate)", () => {
+  it("refuses a closed project's cwd even when per-tab state still names it", () => {
+    // Production: after revoke, RemoteClientState may leave cwd at the closed
+    // path so selectRepo is required. Outbound builders must not scan that
+    // catalog — they consult authorizedListCwd at build time.
+    const open = ["/work/open"];
+    const closed = "/work/closed";
+    expect(authorizedListCwd(closed, open, pathsEqual)).toBeUndefined();
+    expect(authorizedListCwd("/work/open", open, pathsEqual)).toBe("/work/open");
+    expect(authorizedListCwd(undefined, open, pathsEqual)).toBeUndefined();
+  });
+
+  it("filters pinned/session entries so a closed repo never appears in the payload", () => {
+    const authorized = ["/work/open"];
+    const entries = [
+      { id: "a", cwd: "/work/open", displayName: "ok" },
+      { id: "b", cwd: "/work/closed", displayName: "leak" },
+      { id: "c", cwd: undefined as string | undefined, displayName: "no-cwd" },
+    ];
+    const kept = filterEntriesByAuthorizedCwd(entries, authorized, pathsEqual);
+    expect(kept.map((e) => e.id)).toEqual(["a"]);
+  });
+
+  it("mutation: trusting stale tab cwd without authorizedListCwd reopens the leak", () => {
+    // Simulates postSessionsList / buildRemoteSnapshot using remoteClients.cwd
+    // alone as the list scope after a project close.
+    const tabCwd = "/work/closed";
+    const authorized = ["/work/open"];
+    const buggyWouldScan = tabCwd; // old path: always scan tab cwd
+    expect(buggyWouldScan).toBe("/work/closed");
+    const fixed = authorizedListCwd(tabCwd, authorized, pathsEqual);
+    expect(fixed).toBeUndefined(); // empty sessions list, no disk scan
   });
 });
 
@@ -196,5 +233,39 @@ describe("sidebar close-revocation wiring (source)", () => {
     const remoteTargetBody = src.slice(remoteTarget, remoteTarget + 200);
     expect(remoteTargetBody).toContain("isAuthorizedCwd");
     expect(remoteTargetBody).not.toContain("localRepoCatalogEntries");
+  });
+
+  it("every outbound remote builder enforces authorizedListCwd at build time", () => {
+    const src = sidebarSrc();
+    // buildSessionsList: gate before disk scan.
+    const listStart = src.indexOf("private buildSessionsList(");
+    const listEnd = src.indexOf("private sessionDisplayName(", listStart);
+    const listBody = src.slice(listStart, listEnd > listStart ? listEnd : listStart + 800);
+    expect(listBody).toContain("authorizedListCwd");
+    expect(listBody).toContain("authorizedSessionCwds");
+    // Empty list when unauthorized (no indexSessions for closed cwd).
+    expect(listBody).toMatch(/type:\s*"sessions"/);
+    expect(listBody).toContain("entries: []");
+
+    // buildPinnedSessions: skip unauthorized pin buckets.
+    const pinStart = src.indexOf("private buildPinnedSessions(");
+    const pinEnd = src.indexOf("private postPinnedSessions(", pinStart);
+    const pinBody = src.slice(pinStart, pinEnd);
+    expect(pinBody).toContain("authorizedListCwd");
+    expect(pinBody).toContain("filterEntriesByAuthorizedCwd");
+
+    // buildRemoteSnapshot: buffer + sessions only for authorized session cwd.
+    const snapStart = src.indexOf("private buildRemoteSnapshot(");
+    const snapEnd = src.indexOf("private getHtml(", snapStart);
+    const snapBody = src.slice(snapStart, snapEnd);
+    expect(snapBody).toContain("authorizedListCwd");
+    expect(snapBody).toContain("authorizedSessionCwds");
+    expect(snapBody).toContain("buildSessionsList");
+    expect(snapBody).toContain("buildPinnedSessions");
+    // Must not assume revoke already cleared per-tab cwd.
+    expect(snapBody).toMatch(/sessionCwdOk/);
+
+    // localRepoCatalogEntries remains the catalog source (open folders desktop).
+    expect(src).toContain("localRepoCatalogEntries");
   });
 });
