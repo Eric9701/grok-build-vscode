@@ -190,6 +190,9 @@ export function normalizeWorkspaceRoots(
 
 export class ConfigStore {
   private prefs: DesktopAppPrefs = { config: {} };
+  /** This-run-only overrides from `--config-json`. Read by getValue, never
+   *  written to disk. See {@link applySessionOverrides}. */
+  private overlay: Record<string, unknown> = {};
   private listeners = new Set<(e: HostConfigurationChangeEvent) => void>();
   private sensitive: SensitiveConfigStore | undefined;
 
@@ -412,6 +415,12 @@ export class ConfigStore {
   }
 
   getValue(fullKey: string): unknown {
+    // Session overrides win over BOTH stores, including the sensitive one — a
+    // flag naming a value for this run must not be quietly outranked by what
+    // happens to be on disk. Nothing here is ever written back.
+    if (Object.prototype.hasOwnProperty.call(this.overlay, fullKey)) {
+      return this.overlay[fullKey];
+    }
     if (SENSITIVE_CONFIG_KEYS.has(fullKey) && this.sensitive) {
       const s = this.sensitive.get(fullKey);
       if (s !== undefined) return s;
@@ -429,6 +438,10 @@ export class ConfigStore {
   }
 
   setValue(fullKey: string, value: unknown): void {
+    // An explicit change in the app beats a session override — otherwise the
+    // setting would appear to save and then keep reading back the flag's value,
+    // which is the same invisible-cause problem the overlay exists to fix.
+    delete this.overlay[fullKey];
     if (SENSITIVE_CONFIG_KEYS.has(fullKey)) {
       if (this.sensitive) {
         if (value === undefined || value === "") {
@@ -482,7 +495,26 @@ export class ConfigStore {
     }
   }
 
-  /** Merge overrides without firing per-key events (startup / test harness). */
+  /**
+   * `--config-json` / `GROK_DESKTOP_CONFIG_JSON`: overrides for THIS RUN ONLY.
+   *
+   * These used to be written into the user's real config file (and, for
+   * sensitive keys, into their encrypted store) and stayed there forever. That
+   * is not what a command-line flag means anywhere else, and it bites hard: a
+   * throwaway `grok.cliPath` aimed at a stub agent survived every later launch,
+   * so the app kept starting a fake CLI long after the flag was gone — with
+   * nothing on screen to explain why.
+   *
+   * Kept in memory instead, consulted by {@link getValue} ahead of both stores,
+   * and never saved. Quitting the app undoes it.
+   */
+  applySessionOverrides(overrides: Record<string, unknown>): void {
+    for (const [k, v] of Object.entries(overrides)) {
+      this.overlay[k] = v;
+    }
+  }
+
+  /** Merge overrides without firing per-key events, and PERSIST them. */
   applyOverrides(overrides: Record<string, unknown>): void {
     for (const [k, v] of Object.entries(overrides)) {
       if (SENSITIVE_CONFIG_KEYS.has(k)) {

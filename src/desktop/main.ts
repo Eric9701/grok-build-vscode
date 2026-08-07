@@ -302,8 +302,11 @@ async function createApp(): Promise<void> {
       // Windows, and JSON.parse rejects it as an unexpected token.
       const raw = fs.readFileSync(args.configJson, "utf8").replace(/^\uFEFF/, "");
       const overrides = JSON.parse(raw) as Record<string, unknown>;
-      config.applyOverrides(overrides);
-      log(`applied config overrides from ${args.configJson}`);
+      // THIS RUN ONLY — deliberately not persisted. A throwaway grok.cliPath
+      // used to survive into every later launch, leaving the app starting a
+      // stub agent with nothing on screen to explain it.
+      config.applySessionOverrides(overrides);
+      log(`applied config overrides from ${args.configJson} (this run only)`);
     } catch (e) {
       log(`failed to read config-json: ${(e as Error).message}`);
     }

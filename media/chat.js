@@ -2121,9 +2121,13 @@
     gearPopover.appendChild(row);
 
     // ── Session ───────────────────────────────────────────────────────────
-    // One entry: "Continue in a new chat" (fork ± worktree destination).
-    // Rewind lives on user bubbles, not here. This is about THIS conversation,
-    // so it rides with model/effort on the composer surface.
+    // Only where there is nowhere better. Rail hosts put these in the session
+    // header's ⋯ menu, beside Rename / Pin / Delete — the things you do TO a
+    // conversation. That leaves this popover holding model and effort alone,
+    // which is what it is for: how the agent answers, not which conversation
+    // you are in. VS Code has no session header, so they stay here.
+    // Rewind lives on user bubbles either way.
+    if (railGearLive()) return;
     addSection("Session");
     addGearItem(
       `<span class="gear-lead">${ICON.gitFork}<span>Continue in a new chat</span></span>`,
@@ -4683,6 +4687,43 @@
         onSelect: () => railRenameSession(s, cwd),
       },
     ];
+    // "Continue in a new chat" belongs with the other things you do TO a
+    // conversation (rename, pin, delete), not in the composer's settings beside
+    // model and effort — those adjust how the agent answers; this one makes a
+    // different conversation. Only for the conversation you are actually in: a
+    // fork continues from the live transcript, so offering it on some other row
+    // in the history list would promise something it cannot do.
+    if (active) {
+      items.push({
+        label: "Continue in a new chat",
+        icon: ICON.gitFork,
+        onSelect: () => beginContinueInNewChat(),
+      });
+      // Worktree upkeep rides along for the same reason, and only while you are
+      // in one — you cannot apply a checkout you are not standing in.
+      if (state.isWorktree) {
+        items.push({
+          label: "Apply worktree",
+          icon: ICON.gitBranch,
+          onSelect: () => uiConfirm({
+            title: "Apply worktree?",
+            body: "Merges this worktree's edits back into the main checkout.",
+            confirmLabel: "Apply",
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); }),
+        });
+        items.push({
+          label: "Remove worktree",
+          icon: ICON.gitBranch,
+          danger: true,
+          onSelect: () => uiConfirm({
+            title: "Remove worktree?",
+            body: "This deletes the isolated checkout. Unapplied edits are lost.",
+            confirmLabel: "Remove",
+            danger: true,
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); }),
+        });
+      }
+    }
     // Capability, never a version: a host that has never sent `pinnedSessions`
     // will silently drop `toggleSessionPin`, so offering the control there gives
     // a control that does nothing — worse than not having one. The frame arrives

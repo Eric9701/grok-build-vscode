@@ -29,18 +29,37 @@ describe("marketplace vs GitHub README", () => {
     expect(github).toMatch(/Grok-Build-Desktop-<version>-win-x64\.exe/);
   });
 
-  it("marketplace README is extension-only (no desktop app product)", () => {
-    // Product name for the standalone Electron host — must not appear in the
-    // VS Code Marketplace listing (noise for people installing an extension).
-    expect(marketplace).not.toMatch(/Grok Build Desktop/i);
-    expect(marketplace).not.toMatch(/desktop app/i);
-    expect(marketplace).not.toMatch(/standalone Electron/i);
+  // Owner, 2026-08-07: *"the key for me is what people see in marketplaces
+  // focuses primarily on the extension side. we can mention companion apps."*
+  // The rule is PRIMACY, not silence. The previous version banned the desktop
+  // app outright, which also banned telling an extension user that the thing
+  // they might actually want exists.
+  it("marketplace README stays extension-primary, companions only as a footnote", () => {
+    expect(marketplace).toMatch(/Grok Build for VS Code \(Community\)/);
+    expect(marketplace).toMatch(/not affiliated with or endorsed by xAI/i);
+
+    // Build/packaging internals are noise for someone installing an extension,
+    // and stay banned regardless of the relaxation above.
     expect(marketplace).not.toMatch(/npm run dist/i);
     expect(marketplace).not.toMatch(/dist-desktop/i);
     expect(marketplace).not.toMatch(/electron-builder/i);
-    // Still names the extension product and community framing.
-    expect(marketplace).toMatch(/Grok Build for VS Code \(Community\)/);
-    expect(marketplace).toMatch(/not affiliated with or endorsed by xAI/i);
+
+    // Primacy, enforced mechanically: the extension must be established before
+    // another product is named. "Later in the document" is the only
+    // machine-checkable form of "not the headline".
+    const firstExtension = marketplace.search(/Grok Build for VS Code \(Community\)/);
+    const firstDesktop = marketplace.search(/Grok Build Desktop/i);
+    expect(firstExtension).toBeGreaterThanOrEqual(0);
+    if (firstDesktop >= 0) {
+      expect(firstDesktop).toBeGreaterThan(firstExtension);
+      // Past the halfway mark: a companion named in the first half is being
+      // sold, not mentioned.
+      expect(firstDesktop).toBeGreaterThan(marketplace.length / 2);
+      // A footnote is named a handful of times, not threaded throughout.
+      expect((marketplace.match(/Grok Build Desktop/gi) || []).length).toBeLessThanOrEqual(3);
+    }
+    // AFK Pilot may be named anywhere — it IS the extension's Remote Control
+    // feature, not a separate product being cross-sold.
     expect(marketplace).toMatch(/AFK Pilot/);
   });
 

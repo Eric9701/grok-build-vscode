@@ -4,18 +4,25 @@
  * (canonical / realpath — see file-tree.ts), and only the main BrowserWindow
  * may invoke these channels.
  */
-import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type Event as ElectronEvent } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isExecutableOpenTarget } from "./desktop-policy";
 import { interpretOpenPathResult } from "./document-view";
-import { listTreeDir, readTreeFile, resolveTreePath } from "./file-tree";
+import {
+  listTreeDir,
+  readTreeFile,
+  resolveTreePath,
+  writeTreeFile,
+  type TreeFileStamp,
+} from "./file-tree";
 import { fileTreePanelBootSource } from "./file-tree-panel";
 import { isTrustedMainFrameIpc } from "./window-security";
 
 const CH_LIST = "desk-ft:list";
 const CH_OPEN = "desk-ft:open";
 const CH_READ = "desk-ft:read";
+const CH_SAVE = "desk-ft:save";
 const CH_ROOT = "desk-ft:root";
 
 export interface FileTreeIpcOptions {
@@ -33,6 +40,8 @@ export interface FileTreeIpcOptions {
 }
 
 let handlersRegistered = false;
+let closeBoundWindow: BrowserWindow | null = null;
+let closeBoundHandler: ((event: ElectronEvent) => void) | null = null;
 
 /** True when the IPC event came from the desktop app's main window main frame. */
 export function isIpcFromMainWindow(
@@ -154,12 +163,83 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     }
     return readTreeFile(root, relPath);
   });
+
+  ipcMain.handle(CH_SAVE, (e, payload: unknown) => {
+    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_SAVE);
+    const root = opts.getWorkspaceRoot();
+    if (!root) return { ok: false as const, reason: "no workspace root" };
+    if (!payload || typeof payload !== "object") {
+      return { ok: false as const, reason: "invalid save request" };
+    }
+    const request = payload as {
+      relPath?: unknown;
+      text?: unknown;
+      stamp?: unknown;
+    };
+    if (typeof request.relPath !== "string" || typeof request.text !== "string") {
+      return { ok: false as const, reason: "invalid save request" };
+    }
+    const stamp = request.stamp as Partial<TreeFileStamp> | undefined;
+    if (
+      !stamp ||
+      typeof stamp.mtimeMs !== "number" ||
+      typeof stamp.size !== "number"
+    ) {
+      return { ok: false as const, reason: "invalid version stamp" };
+    }
+    const result = writeTreeFile(root, request.relPath, request.text, stamp as TreeFileStamp, {
+      isExecutableOpenTarget: (absPath) => isExecutableOpenTarget(absPath),
+    });
+    if (!result.ok) {
+      opts.log(`[desk-ft] save rejected: ${result.reason} (${request.relPath})`);
+    }
+    return result;
+  });
+
+  const win = opts.getMainWindow();
+  if (win && !win.isDestroyed()) {
+    let closePending = false;
+    const onClose = (event: ElectronEvent) => {
+      if (closePending) {
+        event.preventDefault();
+        return;
+      }
+      closePending = true;
+      event.preventDefault();
+      void win.webContents
+        .executeJavaScript(
+          `(function(){try{var f=window.__grokDeskFtBeforeClose;if(typeof f!=="function")return Promise.resolve(true);return Promise.resolve(f()).then(Boolean);}catch(_){return false;}})()`,
+          true,
+        )
+        .then((ok) => {
+          closePending = false;
+          if (!ok || win.isDestroyed()) return;
+          if (closeBoundWindow === win && closeBoundHandler) {
+            win.removeListener("close", closeBoundHandler);
+            closeBoundWindow = null;
+            closeBoundHandler = null;
+          }
+          win.close();
+        })
+        .catch(() => {
+          closePending = false;
+        });
+    };
+    closeBoundWindow = win;
+    closeBoundHandler = onClose;
+    win.on("close", onClose);
+  }
 }
 
 export function unregisterFileTreeIpc(): void {
   if (!handlersRegistered) return;
-  for (const ch of [CH_LIST, CH_OPEN, CH_READ, CH_ROOT]) {
+  for (const ch of [CH_LIST, CH_OPEN, CH_READ, CH_SAVE, CH_ROOT]) {
     ipcMain.removeHandler(ch);
+  }
+  if (closeBoundWindow && closeBoundHandler) {
+    closeBoundWindow.removeListener("close", closeBoundHandler);
+    closeBoundWindow = null;
+    closeBoundHandler = null;
   }
   handlersRegistered = false;
 }

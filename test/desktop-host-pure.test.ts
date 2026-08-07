@@ -71,6 +71,7 @@ import {
   breadcrumbSegments,
   classifyFilePreview,
   FILE_TREE_MAX_ENTRIES,
+  FILE_PREVIEW_MAX_BYTES,
   findRelPathByBasename,
   isBareFileName,
   listTreeDir,
@@ -78,6 +79,7 @@ import {
   readTreeFile,
   resolveTreePath,
   type TreePathFs,
+  writeTreeFile,
 } from "../src/desktop/file-tree";
 import { isIpcFromMainWindow } from "../src/desktop/file-tree-ipc";
 import { FILE_TREE_PANEL_CSS, fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
@@ -2193,6 +2195,161 @@ describe("file preview helpers (B3)", () => {
 });
 
 // ── Round 8: authorization context, handles, serialization, TOCTOU ──────────
+
+describe("editable file-tree writes", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-write-tree-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("returns a stamp and preserves BOM, dominant CRLF, and trailing newline", () => {
+    const file = path.join(root, "notes.md");
+    fs.writeFileSync(file, Buffer.from("\xef\xbb\xbfone\r\ntwo\r\n", "binary"));
+    const read = readTreeFile(root, "notes.md");
+    expect(read.ok).toBe(true);
+    if (!read.ok || !read.details) throw new Error("expected text details");
+    expect(read.text).toBe("one\r\ntwo\r\n");
+    expect(read.details.bom).toBe(true);
+    expect(read.details.lineEnding).toBe("crlf");
+    expect(read.details.trailingNewline).toBe(true);
+
+    const saved = writeTreeFile(root, "notes.md", "one changed\ntwo", read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(saved.ok).toBe(true);
+    expect(fs.readFileSync(file)).toEqual(Buffer.from("\xef\xbb\xbfone changed\r\ntwo\r\n", "binary"));
+  });
+
+  it("refuses a stale stamp and leaves the agent's newer bytes intact", () => {
+    const file = path.join(root, "notes.md");
+    fs.writeFileSync(file, "agent version\n", "utf8");
+    const read = readTreeFile(root, "notes.md");
+    expect(read.ok && read.details).toBeTruthy();
+    fs.writeFileSync(file, "agent changed it\n", "utf8");
+    const result = writeTreeFile(root, "notes.md", "my edits\n", read.ok ? read.details!.stamp : { mtimeMs: 0, size: 0 }, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(result).toEqual({ ok: false, reason: "changed" });
+    expect(fs.readFileSync(file, "utf8")).toBe("agent changed it\n");
+  });
+
+  it("mutation: removing the stamp comparison would overwrite the newer agent bytes", () => {
+    const file = path.join(root, "notes.md");
+    fs.writeFileSync(file, "agent version\n", "utf8");
+    const read = readTreeFile(root, "notes.md");
+    if (!read.ok || !read.details) throw new Error("expected stamp");
+    fs.writeFileSync(file, "agent changed it\n", "utf8");
+    const result = writeTreeFile(root, "notes.md", "my edits\n", read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(result.ok).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toContain("agent changed it");
+  });
+
+  it("refuses non-editable kinds, executable targets, and oversized bodies", () => {
+    fs.writeFileSync(path.join(root, "image.png"), "png", "utf8");
+    fs.writeFileSync(path.join(root, "script.sh"), "echo hi\n", "utf8");
+    fs.writeFileSync(path.join(root, "notes.txt"), "ok\n", "utf8");
+    const imageRead = readTreeFile(root, "image.png");
+    const scriptRead = readTreeFile(root, "script.sh");
+    const textRead = readTreeFile(root, "notes.txt");
+    expect(imageRead.ok).toBe(true);
+    expect(scriptRead.ok).toBe(true);
+    expect(textRead.ok && textRead.details).toBeTruthy();
+    const imageResult = writeTreeFile(root, "image.png", "x", textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(imageResult).toEqual({ ok: false, reason: "file type is not editable" });
+    const executableResult = writeTreeFile(root, "script.sh", "x", textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {
+      isExecutableOpenTarget: (p) => p.endsWith("script.sh"),
+    });
+    expect(executableResult).toEqual({ ok: false, reason: "executable path refused" });
+    const tooLarge = "x".repeat(FILE_PREVIEW_MAX_BYTES + 1);
+    const oversizedResult = writeTreeFile(root, "notes.txt", tooLarge, textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(oversizedResult).toEqual({ ok: false, reason: "file too large" });
+  });
+
+  it("mutation: removing the final re-resolve would rename the swapped path", () => {
+    const file = path.join(root, "link.txt");
+    fs.writeFileSync(file, "inside\n", "utf8");
+    const read = readTreeFile(root, "link.txt");
+    if (!read.ok || !read.details) throw new Error("expected stamp");
+    let linkCalls = 0;
+    let renamed = false;
+    const pathFs: TreePathFs = {
+      realpathSync: (p) => {
+        if (path.normalize(p) === path.normalize(file)) {
+          linkCalls++;
+          return linkCalls <= 5 ? file : path.join(path.dirname(root), "outside.txt");
+        }
+        return fs.realpathSync(p);
+      },
+      existsSync: (p) => fs.existsSync(p),
+      statSync: (p) => fs.statSync(p),
+      readdirSync: (p, o) => fs.readdirSync(p, o),
+    };
+    const result = writeTreeFile(root, "link.txt", "edited\n", read.details.stamp, {
+      pathFs,
+      isExecutableOpenTarget: () => false,
+      renameSync: () => { renamed = true; },
+    });
+    expect(result.ok).toBe(false);
+    expect(renamed).toBe(false);
+    expect(linkCalls).toBeGreaterThan(5);
+  });
+
+  it("writes through a temporary sibling and renames it into place", () => {
+    const file = path.join(root, "notes.txt");
+    fs.writeFileSync(file, "old\n", "utf8");
+    const read = readTreeFile(root, "notes.txt");
+    if (!read.ok || !read.details) throw new Error("expected stamp");
+    const renames: string[] = [];
+    const result = writeTreeFile(root, "notes.txt", "new\n", read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+      renameSync: (from, to) => {
+        renames.push(`${path.basename(from)} -> ${path.basename(to)}`);
+        fs.renameSync(from, to);
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(renames).toHaveLength(1);
+    expect(renames[0]).toMatch(/\.tmp -> notes\.txt$/);
+    expect(fs.readFileSync(file, "utf8")).toBe("new\n");
+  });
+});
+
+describe("file-tree editing panel contract", () => {
+  it("has the Markdown default preview, edit/save controls, scoped save shortcut, and safe confirmations", () => {
+    const src = fileTreePanelBootSource();
+    expect(src).toContain('mode: result.kind === "markdown" ? "preview"');
+    expect(src).toContain('textContent = "Preview"');
+    expect(src).toContain('textContent = "Code"');
+    expect(src).toContain('textContent = "Edit"');
+    expect(src).toContain('textContent = "Save"');
+    expect(src).toContain('event.ctrlKey || event.metaKey');
+    expect(src).toContain('event.preventDefault();');
+    expect(src).toContain('confirmLabel: "Discard"');
+    expect(src).toContain('settle("cancel")');
+    expect(src).toContain('confirmLabel: "Reload"');
+    expect(src).toContain('"Overwrite"');
+  });
+
+  it("exposes the save bridge and unregisters its IPC handler", () => {
+    const base = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const preload = fs.readFileSync(path.join(base, "src", "desktop", "preload.ts"), "utf8");
+    const ipc = fs.readFileSync(path.join(base, "src", "desktop", "file-tree-ipc.ts"), "utf8");
+    expect(preload).toContain('ipcRenderer.invoke("desk-ft:save", request)');
+    expect(ipc).toContain('const CH_SAVE = "desk-ft:save"');
+    expect(ipc).toContain("writeTreeFile");
+    expect(ipc).toContain("CH_SAVE");
+  });
+});
 
 describe("file selection handles (P1-1)", () => {
   let dir: string;

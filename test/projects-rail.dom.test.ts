@@ -1352,3 +1352,46 @@ describe("projects rail", () => {
     });
   });
 });
+
+// "Continue in a new chat" used to sit in the composer's settings popover
+// beside model and effort. Those two say how the agent ANSWERS; forking makes a
+// different conversation — which is what the ⋯ menu is already for (Rename,
+// Pin, Delete). Moving it leaves the composer popover holding model and effort
+// alone. Owner, 2026-08-07.
+describe("continue-in-a-new-chat lives in the session ⋯ menu", () => {
+  const pinnedFrame = (entries: unknown[]) => ({ type: "pinnedSessions", entries, dots: {} });
+  it("offers it on the conversation you are actually in", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const menu = openMenu(window, section.querySelector(".rail-session") as HTMLElement);
+    const item = menuItem(menu, "Continue in a new chat");
+    expect(item).toBeTruthy();
+    click(window, item!);
+    // Knowledge work is the default, so there is one destination and no popup.
+    expect(posted.find((p) => p.type === "forkSession")).toBeTruthy();
+  });
+
+  it("withholds it from other rows — a fork continues from the LIVE transcript", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const rows = section.querySelectorAll(".rail-session");
+    // Second row is not the live conversation — offering a fork there would
+    // promise to continue from a transcript this client does not have.
+    const menu = openMenu(window, rows[1] as HTMLElement);
+    expect(menuItem(menu, "Continue in a new chat")).toBeUndefined();
+    expect(menuItem(menu, "Delete")).toBeTruthy();
+  });
+});

@@ -262,7 +262,10 @@ describe("rail gear placement (DOM)", () => {
     click(h.window, h.doc.getElementById("gear-btn"));
     const composerMenu = gearText(h);
     expect(composerMenu).toContain("Model and Effort");
-    expect(composerMenu).toContain("Continue in a new chat");
+    // Session actions moved to the header's ⋯ menu, so this popover is model
+    // and effort ALONE — how the agent answers, nothing about which
+    // conversation you are in.
+    expect(composerMenu).not.toContain("Continue in a new chat");
     // App-level settings moved out — that is the whole point of the split.
     expect(composerMenu).not.toContain("Use this app for");
     expect(composerMenu).not.toContain("Basic settings");

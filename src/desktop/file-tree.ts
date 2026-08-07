@@ -11,6 +11,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { TextDecoder } from "node:util";
 import { isFsPathInWorkspace } from "../host";
 
 /**
@@ -71,6 +72,35 @@ export interface TreePathFs {
   existsSync(p: string): boolean;
   statSync(p: string): fs.Stats;
   readdirSync(p: string, opts: { withFileTypes: true }): fs.Dirent[];
+}
+
+export interface TreeFileStamp {
+  mtimeMs: number;
+  size: number;
+}
+
+export type TextFileLineEnding = "lf" | "crlf";
+
+export interface TextFileDetails {
+  stamp: TreeFileStamp;
+  lineEnding: TextFileLineEnding;
+  trailingNewline: boolean;
+  bom: boolean;
+}
+
+export interface WriteTreeFileOptions {
+  platform?: NodeJS.Platform;
+  pathFs?: TreePathFs;
+  readFileSync?: (p: string) => Buffer;
+  writeFileSync?: (
+    p: string,
+    data: Buffer,
+    options?: { flag?: string; mode?: number },
+  ) => void;
+  renameSync?: (from: string, to: string) => void;
+  unlinkSync?: (p: string) => void;
+  /** Supplied by the host so writes use the same executable policy as opens. */
+  isExecutableOpenTarget: (p: string) => boolean;
 }
 
 const defaultTreeFs: TreePathFs = {
@@ -347,8 +377,39 @@ export type ReadTreeFileResult =
       dataUrl?: string;
       /** Pretty-printed when kind is json. */
       pretty?: boolean;
+      /** Version stamp sent back by the editor on save. */
+      stamp?: TreeFileStamp;
+      lineEnding?: TextFileLineEnding;
+      trailingNewline?: boolean;
+      bom?: boolean;
+      details?: TextFileDetails;
     }
   | { ok: false; reason: string; openExternal?: boolean };
+
+export type WriteTreeFileResult =
+  | { ok: true; relPath: string; absPath: string; stamp: TreeFileStamp }
+  | { ok: false; reason: string };
+
+function textDetails(text: string, st: fs.Stats, bom: boolean): TextFileDetails {
+  const crlfCount = (text.match(/\r\n/g) || []).length;
+  const lfCount = (text.replace(/\r\n/g, "").match(/\n/g) || []).length;
+  return {
+    stamp: { mtimeMs: st.mtimeMs, size: st.size },
+    lineEnding: crlfCount > lfCount ? "crlf" : "lf",
+    trailingNewline: text.endsWith("\n") || text.endsWith("\r"),
+    bom,
+  };
+}
+
+function decodeUtf8(buf: Buffer): { text: string; bom: boolean } | null {
+  const bom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
+  const payload = bom ? buf.subarray(3) : buf;
+  try {
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(payload), bom };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Re-resolve immediately before a read so a symlink swap between the first
@@ -478,7 +539,9 @@ export function readTreeFile(
     return { ok: false, reason: "binary file", openExternal: true };
   }
 
-  let text = buf.toString("utf8");
+  const decoded = decodeUtf8(buf);
+  if (!decoded) return { ok: false, reason: "invalid UTF-8", openExternal: true };
+  let text = decoded.text;
   let pretty = false;
   if (kind === "json") {
     try {
@@ -489,6 +552,7 @@ export function readTreeFile(
     }
   }
 
+  const details = textDetails(decoded.text, st, decoded.bom);
   return {
     ok: true,
     kind,
@@ -496,7 +560,183 @@ export function readTreeFile(
     absPath: rechecked.absPath,
     text,
     pretty,
+    stamp: details.stamp,
+    lineEnding: details.lineEnding,
+    trailingNewline: details.trailingNewline,
+    bom: details.bom,
+    details,
   };
+}
+
+/**
+ * Save an edited workspace text file. The caller must provide the stamp from
+ * readTreeFile and the host's executable predicate; keeping both explicit
+ * prevents a new write caller from accidentally weakening either guard.
+ */
+export function writeTreeFile(
+  root: string,
+  relPath: string,
+  text: string,
+  expectedStamp: TreeFileStamp,
+  options: WriteTreeFileOptions,
+): WriteTreeFileResult {
+  const platform = options.platform ?? process.platform;
+  const pathFs = options.pathFs ?? defaultTreeFs;
+  const readFileSync = options.readFileSync ?? ((p: string) => fs.readFileSync(p));
+  const writeFileSync = options.writeFileSync ?? ((p, data, writeOptions) => fs.writeFileSync(p, data, writeOptions));
+  const renameSync = options.renameSync ?? ((from, to) => fs.renameSync(from, to));
+  const unlinkSync = options.unlinkSync ?? ((p) => fs.unlinkSync(p));
+
+  if (typeof text !== "string") return { ok: false, reason: "invalid body" };
+  if (
+    !expectedStamp ||
+    typeof expectedStamp.mtimeMs !== "number" ||
+    typeof expectedStamp.size !== "number"
+  ) {
+    return { ok: false, reason: "invalid version stamp" };
+  }
+
+  const resolved = resolveTreePath(root, relPath, platform, pathFs);
+  if (!resolved.ok) return { ok: false, reason: resolved.reason };
+  const realAtCheck = canonicalPath(resolved.absPath, pathFs);
+
+  let st: fs.Stats;
+  try {
+    st = pathFs.statSync(resolved.absPath);
+  } catch {
+    return { ok: false, reason: "not found" };
+  }
+  if (!st.isFile()) return { ok: false, reason: "not a file" };
+
+  const kind = classifyFilePreview(resolved.relPath || path.basename(resolved.absPath));
+  if (kind !== "markdown" && kind !== "json" && kind !== "text") {
+    return { ok: false, reason: "file type is not editable" };
+  }
+  if (options.isExecutableOpenTarget(resolved.absPath)) {
+    return { ok: false, reason: "executable path refused" };
+  }
+
+  // Match readTreeFile's use-time containment check before reading the source
+  // bytes whose encoding/EOL style will be preserved.
+  const checked = recheckTreePathForRead(
+    root,
+    relPath,
+    resolved.absPath,
+    realAtCheck,
+    platform,
+    pathFs,
+  );
+  if (!checked.ok) return { ok: false, reason: checked.reason };
+
+  let current: Buffer;
+  try {
+    current = readFileSync(checked.absPath);
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message || "unreadable" };
+  }
+  if (current.subarray(0, Math.min(current.length, 8192)).includes(0)) {
+    return { ok: false, reason: "binary file" };
+  }
+  const decoded = decodeUtf8(current);
+  if (!decoded) return { ok: false, reason: "invalid UTF-8" };
+
+  let currentStamp: TreeFileStamp;
+  try {
+    const latest = pathFs.statSync(checked.absPath);
+    currentStamp = { mtimeMs: latest.mtimeMs, size: latest.size };
+  } catch {
+    return { ok: false, reason: "not found" };
+  }
+  if (
+    currentStamp.mtimeMs !== expectedStamp.mtimeMs ||
+    currentStamp.size !== expectedStamp.size
+  ) {
+    return { ok: false, reason: "changed" };
+  }
+
+  const eol = textDetails(decoded.text, st, decoded.bom).lineEnding === "crlf" ? "\r\n" : "\n";
+  let normalized = text.replace(/\r\n|\r|\n/g, eol);
+  const hadTrailing = decoded.text.endsWith("\n") || decoded.text.endsWith("\r");
+  if (hadTrailing) {
+    if (!normalized.endsWith(eol)) normalized += eol;
+  } else {
+    while (normalized.endsWith(eol)) normalized = normalized.slice(0, -eol.length);
+  }
+  const body = Buffer.from((decoded.bom ? "\ufeff" : "") + normalized, "utf8");
+  if (body.byteLength > FILE_PREVIEW_MAX_BYTES) {
+    return { ok: false, reason: "file too large" };
+  }
+
+  const dir = path.dirname(checked.absPath);
+  const temp = path.join(
+    dir,
+    `.${path.basename(checked.absPath)}.grok-save-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let tempWritten = false;
+  try {
+    writeFileSync(temp, body, { flag: "wx", mode: st.mode & 0o7777 });
+    tempWritten = true;
+
+    // This is deliberately the last path check before the target rename. A
+    // link swap after the earlier check must not redirect the replacement.
+    const finalCheck = recheckTreePathForRead(
+      root,
+      relPath,
+      resolved.absPath,
+      realAtCheck,
+      platform,
+      pathFs,
+    );
+    if (!finalCheck.ok || finalCheck.absPath !== checked.absPath) {
+      return { ok: false, reason: finalCheck.ok ? "path changed since check" : finalCheck.reason };
+    }
+    if (options.isExecutableOpenTarget(finalCheck.absPath)) {
+      return { ok: false, reason: "executable path refused" };
+    }
+    let finalStat: fs.Stats;
+    try {
+      finalStat = pathFs.statSync(finalCheck.absPath);
+    } catch {
+      return { ok: false, reason: "not found" };
+    }
+    if (finalStat.mtimeMs !== expectedStamp.mtimeMs || finalStat.size !== expectedStamp.size) {
+      return { ok: false, reason: "changed" };
+    }
+
+    try {
+      renameSync(temp, finalCheck.absPath);
+    } catch (e) {
+      // Windows does not replace an existing file with renameSync. Keep the
+      // same temp+rename design and use a recoverable backup only for that OS.
+      const code = (e as NodeJS.ErrnoException).code;
+      if (platform !== "win32" || !["EEXIST", "EPERM", "ENOTEMPTY"].includes(code || "")) {
+        throw e;
+      }
+      const backup = `${finalCheck.absPath}.grok-save-backup-${process.pid}-${Date.now()}`;
+      renameSync(finalCheck.absPath, backup);
+      try {
+        renameSync(temp, finalCheck.absPath);
+      } catch (replaceError) {
+        try { renameSync(backup, finalCheck.absPath); } catch { /* best effort restore */ }
+        throw replaceError;
+      }
+      try { unlinkSync(backup); } catch { /* harmless backup residue */ }
+    }
+    tempWritten = false;
+    const savedStat = pathFs.statSync(finalCheck.absPath);
+    return {
+      ok: true,
+      relPath: finalCheck.relPath,
+      absPath: finalCheck.absPath,
+      stamp: { mtimeMs: savedStat.mtimeMs, size: savedStat.size },
+    };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message || "write failed" };
+  } finally {
+    if (tempWritten) {
+      try { unlinkSync(temp); } catch { /* best effort cleanup */ }
+    }
+  }
 }
 
 /**

@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld("grokDesktopFileTree", {
   list: (relPath: string) => ipcRenderer.invoke("desk-ft:list", relPath),
   open: (relPath: string) => ipcRenderer.invoke("desk-ft:open", relPath),
   read: (relPath: string) => ipcRenderer.invoke("desk-ft:read", relPath),
+  save: (request: { relPath: string; text: string; stamp: { mtimeMs: number; size: number } }) =>
+    ipcRenderer.invoke("desk-ft:save", request),
   root: () => ipcRenderer.invoke("desk-ft:root"),
   /** Subscribe to active-project changes so the panel can rebind its tree. */
   onRootChanged: (cb: () => void) => {

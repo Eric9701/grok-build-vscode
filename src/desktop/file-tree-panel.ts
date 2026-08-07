@@ -5,7 +5,8 @@
  * Layout:
  *   - Full-width `.top-bar` stays outside the chat/file shell (edge-to-edge).
  *   - Panel toggle lives in the top bar (right end); closed = panel takes no space.
- *   - Opening a file replaces the tree with a read-only viewer + breadcrumb.
+ *   - Opening a file replaces the tree with a viewer + breadcrumb; editing is
+ *     opt-in and text-only.
  *
  * Class prefix `desk-ft-` keeps styles from colliding with chat.css.
  * Runs via webContents.executeJavaScript (bypasses CSP nonce) after each
@@ -506,6 +507,60 @@ body.desk-ft-viewing .desk-ft-viewer {
   opacity: 0.6;
   user-select: none;
 }
+.desk-ft-dirty-dot {
+  color: var(--vscode-charts-yellow, #cca700);
+  font-size: 16px;
+  line-height: 0;
+  margin-left: 2px;
+}
+.desk-ft-viewer-action {
+  flex: 0 0 auto;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-foreground, #ccc);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+.desk-ft-viewer-action:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
+.desk-ft-viewer-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.desk-ft-viewer-action.desk-ft-active {
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+.desk-ft-editor {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  box-sizing: border-box;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 0;
+  background: transparent;
+  color: var(--vscode-foreground, #ccc);
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  tab-size: 2;
+}
+.desk-ft-notice {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  color: var(--vscode-errorForeground, #f48771);
+  font-size: 11px;
+  border-top: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+.desk-ft-notice:empty { display: none; }
 .desk-ft-viewer-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -735,8 +790,13 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   viewerBody.className = "desk-ft-viewer-body";
   viewerBody.id = "desk-ft-viewer-body";
 
+  const viewerNotice = document.createElement("div");
+  viewerNotice.className = "desk-ft-notice";
+  viewerNotice.id = "desk-ft-notice";
+
   viewer.appendChild(crumb);
   viewer.appendChild(viewerBody);
+  viewer.appendChild(viewerNotice);
 
   panel.appendChild(header);
   panel.appendChild(filter);
@@ -784,6 +844,8 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
 
   let rootLabel = "Files";
   let viewRelPath = null; // null = tree mode
+  let currentFile = null;
+  let confirmSeq = 0;
 
   function clampPanelWidth(px) {
     const shellW = shell.getBoundingClientRect().width || window.innerWidth || 800;
@@ -868,10 +930,20 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   applyOpen(startOpen);
 
   if (topToggle) {
-    topToggle.addEventListener("click", () => {
-      applyOpen(document.body.classList.contains("desk-ft-closed"));
+    topToggle.addEventListener("click", async () => {
+      const opening = document.body.classList.contains("desk-ft-closed");
+      if (!opening && !(await confirmLeaveDirty())) return;
+      applyOpen(opening);
     });
   }
+
+  panel.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && currentFile && currentFile.editing) {
+      event.preventDefault();
+      event.stopPropagation();
+      void saveFile();
+    }
+  });
 
   // Projects rail collapse — button lives in .rail-top (getHtml / AFK Pilot shape).
   // Fall back to injecting into a legacy .rail-toolbar if an older shell is open.
@@ -1042,6 +1114,95 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     return out.join("");
   }
 
+  // chat.js owns uiConfirm. Its public host-message seam is the only supported
+  // way for injected panel code to use that same in-page dialog. The optional
+  // second action is added to that dialog only for the Reload/Overwrite choice;
+  // Cancel, Escape, and backdrop dismissal all resolve to the safe outcome.
+  function requestSharedConfirm(opts, secondLabel) {
+    return new Promise((resolve) => {
+      let done = false;
+      let observer = null;
+      let timer = null;
+      let closingSharedDialog = false;
+      const id = "desk-file-confirm-" + (++confirmSeq);
+      const settle = (value) => {
+        if (done) return;
+        done = true;
+        if (observer) observer.disconnect();
+        if (timer) clearTimeout(timer);
+        document.removeEventListener("click", onClick, true);
+        document.removeEventListener("keydown", onKey, true);
+        resolve(value);
+      };
+      const onKey = (event) => {
+        if (event.key === "Escape") settle("cancel");
+      };
+      const onClick = (event) => {
+        const target = event.target;
+        const button = target && target.closest ? target.closest("button") : null;
+        if (button && button.classList.contains("desk-ft-secondary-choice")) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          closingSharedDialog = true;
+          const cancel = button.parentElement && button.parentElement.querySelector(".confirm-btn:not(.confirm-primary):not(.confirm-danger)");
+          if (cancel) cancel.click();
+          settle("second");
+          return;
+        }
+        if (button && (button.classList.contains("confirm-primary") || button.classList.contains("confirm-danger"))) {
+          settle("confirm");
+          return;
+        }
+        if (button && button.textContent === "Cancel") {
+          if (closingSharedDialog) return;
+          settle("cancel");
+          return;
+        }
+        if (target && target.classList && target.classList.contains("confirm-overlay")) {
+          settle("cancel");
+        }
+      };
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("keydown", onKey, true);
+      if (typeof MutationObserver === "function") {
+        observer = new MutationObserver(() => {
+          const overlay = document.querySelector(".confirm-overlay:not([data-desk-ft-owned])");
+          if (!overlay) return;
+          overlay.setAttribute("data-desk-ft-owned", id);
+          if (!secondLabel) return;
+          const actions = overlay.querySelector(".confirm-actions");
+          if (!actions || actions.querySelector(".desk-ft-secondary-choice")) return;
+          const extra = document.createElement("button");
+          extra.type = "button";
+          extra.className = "confirm-btn confirm-primary desk-ft-secondary-choice";
+          extra.textContent = secondLabel;
+          actions.insertBefore(extra, actions.firstChild);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+      // If an older chat bundle has no uiConfirm seam, fail closed rather than
+      // leaving a dirty file action hanging forever.
+      timer = setTimeout(() => settle("cancel"), 5000);
+      try {
+        window.dispatchEvent(new MessageEvent("message", { data: {
+          type: "uiConfirmRequest",
+          id,
+          title: opts.title,
+          body: opts.body,
+          confirmLabel: opts.confirmLabel,
+          danger: !!opts.danger,
+        }}));
+      } catch (_) {
+        settle("cancel");
+      }
+      void closingSharedDialog;
+    });
+  }
+
+  function askConfirm(opts) {
+    return requestSharedConfirm(opts).then((choice) => choice === "confirm");
+  }
+
   function breadcrumbSegments(relPath, label) {
     const segs = [{ label: label || "Files", relPath: "" }];
     const trimmed = (relPath || "").replace(/\\\\/g, "/").replace(/^\\/+|\\/+$/g, "");
@@ -1055,11 +1216,98 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     return segs;
   }
 
-  function showTree() {
+  function dirtyNow() {
+    return !!(currentFile && currentFile.dirty);
+  }
+
+  function updateDirtyUi() {
+    const dot = crumb.querySelector(".desk-ft-dirty-dot");
+    if (dot) dot.textContent = dirtyNow() ? "•" : "";
+    const save = crumb.querySelector(".desk-ft-save");
+    if (save) save.disabled = !dirtyNow();
+  }
+
+  async function confirmLeaveDirty() {
+    if (!dirtyNow()) return true;
+    return askConfirm({
+      title: "Discard changes?",
+      body: "Your edits have not been saved.",
+      confirmLabel: "Discard",
+      danger: true,
+    });
+  }
+
+  window.__grokDeskFtBeforeClose = () => confirmLeaveDirty();
+
+  async function showTree() {
+    if (!(await confirmLeaveDirty())) return false;
+    currentFile = null;
     viewRelPath = null;
     document.body.classList.remove("desk-ft-viewing");
     viewerBody.textContent = "";
+    viewerNotice.textContent = "";
     crumb.textContent = "";
+    return true;
+  }
+
+  function setViewerNotice(message) {
+    viewerNotice.textContent = message || "";
+  }
+
+  function editorValue() {
+    const editor = viewerBody.querySelector(".desk-ft-editor");
+    return editor ? editor.value : (currentFile ? currentFile.text : "");
+  }
+
+  function renderViewerBody() {
+    if (!currentFile) return;
+    viewerBody.textContent = "";
+    const source = editorValue();
+    if (currentFile.kind === "image" && currentFile.dataUrl) {
+      const img = document.createElement("img");
+      img.src = currentFile.dataUrl;
+      img.alt = currentFile.relPath;
+      viewerBody.appendChild(img);
+      return;
+    }
+    const code = currentFile.kind === "markdown" ? currentFile.mode === "code" : currentFile.editing;
+    if (code) {
+      const editor = document.createElement("textarea");
+      editor.className = "desk-ft-editor";
+      editor.value = source;
+      editor.spellcheck = false;
+      editor.setAttribute("aria-label", "Edit " + currentFile.relPath);
+      editor.addEventListener("input", () => {
+        currentFile.text = editor.value;
+        currentFile.dirty = editor.value !== currentFile.originalText;
+        updateDirtyUi();
+      });
+      viewerBody.appendChild(editor);
+      return;
+    }
+    if (currentFile.kind === "markdown" && currentFile.mode === "preview") {
+      const wrap = document.createElement("div");
+      wrap.className = "desk-ft-md";
+      wrap.innerHTML = renderMarkdown(source);
+      viewerBody.appendChild(wrap);
+      return;
+    }
+    const pre = document.createElement("pre");
+    pre.textContent = source;
+    viewerBody.appendChild(pre);
+  }
+
+  function setViewerMode(mode, editing) {
+    if (!currentFile) return;
+    currentFile.mode = mode;
+    currentFile.editing = !!editing;
+    renderCrumb(currentFile.relPath);
+    renderViewerBody();
+    updateDirtyUi();
+    if (currentFile.editing) {
+      const editor = viewerBody.querySelector(".desk-ft-editor");
+      if (editor) editor.focus();
+    }
   }
 
   function renderCrumb(relPath) {
@@ -1070,7 +1318,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     back.innerHTML = ICON_ARROW_LEFT + "<span>Back</span>";
     back.title = "Back to file tree";
     back.setAttribute("aria-label", "Back to file tree");
-    back.addEventListener("click", () => showTree());
+    back.addEventListener("click", () => { void showTree(); });
     crumb.appendChild(back);
 
     const segs = breadcrumbSegments(relPath, rootLabel);
@@ -1100,6 +1348,45 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       crumb.appendChild(btn);
     });
 
+    if (currentFile && (currentFile.kind === "markdown" || currentFile.kind === "text" || currentFile.kind === "json")) {
+      if (currentFile.kind === "markdown") {
+        const preview = document.createElement("button");
+        preview.type = "button";
+        preview.className = "desk-ft-viewer-action" + (currentFile.mode === "preview" ? " desk-ft-active" : "");
+        preview.textContent = "Preview";
+        preview.addEventListener("click", () => setViewerMode("preview", currentFile.editing));
+        crumb.appendChild(preview);
+        const code = document.createElement("button");
+        code.type = "button";
+        code.className = "desk-ft-viewer-action" + (currentFile.mode === "code" ? " desk-ft-active" : "");
+        code.textContent = "Code";
+        code.addEventListener("click", () => setViewerMode("code", true));
+        crumb.appendChild(code);
+      }
+      if (!currentFile.editing) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "desk-ft-viewer-action";
+        edit.textContent = "Edit";
+        edit.title = "Edit this text file";
+        edit.addEventListener("click", () => setViewerMode("code", true));
+        crumb.appendChild(edit);
+      }
+      if (currentFile.editing) {
+        const save = document.createElement("button");
+        save.type = "button";
+        save.className = "desk-ft-viewer-action desk-ft-save";
+        save.textContent = "Save";
+        save.title = "Save (Ctrl+S / Cmd+S)";
+        save.addEventListener("click", () => { void saveFile(); });
+        crumb.appendChild(save);
+      }
+      const dot = document.createElement("span");
+      dot.className = "desk-ft-dirty-dot";
+      dot.setAttribute("aria-label", "Unsaved changes");
+      crumb.appendChild(dot);
+    }
+
     // Explicit OS hand-off while previewing (fallback affordance).
     const openExt = document.createElement("button");
     openExt.type = "button";
@@ -1110,9 +1397,11 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       try { await api.open(relPath); } catch (_) { /* */ }
     });
     crumb.appendChild(openExt);
+    updateDirtyUi();
   }
 
-  async function openFileView(relPath) {
+  async function openFileView(relPath, force) {
+    if (!force && currentFile && currentFile.relPath !== relPath && !(await confirmLeaveDirty())) return { ok: false, reason: "cancelled" };
     if (!api.read) {
       // Older host without read channel — fall back to OS open.
       try { await api.open(relPath); } catch (_) { /* */ }
@@ -1139,32 +1428,82 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     }
 
     viewRelPath = relPath;
+    currentFile = {
+      relPath,
+      kind: result.kind,
+      text: result.text || "",
+      originalText: result.text || "",
+       stamp: result.stamp || (result.details && result.details.stamp),
+      dataUrl: result.dataUrl,
+      mode: result.kind === "markdown" ? "preview" : "read",
+      editing: false,
+      dirty: false,
+    };
     document.body.classList.add("desk-ft-viewing");
     // Ensure panel is open when viewing a file.
     applyOpen(true);
+    setViewerNotice("");
     renderCrumb(relPath);
-    viewerBody.textContent = "";
-
-    if (result.kind === "image" && result.dataUrl) {
-      const img = document.createElement("img");
-      img.src = result.dataUrl;
-      img.alt = relPath;
-      viewerBody.appendChild(img);
-      return { ok: true, kind: result.kind };
-    }
-
-    if (result.kind === "markdown") {
-      const wrap = document.createElement("div");
-      wrap.className = "desk-ft-md";
-      wrap.innerHTML = renderMarkdown(result.text || "");
-      viewerBody.appendChild(wrap);
-      return { ok: true, kind: "markdown" };
-    }
-
-    const pre = document.createElement("pre");
-    pre.textContent = result.text || "";
-    viewerBody.appendChild(pre);
+    renderViewerBody();
     return { ok: true, kind: result.kind || "text" };
+  }
+
+  async function saveFile() {
+    if (!currentFile || !currentFile.editing || !api.save || !currentFile.stamp) return false;
+    const file = currentFile;
+    const text = editorValue();
+    setViewerNotice("");
+    let result;
+    try {
+      result = await api.save({ relPath: file.relPath, text, stamp: file.stamp });
+    } catch (e) {
+      setViewerNotice(String((e && e.message) || e));
+      return false;
+    }
+    if (result && result.ok) {
+      file.text = text;
+      file.originalText = text;
+      file.dirty = false;
+      file.stamp = result.stamp;
+      updateDirtyUi();
+      return true;
+    }
+    if (result && result.reason === "changed") {
+      const choice = await requestSharedConfirm({
+        title: "File changed on disk",
+        body: "Reload the agent's version, or keep your edits and overwrite it.",
+        confirmLabel: "Reload",
+        danger: true,
+      }, "Overwrite");
+      if (choice === "confirm") {
+        await openFileView(file.relPath, true);
+        return false;
+      }
+      if (choice === "second") {
+        let fresh;
+        try { fresh = await api.read(file.relPath); } catch (_) { fresh = null; }
+        if (!fresh || !fresh.ok || !(fresh.stamp || (fresh.details && fresh.details.stamp))) {
+          setViewerNotice("Could not reload the current file version.");
+          return false;
+        }
+        file.stamp = fresh.stamp || fresh.details.stamp;
+        let overwrite;
+        try { overwrite = await api.save({ relPath: file.relPath, text, stamp: file.stamp }); } catch (_) { overwrite = null; }
+        if (overwrite && overwrite.ok) {
+          file.text = text;
+          file.originalText = text;
+          file.dirty = false;
+          file.stamp = overwrite.stamp;
+          updateDirtyUi();
+          return true;
+        }
+        setViewerNotice((overwrite && overwrite.reason) || "Overwrite refused");
+        return false;
+      }
+      return false;
+    }
+    setViewerNotice((result && result.reason) || "Save refused");
+    return false;
   }
 
   // Host → panel open (chat file links). Containment re-checked by api.read.
@@ -1296,7 +1635,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
 
   async function rebindToCurrentRoot() {
     // Drop any open preview so we do not show B's file under A's breadcrumb.
-    showTree();
+    if (!(await showTree())) return;
     body.textContent = "";
     try {
       const rootInfo = await api.root();

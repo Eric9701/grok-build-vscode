@@ -348,6 +348,22 @@ Full diagram, message flow, module map, and design notes: **[docs/architecture.m
 
 ---
 
+## Companion apps
+
+This extension is complete on its own. Two optional companions share the same
+chat UI and the same Grok Build CLI:
+
+- **[AFK Pilot](https://afkpilot.com)** — watch, approve, and steer this
+  extension's agent from your phone or any browser. Pair once from the gear
+  menu.
+- **[Grok Build Desktop (Community)](https://afkpilot.com/desktop)** — the same
+  agent as a standalone app for Windows and macOS, for machines where you would
+  rather not install an editor. Free.
+
+Neither is required, and nothing here depends on them.
+
+---
+
 ## Privacy
 
 **Privacy by design** — no message content, code, or file paths leave your machine automatically. The only automatic report is an anonymous, opt-out usage count (turn it off with `grok.telemetry.enabled: false` or VS Code's global `telemetry.telemetryLevel`). Data leaves only through features you explicitly enable or invoke: Voice input sends audio to xAI for transcription; the optional **Read simplified summaries** switch in VS Code or AFK Pilot sends the cleaned spoken reply to xAI for a brief version; Remote Control relays the chat to your linked devices. Each is disclosed separately from telemetry.
@@ -358,4 +374,4 @@ More: [docs/privacy.md](https://github.com/phuryn/grok-build-vscode/blob/main/do
 
 ## License & attribution
 
-Licensed under the **Functional Source License, Version 1.1, MIT Future License (FSL-1.1-MIT)** — see [LICENSE](https://github.com/phuryn/grok-build-vscode/blob/main/LICENSE). In short: use, modify, and redistribute freely for any purpose **except** offering a competing commercial product or service; each release automatically becomes plain **MIT two years after publication**. Versions up to and including 1.8.1 were published under MIT and remain MIT. The copyright notice and license text must travel with all copies, including compiled builds — if you're reusing this project, see [docs/attribution.md](https://github.com/phuryn/grok-build-vscode/blob/main/docs/attribution.md) for how to credit it properly.
+Licensed under the **Functional Source License, Version 1.1, MIT Future License (FSL-1.1-MIT)** — see [LICENSE](https://github.com/phuryn/grok-build-vscode/blob/main/LICENSE). In short: use, modify, and redistribute freely for any purpose **except** offering a competing commercial product or service. Versions up to and including 1.8.1 were published under MIT and remain MIT. The copyright notice and license text must travel with all copies, including compiled builds — if you're reusing this project, see [docs/attribution.md](https://github.com/phuryn/grok-build-vscode/blob/main/docs/attribution.md) for how to credit it properly.
