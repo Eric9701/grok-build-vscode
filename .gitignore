@@ -28,3 +28,6 @@ terminals/
 # crashed run.
 .tmp-sidebar-portable-out/
 .tmp-sidebar-portable-probe.cjs
+
+# Ad-hoc screenshot/probe scripts an agent may leave behind
+.tmp-*
