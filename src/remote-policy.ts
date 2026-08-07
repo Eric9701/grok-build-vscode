@@ -288,6 +288,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // could neither see nor answer that dialog, so it would hang a phone on a
   // control that never resolves.
   addProjectFolder: "host-local",
+  // Same reasoning, and one more: closing a folder ends every conversation
+  // in it and kills their agents. A remote must never be able to do that to
+  // the machine it is borrowing.
+  removeProjectFolder: "host-local",
   openGlobalConfig: "host-local",
   openProjectConfig: "host-local",
   runMcpList: "host-local",

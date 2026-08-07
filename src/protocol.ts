@@ -283,6 +283,8 @@ export type WebviewMsg =
   | { type: "exportExpr"; action: string; kind: string; current?: string; svg?: string; png?: string; svgDark?: string; svgLight?: string }
   | { type: "setEffort"; level: string }
   | { type: "addProjectFolder" }
+  /** Close one project folder. It leaves the rail; nothing leaves the disk. */
+  | { type: "removeProjectFolder"; cwd?: string }
   | { type: "openGlobalConfig" }
   | { type: "openProjectConfig" }
   | { type: "runMcpList" }
@@ -439,7 +441,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
-  addProjectFolder: true,
+  addProjectFolder: true, removeProjectFolder: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, openSettings: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,

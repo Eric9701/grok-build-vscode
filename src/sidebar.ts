@@ -4999,6 +4999,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "addProjectFolder":
         await this.addProjectFolder();
         break;
+      case "removeProjectFolder":
+        // host-local by policy, so `origin` is always local here. A path the
+        // renderer names is not trusted on its own either: the host's
+        // removeWorkspaceFolder returns false for anything not in the open set,
+        // and this reports that rather than acting on it.
+        await this.removeProjectFolder(msg.cwd);
+        break;
       case "openGlobalConfig": {
         // Intent only — host resolves ~/.grok/config.toml (never a renderer path).
         await this.host.openGlobalConfig();
@@ -9077,6 +9084,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     await this.persistWorktreeBinding(this.focused);
     this.sweepEmptySessions(this.sessionCwd(this.focused));
     this.postRepoCatalog();
+    // The rail's rows for the selected project come from `sessions` frames, and
+    // this path posted the catalog but never the list — so a new conversation on
+    // the desktop did not appear in the rail until something unrelated refreshed
+    // it (closing and reopening the project was how it got noticed). The remote
+    // path has always sent its own list here; only the local one was missing it.
+    // After the sweep, not before: the sweep can retire the empty session this
+    // one replaced, and a list built ahead of it would show a row that is gone.
+    this.postSessionsList();
   }
 
   private focusRemoteSession(clientId: string, session: Session, notifyCatalog = true): void {

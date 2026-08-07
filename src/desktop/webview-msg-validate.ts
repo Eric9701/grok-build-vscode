@@ -77,6 +77,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "cancel":
     case "pickModel":
     case "addProjectFolder":
+    case "removeProjectFolder":
     case "openGlobalConfig":
     case "openProjectConfig":
     case "runMcpList":

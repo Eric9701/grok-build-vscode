@@ -403,6 +403,9 @@
     // A deliberate repo switch stays locked until its transition settles. The
     // replay bracket also keeps the lock honest for an old conversation load.
     repoSwitchPending: false,
+    /** The cwd a rail selection is waiting on, so the catalog echo that
+     *  confirms it can release the lock. Empty when nothing is pending. */
+    repoSwitchTarget: "",
     selectedRepoCwd: "",
     activeRepoCwd: "",
     // Projects rail (browser client only). `repoPreviews` caches one page of
@@ -3210,7 +3213,9 @@
       repoPopover.appendChild(empty);
       return;
     }
-    for (const repo of state.repos) {
+    // Same ordering as the rail — by name. Two lists of the same projects in two
+    // different orders is worse than either order on its own.
+    for (const repo of railRepos()) {
       const row = document.createElement("div");
       const selected = sameCwd(repo.cwd, state.selectedRepoCwd);
       const live = sameCwd(repo.cwd, state.activeRepoCwd);
@@ -3837,15 +3842,22 @@
    *  offers — a pin only earns its complexity where recency is a poor answer, and
    *  for projects it never is: the one you touched last is the one you want.
    *  Conversations are different, and keep their pins. */
+  /** Projects, by name.
+   *
+   *  Recency was the obvious ordering and the wrong one. The rail is a place you
+   *  navigate by memory — a project sits where you last saw it — and sorting by
+   *  activity means the list reorders itself underneath you as you work: start a
+   *  conversation and the project you are in jumps to the top, taking every
+   *  other row with it. A name does not move, so a click never lands on the row
+   *  that slid into place. Recency is still visible where it belongs, on the
+   *  conversations inside each project. */
   function railRepos() {
     return state.repos.slice().sort((a, b) =>
-      // Ties break on the NAME, never on the catalog's own stamp: that stamp is
-      // the session directory's mtime, which clearing a project's history
-      // touches — so using it here would put the just-emptied project above its
-      // equally-empty neighbours, which is the bug this ordering exists to fix,
-      // in miniature.
-      railRepoActivity(b) - railRepoActivity(a) ||
-      String(a.label || a.cwd || "").localeCompare(String(b.label || b.cwd || "")));
+      String(a.label || a.cwd || "").localeCompare(
+        String(b.label || b.cwd || ""),
+        undefined,
+        { sensitivity: "base", numeric: true },
+      ));
   }
 
   /** When this project was last worked in, read from its conversations.
@@ -3880,8 +3892,14 @@
     // Projects with nothing recent in them — deliberately. It holds back the AGE
     // rule only; an explicit Archive still takes effect immediately, or the
     // control would silently do nothing on the projects you use most.
+    // Ranked by ACTIVITY, not by the name order the rail displays. "The newest
+    // few stay in view" is a statement about recency; taking the first few rows
+    // of an alphabetical list would protect whichever projects happen to start
+    // with an early letter and archive the ones actually in use. Display order
+    // and this ranking answer different questions and must not share a list.
+    const byActivity = state.repos.slice().sort((a, b) => railRepoActivity(b) - railRepoActivity(a));
     const floorKeys = new Set(
-      ordered
+      byActivity
         .filter((r) => !sameCwd(r.cwd, state.selectedRepoCwd))
         .slice(0, RAIL_ALWAYS_VISIBLE)
         .map((r) => cwdKey(r.cwd)),
@@ -4717,10 +4735,17 @@
     add.className = "rail-action-btn";
     add.innerHTML = ICON.plus;
     add.title = selected ? "New session here" : "Switch to this project and start a new session";
-    add.disabled = !repo.available || repoSwitcherLocked();
+    // Deliberately NOT gated on repoSwitcherLocked(). Starting a conversation is
+    // the one thing that should always be available, and a lock that disables it
+    // in EVERY project at once is indistinguishable from the app being broken —
+    // which is how it read. A click during a transition supersedes it rather
+    // than racing it: this posts selectRepo for its own project and re-arms the
+    // new-session intent, so the destination is whichever "+" was clicked last.
+    // Only a folder the host cannot reach still refuses, and it says so on hover.
+    add.disabled = !repo.available;
     add.onclick = (e) => {
       e.stopPropagation();
-      if (!repo.available || repoSwitcherLocked()) return;
+      if (!repo.available) return;
       if (selected) { vscode.postMessage({ type: "newSession" }); return; }
       window.__grokRailNewIntent = repo.cwd;
       selectRailRepo(repo);
@@ -4765,6 +4790,20 @@
           cwd: repo.cwd,
           archived: !inArchive,
         }),
+      }, null] : []),
+      // The desktop's equivalent, and a different act despite the same intent.
+      // Its rail IS the set of open folders, so putting a project away means
+      // closing it — there is no archive flag to set, and the browser client
+      // has no business closing folders on the machine it is borrowing. Same
+      // capability as the + that adds them: a host that can open a folder can
+      // close one, and one that cannot never grows either control.
+      ...(canAddProjectFolder() ? [{
+        label: "Hide project",
+        icon: ICON.archive,
+        title:
+          "Take this project out of the list. Nothing is deleted — the folder " +
+          "stays on disk, and + adds it back.",
+        onSelect: () => vscode.postMessage({ type: "removeProjectFolder", cwd: repo.cwd }),
       }, null] : []),
       {
         label: "Clear all history",
@@ -5149,6 +5188,20 @@
 
   function selectRailRepo(repo) {
     state.repoSwitchPending = true;
+    // What we are waiting for. The lock used to be released only by the frames a
+    // session start produces — a replay, setBusy, or an error — which was fine
+    // while every switch opened a conversation. Selecting a project no longer
+    // touches any session, so on that path none of the three ever arrive and the
+    // lock stuck: every "+" in the rail stayed disabled, in every project, until
+    // something unrelated started a session. The catalog echo below is the
+    // completion signal that actually belongs to a selection.
+    state.repoSwitchTarget = repo.cwd;
+    // A superseded switch drops its intent with it — otherwise clicking "+" on
+    // one project and then a plain row on another would start a conversation
+    // nobody asked for.
+    if (window.__grokRailNewIntent && !sameCwd(window.__grokRailNewIntent, repo.cwd)) {
+      window.__grokRailNewIntent = null;
+    }
     renderRepoChip();
     saveRememberedRemoteSession(null);
     vscode.postMessage({ type: "selectRepo", cwd: repo.cwd });
@@ -10852,6 +10905,32 @@
           }
           // The list for the new repo has not arrived yet — see railRowsFor.
           state.railSessionsStale = true;
+        }
+        // The switch we asked for has landed. Release the lock here rather than
+        // waiting for a session to start: a selection that opens no conversation
+        // produces no replay, no setBusy and no error, so those releases never
+        // fire and every rail "+" stays disabled indefinitely. Gated on the
+        // catalog naming the repo we actually asked for, so an unrelated catalog
+        // push mid-switch cannot unlock a transition still in flight.
+        if (state.repoSwitchTarget && sameCwd(state.selectedRepoCwd, state.repoSwitchTarget)) {
+          state.repoSwitchTarget = "";
+          state.repoSwitchPending = false;
+          // …and now the other half of the rail "+" on a project we were not in.
+          // `newSession` names no repo — it starts wherever the host is — so the
+          // switch has to land first and this is where it lands. Without it the
+          // desktop only switched: the conversation on screen stayed whatever it
+          // was, which reads as "it started one in the wrong project", and with
+          // an empty session already open it reads as nothing happening at all.
+          //
+          // Single-shot, and coordinated through the flag itself rather than a
+          // host check: the browser page consumes __grokRailNewIntent as it
+          // forwards the selectRepo, so there it is already null here and this
+          // cannot fire twice. Where nothing consumed it — the desktop — it is
+          // still set, and this is the only place that acts on it.
+          if (window.__grokRailNewIntent && sameCwd(window.__grokRailNewIntent, state.selectedRepoCwd)) {
+            window.__grokRailNewIntent = null;
+            vscode.postMessage({ type: "newSession" });
+          }
         }
         renderRepoChip();
         if (!repoPopover.hidden) renderRepoPopover();

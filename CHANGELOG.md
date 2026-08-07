@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.2.4 — 2026-08-07
+
+### Added
+
+- **Hide a project from the desktop rail** — in a project's `⋯` menu. It leaves the list; nothing leaves your disk, and **+** adds it back.
+
+### Changed
+
+- **Projects are listed by name**, in the rail and the repository picker. They used to reorder by recent activity, so starting a conversation moved the project you were in to the top and shifted everything under your cursor.
+
+### Fixed
+
+- **A new conversation appears in the rail straight away.** The project moved to the top but gained no row, and only closing and reopening it made the conversation show up.
+- **New session is never disabled.** While the app was switching projects, every **+** in the rail greyed out at once — and on a switch that opens no conversation it stayed that way.
+- **"+" on another project starts the conversation there**, rather than switching and leaving you on whatever was already open.
+
 ## 3.2.3 — 2026-08-07
 
 ### Fixed
