@@ -74,6 +74,8 @@ export function desktopProfileLooksOccupied(
  * - Else rename (same volume) or copy the first occupied legacy path into the
  *   branded location so config / memento / secrets are not abandoned.
  * - Never overwrite a branded profile that already has data.
+ * - Never delete a legacy profile unless every top-level entry was fully copied
+ *   (colliding names abort migration and leave legacy intact).
  */
 export function resolveDesktopProfileDir(opts: {
   appData: string;
@@ -100,16 +102,31 @@ export function resolveDesktopProfileDir(opts: {
         profileFs.renameSync(legacy, branded);
         return { userData: branded, migratedFrom: legacy };
       }
-      // Branded path exists but has no markers (empty shell). Merge legacy in.
+      // Branded path exists but has no markers (empty shell or non-marker junk).
+      // Never delete a source we did not fully copy: refuse migration when any
+      // top-level name collides (force:false would skip those entries), and only
+      // remove legacy after every legacy entry is present under branded.
+      const legacyNames = profileFs.readdirSync(legacy);
+      const conflicts = legacyNames.filter((name) =>
+        profileFs.existsSync(path.join(branded, name)),
+      );
+      if (conflicts.length > 0) {
+        // Leave legacy intact; start on the branded shell. Operator can merge.
+        break;
+      }
       if (profileFs.cpSync) {
-        profileFs.cpSync(legacy, branded, { recursive: true, force: false, errorOnExist: false });
+        profileFs.cpSync(legacy, branded, { recursive: true, force: false, errorOnExist: true });
       } else {
-        // rename into place when target is empty enough
-        for (const name of profileFs.readdirSync(legacy)) {
-          const from = path.join(legacy, name);
-          const to = path.join(branded, name);
-          if (!profileFs.existsSync(to)) profileFs.renameSync(from, to);
+        for (const name of legacyNames) {
+          profileFs.renameSync(path.join(legacy, name), path.join(branded, name));
         }
+      }
+      const missing = legacyNames.filter(
+        (name) => !profileFs.existsSync(path.join(branded, name)),
+      );
+      if (missing.length > 0) {
+        // Incomplete copy — keep legacy so nothing is lost.
+        break;
       }
       try {
         profileFs.rmSync?.(legacy, { recursive: true, force: true });
@@ -119,7 +136,7 @@ export function resolveDesktopProfileDir(opts: {
       return { userData: branded, migratedFrom: legacy };
     } catch {
       // Migration failed — still use branded (fresh) rather than stay on
-      // the unbranded path; user can recover from the legacy folder manually.
+      // the unbranded path; legacy is left intact for manual recovery.
       break;
     }
   }

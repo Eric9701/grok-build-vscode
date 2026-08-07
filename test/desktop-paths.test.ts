@@ -163,4 +163,77 @@ describe("desktop userData branding + legacy migration", () => {
     expect(migratedFrom).toBeUndefined();
     expect(fs.existsSync(path.join(userData, "config.json"))).toBe(false);
   });
+
+  it("preserves legacy when branded shell has colliding non-marker entries", () => {
+    // Branded path exists without profile markers (empty shell / junk) but a
+    // name collides with legacy — force:false would skip the legacy file and
+    // the old code then deleted the source. Must leave legacy intact.
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(branded, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(branded, "notes.txt"), "branded junk");
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ theme: "dark" }));
+    fs.writeFileSync(path.join(legacy, "notes.txt"), "legacy notes — must not be deleted");
+    fs.writeFileSync(path.join(legacy, "globalState.json"), "{}");
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(userData).toBe(branded);
+    expect(migratedFrom).toBeUndefined();
+    // Legacy still holds the only full profile.
+    expect(desktopProfileLooksOccupied(legacy)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(legacy, "config.json"), "utf8"))).toEqual({
+      theme: "dark",
+    });
+    expect(fs.readFileSync(path.join(legacy, "notes.txt"), "utf8")).toBe(
+      "legacy notes — must not be deleted",
+    );
+    // Branded junk was not overwritten.
+    expect(fs.readFileSync(path.join(branded, "notes.txt"), "utf8")).toBe("branded junk");
+    expect(fs.existsSync(path.join(branded, "config.json"))).toBe(false);
+  });
+
+  it("mutation: deleting legacy after a partial force:false copy loses data", () => {
+    // Documents the bug the conflict check prevents: skip colliding names,
+    // then rmSync(legacy) would destroy the uncopied legacy bytes.
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(branded, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(branded, "config.json"), "branded-shell-collision");
+    // No markers under branded if we only write a colliding non-marker? config.json
+    // IS a marker — use a path that looks occupied on legacy only. Simulate the
+    // intermediate "copy with force:false" outcome:
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ keep: true }));
+    fs.writeFileSync(path.join(legacy, "secrets.enc.json"), "enc");
+    // Branded has no markers (only unrelated shell file) + collision on secrets:
+    fs.unlinkSync(path.join(branded, "config.json"));
+    fs.writeFileSync(path.join(branded, "secrets.enc.json"), "partial-shell");
+
+    const { migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(migratedFrom).toBeUndefined();
+    expect(fs.existsSync(path.join(legacy, "config.json"))).toBe(true);
+    expect(fs.existsSync(path.join(legacy, "secrets.enc.json"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(legacy, "config.json"), "utf8"))).toEqual({
+      keep: true,
+    });
+  });
+
+  it("merges into an empty branded shell when there are no name collisions", () => {
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(branded, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    // Empty shell: directory exists, no files.
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ ok: 1 }));
+    fs.writeFileSync(path.join(legacy, "globalState.json"), "{}");
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(userData).toBe(branded);
+    expect(migratedFrom).toBe(legacy);
+    expect(JSON.parse(fs.readFileSync(path.join(branded, "config.json"), "utf8"))).toEqual({
+      ok: 1,
+    });
+    expect(desktopProfileLooksOccupied(legacy)).toBe(false);
+  });
 });

@@ -123,7 +123,7 @@ import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
-import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
@@ -2723,6 +2723,10 @@ See design doc for the full state machine diagram.`;
    */
   private revokeClosedProjectFolder(closedCwd: string): void {
     this.authEpoch++;
+    // Voice first: a completing STT turn must not voiceSubmit / post into a
+    // session that is about to be disposed or rehomed to another project.
+    this.revokeVoiceForClosedFolder(closedCwd);
+
     const doomed: Session[] = [];
     const seen = new Set<Session>();
     const consider = (s: Session | undefined) => {
@@ -2825,6 +2829,37 @@ See design doc for the full state machine diagram.`;
     }
   }
 
+  /**
+   * Cancel local + remote voice bound to a just-closed project folder so a late
+   * transcript cannot land on a rehomed session or different focused project.
+   */
+  private revokeVoiceForClosedFolder(closedCwd: string): void {
+    if (
+      (this.localVoiceCwd && pathBoundToClosedFolder(this.localVoiceCwd, closedCwd, pathsEqual)) ||
+      (this.localVoiceCredentialCwd &&
+        pathBoundToClosedFolder(this.localVoiceCredentialCwd, closedCwd, pathsEqual))
+    ) {
+      this.stopVoiceInput();
+    }
+    for (const clientId of [...this.remoteVoice.keys()]) {
+      const entry = this.remoteVoice.get(clientId);
+      if (!entry) continue;
+      const sessCwd = this.sessionCwd(entry.session);
+      if (
+        pathBoundToClosedFolder(entry.credentialCwd, closedCwd, pathsEqual) ||
+        sessionBoundToClosedFolder(
+          sessCwd,
+          entry.session.worktree?.path,
+          entry.session.worktree?.sourceGitRoot,
+          closedCwd,
+          pathsEqual,
+        )
+      ) {
+        this.dropRemoteVoice(clientId);
+      }
+    }
+  }
+
   private async selectRemoteRepo(clientId: string, cwd: string): Promise<void> {
     // Same catalog the client was sent (open folders on desktop, full on VS Code).
     const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
@@ -2906,7 +2941,11 @@ See design doc for the full state machine diagram.`;
       // cwd (already gated against the catalog), and falling back to whatever
       // repo happens to be selected would file the pin under the wrong project.
       const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd;
-      if (pinned && !home) return null; // nothing to write
+      if (!home) return null; // nothing to write (pin or unpin)
+      // Authorization is not only "cwd was once in the catalog": a remote client
+      // that knows a session id must not mutate pin state for a closed project.
+      // No protocol change — wire still allows optional cwd; we re-check home.
+      if (!this.isAuthorizedCwd(home)) return null;
       const next: SessionMetaOverrides = { ...overrides };
       const entry = { ...(existing ?? {}) };
       if (pinned) {
@@ -6450,7 +6489,11 @@ See design doc for the full state machine diagram.`;
     const current = () => this.remoteVoice.get(clientId) === entry && entry.streamer === streamer;
     streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
       if (!current()) return;
-      this.sendRemoteClient(clientId, { type: "voicePartial", text: ev.text });
+      this.sendRemoteClient(
+        clientId,
+        { type: "voicePartial", text: ev.text },
+        entry.credentialCwd,
+      );
       if (ev.speechFinal && entry.phrase) {
         const parsed = parseVoiceCommand(ev.text, entry.phrase);
         if (parsed.send) void this.commitRemoteVoice(clientId, parsed.text);
@@ -6557,7 +6600,11 @@ See design doc for the full state machine diagram.`;
     if (!entry.ingress.restarting()) return;
     const old = entry.streamer;
     old.cancel();
-    this.sendRemoteClient(clientId, { type: "voiceSubmit", text: text.trim() });
+    this.sendRemoteClient(
+      clientId,
+      { type: "voiceSubmit", text: text.trim() },
+      entry.credentialCwd,
+    );
     try {
       await this.startRemotePcm(clientId, entry);
     } catch (e) {
@@ -6589,10 +6636,18 @@ See design doc for the full state machine diagram.`;
       return;
     }
     if (send) {
-      this.sendRemoteClient(clientId, { type: "voiceSubmit", text: text.trim() });
+      this.sendRemoteClient(
+        clientId,
+        { type: "voiceSubmit", text: text.trim() },
+        entry.credentialCwd,
+      );
       this.sendRemoteClient(clientId, { type: "voiceState", status: "idle" });
     } else {
-      this.sendRemoteClient(clientId, { type: "voiceTranscript", text, send: false });
+      this.sendRemoteClient(
+        clientId,
+        { type: "voiceTranscript", text, send: false },
+        entry.credentialCwd,
+      );
     }
   }
 
@@ -7781,42 +7836,94 @@ See design doc for the full state machine diagram.`;
     this.view?.webview.postMessage(message);
   }
 
-  /** Target one opaque relay clientId. */
-  private sendRemoteClient(clientId: string, message: HostMsg): void {
-    this.postTap?.("remote", message, [clientId]);
+  /**
+   * **Sole uplink write path for HostMsgs.** Every remote fan-out
+   * (`sendRemoteClient` / `sendRemoteRepo` / `sendRemoteSession` /
+   * `sendRemoteHistorySnapshot` / `broadcastRemoteDevice`) routes here so a new
+   * sender cannot skip project authorization.
+   *
+   * `scopeCwd` is the session or repo cwd that owns the payload. Required for
+   * conversation/session types ({@link mayDeliverRemoteHostMsg}); list frames
+   * are checked against their entries; device prefs and errors need no scope.
+   */
+  private deliverRemote(
+    clientIds: readonly string[],
+    message: HostMsg,
+    scopeCwd?: string,
+  ): void {
+    if (clientIds.length === 0) return;
+    const authorized = this.authorizedSessionCwds();
+    if (!mayDeliverRemoteHostMsg(message, authorized, scopeCwd, pathsEqual)) {
+      this.host.appendLine(
+        `[remote] dropped ${message.type} (project scope not authorized: ${scopeCwd ?? "<none>"})`,
+      );
+      return;
+    }
+    this.postTap?.("remote", message, [...clientIds]);
     const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
-    if (out) this.uplink?.broadcastTo([clientId], out);
+    if (!out) return;
+    if (clientIds.length === 1) this.uplink?.broadcastTo([clientIds[0]], out);
+    else this.uplink?.broadcastTo([...clientIds], out);
+  }
+
+  /** Target one opaque relay clientId. */
+  private sendRemoteClient(clientId: string, message: HostMsg, scopeCwd?: string): void {
+    // Derive scope when the caller did not pass one: message field → active
+    // session cwd. Never invent a grant from a stale per-tab repo selection alone
+    // for conversation types (that is exactly the close-ordering hole).
+    let scope = scopeCwd;
+    if (scope === undefined) {
+      if (message.type === "sessionName") scope = message.cwd;
+      else if (message.type === "repoSessions") scope = message.cwd;
+      else {
+        const active = this.remoteClients.active(clientId);
+        if (active) scope = this.sessionCwd(active);
+      }
+    }
+    this.deliverRemote([clientId], message, scope);
   }
 
   private sendRemoteRepo(cwd: string, message: HostMsg): void {
-    const clientIds = this.remoteClients.clientsForCwd(cwd);
-    this.postTap?.("remote", message, clientIds);
-    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
-    if (!out) return;
-    this.uplink?.broadcastTo(clientIds, out);
+    // Repo-scoped fan-out (dots, etc.): the named cwd is the authorization scope.
+    this.deliverRemote(this.remoteClients.clientsForCwd(cwd), message, cwd);
   }
 
   private sendRemoteSession(session: Session, message: HostMsg): void {
+    const scope = this.sessionCwd(session);
+    // Belt: refuse before iterating so a disposed/closed-folder session cannot
+    // drip transcript to any remaining holder.
+    if (!mayDeliverRemoteHostMsg(message, this.authorizedSessionCwds(), scope, pathsEqual)) {
+      this.host.appendLine(
+        `[remote] dropped ${message.type} for session (cwd not authorized: ${scope})`,
+      );
+      return;
+    }
     for (const clientId of this.remoteClients.clients()) {
       if (this.remoteClients.active(clientId) === session) {
-        this.sendRemoteClient(clientId, message);
+        this.sendRemoteClient(clientId, message, scope);
       }
     }
   }
 
   private sendRemoteHistorySnapshot(session: Session): void {
+    const scope = this.sessionCwd(session);
+    if (!this.isAuthorizedCwd(scope)) {
+      this.host.appendLine(
+        `[remote] dropped history snapshot (cwd not authorized: ${scope})`,
+      );
+      return;
+    }
     const clientIds = this.remoteClients.clientsForActiveValue(session);
     if (clientIds.length === 0) return;
     const snapshot = bracketRemoteSnapshot(session.buffer);
     for (const clientId of clientIds) {
-      for (const message of snapshot) this.sendRemoteClient(clientId, message);
+      for (const message of snapshot) this.sendRemoteClient(clientId, message, scope);
     }
   }
 
   private broadcastRemoteDevice(message: HostMsg): void {
-    this.postTap?.("remote", message, this.remoteClients.clients());
-    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
-    if (out) this.uplink?.broadcast(out);
+    // Device-global prefs only (DEVICE_GLOBAL_REMOTE_TYPES) — no project scope.
+    this.deliverRemote(this.remoteClients.clients(), message, undefined);
   }
 
   /** Test-only tap on the split posts. Never assigned in a released build:

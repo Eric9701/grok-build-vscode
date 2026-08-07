@@ -268,4 +268,65 @@ describe("sidebar close-revocation wiring (source)", () => {
     // localRepoCatalogEntries remains the catalog source (open folders desktop).
     expect(src).toContain("localRepoCatalogEntries");
   });
+
+  it("single deliverRemote choke point gates all remote HostMsg uplink writes", () => {
+    const src = sidebarSrc();
+    // The shared deliver method is the only place that calls uplink.broadcast*.
+    const deliverStart = src.indexOf("private deliverRemote(");
+    expect(deliverStart).toBeGreaterThan(0);
+    const deliverEnd = src.indexOf("private sendRemoteClient(", deliverStart);
+    const deliverBody = src.slice(deliverStart, deliverEnd);
+    expect(deliverBody).toContain("mayDeliverRemoteHostMsg");
+    expect(deliverBody).toContain("authorizedSessionCwds");
+    expect(deliverBody).toMatch(/uplink\?\.broadcastTo/);
+
+    // Fan-out helpers must route through deliverRemote, not open their own uplink.
+    for (const name of [
+      "private sendRemoteClient(",
+      "private sendRemoteRepo(",
+      "private sendRemoteSession(",
+      "private sendRemoteHistorySnapshot(",
+      "private broadcastRemoteDevice(",
+    ]) {
+      const i = src.indexOf(name);
+      expect(i, name).toBeGreaterThan(0);
+    }
+    // History snapshot refuses unauthorized session cwd before iterating.
+    const histStart = src.indexOf("private sendRemoteHistorySnapshot(");
+    const histBody = src.slice(histStart, histStart + 600);
+    expect(histBody).toContain("isAuthorizedCwd");
+    expect(histBody).toContain("dropped history snapshot");
+
+    // No other uplink.broadcast* outside deliverRemote (device broadcast uses deliver).
+    const uplinkWrites = [...src.matchAll(/uplink\?\.broadcast(?:To)?\(/g)];
+    expect(uplinkWrites.length).toBe(2); // both inside deliverRemote
+    for (const m of uplinkWrites) {
+      expect(m.index! >= deliverStart && m.index! < deliverEnd).toBe(true);
+    }
+  });
+
+  it("toggleSessionPin refuses unauthorized home cwd (no protocol change)", () => {
+    const src = sidebarSrc();
+    const pinStart = src.indexOf("private async toggleSessionPin(");
+    const pinEnd = src.indexOf("private buildPinnedSessions(", pinStart);
+    const pinBody = src.slice(pinStart, pinEnd);
+    expect(pinBody).toContain("isAuthorizedCwd(home)");
+    // Must not mutate when home is only in cache/metadata after project close.
+    expect(pinBody).toMatch(/if\s*\(\s*!this\.isAuthorizedCwd\(home\)\s*\)\s*return null/);
+  });
+
+  it("revokeClosedProjectFolder cancels local and remote voice for the closed folder", () => {
+    const src = sidebarSrc();
+    const revokeStart = src.indexOf("private revokeClosedProjectFolder(");
+    const revokeBody = src.slice(revokeStart, revokeStart + 900);
+    expect(revokeBody).toContain("revokeVoiceForClosedFolder");
+
+    const voiceStart = src.indexOf("private revokeVoiceForClosedFolder(");
+    expect(voiceStart).toBeGreaterThan(0);
+    const voiceBody = src.slice(voiceStart, voiceStart + 1200);
+    expect(voiceBody).toContain("stopVoiceInput");
+    expect(voiceBody).toContain("dropRemoteVoice");
+    expect(voiceBody).toContain("localVoiceCwd");
+    expect(voiceBody).toContain("credentialCwd");
+  });
 });

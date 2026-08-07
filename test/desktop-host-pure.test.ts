@@ -1508,6 +1508,30 @@ describe("desktop openFile / openUrl policy (A1)", () => {
     expect(src).toContain("authorizeDesktopWebviewMsg");
     expect(src).toMatch(/dispatchMessage[\s\S]*authorizeDesktopWebviewMsg/);
   });
+
+  it("file-tree IPC open refuses executables (same policy as chat openFile)", () => {
+    const ipcSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "file-tree-ipc.ts",
+      ),
+      "utf8",
+    );
+    expect(ipcSrc).toContain('import { isExecutablePath } from "./desktop-policy"');
+    expect(ipcSrc).toContain("executable path refused");
+    // Must run before the OS open, not only document in comments.
+    const openHandler = ipcSrc.indexOf("ipcMain.handle(CH_OPEN");
+    expect(openHandler).toBeGreaterThan(0);
+    const openBody = ipcSrc.slice(openHandler, ipcSrc.indexOf("ipcMain.handle(CH_READ", openHandler));
+    const refuse = openBody.indexOf("isExecutablePath(resolved.absPath)");
+    const openCall = openBody.indexOf("await shell.openPath(");
+    expect(refuse).toBeGreaterThan(0);
+    expect(openCall).toBeGreaterThan(0);
+    expect(refuse).toBeLessThan(openCall);
+  });
 });
 
 describe("media provenance + registry (A2)", () => {
