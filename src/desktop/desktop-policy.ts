@@ -16,7 +16,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseFileRef } from "../file-ref";
 import type { WebviewMsg } from "../protocol";
-import { resolveTreePath, type TreePathFs } from "./file-tree";
+import {
+  findRelPathByBasename,
+  isBareFileName,
+  isExistingFile,
+  resolveTreePath,
+  type TreePathFs,
+} from "./file-tree";
 
 /** Extensions the OS may launch as code / scripts / installers / launchers. */
 const EXECUTABLE_EXTS = new Set([
@@ -275,6 +281,78 @@ export function revalidateOpenFileForUse(
 
   // Open/read the path from the final check — never the pre-revalidation string.
   return second;
+}
+
+/**
+ * Use-time resolution for chat/OS open after containment is proven.
+ *
+ * 1. Revalidate the raw path (same TOCTOU property as {@link revalidateOpenFileForUse}).
+ * 2. If that absolute path exists as a file, open it.
+ * 3. If the caller's path is a **bare filename** that is not at the root, search
+ *    authorized roots for a matching basename (shallowest hit) and re-authorize
+ *    the found relative path — agents often link `product-decisions.md` when
+ *    the real file is `docs/product-decisions.md`.
+ * 4. Otherwise `{ reason: "file not found" }` — callers must show an **in-app**
+ *    message and must **not** hand a missing path to `shell.openPath` (Windows
+ *    would raise a shell dialog).
+ *
+ * Paths that escape authorized roots or look executable still fail closed.
+ */
+export function resolveAuthorizedFileForOpen(
+  rawPath: string,
+  ctx: DesktopOpenFileContext,
+): DesktopOpenPathResult {
+  const check = revalidateOpenFileForUse(rawPath, ctx);
+  if (!check.ok) return check;
+
+  const pathFs = ctx.pathFs;
+  const exists = (p: string) =>
+    pathFs ? isExistingFile(p, pathFs) : isExistingFile(p);
+  if (exists(check.absPath)) {
+    return check;
+  }
+
+  // Workspace basename search only for bare links. Multi-segment misses
+  // (e.g. `src/missing.md`) stay "not found" — do not invent alternate paths.
+  // Sidebar joins a relative bare name with the session cwd, so openFsPath often
+  // sees an absolute path whose relative form under a root is still one segment.
+  const bareProbe = parseFileRef(rawPath).path;
+  const baseName = path.basename(bareProbe.replace(/\\/g, "/"));
+  if (!baseName || baseName === "." || baseName === "..") {
+    return { ok: false, reason: "file not found" };
+  }
+  const platform = ctx.platform ?? process.platform;
+  const roots = desktopAuthRoots(ctx);
+  let looksBare = isBareFileName(bareProbe);
+  if (!looksBare) {
+    for (const root of roots) {
+      const rel = path.relative(root, check.absPath).split(path.sep).join("/");
+      if (rel.includes("..")) continue;
+      // Single segment under the root ≡ the chat bare-filename case after join.
+      if (rel === baseName || (!rel.includes("/") && path.basename(rel) === baseName)) {
+        looksBare = true;
+        break;
+      }
+    }
+  }
+  if (!looksBare) {
+    return { ok: false, reason: "file not found" };
+  }
+
+  for (const root of roots) {
+    const foundRel = findRelPathByBasename(root, baseName, platform, pathFs);
+    if (!foundRel) continue;
+    // Re-authorize the discovered relative path (executable + containment).
+    const again = revalidateOpenFileForUse(foundRel, {
+      ...ctx,
+      allowedRoots: [root, ...roots.filter((r) => r !== root)],
+      workspaceRoot: root,
+    });
+    if (again.ok && exists(again.absPath)) {
+      return again;
+    }
+  }
+  return { ok: false, reason: "file not found" };
 }
 
 /**

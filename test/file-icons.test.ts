@@ -68,9 +68,13 @@ describe("Seti icon assets", () => {
 
   it("directory rows use a disclosure chevron and no folder Seti glyph", () => {
     const boot = fileTreePanelBootSource(iconsDir);
-    // Chevrons (Codex / VS Code), not filled triangle folder-adjacent glyphs.
+    // Chevrons (Codex / VS Code SVG > / v), not filled triangle glyphs.
     expect(boot).toMatch(/twistGlyph/);
-    expect(boot).toMatch(/["']⌄["']|["']›["']/);
+    expect(boot).toContain("ICON_CHEVRON_RIGHT");
+    expect(boot).toContain("ICON_CHEVRON_DOWN");
+    expect(boot).toMatch(/m9 18 6-6-6-6/); // chevron-right path
+    expect(boot).toMatch(/m6 9 6 6 6-6/); // chevron-down path
+    expect(boot).not.toMatch(/["']▶["']|["']▼["']|["']▸["']|["']▾["']|["']›["']|["']⌄["']/);
     // Dirs skip Seti: iconFor returns empty for kind===dir, and makeNode only
     // attaches data-icon / img for files.
     expect(boot).toMatch(/if\s*\(\s*kind\s*===\s*["']dir["']\s*\)\s*return\s*\{\s*id:\s*["']["']/);
@@ -90,9 +94,11 @@ describe("Seti icon assets", () => {
     expect(boot).toMatch(
       /if\s*\(\s*entry\.kind\s*===\s*["']file["']\s*\)\s*\{[\s\S]*?data-icon/,
     );
-    // Chevrons are assigned for dirs only.
+    // Chevrons are assigned for dirs only (innerHTML SVG).
+    expect(boot).toMatch(/entry\.kind\s*===\s*["']dir["'][\s\S]{0,80}twistGlyph|twistGlyph\(false\)/);
+    // twistGlyph must return the SVG constants (not a triangle/unicode glyph).
     expect(boot).toMatch(
-      /entry\.kind\s*===\s*["']dir["']\s*\?\s*twistGlyph/,
+      /function twistGlyph\s*\(\s*open\s*\)\s*\{\s*return open \? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT/,
     );
   });
 });

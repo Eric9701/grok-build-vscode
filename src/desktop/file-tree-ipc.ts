@@ -180,6 +180,32 @@ export async function injectFileTreePanel(win: BrowserWindow | null): Promise<vo
   }
 }
 
+/**
+ * Open a workspace-relative path in the in-panel file viewer (chat openFile
+ * for renderable types). Returns true when the renderer accepted the path.
+ * Containment is re-checked by the panel's read IPC — this only delivers the
+ * relative path string.
+ */
+export async function openPathInFilePanel(
+  win: BrowserWindow | null,
+  relPath: string,
+): Promise<boolean> {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return false;
+  if (typeof relPath !== "string" || !relPath || relPath.includes("\0")) return false;
+  // Escape for a single-quoted JS string literal.
+  const lit = relPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\r|\n/g, "");
+  try {
+    const result = await win.webContents.executeJavaScript(
+      `(function(){try{var fn=window.__grokDeskFtOpen;if(typeof fn!=="function")return{ok:false,reason:"no panel"};return Promise.resolve(fn('${lit}')).then(function(r){return r&&r.ok!==false?{ok:true}:r||{ok:true};});}catch(e){return{ok:false,reason:String(e&&e.message||e)};}})()`,
+      true,
+    );
+    if (result && result.ok === false) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function injectFileTreePanelLogged(
   win: BrowserWindow | null,
   log: (line: string) => void,

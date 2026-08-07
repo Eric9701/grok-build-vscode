@@ -79,28 +79,68 @@ body.desk-with-ft.has-rail > .app-main {
      reads as its own region rather than continuing this column. */
   background: var(--vscode-sideBar-background, #252526);
 }
-/* Panel hidden entirely when closed — takes no space. */
-body.desk-ft-closed .desk-ft-panel {
+/* Panel hidden entirely when closed — takes no space (resizer too). */
+body.desk-ft-closed .desk-ft-panel,
+body.desk-ft-closed .desk-ft-resizer {
   display: none !important;
 }
 .desk-ft-panel {
-  flex: 0 0 280px;
-  width: 280px;
-  max-width: 45%;
+  /* Width driven by --desk-ft-width (JS + localStorage); defaults below. */
+  flex: 0 0 var(--desk-ft-width, 280px);
+  width: var(--desk-ft-width, 280px);
+  max-width: none;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-left: none;
   /* Distinct from the chat column (sideBar) so the open panel reads as its
      own region — editor-background is darker under the desktop theme tokens. */
   background: var(--vscode-editor-background, #1e1e1e);
-  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.04);
   color: var(--vscode-foreground, #ccc);
   font-family: var(--vscode-font-family, system-ui, sans-serif);
   /* Match projects rail type scale (--rail-row-* from chat.css body). */
   font-size: var(--rail-row-font-size, 13px);
   line-height: var(--rail-row-line-height, 1.5);
   z-index: 20;
+  overflow: hidden;
+}
+/* Drag handle between chat column and file panel. */
+.desk-ft-resizer {
+  flex: 0 0 5px;
+  width: 5px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-right: 1px solid transparent;
+  background: transparent;
+  cursor: col-resize;
+  z-index: 25;
+  align-self: stretch;
+  /* Hit area slightly wider than the 5px visual line. */
+  position: relative;
+}
+.desk-ft-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
+}
+.desk-ft-resizer:hover,
+.desk-ft-resizer.desk-ft-resizing {
+  border-left-color: var(--vscode-focusBorder, #007fd4);
+  background: var(--vscode-focusBorder, #007fd4);
+  opacity: 0.55;
+}
+body.desk-ft-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.desk-ft-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 .desk-ft-header {
   display: flex;
@@ -190,10 +230,12 @@ body.desk-ft-viewing .desk-ft-body {
   align-items: center;
   justify-content: center;
   color: var(--vscode-descriptionForeground, #9d9d9d);
-  font-size: 11px;
   line-height: 1;
-  /* Optical center for › / ⌄ glyphs */
-  transform: translateY(-0.5px);
+}
+.desk-ft-twist svg {
+  width: 12px;
+  height: 12px;
+  display: block;
 }
 /* File icons only — dirs render an empty spacer so the name column stays aligned. */
 .desk-ft-icon {
@@ -365,18 +407,57 @@ body.desk-ft-viewing .desk-ft-viewer {
   min-height: 28px;
   box-sizing: border-box;
 }
+/* Breadcrumb Back: toolbar button (not a text link) so it does not compete
+   with real anchors inside markdown previews. */
 .desk-ft-crumb-back {
   flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  color: var(--vscode-textLink-foreground, #3794ff);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-foreground, #ccc);
   cursor: pointer;
   font: inherit;
-  padding: 2px 6px 2px 0;
-  margin-right: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px 2px 6px;
+  margin-right: 6px;
+  line-height: 1.3;
+}
+.desk-ft-crumb-back svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  display: block;
 }
 .desk-ft-crumb-back:hover {
-  text-decoration: underline;
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+  text-decoration: none;
+  color: var(--vscode-foreground, #ccc);
+}
+.desk-ft-crumb-back:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 1px;
+}
+/* External-open affordance while a file is previewed in-panel. */
+.desk-ft-open-ext {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.desk-ft-open-ext:hover {
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
 }
 .desk-ft-crumb-seg {
   border: none;
@@ -473,12 +554,21 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   const OPEN_KEY = "desk-ft-open";
   const FILTER_KEY = "desk-ft-filter";
   const RAIL_OPEN_KEY = "desk-rail-open";
+  const WIDTH_KEY = "desk-ft-width";
+  const WIDTH_DEFAULT = 280;
+  const WIDTH_MIN = 200;
+  const WIDTH_CHAT_MIN = 280;
   // Seti UI (MIT) data-URLs — bundled at inject time; no network fetch.
   const SETI_ICONS = ${JSON.stringify(iconMap)};
   const fileIconId = ${iconIdFn};
   // Lucide panel-left / panel-right — same convention as AFK Pilot + Codex.
   const ICON_PANEL_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
   const ICON_PANEL_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>';
+  // Lucide chevron-right / chevron-down — VS Code / Codex disclosure shape (not triangles).
+  const ICON_CHEVRON_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+  const ICON_CHEVRON_DOWN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  // Lucide arrow-left for breadcrumb Back.
+  const ICON_ARROW_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>';
 
   // Tear down a previous mount (reload / re-inject).
   const prevShell = document.getElementById("desk-ft-shell");
@@ -577,7 +667,16 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   panel.appendChild(body);
   panel.appendChild(viewer);
 
+  const resizer = document.createElement("div");
+  resizer.className = "desk-ft-resizer";
+  resizer.id = "desk-ft-resizer";
+  resizer.setAttribute("role", "separator");
+  resizer.setAttribute("aria-orientation", "vertical");
+  resizer.setAttribute("aria-label", "Resize file panel");
+  resizer.title = "Drag to resize";
+
   shell.appendChild(chatCol);
+  shell.appendChild(resizer);
   shell.appendChild(panel);
   // Insert shell after the top bar (or at start of host).
   const topBarEl = layoutHost.querySelector(":scope > .top-bar") || layoutHost.querySelector(".top-bar");
@@ -609,6 +708,69 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
 
   let rootLabel = "Files";
   let viewRelPath = null; // null = tree mode
+
+  function clampPanelWidth(px) {
+    const shellW = shell.getBoundingClientRect().width || window.innerWidth || 800;
+    const maxByChat = Math.max(WIDTH_MIN, Math.floor(shellW - WIDTH_CHAT_MIN));
+    const maxByFrac = Math.floor(shellW * 0.7);
+    const max = Math.max(WIDTH_MIN, Math.min(maxByChat, maxByFrac));
+    const n = Math.round(Number(px));
+    if (!Number.isFinite(n)) return WIDTH_DEFAULT;
+    return Math.min(max, Math.max(WIDTH_MIN, n));
+  }
+
+  function applyPanelWidth(px) {
+    const w = clampPanelWidth(px);
+    panel.style.setProperty("--desk-ft-width", w + "px");
+    try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (_) { /* */ }
+    return w;
+  }
+
+  // Restore persisted width (bounded) before first paint of open panel.
+  let startWidth = WIDTH_DEFAULT;
+  try {
+    const savedW = localStorage.getItem(WIDTH_KEY);
+    if (savedW != null && savedW !== "") startWidth = clampPanelWidth(savedW);
+  } catch (_) { /* */ }
+  applyPanelWidth(startWidth);
+
+  // Drag-to-resize between chat and panel.
+  (function wireResizer() {
+    let dragging = false;
+    let startX = 0;
+    let startW = 0;
+    resizer.addEventListener("pointerdown", (e) => {
+      if (document.body.classList.contains("desk-ft-closed")) return;
+      dragging = true;
+      startX = e.clientX;
+      startW = panel.getBoundingClientRect().width;
+      document.body.classList.add("desk-ft-resizing");
+      resizer.classList.add("desk-ft-resizing");
+      try { resizer.setPointerCapture(e.pointerId); } catch (_) { /* */ }
+      e.preventDefault();
+    });
+    const onMove = (e) => {
+      if (!dragging) return;
+      // Panel is on the right: drag left → wider, drag right → narrower.
+      const delta = startX - e.clientX;
+      applyPanelWidth(startW + delta);
+    };
+    const onUp = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove("desk-ft-resizing");
+      resizer.classList.remove("desk-ft-resizing");
+      try { resizer.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+    };
+    resizer.addEventListener("pointermove", onMove);
+    resizer.addEventListener("pointerup", onUp);
+    resizer.addEventListener("pointercancel", onUp);
+    window.addEventListener("resize", () => {
+      // Re-clamp so a narrow window cannot leave the panel overgrown.
+      const cur = panel.getBoundingClientRect().width;
+      if (cur > 0) applyPanelWidth(cur);
+    });
+  })();
 
   function applyOpen(open) {
     document.body.classList.toggle("desk-ft-closed", !open);
@@ -730,9 +892,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     applyFilter(body);
   });
 
-  /** Plain disclosure chevron (VS Code / Codex style) — no folder glyph. */
+  /** Plain disclosure chevron SVG (VS Code / Codex > / v shape) — not triangles. */
   function twistGlyph(open) {
-    return open ? "⌄" : "›";
+    return open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT;
   }
 
   /** Seti UI icon id + data-URL for a *file* entry (dirs use chevron only). */
@@ -813,8 +975,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     const back = document.createElement("button");
     back.type = "button";
     back.className = "desk-ft-crumb-back";
-    back.textContent = "← Back";
+    back.innerHTML = ICON_ARROW_LEFT + "<span>Back</span>";
     back.title = "Back to file tree";
+    back.setAttribute("aria-label", "Back to file tree");
     back.addEventListener("click", () => showTree());
     crumb.appendChild(back);
 
@@ -844,32 +1007,43 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       }
       crumb.appendChild(btn);
     });
+
+    // Explicit OS hand-off while previewing (fallback affordance).
+    const openExt = document.createElement("button");
+    openExt.type = "button";
+    openExt.className = "desk-ft-open-ext";
+    openExt.textContent = "Open in default app";
+    openExt.title = "Open this file in the system default application";
+    openExt.addEventListener("click", async () => {
+      try { await api.open(relPath); } catch (_) { /* */ }
+    });
+    crumb.appendChild(openExt);
   }
 
   async function openFileView(relPath) {
     if (!api.read) {
       // Older host without read channel — fall back to OS open.
       try { await api.open(relPath); } catch (_) { /* */ }
-      return;
+      return { ok: false, reason: "no read channel", openExternal: true };
     }
     let result;
     try {
       result = await api.read(relPath);
     } catch (e) {
       console.warn("[desk-ft] read error", e);
-      return;
+      return { ok: false, reason: String((e && e.message) || e) };
     }
     if (result && result.openExternal) {
       try { await api.open(relPath); } catch (_) { /* */ }
-      return;
+      return { ok: true, openExternal: true };
     }
     if (!result || result.ok === false) {
-      if (result && result.reason === "open externally") {
+      if (result && (result.reason === "open externally" || result.openExternal)) {
         try { await api.open(relPath); } catch (_) { /* */ }
-      } else {
-        console.warn("[desk-ft] read failed:", result && (result.reason || result.error));
+        return { ok: true, openExternal: true };
       }
-      return;
+      console.warn("[desk-ft] read failed:", result && (result.reason || result.error));
+      return { ok: false, reason: (result && (result.reason || result.error)) || "read failed" };
     }
 
     viewRelPath = relPath;
@@ -884,7 +1058,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       img.src = result.dataUrl;
       img.alt = relPath;
       viewerBody.appendChild(img);
-      return;
+      return { ok: true, kind: result.kind };
     }
 
     if (result.kind === "markdown") {
@@ -892,13 +1066,22 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       wrap.className = "desk-ft-md";
       wrap.innerHTML = renderMarkdown(result.text || "");
       viewerBody.appendChild(wrap);
-      return;
+      return { ok: true, kind: "markdown" };
     }
 
     const pre = document.createElement("pre");
     pre.textContent = result.text || "";
     viewerBody.appendChild(pre);
+    return { ok: true, kind: result.kind || "text" };
   }
+
+  // Host → panel open (chat file links). Containment re-checked by api.read.
+  window.__grokDeskFtOpen = function (relPath) {
+    if (typeof relPath !== "string" || !relPath) {
+      return Promise.resolve({ ok: false, reason: "invalid path" });
+    }
+    return openFileView(relPath);
+  };
 
   function makeNode(entry) {
     const node = document.createElement("div");
@@ -921,7 +1104,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     const twist = document.createElement("span");
     twist.className = "desk-ft-twist";
     twist.setAttribute("aria-hidden", "true");
-    twist.textContent = entry.kind === "dir" ? twistGlyph(false) : "";
+    if (entry.kind === "dir") twist.innerHTML = twistGlyph(false);
 
     // Column 2: Seti file icon (files) or empty spacer (dirs) — fixed width.
     const icon = document.createElement("span");
@@ -955,7 +1138,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       let loaded = false;
       row.addEventListener("click", async () => {
         const open = node.classList.toggle("desk-ft-open");
-        twist.textContent = twistGlyph(open);
+        twist.innerHTML = twistGlyph(open);
         if (open && !loaded) {
           loaded = true;
           await fillDir(kids, entry.relPath);

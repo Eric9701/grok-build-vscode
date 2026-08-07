@@ -520,3 +520,132 @@ export function breadcrumbSegments(
   }
   return segs;
 }
+
+/**
+ * True when `p` is a single filename with no directory components (and not an
+ * absolute Windows/Unix path). Chat agents often emit bare basenames like
+ * `product-decisions.md` for files that actually live under `docs/`.
+ */
+export function isBareFileName(p: string): boolean {
+  if (!p || typeof p !== "string") return false;
+  if (p.includes("\0")) return false;
+  const t = p.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!t || t === "." || t === "..") return false;
+  if (t.includes("/")) return false;
+  // Absolute Windows drive or UNC.
+  if (/^[A-Za-z]:/.test(p) || p.startsWith("\\\\")) return false;
+  return true;
+}
+
+/** Directory basenames skipped while searching for a bare filename. */
+export const FIND_BASENAME_SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".grok",
+  ".hg",
+  ".svn",
+  "dist",
+  "out",
+  "build",
+  ".next",
+  "coverage",
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".tox",
+  "target",
+]);
+
+/** Cap visits so a huge monorepo cannot freeze open-from-chat. */
+export const FIND_BASENAME_MAX_VISITS = 8000;
+
+/**
+ * Bounded search under `root` for a file whose basename matches (case-sensitive
+ * on POSIX, case-insensitive on win32). Prefers the shallowest hit, then
+ * lexical order. Skips bulky/generated dirs. Returns a workspace-relative
+ * POSIX path or null.
+ */
+export function findRelPathByBasename(
+  root: string,
+  basename: string,
+  platform: NodeJS.Platform = process.platform,
+  pathFs: TreePathFs = defaultTreeFs,
+  opts?: { maxVisits?: number; skipDirs?: ReadonlySet<string> },
+): string | null {
+  if (!root || !basename || basename.includes("/") || basename.includes("\\")) {
+    return null;
+  }
+  if (basename === "." || basename === ".." || basename.includes("\0")) return null;
+
+  const maxVisits = opts?.maxVisits ?? FIND_BASENAME_MAX_VISITS;
+  const skip = opts?.skipDirs ?? FIND_BASENAME_SKIP_DIRS;
+  const win = platform === "win32";
+  const want = win ? basename.toLowerCase() : basename;
+
+  type Hit = { rel: string; depth: number };
+  const hits: Hit[] = [];
+  let visits = 0;
+
+  const walk = (absDir: string, relDir: string, depth: number): void => {
+    if (visits >= maxVisits) return;
+    let ents: fs.Dirent[];
+    try {
+      ents = pathFs.readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of ents) {
+      if (visits >= maxVisits) return;
+      visits++;
+      const name = ent.name;
+      if (!name || name === "." || name === "..") continue;
+      const childRel = relDir ? `${relDir}/${name}` : name;
+      const childAbs = path.join(absDir, name);
+
+      let isDir = false;
+      let isFile = false;
+      try {
+        if (typeof ent.isDirectory === "function" && ent.isDirectory()) isDir = true;
+        else if (typeof ent.isFile === "function" && ent.isFile()) isFile = true;
+        else if (typeof ent.isSymbolicLink === "function" && ent.isSymbolicLink()) {
+          const st = pathFs.statSync(childAbs);
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+        }
+      } catch {
+        continue;
+      }
+
+      if (isDir) {
+        if (skip.has(name) || (win && skip.has(name.toLowerCase()))) continue;
+        // Stay inside the root (refuse outbound links).
+        if (!isCanonicallyInsideRoot(root, childAbs, platform, pathFs)) continue;
+        walk(childAbs, childRel, depth + 1);
+        continue;
+      }
+      if (!isFile) continue;
+      const got = win ? name.toLowerCase() : name;
+      if (got === want) {
+        if (!isCanonicallyInsideRoot(root, childAbs, platform, pathFs)) continue;
+        hits.push({ rel: childRel, depth });
+      }
+    }
+  };
+
+  walk(path.resolve(root), "", 0);
+  if (!hits.length) return null;
+  hits.sort((a, b) => a.depth - b.depth || a.rel.localeCompare(b.rel));
+  return hits[0]!.rel;
+}
+
+/** True when `absPath` exists and is a regular file. */
+export function isExistingFile(
+  absPath: string,
+  pathFs: TreePathFs = defaultTreeFs,
+): boolean {
+  try {
+    return pathFs.statSync(absPath).isFile();
+  } catch {
+    return false;
+  }
+}

@@ -56,6 +56,7 @@ import {
   desktopAuthRoots,
   isExecutableOpenTarget,
   isExecutablePath,
+  resolveAuthorizedFileForOpen,
   revalidateOpenFileForUse,
 } from "../src/desktop/desktop-policy";
 import {
@@ -70,6 +71,8 @@ import {
   breadcrumbSegments,
   classifyFilePreview,
   FILE_TREE_MAX_ENTRIES,
+  findRelPathByBasename,
+  isBareFileName,
   listTreeDir,
   nearestExistingAncestor,
   readTreeFile,
@@ -1374,11 +1377,14 @@ describe("file-tree panel assets", () => {
     // Viewer replaces tree (not side-by-side).
     expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-viewer");
     expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-viewing");
-    // Open panel is visually separated (border + own background).
-    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-panel[\s\S]*border-left/);
+    // Open panel is visually separated (resizer border + own background).
+    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-resizer[\s\S]*border-left|col-resize/);
     expect(FILE_TREE_PANEL_CSS).toMatch(
       /\.desk-ft-panel[\s\S]*background:\s*var\(--vscode-editor-background/,
     );
+    // Width is variable + resizable (not a fixed 280px-only panel).
+    expect(FILE_TREE_PANEL_CSS).toContain("--desk-ft-width");
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-resizer");
     // No unprefixed layout hijacks of chat primitives.
     expect(FILE_TREE_PANEL_CSS).not.toMatch(/(?:^|\n)\.messages\s*\{/);
     expect(FILE_TREE_PANEL_CSS).not.toMatch(/(?:^|\n)\.composer\s*\{/);
@@ -1409,6 +1415,24 @@ describe("file-tree panel assets", () => {
     // Tree reuses rail row CSS variables.
     expect(FILE_TREE_PANEL_CSS).toContain("--rail-row-font-size");
     expect(FILE_TREE_PANEL_CSS).toContain("--rail-hover-bg");
+    // Resize persistence + host chat-open hook.
+    expect(boot).toContain("desk-ft-width");
+    expect(boot).toContain("WIDTH_MIN");
+    expect(boot).toContain("__grokDeskFtOpen");
+    expect(boot).toContain("Open in default app");
+    // Back is a button with icon, not a blue text link.
+    expect(boot).toContain("desk-ft-crumb-back");
+    expect(boot).toContain("ICON_ARROW_LEFT");
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-crumb-back[\s\S]*button-secondaryBackground|border-radius/,
+    );
+    expect(FILE_TREE_PANEL_CSS).not.toMatch(
+      /\.desk-ft-crumb-back\s*\{[^}]*textLink-foreground/s,
+    );
+    // Directory disclosure: SVG chevrons, never filled triangles.
+    expect(boot).toContain("ICON_CHEVRON_RIGHT");
+    expect(boot).toContain("ICON_CHEVRON_DOWN");
+    expect(boot).not.toMatch(/["']▶["']|["']▼["']|["']▸["']|["']▾["']/);
     // Does not call into acquireVsCodeApi / Host message bus.
     expect(boot).not.toContain("acquireVsCodeApi");
     expect(boot).not.toMatch(/type:\s*["']openFile["']/);
@@ -2809,8 +2833,8 @@ describe("typed config open intents (host-resolved paths)", () => {
     expect(projectBody).toMatch(/openHostPath\s*\(/);
     expect(projectBody).toMatch(/projectConfigPath\s*\(/);
     expect(projectBody).not.toMatch(/openFsPath\s*\(/);
-    // Renderer openFile path still revalidates.
-    expect(hostSrc).toMatch(/openFsPath[\s\S]*revalidateOpenFileForUse/);
+    // Renderer openFile path still revalidates (via resolveAuthorizedFileForOpen).
+    expect(hostSrc).toMatch(/openFsPath[\s\S]*resolveAuthorizedFileForOpen/);
     // Mutation: if configs were routed back through openResource → openFsPath,
     // the openGlobalConfig body would not call openHostPath.
     expect(globalBody).not.toMatch(/openResource\s*\(/);
@@ -2993,8 +3017,8 @@ describe("chat openFile / openDiff use-time revalidation (round 16)", () => {
         ),
         "utf8",
       );
-      expect(hostSrc).toContain("revalidateOpenFileForUse");
-      expect(hostSrc).toMatch(/openFsPath[\s\S]*revalidateOpenFileForUse/);
+      expect(hostSrc).toContain("resolveAuthorizedFileForOpen");
+      expect(hostSrc).toMatch(/openFsPath[\s\S]*resolveAuthorizedFileForOpen/);
       expect(hostSrc).toMatch(/check\.absPath/);
       // shell.openPath must use the revalidated path, not the raw argument alone.
       const openBody = hostSrc.slice(
@@ -3003,6 +3027,10 @@ describe("chat openFile / openDiff use-time revalidation (round 16)", () => {
       );
       expect(openBody).toMatch(/shell\.openPath\(openPath\)/);
       expect(openBody).not.toMatch(/shell\.openPath\(fsPath\)/);
+      // Renderable types go to the panel first; missing files never openPath.
+      expect(openBody).toContain("classifyFilePreview");
+      expect(openBody).toContain("openPathInFilePanel");
+      expect(openBody).toMatch(/File not found|not found/i);
 
       const sidebarSrc = fs.readFileSync(
         path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
@@ -3078,6 +3106,172 @@ describe("file-tree read TOCTOU recheck (P2-6)", () => {
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+});
+
+describe("chat openFile path resolution + panel routing", () => {
+  it("isBareFileName accepts only single-segment names", () => {
+    expect(isBareFileName("product-decisions.md")).toBe(true);
+    expect(isBareFileName("readme.txt")).toBe(true);
+    expect(isBareFileName("docs/product-decisions.md")).toBe(false);
+    expect(isBareFileName("C:\\\\repo\\\\a.md")).toBe(false);
+    expect(isBareFileName("/tmp/a.md")).toBe(false);
+    expect(isBareFileName("")).toBe(false);
+  });
+
+  it("findRelPathByBasename finds nested files and skips node_modules", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-bn-"));
+    try {
+      fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(root, "docs", "product-decisions.md"), "# pd");
+      fs.mkdirSync(path.join(root, "node_modules", "pkg"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "node_modules", "pkg", "product-decisions.md"),
+        "hidden",
+      );
+      expect(findRelPathByBasename(root, "product-decisions.md")).toBe(
+        "docs/product-decisions.md",
+      );
+      expect(findRelPathByBasename(root, "missing.md")).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveAuthorizedFileForOpen maps bare basename to nested file", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-open-bn-"));
+    try {
+      fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+      const real = path.join(root, "docs", "product-decisions.md");
+      fs.writeFileSync(real, "# decisions");
+      // Bare name (agent link text).
+      const bare = resolveAuthorizedFileForOpen("product-decisions.md", {
+        workspaceRoot: root,
+      });
+      expect(bare.ok).toBe(true);
+      if (bare.ok) {
+        expect(path.normalize(bare.absPath)).toBe(path.normalize(real));
+      }
+      // Absolute path that only has the basename under root (sidebar join).
+      const absMissing = path.join(root, "product-decisions.md");
+      const fromAbs = resolveAuthorizedFileForOpen(absMissing, {
+        workspaceRoot: root,
+      });
+      expect(fromAbs.ok).toBe(true);
+      if (fromAbs.ok) {
+        expect(path.normalize(fromAbs.absPath)).toBe(path.normalize(real));
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveAuthorizedFileForOpen returns not found without inventing multi-segment paths", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-open-miss-"));
+    try {
+      fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+      fs.writeFileSync(path.join(root, "docs", "other.md"), "x");
+      const miss = resolveAuthorizedFileForOpen("nope-missing-xyz.md", {
+        workspaceRoot: root,
+      });
+      expect(miss.ok).toBe(false);
+      if (!miss.ok) expect(miss.reason).toMatch(/not found/i);
+
+      // Multi-segment miss must not be rewritten to another file with same basename.
+      fs.writeFileSync(path.join(root, "docs", "foo.md"), "y");
+      const multi = resolveAuthorizedFileForOpen("src/foo.md", {
+        workspaceRoot: root,
+      });
+      expect(multi.ok).toBe(false);
+      if (!multi.ok) expect(multi.reason).toMatch(/not found/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveAuthorizedFileForOpen still refuses outside roots and executables", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-open-ref-"));
+    try {
+      fs.writeFileSync(path.join(root, "ok.md"), "hi");
+      const outside = path.join(path.dirname(root), "secret.md");
+      fs.writeFileSync(outside, "nope");
+      try {
+        expect(
+          resolveAuthorizedFileForOpen(outside, { workspaceRoot: root }).ok,
+        ).toBe(false);
+      } finally {
+        fs.unlinkSync(outside);
+      }
+      fs.writeFileSync(path.join(root, "tool.exe"), "MZ");
+      expect(
+        resolveAuthorizedFileForOpen("tool.exe", { workspaceRoot: root }).ok,
+      ).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("openFsPath prefers panel for previewable types and OS only for external", () => {
+    const hostSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    const openBody = hostSrc.slice(
+      hostSrc.indexOf("async function openFsPath"),
+      hostSrc.indexOf("return {", hostSrc.indexOf("async function openFsPath")),
+    );
+    // Panel path before OS open.
+    const panelIdx = openBody.indexOf("openPathInFilePanel");
+    const shellIdx = openBody.indexOf("shell.openPath(openPath)");
+    expect(panelIdx).toBeGreaterThan(-1);
+    expect(shellIdx).toBeGreaterThan(panelIdx);
+    expect(openBody).toMatch(/classifyFilePreview[\s\S]*!==\s*["']external["']/);
+    // Miss path uses messageBox / in-app, never openPath on failure reason.
+    expect(openBody).toMatch(/File not found/);
+    expect(openBody).toContain("resolveAuthorizedFileForOpen");
+  });
+
+  it("mutation: without panel branch, chat md would only hit shell.openPath", () => {
+    const hostSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    const openBody = hostSrc.slice(
+      hostSrc.indexOf("async function openFsPath"),
+      hostSrc.indexOf("return {", hostSrc.indexOf("async function openFsPath")),
+    );
+    // Fail if someone removes panel routing (regression of 1a).
+    expect(openBody).toContain("openPathInFilePanel");
+    expect(openBody).toContain("classifyFilePreview");
+    // Fail if miss falls through to shell without a not-found guard.
+    expect(openBody).toMatch(/not found/i);
+  });
+
+  it("file-tree IPC exposes openPathInFilePanel for host chat opens", () => {
+    const ipcSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "file-tree-ipc.ts",
+      ),
+      "utf8",
+    );
+    expect(ipcSrc).toContain("export async function openPathInFilePanel");
+    expect(ipcSrc).toContain("__grokDeskFtOpen");
   });
 });
 

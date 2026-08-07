@@ -75,6 +75,12 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     // Known tree for the file-panel assertions.
     fs.writeFileSync(path.join(workspace, "readme.txt"), "desktop e2e readme\n");
     fs.writeFileSync(path.join(workspace, "notes.md"), "# Notes\n\nHello panel\n");
+    // Nested md for bare-filename chat-link resolution (docs/product-decisions.md).
+    fs.mkdirSync(path.join(workspace, "docs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, "docs", "product-decisions.md"),
+      "# Product decisions\n\nNested for chat links.\n",
+    );
     // Non-previewable type hands off to OS open (sink).
     fs.writeFileSync(path.join(workspace, "payload.bin"), Buffer.from([0, 1, 2, 0, 9]));
     fs.mkdirSync(path.join(workspace, "src"), { recursive: true });
@@ -390,7 +396,7 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(await page.locator("#desk-ft-body").isVisible()).toBe(true);
   });
 
-  it("file-tree toggle uses Lucide panel-right and open panel has a separating border", async () => {
+  it("file-tree toggle uses Lucide panel-right and open panel has a resizer border", async () => {
     await page.waitForSelector("#desk-ft-top-toggle", { timeout: 15_000 });
     // panel-right path divider at x=15 (panel-left uses x=9).
     const iconOk = await page.evaluate(() => {
@@ -402,20 +408,22 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(iconOk).toBe(true);
 
     await ensureFilePanelOpen();
-    const panelCss = await page.evaluate(() => {
-      const panel = document.getElementById("desk-ft-panel");
-      if (!panel) return null;
-      const cs = getComputedStyle(panel);
+    const sepCss = await page.evaluate(() => {
+      const resizer = document.getElementById("desk-ft-resizer");
+      if (!resizer) return null;
+      const cs = getComputedStyle(resizer);
       return {
         borderLeftWidth: cs.borderLeftWidth,
         borderLeftStyle: cs.borderLeftStyle,
+        cursor: cs.cursor,
         display: cs.display,
       };
     });
-    expect(panelCss).toBeTruthy();
-    expect(panelCss!.display).not.toBe("none");
-    expect(panelCss!.borderLeftStyle).not.toBe("none");
-    expect(parseFloat(panelCss!.borderLeftWidth)).toBeGreaterThan(0);
+    expect(sepCss).toBeTruthy();
+    expect(sepCss!.display).not.toBe("none");
+    expect(sepCss!.cursor).toMatch(/col-resize|ew-resize/);
+    expect(sepCss!.borderLeftStyle).not.toBe("none");
+    expect(parseFloat(sepCss!.borderLeftWidth)).toBeGreaterThan(0);
   });
 
   it("scroll-edge fades mount around #messages", async () => {
@@ -485,6 +493,207 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(path.resolve(sink.trim().split(/\r?\n/).filter(Boolean).pop()!)).toBe(
       path.resolve(workspace, "payload.bin"),
     );
+  });
+
+  it("directory rows render SVG chevrons (not triangles)", async () => {
+    await ensureFilePanelOpen();
+    const chev = await page.evaluate(() => {
+      const row = document.querySelector(
+        '.desk-ft-node[data-rel="src"] > .desk-ft-row .desk-ft-twist',
+      );
+      if (!row) return { ok: false as const, reason: "no twist" };
+      const svg = row.querySelector("svg path");
+      const d = (svg && svg.getAttribute("d")) || "";
+      const text = (row.textContent || "").trim();
+      return {
+        ok: true as const,
+        d,
+        text,
+        hasSvg: !!row.querySelector("svg"),
+      };
+    });
+    expect(chev.ok).toBe(true);
+    if (chev.ok) {
+      expect(chev.hasSvg).toBe(true);
+      // Lucide chevron-right path.
+      expect(chev.d).toMatch(/m9 18 6-6-6-6/i);
+      expect(chev.text).not.toMatch(/[▶▼▸▾›⌄]/);
+    }
+  });
+
+  it("chat openFile for a renderable path opens the panel viewer, not the OS sink", async () => {
+    fs.writeFileSync(openSink, "", "utf8");
+    // Leave any prior view.
+    if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
+      await page.locator(".desk-ft-crumb-back").click();
+    }
+    // Full chat openFile path: webview post → authorize → host openFsPath → panel.
+    await page.evaluate(() => {
+      const api = (
+        window as unknown as { acquireVsCodeApi?: () => { postMessage: (m: unknown) => void } }
+      ).acquireVsCodeApi?.();
+      if (!api) throw new Error("no acquireVsCodeApi");
+      api.postMessage({ type: "openFile", path: "notes.md" });
+    });
+    await page.waitForFunction(
+      () => document.body.classList.contains("desk-ft-viewing"),
+      { timeout: 15_000 },
+    );
+    const bodyText = await page.locator("#desk-ft-viewer-body").innerText();
+    expect(bodyText).toMatch(/Notes|Hello panel/i);
+    // Must not have hit the OS open sink for a renderable type.
+    const sink = fs.existsSync(openSink) ? fs.readFileSync(openSink, "utf8") : "";
+    expect(sink).not.toMatch(/notes\.md/);
+    // Back is a button with icon, not a blue link.
+    const back = page.locator(".desk-ft-crumb-back");
+    expect(await back.count()).toBe(1);
+    expect(await back.isVisible()).toBe(true);
+    expect(await back.locator("svg").count()).toBeGreaterThan(0);
+    expect(await back.innerText()).toMatch(/Back/i);
+    const backColor = await back.evaluate((el) => getComputedStyle(el).color);
+    // Must not be the pure link-blue treatment (rgb of --vscode-textLink on dark ≈ 55,148,255).
+    expect(backColor).not.toMatch(/rgb\(\s*55,\s*148,\s*255\s*\)/);
+    // "Open in default app" affordance present while viewing.
+    expect(await page.locator(".desk-ft-open-ext").count()).toBe(1);
+  });
+
+  it("chat openFile bare basename resolves under docs/ into the panel", async () => {
+    fs.writeFileSync(openSink, "", "utf8");
+    if (await page.evaluate(() => document.body.classList.contains("desk-ft-viewing"))) {
+      await page.locator(".desk-ft-crumb-back").click();
+    }
+    // Agent-style bare link: product-decisions.md lives at docs/product-decisions.md.
+    await page.evaluate(() => {
+      const api = (
+        window as unknown as { acquireVsCodeApi?: () => { postMessage: (m: unknown) => void } }
+      ).acquireVsCodeApi?.();
+      if (!api) throw new Error("no acquireVsCodeApi");
+      api.postMessage({ type: "openFile", path: "product-decisions.md" });
+    });
+    await page.waitForFunction(
+      () => document.body.classList.contains("desk-ft-viewing"),
+      { timeout: 15_000 },
+    );
+    const bodyText = await page.locator("#desk-ft-viewer-body").innerText();
+    expect(bodyText).toMatch(/Product decisions|Nested for chat/i);
+    const sink = fs.existsSync(openSink) ? fs.readFileSync(openSink, "utf8") : "";
+    expect(sink).not.toMatch(/product-decisions/);
+  });
+
+  it("chat openFile for non-renderable type reaches OS sink; outside roots stay refused", async () => {
+    fs.writeFileSync(openSink, "", "utf8");
+    // Renderer open of a workspace .bin goes through api.open → sink.
+    const openBin = await page.evaluate(async () => {
+      const api = (
+        window as unknown as {
+          grokDesktopFileTree: { open: (p: string) => Promise<{ ok: boolean }> };
+        }
+      ).grokDesktopFileTree;
+      return api.open("payload.bin");
+    });
+    expect(openBin.ok).toBe(true);
+    let sink = "";
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      sink = fs.existsSync(openSink) ? fs.readFileSync(openSink, "utf8") : "";
+      if (sink.includes("payload.bin")) break;
+      await page.waitForTimeout(100);
+    }
+    expect(sink).toMatch(/payload\.bin/);
+
+    // Outside / traversal still refused by IPC (authorization intact).
+    const outside = await page.evaluate(async () => {
+      const api = (
+        window as unknown as {
+          grokDesktopFileTree: {
+            open: (p: string) => Promise<{ ok: boolean; error?: string }>;
+            read: (p: string) => Promise<{ ok: boolean; reason?: string }>;
+          };
+        }
+      ).grokDesktopFileTree;
+      const open = await api.open("../outside-secret.md");
+      const read = await api.read("../outside-secret.md");
+      return { open, read };
+    });
+    expect(outside.open.ok).toBe(false);
+    expect(outside.read.ok).toBe(false);
+  });
+
+  it("bare basename that does not exist does not write the OS open sink", async () => {
+    fs.writeFileSync(openSink, "", "utf8");
+    // Panel open of a missing bare name should fail closed (read not found),
+    // and must not call api.open → sink.
+    const result = await page.evaluate(async () => {
+      const fn = (
+        window as unknown as {
+          __grokDeskFtOpen?: (p: string) => Promise<{ ok?: boolean; reason?: string }>;
+        }
+      ).__grokDeskFtOpen;
+      if (typeof fn !== "function") return { ok: false, reason: "no hook" };
+      return fn("definitely-missing-file-xyz.md");
+    });
+    expect(result && (result as { ok?: boolean }).ok).toBe(false);
+    await page.waitForTimeout(300);
+    const sink = fs.existsSync(openSink) ? fs.readFileSync(openSink, "utf8") : "";
+    expect(sink).not.toMatch(/definitely-missing-file-xyz/);
+  });
+
+  it("panel width persists across reload and is bounded", async () => {
+    await ensureFilePanelOpen();
+    // Pick a width inside the live shell bounds so clamp does not rewrite it.
+    const target = await page.evaluate(() => {
+      const shell = document.getElementById("desk-ft-shell");
+      const shellW = shell?.getBoundingClientRect().width || window.innerWidth || 800;
+      const maxByChat = Math.max(200, Math.floor(shellW - 280));
+      const maxByFrac = Math.floor(shellW * 0.7);
+      const max = Math.max(200, Math.min(maxByChat, maxByFrac));
+      // Prefer something other than the default 280 when the shell allows it.
+      const w = max >= 240 ? 240 : 200;
+      localStorage.setItem("desk-ft-width", String(w));
+      const panel = document.getElementById("desk-ft-panel") as HTMLElement | null;
+      if (panel) panel.style.setProperty("--desk-ft-width", w + "px");
+      return w;
+    });
+    // Re-inject by reloading the window — boot re-reads WIDTH_KEY.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#input", { timeout: 45_000 });
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 20_000 });
+    await ensureFilePanelOpen();
+    const widthInfo = await page.evaluate(() => {
+      const panel = document.getElementById("desk-ft-panel");
+      if (!panel) return null;
+      const stored = localStorage.getItem("desk-ft-width");
+      const rect = panel.getBoundingClientRect();
+      return { stored, width: rect.width };
+    });
+    expect(widthInfo).toBeTruthy();
+    expect(widthInfo!.stored).toBe(String(target));
+    expect(widthInfo!.width).toBeGreaterThanOrEqual(200);
+    expect(Math.abs(widthInfo!.width - target)).toBeLessThan(8);
+    // Oversize value is clamped (chat min + panel min).
+    await page.evaluate(() => {
+      localStorage.setItem("desk-ft-width", "99999");
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("#desk-ft-top-toggle", { timeout: 20_000 });
+    await ensureFilePanelOpen();
+    const clamped = await page.evaluate(() => {
+      const panel = document.getElementById("desk-ft-panel");
+      if (!panel) return null;
+      const shell = document.getElementById("desk-ft-shell");
+      const shellW = shell?.getBoundingClientRect().width || window.innerWidth;
+      return {
+        width: panel.getBoundingClientRect().width,
+        shellW,
+        stored: localStorage.getItem("desk-ft-width"),
+      };
+    });
+    expect(clamped).toBeTruthy();
+    expect(clamped!.width).toBeLessThan(clamped!.shellW * 0.75);
+    expect(clamped!.width).toBeGreaterThanOrEqual(200);
+    // Stored value after apply is the clamped width, not 99999.
+    expect(Number(clamped!.stored)).toBeLessThan(99999);
+    expect(Number(clamped!.stored)).toBeGreaterThanOrEqual(200);
   });
 
   it("file-tree IPC rejects path traversal from the renderer", async () => {

@@ -1,7 +1,11 @@
 /**
  * Electron implementation of the portable {@link Host} interface.
  *
- * File open: hands the real path to the OS default handler (`shell.openPath`).
+ * File open (chat / openResource): revalidates containment, resolves bare
+ * basenames under authorized roots, then opens **in the file panel** when the
+ * type is previewable (md/json/image/text) and falls back to the OS default
+ * handler (`shell.openPath`) only for non-renderable types. Missing files show
+ * an in-app message — never a Windows shell "cannot find" dialog.
  * Diff / untitled text: read-only internal BrowserWindows (not full editors).
  * AFK Pilot link/unlink: delegates to sidebar handlers wired after construction.
  * Device credentials: never stored by this module (see main.ts + safe-secrets).
@@ -61,7 +65,8 @@ import {
 } from "../grok-config";
 import {
   authorizeOpenUrl,
-  revalidateOpenFileForUse,
+  desktopAuthRoots,
+  resolveAuthorizedFileForOpen,
   type DesktopOpenFileContext,
 } from "./desktop-policy";
 import {
@@ -70,7 +75,12 @@ import {
   interpretOpenPathResult,
   resolveDocumentText,
 } from "./document-view";
-import { nearestExistingAncestor } from "./file-tree";
+import {
+  classifyFilePreview,
+  isCanonicallyInsideRoot,
+  nearestExistingAncestor,
+} from "./file-tree";
+import { openPathInFilePanel } from "./file-tree-ipc";
 import {
   planOpenCliInTerminal,
   planRunCommandInTerminal,
@@ -525,9 +535,12 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
   }
 
   /**
-   * Open a filesystem path via the OS. Revalidates containment + executable
-   * policy immediately before shell.openPath (TOCTOU close vs the message-gate
-   * authorize) and opens only the path returned by that check.
+   * Open a filesystem path from chat / openResource. Revalidates containment +
+   * executable policy, resolves bare basenames under authorized roots, then:
+   *   - in-panel viewer when the type is previewable and the path sits under
+   *     the panel's workspace root;
+   *   - OS default handler only for non-renderable types;
+   *   - in-app error when the file is missing (never shell.openPath on a miss).
    */
   async function openFsPath(fsPath: string): Promise<void> {
     const ctx = getAuthContext?.();
@@ -541,19 +554,48 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
       );
       return;
     }
-    const check = revalidateOpenFileForUse(fsPath, ctx);
+    const check = resolveAuthorizedFileForOpen(fsPath, ctx);
     if (!check.ok) {
       log(`[desktop] open refused at use-time: ${check.reason} (${fsPath})`);
+      const notFound = /not found/i.test(check.reason);
       await messageBox(
         getWindow,
-        "error",
-        `Could not open file:\n${fsPath}\n\n${check.reason}`,
+        notFound ? "warning" : "error",
+        notFound
+          ? `File not found:\n${fsPath}\n\nIt is not under the open project (or no longer exists).`
+          : `Could not open file:\n${fsPath}\n\n${check.reason}`,
         ["OK"],
       );
       return;
     }
     // Use only the path from the final check — never the pre-authorize string.
     const openPath = check.absPath;
+
+    // Prefer the in-panel viewer for types the panel can render (same set as
+    // tree clicks). Outside the panel's workspace root, or non-renderable
+    // types, hand off to the OS.
+    const kind = classifyFilePreview(openPath);
+    if (kind !== "external") {
+      const panelRoot = ctx.workspaceRoot || desktopAuthRoots(ctx)[0];
+      if (
+        panelRoot &&
+        isCanonicallyInsideRoot(panelRoot, openPath, ctx.platform ?? process.platform, ctx.pathFs)
+      ) {
+        const rel = path
+          .relative(panelRoot, openPath)
+          .split(path.sep)
+          .join("/");
+        if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+          const opened = await openPathInFilePanel(getWindow(), rel);
+          if (opened) {
+            log(`[desktop] opened in panel: ${rel}`);
+            return;
+          }
+          log(`[desktop] panel open failed; falling back to OS for ${rel}`);
+        }
+      }
+    }
+
     const err = await shell.openPath(openPath);
     const result = interpretOpenPathResult(err);
     if (!result.ok) {
