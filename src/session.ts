@@ -346,23 +346,32 @@ export function rehydrateBusyChrome(session: Session): { value: boolean; locked:
 }
 
 /**
- * True while this session has a turn in flight — the agent is working, or it is
- * waiting on an answer it will resume from.
+ * True while this session has something to lose — the agent is working, waiting
+ * on an answer it will resume from, or still starting up with input already
+ * queued behind it.
  *
  * Closing a project folder disposes its sessions and force-kills the agent
  * process (a hard kill on Windows), so this predicate is the difference between
- * a clean close and a turn discarded without a word. Deliberately the same
- * three conditions as rehydrateBusyChrome: if the composer would show as busy,
- * there is something to lose. Broader than turnIsInFlight, which only asks
- * whether a token exists — that misses a session still spawning, and one parked
- * on a permission prompt whose answer would have resumed real work.
+ * a clean close and work discarded without a word.
+ *
+ * The startup clause is the one that is easy to get wrong, and it was: an
+ * earlier version of this checked only status and token, and reported "nothing
+ * running" for a session whose process was still spawning — precisely the
+ * window where a slow start leaves queued input sitting unsent.
+ * `rehydrateBusyChrome` treats that state as busy-and-locked for the same
+ * reason. It cannot simply defer to `sessionReadyForPrompt`, though: that is
+ * false for a brand-new session which has never started at all, and warning
+ * about those would fire on every close.
+ *
+ * Broader than `turnIsInFlight`, which only asks whether a token exists.
  */
 export function sessionHasWorkInFlight(session: Session): boolean {
-  return (
-    session.status === "working" ||
-    session.status === "needs-you" ||
-    session.turnToken !== undefined
-  );
+  if (session.status === "working" || session.status === "needs-you") return true;
+  if (session.turnToken !== undefined) return true;
+  // Starting: `priming` covers the spawn window before the client object even
+  // exists; the second clause covers a client whose session/new has not
+  // returned an id yet. A session with neither has never been started.
+  return session.priming || (!!session.client && !session.client.sessionId);
 }
 
 export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {

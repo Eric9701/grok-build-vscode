@@ -44,6 +44,35 @@ describe("sessionHasWorkInFlight", () => {
     expect(sessionHasWorkInFlight(session)).toBe(true);
   });
 
+  it("is true while the process is still spawning", () => {
+    // The window a slow start opens: priming is set before the client object
+    // exists, and anything typed meanwhile is queued and dies with the kill.
+    // The first version of this predicate missed exactly this and reported the
+    // folder as safe to close.
+    const session = new Session();
+    session.status = "idle";
+    session.priming = true;
+    expect(sessionHasWorkInFlight(session)).toBe(true);
+  });
+
+  it("is true while a spawned client waits for its session id", () => {
+    const session = new Session();
+    session.status = "idle";
+    session.priming = false;
+    session.client = { sessionId: undefined } as never;
+    expect(sessionHasWorkInFlight(session)).toBe(true);
+  });
+
+  it("is false for a session that has never been started", () => {
+    // Every folder holds one of these. Deferring wholesale to
+    // sessionReadyForPrompt would warn on every close and train people to
+    // click through the warning that matters.
+    const session = new Session();
+    session.status = "idle";
+    expect(session.client).toBeUndefined();
+    expect(sessionHasWorkInFlight(session)).toBe(false);
+  });
+
   it("is strictly broader than turnIsInFlight", () => {
     // turnIsInFlight only asks whether a token exists. Using it here would miss
     // a session still spawning and one parked on a permission prompt — both of
