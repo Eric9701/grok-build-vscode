@@ -30,6 +30,7 @@ import { GrokSidebar } from "../sidebar";
 import { Uri } from "../host";
 import type { HostContext, HostDisposable } from "../host";
 import { ConfigStore, SensitiveConfigStore } from "./config-store";
+import type { DesktopOpenFileContext } from "./desktop-policy";
 import { createElectronHost, ensureWorkspaceRoot, type ElectronRemoteActions } from "./electron-host";
 import {
   APP_RESOURCE_SCHEME,
@@ -379,11 +380,14 @@ async function createApp(): Promise<void> {
 
   // Bound after GrokSidebar exists so link/unlink reuse the extension flow.
   const remoteActions: { current?: ElectronRemoteActions } = {};
+  // Same auth context for message-gate (webview) and use-time openFsPath (host).
+  const authContext: { get?: () => DesktopOpenFileContext } = {};
   const host = createElectronHost({
     config,
     getWindow: () => mainWindow,
     log,
     remoteActions,
+    getAuthContext: () => authContext.get?.(),
     onWorkspaceRootChanged: (root) => {
       // File-tree panel boots once against api.root(); rebind so the visible
       // tree matches the active project (otherwise reads resolve against B
@@ -397,10 +401,11 @@ async function createApp(): Promise<void> {
   sidebar = new GrokSidebar(hostContext, host);
   // Session-aware roots for openFile/openDiff (worktree cwd, not only the
   // selected project folder). Wired after sidebar exists.
-  webview.getAuthContext = () => ({
+  authContext.get = () => ({
     workspaceRoot: config.getWorkspaceRoot(),
     allowedRoots: sidebar!.desktopAuthRoots(),
   });
+  webview.getAuthContext = () => authContext.get!();
   remoteActions.current = {
     link: () => sidebar!.linkRemoteDevice(),
     unlink: () => sidebar!.unlinkRemoteDevice(),

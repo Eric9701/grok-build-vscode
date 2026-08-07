@@ -160,6 +160,7 @@ import {
   isTrustedGeneratedMediaPath,
   MAX_INLINE_MEDIA_BYTES,
 } from "./media-serve";
+import { revalidateOpenFileForUse } from "./desktop/desktop-policy";
 import {
   filterWorktreesForSourceRepo,
   gitRootForPath,
@@ -6746,22 +6747,19 @@ See design doc for the full state machine diagram.`;
   private readFileForDiff(filePath: string): string | undefined {
     try {
       const session = this.focused;
-      const abs = path.isAbsolute(filePath)
+      let abs = path.isAbsolute(filePath)
         ? filePath
         : path.join(this.sessionCwd(session), filePath);
-      // Desktop already refuses out-of-root openDiff at the message gate; this
-      // is defense-in-depth for any host that still lands here with a path.
+      // Desktop: revalidate containment + executable policy immediately before
+      // the read (same TOCTOU class as openFsPath / file-tree open). Use only
+      // the path returned by that check — never the pre-authorize string.
+      // VS Code keeps the plain read (v3.1.0 behaviour).
       if (this.host.canSwitchWorkspaceFolder) {
-        const roots = this.desktopAuthRoots(session);
-        const inside = roots.some((root) => {
-          try {
-            const rel = path.relative(root, abs);
-            return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-          } catch {
-            return false;
-          }
+        const check = revalidateOpenFileForUse(abs, {
+          allowedRoots: this.desktopAuthRoots(session),
         });
-        if (!inside) return undefined;
+        if (!check.ok) return undefined;
+        abs = check.absPath;
       }
       const stat = fs.statSync(abs);
       if (!stat.isFile() || stat.size > MAX_DIFF_EXPAND_BYTES) return undefined;
@@ -9711,6 +9709,16 @@ See design doc for the full state machine diagram.`;
           const active = this.remoteClients.active(clientId);
           if (active) return this.sessionCwd(active);
           return this.remoteClients.cwd(clientId);
+        },
+        // Repo fan-out uses selected cwd; session fan-out uses active session
+        // cwd. Either counts as ownership of that scope (default ownership
+        // only compares scopeCwdForClient, which is session-first).
+        clientOwnsScope: (clientId, scopeCwd) => {
+          const selected = this.remoteClients.cwdIfPresent(clientId);
+          if (selected && pathsEqual(selected, scopeCwd)) return true;
+          const active = this.remoteClients.active(clientId);
+          if (active && pathsEqual(this.sessionCwd(active), scopeCwd)) return true;
+          return false;
         },
         sameCwd: pathsEqual,
       },

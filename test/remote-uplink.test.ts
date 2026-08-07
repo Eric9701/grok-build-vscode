@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostMsg } from "../src/protocol";
 import { pathsEqual } from "../src/worktree";
@@ -26,7 +29,12 @@ const wsMock = vi.hoisted(() => {
 
 vi.mock("ws", () => ({ default: wsMock.FakeWebSocket }));
 
-import { filterAuthorizedOutbound, RemoteUplink, type RemoteUplinkAuth } from "../src/remote-uplink";
+import {
+  filterAuthorizedOutbound,
+  filterRecipientsOwningScope,
+  RemoteUplink,
+  type RemoteUplinkAuth,
+} from "../src/remote-uplink";
 
 function openAuth(open: string[] = ["/work/open"]): RemoteUplinkAuth {
   return {
@@ -310,6 +318,80 @@ describe("RemoteUplink socket-level project authorization", () => {
       msg: closedChunk,
     });
     uplink.dispose();
+  });
+
+  it("refuses broadcastTo when a recipient does not own the scope", () => {
+    const logs: string[] = [];
+    const scopes: Record<string, string> = {
+      "tab-a": "/work/a",
+      "tab-b": "/work/b",
+    };
+    const uplink = makeUplink({
+      auth: {
+        authorizedCwds: () => ["/work/a", "/work/b"],
+        scopeCwdForClient: (id) => scopes[id],
+        sameCwd: pathsEqual,
+      },
+      log: (l) => logs.push(l),
+    });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+    socket.emit("open");
+
+    // Caller incorrectly includes tab-b under /work/a — ownership filter drops it.
+    uplink.broadcastTo(["tab-a", "tab-b"], closedChunk, "/work/a");
+    const hostTo = socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to");
+    expect(hostTo).toEqual([
+      {
+        t: "host-to",
+        clientIds: ["tab-a"],
+        msg: closedChunk,
+      },
+    ]);
+    expect(logs.some((l) => l.includes("does not own scope") && l.includes("tab-b"))).toBe(true);
+
+    // No owners at all → no write.
+    socket.sent.length = 0;
+    uplink.broadcastTo(["tab-b"], closedChunk, "/work/a");
+    expect(socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to")).toEqual([]);
+    uplink.dispose();
+  });
+
+  it("filterRecipientsOwningScope is pure and mutation-checked", () => {
+    const auth: RemoteUplinkAuth = {
+      authorizedCwds: () => ["/a", "/b"],
+      scopeCwdForClient: (id) => (id === "x" ? "/a" : "/b"),
+      sameCwd: pathsEqual,
+    };
+    expect(filterRecipientsOwningScope(["x", "y"], "/a", auth)).toEqual(["x"]);
+    expect(filterRecipientsOwningScope(["y"], "/a", auth)).toEqual([]);
+    // Richer ownership (repo select vs session cwd).
+    const rich: RemoteUplinkAuth = {
+      ...auth,
+      clientOwnsScope: (id, scope) => id === "y" && scope === "/a",
+    };
+    expect(filterRecipientsOwningScope(["x", "y"], "/a", rich)).toEqual(["y"]);
+
+    // Mutation: without the filter, both ids would ship under a forged multi-client list.
+    const withoutFilter = ["x", "y"];
+    expect(withoutFilter).toContain("y");
+    expect(filterRecipientsOwningScope(withoutFilter, "/a", auth)).not.toContain("y");
+  });
+
+  it("source gate: deliver/broadcastTo ownership filter is on the write path", () => {
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "remote-uplink.ts"),
+      "utf8",
+    );
+    expect(src).toContain("filterRecipientsOwningScope");
+    expect(src).toMatch(/deliver\([\s\S]*filterRecipientsOwningScope/);
+    expect(src).toContain("does not own scope");
+    // Sidebar wires clientOwnsScope for repo + session ownership.
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    expect(sidebar).toContain("clientOwnsScope:");
   });
 
   it("scrubs closed-project data out of the catch-up snapshot frame", () => {

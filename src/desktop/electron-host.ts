@@ -52,7 +52,11 @@ import {
   type FsLike,
 } from "../sessions";
 import type { ConfigStore } from "./config-store";
-import { authorizeOpenUrl } from "./desktop-policy";
+import {
+  authorizeOpenUrl,
+  revalidateOpenFileForUse,
+  type DesktopOpenFileContext,
+} from "./desktop-policy";
 import {
   buildDiffViewerHtml,
   buildTextViewerHtml,
@@ -158,6 +162,12 @@ export interface ElectronHostOptions {
    * reuses the extension's uplink flow (no protocol reimplementation).
    */
   remoteActions?: { current?: ElectronRemoteActions };
+  /**
+   * Session-aware openFile roots (workspace + worktree). Wired after sidebar
+   * exists; when missing, openFsPath refuses (fail closed). Same context the
+   * message gate uses via ElectronWebview.getAuthContext.
+   */
+  getAuthContext?: () => DesktopOpenFileContext | undefined;
   /** Called when the active workspace folder changes (switch / add-as-active). */
   onWorkspaceRootChanged?: (root: string) => void;
   /** Called when the open-folder list changes (add / remove / first open). */
@@ -451,8 +461,15 @@ export function createBoundFileSystemWatcher(
 }
 
 export function createElectronHost(opts: ElectronHostOptions): Host {
-  const { config, getWindow, log, remoteActions, onWorkspaceRootChanged, onWorkspaceFoldersChanged } =
-    opts;
+  const {
+    config,
+    getWindow,
+    log,
+    remoteActions,
+    getAuthContext,
+    onWorkspaceRootChanged,
+    onWorkspaceFoldersChanged,
+  } = opts;
   const configListeners = config; // store owns change events
   let activeEditor: HostTextEditor | undefined;
 
@@ -481,15 +498,44 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     return messageBox(getWindow, "info", `${feature} is not available in the desktop app yet.`, ["OK"]);
   };
 
+  /**
+   * Open a filesystem path via the OS. Revalidates containment + executable
+   * policy immediately before shell.openPath (TOCTOU close vs the message-gate
+   * authorize) and opens only the path returned by that check.
+   */
   async function openFsPath(fsPath: string): Promise<void> {
-    const err = await shell.openPath(fsPath);
+    const ctx = getAuthContext?.();
+    if (!ctx || (!ctx.workspaceRoot && !(ctx.allowedRoots && ctx.allowedRoots.length))) {
+      log(`[desktop] open refused: no auth context for ${fsPath}`);
+      await messageBox(
+        getWindow,
+        "error",
+        `Could not open file:\n${fsPath}\n\nNo authorized project folder is open.`,
+        ["OK"],
+      );
+      return;
+    }
+    const check = revalidateOpenFileForUse(fsPath, ctx);
+    if (!check.ok) {
+      log(`[desktop] open refused at use-time: ${check.reason} (${fsPath})`);
+      await messageBox(
+        getWindow,
+        "error",
+        `Could not open file:\n${fsPath}\n\n${check.reason}`,
+        ["OK"],
+      );
+      return;
+    }
+    // Use only the path from the final check — never the pre-authorize string.
+    const openPath = check.absPath;
+    const err = await shell.openPath(openPath);
     const result = interpretOpenPathResult(err);
     if (!result.ok) {
       log(`[desktop] openPath failed: ${result.error}`);
       await messageBox(
         getWindow,
         "error",
-        `Could not open file:\n${fsPath}\n\n${result.error}`,
+        `Could not open file:\n${openPath}\n\n${result.error}`,
         ["OK"],
       );
     }

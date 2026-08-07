@@ -35,7 +35,50 @@ export interface RemoteUplinkAuth {
    * the write call does not pass an explicit `scopeCwd` (snapshots, etc.).
    */
   scopeCwdForClient: (clientId: string) => string | undefined;
+  /**
+   * True when this client may receive a delivery whose payload is scoped to
+   * `scopeCwd`. Defaults to sameCwd(scopeCwdForClient(id), scopeCwd) when
+   * omitted. Sidebar supplies a richer check (selected repo cwd OR active
+   * session cwd) so repo-scoped fan-out still reaches worktree sessions.
+   */
+  clientOwnsScope?: (clientId: string, scopeCwd: string) => boolean;
   sameCwd: (a: string, b: string) => boolean;
+}
+
+/**
+ * Recipients that own `scopeCwd`. Pure — unit-tested independently of the socket.
+ * When `clientOwnsScope` is absent, ownership is `sameCwd(scopeCwdForClient, scope)`.
+ */
+export function filterRecipientsOwningScope(
+  clientIds: readonly string[],
+  scopeCwd: string,
+  auth: Pick<RemoteUplinkAuth, "scopeCwdForClient" | "clientOwnsScope" | "sameCwd">,
+): string[] {
+  const out: string[] = [];
+  for (const id of clientIds) {
+    if (auth.clientOwnsScope) {
+      if (auth.clientOwnsScope(id, scopeCwd)) out.push(id);
+      continue;
+    }
+    const owned = auth.scopeCwdForClient(id);
+    if (owned !== undefined && auth.sameCwd(owned, scopeCwd)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Typed delivery target for a host→client write. Callers still name recipients
+ * and (when project-scoped) the originating scope; the uplink derives nothing
+ * from a free-form cwd alone — it re-filters recipients to owners of that scope
+ * and re-checks {@link mayDeliverRemoteHostMsg}.
+ *
+ * What remains caller-supplied: the client id list and the scope string. A later
+ * pass could replace both with session/repo handles only.
+ */
+export interface RemoteDeliveryTarget {
+  clientIds: readonly string[];
+  /** Project scope that owns the payload; omit for device-global messages. */
+  scopeCwd?: string;
 }
 
 export interface RemoteUplinkOptions {
@@ -111,18 +154,50 @@ export class RemoteUplink {
     }
   }
 
-  /** Send one host message only to the named browser clients. */
+  /**
+   * Send one host message only to the named browser clients.
+   * Prefer {@link deliver} with a {@link RemoteDeliveryTarget}; this overload
+   * keeps existing call sites.
+   */
   broadcastTo(clientIds: string[], msg: HostMsg, scopeCwd?: string): void {
-    if (!clientIds.length || this.ws?.readyState !== WebSocket.OPEN) return;
-    const unique = [...new Set(clientIds)];
-    // One shared scope (session fan-out / explicit caller). When omitted, each
-    // client is authorized against its own scope so a multi-tab send cannot
-    // borrow another tab's open project.
-    if (scopeCwd !== undefined || unique.length === 1) {
-      const scope =
-        scopeCwd !== undefined
-          ? scopeCwd
-          : this.opts.auth.scopeCwdForClient(unique[0]);
+    this.deliver({ clientIds, scopeCwd }, msg);
+  }
+
+  /**
+   * Socket write with a typed delivery target. When `scopeCwd` is set, every
+   * recipient must own that scope ({@link filterRecipientsOwningScope}); the
+   * message is then gated with {@link mayDeliverRemoteHostMsg} for that scope.
+   * Callers cannot widen delivery to tabs that merely share an authorized cwd
+   * set — ownership is per-client.
+   */
+  deliver(target: RemoteDeliveryTarget, msg: HostMsg): void {
+    const unique = [...new Set(target.clientIds)];
+    if (!unique.length || this.ws?.readyState !== WebSocket.OPEN) return;
+    const scopeCwd = target.scopeCwd;
+
+    if (scopeCwd !== undefined) {
+      const owners = filterRecipientsOwningScope(unique, scopeCwd, this.opts.auth);
+      for (const id of unique) {
+        if (!owners.includes(id)) {
+          this.opts.log(
+            `[remote] dropped ${msg.type} for client ${id} (does not own scope: ${scopeCwd})`,
+          );
+        }
+      }
+      if (!owners.length) return;
+      if (!this.authorizeWrite(msg, scopeCwd)) return;
+      try {
+        this.ws.send(JSON.stringify(hostToFrame(owners, msg)));
+      } catch {
+        /* teardown race; reconnect handles it */
+      }
+      return;
+    }
+
+    // No explicit scope: authorize each client against its own scope so a
+    // multi-tab send cannot borrow another tab's open project.
+    if (unique.length === 1) {
+      const scope = this.opts.auth.scopeCwdForClient(unique[0]);
       if (!this.authorizeWrite(msg, scope)) return;
       try {
         this.ws.send(JSON.stringify(hostToFrame(unique, msg)));
@@ -131,7 +206,6 @@ export class RemoteUplink {
       }
       return;
     }
-    // Split by which clients still authorize under their own scope.
     const allowed: string[] = [];
     for (const id of unique) {
       const scope = this.opts.auth.scopeCwdForClient(id);

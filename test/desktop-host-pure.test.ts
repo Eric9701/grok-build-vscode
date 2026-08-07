@@ -56,6 +56,7 @@ import {
   desktopAuthRoots,
   isExecutableOpenTarget,
   isExecutablePath,
+  revalidateOpenFileForUse,
 } from "../src/desktop/desktop-policy";
 import {
   FileSelectionRegistry,
@@ -2698,6 +2699,165 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     expect(roots).toContain(path.resolve(worktree));
     expect(roots).toContain(path.resolve(workspace));
     expect(roots.length).toBe(2);
+  });
+});
+
+describe("chat openFile / openDiff use-time revalidation (round 16)", () => {
+  it("authorizeOpenFile returns the absPath to use", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-auth-abs-"));
+    try {
+      fs.writeFileSync(path.join(root, "a.md"), "hi");
+      const r = authorizeOpenFile("a.md", { workspaceRoot: root });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(path.normalize(r.absPath)).toBe(path.normalize(path.join(root, "a.md")));
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidateOpenFileForUse refuses a symlink swap between checks", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-toctou-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-toctou-out-"));
+    try {
+      const safe = path.join(root, "safe.txt");
+      const link = path.join(root, "link.txt");
+      const leaked = path.join(outside, "secret.txt");
+      fs.writeFileSync(safe, "inside");
+      fs.writeFileSync(leaked, "OUTSIDE_SECRET");
+      fs.writeFileSync(link, "placeholder");
+
+      // Per authorizeOpenFile: ~2 realpath(link) (containment + executable).
+      // revalidate: first authorize (safe) → realAtCheck snapshot (safe) →
+      // second authorize (swapped outside) must refuse.
+      // Threshold 3 so a single authorizeOpenFile alone would still pass —
+      // only the double-check inside revalidate fails (mutation-sensitive).
+      let linkRealpathCalls = 0;
+      const pathFs: TreePathFs = {
+        realpathSync: (p) => {
+          const n = path.normalize(p);
+          if (n === path.normalize(link) || n.endsWith(`${path.sep}link.txt`)) {
+            linkRealpathCalls++;
+            return linkRealpathCalls <= 3 ? safe : leaked;
+          }
+          try {
+            return fs.realpathSync(p);
+          } catch {
+            return p;
+          }
+        },
+        existsSync: (p) => fs.existsSync(p),
+        statSync: (p) => fs.statSync(p),
+        readdirSync: (p, o) => fs.readdirSync(p, o),
+      };
+
+      // Single authorize still sees the in-tree target (gate would pass).
+      expect(authorizeOpenFile(link, { workspaceRoot: root, pathFs }).ok).toBe(true);
+      linkRealpathCalls = 0; // fresh window for use-time revalidate
+
+      const use = revalidateOpenFileForUse(link, { workspaceRoot: root, pathFs });
+      expect(use.ok).toBe(false);
+      if (!use.ok) {
+        expect(use.reason).toMatch(/symlink|escape|changed|executable/i);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidateOpenFileForUse refuses swap to an in-tree executable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-exe-"));
+    try {
+      const safe = path.join(root, "note.txt");
+      const pe = path.join(root, "tool.exe");
+      const link = path.join(root, "open-me.txt");
+      fs.writeFileSync(safe, "safe");
+      fs.writeFileSync(pe, "MZ");
+      fs.writeFileSync(link, "placeholder");
+
+      // Same budget as the escape test: first pass + realAtCheck stay on safe;
+      // second authorize sees the PE realpath and refuses executable.
+      let calls = 0;
+      const pathFs: TreePathFs = {
+        realpathSync: (p) => {
+          const n = path.normalize(p);
+          if (n === path.normalize(link) || n.endsWith(`${path.sep}open-me.txt`)) {
+            calls++;
+            return calls <= 3 ? safe : pe;
+          }
+          try {
+            return fs.realpathSync(p);
+          } catch {
+            return p;
+          }
+        },
+        existsSync: (p) => fs.existsSync(p),
+        statSync: (p) => fs.statSync(p),
+        readdirSync: (p, o) => fs.readdirSync(p, o),
+      };
+
+      expect(authorizeOpenFile(link, { workspaceRoot: root, pathFs }).ok).toBe(true);
+      calls = 0;
+      const use = revalidateOpenFileForUse(link, { workspaceRoot: root, pathFs });
+      expect(use.ok).toBe(false);
+      if (!use.ok) {
+        expect(use.reason).toMatch(/executable|symlink|changed|escape/i);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mutation: single authorizeOpenFile without revalidate would keep the pre-swap path", () => {
+    // Documents the hole: message-gate authorize succeeds, then a swap; using
+    // the original abs string (or a path that no longer matches real target)
+    // is what openFsPath used to do.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-mut-"));
+    try {
+      const safe = path.join(root, "doc.md");
+      fs.writeFileSync(safe, "ok");
+      const gate = authorizeOpenFile("doc.md", { workspaceRoot: root });
+      expect(gate.ok).toBe(true);
+      if (!gate.ok) return;
+      // Without revalidateOpenFileForUse, callers would open gate.absPath even
+      // after a later swap. The use-time helper must be the only open path.
+      const hostSrc = fs.readFileSync(
+        path.join(
+          path.dirname(fileURLToPath(import.meta.url)),
+          "..",
+          "src",
+          "desktop",
+          "electron-host.ts",
+        ),
+        "utf8",
+      );
+      expect(hostSrc).toContain("revalidateOpenFileForUse");
+      expect(hostSrc).toMatch(/openFsPath[\s\S]*revalidateOpenFileForUse/);
+      expect(hostSrc).toMatch(/check\.absPath/);
+      // shell.openPath must use the revalidated path, not the raw argument alone.
+      const openBody = hostSrc.slice(
+        hostSrc.indexOf("async function openFsPath"),
+        hostSrc.indexOf("return {", hostSrc.indexOf("async function openFsPath")),
+      );
+      expect(openBody).toMatch(/shell\.openPath\(openPath\)/);
+      expect(openBody).not.toMatch(/shell\.openPath\(fsPath\)/);
+
+      const sidebarSrc = fs.readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+        "utf8",
+      );
+      const readDiff = sidebarSrc.slice(
+        sidebarSrc.indexOf("private readFileForDiff"),
+        sidebarSrc.indexOf("private closeDiffForRequest"),
+      );
+      expect(readDiff).toContain("revalidateOpenFileForUse");
+      expect(readDiff).toMatch(/abs\s*=\s*check\.absPath/);
+      expect(readDiff).not.toMatch(/rel\.startsWith\("\.\."\)/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

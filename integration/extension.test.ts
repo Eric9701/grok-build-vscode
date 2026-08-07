@@ -857,7 +857,9 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     hooks.fromRemote({ type: "resumeSession", id: "session-a", cwd: repoB }, "tab-b");
     hooks.fromRemote({ type: "selectRepo", cwd: repoB }, "tab-missing");
     hooks.fromRemote({ type: "resumeSession", id: "deleted-session", cwd: repoB }, "tab-missing");
-    await new Promise((r) => setTimeout(r, 100));
+    // selectRepo auto-opens newest then resume runs serialized — 100ms was
+    // tight under load (flaked as a missing "Could not restore" for tab-missing).
+    await new Promise((r) => setTimeout(r, 400));
 
     assert.ok(posts.some((p) =>
       p.clientIds?.includes("tab-b") &&

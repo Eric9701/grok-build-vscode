@@ -69,6 +69,11 @@ export type DesktopAuthResult =
   | { ok: true }
   | { ok: false; reason: string };
 
+/** Path-bearing open/read authorize result — success carries the path to use. */
+export type DesktopOpenPathResult =
+  | { ok: true; /** Absolute path that passed containment (link path when still in-tree). */ absPath: string }
+  | { ok: false; reason: string };
+
 /**
  * Context for path-bearing desktop operations (openFile / openDiff / dropFile).
  * Prefer {@link allowedRoots} (session cwd + worktree + workspace); {@link workspaceRoot}
@@ -175,6 +180,11 @@ export function isExecutableOpenTarget(
  * authorized session roots with the same canonical containment as the file tree,
  * and must not be an executable (name, symlink target, or POSIX +x).
  *
+ * On success returns the absolute path to use (the resolveTreePath absPath —
+ * link path when the link itself is still under the root). Callers that open
+ * or read must not trust a path authorized earlier: call
+ * {@link revalidateOpenFileForUse} immediately before use.
+ *
  * `rawPath` may be absolute or root-relative (and may carry a `#L` / `:line`
  * suffix already stripped by the caller, or still present — we only need the
  * filesystem path portion).
@@ -182,7 +192,7 @@ export function isExecutableOpenTarget(
 export function authorizeOpenFile(
   rawPath: string,
   ctx: DesktopOpenFileContext,
-): DesktopAuthResult {
+): DesktopOpenPathResult {
   if (!rawPath || typeof rawPath !== "string") {
     return { ok: false, reason: "empty path" };
   }
@@ -206,9 +216,65 @@ export function authorizeOpenFile(
     ) {
       return { ok: false, reason: "executable path refused" };
     }
-    return { ok: true };
+    return { ok: true, absPath: resolved.absPath };
   }
   return { ok: false, reason: "path escapes authorized roots" };
+}
+
+/**
+ * Use-time revalidation for chat open/read (same property as the file-tree
+ * panel's final `resolveTreePath` before open/read).
+ *
+ * Re-runs containment + executable checks immediately before openPath/readFile
+ * and returns the path that must be used. A symlink/junction swap between the
+ * message-gate authorize and this call (or between the two internal checks)
+ * fails closed — the external target is never opened or read.
+ *
+ * Shared by {@link createElectronHost} `openFsPath` and sidebar `readFileForDiff`.
+ */
+export function revalidateOpenFileForUse(
+  rawPath: string,
+  ctx: DesktopOpenFileContext,
+): DesktopOpenPathResult {
+  const first = authorizeOpenFile(rawPath, ctx);
+  if (!first.ok) return first;
+
+  const pathFs = ctx.pathFs;
+  const platform = ctx.platform ?? process.platform;
+  // Snapshot realpath after the first pass so a swap that keeps the same link
+  // path (and would still need a second authorize) is compared explicitly.
+  let realAtCheck: string;
+  try {
+    realAtCheck = pathFs
+      ? pathFs.realpathSync(first.absPath)
+      : fs.realpathSync(first.absPath);
+  } catch {
+    realAtCheck = first.absPath;
+  }
+
+  const second = authorizeOpenFile(rawPath, ctx);
+  if (!second.ok) return second;
+
+  const norm = (p: string) =>
+    platform === "win32" ? path.normalize(p).toLowerCase() : path.normalize(p);
+  if (norm(first.absPath) !== norm(second.absPath)) {
+    return { ok: false, reason: "path changed since check" };
+  }
+
+  let realNow: string;
+  try {
+    realNow = pathFs
+      ? pathFs.realpathSync(second.absPath)
+      : fs.realpathSync(second.absPath);
+  } catch {
+    realNow = second.absPath;
+  }
+  if (norm(realAtCheck) !== norm(realNow)) {
+    return { ok: false, reason: "path escaped workspace (symlink swap)" };
+  }
+
+  // Open/read the path from the final check — never the pre-revalidation string.
+  return second;
 }
 
 /**
