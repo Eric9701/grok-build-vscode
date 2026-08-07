@@ -70,7 +70,11 @@ mac:
         - x64
 
 dmg:
-  title: Grok Build Desktop ${version}
+  # ${arch} matters: without it the arm64 and x64 builds both mount a volume
+  # called "Grok Build Desktop <version>", and the second one races the first's
+  # unmount — hdiutil detach then fails on a volume that is already gone or
+  # still busy, which is what killed the first macOS run.
+  title: Grok Build Desktop ${version} ${arch}
 
 win:
   # Unsigned — no Authenticode certificate yet.
