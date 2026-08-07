@@ -115,7 +115,12 @@ body.has-rail .app-main {
      could exceed the viewport and the row reflowed all at once, which reads as
      the panels jumping. Shrinking to a floor keeps the change gradual, and the
      basis is untouched so the rail returns to its width when there is room. */
-  width: var(--rail-width, min(260px, 38vw));
+  /* Fixed default, not viewport-relative. `min(260px, 38vw)` meant that until
+     you dragged the rail its width tracked the window: widening the window
+     widened the rail, and the extra space went there instead of to the
+     conversation. The vw term was protecting narrow viewports, which the phone
+     drawer rules in the relay page already handle on their own. */
+  width: var(--rail-width, 260px);
   /* Rigid — see the desktop file panel for why a shrinkable panel makes drags
      fight each other. */
   flex-shrink: 0;
