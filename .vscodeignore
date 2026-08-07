@@ -21,12 +21,26 @@ node_modules/**
 .git/**
 **/*.map
 **/*.ts
-!out/**/*.js
+# Re-include only top-level compiled extension JS (out/*.js).
+# Do NOT use `!out/**/*.js` — that also un-ignores out/desktop/** and a later
+# `out/desktop/**` rule does not re-exclude those files under vsce's matcher.
+# Today the only nested out/ tree is desktop/; keep it excluded entirely.
+!out/*.js
 # Desktop Electron app — never ship in the VS Code extension vsix.
 out/desktop/**
 src/desktop/**
 vitest.desktop.config.ts
 scripts/run-desktop.cjs
+electron-builder.yml
+dist-desktop/**
+# Marketplace description is README.marketplace.md via
+# `vsce package --readme-path` (see package scripts). Exclude BOTH source
+# readme files so vsce does not also pack root README.md as extension/README.md
+# and collide with the packaged extension/readme.md on case-insensitive FS.
+README.md
+README.marketplace.md
+docs/desktop.md
+scripts/gen-marketplace-readme.cjs
 grok-session-preview.html
 # Private/untracked working docs (git-excluded via .gitignore / .git/info/exclude)
 # must never ship in the public vsix — vsce doesn't read those files.
@@ -41,3 +55,6 @@ docs/codex-style-analysis.md
 terminals/**
 .verification/**
 .grok/**
+.tmp-*/**
+.tmp-*
+.tmp-shots/**

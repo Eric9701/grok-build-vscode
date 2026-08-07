@@ -406,8 +406,12 @@
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",
     "prepackage": "node -e \"for (const f of require('fs').readdirSync('.')) if (f.endsWith('.vsix')) require('fs').unlinkSync(f)\"",
-    "package": "npx @vscode/vsce package",
-    "publish": "npx @vscode/vsce publish"
+    "package": "npx @vscode/vsce package --readme-path README.marketplace.md",
+    "publish": "npx @vscode/vsce publish --readme-path README.marketplace.md",
+    "dist": "npm run compile && electron-builder --publish never",
+    "dist:mac": "npm run compile && electron-builder --mac --publish never",
+    "dist:win": "npm run compile && electron-builder --win --x64 --publish never",
+    "dist:dir": "npm run compile && electron-builder --dir --publish never"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -417,6 +421,7 @@
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.5.2",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "happy-dom": "^20.9.0",
     "playwright": "^1.49.1",
     "typescript": "^5.4.0",
