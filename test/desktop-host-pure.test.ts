@@ -2960,7 +2960,10 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     // prove the abort sits BEFORE selectedRepoCwd assignment / history read.
     const refuseIdx = switchBody.indexOf("setActiveWorkspaceFolder(target)");
     const selectedIdx = switchBody.indexOf("this.selectedRepoCwd = target");
-    const historyIdx = switchBody.indexOf("buildSessionsList");
+    // Selecting a project no longer resumes its newest conversation, so there is
+    // no history read here any more — the session work that must stay behind the
+    // abort is now creating the blank session for the target folder.
+    const historyIdx = switchBody.indexOf("newFocusedSession");
     expect(refuseIdx).toBeGreaterThan(0);
     expect(selectedIdx).toBeGreaterThan(refuseIdx);
     expect(historyIdx).toBeGreaterThan(selectedIdx);

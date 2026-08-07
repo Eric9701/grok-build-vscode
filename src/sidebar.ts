@@ -2701,31 +2701,18 @@ Only continue if you trust this code.`,
       return;
     }
 
-    const history = this.buildSessionsList(
-      target,
-      { limit: Number.MAX_SAFE_INTEGER },
-      undefined,
-    );
-    const live = new Map(
-      [...this.pool]
-        .filter((session) => session.activeSessionId)
-        .map((session) => [session.activeSessionId!, session]),
-    );
-    const newest = history.type === "sessions"
-      ? mostRecentSession(history.entries.filter((entry) => {
-          const session = live.get(entry.id);
-          return !session || session.hasHistory;
-        }))
-      : undefined;
-
-    if (newest) {
-      // newest.cwd is the conversation's own checkout (may be a worktree); it
-      // was resolved against `target` above, not a shared field that could
-      // change mid-flight.
-      await this.openSession(newest.id, newest.cwd);
-    } else {
-      await this.newFocusedSession("local");
-    }
+    // Selecting a project shows you what is in it. It does NOT resume a
+    // conversation: this used to open the project's newest one, so a glance at
+    // another project silently moved you into it, spawned an agent there, and
+    // left the conversation you were reading. Picking a project and picking a
+    // conversation are separate intentions and now take separate clicks — a
+    // session opens when you click a session, or start a new one.
+    //
+    // A blank session for the target folder rather than nothing: the chat pane
+    // must not keep showing the previous project's transcript while the rail
+    // says you are somewhere else, and anything typed needs a session in the
+    // right cwd to land in.
+    await this.newFocusedSession("local");
     this.postRepoCatalog();
     this.postSessionsList();
   }
