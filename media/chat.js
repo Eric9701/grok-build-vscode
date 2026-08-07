@@ -2691,11 +2691,18 @@
   }
 
   function openGearPopover(fromBtn) {
-    if (!gearPopover.hidden) { closePopovers(); return; }
-    closePopovers();
     // Which button was pressed decides which sections render. Without a rail
     // gear both surfaces collapse into the composer one, so this is inert there.
-    state.gearSurface = fromBtn && fromBtn.id === "rail-gear-btn" ? "rail" : "composer";
+    const surface = fromBtn && fromBtn.id === "rail-gear-btn" ? "rail" : "composer";
+    // Clicking the button that is already showing closes it — clicking the OTHER
+    // one switches to it. Closing on any open popover made the two surfaces
+    // cost two clicks to move between: the first only dismissed the other menu.
+    if (!gearPopover.hidden) {
+      const showingThis = state.gearSurface === surface;
+      closePopovers();
+      if (showingThis) return;
+    }
+    state.gearSurface = surface;
     renderGearMain();
     positionGearPopover(fromBtn || activeGearButton());
     gearPopover.hidden = false;

@@ -288,6 +288,27 @@ describe("rail gear placement (DOM)", () => {
     expect(foot.firstElementChild!.id).toBe("rail-gear-btn");
   });
 
+  it("switches surfaces in ONE click, and still toggles its own shut", () => {
+    const h = liveRail();
+    const composer = h.doc.getElementById("gear-btn")!;
+    const rail = h.doc.getElementById("rail-gear-btn")!;
+    const pop = h.doc.getElementById("gear-popover")!;
+
+    click(h.window, rail);
+    expect(gearText(h)).toContain("Use this app for");
+    // One click on the OTHER button must land on the other menu — not merely
+    // dismiss this one and make you click again.
+    click(h.window, composer);
+    expect(pop.hidden).toBe(false);
+    expect(gearText(h)).toContain("Model and Effort");
+    click(h.window, rail);
+    expect(pop.hidden).toBe(false);
+    expect(gearText(h)).toContain("Use this app for");
+    // Clicking the button that IS showing still closes it.
+    click(h.window, rail);
+    expect(pop.hidden).toBe(true);
+  });
+
   it("caps the rail-anchored popover width so About cannot span the window", () => {
     const h = liveRail();
     const railGear = h.doc.getElementById("rail-gear-btn")!;

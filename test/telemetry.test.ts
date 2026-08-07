@@ -9,6 +9,7 @@ import {
   APTABASE_APP_KEY_PROD,
   APTABASE_APP_KEY_DEV,
 } from "../src/telemetry";
+import { DESKTOP_APP_SHORT_NAME } from "../src/desktop/host-dialogs";
 
 describe("aptabaseHost — region from app key", () => {
   it("resolves EU and US keys to their ingest hosts", () => {
@@ -231,5 +232,53 @@ describe("session_start — feature flags + host (analytics)", () => {
         "showThinking", "soundNotifications", "steerByDefault",
       ],
     );
+  });
+});
+
+describe("the three hosts are distinguishable in analytics", () => {
+  // Grok Build Desktop reports through the SAME shared send path as the
+  // extension (sidebar.ts → host.appName → `host`), and its extensionId
+  // resolves to the official publisher.name, so the fork gate lets it through.
+  // What identifies it is this property — without it, desktop sessions would be
+  // indistinguishable from VS Code ones in the same project.
+  const props = (host?: string) => ({
+    installId: "i-1",
+    mode: "agent",
+    model: "grok-build",
+    effort: "high",
+    showThinking: false,
+    expandToolDetails: false,
+    steerByDefault: false,
+    chatFontScale: 100,
+    readRepliesAloud: false,
+    soundNotifications: false,
+    ...(host ? { host } : {}),
+  });
+  const sys = {
+    appVersion: "3.1.0",
+    osName: "Windows",
+    osVersion: "10.0.26200",
+    locale: "en",
+    isDebug: false,
+  };
+
+  it("tags desktop sessions with Grok Build Desktop", () => {
+    const ev = buildSessionStartEvent(
+      props(DESKTOP_APP_SHORT_NAME), sys, "s-1", "2026-08-07T00:00:00.000Z",
+    ) as any;
+    expect(ev.props.host).toBe("Grok Build Desktop");
+  });
+
+  it("keeps the editor's own name for the extension, and omits it when unknown", () => {
+    const code = buildSessionStartEvent(
+      props("Visual Studio Code"), sys, "s-2", "2026-08-07T00:00:00.000Z",
+    ) as any;
+    expect(code.props.host).toBe("Visual Studio Code");
+    // Absent host is unknown, not blank — an empty string would look like a
+    // fourth product in the dashboard.
+    const unknown = buildSessionStartEvent(
+      props(), sys, "s-3", "2026-08-07T00:00:00.000Z",
+    ) as any;
+    expect("host" in unknown.props).toBe(false);
   });
 });
