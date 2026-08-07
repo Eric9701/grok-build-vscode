@@ -77,6 +77,19 @@ body {
   zoom: var(--chat-zoom, 1);
   height: calc(100vh / var(--chat-zoom, 1));
   overflow: hidden;
+  /* Shared rail / file-tree row rhythm (desktop tree panel reuses these). */
+  --rail-row-font-size: 13px;
+  --rail-row-line-height: 1.5;
+  --rail-row-min-height: 30px;
+  --rail-row-gap: 6px;
+  --rail-repo-font-size: 14px;
+  --rail-repo-font-weight: 600;
+  --rail-repo-line-height: 1.45;
+  --rail-repo-min-height: 34px;
+  --rail-indent: 16px;
+  --rail-icon-size: 14px;
+  --rail-row-radius: 5px;
+  --rail-hover-bg: var(--vscode-list-hoverBackground);
 }
 
 /* ---- projects rail (desktop multi-folder / AFK Pilot page mount) ----
@@ -297,16 +310,19 @@ body.has-rail .app-main {
 .rail-repo { min-width: 0; border-radius: 6px; }
 .rail-repo.unavailable { opacity: .62; }
 .rail-repo-head {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 34px;
+  min-height: var(--rail-repo-min-height);
   gap: 2px;
   padding: 1px 4px;
   border-radius: 6px;
+  cursor: pointer;
 }
 .rail-repo-head:hover,
-.rail-repo-head:focus-within { background: var(--vscode-list-hoverBackground); }
+.rail-repo-head:focus-within { background: var(--rail-hover-bg); }
+.rail-repo-head:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .rail-twisty,
 .rail-action-btn {
   display: inline-grid;
@@ -319,46 +335,71 @@ body.has-rail .app-main {
   background: transparent;
   border: 0;
   border-radius: 4px;
-  cursor: pointer;
 }
-.rail-twisty:hover,
+/* Folder is an open/closed indicator — the whole head is the hit target. */
+.rail-twisty { cursor: inherit; pointer-events: none; }
+.rail-action-btn { cursor: pointer; }
 .rail-action-btn:hover,
 .rail-action-btn.active { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
-.rail-twisty:focus-visible,
 .rail-action-btn:focus-visible,
-.rail-repo-name:focus-visible,
 .rail-more:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
-.rail-twisty svg { width: 14px; height: 14px; }
+.rail-twisty svg { width: var(--rail-icon-size); height: var(--rail-icon-size); }
 .rail-repo-name {
   display: flex;
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
   gap: 7px;
-  height: 30px;
+  height: var(--rail-row-min-height);
   padding: 0 4px;
   overflow: hidden;
   color: var(--vscode-foreground);
   background: transparent;
   border: 0;
   border-radius: 4px;
-  font: 600 14px/1.45 var(--vscode-font-family);
+  font-family: var(--vscode-font-family);
+  font-size: var(--rail-repo-font-size);
+  font-weight: var(--rail-repo-font-weight);
+  line-height: var(--rail-repo-line-height);
   text-align: left;
-  cursor: pointer;
+  /* Head owns the click; name is a label that may use the full row width. */
+  cursor: inherit;
+  pointer-events: none;
 }
-.rail-repo-name:disabled,
 .rail-action-btn:disabled { cursor: default; }
 .rail-repo-icon { display: inline-flex; flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
-.rail-repo-icon svg { width: 14px; height: 14px; }
-.rail-repo-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.45; }
+.rail-repo-icon svg { width: var(--rail-icon-size); height: var(--rail-icon-size); }
+.rail-repo-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: var(--rail-repo-line-height);
+}
+/* Hover actions overlay the trailing edge so labels use the full row width.
+   On @media (hover: none) they return to in-flow (see below). */
 .rail-repo-actions,
 .rail-session-actions {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
   display: flex;
-  flex: 0 0 auto;
+  flex: none;
   gap: 1px;
   opacity: 0;
   pointer-events: none;
   transition: opacity .1s ease;
+  /* Soft scrim so trailing title text does not fight the icons on hover. */
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--vscode-sideBar-background, var(--vscode-editor-background, #252526)) 28%
+  );
+  padding-left: 14px;
+  border-radius: 4px;
 }
 .rail-repo:hover .rail-repo-actions,
 .rail-repo:focus-within .rail-repo-actions,
@@ -367,17 +408,18 @@ body.has-rail .app-main {
 .rail-action-btn { width: 25px; height: 27px; }
 .rail-action-btn svg { width: 13px; height: 13px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; }
-/* Session indent: no left pad on the list; rows and Show more share 16px. */
+/* Session indent: no left pad on the list; rows and Show more share --rail-indent. */
 .rail-sessions { display: flex; flex-direction: column; min-width: 0; gap: 1px; padding: 1px 0 5px 0; }
 .rail-session {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
-  min-height: 30px;
-  gap: 6px;
-  padding: 4px 4px 4px 16px;
+  min-height: var(--rail-row-min-height);
+  gap: var(--rail-row-gap);
+  padding: 4px 4px 4px var(--rail-indent);
   color: var(--vscode-descriptionForeground);
-  border-radius: 5px;
+  border-radius: var(--rail-row-radius);
   cursor: pointer;
   border: none;
   background: transparent;
@@ -385,10 +427,18 @@ body.has-rail .app-main {
   width: 100%;
   font: inherit;
 }
-.rail-session:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.rail-session:hover { color: var(--vscode-foreground); background: var(--rail-hover-bg); }
 .rail-session.active { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); background: var(--vscode-list-activeSelectionBackground); }
 .rail-session .history-row-dot { flex: 0 0 auto; width: 7px; height: 7px; }
-.rail-session-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 1.5; }
+.rail-session-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--rail-row-font-size);
+  line-height: var(--rail-row-line-height);
+}
 .rail-session-branch { display: inline-flex; flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
 .rail-session-branch svg { width: 12px; height: 12px; }
 .rail-pinned { margin-bottom: 2px; }
@@ -409,7 +459,7 @@ body.has-rail .app-main {
 .rail-more {
   align-self: flex-start;
   margin: 2px 0 1px 0;
-  padding: 3px 7px 3px 16px;
+  padding: 3px 7px 3px var(--rail-indent);
   color: var(--vscode-descriptionForeground);
   background: transparent;
   border: 0;
@@ -463,10 +513,22 @@ body.has-rail .app-main {
 .rail-menu-item.danger .rail-menu-icon { color: inherit; }
 .rail-menu-sep { height: 1px; margin: 3px 2px; background: var(--vscode-panel-border); }
 
-/* No hover means no hover-reveal: force session/repo actions visible on touch. */
+/* No hover means no hover-reveal: force session/repo actions visible on touch.
+   On these devices actions stay in-flow (reserve space) — overlay would
+   permanently cover the trailing title. */
 @media (hover: none) {
   .rail-repo-actions,
-  .rail-session-actions { opacity: 1; pointer-events: auto; }
+  .rail-session-actions {
+    position: static;
+    right: auto;
+    top: auto;
+    transform: none;
+    flex: 0 0 auto;
+    opacity: 1;
+    pointer-events: auto;
+    background: transparent;
+    padding-left: 0;
+  }
   .rail-action-btn { width: 32px; height: 32px; }
   .rail-session-actions .rail-action-btn { width: 32px; height: 30px; }
   .rail-repo-head { min-height: 40px; }

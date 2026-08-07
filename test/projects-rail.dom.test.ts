@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { bootWebview, click, dispatch } from "./webview-harness";
 
 // The rail is the relay page's surface: `#projects-rail` lives in web/chat.html,
@@ -1003,9 +1006,9 @@ describe("projects rail", () => {
       dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
 
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      const twisty = alpha().querySelector(".rail-twisty") as HTMLButtonElement;
-      expect(twisty.disabled).toBe(false);
-      click(window, twisty);
+      const head = alpha().querySelector(".rail-repo-head") as HTMLElement;
+      expect(head.getAttribute("aria-expanded")).toBe("true");
+      click(window, head);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
 
       // Holding the current project open forever made the one section you most
@@ -1022,7 +1025,7 @@ describe("projects rail", () => {
       const { doc, window } = boot("/work/alpha");
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-      click(window, alpha().querySelector(".rail-twisty") as HTMLElement);
+      click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
 
       // The host names the worktree, not the checkout — and it lands BEFORE the
@@ -1045,7 +1048,7 @@ describe("projects rail", () => {
       const { doc, window } = boot("/work/alpha");
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      click(window, alpha().querySelector(".rail-twisty") as HTMLElement);
+      click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
 
       // The conversation is opened from somewhere else — a phone, the desk, the
@@ -1268,7 +1271,9 @@ describe("projects rail", () => {
       expect(!!alpha().querySelector(".rail-sessions")).toBe(
         /m6 14/.test(twisty().innerHTML),
       );
-      click(window, twisty());
+      // Folder is an indicator (not a button); the whole head toggles.
+      expect(twisty().tagName).toBe("SPAN");
+      click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
       // Collapsed: folder-closed has M2 10h20; no sessions; data-expanded=0.
       expect(alpha().getAttribute("data-expanded")).toBe("0");
       expect(twisty().innerHTML).toMatch(/M2 10h20/);
@@ -1276,6 +1281,42 @@ describe("projects rail", () => {
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
       expect(!!alpha().querySelector(".rail-sessions")).toBe(
         /m6 14/.test(twisty().innerHTML),
+      );
+    });
+
+    it("the whole project header toggles expand; hover actions do not", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const head = () => alpha().querySelector(".rail-repo-head") as HTMLElement;
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Click the label area (not the folder alone) — whole head is the control.
+      click(window, alpha().querySelector(".rail-repo-label") as HTMLElement);
+      expect(alpha().getAttribute("data-expanded")).toBe("0");
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+      click(window, head());
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Hover action (+ New) must not toggle.
+      const before = posted.length;
+      const add = alpha().querySelector(".rail-repo-actions .rail-action-btn") as HTMLElement;
+      click(window, add);
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Selected project's + posts newSession (does not fold).
+      expect(posted.slice(before).some((p) => p.type === "newSession")).toBe(true);
+    });
+
+    it("hidden hover actions are absolutely positioned so they do not reserve label width", () => {
+      // Assert the CSS contract: actions overlay (position:absolute) on hover-capable
+      // surfaces. A layout-space reservation would reintroduce early title truncation.
+      const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css");
+      const css = fs.readFileSync(cssPath, "utf8");
+      // Overlay path (default).
+      expect(css).toMatch(
+        /\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]*position:\s*absolute/s,
+      );
+      // Touch / no-hover: back to in-flow reservation.
+      expect(css).toMatch(
+        /@media\s*\(hover:\s*none\)\s*\{[\s\S]*?\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]*position:\s*static/,
       );
     });
 

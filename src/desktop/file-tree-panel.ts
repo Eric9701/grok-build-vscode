@@ -10,9 +10,14 @@
  * Class prefix `desk-ft-` keeps styles from colliding with chat.css.
  * Runs via webContents.executeJavaScript (bypasses CSP nonce) after each
  * HTML load so renderer reloads re-mount the panel.
+ *
+ * File-type glyphs: Seti UI (MIT) via {@link buildFileIconDataUrlMap}.
  */
+import { buildFileIconDataUrlMap, fileIconId } from "./file-icons";
 
-/** Styles scoped under `.desk-ft-*` — never bare element rules that could hit chat. */
+/** Styles scoped under `.desk-ft-*` — never bare element rules that could hit chat.
+ *  Row rhythm reuses the rail CSS custom properties defined on `body` in chat.css
+ *  (`--rail-row-*`, `--rail-hover-bg`, …) so the tree and projects rail match. */
 export const FILE_TREE_PANEL_CSS = `
 /* body is still chat.css's column flex; shell sits under the full-width top bar.
    With the projects rail (body.has-rail), body is row: rail | .app-main column. */
@@ -92,7 +97,9 @@ body.desk-ft-closed .desk-ft-panel {
   box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.04);
   color: var(--vscode-foreground, #ccc);
   font-family: var(--vscode-font-family, system-ui, sans-serif);
-  font-size: 12px;
+  /* Match projects rail type scale (--rail-row-* from chat.css body). */
+  font-size: var(--rail-row-font-size, 13px);
+  line-height: var(--rail-row-line-height, 1.5);
   z-index: 20;
 }
 .desk-ft-header {
@@ -102,7 +109,7 @@ body.desk-ft-closed .desk-ft-panel {
   padding: 4px 6px;
   border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
   flex-shrink: 0;
-  min-height: 28px;
+  min-height: var(--rail-row-min-height, 30px);
   box-sizing: border-box;
 }
 .desk-ft-title {
@@ -111,10 +118,10 @@ body.desk-ft-closed .desk-ft-panel {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   color: var(--vscode-descriptionForeground, #9d9d9d);
 }
 .desk-ft-filter {
@@ -125,6 +132,7 @@ body.desk-ft-closed .desk-ft-panel {
   background: var(--vscode-input-background, #3c3c3c);
   color: var(--vscode-input-foreground, #ccc);
   font: inherit;
+  font-size: var(--rail-row-font-size, 13px);
   outline: none;
   box-sizing: border-box;
   width: calc(100% - 12px);
@@ -140,7 +148,7 @@ body.desk-ft-viewing .desk-ft-filter {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 4px 0 8px;
+  padding: 1px 0 5px;
 }
 body.desk-ft-viewing .desk-ft-body {
   display: none !important;
@@ -148,8 +156,9 @@ body.desk-ft-viewing .desk-ft-body {
 .desk-ft-row {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px 6px 2px 0;
+  gap: var(--rail-row-gap, 6px);
+  min-height: var(--rail-row-min-height, 30px);
+  padding: 4px 4px 4px 0;
   cursor: default;
   user-select: none;
   white-space: nowrap;
@@ -157,15 +166,18 @@ body.desk-ft-viewing .desk-ft-body {
   background: transparent;
   color: inherit;
   font: inherit;
+  font-size: var(--rail-row-font-size, 13px);
+  line-height: var(--rail-row-line-height, 1.5);
   width: 100%;
   text-align: left;
   box-sizing: border-box;
+  border-radius: var(--rail-row-radius, 5px);
 }
 .desk-ft-row:hover {
-  background: var(--vscode-list-hoverBackground, #2a2d2e);
+  background: var(--rail-hover-bg, var(--vscode-list-hoverBackground, #2a2d2e));
 }
 .desk-ft-row:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline: 2px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: -1px;
 }
 .desk-ft-twist {
@@ -174,26 +186,38 @@ body.desk-ft-viewing .desk-ft-body {
   text-align: center;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   font-size: 10px;
+  line-height: 1;
 }
 .desk-ft-icon {
-  flex: 0 0 16px;
-  width: 16px;
-  text-align: center;
-  opacity: 0.85;
-  font-size: 12px;
+  flex: 0 0 var(--rail-icon-size, 14px);
+  width: var(--rail-icon-size, 14px);
+  height: var(--rail-icon-size, 14px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.95;
+}
+.desk-ft-icon img,
+.desk-ft-icon-img {
+  width: var(--rail-icon-size, 14px);
+  height: var(--rail-icon-size, 14px);
+  display: block;
+  object-fit: contain;
 }
 .desk-ft-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: var(--rail-row-font-size, 13px);
+  line-height: var(--rail-row-line-height, 1.5);
 }
 .desk-ft-empty,
 .desk-ft-error,
 .desk-ft-more {
-  padding: 8px 10px;
+  padding: 8px 10px 8px var(--rail-indent, 16px);
   color: var(--vscode-descriptionForeground, #9d9d9d);
-  font-size: 11px;
+  font-size: 12px;
 }
 .desk-ft-error {
   color: var(--vscode-errorForeground, #f48771);
@@ -416,10 +440,16 @@ body.desk-ft-viewing .desk-ft-viewer {
 /**
  * Boot script source. Receives the preload bridge as `window.grokDesktopFileTree`.
  * Idempotent: re-running after reload remounts a single panel.
+ *
+ * @param iconsDir optional override for unit tests (defaults to media/file-icons).
  */
-export function fileTreePanelBootSource(): string {
+export function fileTreePanelBootSource(iconsDir?: string): string {
   // Built as a function body so executeJavaScript can wrap it. No TypeScript —
   // this string runs in the renderer.
+  const iconMap = buildFileIconDataUrlMap(iconsDir);
+  // Compact extension → Seti id table for the renderer (mirrors fileIconId).
+  // Keep in sync with src/desktop/file-icons.ts fileIconId().
+  const iconIdFn = fileIconId.toString();
   return `(() => {
   const api = window.grokDesktopFileTree;
   if (!api || typeof api.list !== "function") return { ok: false, reason: "no bridge" };
@@ -427,6 +457,9 @@ export function fileTreePanelBootSource(): string {
   const OPEN_KEY = "desk-ft-open";
   const FILTER_KEY = "desk-ft-filter";
   const RAIL_OPEN_KEY = "desk-rail-open";
+  // Seti UI (MIT) data-URLs — bundled at inject time; no network fetch.
+  const SETI_ICONS = ${JSON.stringify(iconMap)};
+  const fileIconId = ${iconIdFn};
   // Lucide panel-left / panel-right — same convention as AFK Pilot + Codex.
   const ICON_PANEL_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
   const ICON_PANEL_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>';
@@ -685,30 +718,11 @@ export function fileTreePanelBootSource(): string {
     return open ? "▼" : "▶";
   }
 
+  /** Seti UI icon id + data-URL for a tree entry (see media/file-icons). */
   function iconFor(kind, name) {
-    if (kind === "dir") return "📁";
-    const ext = (name || "").includes(".")
-      ? "." + name.split(".").pop().toLowerCase()
-      : "";
-    const map = {
-      ".md": "📝",
-      ".ts": "🔷",
-      ".tsx": "🔷",
-      ".js": "🟨",
-      ".jsx": "🟨",
-      ".json": "{ }",
-      ".css": "🎨",
-      ".html": "🌐",
-      ".png": "🖼",
-      ".jpg": "🖼",
-      ".jpeg": "🖼",
-      ".gif": "🖼",
-      ".webp": "🖼",
-      ".yml": "⚙",
-      ".yaml": "⚙",
-      ".env": "🔑",
-    };
-    return map[ext] || "📄";
+    const id = fileIconId(kind, name);
+    const src = SETI_ICONS[id] || SETI_ICONS.default || "";
+    return { id: id, src: src };
   }
 
   function escapeHtml(s) {
@@ -879,7 +893,9 @@ export function fileTreePanelBootSource(): string {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "desk-ft-row";
-    row.style.paddingLeft = (6 + depth * 12) + "px";
+    // Indent matches rail session indent rhythm (--rail-indent ≈ 16px step).
+    const indent = 8 + depth * 12;
+    row.style.paddingLeft = indent + "px";
     row.title = entry.relPath;
 
     const twist = document.createElement("span");
@@ -888,7 +904,16 @@ export function fileTreePanelBootSource(): string {
 
     const icon = document.createElement("span");
     icon.className = "desk-ft-icon";
-    icon.textContent = iconFor(entry.kind, entry.name);
+    const ic = iconFor(entry.kind, entry.name);
+    icon.setAttribute("data-icon", ic.id);
+    if (ic.src) {
+      const img = document.createElement("img");
+      img.className = "desk-ft-icon-img";
+      img.src = ic.src;
+      img.alt = "";
+      img.draggable = false;
+      icon.appendChild(img);
+    }
 
     const name = document.createElement("span");
     name.className = "desk-ft-name";

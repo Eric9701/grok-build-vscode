@@ -6,7 +6,19 @@
   // host-only affordances: worktree/rewind actions (their host flows run native
   // VS Code UI a browser user can't see) and the AFK Pilot account section.
   const IS_REMOTE = !!window.grokRemoteClient;
+  // Desktop Electron preload sets grokDesktopShell; VS Code webview never does.
+  // Client-owned font scale (localStorage + keyboard/wheel) applies to remote AND desktop
+  // — not the VS Code sidebar, which stays on host `grok.chatFontScale`.
+  // Do not key off the file-tree bridge — that API is panel-only; chat.js must not call it.
+  const IS_DESKTOP_CLIENT = !!window.grokDesktopShell;
+  const CLIENT_OWNS_FONT_SCALE = IS_REMOTE || IS_DESKTOP_CLIENT;
   const REMOTE_FONT_SCALE_KEY = "grok.remote.fontScale";
+  const DESKTOP_FONT_SCALE_KEY = "grok.desktop.fontScale";
+  const CLIENT_FONT_SCALE_KEY = IS_REMOTE ? REMOTE_FONT_SCALE_KEY : DESKTOP_FONT_SCALE_KEY;
+  /** Client zoom bounds (fraction of 1). Matches AFK Pilot's 80–160% slider. */
+  const CLIENT_FONT_SCALE_MIN = 0.8;
+  const CLIENT_FONT_SCALE_MAX = 1.6;
+  const CLIENT_FONT_SCALE_STEP = 0.1;
   const REMOTE_TTS_KEY = "grok.remote.tts";
   const REMOTE_TTS_SUMMARY_KEY = "grok.remote.ttsSummary";
   const REMOTE_STORAGE_SUFFIX = (
@@ -197,6 +209,17 @@
     try { window.localStorage.setItem(key, String(value)); } catch { /* unavailable */ }
   }
 
+  /** Clamp client zoom into [MIN, MAX]; non-finite → 1. Exported for tests via window.__grokFontScale. */
+  function clampClientFontScale(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return 1;
+    return Math.min(CLIENT_FONT_SCALE_MAX, Math.max(CLIENT_FONT_SCALE_MIN, Math.round(v * 100) / 100));
+  }
+
+  function stepClientFontScale(current, delta) {
+    return clampClientFontScale(Number(current) + Number(delta));
+  }
+
   function remoteUsesTouchComposer() {
     return IS_REMOTE && typeof window.matchMedia === "function" &&
       window.matchMedia("(hover: none), (pointer: coarse)").matches;
@@ -298,7 +321,10 @@
     voiceDiscarded: false,
     // The configured send phrase (for highlighting it in the composer).
     voiceSendPhrase: "grok send",
-    remoteFontScale: IS_REMOTE ? storedNumber(REMOTE_FONT_SCALE_KEY, 1) : 1,
+    // Client-owned zoom (remote + desktop). VS Code uses hostFontScale only.
+    remoteFontScale: CLIENT_OWNS_FONT_SCALE
+      ? clampClientFontScale(storedNumber(CLIENT_FONT_SCALE_KEY, 1))
+      : 1,
     hostFontScale: Number(document.body.style.getPropertyValue("--chat-zoom")) || 1,
     remoteTts: storedRemoteTts,
     remoteSummarizeRepliesAloud: storedRemoteTtsSummary,
@@ -2228,12 +2254,16 @@
         renderConfigDebugPanel(); // re-render so the switch reflects the new state
       },
     );
-    if (IS_REMOTE) {
+    if (CLIENT_OWNS_FONT_SCALE) {
       const fontRow = document.createElement("div");
       fontRow.className = "toolbar-popover-item remote-font-row";
+      const title = IS_REMOTE
+        ? "Chat text size on this device only. Independent of VS Code's own zoom — the desktop's setting never affects AFK Pilot."
+        : "Chat text size in this window. Ctrl/Cmd + +/−/0 or Ctrl/Cmd + scroll wheel also adjusts it.";
+      const aria = IS_REMOTE ? "AFK Pilot text size" : "Desktop text size";
       fontRow.innerHTML =
-        `<label for="remote-font-scale" title="Chat text size on this device only. Independent of VS Code's own zoom — the desktop's setting never affects AFK Pilot.">Text size</label>` +
-        `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="AFK Pilot text size">` +
+        `<label for="remote-font-scale" title="${title}">Text size</label>` +
+        `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="${aria}">` +
         `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
       const slider = fontRow.querySelector("input");
       const output = fontRow.querySelector("output");
@@ -2241,10 +2271,7 @@
         output.textContent = `${slider.value}%`;
       };
       slider.onchange = () => {
-        state.remoteFontScale = Number(slider.value) / 100;
-        storeRemotePref(REMOTE_FONT_SCALE_KEY, state.remoteFontScale);
-        applyChatZoom();
-        reportRemotePreferences();
+        setClientFontScale(Number(slider.value) / 100);
       };
       gearPopover.appendChild(fontRow);
     }
@@ -3916,43 +3943,62 @@
     const head = document.createElement("div");
     head.className = "rail-repo-head";
     head.title = repo.cwd;
+    // Whole header toggles expand/collapse (folder is indicator only). Hover
+    // actions stopPropagation so a pin/new/menu click does not also fold.
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", String(expanded));
+    head.setAttribute(
+      "aria-label",
+      (expanded ? "Collapse " : "Expand ") + (repo.label || cwdLeaf(repo.cwd)),
+    );
 
-    // Folder open/closed is the expand control (no leading chevron on project rows).
-    // Icon is derived from `expanded` — the same flag that decides whether sessions render.
-    const twisty = document.createElement("button");
-    twisty.type = "button";
+    // Folder open/closed indicator — same `expanded` flag as the session list.
+    const twisty = document.createElement("span");
     twisty.className = "rail-twisty";
     twisty.innerHTML = expanded ? ICON.folderOpen : ICON.folderClosed;
-    twisty.title = expanded ? "Collapse" : "Expand";
-    twisty.setAttribute("aria-expanded", String(expanded));
-    twisty.setAttribute("aria-label", expanded ? "Collapse project" : "Expand project");
-    twisty.onclick = (e) => {
-      e.stopPropagation();
+    twisty.setAttribute("aria-hidden", "true");
+    head.appendChild(twisty);
+
+    const name = document.createElement("span");
+    name.className = "rail-repo-name";
+    // Worktree keeps a branch glyph; ordinary projects rely on the folder indicator.
+    name.innerHTML = repo.worktreeLabel
+      ? `<span class="rail-repo-icon">${ICON.gitBranch}</span><span class="rail-repo-label"></span>`
+      : `<span class="rail-repo-label"></span>`;
+    name.querySelector(".rail-repo-label").textContent = repo.label || cwdLeaf(repo.cwd);
+    head.appendChild(name);
+
+    const toggleRepoExpand = () => {
       if (expanded) state.railCollapsed[key] = true;
       else delete state.railCollapsed[key];
       saveRailShape();
       renderRail();
     };
-    head.appendChild(twisty);
-
-    const name = document.createElement("button");
-    name.type = "button";
-    name.className = "rail-repo-name";
-    name.disabled = !repo.available || repoSwitcherLocked();
-    // Worktree keeps a branch glyph; ordinary projects rely on the folder twisty.
-    name.innerHTML = repo.worktreeLabel
-      ? `<span class="rail-repo-icon">${ICON.gitBranch}</span><span class="rail-repo-label"></span>`
-      : `<span class="rail-repo-label"></span>`;
-    name.querySelector(".rail-repo-label").textContent = repo.label || cwdLeaf(repo.cwd);
-    name.onclick = () => {
-      if (!repo.available || repoSwitcherLocked() || selected) return;
-      selectRailRepo(repo);
+    head.onclick = (e) => {
+      // Actions (and anything inside them) must not fold the section.
+      if (e.target.closest(".rail-repo-actions")) return;
+      // Unselected project: switch into it and ensure the section is open
+      // (desktop multi-folder / AFK Pilot). Selected project: toggle fold.
+      if (!selected && repo.available && !repoSwitcherLocked()) {
+        delete state.railCollapsed[key];
+        saveRailShape();
+        selectRailRepo(repo);
+        return;
+      }
+      toggleRepoExpand();
     };
-    head.appendChild(name);
-
+    head.onkeydown = (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target !== head) return;
+      e.preventDefault();
+      head.click();
+    };
 
     const actions = document.createElement("div");
     actions.className = "rail-repo-actions";
+    // Clicks inside the action cluster must not bubble to the head toggle.
+    actions.addEventListener("click", (e) => e.stopPropagation());
 
     // New session in ANY project, selected or not. The host only ever creates in
     // the repo it currently has selected, so for another one this is really
@@ -6406,8 +6452,71 @@
   }
 
   function applyChatZoom() {
-    const zoom = IS_REMOTE ? state.remoteFontScale : state.hostFontScale;
+    const zoom = CLIENT_OWNS_FONT_SCALE ? state.remoteFontScale : state.hostFontScale;
     document.body.style.setProperty("--chat-zoom", String(zoom));
+  }
+
+  /** Set client-owned zoom, persist, report (remote), refresh gear if open. */
+  function setClientFontScale(next) {
+    if (!CLIENT_OWNS_FONT_SCALE) return state.remoteFontScale;
+    const clamped = clampClientFontScale(next);
+    state.remoteFontScale = clamped;
+    storeRemotePref(CLIENT_FONT_SCALE_KEY, clamped);
+    applyChatZoom();
+    if (IS_REMOTE) reportRemotePreferences();
+    const slider = document.getElementById("remote-font-scale");
+    if (slider) {
+      slider.value = String(Math.round(clamped * 100));
+      const output = slider.parentElement && slider.parentElement.querySelector("output");
+      if (output) output.textContent = `${Math.round(clamped * 100)}%`;
+    }
+    return clamped;
+  }
+
+  function wireClientFontScaleShortcuts() {
+    if (!CLIENT_OWNS_FONT_SCALE || window.__grokFontScaleWired) return;
+    window.__grokFontScaleWired = true;
+    // Test seam (also handy for manual probes).
+    window.__grokFontScale = {
+      get: () => state.remoteFontScale,
+      set: setClientFontScale,
+      clamp: clampClientFontScale,
+      step: stepClientFontScale,
+      min: CLIENT_FONT_SCALE_MIN,
+      max: CLIENT_FONT_SCALE_MAX,
+      stepSize: CLIENT_FONT_SCALE_STEP,
+      key: CLIENT_FONT_SCALE_KEY,
+    };
+    window.addEventListener("keydown", (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      // Ignore when an editable field is composing IME, but allow zoom over inputs
+      // (desktop apps zoom the whole UI regardless of focus).
+      const key = e.key;
+      if (key === "=" || key === "+" || key === "Add") {
+        e.preventDefault();
+        setClientFontScale(stepClientFontScale(state.remoteFontScale, CLIENT_FONT_SCALE_STEP));
+      } else if (key === "-" || key === "Subtract") {
+        e.preventDefault();
+        setClientFontScale(stepClientFontScale(state.remoteFontScale, -CLIENT_FONT_SCALE_STEP));
+      } else if (key === "0" || key === "Digit0" || key === "Numpad0") {
+        // Ctrl/Cmd+0 resets to 100%.
+        if (key === "0" || e.code === "Digit0" || e.code === "Numpad0") {
+          e.preventDefault();
+          setClientFontScale(1);
+        }
+      }
+    });
+    window.addEventListener(
+      "wheel",
+      (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        // Continuous scale; prevent Chromium page-zoom fighting us.
+        e.preventDefault();
+        const delta = e.deltaY === 0 ? 0 : e.deltaY > 0 ? -0.05 : 0.05;
+        if (delta) setClientFontScale(stepClientFontScale(state.remoteFontScale, delta));
+      },
+      { passive: false },
+    );
   }
 
   function setRemoteTtsEnabled(enabled) {
@@ -8877,8 +8986,10 @@
         // <body style="--chat-zoom:…"> by the host; this just applies later edits.
         // The CSS derives both `zoom` and the viewport-height compensation from
         // this one variable, so the composer stays pinned to the bottom.
+        // Client-owned zoom (remote + desktop) ignores host updates so local
+        // keyboard/wheel/slider choice is not clobbered.
         state.hostFontScale = Number(msg.value) || 1;
-        applyChatZoom();
+        if (!CLIENT_OWNS_FONT_SCALE) applyChatZoom();
         break;
       case "focusInput":
         // Send Selection / Send File / @-mention (#43): the host revealed the
@@ -10354,6 +10465,7 @@
     });
   }
   applyChatZoom();
+  wireClientFontScaleShortcuts();
   initMermaid();
   initMathJax();
   claimRemoteTabIdentity((finalToken) => {

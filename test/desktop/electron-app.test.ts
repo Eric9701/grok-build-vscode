@@ -971,16 +971,17 @@ describe("desktop multi-folder rail + isolation", () => {
       { timeout: 30_000 },
     );
 
-    // Switch to B via the rail project name button.
+    // Switch to B via the project header (whole row selects when not focused).
     await page.waitForFunction(
-      (name) => [...document.querySelectorAll(".rail-repo-name")].some((b) => (b.textContent || "").includes(name)),
+      (name) => [...document.querySelectorAll(".rail-repo-label")].some((b) => (b.textContent || "").includes(name)),
       leafB,
       { timeout: 15_000 },
     );
     await page.evaluate((name) => {
-      const btn = [...document.querySelectorAll(".rail-repo-name")]
-        .find((b) => (b.textContent || "").includes(name)) as HTMLButtonElement | undefined;
-      btn?.click();
+      const head = [...document.querySelectorAll(".rail-repo-head")].find((h) =>
+        (h.textContent || "").includes(name),
+      ) as HTMLElement | undefined;
+      head?.click();
     }, leafB);
 
     // After switch: A's user bubble must not be the live conversation.
@@ -1005,9 +1006,10 @@ describe("desktop multi-folder rail + isolation", () => {
 
     // Back to A — B's message must not appear; A's may reload from pool/disk.
     await page.evaluate((name) => {
-      const btn = [...document.querySelectorAll(".rail-repo-name")]
-        .find((b) => (b.textContent || "").includes(name)) as HTMLButtonElement | undefined;
-      btn?.click();
+      const head = [...document.querySelectorAll(".rail-repo-head")].find((h) =>
+        (h.textContent || "").includes(name),
+      ) as HTMLElement | undefined;
+      head?.click();
     }, leafA);
 
     await page.waitForFunction(

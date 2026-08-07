@@ -55,6 +55,13 @@ const api = {
 contextBridge.exposeInMainWorld("acquireVsCodeApi", () => api);
 
 /**
+ * Marks the Electron desktop shell for shared chat.js (font scale, etc.).
+ * Deliberately separate from the file-tree bridge so chat.js never imports
+ * path-listing APIs — only this capability flag.
+ */
+contextBridge.exposeInMainWorld("grokDesktopShell", true);
+
+/**
  * Desktop-only file-tree bridge (not used by chat.js). Paths are re-validated
  * in the main process — the renderer is not trusted for containment.
  */

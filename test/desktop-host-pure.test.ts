@@ -553,6 +553,7 @@ describe("desktop main wiring (source gates)", () => {
     expect(main).toContain("injectFileTreePanelLogged");
     expect(main).toContain("did-finish-load");
     expect(preload).toContain("grokDesktopFileTree");
+    expect(preload).toContain("grokDesktopShell");
     expect(preload).toContain("desk-ft:list");
     // Panel boot must not live in shared chat.js.
     const chatJs = fs.readFileSync(
@@ -561,6 +562,8 @@ describe("desktop main wiring (source gates)", () => {
     );
     expect(chatJs).not.toContain("desk-ft-");
     expect(chatJs).not.toContain("grokDesktopFileTree");
+    // Capability flag only — chat may detect desktop shell for client zoom.
+    expect(chatJs).toContain("grokDesktopShell");
   });
 
   it("does not expose a process-global lastOpen path (cross-project leak)", () => {
@@ -1399,6 +1402,13 @@ describe("file-tree panel assets", () => {
     expect(boot).not.toContain("◧");
     expect(boot).not.toContain("◫");
     expect(boot).toContain("desk-rail-toggle");
+    // Seti file icons (not emoji).
+    expect(boot).toContain("SETI_ICONS");
+    expect(boot).toContain("data-icon");
+    expect(boot).not.toContain("🟨");
+    // Tree reuses rail row CSS variables.
+    expect(FILE_TREE_PANEL_CSS).toContain("--rail-row-font-size");
+    expect(FILE_TREE_PANEL_CSS).toContain("--rail-hover-bg");
     // Does not call into acquireVsCodeApi / Host message bus.
     expect(boot).not.toContain("acquireVsCodeApi");
     expect(boot).not.toMatch(/type:\s*["']openFile["']/);
