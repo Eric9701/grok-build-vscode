@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.2.0 — 2026-08-07
+
+### Added
+
+- **Grok Build Desktop (Community) — a standalone app for Windows and macOS.** The same coding agent, without an editor or a terminal in front of it: open a folder and start. Projects on the left, the conversation in the middle, your files on the right. It is a **pre-release**, and the builds are **not code-signed yet** — Windows SmartScreen and macOS Gatekeeper will warn you the first time. [Download](https://afkpilot.com/desktop).
+- **The desktop file panel edits text files.** Markdown opens as a preview with a **Code** toggle, `Ctrl`/`Cmd+S` saves, and a file with unsaved changes asks before you navigate away or close the window. If the agent changed the file underneath you, the save is refused and you choose: reload its version, or keep yours. Silently winning that race in either direction is how people lose work.
+- **A project that turns off permission prompts now asks you first.** A repository can ship a `.grok/config.toml` setting `permission_mode = "always-approve"`, and it overrides your own setting — so cloning someone's code was enough to remove every prompt between the agent and your machine. Opening such a project now says so and waits for you. Your own global setting is unaffected and stays silent.
+
+### Changed
+
+- **"Continue in a new chat" moved to the conversation's `⋯` menu**, beside Rename and Delete — the things you do *to* a conversation. The composer's settings keep model and effort, which is what they are for. Worktree apply and remove moved with it.
+- **The file tree and the projects rail can be resized** by dragging their edge, on desktop and in the browser.
+
+### Fixed
+
+- **File icons are visible in dark themes.** Around thirty file types drew almost black on a dark background, so `.dockerignore` and friends were nearly invisible.
+- **Markdown files render properly in the desktop panel** — lists, tables and the rest, using the same renderer the conversation uses, rather than a reduced one that handled only links and headings.
+- **The settings button under the composer opens settings on the first click** when the gear menu is already open, instead of only focusing the composer.
+- **A phone's project drawer is full width again.** It had collapsed to about 150px in AFK Pilot.
+- **Closing a project folder asks first when something is still running.** It ends every conversation in that folder and stops the agent, which discarded a turn in progress with no warning.
+- **`--config-json` applies to one run.** It was merged into your real configuration and left there, so a throwaway setting passed once kept applying on every later launch, with nothing on screen explaining why.
+- **Files in one project can no longer be opened from a conversation in another.** Having both projects open was treated as permission to reach either from either.
+
 ## 3.1.0 — 2026-08-06
 
 ### Added
