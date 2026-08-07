@@ -92,6 +92,8 @@ import {
   buildQuickPickHtml,
   DESKTOP_APP_SHORT_NAME,
   parseDialogSubmit,
+  planMessageBoxButtons,
+  resolveMessageBoxChoice,
   selectQuickPickIndex,
 } from "./host-dialogs";
 import { installWindowSecurityLocks } from "./window-security";
@@ -110,6 +112,11 @@ function parentWindow(getWindow: () => BrowserWindow | null): BrowserWindow | un
   return w && !w.isDestroyed() ? w : undefined;
 }
 
+/**
+ * Native message box with VS Code show*Message return semantics:
+ * action label on click, `undefined` on Cancel / Esc / window close.
+ * `modal` is accepted for API parity (Electron dialogs are always modal).
+ */
 async function messageBox(
   getWindow: () => BrowserWindow | null,
   kind: "info" | "warning" | "error",
@@ -118,20 +125,20 @@ async function messageBox(
   modal?: boolean,
 ): Promise<string | undefined> {
   void modal;
+  const plan = planMessageBoxButtons(buttons);
   const opts = {
     type: kind === "info" ? ("info" as const) : kind === "warning" ? ("warning" as const) : ("error" as const),
     message,
-    buttons: buttons.length ? buttons : ["OK"],
-    defaultId: 0,
-    cancelId: buttons.length ? buttons.length - 1 : 0,
+    buttons: plan.dialogButtons,
+    defaultId: plan.defaultId,
+    cancelId: plan.cancelId,
     noLink: true,
   };
   const win = parentWindow(getWindow);
   const result = win
     ? await dialog.showMessageBox(win, opts)
     : await dialog.showMessageBox(opts);
-  if (!buttons.length) return undefined;
-  return buttons[result.response];
+  return resolveMessageBoxChoice(buttons, plan.dialogButtons, result.response);
 }
 
 const hostFs: HostFileSystem = {

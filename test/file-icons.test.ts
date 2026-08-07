@@ -75,30 +75,61 @@ describe("Seti icon assets", () => {
     expect(boot).toMatch(/m9 18 6-6-6-6/); // chevron-right path
     expect(boot).toMatch(/m6 9 6 6 6-6/); // chevron-down path
     expect(boot).not.toMatch(/["']▶["']|["']▼["']|["']▸["']|["']▾["']|["']›["']|["']⌄["']/);
-    // Dirs skip Seti: iconFor returns empty for kind===dir, and makeNode only
-    // attaches data-icon / img for files.
+    // Dirs skip Seti: iconFor returns empty for kind===dir.
     expect(boot).toMatch(/if\s*\(\s*kind\s*===\s*["']dir["']\s*\)\s*return\s*\{\s*id:\s*["']["']/);
-    expect(boot).toMatch(/entry\.kind\s*===\s*["']file["']/);
     expect(boot).toMatch(/data-kind/);
-    // CSS: dir icon column hidden (alignment spacer); file icons larger than rail.
-    expect(FILE_TREE_PANEL_CSS).toMatch(
+    // Single lead column: chevron OR icon, shared 16px box (no file spacer column).
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-lead");
+    expect(FILE_TREE_PANEL_CSS).toMatch(/--desk-ft-lead-size:\s*16px/);
+    // No empty disclosure spacer kept for alignment on dir rows.
+    expect(FILE_TREE_PANEL_CSS).not.toMatch(
       /\.desk-ft-row\[data-kind=["']dir["']\]\s*\.desk-ft-icon\s*\{[^}]*visibility:\s*hidden/s,
     );
-    expect(FILE_TREE_PANEL_CSS).toContain("--desk-ft-file-icon-size");
-    expect(FILE_TREE_PANEL_CSS).toMatch(/--desk-ft-file-icon-size:\s*16px/);
     // Row height unchanged from the rail density pass.
     expect(FILE_TREE_PANEL_CSS).toMatch(
       /\.desk-ft-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height/s,
     );
-    // makeNode only attaches Seti imgs for files — dirs never get data-icon.
-    expect(boot).toMatch(
-      /if\s*\(\s*entry\.kind\s*===\s*["']file["']\s*\)\s*\{[\s\S]*?data-icon/,
+    // Tight lead→label gap (not the rail's 6px).
+    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-row\s*\{[^}]*gap:\s*2px/s);
+    // Chevron fills the lead box (optical parity with 16px Seti icons).
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-twist svg\s*\{[^}]*width:\s*var\(--desk-ft-lead-size/s,
     );
-    // Chevrons are assigned for dirs only (innerHTML SVG).
-    expect(boot).toMatch(/entry\.kind\s*===\s*["']dir["'][\s\S]{0,80}twistGlyph|twistGlyph\(false\)/);
+    // makeNode: one lead child — twist for dirs, icon for files (never both).
+    expect(boot).toMatch(/desk-ft-lead/);
+    expect(boot).toMatch(/classList\.add\(["']desk-ft-twist["']\)/);
+    expect(boot).toMatch(/classList\.add\(["']desk-ft-icon["']\)/);
+    // Only one append of the lead before name — no second glyph column.
+    expect(boot).toMatch(/row\.appendChild\(lead\);\s*row\.appendChild\(name\)/);
+    // File branch attaches data-icon on the lead; dir branch uses twistGlyph.
+    expect(boot).toMatch(
+      /entry\.kind\s*===\s*["']dir["']\s*\)\s*\{[\s\S]*?desk-ft-twist[\s\S]*?twistGlyph/,
+    );
+    expect(boot).toMatch(
+      /else\s*\{[\s\S]*?desk-ft-icon[\s\S]*?data-icon/,
+    );
     // twistGlyph must return the SVG constants (not a triangle/unicode glyph).
     expect(boot).toMatch(
       /function twistGlyph\s*\(\s*open\s*\)\s*\{\s*return open \? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT/,
+    );
+  });
+
+  it("file and folder leads share the same column model and per-level indent", () => {
+    const boot = fileTreePanelBootSource(iconsDir);
+    // Same depth → same paddingLeft formula (per-level indent preserved).
+    expect(boot).toMatch(/const indent = 8 \+ depth \* 12/);
+    expect(boot).toMatch(/row\.style\.paddingLeft = indent \+ ["']px["']/);
+    // Leading glyph is exactly one of twist|icon under .desk-ft-lead — not
+    // twist+icon (which would push files right by a chevron width).
+    expect(boot).toMatch(/lead\.className = ["']desk-ft-lead["']/);
+    expect(boot).not.toMatch(/appendChild\(twist\);\s*row\.appendChild\(icon\)/);
+    // Shared lead box width for both glyphs.
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-lead\s*\{[^}]*--desk-ft-lead-size:\s*16px/s,
+    );
+    // Row min-height still the rail density token (must not grow).
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*30px\)/s,
     );
   });
 });

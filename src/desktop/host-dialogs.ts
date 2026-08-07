@@ -213,6 +213,83 @@ export function parseDialogSubmit(raw: unknown):
   return null;
 }
 
+// ── Native message-box contract (VS Code show*Message parity) ─────────────
+//
+// VS Code returns `undefined` when a modal is dismissed / Cancelled, and modal
+// dialogs get an implicit Cancel. Electron's showMessageBox returns cancelId
+// as `response` on Esc/window-close — so cancelId must never point at an
+// action label, or a single-button confirmation becomes un-cancellable
+// (Esc "chooses" the only action).
+
+/** Label VS Code adds implicitly on modal confirmations. */
+export const MESSAGE_BOX_CANCEL_LABEL = "Cancel";
+
+export interface MessageBoxButtonPlan {
+  /** Buttons passed to Electron `dialog.showMessageBox`. */
+  dialogButtons: string[];
+  /** Enter activates the first action (or OK). */
+  defaultId: number;
+  /** Esc / window close — always a non-action target when actions exist. */
+  cancelId: number;
+}
+
+/**
+ * Build the Electron button row for a host `show*Message` call.
+ *
+ * - No action buttons → `["OK"]` (informational; choice is always undefined).
+ * - Action buttons → append Cancel when missing so Esc/dismiss cannot map to
+ *   an action. Modal callers need this for VS Code parity; non-modal Electron
+ *   message boxes need it too (there is no toast dismiss path).
+ */
+export function planMessageBoxButtons(
+  actionButtons: readonly string[],
+): MessageBoxButtonPlan {
+  if (actionButtons.length === 0) {
+    return { dialogButtons: ["OK"], defaultId: 0, cancelId: 0 };
+  }
+  const dialogButtons = [...actionButtons];
+  if (!dialogButtons.includes(MESSAGE_BOX_CANCEL_LABEL)) {
+    dialogButtons.push(MESSAGE_BOX_CANCEL_LABEL);
+  }
+  // Prefer the last Cancel so an explicit trailing Cancel from the caller wins.
+  let cancelId = dialogButtons.length - 1;
+  for (let i = dialogButtons.length - 1; i >= 0; i--) {
+    if (dialogButtons[i] === MESSAGE_BOX_CANCEL_LABEL) {
+      cancelId = i;
+      break;
+    }
+  }
+  return { dialogButtons, defaultId: 0, cancelId };
+}
+
+/**
+ * Map an Electron `response` index to the VS Code return value.
+ *
+ * Returns the action label only when the user chose a caller-supplied button.
+ * Cancel (implicit or window dismiss via cancelId), OK-only notices, and
+ * out-of-range indices all yield `undefined`.
+ */
+export function resolveMessageBoxChoice(
+  actionButtons: readonly string[],
+  dialogButtons: readonly string[],
+  response: number,
+): string | undefined {
+  if (actionButtons.length === 0) return undefined;
+  if (!Number.isInteger(response) || response < 0 || response >= dialogButtons.length) {
+    return undefined;
+  }
+  const chosen = dialogButtons[response];
+  // Implicit Cancel we appended is not a caller action.
+  if (
+    chosen === MESSAGE_BOX_CANCEL_LABEL &&
+    !actionButtons.includes(MESSAGE_BOX_CANCEL_LABEL)
+  ) {
+    return undefined;
+  }
+  if (!actionButtons.includes(chosen)) return undefined;
+  return chosen;
+}
+
 /** Public repo linked from the Help menu — this repo only. */
 export const DESKTOP_PUBLIC_REPO_URL = "https://github.com/phuryn/grok-build-vscode";
 

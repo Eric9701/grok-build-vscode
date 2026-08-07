@@ -104,7 +104,10 @@ import {
   buildQuickPickHtml,
   DESKTOP_APP_FULL_NAME,
   DESKTOP_PUBLIC_REPO_URL,
+  MESSAGE_BOX_CANCEL_LABEL,
   parseDialogSubmit,
+  planMessageBoxButtons,
+  resolveMessageBoxChoice,
   selectQuickPickIndex,
 } from "../src/desktop/host-dialogs";
 import {
@@ -1144,7 +1147,93 @@ describe("desktop quick pick and input dialogs", () => {
       value: "hello",
     });
   });
+});
 
+/**
+ * Behavioural contract for native message boxes (Sign out, unlink-style
+ * single-action modals, etc.). Mirrors VS Code showWarningMessage: dismiss /
+ * Cancel → undefined; action click → label. A regression here re-enables the
+ * "Esc signs you out" bug (cancelId mapped to the only action button).
+ */
+describe("desktop messageBox cancel / dismiss contract", () => {
+  it("single-action confirmation is cancellable (Cancel + cancelId)", () => {
+    const actions = ["Sign Out"];
+    const plan = planMessageBoxButtons(actions);
+    expect(plan.dialogButtons).toEqual(["Sign Out", MESSAGE_BOX_CANCEL_LABEL]);
+    expect(plan.defaultId).toBe(0);
+    expect(plan.cancelId).toBe(1);
+    expect(plan.dialogButtons[plan.cancelId]).toBe(MESSAGE_BOX_CANCEL_LABEL);
+  });
+
+  it("dismissed modal confirmation returns undefined — caller does not act", () => {
+    const actions = ["Sign Out"];
+    const plan = planMessageBoxButtons(actions);
+    // Electron returns cancelId when Esc / window-close dismisses the dialog.
+    const choice = resolveMessageBoxChoice(
+      actions,
+      plan.dialogButtons,
+      plan.cancelId,
+    );
+    expect(choice).toBeUndefined();
+    // Same gate sidebar.logout / apply-worktree / etc. use:
+    expect(choice === "Sign Out").toBe(false);
+  });
+
+  it("choosing the action still returns its label", () => {
+    const actions = ["Sign Out"];
+    const plan = planMessageBoxButtons(actions);
+    const choice = resolveMessageBoxChoice(actions, plan.dialogButtons, 0);
+    expect(choice).toBe("Sign Out");
+    expect(choice === "Sign Out").toBe(true);
+  });
+
+  it("covers every single-action modal shape used by the sidebar", () => {
+    // Audit: logout, apply worktree, remove worktree, CLI update-while-busy.
+    for (const label of ["Sign Out", "Apply", "Remove", "Update Anyway"]) {
+      const plan = planMessageBoxButtons([label]);
+      expect(resolveMessageBoxChoice([label], plan.dialogButtons, plan.cancelId)).toBeUndefined();
+      expect(resolveMessageBoxChoice([label], plan.dialogButtons, 0)).toBe(label);
+    }
+  });
+
+  it("OK-only notices return undefined (no false action label)", () => {
+    const plan = planMessageBoxButtons([]);
+    expect(plan.dialogButtons).toEqual(["OK"]);
+    expect(resolveMessageBoxChoice([], plan.dialogButtons, 0)).toBeUndefined();
+  });
+
+  it("does not double-append Cancel when the caller already offered it", () => {
+    const actions = ["Discard", "Cancel"];
+    const plan = planMessageBoxButtons(actions);
+    expect(plan.dialogButtons).toEqual(["Discard", "Cancel"]);
+    expect(plan.cancelId).toBe(1);
+    // Explicit Cancel is a real choice the caller may branch on.
+    expect(resolveMessageBoxChoice(actions, plan.dialogButtons, 1)).toBe("Cancel");
+    expect(resolveMessageBoxChoice(actions, plan.dialogButtons, 0)).toBe("Discard");
+  });
+
+  it("source gate: electron-host wires plan + resolve (not raw buttons[response])", () => {
+    const src = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    expect(src).toContain("planMessageBoxButtons");
+    expect(src).toContain("resolveMessageBoxChoice");
+    // The old bug: cancelId on the last action + return buttons[response].
+    expect(src).not.toMatch(
+      /cancelId:\s*buttons\.length\s*\?\s*buttons\.length\s*-\s*1/,
+    );
+    expect(src).not.toMatch(/return buttons\[result\.response\]/);
+  });
+});
+
+describe("desktop quick pick (continued)", () => {
   it("source gate: electron-host no longer cancels large quick picks", () => {
     const src = fs.readFileSync(
       path.join(

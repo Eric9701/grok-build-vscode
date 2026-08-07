@@ -196,7 +196,8 @@ body.desk-ft-viewing .desk-ft-body {
 .desk-ft-row {
   display: flex;
   align-items: center;
-  gap: var(--rail-row-gap, 6px);
+  /* Tight lead→label gap: chevron/icon + name read as one unit (not rail's 6px). */
+  gap: 2px;
   min-height: var(--rail-row-min-height, 30px);
   padding: 4px 4px 4px 0;
   cursor: default;
@@ -220,47 +221,42 @@ body.desk-ft-viewing .desk-ft-body {
   outline: 2px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: -1px;
 }
-/* Disclosure chevron column (dirs only). File-type icons use a separate
-   column so chevrons and Seti glyphs line up down the tree. */
-.desk-ft-twist {
-  flex: 0 0 16px;
-  width: 16px;
-  height: 16px;
+/* Single leading glyph column (Codex / VS Code): dir chevron OR file icon —
+   never both, never an empty disclosure spacer beside the icon. Same 16px
+   box so root files and folders share one left edge. */
+.desk-ft-lead {
+  --desk-ft-lead-size: 16px;
+  flex: 0 0 var(--desk-ft-lead-size);
+  width: var(--desk-ft-lead-size);
+  height: var(--desk-ft-lead-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
   line-height: 1;
+  flex-shrink: 0;
+}
+/* Disclosure chevron — fill the lead box; stroke is slightly heavier than
+   default Lucide so a line glyph matches a filled Seti icon's visual weight. */
+.desk-ft-twist {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
 }
 .desk-ft-twist svg {
-  width: 12px;
-  height: 12px;
+  width: var(--desk-ft-lead-size, 16px);
+  height: var(--desk-ft-lead-size, 16px);
   display: block;
+  /* Optical weight vs filled 16px Seti icons (stroke paints inside the box). */
+  stroke-width: 2.5;
 }
-/* File icons only — dirs render an empty spacer so the name column stays aligned. */
+/* File Seti icon in the same lead column as the folder chevron. */
 .desk-ft-icon {
-  /* Larger than rail (14px) for optical parity with former folder glyphs;
-     row min-height stays --rail-row-min-height (30px). */
-  --desk-ft-file-icon-size: 16px;
-  flex: 0 0 var(--desk-ft-file-icon-size);
-  width: var(--desk-ft-file-icon-size);
-  height: var(--desk-ft-file-icon-size);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   opacity: 0.95;
 }
 .desk-ft-icon img,
 .desk-ft-icon-img {
-  width: var(--desk-ft-file-icon-size);
-  height: var(--desk-ft-file-icon-size);
+  width: var(--desk-ft-lead-size, 16px);
+  height: var(--desk-ft-lead-size, 16px);
   display: block;
   object-fit: contain;
-}
-/* Directory rows: no folder glyph — chevron alone is the disclosure control. */
-.desk-ft-row[data-kind="dir"] .desk-ft-icon {
-  /* Keep the column for alignment with file icons; leave empty. */
-  visibility: hidden;
 }
 .desk-ft-name {
   flex: 1 1 auto;
@@ -565,8 +561,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   const ICON_PANEL_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
   const ICON_PANEL_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>';
   // Lucide chevron-right / chevron-down — VS Code / Codex disclosure shape (not triangles).
-  const ICON_CHEVRON_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
-  const ICON_CHEVRON_DOWN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  // stroke-width 2.5 + 16px CSS box so the line glyph matches Seti icon weight.
+  const ICON_CHEVRON_RIGHT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+  const ICON_CHEVRON_DOWN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
   // Lucide arrow-left for breadcrumb Back.
   const ICON_ARROW_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>';
 
@@ -1100,25 +1097,25 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     row.style.paddingLeft = indent + "px";
     row.title = entry.relPath;
 
-    // Column 1: disclosure chevron (dirs) or empty (files) — fixed width.
-    const twist = document.createElement("span");
-    twist.className = "desk-ft-twist";
-    twist.setAttribute("aria-hidden", "true");
-    if (entry.kind === "dir") twist.innerHTML = twistGlyph(false);
-
-    // Column 2: Seti file icon (files) or empty spacer (dirs) — fixed width.
-    const icon = document.createElement("span");
-    icon.className = "desk-ft-icon";
-    if (entry.kind === "file") {
+    // Single lead column (Codex / VS Code): chevron for dirs, Seti icon for
+    // files — same indent box, no empty disclosure spacer on file rows.
+    const lead = document.createElement("span");
+    lead.className = "desk-ft-lead";
+    lead.setAttribute("aria-hidden", "true");
+    if (entry.kind === "dir") {
+      lead.classList.add("desk-ft-twist");
+      lead.innerHTML = twistGlyph(false);
+    } else {
+      lead.classList.add("desk-ft-icon");
       const ic = iconFor(entry.kind, entry.name);
-      icon.setAttribute("data-icon", ic.id);
+      lead.setAttribute("data-icon", ic.id);
       if (ic.src) {
         const img = document.createElement("img");
         img.className = "desk-ft-icon-img";
         img.src = ic.src;
         img.alt = "";
         img.draggable = false;
-        icon.appendChild(img);
+        lead.appendChild(img);
       }
     }
 
@@ -1126,8 +1123,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     name.className = "desk-ft-name";
     name.textContent = entry.name;
 
-    row.appendChild(twist);
-    row.appendChild(icon);
+    row.appendChild(lead);
     row.appendChild(name);
     node.appendChild(row);
 
@@ -1138,7 +1134,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       let loaded = false;
       row.addEventListener("click", async () => {
         const open = node.classList.toggle("desk-ft-open");
-        twist.innerHTML = twistGlyph(open);
+        lead.innerHTML = twistGlyph(open);
         if (open && !loaded) {
           loaded = true;
           await fillDir(kids, entry.relPath);
