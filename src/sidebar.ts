@@ -4387,6 +4387,11 @@ See design doc for the full state machine diagram.`;
       case "ready":
         this.postInitialState();
         this.postRepoCatalog();
+        // Selected project on the desktop rail reads `sessions`, not `repoSessions`
+        // (previews skip the selection). History is disk-only — do not wait for
+        // the agent handshake or the rail stays on "No sessions yet" forever
+        // when startSession is slow, fails, or never reaches a caller that posts.
+        this.postSessionsList();
         break;
       case "remotePreferences":
         if (origin === "remote" && clientId) {
@@ -7626,7 +7631,11 @@ See design doc for the full state machine diagram.`;
     // Sweep abandoned empty sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep). This is the run that
     // collects what the last window left behind when it closed without a prompt.
+    // Re-post the session list after start so a live empty "New session" row and
+    // any id assigned by session/new land on the selected project's rail (ready
+    // already pushed the disk list before the agent was up).
     void this.startSession().then(() => {
+      this.postSessionsList();
       this.sweepEmptySessions();
     });
   }

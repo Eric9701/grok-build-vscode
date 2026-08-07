@@ -139,6 +139,26 @@ describe("projects rail", () => {
     expect(repoNames(doc)[0]).toBe("alpha");
   });
 
+  // Cold start used to leave the selected project on "No sessions yet" while
+  // sibling `repoSessions` previews filled in — because `railSelectedRows`
+  // starts empty and was treated as a known-empty list. Empty + unknown must
+  // read as loading; empty only after an unfiltered `sessions` frame is real.
+  it("shows Loading for the selected project until sessions arrives, not No sessions yet", () => {
+    const { doc, window } = boot("/work/alpha");
+    const notes = () => {
+      const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return [...alpha.querySelectorAll(".rail-note")].map((e) => e.textContent);
+    };
+    expect(notes()).toContain("Loading…");
+    expect(notes()).not.toContain("No sessions yet");
+
+    dispatch(window, sessionsFrame([]));
+    expect(notes()).toContain("No sessions yet");
+
+    dispatch(window, sessionsFrame([row("a1", "/work/alpha", "real history", 9)]));
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["real history"]);
+  });
+
   // Two empty projects tie on activity, and the tie used to break on the
   // catalog's own stamp — the session directory's mtime, which CLEARING a
   // project touches. So the just-emptied one still climbed above its equally

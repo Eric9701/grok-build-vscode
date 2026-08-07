@@ -2371,6 +2371,37 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     }
   });
 
+  it("ready posts the selected project's sessions list (desktop rail cold start)", () => {
+    // The projects rail reads the SELECTED repo from the live `sessions` frame,
+    // not from `listRepoSessions` (previews deliberately skip the selection).
+    // A host that only posts `repos` + sibling previews leaves the open project
+    // on "No sessions yet" forever — even when indexSessions would find dozens
+    // of conversations (including after drive-letter case-alias merge).
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const readyStart = sidebar.indexOf('case "ready":');
+    expect(readyStart).toBeGreaterThan(0);
+    const readyEnd = sidebar.indexOf("case \"remotePreferences\"", readyStart);
+    const readyBody = sidebar.slice(readyStart, readyEnd > readyStart ? readyEnd : readyStart + 400);
+    expect(readyBody).toContain("postRepoCatalog");
+    expect(readyBody).toContain("postSessionsList");
+    // Order: catalog first (sets selectedRepoCwd), then the list for that selection.
+    expect(readyBody.indexOf("postRepoCatalog")).toBeLessThan(readyBody.indexOf("postSessionsList"));
+    // After agent start, re-post so a live empty "New session" row appears.
+    const initialStart = sidebar.indexOf("private postInitialState(");
+    const initialEnd = sidebar.indexOf("private rehydrateWebviewFromFocused(", initialStart);
+    const initialBody = sidebar.slice(initialStart, initialEnd);
+    expect(initialBody).toContain("startSession()");
+    expect(initialBody).toContain("postSessionsList()");
+    expect(initialBody).toContain("sweepEmptySessions()");
+    // postSessionsList must run on the startSession success path (not only on ready).
+    const thenIdx = initialBody.indexOf("startSession().then");
+    expect(thenIdx).toBeGreaterThan(0);
+    expect(initialBody.indexOf("postSessionsList()", thenIdx)).toBeGreaterThan(thenIdx);
+  });
+
   it("local listRepoSessions/selectRepo refuse non-open roots; setActive abort is mandatory", () => {
     const sidebar = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),

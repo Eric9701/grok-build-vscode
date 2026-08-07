@@ -957,3 +957,114 @@ describe("desktop multi-folder rail + isolation", () => {
     expect(transcript).not.toContain(msgB);
   });
 });
+
+/**
+ * Windows case-alias regression (the accredia class of bug):
+ * history lives under `c:\…` catalog leaf while the open folder is `C:\…`.
+ * The selected project's rail must list those sessions on cold start — not
+ * "No sessions yet". Requires the ready-path `postSessionsList` plus
+ * `sessionCatalogDirs` alias merge.
+ */
+describe("desktop rail: case-mismatched session catalog (selected project)", () => {
+  let app: ElectronApplication;
+  let page: Page;
+  let workspace: string;
+  let userData: string;
+  let grokHome: string;
+  const sessionTitle = "case-alias-history-row";
+
+  beforeAll(async () => {
+    if (process.platform !== "win32") return;
+    if (!fs.existsSync(mainJs)) {
+      throw new Error(`Missing ${mainJs} — run npm run compile before test:desktop`);
+    }
+    try { fs.chmodSync(fixtureCli(), 0o755); } catch { /* */ }
+
+    // Open folder with uppercase drive letter (what the host workspace uses).
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "grok-case-ws-"));
+    // Force a path that starts with uppercase drive if possible.
+    workspace = path.resolve(workspace);
+    if (workspace.length >= 2 && workspace[1] === ":") {
+      workspace = workspace[0].toUpperCase() + workspace.slice(1);
+    }
+    fs.writeFileSync(path.join(workspace, "readme.txt"), "case alias fixture\n");
+
+    grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-case-home-"));
+    userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-case-ud-"));
+
+    // Plant history under the *other* drive-letter casing (CLI write path).
+    const lowerCwd =
+      workspace.length >= 2 && workspace[1] === ":"
+        ? workspace[0].toLowerCase() + workspace.slice(1)
+        : workspace;
+    const leaf = encodeURIComponent(lowerCwd);
+    const sessId = "019fd999-case-alias-sess01";
+    const sessDir = path.join(grokHome, "sessions", leaf, sessId);
+    fs.mkdirSync(sessDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessDir, "summary.json"),
+      JSON.stringify({
+        info: { id: sessId, cwd: lowerCwd },
+        session_summary: sessionTitle,
+        updated_at: new Date().toISOString(),
+        num_messages: 4,
+      }),
+      "utf8",
+    );
+
+    fs.writeFileSync(
+      path.join(userData, "config.json"),
+      JSON.stringify({
+        workspaceRoot: workspace,
+        workspaceRoots: [workspace],
+        discoverySeedCompleted: true,
+        config: { "grok.cliPath": fixtureCli() },
+      }, null, 2),
+      "utf8",
+    );
+
+    app = await electron.launch({
+      executablePath: electronExe,
+      args: [
+        mainJs,
+        `--workspace=${workspace}`,
+        `--user-data-dir=${userData}`,
+      ],
+      env: {
+        ...stripElectronRunAsNode(process.env),
+        GROK_HOME: grokHome,
+      },
+      timeout: 60_000,
+    });
+    page = await app.firstWindow({ timeout: 60_000 });
+    await page.waitForSelector("#input", { timeout: 45_000 });
+    await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 }).catch(() => {});
+  }, 90_000);
+
+  afterAll(async () => {
+    if (process.platform !== "win32") return;
+    try { await app?.close(); } catch { /* */ }
+    for (const p of [workspace, userData, grokHome]) {
+      if (!p) continue;
+      try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* */ }
+    }
+  });
+
+  it("selected project rail lists sessions stored under the other drive-letter casing", async () => {
+    if (process.platform !== "win32") return;
+    // Wait until the host has posted sessions (ready → postSessionsList).
+    await page.waitForFunction(
+      (title) => {
+        const rail = document.querySelector("#projects-rail");
+        if (!rail) return false;
+        const text = rail.textContent || "";
+        return text.includes(title) && !text.includes("No sessions yet");
+      },
+      sessionTitle,
+      { timeout: 45_000 },
+    );
+    const railText = await page.locator("#projects-rail").innerText();
+    expect(railText).toContain(sessionTitle);
+    expect(railText).not.toMatch(/No sessions yet/);
+  });
+});

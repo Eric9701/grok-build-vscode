@@ -4078,6 +4078,21 @@
       return body;
     }
 
+    // Selected project: empty `railSelectedRows` before the first unfiltered
+    // `sessions` frame means "list not received yet", not "zero conversations".
+    // Without this the rail permanently said "No sessions yet" when the host
+    // delayed or omitted that frame (desktop cold start used to only push
+    // sibling `repoSessions` previews).
+    if (
+      sameCwd(repo.cwd, state.selectedRepoCwd) &&
+      !rows.entries.length &&
+      !state.railSelectedRowsKnown &&
+      !state.railSessionsStale
+    ) {
+      body.appendChild(railNote("Loading…"));
+      return body;
+    }
+
     // A search answers itself: showing three of five matches behind a "Show
     // more" would hide the very rows the query asked for. Matching by project
     // name instead means the whole project matched, so its list stays as it was.
