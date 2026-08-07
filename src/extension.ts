@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { GrokSidebar } from "./sidebar";
+import { createVsCodeHost, createVsCodeHostContext, fromVsCodeUri, wrapWebviewView } from "./vscode-host";
 
 /** What `activate` hands back through `extension.exports`. Empty in every
  *  released build — the test seam below is populated only under
@@ -10,12 +11,22 @@ export interface GrokExtensionApi {
 
 export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
   const output = vscode.window.createOutputChannel("Grok");
-  const sidebar = new GrokSidebar(context, output);
+  const host = createVsCodeHost(output);
+  const hostContext = createVsCodeHostContext(context);
+  const sidebar = new GrokSidebar(hostContext, host);
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(GrokSidebar.viewId, sidebar, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
+    vscode.window.registerWebviewViewProvider(
+      GrokSidebar.viewId,
+      {
+        resolveWebviewView(view) {
+          sidebar.resolveWebviewView(wrapWebviewView(view));
+        },
+      },
+      {
+        webviewOptions: { retainContextWhenHidden: true },
+      },
+    ),
     output,
     { dispose: () => sidebar.dispose() },
     vscode.commands.registerCommand("grok.open", () =>
@@ -39,7 +50,12 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
     ),
     vscode.commands.registerCommand(
       "grok.sendFile",
-      (uri?: vscode.Uri) => sidebar.insertActiveMention({ uri, pickIfMissing: true }),
+      // Pass the explorer Uri intact — flattening to fsPath drops remote authority.
+      (uri?: vscode.Uri) =>
+        sidebar.insertActiveMention({
+          uri: uri ? fromVsCodeUri(uri) : undefined,
+          pickIfMissing: true,
+        }),
     ),
     vscode.commands.registerCommand("grok.insertAtMention", () =>
       sidebar.insertActiveMention(),

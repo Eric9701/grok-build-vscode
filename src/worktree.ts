@@ -296,20 +296,104 @@ export function worktreeCwdsForRepo(opts: {
  * A worktree list RPC is scoped to the repo of the ACP client that served it.
  * Replace that repo's rows without erasing registrations learned from clients
  * rooted in other repositories.
+ *
+ * Refreshed rows are filtered through {@link filterWorktreesForSourceRepo} so a
+ * malformed or compromised list cannot inject arbitrary paths into the cache
+ * (and thus into desktop auth roots).
  */
 export function mergeWorktreeRefresh(
   current: WorktreeRecord[],
   sourceRepo: string,
   refreshed: WorktreeRecord[],
+  opts?: { sourceGitRoot?: string },
 ): WorktreeRecord[] {
-  const refreshedPaths = new Set(refreshed.map((record) => normalizeFsPath(record.path)));
+  const trusted = filterWorktreesForSourceRepo(refreshed, sourceRepo, opts);
+  const refreshedPaths = new Set(trusted.map((record) => normalizeFsPath(record.path)));
   return [
     ...current.filter((record) =>
       !pathsEqual(record.sourceRepo, sourceRepo) &&
       !refreshedPaths.has(normalizeFsPath(record.path))
     ),
-    ...refreshed,
+    ...trusted,
   ];
+}
+
+/**
+ * Keep only worktree records that claim the requested repository as their
+ * source. Records without `sourceRepo` are refused — they cannot be attributed
+ * and must not widen auth roots.
+ */
+export function filterWorktreesForSourceRepo(
+  records: readonly WorktreeRecord[],
+  sourceRepo: string,
+  opts?: { sourceGitRoot?: string },
+): WorktreeRecord[] {
+  if (!sourceRepo) return [];
+  const roots = [sourceRepo];
+  if (opts?.sourceGitRoot && !pathsEqual(opts.sourceGitRoot, sourceRepo)) {
+    roots.push(opts.sourceGitRoot);
+  }
+  return records.filter((r) => {
+    if (!r?.path || typeof r.path !== "string") return false;
+    if (!r.sourceRepo) return false;
+    return roots.some((root) => pathsEqual(r.sourceRepo, root));
+  });
+}
+
+/**
+ * Whether an ACP-returned worktree path may enter the cache / session cwd /
+ * auth roots. The path must appear in an authoritative worktree list for the
+ * requested repository (from `git worktree list` or `_x.ai/git/worktree/list`).
+ *
+ * When `claimedSourceGitRoot` is non-empty it must match the source repo (or
+ * its git root). Empty claimed root is allowed (older payloads) as long as the
+ * path is listed.
+ */
+export function worktreePathAuthorizedForRepo(opts: {
+  worktreePath: string;
+  sourceRepo: string;
+  listedWorktreePaths: readonly string[];
+  claimedSourceGitRoot?: string;
+  sourceGitRoot?: string;
+  sameCwd?: (a: string, b: string) => boolean;
+}): boolean {
+  const same = opts.sameCwd ?? pathsEqual;
+  const wt = opts.worktreePath;
+  const source = opts.sourceRepo;
+  if (!wt || typeof wt !== "string" || !source) return false;
+  if (!opts.listedWorktreePaths.some((p) => same(p, wt))) return false;
+  // The main checkout is listed too — create must return a *different* path.
+  if (same(wt, source)) return false;
+  if (opts.sourceGitRoot && same(wt, opts.sourceGitRoot)) return false;
+  const claimed = opts.claimedSourceGitRoot?.trim();
+  if (claimed) {
+    const ok =
+      same(claimed, source) ||
+      (!!opts.sourceGitRoot && same(claimed, opts.sourceGitRoot));
+    if (!ok) return false;
+  }
+  return true;
+}
+
+/**
+ * Parse `git worktree list --porcelain` stdout into absolute worktree paths.
+ * Pure against the text (no spawn).
+ */
+export function parseGitWorktreeListPorcelain(stdout: string): string[] {
+  if (!stdout || typeof stdout !== "string") return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    // porcelain: "worktree /abs/path"
+    if (!line.startsWith("worktree ")) continue;
+    const p = line.slice("worktree ".length).trim();
+    if (!p) continue;
+    const key = normalizeFsPath(p);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
 }
 
 function belongsToRepo(sourceGitRoot: string | undefined, repoGitRoot: string | undefined): boolean {

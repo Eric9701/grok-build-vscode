@@ -59,6 +59,9 @@ export const DISK_KEYS: Readonly<Record<string, string>> = {
   "grok.repoPins": "repo-pins.json",
   "grok.repoArchives": "repo-archives.json",
   "grok.installId": "install-id.json",
+  // Global progressive-disclosure preference ("knowledge" | "coding"). String
+  // scalar like installId — not a record map. See src/app-purpose.ts.
+  "grok.appPurpose": "app-purpose.json",
 };
 
 export class PersistedState {
@@ -87,7 +90,11 @@ export class PersistedState {
   }
 
   private validValue(key: string, value: unknown): boolean {
-    if (key === "grok.installId") return typeof value === "string";
+    // Scalar string keys (install id + app purpose). Everything else is a
+    // record-of-records map (session meta, pins, archives).
+    if (key === "grok.installId" || key === "grok.appPurpose") {
+      return typeof value === "string";
+    }
     return isRecordMap(value);
   }
 

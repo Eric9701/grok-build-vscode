@@ -1313,7 +1313,21 @@ describe("send button startup state (spinner by default until the session is rea
 describe("gear menu — Other group + About / Config & debug sub-views", () => {
   function boot() {
     const h = bootWebview();
-    dispatch(h.window, { type: "initialState", useCtrlEnter: false, effort: "", cwd: "/x", extVersion: "1.4.0" });
+    dispatch(h.window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      effort: "",
+      cwd: "/x",
+      extVersion: "1.4.0",
+      // VS Code host affordances — gear gates logs / Move view on these.
+      capabilities: {
+        uploadFile: true,
+        remoteVoice: true,
+        deleteActiveSession: true,
+        relocateView: true,
+        showOutput: true,
+      },
+    });
     dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });
     dispatch(h.window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
     h.posted.length = 0;
@@ -1433,8 +1447,9 @@ describe("thinking traces toggle (#26)", () => {
     expect(doc.body.classList.contains("thinking-hidden")).toBe(true);
   });
 
-  it("toggles the body class live on a showThinking message", () => {
+  it("toggles the body class live on a showThinking message (Coding purpose)", () => {
     const { window, doc } = bootWebview();
+    dispatch(window, { type: "appPurpose", value: "coding" });
     dispatch(window, { type: "showThinking", value: true });
     expect(doc.body.classList.contains("thinking-hidden")).toBe(false);
     dispatch(window, { type: "showThinking", value: false });
@@ -1452,8 +1467,9 @@ describe("thinking traces toggle (#26)", () => {
     expect(doc.querySelector(".msg.thinking")).not.toBeNull();
   });
 
-  it("shows no stand-in when traces are visible", () => {
+  it("shows no stand-in when traces are visible (Coding purpose)", () => {
     const { window, doc } = bootWebview();
+    dispatch(window, { type: "appPurpose", value: "coding" });
     dispatch(window, { type: "showThinking", value: true });
     dispatch(window, { type: "thoughtChunk", text: "weighing options…" });
     expect(doc.querySelector(".thinking-indicator")).toBeNull();
@@ -1469,8 +1485,9 @@ describe("thinking traces toggle (#26)", () => {
     expect(doc.querySelector(".thinking-indicator")).toBeNull();
   });
 
-  it("exposes a Show thinking traces switch in Config & debug that posts setShowThinking and flips the class", () => {
+  it("exposes a Show thinking traces switch in Config & debug under Coding", () => {
     const { window, posted, doc } = bootWebview();
+    dispatch(window, { type: "appPurpose", value: "coding" });
     dispatch(window, { type: "showThinking", value: false });
     expect(doc.body.classList.contains("thinking-hidden")).toBe(true);
     click(window, $(doc, "gear-btn"));
@@ -1709,41 +1726,37 @@ describe("thinking traces toggle (#26)", () => {
   });
 });
 
-describe("gear menu — worktree/rewind gating (#65)", () => {
+describe("gear menu — session continue + worktree gating", () => {
   const gearItems = (doc: Document) =>
     [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].map((el) => el.textContent || "");
   const has = (doc: Document, label: string) => gearItems(doc).some((t) => t.includes(label));
 
-  it("non-worktree shows Fork + New worktree; worktree shows Fork + Apply/Remove and hides only New worktree", () => {
+  it("shows Continue in a new chat; worktree sessions also show Apply/Remove", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
     click(window, $(doc, "gear-btn"));
-    expect(has(doc, "Fork conversation")).toBe(true);
-    expect(has(doc, "New worktree session")).toBe(true);
+    expect(has(doc, "Continue in a new chat")).toBe(true);
+    // Old three-entry menu is gone.
+    expect(has(doc, "Fork conversation")).toBe(false);
+    expect(has(doc, "New worktree session")).toBe(false);
     expect(has(doc, "Apply worktree")).toBe(false);
     expect(has(doc, "Remove worktree")).toBe(false);
     click(window, $(doc, "gear-btn")); // close
 
     dispatch(window, { type: "session", sessionId: "s2", models: [], currentModelId: "grok-build", worktree: true });
     click(window, $(doc, "gear-btn")); // re-open
+    expect(has(doc, "Continue in a new chat")).toBe(true);
     expect(has(doc, "Apply worktree")).toBe(true);
     expect(has(doc, "Remove worktree")).toBe(true);
-    // Fork stays (a shared-checkout branch, like the Dashboard's parallel sessions);
-    // only New worktree is blocked (no nesting).
-    expect(has(doc, "Fork conversation")).toBe(true);
-    expect(has(doc, "New worktree session")).toBe(false);
   });
 
-  it("hides Rewind conversation on an empty session, shows it once a user message exists", () => {
+  it("never shows gear Rewind — rewind is per-message only", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
+    dispatch(window, { type: "userMessage", text: "hello", chips: [] });
     click(window, $(doc, "gear-btn"));
     expect(has(doc, "Rewind conversation")).toBe(false);
-    click(window, $(doc, "gear-btn")); // close
-
-    dispatch(window, { type: "userMessage", text: "hello", chips: [] });
-    click(window, $(doc, "gear-btn")); // re-open
-    expect(has(doc, "Rewind conversation")).toBe(true);
+    expect(has(doc, "Continue in a new chat")).toBe(true);
   });
 });
 
@@ -2239,8 +2252,13 @@ describe("gear entry: Move view (Config & debug)", () => {
       el.textContent!.includes(label),
     ) as HTMLElement | undefined;
 
-  it("offers the three destinations, each posting moveView with its location", () => {
+  it("offers the three destinations when the host advertises relocateView", () => {
     const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { uploadFile: true, remoteVoice: true, relocateView: true, showOutput: true },
+    });
     const destinations: Array<[string, string]> = [
       ["To Secondary Side Bar", "auxiliarybar"],
       ["To Primary Side Bar", "sidebar"],
@@ -2253,6 +2271,54 @@ describe("gear entry: Move view (Config & debug)", () => {
       click(window, item!);
       expect(posted).toContainEqual({ type: "moveView", location });
     }
+  });
+
+  it("still shows Move view + Show logs when the host sends no capability flags (v3.1.0)", () => {
+    // Compatibility contract: the web client is always new; the extension may
+    // be an older install that never emitted relocateView/showOutput. Those
+    // gear items existed ungated before the flags — absent must mean supported.
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      // No relocateView / showOutput — mirrors released v3.1.0 hosts.
+      capabilities: { uploadFile: true, remoteVoice: true },
+    });
+    openConfigDebug(window, doc);
+    expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
+    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeTruthy();
+    expect(itemByLabel(doc, "To Primary Side Bar")).toBeTruthy();
+    expect(itemByLabel(doc, "To Panel")).toBeTruthy();
+    click(window, itemByLabel(doc, "Show extension logs")!);
+    expect(posted).toContainEqual({ type: "showLogs" });
+  });
+
+  it("still shows Move view + Show logs when capabilities is omitted entirely", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      // No capabilities object at all (hostCaps stays {}).
+    });
+    openConfigDebug(window, doc);
+    expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
+    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeTruthy();
+  });
+
+  it("hides Move view and Show logs only when the host opts out with false (desktop)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { uploadFile: true, remoteVoice: true, relocateView: false, showOutput: false },
+    });
+    openConfigDebug(window, doc);
+    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeUndefined();
+    expect(itemByLabel(doc, "To Primary Side Bar")).toBeUndefined();
+    expect(itemByLabel(doc, "To Panel")).toBeUndefined();
+    expect(itemByLabel(doc, "Show extension logs")).toBeUndefined();
+    // Config paths still work on desktop.
+    expect(itemByLabel(doc, "Open global config")).toBeTruthy();
   });
 });
 

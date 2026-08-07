@@ -1,0 +1,90 @@
+# Builds the Grok Build Desktop installers.
+#
+# macOS is the reason this workflow exists. A .dmg can only be produced on
+# macOS, so there is no way to cut a Mac build from the Windows dev box — the
+# macos-latest runner IS the build host. Windows is built here too so both
+# installers come out of the same commit and the same npm ci, rather than one
+# from CI and one from whatever happened to be on a laptop.
+#
+# Nothing is signed. `identity: null` (mac) and `signAndEditExecutable: false`
+# (win) in electron-builder.yml are deliberate: there is no Apple Developer
+# certificate and no Authenticode certificate yet, so first-run Gatekeeper and
+# SmartScreen warnings are expected and are called out on the download page.
+# When certificates exist, add them as secrets and drop those two lines — the
+# rest of this file does not change.
+#
+# Manual by design. Publishing installers is the owner's call, so this never
+# fires on a push: dispatch it, and it uploads to the run's artifacts. Only a
+# `release_tag` input attaches them to a GitHub Release, and only when that
+# release already exists — this workflow does not create one.
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to attach installers to (leave empty to only upload run artifacts)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            name: macos
+          - os: windows-latest
+            script: dist:win
+            name: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run ${{ matrix.script }}
+        env:
+          # electron-builder reads this to decide whether to try notarising.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # The installers only. dist-desktop/ also holds unpacked app trees and
+      # electron-builder's own metadata, which nobody downloads.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grok-build-desktop-${{ matrix.name }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.zip
+            dist-desktop/*.exe
+            dist-desktop/*.blockmap
+
+      - name: Attach to release
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # --clobber so re-running after a failed leg replaces a half-uploaded
+          # asset instead of erroring on the name already being taken.
+          shopt -s nullglob
+          files=(dist-desktop/*.dmg dist-desktop/*.zip dist-desktop/*.exe dist-desktop/*.blockmap)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no installers produced" >&2
+            exit 1
+          fi
+          gh release upload "${{ inputs.release_tag }}" "${files[@]}" --clobber

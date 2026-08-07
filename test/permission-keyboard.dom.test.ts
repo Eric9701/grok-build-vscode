@@ -135,6 +135,8 @@ describe("permission card keyboard (real chat.js in a DOM)", () => {
       return scheduled.length;
     }) as typeof window.setTimeout);
     try {
+      // Thinking traces only surface under Coding purpose.
+      dispatch(window, { type: "appPurpose", value: "coding" });
       dispatch(window, { type: "showThinking", value: true });
       card(window, [REJECT, ALLOW]);
       const reject = buttons(doc)[1];

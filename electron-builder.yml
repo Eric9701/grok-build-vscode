@@ -1,0 +1,90 @@
+# Grok Build Desktop — electron-builder config (unsigned release builds).
+# Entry: out/desktop/main.js (see package.json scripts dist / dist:mac / dist:win).
+# Does not affect the VS Code VSIX path (npm run package).
+
+appId: com.productcompass.grok-build-desktop
+productName: Grok Build Desktop
+copyright: Copyright © Paweł Huryn
+
+# Keep installers out of the extension tree; never ship this folder in the VSIX.
+directories:
+  output: dist-desktop
+  buildResources: resources
+
+# Packaged package.json main (extension still uses out/extension.js for VS Code).
+extraMetadata:
+  main: out/desktop/main.js
+  name: grok-build-desktop
+
+# Layout inside app.asar (or app/ when --dir):
+#   package.json, out/**, media/**, resources/**, LICENSE, node_modules/{ws,jpeg-js}
+# resolveExtensionRoot() expects media/chat.js at the package root (see src/desktop/paths.ts).
+files:
+  - package.json
+  - LICENSE
+  - out/**/*
+  - media/**/*
+  - resources/**/*
+  - node_modules/ws/**/*
+  - node_modules/jpeg-js/**/*
+  - "!out/**/*.map"
+  - "!**/*.{ts,tsx,md}"
+
+asar: true
+
+# Predictable GitHub Release asset names for the download page:
+#   Grok-Build-Desktop-<version>-mac-arm64.dmg
+#   Grok-Build-Desktop-<version>-mac-x64.dmg
+#   Grok-Build-Desktop-<version>-win-x64.exe
+# ${os} is electron-builder's short name: mac | win | linux
+artifactName: Grok-Build-Desktop-${version}-${os}-${arch}.${ext}
+
+# No auto-update publish channel yet (see docs/desktop.md).
+publish: null
+
+# App icon for installers (VS Code marketplace still uses resources/grok-icon.png at 128).
+# electron-builder requires >=256 for NSIS / macOS targets.
+icon: resources/grok-icon-512.png
+
+mac:
+  category: public.app-category.developer-tools
+  # Unsigned — no Apple Developer certificate yet.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+
+dmg:
+  title: Grok Build Desktop ${version}
+
+win:
+  # Unsigned — no Authenticode certificate yet.
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Grok Build Desktop
+  uninstallDisplayName: Grok Build Desktop (Community)
+  artifactName: Grok-Build-Desktop-${version}-${os}-${arch}.${ext}
+
+linux:
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64

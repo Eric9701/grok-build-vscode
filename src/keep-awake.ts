@@ -1,7 +1,8 @@
-// Keep-awake — hold an OS wake lock while AFK Pilot is linked, so the machine
-// you're driving from your phone doesn't idle-suspend mid-turn and drop the
-// uplink. Scoped to the uplink's lifetime: linked device token + a live
-// extension host. Unlink (or shut VS Code) and the lock goes away with it.
+// Keep-awake — hold an OS wake lock while work needs the machine awake: an AFK
+// Pilot link (so an idle laptop doesn't drop the uplink mid-remote-turn) OR a
+// local agent turn in flight (desktop / VS Code without a remote link). The
+// opt-out key remains `grok.remote.keepAwake` (ships today); it now covers both
+// triggers. Not "app is open" — a standing wake lock drains laptops.
 //
 // There is no cross-platform Node API for this and we don't want a native
 // dependency, so each platform gets the wake lock its OS already ships:
@@ -25,8 +26,8 @@
 import { ChildProcess, spawn } from "node:child_process";
 
 /** Shown in `systemd-inhibit --list` so a user can see who holds the lock. */
-export const KEEP_AWAKE_WHO = "Grok Build (AFK Pilot)";
-export const KEEP_AWAKE_WHY = "Remote device linked — staying reachable";
+export const KEEP_AWAKE_WHO = "Grok Build";
+export const KEEP_AWAKE_WHY = "Agent turn or AFK Pilot link — staying awake";
 
 /** How often each child re-checks that the extension host is still alive. */
 export const KEEP_AWAKE_WATCH_SECONDS = 30;
@@ -129,10 +130,17 @@ export function keepAwakeFallbackWhat(platform: NodeJS.Platform, what: LinuxInhi
   return (what ?? "idle:sleep") === "idle:sleep" ? "idle" : null;
 }
 
-/** Wake-lock policy: held exactly while the setting is on AND this machine is
- *  linked to an AFK Pilot account. Pure so the call sites can't disagree. */
-export function shouldKeepAwake(state: { enabled: boolean; linked: boolean }): boolean {
-  return state.enabled && state.linked;
+/**
+ * Wake-lock policy: setting on AND (AFK Pilot linked OR a turn is in flight).
+ * Pure so the call sites can't disagree. Deliberately not "app is open".
+ */
+export function shouldKeepAwake(state: {
+  enabled: boolean;
+  linked: boolean;
+  /** Any pooled session is `working` or `needs-you`. */
+  turnInFlight?: boolean;
+}): boolean {
+  return state.enabled && (state.linked || !!state.turnInFlight);
 }
 
 /**

@@ -25,3 +25,19 @@ Concretely:
 4. **Surface it in-app** where practical — e.g. an About/Credits view.
 
 Items 2–4 are good-faith etiquette built on top of the hard requirements. Do that, stay out of Competing Use, and you're welcome to build on this freely.
+
+## Third-party assets
+
+### Seti UI file icons (desktop file tree)
+
+The desktop app's file-tree panel uses a curated subset of the **[Seti UI](https://github.com/jesseweed/seti-ui)** icons (the same family VS Code's default file-icon theme derives from).
+
+| | |
+|---|---|
+| **Source** | [jesseweed/seti-ui](https://github.com/jesseweed/seti-ui) (`icons/*.svg`) |
+| **License** | MIT — Copyright (c) 2014 Jesse Weed |
+| **Vendored at** | [`media/file-icons/`](../media/file-icons/) |
+| **License text** | [`media/file-icons/LICENSE-SETI.md`](../media/file-icons/LICENSE-SETI.md) |
+| **Wiring** | [`src/desktop/file-icons.ts`](../src/desktop/file-icons.ts) maps extensions → icon ids; SVGs are inlined as `data:` URLs into the panel boot script (no runtime network fetch; CSP-safe). |
+
+The MIT notice above is the hard requirement for redistribution of those SVGs. Do not replace this set with a non-redistributable icon pack without updating this section and the vendored license file.

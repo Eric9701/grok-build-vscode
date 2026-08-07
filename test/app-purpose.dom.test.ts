@@ -1,0 +1,470 @@
+/**
+ * DOM coverage for the simplification plan:
+ *  - "Use this app for" (Knowledge work / Coding)
+ *  - Session → single "Continue in a new chat"
+ *  - Knowledge work hides worktree destination + coding controls
+ *  - Rail gear present when #projects-rail mounts; composer gear when not
+ *  - Rewind confirm cancel answers ok:false (host must not revert)
+ */
+import { describe, expect, it } from "vitest";
+import { bootWebview, type Harness } from "./webview-harness";
+
+function dispatch(window: any, msg: object) {
+  window.dispatchEvent(
+    new window.MessageEvent("message", { data: msg }),
+  );
+}
+
+function click(window: any, el: Element | null | undefined) {
+  if (!el) throw new Error("click target missing");
+  el.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+}
+
+function openGear(h: Harness) {
+  const btn = h.doc.getElementById("gear-btn") || h.doc.getElementById("rail-gear-btn");
+  click(h.window, btn);
+  expect(h.doc.getElementById("gear-popover")!.hidden).toBe(false);
+}
+
+function gearText(h: Harness): string {
+  return h.doc.getElementById("gear-popover")!.textContent || "";
+}
+
+function gearItems(h: Harness): string[] {
+  return [...h.doc.querySelectorAll("#gear-popover .toolbar-popover-item")].map(
+    (el) => (el.textContent || "").replace(/\s+/g, " ").trim(),
+  );
+}
+
+function findGearItem(h: Harness, re: RegExp): HTMLElement | undefined {
+  return [...h.doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
+    re.test(el.textContent || ""),
+  ) as HTMLElement | undefined;
+}
+
+describe("app purpose + session menu (DOM)", () => {
+  it("defaults to Knowledge work when initialState omits appPurpose", () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: true,
+      expandCommandOutputs: true,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      capabilities: {},
+    });
+    // Knowledge work forces thinking-hidden even when showThinking is true.
+    expect(h.doc.body.classList.contains("thinking-hidden")).toBe(true);
+    openGear(h);
+    expect(gearText(h)).toContain("Use this app for");
+    expect(gearText(h)).toContain("Knowledge work");
+    expect(gearText(h)).toContain("Continue in a new chat");
+    // Old three-way Session menu is gone.
+    expect(gearText(h)).not.toContain("Fork conversation");
+    expect(gearText(h)).not.toContain("New worktree session");
+    expect(gearText(h)).not.toContain("Rewind conversation");
+  });
+
+  it("Knowledge work continues straight to fork with no destination popup", async () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "knowledge",
+      capabilities: {},
+    });
+    openGear(h);
+    const cont = findGearItem(h, /Continue in a new chat/);
+    expect(cont).toBeTruthy();
+    click(h.window, cont!);
+    await Promise.resolve();
+    expect(h.posted.find((m) => m.type === "forkSession")).toEqual({ type: "forkSession" });
+    // No destination popup — gear closes without a "Where?" panel.
+    expect(gearText(h)).not.toContain("Use a new worktree");
+  });
+
+  it("Coding offers worktree destination; workspace is default", async () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    openGear(h);
+    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    await Promise.resolve();
+    // Popup appears with both destinations.
+    expect(gearText(h)).toContain("Use this workspace");
+    expect(gearText(h)).toContain("Use a new worktree");
+    // Workspace is focused default — click it forks.
+    click(h.window, findGearItem(h, /Use this workspace/)!);
+    await Promise.resolve();
+    expect(h.posted.find((m) => m.type === "forkSession")).toBeTruthy();
+  });
+
+  it("Coding → worktree destination posts newWorktreeSession", async () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    openGear(h);
+    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    await Promise.resolve();
+    click(h.window, findGearItem(h, /Use a new worktree/)!);
+    await Promise.resolve();
+    expect(h.posted.find((m) => m.type === "newWorktreeSession")).toEqual({
+      type: "newWorktreeSession",
+    });
+  });
+
+  // The host runs worktree apply/remove against ITS focused session and creates
+  // one against ITS workspace root, ignoring the requesting session. So a remote
+  // tab in repo B could remove the worktree the desk was standing in — and
+  // Remove discards unapplied edits. The policy refuses these from remote; these
+  // two make sure the UI does not offer them anyway, because a control the host
+  // silently drops is worse than no control.
+  it("a remote client is never offered a worktree destination", async () => {
+    const h = bootWebview({ ready: true, remote: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    dispatch(h.window, { type: "worktreeSupported", value: true } as never);
+    openGear(h);
+    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    await Promise.resolve();
+    // With only one destination the picker is skipped entirely and the fork
+    // goes straight through — which is the desired remote behaviour.
+    expect(findGearItem(h, /Use a new worktree/)).toBeFalsy();
+    expect(h.posted.find((m) => m.type === "newWorktreeSession")).toBeFalsy();
+  });
+
+  it("a remote client in a worktree is never offered Apply/Remove", async () => {
+    const h = bootWebview({ ready: true, remote: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    // `session` is what actually sets state.isWorktree — a bespoke "worktree"
+    // frame sets nothing, and the test would pass without the guard.
+    dispatch(h.window, {
+      type: "session",
+      currentModelId: "grok-4-5",
+      models: [],
+      worktree: { label: "feature", path: "/w/.worktrees/feature" },
+    } as never);
+    openGear(h);
+    expect(findGearItem(h, /Apply worktree/)).toBeFalsy();
+    expect(findGearItem(h, /Remove worktree/)).toBeFalsy();
+  });
+
+  it("setAppPurpose posts the choice and Coding reveals thinking control", async () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "knowledge",
+      capabilities: { relocateView: true, showOutput: true },
+    });
+    openGear(h);
+    click(h.window, findGearItem(h, /Coding/)!);
+    await Promise.resolve();
+    expect(h.posted.find((m) => m.type === "setAppPurpose")).toEqual({
+      type: "setAppPurpose",
+      value: "coding",
+    });
+    // Config & debug is VS Code path (no rail in harness BODY).
+    click(h.window, findGearItem(h, /Config/)!);
+    await Promise.resolve();
+    expect(gearText(h)).toContain("Show thinking traces");
+    expect(gearText(h)).toContain("Expand tool details");
+  });
+
+  it("Knowledge work Config panel hides thinking and tool-detail switches", async () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: true,
+      expandCommandOutputs: true,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "knowledge",
+      capabilities: { relocateView: true, showOutput: true },
+    });
+    openGear(h);
+    click(h.window, findGearItem(h, /Config/)!);
+    await Promise.resolve();
+    expect(gearText(h)).not.toContain("Show thinking traces");
+    expect(gearText(h)).not.toContain("Expand tool details");
+  });
+});
+
+describe("rail gear placement (DOM)", () => {
+  const withRail = (window: any) => {
+    const el = window.document.createElement("aside");
+    el.id = "projects-rail";
+    el.hidden = true;
+    const scroll = window.document.createElement("div");
+    scroll.id = "rail-scroll";
+    el.appendChild(scroll);
+    const foot = window.document.createElement("div");
+    foot.className = "rail-foot";
+    const gear = window.document.createElement("button");
+    gear.id = "rail-gear-btn";
+    gear.type = "button";
+    gear.className = "rail-icon-btn";
+    gear.hidden = true;
+    foot.appendChild(gear);
+    el.appendChild(foot);
+    window.document.body.appendChild(el);
+  };
+
+  const liveRail = () => {
+    const h = bootWebview({ ready: true, beforeScripts: withRail });
+    dispatch(h.window, {
+      type: "repos",
+      entries: [
+        { cwd: "/proj", label: "proj", available: true, pinned: false, updatedAt: 1 },
+      ],
+      selectedCwd: "/proj",
+      activeCwd: "/proj",
+    });
+    return h;
+  };
+
+  it("keeps BOTH buttons when the rail is live, with different icons", () => {
+    const h = liveRail();
+    const railGear = h.doc.getElementById("rail-gear-btn")!;
+    const composerGear = h.doc.getElementById("gear-btn")!;
+    // The composer button never disappears — model + effort is the highest
+    // frequency control and must stay next to the composer.
+    expect(composerGear.hidden).toBe(false);
+    expect(railGear.hidden).toBe(false);
+    // ...but it must not be a SECOND gear: sliders (lucide settings-2) vs gear.
+    // circle+circle is settings-2's signature; the gear has exactly one.
+    expect((composerGear.innerHTML.match(/<circle/g) || []).length).toBe(2);
+    expect(composerGear.innerHTML).not.toContain("M12.22 2h-.44");
+  });
+
+  it("splits the menu: composer = this conversation, rail = the app", () => {
+    const h = liveRail();
+    click(h.window, h.doc.getElementById("gear-btn"));
+    const composerMenu = gearText(h);
+    expect(composerMenu).toContain("Model and Effort");
+    // Session actions moved to the header's ⋯ menu, so this popover is model
+    // and effort ALONE — how the agent answers, nothing about which
+    // conversation you are in.
+    expect(composerMenu).not.toContain("Continue in a new chat");
+    // App-level settings moved out — that is the whole point of the split.
+    expect(composerMenu).not.toContain("Use this app for");
+    expect(composerMenu).not.toContain("Basic settings");
+    expect(composerMenu).not.toContain("Version & about");
+
+    click(h.window, h.doc.getElementById("gear-btn")); // close
+    click(h.window, h.doc.getElementById("rail-gear-btn"));
+    const railMenu = gearText(h);
+    expect(railMenu).toContain("Use this app for");
+    expect(railMenu).toContain("Basic settings");
+    expect(railMenu).toContain("Advanced settings");
+    expect(railMenu).toContain("Version & about");
+    expect(railMenu).not.toContain("Model and Effort");
+    expect(railMenu).not.toContain("Continue in a new chat");
+  });
+
+  it("puts the rail gear leftmost in the footer, not stranded mid-row", () => {
+    const h = liveRail();
+    const foot = h.doc.querySelector("#projects-rail .rail-foot")!;
+    // `.rail-foot` packs left and pushes only its LAST child to the far edge,
+    // so first-child is the one place the gear reads as aligned rather than
+    // centred between the account and the theme toggle.
+    expect(foot.firstElementChild!.id).toBe("rail-gear-btn");
+  });
+
+  it("switches surfaces in ONE click, and still toggles its own shut", () => {
+    const h = liveRail();
+    const composer = h.doc.getElementById("gear-btn")!;
+    const rail = h.doc.getElementById("rail-gear-btn")!;
+    const pop = h.doc.getElementById("gear-popover")!;
+
+    click(h.window, rail);
+    expect(gearText(h)).toContain("Use this app for");
+    // One click on the OTHER button must land on the other menu — not merely
+    // dismiss this one and make you click again.
+    click(h.window, composer);
+    expect(pop.hidden).toBe(false);
+    expect(gearText(h)).toContain("Model and Effort");
+    click(h.window, rail);
+    expect(pop.hidden).toBe(false);
+    expect(gearText(h)).toContain("Use this app for");
+    // Clicking the button that IS showing still closes it.
+    click(h.window, rail);
+    expect(pop.hidden).toBe(true);
+  });
+
+  it("caps the rail-anchored popover width so About cannot span the window", () => {
+    const h = liveRail();
+    const railGear = h.doc.getElementById("rail-gear-btn")!;
+    // jsdom gives every element a zero rect; the popover only needs the anchor
+    // to exist for the fixed-position branch to run.
+    click(h.window, railGear);
+    const pop = h.doc.getElementById("gear-popover")! as HTMLElement;
+    expect(pop.style.position).toBe("fixed");
+    const cap = parseInt(pop.style.maxWidth, 10);
+    expect(cap).toBeGreaterThan(0);
+    expect(cap).toBeLessThanOrEqual(240);
+  });
+
+  it("VS Code's single button keeps a gear icon and the whole menu", () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      capabilities: {},
+    });
+    const composerGear = h.doc.getElementById("gear-btn")!;
+    expect(composerGear.innerHTML).toContain("M12.22 2h-.44");
+    openGear(h);
+    // Nothing is split without a rail to split into.
+    expect(gearText(h)).toContain("Model and Effort");
+    expect(gearText(h)).toContain("Continue in a new chat");
+    expect(gearText(h)).toContain("Use this app for");
+    expect(gearText(h)).toContain("Version & about");
+  });
+
+  it("keeps composer gear and never mounts a rail gear without #projects-rail (VS Code)", () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      capabilities: {},
+    });
+    // A repos frame for clear-all naming must not light a rail or invent a gear.
+    dispatch(h.window, {
+      type: "repos",
+      entries: [{ cwd: "/w", label: "w", available: true, pinned: false, updatedAt: 1 }],
+      selectedCwd: "/w",
+      activeCwd: "/w",
+    });
+    expect(h.doc.getElementById("projects-rail")).toBeNull();
+    expect(h.doc.getElementById("rail-gear-btn")).toBeNull();
+    expect(h.doc.getElementById("gear-btn")!.hidden).toBe(false);
+  });
+});
+
+describe("rewind confirm dismiss (DOM)", () => {
+  it("cancel answers ok:false so the host must not revert", async () => {
+    const h = bootWebview({ ready: true });
+    dispatch(h.window, {
+      type: "uiConfirmRequest",
+      id: "rw-1",
+      title: "Rewind past this message?",
+      body: "Files will be restored.",
+      confirmLabel: "Rewind",
+      danger: true,
+    });
+    const cancel = [...h.doc.querySelectorAll(".confirm-panel button")].find(
+      (b) => b.textContent?.trim() === "Cancel",
+    ) as HTMLButtonElement;
+    click(h.window, cancel);
+    await Promise.resolve();
+    expect(h.posted.find((m) => m.type === "uiConfirmAnswer")).toEqual({
+      type: "uiConfirmAnswer",
+      id: "rw-1",
+      ok: false,
+    });
+    // No rewindSession was posted by the webview on cancel — only the answer.
+    expect(h.posted.filter((m) => m.type === "rewindSession")).toHaveLength(0);
+  });
+});

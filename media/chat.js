@@ -6,7 +6,19 @@
   // host-only affordances: worktree/rewind actions (their host flows run native
   // VS Code UI a browser user can't see) and the AFK Pilot account section.
   const IS_REMOTE = !!window.grokRemoteClient;
+  // Desktop Electron preload sets grokDesktopShell; VS Code webview never does.
+  // Client-owned font scale (localStorage + keyboard/wheel) applies to remote AND desktop
+  // — not the VS Code sidebar, which stays on host `grok.chatFontScale`.
+  // Do not key off the file-tree bridge — that API is panel-only; chat.js must not call it.
+  const IS_DESKTOP_CLIENT = !!window.grokDesktopShell;
+  const CLIENT_OWNS_FONT_SCALE = IS_REMOTE || IS_DESKTOP_CLIENT;
   const REMOTE_FONT_SCALE_KEY = "grok.remote.fontScale";
+  const DESKTOP_FONT_SCALE_KEY = "grok.desktop.fontScale";
+  const CLIENT_FONT_SCALE_KEY = IS_REMOTE ? REMOTE_FONT_SCALE_KEY : DESKTOP_FONT_SCALE_KEY;
+  /** Client zoom bounds (fraction of 1). Matches AFK Pilot's 80–160% slider. */
+  const CLIENT_FONT_SCALE_MIN = 0.8;
+  const CLIENT_FONT_SCALE_MAX = 1.6;
+  const CLIENT_FONT_SCALE_STEP = 0.1;
   const REMOTE_TTS_KEY = "grok.remote.tts";
   const REMOTE_TTS_SUMMARY_KEY = "grok.remote.ttsSummary";
   const REMOTE_STORAGE_SUFFIX = (
@@ -197,6 +209,17 @@
     try { window.localStorage.setItem(key, String(value)); } catch { /* unavailable */ }
   }
 
+  /** Clamp client zoom into [MIN, MAX]; non-finite → 1. Exported for tests via window.__grokFontScale. */
+  function clampClientFontScale(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return 1;
+    return Math.min(CLIENT_FONT_SCALE_MAX, Math.max(CLIENT_FONT_SCALE_MIN, Math.round(v * 100) / 100));
+  }
+
+  function stepClientFontScale(current, delta) {
+    return clampClientFontScale(Number(current) + Number(delta));
+  }
+
   function remoteUsesTouchComposer() {
     return IS_REMOTE && typeof window.matchMedia === "function" &&
       window.matchMedia("(hover: none), (pointer: coarse)").matches;
@@ -298,7 +321,10 @@
     voiceDiscarded: false,
     // The configured send phrase (for highlighting it in the composer).
     voiceSendPhrase: "grok send",
-    remoteFontScale: IS_REMOTE ? storedNumber(REMOTE_FONT_SCALE_KEY, 1) : 1,
+    // Client-owned zoom (remote + desktop). VS Code uses hostFontScale only.
+    remoteFontScale: CLIENT_OWNS_FONT_SCALE
+      ? clampClientFontScale(storedNumber(CLIENT_FONT_SCALE_KEY, 1))
+      : 1,
     hostFontScale: Number(document.body.style.getPropertyValue("--chat-zoom")) || 1,
     remoteTts: storedRemoteTts,
     remoteSummarizeRepliesAloud: storedRemoteTtsSummary,
@@ -410,8 +436,11 @@
      *  being refused outright. */
     railLiveRepoKey: "",
     railExpanded: {},
-    // Whether the Archived section is open. Closed by default and remembered
-    // per device, like the project folds.
+    // Collapsible group headers (PINNED is never collapsible). Defaults:
+    // Recent + Projects open; Archived folded away. Persisted in saveRailShape.
+    railGroupCollapsed: { recent: false, projects: false, archived: true },
+    // Compatibility alias for older railShape writes — mirrored from
+    // railGroupCollapsed.archived on load/save.
     railArchiveOpen: false,
     // True between a catalog naming a new selected repo and the session list for
     // that repo arriving — the window in which `state.sessions` still describes
@@ -506,6 +535,11 @@
     // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
     // async grokUpdateStatus only re-renders About when it's the visible view.
     gearView: "main",
+    // Which button opened the popover: "composer" (this conversation — model,
+    // effort, where it continues) or "rail" (the app — account, purpose,
+    // settings, about). Only meaningful once a rail gear exists; in VS Code the
+    // one composer button owns both and this stays inert.
+    gearSurface: "composer",
     // Latest `grok update --check` result for the About panel: { checking } while
     // in flight, then { current, latest, updateAvailable, error }.
     grokUpdate: null,
@@ -526,6 +560,7 @@
     // a lightweight "Thinking…" indicator stands in while grok reasons (and no
     // tool/Grokking indicator is already showing). Toggle lives in gear → Config
     // & debug. The host posts the real value on init and on config change.
+    // Effective display also requires Coding app-purpose (see isCodingPurpose).
     showThinking: false,
     thinkingIndicatorEl: null,
     // Command rows awaiting their output ({command, details, done}) — the
@@ -535,7 +570,14 @@
     // grok.expandCommandOutputs (persisted, global): the standing DEFAULT for
     // new content — command IN/OUT details pre-open, and command-bearing groups
     // auto-open. Command scope only (explore/edit groups stay collapsed).
+    // Effective expand also requires Coding app-purpose.
     expandCommandOutputs: false,
+    // Global "Use this app for" — Knowledge work (default) | Coding. Absent from
+    // an older host means Knowledge work (smaller surface). Stored on the host
+    // in ~/.grok/client-state; never invent a second store.
+    appPurpose: "knowledge",
+    // CLI worktree RPCs assumed supported until create returns unsupported.
+    worktreeSupported: true,
     // grok.steerByDefault (persisted, global): when true a message sent while
     // grok is working SKIPS the queue and is interjected into the running turn.
     // False = today's behavior (queue, with an on-demand Steer button).
@@ -607,6 +649,11 @@
     square: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
     spinner: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
     gear: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`,
+    // lucide settings-2 (sliders). The composer button wears this once the rail
+    // has taken the app-level settings: sliders read as "adjust what's in front
+    // of me", the gear as "configure the product". Two gears side by side read
+    // as a duplicate; these two do not.
+    settings2: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>`,
     shield: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>`,
     bot: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`,
     listTree: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></svg>`,
@@ -625,7 +672,12 @@
     trash: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
     folder: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>`,
+    // Lucide folder-closed / folder-open — project expand/collapse (replaces chevron).
+    folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M2 10h20"/></svg>`,
+    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z"/></svg>`,
+    // Same Lucide pin path with a filled head (outline stroke kept for the needle).
+    pinFilled: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z" fill="currentColor"/></svg>`,
     archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>`,
     archiveRestore: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h4"/><path d="M20 8v11a2 2 0 0 1-2 2h-4"/><path d="m9 15 3-3 3 3"/><path d="M12 12v9"/></svg>`,
     mic: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>`,
@@ -1231,6 +1283,14 @@
     return `<code class="diff-code">${body}</code>`;
   }
 
+  // Published for the desktop file panel, which is injected into THIS document
+  // after load and previews `.md` files. It used to carry its own ~35-line
+  // subset (h1–h3, fences, bold) so bullets and tables simply did not render.
+  // One renderer, one set of behaviours — and it is safe for repo content
+  // because `inline()` escapes &, < and > before doing anything else, so raw
+  // HTML in a README cannot become live markup.
+  window.__grokRenderMarkdown = (raw) => renderMarkdown(String(raw == null ? "" : raw));
+
   function renderMarkdown(raw) {
     const codeBlocks = [];
     // Fence is 3+ backticks; the closing fence must be the SAME length (\1
@@ -1717,6 +1777,40 @@
 
   // ---------- gear popover ----------
 
+  /** Coding purpose unlocks worktrees, thinking traces, and tool-detail toggles. */
+  function isCodingPurpose() {
+    return state.appPurpose === "coding";
+  }
+
+  /** Knowledge work always hides traces; Coding honours the user toggle. */
+  function effectiveShowThinking() {
+    return isCodingPurpose() && !!state.showThinking;
+  }
+
+  /** Knowledge work never pre-expands tool details; Coding honours the toggle. */
+  function effectiveExpandCommandOutputs() {
+    return isCodingPurpose() && !!state.expandCommandOutputs;
+  }
+
+  function setAppPurpose(value) {
+    const next = value === "coding" ? "coding" : "knowledge";
+    if (state.appPurpose === next) return;
+    state.appPurpose = next;
+    vscode.postMessage({ type: "setAppPurpose", value: next });
+    applyThinkingVisibility();
+    applyExpandCommandOutputs();
+    // Re-render open gear panels so hidden items appear/disappear live.
+    if (!gearPopover.hidden) {
+      if (state.gearView === "main") renderGearMain();
+      else if (state.gearView === "config" || state.gearView === "basic" || state.gearView === "advanced") {
+        if (state.gearView === "basic") renderBasicSettingsPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+        else renderConfigDebugPanel();
+      }
+    }
+    syncGearPlacement();
+  }
+
   function addSection(label) {
     const el = document.createElement("div");
     el.className = "popover-section";
@@ -1947,6 +2041,21 @@
     state.gearView = "main";
     gearPopover.innerHTML = "";
 
+    // Two surfaces, one popover. With a rail gear the composer holds what is
+    // about THIS CONVERSATION (model, effort, where it continues) and the rail
+    // holds what is about THE APP (account, purpose, settings, about). Without
+    // one — VS Code — both flags are true and nothing is split, which is why
+    // this needs no host branch.
+    const split = railGearLive();
+    const showConversation = !split || state.gearSurface !== "rail";
+    const showApp = !split || state.gearSurface === "rail";
+
+    if (showConversation) renderGearConversation();
+    if (showApp) renderGearApp();
+  }
+
+  /** Model + effort, and where this conversation continues. */
+  function renderGearConversation() {
     // ── Model + effort header ─────────────────────────────────────────────
     const modelEffortSection = document.createElement("div");
     modelEffortSection.className = "popover-section popover-section-first";
@@ -2011,6 +2120,45 @@
     row.appendChild(dotsEl);
     gearPopover.appendChild(row);
 
+    // ── Session ───────────────────────────────────────────────────────────
+    // Only where there is nowhere better. Rail hosts put these in the session
+    // header's ⋯ menu, beside Rename / Pin / Delete — the things you do TO a
+    // conversation. That leaves this popover holding model and effort alone,
+    // which is what it is for: how the agent answers, not which conversation
+    // you are in. VS Code has no session header, so they stay here.
+    // Rewind lives on user bubbles either way.
+    if (railGearLive()) return;
+    addSection("Session");
+    addGearItem(
+      `<span class="gear-lead">${ICON.gitFork}<span>Continue in a new chat</span></span>`,
+      () => { beginContinueInNewChat(); },
+    );
+    // Worktree Apply/Remove only while already in a worktree (Coding or not —
+    // you're already in one, so the controls must stay reachable). Never from a
+    // remote: the host acts on its own focused session, not the requester's.
+    if (state.isWorktree && !IS_REMOTE) {
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
+        closePopovers();
+        uiConfirm({
+          title: "Apply worktree?",
+          body: "Merges this worktree's edits back into the main checkout.",
+          confirmLabel: "Apply",
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); });
+      });
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
+        closePopovers();
+        uiConfirm({
+          title: "Remove worktree?",
+          body: "This deletes the isolated checkout. Unapplied edits are lost.",
+          confirmLabel: "Remove",
+          danger: true,
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); });
+      });
+    }
+  }
+
+  /** The app itself: account, what it is used for, settings, about. */
+  function renderGearApp() {
     // ── Remote Control ────────────────────────────────────────────────────
     // The hosted relay account, on the machine that links itself — above
     // Session on purpose (it's about reaching this machine at all). Hidden in
@@ -2047,69 +2195,148 @@
       }
     }
 
-    // ── Session ───────────────────────────────────────────────────────────
-    // Session-LIFECYCLE actions live here; context actions (Compact) live on the
-    // context donut, next to the number that motivates them.
-    addSection("Session");
-    // Fork copies the CONVERSATION (not files). It's fine on a worktree too — the
-    // fork shares that checkout, the same as the Agent Dashboard already running
-    // parallel sessions on one repo; Remove worktree disposes both.
-    addGearItem(`<span class="gear-lead">${ICON.gitFork}<span>Fork conversation</span></span>`, () => {
-      vscode.postMessage({ type: "forkSession" });
-      closePopovers();
-    });
-    // Rewind needs a conversation to roll back — hide it on an empty session.
-    // Rewind + worktrees are desktop-only: their host flows still run native
-    // VS Code UI (QuickPick / input box / progress) a browser user can't see.
-    if (!IS_REMOTE && messagesEl.querySelector(".msg.user")) {
-      addGearItem(`<span class="gear-lead">${ICON.undo}<span>Rewind conversation</span></span>`, () => {
-        vscode.postMessage({ type: "rewindSession" });
-        closePopovers();
-      });
-    }
-    // Worktree = an isolated git checkout, in the one Session menu. New is hidden
-    // INSIDE a worktree (no worktree-from-worktree — checkouts stay singular);
-    // Apply merges edits back and Remove deletes the checkout, so both apply only
-    // to a worktree session. Apply/Remove confirm here (uiConfirm) — the host
-    // skips its native modal for the webview path.
-    if (!IS_REMOTE) {
-      if (!state.isWorktree) {
-        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>New worktree session</span></span>`, () => {
-          vscode.postMessage({ type: "newWorktreeSession" });
-          closePopovers();
-        });
-      } else {
-        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
-          closePopovers();
-          uiConfirm({
-            title: "Apply worktree?",
-            body: "Merges this worktree's edits back into the main checkout.",
-            confirmLabel: "Apply",
-          }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); });
-        });
-        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
-          closePopovers();
-          uiConfirm({
-            title: "Remove worktree?",
-            body: "This deletes the isolated checkout. Unapplied edits are lost.",
-            confirmLabel: "Remove",
-            danger: true,
-          }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); });
-        });
-      }
-    }
+    // ── Use this app for ──────────────────────────────────────────────────
+    // Progressive disclosure: Knowledge work (default) hides worktrees,
+    // thinking traces and tool details; Coding unlocks them (still default off).
+    addSection("Use this app for");
+    addGearItem(
+      `<span title="Hides worktrees, thinking traces, and tool details. The default for knowledge work.">Knowledge work</span>${state.appPurpose !== "coding" ? '<span class="popover-check">✓</span>' : ""}`,
+      () => { setAppPurpose("knowledge"); renderGearMain(); gearPopover.hidden = false; },
+    );
+    addGearItem(
+      `<span title="Adds worktrees, thinking traces, and tool details (still off by default).">Coding</span>${state.appPurpose === "coding" ? '<span class="popover-check">✓</span>' : ""}`,
+      () => { setAppPurpose("coding"); renderGearMain(); gearPopover.hidden = false; },
+    );
 
-
-    // ── Other ─────────────────────────────────────────────────────────────
-    // Collapses the former Config / Account / Debug sections into sub-views
-    // (mirrors the Model picker), keeping the main menu short.
-    addSection("Other");
+    // ── Settings entry points ─────────────────────────────────────────────
+    // Desktop (rail) uses Basic / Advanced; VS Code keeps Config & debug and
+    // defers most prefs to VS Code settings. Gated on capabilities / rail, not
+    // an IS_DESKTOP flag.
+    if (railMount()) {
+      addSection("Settings");
+      addGearItem('<span>Basic settings</span><span class="popover-chevron">›</span>', () => renderBasicSettingsPanel());
+      addGearItem('<span>Advanced settings</span><span class="popover-chevron">›</span>', () => renderAdvancedSettingsPanel());
+    } else {
+      addSection("Other");
+      addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
+    }
     addGearItem('<span>Version &amp; about</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
-    addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
+    // Log out = Grok CLI credential. Not device unlink (portal only).
     addGearItem("<span>Log out</span>", () => {
       vscode.postMessage({ type: "logout" });
       closePopovers();
     });
+  }
+
+  /**
+   * Destinations under "Continue in a new chat".
+   * Knowledge work / unsupported worktrees / already-in-worktree → workspace only.
+   */
+  function continueChatDestinations() {
+    const dests = [
+      {
+        id: "workspace",
+        label: "Use this workspace",
+        description: "Continue from here in the current checkout",
+      },
+    ];
+    // Desk-only: the host creates a worktree against its own workspace root
+    // rather than the session that asked, so a remote tab working in another
+    // repo would get a checkout somewhere it never chose. Offering the option
+    // here would promise a placement the host does not honour.
+    if (isCodingPurpose() && state.worktreeSupported && !state.isWorktree && !IS_REMOTE) {
+      dests.push({
+        id: "worktree",
+        label: "Use a new worktree",
+        description: "Continue from here in an isolated checkout",
+      });
+    }
+    return dests;
+  }
+
+  /** One destination → go straight there; several → destination picker. */
+  function beginContinueInNewChat() {
+    const dests = continueChatDestinations();
+    if (dests.length <= 1) {
+      runContinueDestination(dests[0] ? dests[0].id : "workspace");
+      return;
+    }
+    renderContinueDestinationPicker(dests);
+  }
+
+  function runContinueDestination(id) {
+    closePopovers();
+    if (id === "worktree") {
+      vscode.postMessage({ type: "newWorktreeSession" });
+    } else {
+      vscode.postMessage({ type: "forkSession" });
+    }
+  }
+
+  function renderContinueDestinationPicker(dests) {
+    state.gearView = "continue";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Continue in a new chat</span>', renderGearMain);
+    addSection("Where?");
+    dests.forEach((d, i) => {
+      const el = document.createElement("div");
+      el.className = "toolbar-popover-item" + (i === 0 ? " active" : "");
+      el.innerHTML =
+        `<span class="mode-item-body">` +
+          `<span class="mode-item-label">${escapeHtml(d.label)}</span>` +
+          `<span class="mode-item-desc">${escapeHtml(d.description)}</span>` +
+        `</span>`;
+      el.tabIndex = i === 0 ? 0 : -1;
+      el.onclick = (e) => {
+        e.stopPropagation();
+        runContinueDestination(d.id);
+      };
+      gearPopover.appendChild(el);
+      if (i === 0) {
+        // "Use this workspace" is the focused default so Enter does the common thing.
+        requestAnimationFrame(() => { try { el.focus(); } catch { /* */ } });
+      }
+    });
+  }
+
+  /** Basic prefs for rail hosts (desktop / web): sounds, TTS, steer, coding toggles. */
+  function renderBasicSettingsPanel() {
+    state.gearView = "basic";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Basic settings</span>', renderGearMain);
+    appendSharedPreferenceSwitches();
+  }
+
+  /** Advanced prefs for rail hosts: config files, MCP, Logs (not "Extension logs"). */
+  function renderAdvancedSettingsPanel() {
+    state.gearView = "advanced";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Advanced settings</span>', renderGearMain);
+    // Host-local config openers — hide on remote (policy-dropped).
+    if (!IS_REMOTE) {
+      addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "openGlobalConfig" });
+        closePopovers();
+      });
+      addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "openProjectConfig" });
+        closePopovers();
+      });
+      addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "runMcpList" });
+        closePopovers();
+      });
+      // Desktop capability-hid this as "Show extension logs"; un-hide as "Logs".
+      const logsLabel = (state.hostCaps && state.hostCaps.showOutput === false)
+        ? "Logs"
+        : "Show extension logs";
+      addGearItem(`<span>${logsLabel}</span>`, () => {
+        vscode.postMessage({ type: "showLogs" });
+        closePopovers();
+      });
+    } else {
+      addGearInfo("<span>Host config is managed on the desk</span>");
+    }
   }
 
   // About: extension + Grok Build versions, update availability, and an action to
@@ -2204,23 +2431,46 @@
     );
   }
 
-  // Config & debug: the former Config + Debug items behind one sub-view.
-  function renderConfigDebugPanel() {
-    state.gearView = "config";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
-    // Show thinking traces (#26) — a switcher; off by default keeps grok's
-    // reasoning out of the way, on reveals it (incl. on already-loaded sessions).
-    addGearItem(
-      `<span title="Show Grok's reasoning (thinking) traces in chat, including on already-loaded sessions. Off by default — a lightweight &quot;Thinking…&quot; indicator stands in while Grok reasons.">Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
-      () => {
-        state.showThinking = !state.showThinking;
-        applyThinkingVisibility();
-        vscode.postMessage({ type: "setShowThinking", value: state.showThinking });
-        renderConfigDebugPanel(); // re-render so the switch reflects the new state
-      },
-    );
-    if (IS_REMOTE) {
+  /**
+   * Shared preference switches used by Config & debug (VS Code) and Basic
+   * settings (rail hosts). `rerender` repaints the open panel after a toggle.
+   */
+  function appendSharedPreferenceSwitches(rerender) {
+    const paint = typeof rerender === "function"
+      ? rerender
+      : () => {
+          if (state.gearView === "basic") renderBasicSettingsPanel();
+          else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+          else renderConfigDebugPanel();
+        };
+
+    // Thinking + tool details only in Coding — Knowledge work hides the controls
+    // and forces traces/details off (see effectiveShowThinking).
+    if (isCodingPurpose()) {
+      addGearItem(
+        `<span title="Show Grok's reasoning (thinking) traces in chat, including on already-loaded sessions. Off by default — a lightweight &quot;Thinking…&quot; indicator stands in while Grok reasons.">Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
+        () => {
+          state.showThinking = !state.showThinking;
+          applyThinkingVisibility();
+          vscode.postMessage({ type: "setShowThinking", value: state.showThinking });
+          paint();
+        },
+      );
+      addGearItem(
+        `<span title="Pre-open each command's IN/OUT block and each edit's inline diff by default, instead of clicking a row (›) to expand it. Edit rows always show a +N −M change count either way.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
+        () => {
+          state.expandCommandOutputs = !state.expandCommandOutputs;
+          state.toolExpandOverride = null;
+          applyExpandCommandOutputs();
+          vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
+          paint();
+        },
+      );
+    }
+
+    // Font size: remote keeps the slider; desktop owns zoom via Ctrl/Cmd +/−/0
+    // (spec: not ported into the menu). VS Code uses host chatFontScale.
+    if (CLIENT_OWNS_FONT_SCALE && IS_REMOTE) {
       const fontRow = document.createElement("div");
       fontRow.className = "toolbar-popover-item remote-font-row";
       fontRow.innerHTML =
@@ -2229,58 +2479,28 @@
         `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
       const slider = fontRow.querySelector("input");
       const output = fontRow.querySelector("output");
-      slider.oninput = () => {
-        output.textContent = `${slider.value}%`;
-      };
-      slider.onchange = () => {
-        state.remoteFontScale = Number(slider.value) / 100;
-        storeRemotePref(REMOTE_FONT_SCALE_KEY, state.remoteFontScale);
-        applyChatZoom();
-        reportRemotePreferences();
-      };
+      slider.oninput = () => { output.textContent = `${slider.value}%`; };
+      slider.onchange = () => { setClientFontScale(Number(slider.value) / 100); };
       gearPopover.appendChild(fontRow);
     }
-    // Expand tool details (#41/#45) — the persisted default: pre-open every tool
-    // detail surface (a command's IN/OUT block, an edit's inline diff) + the
-    // groups that hold one. Named to match the "Expand/Collapse All Tool Details"
-    // commands. Flipping it clears the per-session Expand/Collapse All latch so the
-    // setting takes over (last action wins). Persisted via grok.expandCommandOutputs
-    // (the key is unchanged — only the user-facing label widened).
-    addGearItem(
-      `<span title="Pre-open each command's IN/OUT block and each edit's inline diff by default, instead of clicking a row (›) to expand it. Edit rows always show a +N −M change count either way.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
-      () => {
-        state.expandCommandOutputs = !state.expandCommandOutputs;
-        state.toolExpandOverride = null;
-        applyExpandCommandOutputs();
-        vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
-        renderConfigDebugPanel();
-      },
-    );
-    // Steer by default (#52) — how a message sent mid-turn behaves. Off keeps
-    // the queue (and the per-message Steer button); on skips the queue entirely.
-    // Hidden when the CLI can't interject: offering a switch that silently does
-    // nothing is worse than not offering it.
+
     if (state.steerSupported) {
       addGearItem(
         `<span title="Send straight into Grok's running turn instead of queueing until it finishes. Steering does not cancel the turn or discard work in progress. Plain text only — no attached files, editor context, or /commands.">Steer by default</span><span class="popover-switch${state.steerByDefault ? " on" : ""}" role="switch" aria-checked="${state.steerByDefault}"><span class="popover-switch-knob"></span></span>`,
         () => {
           state.steerByDefault = !state.steerByDefault;
           vscode.postMessage({ type: "setSteerByDefault", value: state.steerByDefault });
-          renderConfigDebugPanel();
+          paint();
         },
       );
     }
-    // Sound notifications (#59) — a short tone on turn completion / error, played
-    // only when the Grok panel isn't focused (notify me when I've stepped away).
     addGearItem(
       `<span title="Play a short sound when Grok finishes or errors — only when the Grok panel isn't focused. A rising chime for done, a lower tone for errors.">Sound notifications</span><span class="popover-switch${state.soundNotifications ? " on" : ""}" role="switch" aria-checked="${state.soundNotifications}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.soundNotifications = !state.soundNotifications;
         vscode.postMessage({ type: "setSoundNotifications", value: state.soundNotifications });
-        // Unlock the audio context on this user gesture so the first later beep
-        // is allowed (autoplay policy). A no-op when already running.
         if (state.soundNotifications) unlockAudio();
-        renderConfigDebugPanel();
+        paint();
       },
     );
     addGearItem(
@@ -2295,7 +2515,7 @@
           if (processingCueTimer != null) clearTimeout(processingCueTimer);
           processingCueTimer = null;
         }
-        renderConfigDebugPanel();
+        paint();
       },
     );
     if (ttsAvailable) {
@@ -2316,7 +2536,7 @@
               }
             }
           }
-          renderConfigDebugPanel();
+          paint();
         },
       );
       const summarizeEnabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
@@ -2341,7 +2561,7 @@
               value: state.summarizeRepliesAloud,
             });
           }
-          renderConfigDebugPanel();
+          paint();
         };
       } else {
         summarizeRow.setAttribute("aria-disabled", "true");
@@ -2351,6 +2571,14 @@
     } else {
       addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
     }
+  }
+
+  // Config & debug: VS Code composer-gear path (no rail). Host config + Move view.
+  function renderConfigDebugPanel() {
+    state.gearView = "config";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
+    appendSharedPreferenceSwitches(() => renderConfigDebugPanel());
     // Opening host config files, the MCP list, and the extension log channel are
     // all host-local (the messages are policy-dropped on remotes) — hide the whole
     // section in the browser client rather than show dead links.
@@ -2368,19 +2596,31 @@
         vscode.postMessage({ type: "runMcpList" });
         closePopovers();
       });
-      addGearItem("<span>Show extension logs</span>", () => {
+      // showOutput false = desktop (logs to stdout); still offer "Logs" there.
+      // Absent / true = VS Code output channel ("Show extension logs").
+      const logsLabel = (state.hostCaps && state.hostCaps.showOutput === false)
+        ? "Logs"
+        : "Show extension logs";
+      addGearItem(`<span>${logsLabel}</span>`, () => {
         vscode.postMessage({ type: "showLogs" });
         closePopovers();
       });
+      // Link into VS Code settings (owner of extension settings). Desktop's
+      // openSettings is a stub — hide when relocateView is already false AND
+      // showOutput is false (desktop host signature via capabilities).
+      const isDeskCaps = state.hostCaps &&
+        state.hostCaps.relocateView === false &&
+        state.hostCaps.showOutput === false;
+      if (!isDeskCaps) {
+        addGearItem('<span>Open VS Code settings</span><span class="popover-external">↗</span>', () => {
+          vscode.postMessage({ type: "openSettings", section: "grok" });
+          closePopovers();
+        });
+      }
     }
-    // One-click view relocation (each destination is a direct move into an
-    // extension-owned container — see src/view-move.ts). Our own mover because
-    // Cursor's primary-side-bar context menu hides the built-in "Move To".
-    // Relocating the VS Code view is host-local (the moveView messages are
-    // policy-dropped on remotes) — hide the whole section in the browser client.
-    if (!IS_REMOTE) {
-      // No addGearSep() here: .popover-section draws its own border-top, so a
-      // separator in front of a section header renders two rules.
+    // Move view: same polarity as before — missing flags still show; only
+    // explicit false hides (desktop has no view containers).
+    if (!(state.hostCaps && state.hostCaps.relocateView === false)) {
       addSection("Move view");
       addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
         vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
@@ -2419,11 +2659,61 @@
     }
   }
 
-  function openGearPopover() {
-    if (!gearPopover.hidden) { closePopovers(); return; }
-    closePopovers();
-    renderGearMain();
+  /** The trigger for the surface currently being rendered. */
+  function activeGearButton() {
+    if (state.gearSurface === "rail") return document.getElementById("rail-gear-btn") || gearBtn;
+    return gearBtn;
+  }
+
+  /** Where app-level panels (settings, about) hang: the rail gear once it exists. */
+  function appSettingsButton() {
+    return document.getElementById("rail-gear-btn") || gearBtn;
+  }
+
+  /**
+   * Position the gear popover. Composer gear uses the existing absolute
+   * placement inside .composer; rail gear uses fixed coords so it is not
+   * clipped by the rail scroller.
+   */
+  function positionGearPopover(btn) {
+    const anchor = btn || activeGearButton();
+    if (anchor && anchor.id === "rail-gear-btn") {
+      const rect = anchor.getBoundingClientRect();
+      gearPopover.style.position = "fixed";
+      gearPopover.style.left = Math.min(window.innerWidth - GEAR_POPOVER_WIDTH, Math.max(8, rect.right + 6)) + "px";
+      gearPopover.style.bottom = Math.max(8, window.innerHeight - rect.bottom) + "px";
+      gearPopover.style.top = "auto";
+      gearPopover.style.right = "auto";
+      gearPopover.style.maxHeight = Math.min(420, window.innerHeight - 24) + "px";
+      // Fixed positioning with `right: auto` leaves the width shrink-to-fit and
+      // uncapped, so the Version & about panel's long strings stretched it most
+      // of the way across the window. The composer path is bounded by the
+      // composer; this one has to say so. Same number the left-clamp above
+      // reserves, so the popover can never be pushed off-screen.
+      gearPopover.style.maxWidth = Math.min(GEAR_POPOVER_WIDTH, window.innerWidth - 16) + "px";
+      return;
+    }
+    gearPopover.style.position = "";
+    gearPopover.style.maxHeight = "";
+    gearPopover.style.maxWidth = "";
     positionPopover(gearPopover, gearBtn);
+  }
+
+  function openGearPopover(fromBtn) {
+    // Which button was pressed decides which sections render. Without a rail
+    // gear both surfaces collapse into the composer one, so this is inert there.
+    const surface = fromBtn && fromBtn.id === "rail-gear-btn" ? "rail" : "composer";
+    // Clicking the button that is already showing closes it — clicking the OTHER
+    // one switches to it. Closing on any open popover made the two surfaces
+    // cost two clicks to move between: the first only dismissed the other menu.
+    if (!gearPopover.hidden) {
+      const showingThis = state.gearSurface === surface;
+      closePopovers();
+      if (showingThis) return;
+    }
+    state.gearSurface = surface;
+    renderGearMain();
+    positionGearPopover(fromBtn || activeGearButton());
     gearPopover.hidden = false;
   }
 
@@ -2432,9 +2722,179 @@
   function openAboutPanel() {
     if (!gearPopover.hidden && state.gearView === "about") return;
     closePopovers();
+    // About is app-level, so it belongs to whichever button owns app settings.
+    const anchor = appSettingsButton();
+    state.gearSurface = anchor.id === "rail-gear-btn" ? "rail" : "composer";
     renderAboutPanel(true);
-    positionPopover(gearPopover, gearBtn);
+    positionGearPopover(anchor);
     gearPopover.hidden = false;
+  }
+
+  /**
+   * Rail hosts (desktop getHtml / AFK Pilot page) put the gear in the rail
+   * footer so web and desktop share one control by construction. VS Code has
+   * no rail mount, so the composer gear stays. No IS_DESKTOP flag.
+   */
+  function ensureRailGear() {
+    const foot = document.querySelector("#projects-rail .rail-foot");
+    if (!foot) return null;
+    let btn = document.getElementById("rail-gear-btn");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "rail-gear-btn";
+      btn.type = "button";
+      btn.className = "rail-icon-btn";
+      btn.title = "Settings";
+      btn.setAttribute("aria-label", "Settings");
+      // Leftmost in the footer on BOTH hosts. Anchoring it to the theme toggle
+      // instead only worked on desktop — the browser client's toggle carries no
+      // id, so the gear was appended and landed on the opposite side. First
+      // child needs nothing to look up.
+      foot.insertBefore(btn, foot.firstChild);
+    }
+    if (!btn.dataset.railGearWired) {
+      btn.dataset.railGearWired = "1";
+      btn.innerHTML = ICON.gear;
+      btn.title = "Settings";
+      btn.setAttribute("aria-label", "Settings");
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openGearPopover(btn);
+      });
+    }
+    return btn;
+  }
+
+  // ---------- draggable rail edge ----------
+  //
+  // The rail's own border, made draggable. Mounted here rather than in either
+  // host's markup so desktop and the browser client get it by construction —
+  // the same argument that put the gear in the rail. Inert in VS Code, which
+  // has no rail mount at all.
+  //
+  // The phone drawer is excluded by CSS, not by JS: web/chat.html owns the
+  // breakpoint that decides drawer-vs-docked, and that is the only place that
+  // knows. One definition of "is this a phone", not two.
+  // Width cap for the rail-anchored gear popover. Menu items and the About
+  // panel's version lines both live in here, so it has to fit "Grok Build for
+  // VS Code (Community)" wrapped without becoming a full-width sheet.
+  const GEAR_POPOVER_WIDTH = 240;
+
+  const RAIL_WIDTH_KEY = "rail-width";
+  const RAIL_WIDTH_MIN = 180;
+  const RAIL_CHAT_MIN = 360;
+
+  function clampRailWidth(px) {
+    const total = window.innerWidth || 1200;
+    // Whichever bites first: leave the chat a usable column, and never let the
+    // rail past half the window even on a very wide one.
+    const max = Math.max(RAIL_WIDTH_MIN, Math.min(Math.floor(total * 0.5), total - RAIL_CHAT_MIN));
+    const n = Math.round(Number(px));
+    if (!Number.isFinite(n)) return RAIL_WIDTH_MIN;
+    return Math.min(max, Math.max(RAIL_WIDTH_MIN, n));
+  }
+
+  function applyRailWidth(px, persist) {
+    const w = clampRailWidth(px);
+    document.documentElement.style.setProperty("--rail-width", w + "px");
+    if (persist) { try { localStorage.setItem(RAIL_WIDTH_KEY, String(w)); } catch (_) { /* */ } }
+    return w;
+  }
+
+  let railResizerWired = false;
+  function ensureRailResizer() {
+    const rail = railMount();
+    if (!rail || !rail.parentElement) return null;
+    let handle = document.getElementById("rail-resizer");
+    if (!handle) {
+      handle = document.createElement("div");
+      handle.id = "rail-resizer";
+      handle.className = "rail-resizer";
+      handle.setAttribute("role", "separator");
+      handle.setAttribute("aria-orientation", "vertical");
+      handle.setAttribute("aria-label", "Resize projects rail");
+      handle.title = "Drag to resize";
+      rail.parentElement.insertBefore(handle, rail.nextSibling);
+    }
+    if (!railResizerWired) {
+      railResizerWired = true;
+      // Restore the persisted width before the rail is first painted wide.
+      try {
+        const saved = localStorage.getItem(RAIL_WIDTH_KEY);
+        if (saved != null && saved !== "") applyRailWidth(saved, false);
+      } catch (_) { /* */ }
+
+      let dragging = false;
+      let startX = 0;
+      let startW = 0;
+      let lastW = 0;
+      handle.addEventListener("pointerdown", (e) => {
+        // getBoundingClientRect, not the stored value: the rail may be sitting
+        // at its CSS default having never been dragged.
+        startW = rail.getBoundingClientRect().width;
+        if (!startW) return;
+        dragging = true;
+        startX = e.clientX;
+        lastW = startW;
+        document.body.classList.add("rail-resizing");
+        handle.classList.add("rail-resizing");
+        try { handle.setPointerCapture(e.pointerId); } catch (_) { /* */ }
+        e.preventDefault();
+      });
+      handle.addEventListener("pointermove", (e) => {
+        // Rail is on the left: drag right → wider.
+        if (dragging) lastW = applyRailWidth(startW + (e.clientX - startX), false);
+      });
+      const end = (e) => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.classList.remove("rail-resizing");
+        handle.classList.remove("rail-resizing");
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+        // Persist once, on release — not on every move. The value APPLIED, not
+        // a fresh measurement: the element may not have reflowed to the last
+        // move yet, and re-measuring would then persist a stale width.
+        applyRailWidth(lastW, true);
+      };
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+      // Re-clamp so shrinking the window cannot leave the rail overgrown.
+      window.addEventListener("resize", () => {
+        const cur = rail.getBoundingClientRect().width;
+        if (cur > 0) applyRailWidth(cur, false);
+      });
+    }
+    return handle;
+  }
+
+  /**
+   * True while the rail is showing its own gear — i.e. the app-level settings
+   * have a home outside the composer. The one latch both the placement and the
+   * icon derive from.
+   */
+  function railGearLive() {
+    return !!document.getElementById("rail-gear-btn") && railAvailable();
+  }
+
+  /**
+   * Split the settings surfaces rather than moving one button.
+   *
+   * The composer button NEVER disappears — Model and Effort is the highest-
+   * frequency control in the app and belongs next to the thing you type in.
+   * What changes is what it holds, and its icon follows that: sliders
+   * (settings-2) once the rail owns the app settings, the gear when it owns
+   * everything (VS Code, which has no rail). Derived from `railGearLive()`,
+   * not from a host flag.
+   */
+  function syncGearPlacement() {
+    const railGear = ensureRailGear();
+    ensureRailResizer();
+    const split = railGearLive();
+    gearBtn.hidden = false;
+    gearBtn.innerHTML = split ? ICON.settings2 : ICON.gear;
+    gearBtn.title = split ? "Model, effort and session" : "Settings";
+    gearBtn.setAttribute("aria-label", gearBtn.title);
+    if (railGear) railGear.hidden = !split;
   }
 
   function openModePopover() {
@@ -2919,27 +3379,31 @@
   }
 
   function railHistoryAnchor() {
-    if (!IS_REMOTE || !document.body.classList.contains("has-rail")) return null;
+    if (!railAvailable() || !document.body.classList.contains("has-rail")) return null;
     return document.getElementById("session-history") || document.getElementById("session-head-main");
   }
 
   // ---------- projects rail ----------
   //
-  // A persistent left rail: every repo with Grok history, each showing its
-  // newest few sessions. It exists ONLY in the browser client — `#projects-rail`
-  // is part of the relay's own page, so in the VS Code webview every function
-  // here finds no mount and returns. That element lookup is the entire gate;
-  // there is no second copy of this UI to keep in sync, and VS Code (where the
-  // window already IS the repo) renders nothing new.
+  // A persistent left rail: every open project (or every repo with Grok history
+  // on remote), each showing its newest few sessions.
+  //
+  // Gate (capability, not IS_REMOTE / not a host flag):
+  //   1. The host shipped a `#projects-rail` mount (desktop getHtml / AFK Pilot
+  //      page). VS Code getHtml does not — that absence alone keeps the extension
+  //      single-column even when a `repos` frame arrives for clear-all naming.
+  //   2. The host has sent a `repos` frame (`state.reposKnown`). An older host
+  //      that never sends one gets the plain chat, not an empty sidebar.
   //
   // Rows for a repo the client is NOT currently in arrive on `repoSessions`, a
   // frame older hosts never send. When it never arrives the rail still works:
   // the selected repo's rows come from the ordinary `sessions` frame and the
-  // other repos simply stay empty until you open them. Capability detection,
-  // never a version check — same rule as the repo chip above.
+  // other repos simply stay empty until you open them.
 
-  const RAIL_PREVIEW = 3;      // rows per repo before "Show all"
+  const RAIL_PREVIEW = 3;      // rows per list before "Show more"
   const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
+  // Synthetic expand key for the RECENT group (shares railExpanded with repos).
+  const RAIL_RECENT_KEY = "__recent__";
 
   // A project nobody has touched in a month is not one you are choosing between
   // today, so it drops to Archived on its own — the list stays a list of what you
@@ -2956,6 +3420,19 @@
   let railResolved = false;
   let railProbeTimer = null;
 
+  /** Host shipped a rail surface (desktop multi-folder / AFK Pilot page). */
+  function railMount() {
+    return document.getElementById("projects-rail");
+  }
+
+  /**
+   * Rail is live when the mount exists AND the host has proven it feeds a
+   * multi-repo catalog (`repos` frame). Never gated on IS_REMOTE.
+   */
+  function railAvailable() {
+    return !!railMount() && state.reposKnown;
+  }
+
   /** The list body. The browser page wraps the rail in fixed chrome (brand,
    *  search, account) and gives the scrolling middle its own element, so the
    *  only thing this file may empty is that middle — clearing the whole aside
@@ -2964,8 +3441,9 @@
   function rail() {
     if (!railResolved) {
       railResolved = true;
-      railEl = IS_REMOTE
-        ? document.getElementById("rail-scroll") || document.getElementById("projects-rail")
+      const panel = railMount();
+      railEl = panel
+        ? (document.getElementById("rail-scroll") || panel)
         : null;
       // Once, before anything reads the fold state — renderRail() resolves the
       // mount before it renders a row, so this always lands first.
@@ -2977,7 +3455,7 @@
   /** The whole panel, chrome included — what gets hidden, and what the drawer
    *  slides. `rail()` is only its scrolling middle. */
   function railPanel() {
-    return IS_REMOTE ? document.getElementById("projects-rail") : null;
+    return railMount();
   }
 
   /** Live filter over what the rail already holds: repo labels and the session
@@ -3070,15 +3548,15 @@
   }
   openRailMenu.seq = 0;
 
-  if (IS_REMOTE) {
-    document.addEventListener("click", (e) => {
-      if (railMenuEl && !railMenuEl.contains(e.target)) closeRailMenu();
-    }, true);
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeRailMenu();
-    });
-    window.addEventListener("resize", closeRailMenu);
-  }
+  // Rail menus are fixed-position under <body>; close on outside click / Esc /
+  // resize regardless of remote vs desktop once a rail mount exists (or may).
+  document.addEventListener("click", (e) => {
+    if (railMenuEl && !railMenuEl.contains(e.target)) closeRailMenu();
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeRailMenu();
+  });
+  window.addEventListener("resize", closeRailMenu);
 
   /** The ⋯ button itself — same shape for a project row, a conversation row and
    *  the conversation header, so one class carries all three. */
@@ -3116,8 +3594,12 @@
     }
   }
 
+  function defaultRailGroupCollapsed() {
+    return { recent: false, projects: false, archived: true };
+  }
+
   function loadRailShape() {
-    if (!IS_REMOTE) return;
+    if (!railMount()) return;
     try {
       const raw = localStorage.getItem(railShapeKey());
       if (!raw) return;
@@ -3127,22 +3609,51 @@
       if (saved && typeof saved === "object") {
         if (saved.collapsed && typeof saved.collapsed === "object") state.railCollapsed = saved.collapsed;
         if (saved.expanded && typeof saved.expanded === "object") state.railExpanded = saved.expanded;
-        // Whether Archived is open is the same kind of answer, so it keeps the
-        // same company. Default closed: the section exists to be out of the way.
-        if (saved.archiveOpen === true) state.railArchiveOpen = true;
+        const groups = defaultRailGroupCollapsed();
+        if (saved.groupCollapsed && typeof saved.groupCollapsed === "object") {
+          for (const k of Object.keys(groups)) {
+            if (typeof saved.groupCollapsed[k] === "boolean") groups[k] = saved.groupCollapsed[k];
+          }
+        } else if (saved.archiveOpen === true) {
+          // Pre-redesign shape: only Archived remembered open/closed.
+          groups.archived = false;
+        } else if (saved.archiveOpen === false) {
+          groups.archived = true;
+        }
+        state.railGroupCollapsed = groups;
+        state.railArchiveOpen = !groups.archived;
       }
     } catch (_) { /* private mode, or a value we did not write */ }
   }
 
   function saveRailShape() {
-    if (!IS_REMOTE) return;
+    if (!railMount()) return;
     try {
+      const groups = state.railGroupCollapsed || defaultRailGroupCollapsed();
+      state.railArchiveOpen = !groups.archived;
       localStorage.setItem(railShapeKey(), JSON.stringify({
         collapsed: state.railCollapsed,
         expanded: state.railExpanded,
-        archiveOpen: !!state.railArchiveOpen,
+        groupCollapsed: groups,
+        // Keep the legacy key so an older page shell reading this store still
+        // understands Archived open/closed until it picks up the redesign.
+        archiveOpen: !groups.archived,
       }));
     } catch (_) { /* private mode, or quota */ }
+  }
+
+  function railGroupIsCollapsed(name) {
+    const groups = state.railGroupCollapsed || defaultRailGroupCollapsed();
+    if (typeof groups[name] === "boolean") return groups[name];
+    // Archived defaults folded; Recent / Projects default open.
+    return name === "archived";
+  }
+
+  function setRailGroupCollapsed(name, collapsed) {
+    if (!state.railGroupCollapsed) state.railGroupCollapsed = defaultRailGroupCollapsed();
+    state.railGroupCollapsed[name] = !!collapsed;
+    if (name === "archived") state.railArchiveOpen = !collapsed;
+    saveRailShape();
   }
 
 
@@ -3180,6 +3691,12 @@
    *  outranks it, and there is no flag left behind to go stale. */
   function railSections() {
     const ordered = railRepos();
+    // Host without archive capability (desktop curated open/close): no Project
+    // Archive group and no age rule. Presence of `archived` on rows is the
+    // signal — see railArchiveSupported.
+    if (!railArchiveSupported()) {
+      return { active: ordered, archived: [] };
+    }
     const now = Date.now();
     // The floor, and it is a REQUIREMENT rather than a rounding error: however
     // quiet things have been, the newest few projects stay in view. Coming back
@@ -3363,10 +3880,10 @@
     const root = rail();
     if (!root) return;
     railFollowLiveRepo();
-    // The rail is the repo switcher in another shape: it appears under exactly
-    // the same condition, so a host that never sends `repos` gets the plain
-    // single-column chat instead of an empty sidebar.
-    const on = repoSwitcherAvailable() && state.repos.length > 0;
+    // Mount + `repos` frame (+ non-empty catalog). A host that never sends
+    // `repos` keeps the plain single-column chat; no mount (VS Code) never
+    // lights the rail even when repos arrives for clear-all.
+    const on = railAvailable() && state.repos.length > 0;
     const panel = railPanel();
     if (panel) panel.hidden = !on;
     root.hidden = !on;
@@ -3376,28 +3893,54 @@
     closeRailMenu();
 
     root.innerHTML = "";
+    syncGearPlacement();
     const q = railFilterText();
     let shownAnything = false;
 
-    // Pinned sits ABOVE Projects and spans every repo: a pin is only worth
-    // anything if it lifts a conversation OUT of the project you would otherwise
-    // have to open first. Rows name their repo, because out here that is the
-    // only thing telling two similarly-named conversations apart.
+    // Four groups: PINNED (always open) → RECENT → PROJECTS → PROJECT ARCHIVE.
+    // Labels are title-case in the DOM; CSS text-transform: uppercase paints them.
+    // PINNED is not collapsible — that is what pinning means.
+    // PROJECT ARCHIVE only mounts when ≥1 project qualifies (put-away or age-quiet);
+    // an empty section is deliberately omitted rather than an always-on empty state.
     const pinned = state.pinnedSessions.filter(
       (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
     );
     if (pinned.length) {
-      const pinHead = document.createElement("div");
-      pinHead.className = "rail-head";
-      pinHead.innerHTML = `<span class="rail-head-title">Pinned</span>`;
-      root.appendChild(pinHead);
-
+      root.appendChild(railStaticGroupHead("Pinned"));
       const pinList = document.createElement("div");
       pinList.className = "rail-list rail-pinned";
       for (const s of pinned) {
         pinList.appendChild(renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }));
       }
       root.appendChild(pinList);
+      shownAnything = true;
+    }
+
+    // RECENT: most recent across every loaded project, including pinned rows.
+    // Duplication with PROJECTS / PINNED is intentional — a shortcut, not a partition.
+    const recentAll = railRecentRows().filter(
+      (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
+    );
+    if (recentAll.length) {
+      const forcedOpen = !!q;
+      const open = forcedOpen || !railGroupIsCollapsed("recent");
+      root.appendChild(railCollapsibleGroupHead({
+        title: "Recent",
+        group: "recent",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        openTitle: "Hide recent conversations",
+        closedTitle: "Show recent conversations",
+        searchTitle: "Open while your search matches a conversation",
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-recent";
+        appendRailSessionSlice(list, recentAll, RAIL_RECENT_KEY, (s) =>
+          renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }),
+        );
+        root.appendChild(list);
+      }
       shownAnything = true;
     }
 
@@ -3408,30 +3951,44 @@
     const sections = railSections();
     const repos = sections.active.filter((repo) => !q || railRepoHasMatch(repo));
     if (repos.length) {
-      const head = document.createElement("div");
-      head.className = "rail-head";
-      head.innerHTML = `<span class="rail-head-title">Projects</span>`;
-      root.appendChild(head);
-
-      const list = document.createElement("div");
-      list.className = "rail-list";
-      root.appendChild(list);
-
-      for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
+      const forcedOpen = !!q;
+      const open = forcedOpen || !railGroupIsCollapsed("projects");
+      root.appendChild(railCollapsibleGroupHead({
+        title: "Projects",
+        group: "projects",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        openTitle: "Hide projects",
+        closedTitle: "Show projects",
+        searchTitle: "Open while your search matches a project",
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-projects";
+        for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
+        root.appendChild(list);
+      }
       shownAnything = true;
     }
 
-    // Archived: everything you put away, plus everything that went quiet for a
-    // month. Folded by default — the whole point is that it is out of the way —
-    // but a search reaches inside, because a query answered with "No matches."
-    // while the project sits collapsed two inches below is simply wrong.
+    // Project archive: put-away + age-quiet projects. Folded by default; search opens it.
     const archived = sections.archived.filter((repo) => !q || railRepoHasMatch(repo));
     if (archived.length) {
-      const open = q ? true : !!state.railArchiveOpen;
-      root.appendChild(railArchiveHead(archived.length, open, !!q));
+      const forcedOpen = !!q;
+      const open = forcedOpen || !railGroupIsCollapsed("archived");
+      root.appendChild(railCollapsibleGroupHead({
+        title: "Project Archive",
+        group: "archived",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        icon: ICON.archive,
+        openTitle: "Hide archived projects",
+        closedTitle: "Show archived projects",
+        searchTitle: "Open while your search matches an archived project",
+      }));
       if (open) {
         const list = document.createElement("div");
-        list.className = "rail-list";
+        list.className = "rail-list rail-archived";
         for (const repo of archived) list.appendChild(renderRailRepo(repo, true));
         root.appendChild(list);
       }
@@ -3442,36 +3999,110 @@
     renderSessionHead();
   }
 
-  /** The Archived heading, which is also its own disclosure control. A count
-   *  rather than a bare label: folded away, the number is the only thing saying
-   *  whether there is anything down there worth opening. */
-  function railArchiveHead(count, open, forcedOpenBySearch) {
+  /** Non-collapsible group label (PINNED). */
+  function railStaticGroupHead(title) {
+    const head = document.createElement("div");
+    head.className = "rail-head";
+    head.innerHTML = `<span class="rail-head-title"></span>`;
+    head.querySelector(".rail-head-title").textContent = title;
+    return head;
+  }
+
+  /**
+   * Collapsible group header: label first, chevron AFTER (not before).
+   * PINNED never uses this.
+   */
+  function railCollapsibleGroupHead(opts) {
     const head = document.createElement("div");
     head.className = "rail-head rail-head-fold";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "rail-head-btn";
-    btn.setAttribute("aria-expanded", String(open));
-    btn.innerHTML =
-      `<span class="rail-head-twisty">${open ? ICON.chevronDown : ICON.chevronRight}</span>` +
-      `<span class="rail-head-title">Archived</span>` +
-      `<span class="rail-head-count"></span>`;
-    btn.querySelector(".rail-head-count").textContent = String(count);
-    // While a search is holding it open, the button would otherwise appear to do
-    // nothing — the next render forces it back open. Say so instead.
-    btn.disabled = forcedOpenBySearch;
-    btn.title = forcedOpenBySearch
-      ? "Open while your search matches an archived project"
-      : (open ? "Hide archived projects" : "Show archived projects");
+    btn.setAttribute("aria-expanded", String(opts.open));
+    let html = "";
+    if (opts.icon) html += `<span class="rail-head-icon">${opts.icon}</span>`;
+    html += `<span class="rail-head-title"></span>`;
+    html += `<span class="rail-head-twisty">${opts.open ? ICON.chevronDown : ICON.chevronRight}</span>`;
+    btn.innerHTML = html;
+    btn.querySelector(".rail-head-title").textContent = opts.title;
+    btn.disabled = !!opts.forcedOpenBySearch;
+    btn.title = opts.forcedOpenBySearch
+      ? (opts.searchTitle || "Held open by search")
+      : (opts.open ? opts.openTitle : opts.closedTitle);
     btn.onclick = (e) => {
       e.stopPropagation();
-      if (state.railArchiveOpen) delete state.railArchiveOpen;
-      else state.railArchiveOpen = true;
-      saveRailShape();
+      // Toggle: currently open → collapse; currently closed → expand.
+      setRailGroupCollapsed(opts.group, opts.open);
       renderRail();
     };
     head.appendChild(btn);
     return head;
+  }
+
+  /**
+   * Most-recent conversations across every project whose preview (or selected
+   * page) has loaded, plus pinned sessions that may not be in those previews.
+   * Newest first. Within RECENT, ids are unique; the same row may still appear
+   * again under PINNED and under its PROJECT — that duplication is intentional.
+   */
+  function railRecentRows() {
+    const byId = new Map();
+    for (const repo of state.repos || []) {
+      const known = railKnownRows(repo);
+      if (!known) continue;
+      for (const s of known.entries) {
+        if (s && s.id) byId.set(s.id, s);
+      }
+    }
+    for (const s of state.pinnedSessions || []) {
+      if (!s || !s.id) continue;
+      // Prefer the pinned record when both exist (carries pinnedAt).
+      const prev = byId.get(s.id);
+      byId.set(s.id, prev ? { ...prev, ...s } : s);
+    }
+    return [...byId.values()].sort(
+      (a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)
+        || String(b.id || "").localeCompare(String(a.id || "")),
+    );
+  }
+
+  /**
+   * Preview / Show more / Show less for a flat session list (RECENT or a repo).
+   * Labels carry no digits — three disagreeing totals stranded rows behind a
+   * lying count (see the scar comment on renderRailSessions).
+   */
+  function appendRailSessionSlice(body, entries, expandKey, rowFactory) {
+    const expanded = !!state.railExpanded[expandKey];
+    const visible = expanded ? RAIL_EXPANDED : RAIL_PREVIEW;
+    const shown = entries.slice(0, visible);
+    for (const s of shown) body.appendChild(rowFactory(s));
+    const reachable = Math.min(entries.length, RAIL_EXPANDED);
+    const hidden = Math.max(0, reachable - shown.length);
+    if (hidden > 0 && !expanded) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "rail-more";
+      more.textContent = "Show more";
+      more.onclick = (e) => {
+        e.stopPropagation();
+        state.railExpanded[expandKey] = true;
+        saveRailShape();
+        renderRail();
+      };
+      body.appendChild(more);
+    } else if (expanded && entries.length > RAIL_PREVIEW) {
+      const less = document.createElement("button");
+      less.type = "button";
+      less.className = "rail-more";
+      less.textContent = "Show less";
+      less.onclick = (e) => {
+        e.stopPropagation();
+        delete state.railExpanded[expandKey];
+        saveRailShape();
+        renderRail();
+      };
+      body.appendChild(less);
+    }
   }
 
   /** The catalog's label for a cwd — repos that share a leaf name are only
@@ -3715,7 +4346,12 @@
     // forever meant the one section you most often want out of the way was the
     // one you could not fold. Only in Projects — down in Archived the section is
     // already closed, so holding one open inside it would be noise.
-    const collapsed = !!state.railCollapsed[key];
+    //
+    // ONE flag drives both the session list and the folder icon. `expanded` is
+    // the positive form so the icon cannot drift from the list (closed icon on
+    // an open section was a real screenshot bug when the two read different
+    // shapes of the same store).
+    const expanded = !state.railCollapsed[key];
 
     // No marker for the selected or the live project. The conversation you are
     // reading is highlighted where it sits, which says which project you are in
@@ -3723,46 +4359,69 @@
     const sec = document.createElement("section");
     sec.className = "rail-repo" +
       (repo.available ? "" : " unavailable") +
-      (collapsed ? " collapsed" : "");
+      (expanded ? "" : " collapsed");
+    // Mirror for CSS/tests: data-expanded is the same boolean that controls the list.
+    sec.dataset.expanded = expanded ? "1" : "0";
 
     const head = document.createElement("div");
     head.className = "rail-repo-head";
     head.title = repo.cwd;
+    // Whole header toggles expand/collapse (folder is indicator only). Hover
+    // actions stopPropagation so a pin/new/menu click does not also fold.
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", String(expanded));
+    head.setAttribute(
+      "aria-label",
+      (expanded ? "Collapse " : "Expand ") + (repo.label || cwdLeaf(repo.cwd)),
+    );
 
-    // Collapse is its own control, so clicking the NAME can mean "work here"
-    // without also folding the rows away.
-    const twisty = document.createElement("button");
-    twisty.type = "button";
+    // Folder open/closed indicator — same `expanded` flag as the session list.
+    const twisty = document.createElement("span");
     twisty.className = "rail-twisty";
-    twisty.innerHTML = collapsed ? ICON.chevronRight : ICON.chevronDown;
-    twisty.title = collapsed ? "Expand" : "Collapse";
-    twisty.setAttribute("aria-expanded", String(!collapsed));
-    twisty.onclick = (e) => {
-      e.stopPropagation();
-      if (collapsed) delete state.railCollapsed[key];
-      else state.railCollapsed[key] = true;
+    twisty.innerHTML = expanded ? ICON.folderOpen : ICON.folderClosed;
+    twisty.setAttribute("aria-hidden", "true");
+    head.appendChild(twisty);
+
+    const name = document.createElement("span");
+    name.className = "rail-repo-name";
+    // Worktree keeps a branch glyph; ordinary projects rely on the folder indicator.
+    name.innerHTML = repo.worktreeLabel
+      ? `<span class="rail-repo-icon">${ICON.gitBranch}</span><span class="rail-repo-label"></span>`
+      : `<span class="rail-repo-label"></span>`;
+    name.querySelector(".rail-repo-label").textContent = repo.label || cwdLeaf(repo.cwd);
+    head.appendChild(name);
+
+    const toggleRepoExpand = () => {
+      if (expanded) state.railCollapsed[key] = true;
+      else delete state.railCollapsed[key];
       saveRailShape();
       renderRail();
     };
-    head.appendChild(twisty);
-
-    const name = document.createElement("button");
-    name.type = "button";
-    name.className = "rail-repo-name";
-    name.disabled = !repo.available || repoSwitcherLocked();
-    name.innerHTML =
-      `<span class="rail-repo-icon">${repo.worktreeLabel ? ICON.gitBranch : ICON.folder}</span>` +
-      `<span class="rail-repo-label"></span>`;
-    name.querySelector(".rail-repo-label").textContent = repo.label || cwdLeaf(repo.cwd);
-    name.onclick = () => {
-      if (!repo.available || repoSwitcherLocked() || selected) return;
-      selectRailRepo(repo);
+    head.onclick = (e) => {
+      // Actions (and anything inside them) must not fold the section.
+      if (e.target.closest(".rail-repo-actions")) return;
+      // Unselected project: switch into it and ensure the section is open
+      // (desktop multi-folder / AFK Pilot). Selected project: toggle fold.
+      if (!selected && repo.available && !repoSwitcherLocked()) {
+        delete state.railCollapsed[key];
+        saveRailShape();
+        selectRailRepo(repo);
+        return;
+      }
+      toggleRepoExpand();
     };
-    head.appendChild(name);
-
+    head.onkeydown = (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target !== head) return;
+      e.preventDefault();
+      head.click();
+    };
 
     const actions = document.createElement("div");
     actions.className = "rail-repo-actions";
+    // Clicks inside the action cluster must not bubble to the head toggle.
+    actions.addEventListener("click", (e) => e.stopPropagation());
 
     // New session in ANY project, selected or not. The host only ever creates in
     // the repo it currently has selected, so for another one this is really
@@ -3855,7 +4514,8 @@
     head.appendChild(actions);
     sec.appendChild(head);
 
-    if (!collapsed) sec.appendChild(renderRailSessions(repo, key));
+    // Same `expanded` as the folder icon — never a second, independent flag.
+    if (expanded) sec.appendChild(renderRailSessions(repo, key));
     return sec;
   }
 
@@ -3887,7 +4547,22 @@
       return body;
     }
 
-    // A search answers itself: showing three of five matches behind a "Show 2
+    // Selected project: empty `railSelectedRows` before the first unfiltered
+    // `sessions` frame means "list not received yet", not "zero conversations".
+    // Without this the rail permanently said "No sessions yet" when the host
+    // delayed or omitted that frame (desktop cold start used to only push
+    // sibling `repoSessions` previews).
+    if (
+      sameCwd(repo.cwd, state.selectedRepoCwd) &&
+      !rows.entries.length &&
+      !state.railSelectedRowsKnown &&
+      !state.railSessionsStale
+    ) {
+      body.appendChild(railNote("Loading…"));
+      return body;
+    }
+
+    // A search answers itself: showing three of five matches behind a "Show
     // more" would hide the very rows the query asked for. Matching by project
     // name instead means the whole project matched, so its list stays as it was.
     const q = railFilterText();
@@ -3898,48 +4573,15 @@
       return body;
     }
 
-    const visible = state.railExpanded[key] ? RAIL_EXPANDED : RAIL_PREVIEW;
-    const shown = rows.entries.slice(0, visible);
-    if (!shown.length) {
+    if (!rows.entries.length) {
       body.appendChild(railNote("No sessions yet"));
       return body;
     }
-    for (const s of shown) body.appendChild(renderRailSessionRow(s, repo));
 
-    // What expanding ACTUALLY reveals, which is two caps deep:
-    //   - never the host's `total` (it counts index slots, including subagent
-    //     sessions the list hides, so it promises rows that do not exist), and
-    //   - never the full loaded list either, because expanding stops at
-    //     RAIL_EXPANDED. A repo with 28 loaded sessions offered "Show 25 more"
-    //     and then revealed 17, stranding the last 8 behind no control at all.
-    // The rail is a jump list; history remains the place that holds everything.
-    const reachable = Math.min(rows.entries.length, RAIL_EXPANDED);
-    const hidden = Math.max(0, reachable - shown.length);
-    if (hidden > 0 && !state.railExpanded[key]) {
-      const more = document.createElement("button");
-      more.type = "button";
-      more.className = "rail-more";
-      more.textContent = `Show ${hidden} more`;
-      more.onclick = (e) => {
-        e.stopPropagation();
-        state.railExpanded[key] = true;
-        saveRailShape();
-        renderRail();
-      };
-      body.appendChild(more);
-    } else if (state.railExpanded[key] && rows.entries.length > RAIL_PREVIEW) {
-      const less = document.createElement("button");
-      less.type = "button";
-      less.className = "rail-more";
-      less.textContent = "Show less";
-      less.onclick = (e) => {
-        e.stopPropagation();
-        delete state.railExpanded[key];
-        saveRailShape();
-        renderRail();
-      };
-      body.appendChild(less);
-    }
+    // One-step reveal, no counters. Three numbers disagree (host total, loaded
+    // length, RAIL_EXPANDED cap); a count-labelled control stranded rows. Depth
+    // belongs in the history popover. See appendRailSessionSlice.
+    appendRailSessionSlice(body, rows.entries, key, (s) => renderRailSessionRow(s, repo));
     return body;
   }
 
@@ -4003,14 +4645,31 @@
       row.appendChild(where);
     }
 
-    // No pin mark. The Pinned section at the top of the rail already says which
-    // conversations are pinned — more plainly than a glyph could — and repeating
-    // it on the copy inside the project is a second answer to a question already
-    // answered. The menu still says Unpin wherever you open it.
-    if (typeof s.pinnedAt === "number") row.classList.add("pinned");
+    const isPinned = typeof s.pinnedAt === "number";
+    if (isPinned) row.classList.add("pinned");
 
     const actions = document.createElement("div");
     actions.className = "rail-session-actions";
+    // Hover pin control (one click). Hidden until :hover / :focus-within; forced
+    // visible on touch via @media (hover: none). Capability-gated like the menu.
+    if (state.pinnedSessionsKnown) {
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.className = "rail-action-btn rail-pin-btn" + (isPinned ? " active" : "");
+      pinBtn.innerHTML = isPinned ? ICON.pinFilled : ICON.pin;
+      pinBtn.title = isPinned ? "Unpin conversation" : "Pin conversation";
+      pinBtn.setAttribute("aria-label", pinBtn.title);
+      pinBtn.onclick = (e) => {
+        e.stopPropagation();
+        vscode.postMessage({
+          type: "toggleSessionPin",
+          id: s.id,
+          cwd: s.cwd || repo.cwd,
+          pinned: !isPinned,
+        });
+      };
+      actions.appendChild(pinBtn);
+    }
     actions.appendChild(railMenuButton("Session actions", () => railSessionMenuItems(s, repo, active)));
     row.appendChild(actions);
     row.onclick = railSessionOpener(s, repo, active);
@@ -4033,6 +4692,50 @@
         onSelect: () => railRenameSession(s, cwd),
       },
     ];
+    // "Continue in a new chat" belongs with the other things you do TO a
+    // conversation (rename, pin, delete), not in the composer's settings beside
+    // model and effort — those adjust how the agent answers; this one makes a
+    // different conversation. Only for the conversation you are actually in: a
+    // fork continues from the live transcript, so offering it on some other row
+    // in the history list would promise something it cannot do.
+    if (active) {
+      items.push({
+        label: "Continue in a new chat",
+        icon: ICON.gitFork,
+        onSelect: () => beginContinueInNewChat(),
+      });
+      // Worktree upkeep rides along for the same reason, and only while you are
+      // in one — you cannot apply a checkout you are not standing in.
+      //
+      // Not from a remote, though. The host runs apply/remove against ITS
+      // focused session, not the one that asked, so a phone in repo B would
+      // remove the worktree the desk was standing in — and Remove discards
+      // unapplied edits. Hidden rather than shown-and-dropped: the host now
+      // refuses these from remote, and a control that silently does nothing is
+      // worse than one that isn't there.
+      if (state.isWorktree && !IS_REMOTE) {
+        items.push({
+          label: "Apply worktree",
+          icon: ICON.gitBranch,
+          onSelect: () => uiConfirm({
+            title: "Apply worktree?",
+            body: "Merges this worktree's edits back into the main checkout.",
+            confirmLabel: "Apply",
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); }),
+        });
+        items.push({
+          label: "Remove worktree",
+          icon: ICON.gitBranch,
+          danger: true,
+          onSelect: () => uiConfirm({
+            title: "Remove worktree?",
+            body: "This deletes the isolated checkout. Unapplied edits are lost.",
+            confirmLabel: "Remove",
+            danger: true,
+          }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); }),
+        });
+      }
+    }
     // Capability, never a version: a host that has never sent `pinnedSessions`
     // will silently drop `toggleSessionPin`, so offering the control there gives
     // a control that does nothing — worse than not having one. The frame arrives
@@ -4951,11 +5654,11 @@
   // `detailShouldExpand` is group-agnostic.
   function groupShouldExpand(el) {
     if (state.toolExpandOverride !== null) return state.toolExpandOverride;
-    return state.expandCommandOutputs && !!(el && el.querySelector(".has-details"));
+    return effectiveExpandCommandOutputs() && !!(el && el.querySelector(".has-details"));
   }
   function detailShouldExpand() {
     if (state.toolExpandOverride !== null) return state.toolExpandOverride;
-    return state.expandCommandOutputs;
+    return effectiveExpandCommandOutputs();
   }
   // Open/close a group's body + chevron (safe on an in-progress group — the CSS
   // shows the chevron once `.expanded` is set even mid-run).
@@ -6143,7 +6846,7 @@
     hideGrokking(); // real content arrived — the Thinking block takes over
     // Traces hidden (the default): stand in with a "Thinking…" row. While
     // replaying a loaded session there's no live reasoning to indicate.
-    if (!state.showThinking && !state.replaying) showThinkingIndicator();
+    if (!effectiveShowThinking() && !state.replaying) showThinkingIndicator();
     state.activeUserEl = null;
     state.skipUserBubble = false; // marker-only verdict turn is over
     clearWelcome();
@@ -6216,8 +6919,71 @@
   }
 
   function applyChatZoom() {
-    const zoom = IS_REMOTE ? state.remoteFontScale : state.hostFontScale;
+    const zoom = CLIENT_OWNS_FONT_SCALE ? state.remoteFontScale : state.hostFontScale;
     document.body.style.setProperty("--chat-zoom", String(zoom));
+  }
+
+  /** Set client-owned zoom, persist, report (remote), refresh gear if open. */
+  function setClientFontScale(next) {
+    if (!CLIENT_OWNS_FONT_SCALE) return state.remoteFontScale;
+    const clamped = clampClientFontScale(next);
+    state.remoteFontScale = clamped;
+    storeRemotePref(CLIENT_FONT_SCALE_KEY, clamped);
+    applyChatZoom();
+    if (IS_REMOTE) reportRemotePreferences();
+    const slider = document.getElementById("remote-font-scale");
+    if (slider) {
+      slider.value = String(Math.round(clamped * 100));
+      const output = slider.parentElement && slider.parentElement.querySelector("output");
+      if (output) output.textContent = `${Math.round(clamped * 100)}%`;
+    }
+    return clamped;
+  }
+
+  function wireClientFontScaleShortcuts() {
+    if (!CLIENT_OWNS_FONT_SCALE || window.__grokFontScaleWired) return;
+    window.__grokFontScaleWired = true;
+    // Test seam (also handy for manual probes).
+    window.__grokFontScale = {
+      get: () => state.remoteFontScale,
+      set: setClientFontScale,
+      clamp: clampClientFontScale,
+      step: stepClientFontScale,
+      min: CLIENT_FONT_SCALE_MIN,
+      max: CLIENT_FONT_SCALE_MAX,
+      stepSize: CLIENT_FONT_SCALE_STEP,
+      key: CLIENT_FONT_SCALE_KEY,
+    };
+    window.addEventListener("keydown", (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      // Ignore when an editable field is composing IME, but allow zoom over inputs
+      // (desktop apps zoom the whole UI regardless of focus).
+      const key = e.key;
+      if (key === "=" || key === "+" || key === "Add") {
+        e.preventDefault();
+        setClientFontScale(stepClientFontScale(state.remoteFontScale, CLIENT_FONT_SCALE_STEP));
+      } else if (key === "-" || key === "Subtract") {
+        e.preventDefault();
+        setClientFontScale(stepClientFontScale(state.remoteFontScale, -CLIENT_FONT_SCALE_STEP));
+      } else if (key === "0" || key === "Digit0" || key === "Numpad0") {
+        // Ctrl/Cmd+0 resets to 100%.
+        if (key === "0" || e.code === "Digit0" || e.code === "Numpad0") {
+          e.preventDefault();
+          setClientFontScale(1);
+        }
+      }
+    });
+    window.addEventListener(
+      "wheel",
+      (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        // Continuous scale; prevent Chromium page-zoom fighting us.
+        e.preventDefault();
+        const delta = e.deltaY === 0 ? 0 : e.deltaY > 0 ? -0.05 : 0.05;
+        if (delta) setClientFontScale(stepClientFontScale(state.remoteFontScale, delta));
+      },
+      { passive: false },
+    );
   }
 
   function setRemoteTtsEnabled(enabled) {
@@ -6631,8 +7397,8 @@
   // toggling is instant with no reload — and turning traces back on drops the
   // stand-in indicator.
   function applyThinkingVisibility() {
-    document.body.classList.toggle("thinking-hidden", !state.showThinking);
-    if (state.showThinking) hideThinkingIndicator();
+    document.body.classList.toggle("thinking-hidden", !effectiveShowThinking());
+    if (effectiveShowThinking()) hideThinkingIndicator();
   }
 
   // True when *something* already tells the user grok is mid-work or awaiting
@@ -6645,7 +7411,7 @@
       state.thinkingIndicatorEl ||
       state.activeToolGroupEl ||
       (state.activeAgentEl && (state.activeAgentRaw || "").trim()) ||
-      (state.showThinking && state.activeThoughtEl) ||
+      (effectiveShowThinking() && state.activeThoughtEl) ||
       messagesEl.querySelector(".card:not(.resolved)")
     );
   }
@@ -6804,7 +7570,7 @@
         // A permission arrival force-scrolls the transcript. Ignore pointer
         // targeting during that layout transition so a click intended for the
         // adjacent Thinking disclosure cannot land on Reject (#76).
-        if (state.showThinking) {
+        if (effectiveShowThinking()) {
           btn.classList.add("arming");
           setTimeout(() => btn.classList.remove("arming"), 1000);
         }
@@ -8593,6 +9359,8 @@
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
         if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
         if (typeof msg.processingSound === "boolean") state.processingSound = msg.processingSound;
+        // Absent appPurpose (older host) → Knowledge work — smaller surface.
+        state.appPurpose = msg.appPurpose === "coding" ? "coding" : "knowledge";
         if (typeof msg.readRepliesAloud === "boolean") {
           state.readRepliesAloud = msg.readRepliesAloud;
           if (IS_REMOTE && !state.remotePreferencesSupported) {
@@ -8601,6 +9369,8 @@
           }
         }
         applyThinkingVisibility();
+        applyExpandCommandOutputs();
+        syncGearPlacement();
         break;
       case "planModeAvailability":
         state.planModeAvailable = msg.available !== false;
@@ -8680,15 +9450,29 @@
         // initialState + is baked into the <body class> by the host to avoid a flash.
         state.showThinking = !!msg.value;
         applyThinkingVisibility();
-        if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        if (state.gearView === "config") renderConfigDebugPanel();
+        else if (state.gearView === "basic") renderBasicSettingsPanel();
+        break;
+      case "appPurpose":
+        // Live global disclosure preference (Knowledge work / Coding).
+        state.appPurpose = msg.value === "coding" ? "coding" : "knowledge";
+        applyThinkingVisibility();
+        applyExpandCommandOutputs();
+        if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
+        else if (state.gearView === "config") renderConfigDebugPanel();
+        else if (state.gearView === "basic") renderBasicSettingsPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+        syncGearPlacement();
         break;
       case "fontScale":
         // Live chat-only zoom (grok.chatFontScale). Initial value is baked into
         // <body style="--chat-zoom:…"> by the host; this just applies later edits.
         // The CSS derives both `zoom` and the viewport-height compensation from
         // this one variable, so the composer stays pinned to the bottom.
+        // Client-owned zoom (remote + desktop) ignores host updates so local
+        // keyboard/wheel/slider choice is not clobbered.
         state.hostFontScale = Number(msg.value) || 1;
-        applyChatZoom();
+        if (!CLIENT_OWNS_FONT_SCALE) applyChatZoom();
         break;
       case "focusInput":
         // Send Selection / Send File / @-mention (#43): the host revealed the
@@ -10164,6 +10948,7 @@
     });
   }
   applyChatZoom();
+  wireClientFontScaleShortcuts();
   initMermaid();
   initMathJax();
   claimRemoteTabIdentity((finalToken) => {

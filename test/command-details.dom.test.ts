@@ -73,7 +73,7 @@ describe("command details (#41)", () => {
     dispatch(window, {
       type: "initialState",
       effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
-      showThinking: false, expandCommandOutputs: true,
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
     });
     dispatch(window, exec("a", "git status"));
     close(window);
@@ -493,7 +493,7 @@ describe("group auto-expand under grok.expandCommandOutputs", () => {
     dispatch(h.window, {
       type: "initialState",
       effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
-      showThinking: false, expandCommandOutputs: true,
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
     });
     return h;
   };
@@ -524,6 +524,7 @@ describe("group auto-expand under grok.expandCommandOutputs", () => {
 
   it("toggling the setting live expands/collapses existing command-bearing groups only", () => {
     const { window, doc } = bootWebview(); // setting OFF by default
+    dispatch(window, { type: "appPurpose", value: "coding" });
 
     dispatch(window, exec("c1", "git status"));
     dispatch(window, read("r1", "src/a.ts"));
@@ -614,6 +615,7 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
 
   it("last action wins: flipping the gear setting clears the latch", () => {
     const { window, doc } = bootWebview();
+    dispatch(window, { type: "appPurpose", value: "coding" });
     dispatch(window, exec("c1", "git status"));
     dispatch(window, read("r1", "src/a.ts"));
     close(window);
@@ -637,7 +639,7 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
     dispatch(window, {
       type: "initialState",
       effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
-      showThinking: false, expandCommandOutputs: true,
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
     });
     dispatch(window, exec("c1", "git status"));
     dispatch(window, read("r1", "src/a.ts"));

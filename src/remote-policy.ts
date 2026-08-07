@@ -15,6 +15,7 @@ import { isImageChip, type FileChip } from "./chips";
 import { isPrimerText } from "./grok-primer";
 import { countsAsUserBubble } from "./plan-restore";
 import { historyEventCount } from "./rewind";
+import { cwdIsAuthorized } from "./workspace-auth";
 
 export const REMOTE_HISTORY_USER_LIMIT = 10;
 /** Keep reconnect history comfortably below the relay's 36 MiB WS ceiling. */
@@ -224,18 +225,32 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   clearQueuedSends: "propose",
   steerSend: "propose",
   forkSession: "propose",
-  // Worktree create/apply/remove and rewind are driven by native VS Code UI on
-  // the host (input box for the worktree label, confirms, QuickPick) — a remote
-  // tap would stall on a dialog nobody at the desk can see. Desktop-only until
-  // the flows get remote-capable UI (2026-07-24; the remote client also hides
-  // these gear items).
+  // Worktree create/apply/remove: REVERTED to host-local 2026-08-07, hours
+  // after being widened to "propose" the same day. The widening was safe in
+  // itself — the authorization underneath (git-list, path containment) never
+  // changed. What made it wrong is that the handlers do not act on the session
+  // that asked: `applyWorktree`/`removeWorktree` run against `this.focused`,
+  // and `newWorktreeSession` against `workspaceRoot()`, while `session` sits
+  // unused in scope right beside them (contrast `forkSession`, two cases up,
+  // which threads it correctly). So a phone driving repo B could remove the
+  // worktree the desk was focused on in repo A, discarding unapplied edits —
+  // work loss, triggered by a control that looked like it applied to what you
+  // were looking at.
+  //
+  // The real fix is to give these three an explicit target session, the way
+  // fork has one. That is a session-ownership change through worktree DELETION,
+  // and this codebase has been bitten three times by an identifier captured
+  // before an await going stale after it — so it is not a change to make in a
+  // hurry. Until then the capability goes back where it was safe. The rail's
+  // ⋯ menu hides both entries on remote clients, so nothing offers a control
+  // the host will drop.
   newWorktreeSession: "host-local",
   applyWorktree: "host-local",
   removeWorktree: "host-local",
+  // Rewind discards work already on disk — stays host-local. Desktop (local
+  // host) supports it via confirmInChat; remote must not.
   rewindSession: "host-local",
-  // Edit-and-resend is a rewind underneath (native modal confirm), so it carries
-  // the same desktop-only restriction — and it discards code, which a remote tap
-  // must not trigger against a desk nobody is watching.
+  // Edit-and-resend is a rewind underneath, so the same host-local gate.
   editLastMessage: "host-local",
   // The last gate before a rewind reverts files — only the local webview answers.
   uiConfirmAnswer: "host-local",
@@ -273,6 +288,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   openProjectConfig: "host-local",
   runMcpList: "host-local",
   showLogs: "host-local",
+  openSettings: "host-local",
   moveView: "host-local",
   dropFile: "host-local",
   pickFile: "host-local",
@@ -290,6 +306,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setProcessingSound: "host-local",
   setReadRepliesAloud: "host-local",
   setSummarizeRepliesAloud: "host-local",
+  // Machine-global disclosure preference in ~/.grok/client-state — the web
+  // client inherits and may set it (host-owned store, not VS Code settings).
+  setAppPurpose: "propose",
   // A remote may spend one extra xAI call to shorten text it is about to speak.
   // The host independently requires that tab's reported TTS + summary prefs.
   summarizeSpeech: "propose",
@@ -339,6 +358,8 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     case "resumeSession":
     // Same shape as resume: the cwd is optional (the host falls back to its own
     // bounded lookup), but when given it must name a discovered checkout.
+    // Host additionally re-checks the resolved pin home against the *live*
+    // authorized open set before mutating (closed-project pin hole).
     case "toggleSessionPin":
       return !msg.cwd || isKnownCwd(msg.cwd);
     default:
@@ -410,6 +431,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   voiceError: "mirror",
   initialState: "mirror",
   showThinking: "mirror",
+  appPurpose: "mirror",
   fontScale: "mirror",
   grokUpdateStatus: "mirror",
   initialized: "mirror",
@@ -490,6 +512,198 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   steerUnavailable: "mirror",
   usage: "mirror",
 };
+
+/**
+ * Whether delivering this HostMsg to a remote client requires a live authorized
+ * project scope (open folder / worktree). Independent of {@link OUTBOUND_DISPOSITION}
+ * (mirror vs host-local): a mirrored transcript is still project data.
+ *
+ * - `none` — device prefs, errors, UI chrome with no project path fields. Always OK.
+ * - `scope` — conversation/session payload; caller must pass the session or
+ *   repo cwd, which must be in the live authorized set.
+ * - `entries` — list frames; every entry's `cwd` must be authorized (empty list OK).
+ * - `message-cwd` — frame carries its own `cwd` field that must be authorized.
+ * - `repos-catalog` — `repos` frame: every entry cwd authorized; selectedCwd /
+ *   activeCwd authorized or empty (empty = unbound after rehome; closed ≠ empty).
+ * - `optional-cwd` — frame carries a `cwd` that is authorized or empty (no
+ *   closed-project leak via reconnect shell).
+ *
+ * Exhaustive over HostMsg so a new type cannot ship without a classification.
+ */
+export type OutboundProjectAuth =
+  | "none"
+  | "scope"
+  | "entries"
+  | "message-cwd"
+  | "repos-catalog"
+  | "optional-cwd";
+
+export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth> = {
+  // Device-global / host chrome — not project data.
+  showThinking: "none",
+  appPurpose: "none",
+  fontScale: "none",
+  grokUpdateStatus: "none",
+  cliUpdating: "none",
+  onboarding: "none",
+  expandCommandOutputs: "none",
+  steerByDefault: "none",
+  soundNotifications: "none",
+  processingSound: "none",
+  readRepliesAloud: "none",
+  summarizeRepliesAloud: "none",
+  moveComposerCaret: "none",
+  remoteStatus: "none",
+  error: "none",
+  hostNotice: "none",
+  focusInput: "none",
+  openModePopover: "none",
+  // Open-folder catalog — project-bearing selectedCwd/activeCwd/entries validated.
+  repos: "repos-catalog",
+  // Safe wipe — no project path fields.
+  clearMessages: "none",
+  // Reconnect shell carries cwd; empty or authorized only.
+  initialState: "optional-cwd",
+  // Session-start chrome; delivered via emit → sendRemoteSession with scope.
+  initialized: "scope",
+  // voiceConfigured is project-scoped (sendPhrase / key resolution per cwd) —
+  // a closed or re-homed tab must not keep the prior project's voice prefs.
+  // Content-bearing voiceSubmit / voiceTranscript / voicePartial use scope so a
+  // closed-project capture cannot land after rehome. voiceState / voiceError are
+  // control chrome without project metadata.
+  voiceState: "none",
+  voiceConfigured: "scope",
+  voicePartial: "scope",
+  voiceSubmit: "scope",
+  voiceTranscript: "scope",
+  voiceError: "none",
+  // History / session lists — empty entries are fine; a closed cwd in an entry is not.
+  sessions: "entries",
+  pinnedSessions: "entries",
+  repoSessions: "message-cwd",
+  sessionName: "message-cwd",
+  // Session-scoped live + restore payload — requires authorized session/repo cwd.
+  session: "scope",
+  sessionDot: "scope",
+  chips: "scope",
+  modelChanged: "scope",
+  modeChanged: "scope",
+  planModeAvailability: "scope",
+  commandsUpdate: "scope",
+  mentionResults: "scope",
+  userMessage: "scope",
+  agentStart: "scope",
+  thoughtChunk: "scope",
+  messageChunk: "scope",
+  userMessageChunk: "scope",
+  media: "scope",
+  imageFull: "scope",
+  speechSummary: "scope",
+  historyReplay: "scope",
+  historyBatch: "scope",
+  permissionHistoryQueue: "scope",
+  planHistoryQueue: "scope",
+  toolCall: "scope",
+  toolCallUpdate: "scope",
+  permissionRequest: "scope",
+  permissionOptions: "scope",
+  permissionResolved: "scope",
+  exitPlanRequest: "scope",
+  planResolved: "scope",
+  questionRequest: "scope",
+  planNotice: "scope",
+  autoCompactNotice: "scope",
+  planBlocked: "scope",
+  promptComplete: "scope",
+  contextUsage: "scope",
+  agentReset: "scope",
+  agentError: "scope",
+  agentEnd: "scope",
+  exit: "scope",
+  setBusy: "scope",
+  summarizing: "scope",
+  sessionContext: "scope",
+  xaiNotification: "scope",
+  subagentUpdate: "scope",
+  runProgress: "scope",
+  commandOutput: "scope",
+  setAllToolDetails: "scope",
+  restoreComposer: "scope",
+  truncateMessages: "scope",
+  uiConfirmRequest: "scope",
+  queuedSends: "scope",
+  submitQueuedSend: "scope",
+  steerUnavailable: "scope",
+  usage: "scope",
+};
+
+/**
+ * Sole authorization predicate for remote HostMsg delivery. Callers pass the
+ * session/repo cwd as `scopeCwd` for `scope` types; list frames are checked
+ * against their entries (and `message-cwd` against the frame's own field).
+ *
+ * Returns false when project/session/transcript data would leave for a closed
+ * folder — independent of whether revoke already cleared per-tab mappings.
+ */
+export function mayDeliverRemoteHostMsg(
+  msg: HostMsg,
+  authorizedCwds: readonly string[],
+  scopeCwd: string | undefined,
+  sameCwd: (a: string, b: string) => boolean,
+): boolean {
+  if (msg.type === "historyBatch") {
+    return msg.messages.every((nested) =>
+      mayDeliverRemoteHostMsg(nested, authorizedCwds, scopeCwd, sameCwd),
+    );
+  }
+  switch (OUTBOUND_PROJECT_AUTH[msg.type]) {
+    case "none":
+      return true;
+    case "entries": {
+      const entries =
+        msg.type === "sessions" || msg.type === "pinnedSessions"
+          ? msg.entries
+          : [];
+      return entries.every(
+        (e) => !e.cwd || cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd),
+      );
+    }
+    case "repos-catalog": {
+      if (msg.type !== "repos") return false;
+      // Empty selected/active is intentional after rehome (unbound tab). A
+      // non-empty closed path is a leak — refuse rather than mirror builders.
+      if (msg.selectedCwd && !cwdIsAuthorized(msg.selectedCwd, authorizedCwds, sameCwd)) {
+        return false;
+      }
+      if (msg.activeCwd && !cwdIsAuthorized(msg.activeCwd, authorizedCwds, sameCwd)) {
+        return false;
+      }
+      return msg.entries.every(
+        (e) => !e.cwd || cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd),
+      );
+    }
+    case "optional-cwd": {
+      if (msg.type !== "initialState") return false;
+      return !msg.cwd || cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd);
+    }
+    case "message-cwd": {
+      if (msg.type === "repoSessions") {
+        if (!cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd)) return false;
+        return msg.entries.every(
+          (e) => !e.cwd || cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd),
+        );
+      }
+      if (msg.type === "sessionName") {
+        return cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd);
+      }
+      return false;
+    }
+    case "scope":
+      return cwdIsAuthorized(scopeCwd, authorizedCwds, sameCwd);
+    default:
+      return false;
+  }
+}
 
 // ---------- media inlining ----------
 

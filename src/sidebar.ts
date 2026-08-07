@@ -1,4 +1,13 @@
-import * as vscode from "vscode";
+import type {
+  Host,
+  HostCancellationToken,
+  HostContext,
+  HostDisposable,
+  HostTextDocumentContentProvider,
+  HostWebview,
+  HostWebviewView,
+} from "./host";
+import { Uri, disposeAll, formatRemoteInstallId, shouldRehydrateOnWebviewReady } from "./host";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,6 +23,9 @@ import {
   finishQueuedSendCommit,
   pendingPermissionOptions,
   preferredPermissionAllowOption,
+  rehydrateBusyChrome,
+  sessionHasWorkInFlight,
+  sessionReadyForPrompt,
   sessionUiSnapshot,
   turnIsInFlight,
 } from "./session";
@@ -38,6 +50,7 @@ import {
 } from "./telemetry";
 import { randomUUID } from "node:crypto";
 import { execGrokCli } from "./cli-process";
+import { listGitWorktreePaths } from "./git-worktree-list";
 import {
   locateGrokCli,
   extensionWasUpgraded,
@@ -91,7 +104,13 @@ import {
   orderMentionIndex,
   resolveMentionAttachmentPath,
 } from "./mention";
-import { configForcesAlwaysApprove } from "./grok-config";
+import {
+  alwaysApproveSource,
+  configForcesAlwaysApprove,
+  globalConfigPath,
+  projectConfigPath,
+} from "./grok-config";
+import { sessionScopedRoots } from "./auth-roots";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import {
   prepareFileUpload,
@@ -104,12 +123,14 @@ import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, sh
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
 import { isPrimerText } from "./grok-primer";
+import { AsyncSerialQueue } from "./async-serial";
 import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
+import { withoutArchiveFields } from "./project-discovery";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
-import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
@@ -118,6 +139,7 @@ import {
   SessionListEntry,
   SessionMetaOverrides,
   RepoArchives,
+  RepoListEntry,
   RepoPins,
   carrySessionName,
   clearSessions,
@@ -126,18 +148,28 @@ import {
   deleteSessionDir,
   discoverRepos,
   fallbackName,
+  findSessionCatalogCwd,
   forkDisplayName,
   indexSessions,
   isEmptySession,
   isPathInside,
   mostRecentSession,
   normalizeRepoPath,
+  orderedResumeCwdCandidates,
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
-  sessionsDirFor,
+  sessionDirFor,
 } from "./sessions";
 import {
+  base64DecodedByteLength,
+  isRefusedMediaPath,
+  isTrustedGeneratedMediaPath,
+  MAX_INLINE_MEDIA_BYTES,
+} from "./media-serve";
+import { revalidateOpenFileForUse } from "./desktop/desktop-policy";
+import {
+  filterWorktreesForSourceRepo,
   gitRootForPath,
   isGitRepo,
   matchWorktreeForCwd,
@@ -146,12 +178,23 @@ import {
   normalizeFsPath,
   pathsEqual,
   sanitizeWorktreeLabel,
+  worktreePathAuthorizedForRepo,
   type WorktreeParentRef,
   type WorktreeRecord,
   worktreeCwdsForRepo,
   worktreeDisplayName,
   worktreesForRepo,
 } from "./worktree";
+import {
+  authorizedListCwd,
+  cwdIsAuthorized,
+  filterEntriesByAuthorizedCwd,
+  imageHandlesToRevoke,
+  imagePathStillAuthorized,
+  pathBoundToClosedFolder,
+  remoteBoundCwdStillAuthorized,
+  sessionBoundToClosedFolder,
+} from "./workspace-auth";
 import {
   formatRewindPointDetail,
   formatRewindPointLabel,
@@ -171,6 +214,12 @@ import {
   parseRunProgressUpdate,
   workflowControlCommand,
 } from "./run-progress";
+import {
+  APP_PURPOSE_KEY,
+  DEFAULT_APP_PURPOSE,
+  parseAppPurpose,
+  type AppPurpose,
+} from "./app-purpose";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -280,17 +329,18 @@ const GROK_DIFF_SCHEME = "grok-diff";
 /**
  * Read-only content provider for the diff-preview virtual documents. Content is
  * stored per-URI and served verbatim; the documents are never editable or dirty,
- * so the diff tab closes without a save prompt. Pure VS Code glue.
+ * so the diff tab closes without a save prompt. Host-registered via
+ * {@link Host.registerTextDocumentContentProvider}.
  */
-class GrokDiffContentProvider implements vscode.TextDocumentContentProvider {
+class GrokDiffContentProvider implements HostTextDocumentContentProvider {
   private readonly contents = new Map<string, string>();
-  provideTextDocumentContent(uri: vscode.Uri): string {
+  provideTextDocumentContent(uri: Uri): string {
     return this.contents.get(uri.toString()) ?? "";
   }
-  set(uri: vscode.Uri, content: string): void {
+  set(uri: Uri, content: string): void {
     this.contents.set(uri.toString(), content);
   }
-  delete(...uris: vscode.Uri[]): void {
+  delete(...uris: Uri[]): void {
     for (const uri of uris) this.contents.delete(uri.toString());
   }
 }
@@ -313,9 +363,9 @@ function guessMediaMime(p: string): string {
   }
 }
 
-export class GrokSidebar implements vscode.WebviewViewProvider {
+export class GrokSidebar {
   public static readonly viewId = "grok.chat";
-  private view?: vscode.WebviewView;
+  private view?: HostWebviewView;
   /** The session currently shown in the chat — one member of {@link pool}. */
   private focused = this.newLocalSession();
   /**
@@ -360,7 +410,6 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private static readonly SWEEP_MIN_AGE_MS = 30 * 60 * 1000;
   private reaper?: ReturnType<typeof setInterval>;
   private oauthShadowWarningShown = false;
-  private output: vscode.OutputChannel;
   private get chips(): FileChip[] { return this.focused.chips; }
   private set chips(value: FileChip[]) { this.focused.chips = value; }
   /** Attachment-staging ops still in flight — see trackAttach. */
@@ -375,7 +424,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     rels: string[];
     absByRel: Map<string, string>;
   }>();
-  private editorWatcher?: vscode.Disposable;
+  private editorWatcher?: HostDisposable;
   private terminalManager = new TerminalManager();
   private voiceRecorder = new VoiceRecorder();
   private voiceTempPath?: string;
@@ -399,7 +448,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly remoteVoice = new Map<string, RemoteVoiceEntry>();
   private static readonly MAX_REMOTE_PCM_BYTES = MAX_RECORDING_SECONDS * 16_000 * 2;
   private static readonly MAX_REMOTE_PCM_CHUNK_BYTES = 256 * 1024;
-  private configWatcher?: vscode.Disposable;
+  private configWatcher?: HostDisposable;
   // Remote uplink — outbound wss to the relay (REMOTE_RELAY_URL), active only
   // when a device token is stored (the "AFK Pilot: Link this device" / gear
   // sign-in flow). The taps in post()/emit() are no-ops when it's off, so the
@@ -420,14 +469,21 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   // OS wake lock, held for exactly as long as the uplink is (linked device token
   // + live extension host) so an AFK machine can't idle-suspend out from under a
   // remote turn. `grok.remote.keepAwake` is the opt-out. See src/keep-awake.ts.
-  private readonly keepAwake = new KeepAwake((l) => this.output.appendLine(l), process.platform, process.pid, os.release());
+  private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
-    "showThinking", "fontScale", "grokUpdateStatus", "cliUpdating",
+    "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
     "onboarding", "expandCommandOutputs", "steerByDefault", "soundNotifications",
   ]);
   private cliPath?: string;
   /** History browsing scope. Deliberately independent of the live session cwd. */
   private selectedRepoCwd?: string;
+  /**
+   * Serializes local project-folder switches (desktop multi-folder). Renderer
+   * `repoSwitchPending` is not a trust boundary — two concurrent `selectRepo`
+   * messages must not interleave host-side openSession against a mutated
+   * focused session (cross-repo bleed).
+   */
+  private readonly localWorkspaceSwitchQueue = new AsyncSerialQueue();
   // The original update trigger: at most once per activation, and only after an
   // extension-version change (never on the fresh-install baseline).
   private cliUpdateChecked = false;
@@ -449,7 +505,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly diffProvider = new GrokDiffContentProvider();
   private diffSeq = 0;
   private readonly openDiffsByRequest =
-    new SessionRequestState<Session, { left: vscode.Uri; right: vscode.Uri }>();
+    new SessionRequestState<Session, { left: Uri; right: Uri }>();
   /** In-flight in-chat confirms, keyed by request id — see confirmInChat. */
   private readonly pendingConfirms = new Map<string, (ok: boolean) => void>();
   private confirmSeq = 0;
@@ -460,24 +516,24 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   private readonly state: PersistedState;
 
   constructor(
-    private context: vscode.ExtensionContext,
-    output: vscode.OutputChannel,
+    private context: HostContext,
+    /** Effectful host surface — VS Code supplies createVsCodeHost; a desktop app injects its own. */
+    private readonly host: Host,
   ) {
-    this.output = output;
     // Before anything can read it: the loss case is an empty read followed by a
     // write, so this must not be deferred to an async init.
     this.state = new PersistedState(
       context.globalState,
       path.join(resolveGrokHome(process.env), "client-state"),
       fs,
-      (line) => output.appendLine(line),
+      (line) => this.host.appendLine(line),
     );
     this.remoteClients = new RemoteClientState<Session, RemoteBrowserPreferences>(
       this.workspaceRoot(),
       normalizeRepoPath,
     );
     context.subscriptions.push(
-      vscode.workspace.registerTextDocumentContentProvider(GROK_DIFF_SCHEME, this.diffProvider),
+      this.host.registerTextDocumentContentProvider(GROK_DIFF_SCHEME, this.diffProvider),
     );
     // Apply the terminal-shell preference at construction, BEFORE any command
     // (e.g. grok.newSession) can spawn a session — otherwise the first
@@ -488,29 +544,32 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     void this.sweepFileStaging();
   }
 
-  resolveWebviewView(view: vscode.WebviewView): void {
+  resolveWebviewView(view: HostWebviewView): void {
     this.view = view;
     view.webview.options = {
       enableScripts: true,
+      // Extension assets keep extensionUri identity (vscode-remote on remote hosts).
+      // Staging + grok home are genuinely local disk paths → Uri.file.
       localResourceRoots: [
-        vscode.Uri.joinPath(this.context.extensionUri, "media"),
-        vscode.Uri.joinPath(this.context.extensionUri, "resources"),
-        vscode.Uri.file(this.imageStagingDir()),
+        Uri.joinPath(this.context.extensionUri, "media"),
+        Uri.joinPath(this.context.extensionUri, "resources"),
+        Uri.file(this.imageStagingDir()),
         // grok writes generated media under ~/.grok/sessions/<cwd>/<id>/{images,videos};
         // serving it via asWebviewUri (instead of a base64 data: URI) lets the
         // webview stream a multi-MB video from disk — see postGeneratedMedia.
-        vscode.Uri.file(resolveGrokHome()),
+        Uri.file(resolveGrokHome()),
       ],
     };
     view.webview.html = this.getHtml(view.webview);
     // Message handlers run async; without this catch a throw (e.g. an fs error
     // in an image-attach path) becomes a silent unhandled rejection and the
     // user's action just... does nothing.
-    view.webview.onDidReceiveMessage((m: WebviewMsg) => {
+    view.webview.onDidReceiveMessage((raw) => {
+      const m = raw as WebviewMsg;
       void this.onMessage(m, "local").catch((e) => {
         const msg = (e as Error)?.message ?? String(e);
-        this.output.appendLine(`[webview] ${m.type} failed: ${msg}`);
-        void vscode.window.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
+        this.host.appendLine(`[webview] ${m.type} failed: ${msg}`);
+        void this.host.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
       });
     });
     this.watchActiveEditor();
@@ -522,7 +581,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // Re-tell the webview whether voice is set up when the relevant settings
     // change, so the mic button's "needs setup" hint updates without a reload.
     this.configWatcher?.dispose();
-    const configChanges = vscode.workspace.onDidChangeConfiguration((e) => {
+    const configChanges = this.host.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("grok.voiceApiKey") ||
         e.affectsConfiguration("grok.ffmpegPath") ||
@@ -539,37 +598,37 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       if (e.affectsConfiguration("grok.expandCommandOutputs")) {
         this.post({
           type: "expandCommandOutputs",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("expandCommandOutputs", false),
+          value: this.host.getConfiguration("grok").get<boolean>("expandCommandOutputs", false),
         });
       }
       if (e.affectsConfiguration("grok.steerByDefault")) {
         this.post({
           type: "steerByDefault",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("steerByDefault", false),
+          value: this.host.getConfiguration("grok").get<boolean>("steerByDefault", false),
         });
       }
       if (e.affectsConfiguration("grok.soundNotifications")) {
         this.post({
           type: "soundNotifications",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("soundNotifications", false),
+          value: this.host.getConfiguration("grok").get<boolean>("soundNotifications", false),
         });
       }
       if (e.affectsConfiguration("grok.processingSound")) {
         this.post({
           type: "processingSound",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("processingSound", false),
+          value: this.host.getConfiguration("grok").get<boolean>("processingSound", false),
         });
       }
       if (e.affectsConfiguration("grok.readRepliesAloud")) {
         this.post({
           type: "readRepliesAloud",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("readRepliesAloud", false),
+          value: this.host.getConfiguration("grok").get<boolean>("readRepliesAloud", false),
         });
       }
       if (e.affectsConfiguration("grok.summarizeRepliesAloud")) {
         this.post({
           type: "summarizeRepliesAloud",
-          value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
+          value: this.host.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
         });
       }
       if (e.affectsConfiguration("grok.includeActiveFileByDefault")) {
@@ -590,14 +649,15 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         this.refreshKeepAwake();
       }
     });
-    const authWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(resolveGrokHome(process.env), "auth.json"),
+    const authWatcher = this.host.createFileSystemWatcher(
+      resolveGrokHome(process.env),
+      "auth.json",
     );
     const refreshVoiceConfigured = () => this.postVoiceConfigured();
     authWatcher.onDidCreate(refreshVoiceConfigured);
     authWatcher.onDidChange(refreshVoiceConfigured);
     authWatcher.onDidDelete(refreshVoiceConfigured);
-    this.configWatcher = vscode.Disposable.from(configChanges, authWatcher);
+    this.configWatcher = disposeAll(configChanges, authWatcher);
     this.applyTerminalShellPref();
     void this.maybeStartUplink();
   }
@@ -605,14 +665,18 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
   /** Push the `grok.terminalShell` preference (#46) into the shared shell
    *  resolver so the next agent command re-resolves cmd vs PowerShell. */
   private applyTerminalShellPref(): void {
-    const pref = vscode.workspace.getConfiguration("grok").get<ShellPreference>("terminalShell", "auto");
+    const pref = this.host.getConfiguration("grok").get<ShellPreference>("terminalShell", "auto");
     setTerminalShellPreference(pref === "cmd" ? "cmd" : "auto");
   }
 
-  insertActiveMention(opts?: { selection?: boolean; uri?: vscode.Uri; pickIfMissing?: boolean }): void {
-    const editor = vscode.window.activeTextEditor;
-    const uri = opts?.uri ?? editor?.document.uri;
-    if (!uri) {
+  insertActiveMention(opts?: { selection?: boolean; uri?: Uri; pickIfMissing?: boolean }): void {
+    const editor = this.host.getActiveTextEditor();
+    // Prefer a full Uri end-to-end (scheme + authority) so asRelativePath matches
+    // remote workspace folders. Explorer Send File passes the explorer Uri via
+    // the adapter; never flatten to fsPath and rebuild with Uri.file.
+    const pathUri = opts?.uri ?? editor?.document.uri;
+    const absPath = pathUri?.fsPath;
+    if (!absPath || !pathUri) {
       // Invoked from the Command Palette with no file editor active — no target
       // to attach. Degrade gracefully instead of a silent no-op that also drops
       // focus (#43): Send File opens the file picker; the selection/@-mention
@@ -621,13 +685,13 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       if (opts?.pickIfMissing) {
         void this.trackAttach(this.pickFileFromComputer());
       } else {
-        void vscode.window.showInformationMessage(
+        void this.host.showInformationMessage(
           "Grok: open a file in the editor first, then run this command.",
         );
       }
       return;
     }
-    const relPath = vscode.workspace.asRelativePath(uri);
+    const relPath = this.host.asRelativePath(pathUri);
     let selStart: number | undefined;
     let selEnd: number | undefined;
     if (opts?.selection && editor && !editor.selection.isEmpty) {
@@ -635,7 +699,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       selStart = range.startLine;
       selEnd = range.endLine;
     }
-    this.chips.push(makeExplicitChip(uri.fsPath, relPath, selStart, selEnd));
+    this.chips.push(makeExplicitChip(absPath, relPath, selStart, selEnd));
     this.postChips();
     this.revealAndFocusComposer();
   }
@@ -646,7 +710,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
 
   async pickModel(): Promise<void> {
     if (!this.focused.client || !this.focused.client.availableModels.length) {
-      vscode.window.showInformationMessage("Start a session first.");
+      this.host.showInformationMessage("Start a session first.");
       return;
     }
     const items = this.focused.client.availableModels.map((m) => ({
@@ -655,7 +719,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       detail: m.description,
       modelId: m.modelId,
     }));
-    const picked = await vscode.window.showQuickPick(items, {
+    const picked = await this.host.showQuickPick(items, {
       placeHolder: "Pick a Grok model",
     });
     if (picked) await this.switchModel(picked.modelId);
@@ -678,10 +742,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
     // Ignore switches fired during session startup. The webview disables the
     // control while busy; this is the backstop for a click already in flight.
     if (!client || session.priming || modelId === client.currentModelId) return;
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     try {
       await client.setModel(modelId);
-      await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
+      await cfg.update("defaultModel", modelId, "global");
     } catch (e) {
       if (!isIncompatibleAgentError(e)) {
         this.reportRequester(requester, "error", `Failed to set model: ${(e as Error).message}`);
@@ -692,7 +756,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
         // with a fresh grok id. There is nothing to summarize or preserve.
         // Drop it after the restart, carrying over any rename the user made.
         const discardId = session.activeSessionId;
-        await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
+        await cfg.update("defaultModel", modelId, "global");
         await this.startSession(undefined, session);
         this.discardRestartedEmptySession(discardId, session);
         return;
@@ -707,7 +771,7 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
       }
       const mode = await this.pickRestartMode("Switching to this model requires a new session.");
       if (!mode) return; // dismissed — keep the current model
-      await cfg.update("defaultModel", modelId, vscode.ConfigurationTarget.Global);
+      await cfg.update("defaultModel", modelId, "global");
       await this.restartSession(mode, session);
     }
   }
@@ -784,6 +848,86 @@ See design doc for the full state machine diagram.`;
    *  `.grok/config.toml` overrides global `~/.grok/config.toml`. Read fresh on
    *  each session start — it's a couple of small file reads, and the user may
    *  edit the config between sessions. Any read error → false (treat as normal). */
+  /**
+   * Confirmation for the handful of messages that make the host RUN something.
+   *
+   * The desktop dispatcher authorizes on "this came from the main window's main
+   * frame", which proves origin but not intent — there is no user-gesture
+   * notion, so anything able to post a message can trigger these. A per-
+   * capability model is the real answer; until then these two get a dialog the
+   * renderer cannot draw or dismiss, which is what makes it worth anything.
+   */
+  private async confirmHostExecute(
+    title: string,
+    detail: string,
+    confirmLabel: string,
+  ): Promise<boolean> {
+    const ok = await this.host.showWarningMessage(
+      `${title}
+
+${detail}`,
+      { modal: true },
+      confirmLabel,
+    );
+    return ok === confirmLabel;
+  }
+
+  /** Which config forced always-approve, if any. See alwaysApproveSource. */
+  private autoApproveSource(cwd: string = this.workspaceRoot()): "project" | "global" | undefined {
+    const readSafe = (p?: string): string | undefined => {
+      if (!p) return undefined;
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return undefined;
+      }
+    };
+    return alwaysApproveSource({
+      project: cwd ? readSafe(projectConfigPath(cwd)) : undefined,
+      global: readSafe(globalConfigPath()),
+    });
+  }
+
+  /** Roots whose repo-supplied always-approve the user has accepted this run. */
+  private readonly autoApproveConsented = new Set<string>();
+
+  /**
+   * Consent for a repository that ships its own always-approve config, asked
+   * once per project root per run.
+   *
+   * This is the one setting a *repository* can use to switch off every
+   * permission prompt the agent would otherwise hit before writing files or
+   * running commands — and cloning the repo is enough to carry it, because a
+   * project .grok/config.toml overrides the user's own.
+   *
+   * grok applies the file itself, server-side, so declining cannot un-apply it.
+   * Declining therefore refuses to start the session at all, which is the only
+   * honest option available from here.
+   */
+  private async confirmRepoForcedAutoApprove(cwd: string): Promise<boolean> {
+    if (!cwd || this.autoApproveSource(cwd) !== "project") return true;
+    const key = process.platform === "win32" ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
+    if (this.autoApproveConsented.has(key)) return true;
+    const ok = await this.host.showWarningMessage(
+      `"${path.basename(cwd)}" turns off every permission prompt.
+
+` +
+        `This project ships a .grok/config.toml setting permission_mode = "always-approve", which ` +
+        `overrides your own setting. The agent will edit files and run commands here without asking ` +
+        `you first.
+
+Only continue if you trust this code.`,
+      { modal: true },
+      "Continue anyway",
+    );
+    if (ok !== "Continue anyway") {
+      this.host.appendLine(`[trust] declined: ${cwd} forces always-approve`);
+      return false;
+    }
+    this.autoApproveConsented.add(key);
+    return true;
+  }
+
   private configForcesAutoApprove(cwd: string = this.workspaceRoot()): boolean {
     const readSafe = (p?: string): string | undefined => {
       if (!p) return undefined;
@@ -793,9 +937,8 @@ See design doc for the full state machine diagram.`;
         return undefined;
       }
     };
-    const home = process.env.HOME || process.env.USERPROFILE || "";
-    const globalPath = home ? path.join(home, ".grok", "config.toml") : undefined;
-    const projectPath = cwd ? path.join(cwd, ".grok", "config.toml") : undefined;
+    const globalPath = globalConfigPath();
+    const projectPath = cwd ? projectConfigPath(cwd) : undefined;
     return configForcesAlwaysApprove({ project: readSafe(projectPath), global: readSafe(globalPath) });
   }
 
@@ -808,20 +951,13 @@ See design doc for the full state machine diagram.`;
     if (this.alwaysApproveNoticeShown) return;
     this.alwaysApproveNoticeShown = true;
     const OPEN = "Open config.toml";
-    void vscode.window
-      .showInformationMessage(
-        'Grok: "always-approve" is set in your grok config.toml, so tool actions are auto-approved for every session (CLI and extension). The mode shows "Auto accept" to reflect this — the extension can\'t override a global config setting per-session.',
-        OPEN,
-      )
-      .then((pick) => {
-        if (pick !== OPEN) return;
-        const home = process.env.HOME || process.env.USERPROFILE || "";
-        if (!home) return;
-        void vscode.commands.executeCommand(
-          "vscode.open",
-          vscode.Uri.file(path.join(home, ".grok", "config.toml")),
-        );
-      });
+    void this.host.showInformationMessage(
+      'Grok: "always-approve" is set in your grok config.toml, so tool actions are auto-approved for every session (CLI and extension). The mode shows "Auto accept" to reflect this — the extension can\'t override a global config setting per-session.',
+      OPEN,
+    ).then((pick) => {
+      if (pick !== OPEN) return;
+      void this.host.openGlobalConfig();
+    });
   }
 
   /** Toggle the client-enforced plan gate and keep the live client in sync. Only
@@ -877,9 +1013,8 @@ See design doc for the full state machine diagram.`;
     // directly). `modeToRemember` drops Plan (a transient per-task choice).
     const remember = modeToRemember(modeId);
     if (remember) {
-      void vscode.workspace
-        .getConfiguration("grok")
-        .update("defaultMode", remember, vscode.ConfigurationTarget.Global);
+      void this.host.getConfiguration("grok")
+        .update("defaultMode", remember, "global");
     }
     if (modeId === "yolo") {
       session.autoApprove = true;
@@ -935,7 +1070,7 @@ See design doc for the full state machine diagram.`;
     if (verdict === "approved") {
       // Restore the mode chosen before Plan (#64) before native implementation
       // can raise a permission request in this same turn.
-      session.autoApprove = vscode.workspace.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
+      session.autoApprove = this.host.getConfiguration("grok").get<string>("defaultMode", "") === "yolo";
       this.setPlanActive(session, false);
     } else if (verdict === "rejected") {
       session.autoApprove = false;
@@ -1001,7 +1136,7 @@ See design doc for the full state machine diagram.`;
       if (gen !== session.gen || session.client !== client) return;
       if (result === "ok") {
         this.emit(session, { type: "userMessage", text: feedback, chips: [], steer: true });
-        this.output.appendLine(`[plan-verdict] interjected ${feedback.length} comment chars`);
+        this.host.appendLine(`[plan-verdict] interjected ${feedback.length} comment chars`);
       } else {
         if (session.inFlightPlanComments.get(requestId) === inFlightComment) {
           session.inFlightPlanComments.delete(requestId);
@@ -1207,7 +1342,7 @@ See design doc for the full state machine diagram.`;
       usageLog,
       surviving,
     );
-    this.output.appendLine(
+    this.host.appendLine(
       `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
     );
     await this.state.update(SESSION_META_KEY, {
@@ -1307,7 +1442,8 @@ See design doc for the full state machine diagram.`;
    */
   private queuedSendReadyText(session: Session): string | undefined {
     if (!session.queuedSends.length) return undefined;
-    if (!session.client || session.priming) return undefined;
+    // Same readiness as handleSend — client without sessionId is still priming.
+    if (!sessionReadyForPrompt(session)) return undefined;
     if (session.status === "working" || session.status === "needs-you") return undefined;
     return session.queuedSends.join("\n\n");
   }
@@ -1383,7 +1519,7 @@ See design doc for the full state machine diagram.`;
         );
         return;
       }
-      this.output.appendLine(`[steer] interjected ${body.length} chars into the running turn`);
+      this.host.appendLine(`[steer] interjected ${body.length} chars into the running turn`);
     } catch (e: any) {
       this.emit(session, { type: "agentReset" });
       session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
@@ -1429,7 +1565,7 @@ See design doc for the full state machine diagram.`;
         );
         return;
       }
-      this.output.appendLine(`[fork] ${session.activeSessionId} → ${r.newSessionId} ("${forkName}")`);
+      this.host.appendLine(`[fork] ${session.activeSessionId} → ${r.newSessionId} ("${forkName}")`);
       // Stamp the name before focusing, so neither the history list nor the
       // toolbar ever flashes grok's own generated title for the fork.
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -1500,16 +1636,16 @@ See design doc for the full state machine diagram.`;
   private async editLastMessage(userBubbleIndex: number, text: string, totalUserBubbles?: number): Promise<void> {
     const session = this.focused;
     if (!session.client || !session.activeSessionId) {
-      return void vscode.window.showWarningMessage("Start a session before editing a message.");
+      return void this.host.showWarningMessage("Start a session before editing a message.");
     }
     if (session.status === "working" || session.status === "needs-you") {
       // Name the state. "Wait for the current turn" is useless when the turn
       // already finished and the status is merely stale — the user can't tell
       // those apart, and neither could I without this line.
-      this.output.appendLine(
+      this.host.appendLine(
         `[edit] refused: session.status=${session.status} bubble=${userBubbleIndex}`,
       );
-      return void vscode.window.showWarningMessage(
+      return void this.host.showWarningMessage(
         session.status === "needs-you"
           ? "Answer the pending permission or plan card first, then edit your last message."
           : "Wait for the current turn to finish (or Stop it) before editing your last message.",
@@ -1518,7 +1654,7 @@ See design doc for the full state machine diagram.`;
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
@@ -1526,17 +1662,17 @@ See design doc for the full state machine diagram.`;
       // bubble->point map can't be trusted — refuse instead of reverting a turn
       // we may have mis-identified. See bubbleMapIsConsistent.
       if (!bubbleMapIsConsistent(points, totalUserBubbles)) {
-        this.output.appendLine(
+        this.host.appendLine(
           `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
         );
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
         );
       }
       const target = resolveEditRewindTarget(points, userBubbleIndex);
       if (!target) {
         const copy = "Copy text to composer";
-        const pick = await vscode.window.showInformationMessage(
+        const pick = await this.host.showInformationMessage(
           "Grok has no restore point for this message, so it can't be rolled back. You can still copy the text and send it again.",
           copy,
         );
@@ -1563,17 +1699,17 @@ See design doc for the full state machine diagram.`;
         mode: "all",
       });
       if (result === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       if (!result.success) {
         // Surface the CLI's own words — e.g. rewinding past a compaction point.
-        return void vscode.window.showErrorMessage(result.error || "Couldn't roll back that message.");
+        return void this.host.showErrorMessage(result.error || "Couldn't roll back that message.");
       }
 
       const reportedFiles = result.revertedFiles.length;
-      this.output.appendLine(
+      this.host.appendLine(
         `[edit] rewound to prompt #${result.targetPromptIndex} (reported_files=${reportedFiles}, bubble=${userBubbleIndex})`,
       );
       const resumeId = session.activeSessionId;
@@ -1582,32 +1718,32 @@ See design doc for the full state machine diagram.`;
       this.applyRewindToView(session, surviving);
       this.emit(session, { type: "restoreComposer", text });
       if (reportedFiles > 0) {
-        void vscode.window.showInformationMessage(
+        void this.host.showInformationMessage(
           "Message moved back to the composer. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
-      vscode.window.showErrorMessage(`Couldn't edit that message: ${e?.message ?? e}`);
+      this.host.showErrorMessage(`Couldn't edit that message: ${e?.message ?? e}`);
     }
   }
 
   async rewindFocusedSession(userBubbleIndex?: number, bubbleText?: string, totalUserBubbles?: number): Promise<void> {
     const session = this.focused;
     if (!session.client || !session.activeSessionId) {
-      return void vscode.window.showWarningMessage("Start a session before rewinding it.");
+      return void this.host.showWarningMessage("Start a session before rewinding it.");
     }
     if (session.status === "working" || session.status === "needs-you") {
-      return void vscode.window.showWarningMessage(
+      return void this.host.showWarningMessage(
         "Wait for the current turn to finish (or Stop it) before rewinding.",
       );
     }
     if (!session.hasHistory) {
-      return void vscode.window.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
+      return void this.host.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
     }
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
@@ -1616,10 +1752,10 @@ See design doc for the full state machine diagram.`;
       // bubble->point map can't be trusted — refuse instead of reverting a turn
       // we may have mis-identified. See bubbleMapIsConsistent.
       if (!bubbleMapIsConsistent(points, totalUserBubbles)) {
-        this.output.appendLine(
+        this.host.appendLine(
           `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
         );
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
         );
       }
@@ -1628,7 +1764,7 @@ See design doc for the full state machine diagram.`;
         // Bubble button: map visible user bubble → wire prompt_index (skips legacy hidden turns).
         target = resolveUserBubbleRewind(points, userBubbleIndex);
         if (!target) {
-          return void vscode.window.showInformationMessage(
+          return void this.host.showInformationMessage(
             "Can't rewind to this message — it's the latest turn, or the checkpoint is unavailable.",
           );
         }
@@ -1637,7 +1773,7 @@ See design doc for the full state machine diagram.`;
         const facing = userFacingRewindPoints(points);
         const selectable = selectableRewindPoints(facing.length ? facing : points);
         if (selectable.length === 0) {
-          return void vscode.window.showInformationMessage(
+          return void this.host.showInformationMessage(
             facing.length <= 1
               ? "Only one message so far — hover an earlier user message and click Rewind."
               : "No rewind points available.",
@@ -1656,7 +1792,7 @@ See design doc for the full state machine diagram.`;
             detail: formatRewindPointDetail(p),
             point: p,
           }));
-        const pick = await vscode.window.showQuickPick(items, {
+        const pick = await this.host.showQuickPick(items, {
           // Execute discards the chosen message too, not just what follows it.
           placeHolder: "Rewind past which message? (it and everything after it are discarded)",
           ignoreFocusOut: true,
@@ -1686,17 +1822,17 @@ See design doc for the full state machine diagram.`;
         mode: "all",
       });
       if (result === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       if (!result.success) {
         const err = result.error || "Rewind did not apply (no changes).";
-        return void vscode.window.showErrorMessage(err);
+        return void this.host.showErrorMessage(err);
       }
 
       const reportedFiles = result.revertedFiles.length;
-      this.output.appendLine(
+      this.host.appendLine(
         `[rewind] → prompt #${result.targetPromptIndex} (mode=${result.mode}, reported_files=${reportedFiles}` +
           (typeof userBubbleIndex === "number" ? `, bubble=${userBubbleIndex}` : "") +
           `)`,
@@ -1723,12 +1859,12 @@ See design doc for the full state machine diagram.`;
       // own feedback; a toast restating them is noise. Reverted files are NOT
       // visible in the chat, so those still get reported.
       if (reportedFiles > 0) {
-        void vscode.window.showInformationMessage(
+        void this.host.showInformationMessage(
           "Rewound. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
+      void this.host.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
     }
   }
 
@@ -1744,14 +1880,19 @@ See design doc for the full state machine diagram.`;
   ): Promise<void> {
     const cmd = workflowControlCommand(action, displayName);
     if (!cmd) {
-      return void vscode.window.showWarningMessage("Missing workflow display name.");
+      return void this.host.showWarningMessage("Missing workflow display name.");
     }
     await this.handleSend(cmd, true, session);
   }
 
   /** Workspace folder root (the main checkout for worktree ops). */
   private workspaceRoot(): string {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const root = this.host.workspaceRoot();
+    if (root) return root;
+    // Desktop with an empty open set has no root — do not fall back to the
+    // process cwd (that would create sessions under the install directory).
+    if (this.host.canSwitchWorkspaceFolder) return "";
+    return process.cwd();
   }
 
   /** Effective cwd for a session (worktree path or workspace root). */
@@ -1793,30 +1934,41 @@ See design doc for the full state machine diagram.`;
    * fresh session whose cwd is that worktree. Edits stay out of the main
    * checkout until the user runs Apply Worktree.
    */
-  async newWorktreeSession(): Promise<void> {
+  /**
+   * Create an isolated worktree session. Authorization (git worktree list /
+   * path containment) is unchanged for remote callers — only the label prompt
+   * is skipped when `fromRemote` is true so a phone tap never stalls on a desk
+   * input box (auto-named worktree instead).
+   */
+  async newWorktreeSession(opts?: { fromRemote?: boolean }): Promise<void> {
     // No worktree-from-worktree — checkouts stay singular. The gear hides this
     // inside a worktree; guard the Command-Palette path too.
     if (this.focused.worktree) {
-      return void vscode.window.showInformationMessage(
+      return void this.host.showInformationMessage(
         "You're already in a worktree. Start a new worktree from a normal session — worktrees don't nest.",
       );
     }
     const sourcePath = this.workspaceRoot();
     if (!isGitRepo(sourcePath, fs)) {
-      return void vscode.window.showWarningMessage(
+      return void this.host.showWarningMessage(
         "Worktree sessions need a git repository. Open a folder that is a git checkout (or run git init).",
       );
     }
-    const rawLabel = await vscode.window.showInputBox({
-      prompt: "Worktree label (optional)",
-      placeHolder: "e.g. feat-auth — leave blank for an auto name",
-      ignoreFocusOut: true,
-    });
-    if (rawLabel === undefined) return; // cancelled
-    const label = sanitizeWorktreeLabel(rawLabel);
+    // Remote origin: skip the host input box (invisible to the phone). Local
+    // and Command Palette still prompt for an optional label.
+    let label = "";
+    if (!opts?.fromRemote) {
+      const rawLabel = await this.host.showInputBox({
+        prompt: "Worktree label (optional)",
+        placeHolder: "e.g. feat-auth — leave blank for an auto name",
+        ignoreFocusOut: true,
+      });
+      if (rawLabel === undefined) return; // cancelled
+      label = sanitizeWorktreeLabel(rawLabel);
+    }
 
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Creating git worktree…", cancellable: false },
+    await this.host.withProgress(
+      { title: "Creating git worktree…", cancellable: false },
       async () => {
         try {
           // Create needs a live sessionId. Prefer a workspace-cwd client so we
@@ -1824,7 +1976,7 @@ See design doc for the full state machine diagram.`;
           // otherwise spin a short-lived ACP client just for the create RPC.
           const creator = await this.clientForWorktreeCreate(sourcePath);
           if (!creator) {
-            return void vscode.window.showErrorMessage("Could not start Grok to create a worktree.");
+            return void this.host.showErrorMessage("Could not start Grok to create a worktree.");
           }
           const { client, disposeAfter } = creator;
           let created;
@@ -1837,14 +1989,53 @@ See design doc for the full state machine diagram.`;
             if (disposeAfter) await client.dispose();
           }
           if (created === "unsupported") {
-            return void vscode.window.showWarningMessage(
+            return void this.host.showWarningMessage(
               "Worktrees need a newer Grok Build CLI. Update via the gear menu → Version & about.",
             );
           }
           const wtPath = created.worktreePath;
           const wtLabel = label || path.basename(wtPath);
-          this.output.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
-          // Refresh cache so history can see sessions under this path.
+          this.host.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
+
+          // create is ASYNC — the RPC returns "creating" before git writes the
+          // checkout (its dir + `.git` pointer appear a beat later). Spawning a
+          // session in a not-yet-existing cwd hangs the whole flow, so wait for
+          // the checkout to land before validating or starting the session.
+          const ready = await this.waitForWorktreeReady(wtPath, 30000);
+          if (!ready) {
+            return void this.host.showErrorMessage(
+              `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
+            );
+          }
+
+          // Validate against an authoritative worktree list before cache /
+          // overrides / auth roots. A compromised or malformed ACP path must
+          // not become a trusted session cwd.
+          const sourceGitRoot =
+            created.sourceGitRoot || gitRootForPath(sourcePath, defaultFs) || sourcePath;
+          const listedPaths = await this.listAuthoritativeWorktreePaths(
+            client,
+            sourcePath,
+            sourceGitRoot,
+          );
+          if (
+            !worktreePathAuthorizedForRepo({
+              worktreePath: wtPath,
+              sourceRepo: sourcePath,
+              listedWorktreePaths: listedPaths,
+              claimedSourceGitRoot: created.sourceGitRoot || undefined,
+              sourceGitRoot,
+            })
+          ) {
+            this.host.appendLine(
+              `[worktree] refused unlisted/unauthorized path from create: ${wtPath}`,
+            );
+            return void this.host.showErrorMessage(
+              `Worktree path was not accepted as part of this repository (not in git worktree list). Session not started.`,
+            );
+          }
+
+          // Refresh cache only after validation.
           this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wtPath));
           this.worktreeCache.push({
             id: wtLabel,
@@ -1860,17 +2051,6 @@ See design doc for the full state machine diagram.`;
             userProvidedLabel: !!label,
           });
 
-          // create is ASYNC — the RPC returns "creating" before git writes the
-          // checkout (its dir + `.git` pointer appear a beat later). Spawning a
-          // session in a not-yet-existing cwd hangs the whole flow, so wait for
-          // the checkout to land before starting the session.
-          const ready = await this.waitForWorktreeReady(wtPath, 30000);
-          if (!ready) {
-            return void vscode.window.showErrorMessage(
-              `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
-            );
-          }
-
           // Open a brand-new session whose process cwd is the worktree.
           this.parkFocused();
           this.focused = this.newLocalSession();
@@ -1879,7 +2059,7 @@ See design doc for the full state machine diagram.`;
           this.focused.worktree = {
             path: wtPath,
             label: wtLabel,
-            sourceGitRoot: created.sourceGitRoot || sourcePath,
+            sourceGitRoot,
           };
           await this.startSession();
           const id = this.focused.activeSessionId;
@@ -1892,17 +2072,17 @@ See design doc for the full state machine diagram.`;
                 customName: worktreeDisplayName(wtLabel),
                 worktreePath: wtPath,
                 worktreeLabel: wtLabel,
-                sourceGitRoot: created.sourceGitRoot || sourcePath,
+                sourceGitRoot,
               },
             });
             this.sessionCache.delete(id);
           }
           this.postSessionsList();
-          void vscode.window.showInformationMessage(
+          void this.host.showInformationMessage(
             `Worktree session ready: ${wtLabel}. Edits stay isolated until you Apply worktree.`,
           );
         } catch (e: any) {
-          void vscode.window.showErrorMessage(`Create worktree failed: ${e?.message ?? e}`);
+          void this.host.showErrorMessage(`Create worktree failed: ${e?.message ?? e}`);
         }
       },
     );
@@ -1941,14 +2121,14 @@ See design doc for the full state machine diagram.`;
       return { client: this.focused.client, disposeAfter: false };
     }
     // Temporary client: initialize + session/new, caller disposes after create.
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
     if (!cliPath) return undefined;
     const client = new AcpClient({
       cliPath,
       cwd: sourcePath,
       env: this.buildEnv(sourcePath),
-      log: (msg) => this.output.appendLine(msg),
+      log: (msg) => this.host.appendLine(msg),
     });
     // Minimal handlers so the handshake doesn't hang on server requests.
     client.fsRead = async (p) => fs.readFileSync(p, "utf8");
@@ -1965,15 +2145,15 @@ See design doc for the full state machine diagram.`;
     const session = this.focused;
     const wt = session.worktree;
     if (!wt) {
-      return void vscode.window.showInformationMessage(
+      return void this.host.showInformationMessage(
         "This session is not in a worktree. Start one with Grok: New Worktree Session.",
       );
     }
     if (!session.client?.sessionId) {
-      return void vscode.window.showWarningMessage("Start the session before applying its worktree.");
+      return void this.host.showWarningMessage("Start the session before applying its worktree.");
     }
     if (!skipConfirm) {
-      const ok = await vscode.window.showWarningMessage(
+      const ok = await this.host.showWarningMessage(
         `Apply worktree "${wt.label}" into the main checkout?\n\n${wt.path}\n→ ${wt.sourceGitRoot || this.workspaceRoot()}`,
         { modal: true },
         "Apply",
@@ -1983,17 +2163,17 @@ See design doc for the full state machine diagram.`;
     try {
       const r = await session.client.applyWorktree(wt.path);
       if (r === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Apply worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       const n = r.files?.length ?? 0;
-      this.output.appendLine(`[worktree] apply ${wt.path}: ${n} file(s), status=${r.status}`);
-      void vscode.window.showInformationMessage(
+      this.host.appendLine(`[worktree] apply ${wt.path}: ${n} file(s), status=${r.status}`);
+      void this.host.showInformationMessage(
         n ? `Applied ${n} file${n === 1 ? "" : "s"} from worktree "${wt.label}".` : `Worktree "${wt.label}" applied (no file changes).`,
       );
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Apply worktree failed: ${e?.message ?? e}`);
+      void this.host.showErrorMessage(`Apply worktree failed: ${e?.message ?? e}`);
     }
   }
 
@@ -2003,10 +2183,10 @@ See design doc for the full state machine diagram.`;
     const session = this.focused;
     const wt = session.worktree;
     if (!wt) {
-      return void vscode.window.showInformationMessage("This session is not in a worktree.");
+      return void this.host.showInformationMessage("This session is not in a worktree.");
     }
     if (!skipConfirm) {
-      const ok = await vscode.window.showWarningMessage(
+      const ok = await this.host.showWarningMessage(
         `Remove worktree "${wt.label}"?\n\n${wt.path}\n\nThis deletes the isolated checkout. Unapplied edits are lost.`,
         { modal: true },
         "Remove",
@@ -2037,7 +2217,7 @@ See design doc for the full state machine diagram.`;
       if (!client) {
         const tmp = await this.clientForWorktreeCreate(this.workspaceRoot());
         if (!tmp) {
-          return void vscode.window.showErrorMessage("Could not start Grok to remove the worktree.");
+          return void this.host.showErrorMessage("Could not start Grok to remove the worktree.");
         }
         client = tmp.client;
         disposeAfter = tmp.disposeAfter;
@@ -2049,12 +2229,12 @@ See design doc for the full state machine diagram.`;
         if (disposeAfter) await client.dispose();
       }
       if (r === "unsupported") {
-        return void vscode.window.showWarningMessage(
+        return void this.host.showWarningMessage(
           "Remove worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
       this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wt.path));
-      this.output.appendLine(`[worktree] removed ${wt.path} (removed=${r.removed})`);
+      this.host.appendLine(`[worktree] removed ${wt.path} (removed=${r.removed})`);
       // Clear worktree binding on meta for sessions that pointed here.
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       let changed = false;
@@ -2091,9 +2271,9 @@ See design doc for the full state machine diagram.`;
         });
         for (const message of this.buildRemoteSnapshot(holder)) this.sendRemoteClient(holder, message);
       }
-      void vscode.window.showInformationMessage(`Removed worktree "${wt.label}".`);
+      void this.host.showInformationMessage(`Removed worktree "${wt.label}".`);
     } catch (e: any) {
-      void vscode.window.showErrorMessage(`Remove worktree failed: ${e?.message ?? e}`);
+      void this.host.showErrorMessage(`Remove worktree failed: ${e?.message ?? e}`);
     }
   }
 
@@ -2107,13 +2287,65 @@ See design doc for the full state machine diagram.`;
     const client = session?.client;
     if (!client) return;
     const sourceRepo = session.worktree?.sourceGitRoot || this.sessionCwd(session);
+    const sourceGitRoot = gitRootForPath(sourceRepo, defaultFs) ?? sourceRepo;
     try {
       const list = await client.listWorktrees({});
       if (list === "unsupported") return;
-      this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, list);
+      // mergeWorktreeRefresh filters unattributed / wrong-repo rows.
+      this.worktreeCache = mergeWorktreeRefresh(this.worktreeCache, sourceRepo, list, {
+        sourceGitRoot,
+      });
     } catch (e: any) {
-      this.output.appendLine(`[worktree] list failed: ${e?.message ?? e}`);
+      this.host.appendLine(`[worktree] list failed: ${e?.message ?? e}`);
     }
+  }
+
+  /**
+   * Authoritative worktree paths for `sourcePath`: prefer the CLI list RPC
+   * (scoped to that client's repo), fall back to `git worktree list --porcelain`.
+   */
+  private async listAuthoritativeWorktreePaths(
+    client: AcpClient,
+    sourcePath: string,
+    sourceGitRoot: string,
+  ): Promise<string[]> {
+    try {
+      const list = await client.listWorktrees({});
+      if (list !== "unsupported" && Array.isArray(list)) {
+        const trusted = filterWorktreesForSourceRepo(list, sourcePath, { sourceGitRoot });
+        const paths = trusted.map((r) => r.path);
+        // list may omit sourceRepo on some builds — also accept raw paths that
+        // git itself reports for this checkout.
+        if (paths.length) return paths;
+        const allListed = list.map((r) => r.path).filter(Boolean);
+        if (allListed.length) {
+          // Cross-check with git so we do not trust unattributed ACP rows alone.
+          const gitPaths = await listGitWorktreePaths(sourceGitRoot || sourcePath, {
+            log: (m) => this.host.appendLine(m),
+          });
+          return allListed.filter((p) =>
+            gitPaths.some((g) => pathsEqual(g, p)),
+          );
+        }
+      }
+    } catch (e: any) {
+      this.host.appendLine(`[worktree] listWorktrees for validate failed: ${e?.message ?? e}`);
+    }
+    return listGitWorktreePaths(sourceGitRoot || sourcePath, {
+      log: (m) => this.host.appendLine(m),
+    });
+  }
+
+  /** Every open workspace folder root (desktop multi-folder, or VS Code folders). */
+  private openWorkspaceFolders(): string[] {
+    try {
+      const folders = this.host.workspaceFolders?.() ?? [];
+      if (folders.length) return folders;
+    } catch {
+      /* fall through */
+    }
+    const root = this.workspaceRoot();
+    return root ? [root] : [];
   }
 
   private repoCatalog() {
@@ -2131,14 +2363,66 @@ See design doc for the full state machine diagram.`;
       fs: defaultFs,
       grokHome: resolveGrokHome(process.env),
       pins,
-      archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
+      // Desktop ignores shared repo-archives.json (canArchiveRepos false);
+      // VS Code still applies stored choices.
+      archives: this.host.canArchiveRepos
+        ? this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {})
+        : undefined,
       tmpDir: os.tmpdir(),
-      // The primary workspace is already the extension's local execution scope;
-      // keep it as the one trusted return target before its first catalog lands.
-      trustedCwds: [this.workspaceRoot()],
+      // Open folders remain selectable before Grok creates a catalog row (and
+      // bypass managed-worktree exclusion when the user opened a worktree).
+      trustedCwds: this.openWorkspaceFolders(),
       worktreeLabels,
-      log: (m) => this.output.appendLine(m),
+      log: (m) => this.host.appendLine(m),
     });
+  }
+
+  /**
+   * Project rows for the local rail (and, on desktop, for remotes attached to
+   * this host). Desktop multi-folder: only open project folders. VS Code: the
+   * full discoverRepos catalog. Archive fields are stripped when the host
+   * cannot archive ({@link Host.canArchiveRepos}) so the client hides Project
+   * Archive without an `IS_DESKTOP` flag.
+   */
+  private localRepoCatalogEntries(): RepoListEntry[] {
+    const full = this.repoCatalog();
+    let entries: RepoListEntry[];
+    if (!this.host.canSwitchWorkspaceFolder) {
+      entries = full;
+    } else {
+      const open = this.openWorkspaceFolders();
+      // Empty open set → empty rail (user may Add Project Folder). Never fall
+      // back to the historical catalog — that reopened the trust hole.
+      if (!open.length) {
+        entries = [];
+      } else {
+        const byKey = new Map(full.map((r) => [normalizeRepoPath(r.cwd), r]));
+        entries = [];
+        for (const cwd of open) {
+          const key = normalizeRepoPath(cwd);
+          const hit = byKey.get(key);
+          if (hit) {
+            entries.push(hit);
+            continue;
+          }
+          // Trusted open folder with no catalog row yet — still show it.
+          entries.push({
+            cwd,
+            label: path.basename(cwd) || cwd,
+            available: true,
+            pinned: false,
+            updatedAt: 0,
+          });
+        }
+      }
+    }
+    return this.applyArchiveCapability(entries);
+  }
+
+  /** Drop archive fields when the host does not support archiving. */
+  private applyArchiveCapability(entries: RepoListEntry[]): RepoListEntry[] {
+    if (this.host.canArchiveRepos) return entries;
+    return entries.map((e) => withoutArchiveFields(e) as RepoListEntry);
   }
 
   private selectedHistoryCwd(): string {
@@ -2180,88 +2464,152 @@ See design doc for the full state machine diagram.`;
     return cwds;
   }
 
-  /** Every cwd a remote client may legitimately name: the discovered repos plus
-   *  their worktree catalogs (a worktree session is listed, so it must open).
-   *  Built on demand — `repoCatalog()` walks `<grokHome>/sessions` on disk, and
-   *  the remote gate consults this for `mentionQuery`-rate traffic. */
-  private remoteTargetableCwd(cwd: string): boolean {
-    const wanted = normalizeRepoPath(cwd);
-    if (!wanted) return false;
+  /**
+   * Authorization epoch — bumped on open/close of a project folder so any
+   * capability that cached "was authorized" can detect revocation. The live
+   * check is always {@link isAuthorizedCwd} against the current open set.
+   */
+  private authEpoch = 0;
+
+  /**
+   * **Single authorization query** for session/process/remote/image use:
+   * is this cwd currently in the host-trusted set?
+   *
+   * Desktop: open folders + worktrees authorized for sessions within them
+   * (`localTrustedSessionCwds`). VS Code: full historical catalog (v3.1.0).
+   * All call sites (remote target, start/resume, image handles, desktop auth
+   * roots via the same trusted set) consult this rather than re-deriving.
+   */
+  private isAuthorizedCwd(cwd: string | undefined): boolean {
+    if (!cwd) return false;
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    for (const repo of this.repoCatalog()) {
-      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) {
-        if (normalizeRepoPath(c) === wanted) return true;
-      }
-    }
-    return false;
+    return cwdIsAuthorized(cwd, this.localTrustedSessionCwds(overrides), pathsEqual);
+  }
+
+  /** Snapshot of currently authorized session cwds (same set as isAuthorizedCwd). */
+  private authorizedSessionCwds(): string[] {
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    return this.localTrustedSessionCwds(overrides);
+  }
+
+  /**
+   * Every cwd a remote client may legitimately name. Delegates to the shared
+   * authorization query — never a separate recomputation of the open set.
+   */
+  private remoteTargetableCwd(cwd: string): boolean {
+    return this.isAuthorizedCwd(cwd);
   }
 
   private postRepoCatalog(): void {
-    const entries = this.repoCatalog();
+    // Both local and remote attached clients see the host's catalog: curated
+    // open folders on desktop, full discovery on VS Code. Archive fields only
+    // when canArchiveRepos (already applied inside localRepoCatalogEntries).
+    const localEntries = this.localRepoCatalogEntries();
     const activeCwd = this.sessionCwd(this.focused);
     const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
-    const selected = entries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
+    const selected = localEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
     // The selection MUST name a row in the catalog. `clearAllSessions` and
     // `selectRepo` both resolve through it and bail when the lookup misses, so
     // a selection that isn't there turns a confirmed "Delete All" into a silent
-    // no-op. Falling back to the workspace root is always valid — it's a
-    // trusted cwd, so it is always a row.
-    const inCatalog = (cwd: string) =>
-      !!cwd && entries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
-    if (selected) this.selectedRepoCwd = selected.cwd;
-    else this.selectedRepoCwd = inCatalog(activeCwd) ? activeCwd : this.workspaceRoot();
+    // no-op. Falling back to the workspace root is always valid when a root is
+    // open — it's a trusted cwd. Empty desktop rail: clear the selection.
+    const inLocal = (cwd: string) =>
+      !!cwd && localEntries.some((r) => normalizeRepoPath(r.cwd) === normalizeRepoPath(cwd));
+    if (selected && inLocal(selected.cwd)) this.selectedRepoCwd = selected.cwd;
+    else if (inLocal(activeCwd)) this.selectedRepoCwd = activeCwd;
+    else {
+      const root = this.host.workspaceRoot();
+      this.selectedRepoCwd = root && inLocal(root) ? root : (localEntries[0]?.cwd ?? "");
+    }
     // Same split as the history list: remote clients see (and drive) the global
     // selection, the VS Code webview always reads its own workspace. The chip is
     // hidden locally, but this frame still feeds Clear-all's target and the name
     // in its confirm dialog — so pointing it at a remotely-selected repo would
     // aim a destructive action somewhere the user cannot see.
+    // Desktop multi-folder: selectedCwd tracks the open folder the user chose
+    // (may equal active session cwd once switch settles).
+    const localSelected = this.host.canSwitchWorkspaceFolder
+      ? (this.selectedRepoCwd || this.host.workspaceRoot() || "")
+      : this.workspaceRoot();
     this.postLocal({
       type: "repos",
-      entries,
-      selectedCwd: this.workspaceRoot(),
+      entries: localEntries,
+      selectedCwd: localSelected,
       activeCwd,
     });
     for (const clientId of this.remoteClients.clients()) {
-      const cwd = this.remoteClients.cwd(clientId);
-      const remoteActive = this.remoteClients.active(clientId);
-      this.sendRemoteClient(clientId, {
-        type: "repos",
-        entries,
-        selectedCwd: cwd,
-        activeCwd: remoteActive ? this.sessionCwd(remoteActive) : cwd,
-      });
+      this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));
     }
   }
 
-  private sendRemoteRepoCatalog(clientId: string): void {
-    const cwd = this.remoteClients.cwd(clientId);
+  /**
+   * Remote `repos` frame with project-bearing fields scrubbed to the live
+   * authorized set. Per-tab state may still name a closed cwd (inbound refuse);
+   * the wire never does — {@link mayDeliverRemoteHostMsg} rejects otherwise.
+   */
+  private buildRemoteReposMsg(
+    clientId: string,
+    entries: RepoListEntry[] = this.localRepoCatalogEntries(),
+  ): HostMsg {
+    const authorized = this.authorizedSessionCwds();
+    const selectedCwd =
+      authorizedListCwd(this.remoteClients.cwd(clientId), authorized, pathsEqual) ?? "";
     const active = this.remoteClients.active(clientId);
-    this.sendRemoteClient(clientId, {
+    let activeCwd = selectedCwd;
+    if (active) {
+      const sc = this.sessionCwd(active);
+      if (authorizedListCwd(sc, authorized, pathsEqual)) activeCwd = sc;
+    }
+    return {
       type: "repos",
-      entries: this.repoCatalog(),
-      selectedCwd: cwd,
-      activeCwd: active ? this.sessionCwd(active) : cwd,
-    });
+      // Same catalog as local — remote follows the host's open/discovered set.
+      entries,
+      selectedCwd,
+      activeCwd,
+    };
+  }
+
+  private sendRemoteRepoCatalog(clientId: string): void {
+    this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId));
+  }
+
+  /**
+   * Resolve a renderer/local `cwd` against the host-owned local catalog only.
+   * Desktop: open folders (via {@link localRepoCatalogEntries}). VS Code: the
+   * full historical catalog (same helper returns the full list when the host
+   * cannot switch folders). Never the remote full-catalog-or-fallback probe.
+   */
+  private resolveLocalRepoTarget(cwd: string): RepoListEntry | undefined {
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit || !hit.available) return undefined;
+    return hit;
   }
 
   /** Answer `listRepoSessions`: the newest few sessions for ONE repo, without
    *  making it the client's selection. `cwd` is matched against the catalog the
    *  client was already sent — an unknown or unavailable path is dropped in
    *  silence rather than answered, so a remote can never turn this into a probe
-   *  for which arbitrary paths exist on the host. */
-  private sendRepoSessionsPreview(clientId: string, cwd: string, limit?: number): void {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
-    if (!hit || !hit.available) return;
+   *  for which arbitrary paths exist on the host. Both local and remote use
+   *  {@link localRepoCatalogEntries} (open folders on desktop, full catalog on
+   *  VS Code) so the preview scope cannot exceed the trust set. */
+  private buildRepoSessionsPreview(
+    cwd: string,
+    limit: number | undefined,
+    activeId: string | null | undefined,
+    _scope: "local" | "remote" = "local",
+  ): HostMsg | undefined {
+    const hit = this.resolveLocalRepoTarget(cwd);
+    if (!hit || !hit.available) return undefined;
     // Clamp: the rail wants a handful, and an unbounded limit would make every
     // repo row a full history read.
     const size = Math.max(1, Math.min(20, Math.trunc(Number(limit)) || REPO_PREVIEW_SIZE));
     const list = this.buildSessionsList(
       hit.cwd,
       { offset: 0, limit: size },
-      this.remoteActiveSessionId(clientId),
+      activeId,
     );
-    if (list.type !== "sessions") return;
-    this.sendRemoteClient(clientId, {
+    if (list.type !== "sessions") return undefined;
+    return {
       type: "repoSessions",
       // The host's own spelling, not the one the client sent — the rail keys its
       // rows on this, and echoing an arbitrary casing would split one repo into
@@ -2270,19 +2618,402 @@ See design doc for the full state machine diagram.`;
       entries: list.entries,
       dots: list.dots,
       total: list.total,
-    });
+    };
   }
 
-  private selectRepo(cwd: string): void {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
-    if (!hit || !hit.available) return;
+  private sendRepoSessionsPreview(clientId: string, cwd: string, limit?: number): void {
+    const msg = this.buildRepoSessionsPreview(
+      cwd,
+      limit,
+      this.remoteActiveSessionId(clientId),
+      "remote",
+    );
+    if (msg) this.sendRemoteClient(clientId, msg);
+  }
+
+  private sendLocalRepoSessionsPreview(cwd: string, limit?: number): void {
+    const msg = this.buildRepoSessionsPreview(
+      cwd,
+      limit,
+      this.focused.activeSessionId,
+      "local",
+    );
+    if (msg) this.postLocal(msg);
+  }
+
+  /**
+   * Local repo selection. VS Code: history-scope only (workspace does not move).
+   * Desktop multi-folder: re-homes the active folder and conversation — same
+   * "newest real session or new" rule as {@link selectRemoteRepo}.
+   * Desktop only accepts open folders; a closed historical catalog path is refused.
+   */
+  private async selectRepo(cwd: string): Promise<void> {
+    const hit = this.resolveLocalRepoTarget(cwd);
+    if (!hit) return;
+
+    if (this.host.canSwitchWorkspaceFolder) {
+      await this.switchLocalWorkspaceFolder(hit.cwd);
+      return;
+    }
+
     this.selectedRepoCwd = hit.cwd;
     this.postRepoCatalog();
     this.postSessionsList();
   }
 
+  /**
+   * Desktop multi-folder: switch the host's active folder and open that
+   * project's newest conversation (or start a blank one). Reuses the session
+   * pool + openSession path — no parallel multi-cwd machinery.
+   *
+   * Serialized on {@link localWorkspaceSwitchQueue} so concurrent `selectRepo`
+   * cannot interleave. The target cwd is captured once for the whole action —
+   * never re-read from a shared active-root field after an await.
+   */
+  private async switchLocalWorkspaceFolder(cwd: string): Promise<void> {
+    const target = cwd;
+    return this.localWorkspaceSwitchQueue.run(() =>
+      this.switchLocalWorkspaceFolderExclusive(target),
+    );
+  }
+
+  private async switchLocalWorkspaceFolderExclusive(target: string): Promise<void> {
+    const prevRoot = this.workspaceRoot();
+    if (!pathsEqual(target, prevRoot)) {
+      // A rejected host call must abort — never treat setActive as advisory
+      // and then open history / spawn an agent against the refused path.
+      if (!this.host.setActiveWorkspaceFolder(target)) {
+        this.host.appendLine(
+          `[workspace] refused setActiveWorkspaceFolder (not an open folder): ${target}`,
+        );
+        void this.host.showWarningMessage(
+          `That folder is not open in this app:\n${target}`,
+        );
+        return;
+      }
+    }
+    this.selectedRepoCwd = target;
+    this.postRepoCatalog();
+
+    // Already focused on this folder's live conversation — just refresh chrome.
+    if (pathsEqual(this.sessionCwd(this.focused), target) && this.focused.client) {
+      this.postSessionsList();
+      return;
+    }
+
+    const history = this.buildSessionsList(
+      target,
+      { limit: Number.MAX_SAFE_INTEGER },
+      undefined,
+    );
+    const live = new Map(
+      [...this.pool]
+        .filter((session) => session.activeSessionId)
+        .map((session) => [session.activeSessionId!, session]),
+    );
+    const newest = history.type === "sessions"
+      ? mostRecentSession(history.entries.filter((entry) => {
+          const session = live.get(entry.id);
+          return !session || session.hasHistory;
+        }))
+      : undefined;
+
+    if (newest) {
+      // newest.cwd is the conversation's own checkout (may be a worktree); it
+      // was resolved against `target` above, not a shared field that could
+      // change mid-flight.
+      await this.openSession(newest.id, newest.cwd);
+    } else {
+      await this.newFocusedSession("local");
+    }
+    this.postRepoCatalog();
+    this.postSessionsList();
+  }
+
+  /**
+   * Roots the desktop trust boundary may open files under, for THIS session.
+   *
+   * Two conditions, both necessary. The folder must be in the host-owned open
+   * set — never a historical catalog cwd the user has not opened — AND it must
+   * belong to the session the message came from. The second used to be missing:
+   * the parameter was accepted and then ignored on desktop, so every open
+   * project was a legal target and a message from a session in repo A could
+   * open or diff a file in repo B merely because B was also open. Being open is
+   * what makes a folder reachable at all; it is not what makes it this
+   * session's business.
+   */
+  desktopAuthRoots(session: Session = this.focused): string[] {
+    const roots: string[] = [];
+    const seen = new Set<string>();
+    const add = (p: string | undefined) => {
+      if (!p || typeof p !== "string") return;
+      const abs = path.resolve(p);
+      const key = process.platform === "win32" ? abs.toLowerCase() : abs;
+      if (seen.has(key)) return;
+      seen.add(key);
+      roots.push(abs);
+    };
+    if (this.host.canSwitchWorkspaceFolder) {
+      return sessionScopedRoots({
+        sessionCwd: this.sessionCwd(session),
+        worktreePath: session.worktree?.path,
+        worktreeSourceRoot: session.worktree?.sourceGitRoot,
+        activeRoot: this.workspaceRoot(),
+        isAuthorized: (cwd) => this.isAuthorizedCwd(cwd),
+      });
+    }
+    add(this.sessionCwd(session));
+    if (session.worktree?.path) add(session.worktree.path);
+    if (session.worktree?.sourceGitRoot) add(session.worktree.sourceGitRoot);
+    add(this.workspaceRoot());
+    return roots;
+  }
+
+  /**
+   * Public: desktop File menu / host asks the sidebar to open another folder.
+   * Picks a directory when `cwd` is omitted.
+   */
+  async addProjectFolder(cwd?: string): Promise<void> {
+    if (!this.host.canSwitchWorkspaceFolder) return;
+    let folder = cwd;
+    if (!folder) {
+      const picked = await this.host.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        openLabel: "Add Project",
+      });
+      folder = picked?.[0];
+    }
+    if (!folder) return;
+    if (!this.host.addWorkspaceFolder(folder)) {
+      void this.host.showWarningMessage(`Could not open folder:\n${folder}`);
+      return;
+    }
+    this.authEpoch++;
+    await this.switchLocalWorkspaceFolder(path.resolve(folder));
+  }
+
+  /**
+   * Public: close a project folder from the desktop File menu. Closing is a
+   * **revocation**, not a catalog filter: sessions bound to the folder end,
+   * remote ownership on that cwd is released, and image handles under it are
+   * dropped. Closing the last folder leaves an empty rail (no re-seed).
+   */
+  async removeProjectFolder(cwd?: string): Promise<void> {
+    if (!this.host.canSwitchWorkspaceFolder) return;
+    const target = cwd || this.host.workspaceRoot();
+    if (!target) return;
+    // Closing is a revocation: every session in the folder is disposed and its
+    // agent process killed (hard-killed on Windows). A File-menu item gives no
+    // hint that anything is running, so a mid-turn close would discard the work
+    // silently. Ask first. The revoke recomputes its own list at use time, so
+    // nothing here goes stale across the await.
+    const working = this.sessionsBoundToFolder(target).filter(sessionHasWorkInFlight);
+    if (working.length) {
+      const many = working.length > 1;
+      const ok = await this.host.showWarningMessage(
+        `Close "${path.basename(target)}"?
+
+${many ? `${working.length} conversations are` : "A conversation is"} still working. ` +
+          `Closing ends ${many ? "them" : "it"} and discards the turn in progress.`,
+        { modal: true },
+        "Close anyway",
+      );
+      if (ok !== "Close anyway") return;
+    }
+
+    const activeRoot = this.host.workspaceRoot();
+    const wasActive = !!activeRoot && pathsEqual(target, activeRoot);
+    if (!this.host.removeWorkspaceFolder(target)) {
+      void this.host.showWarningMessage(`Could not close folder:\n${target}`);
+      return;
+    }
+    // Revoke first so a concurrent remote send cannot still route to a doomed
+    // session after the folder is gone from the open set.
+    this.revokeClosedProjectFolder(target);
+
+    const next = this.host.workspaceRoot();
+    if (wasActive && next) {
+      await this.switchLocalWorkspaceFolder(next);
+    } else if (!next) {
+      // Empty open set — focused may already have been disposed by revoke.
+      if (this.pool.has(this.focused) || this.focused.client) {
+        this.parkFocused();
+      }
+      this.focused = this.newLocalSession();
+      this.selectedRepoCwd = "";
+      this.postRepoCatalog();
+      this.postSessionsList();
+      this.emit(this.focused, { type: "clearMessages" });
+    } else {
+      // Revoke may have disposed the focused session when it lived in the closed
+      // folder even though another folder remains active.
+      if (!this.pool.has(this.focused) && !this.focused.client) {
+        this.focused = this.newLocalSession();
+      }
+      this.postRepoCatalog();
+      this.postSessionsList();
+    }
+  }
+
+  /**
+   * Revoke all live capabilities that belonged to a just-closed project folder.
+   * Bumps {@link authEpoch}. Idempotent for a given path once the open set has
+   * already dropped it (isAuthorizedCwd is false for that cwd).
+   */
+  /** Every live session the given folder owns — pool plus focused, worktrees
+   *  included. Both the close warning and the revoke read this, so the set the
+   *  user is warned about is by construction the set that gets disposed. */
+  private sessionsBoundToFolder(closedCwd: string): Session[] {
+    const bound: Session[] = [];
+    const seen = new Set<Session>();
+    const consider = (s: Session | undefined) => {
+      if (!s || seen.has(s)) return;
+      seen.add(s);
+      if (
+        sessionBoundToClosedFolder(
+          this.sessionCwd(s),
+          s.worktree?.path,
+          s.worktree?.sourceGitRoot,
+          closedCwd,
+          pathsEqual,
+        )
+      ) {
+        bound.push(s);
+      }
+    };
+    for (const s of this.pool) consider(s);
+    consider(this.focused);
+    return bound;
+  }
+
+  private revokeClosedProjectFolder(closedCwd: string): void {
+    this.authEpoch++;
+    // Voice first: a completing STT turn must not voiceSubmit / post into a
+    // session that is about to be disposed or rehomed to another project.
+    this.revokeVoiceForClosedFolder(closedCwd);
+
+    const doomed = this.sessionsBoundToFolder(closedCwd);
+
+    for (const s of doomed) {
+      const remoteHolders = this.remoteClients.clientsForActiveValue(s);
+      this.disposeSession(s);
+      for (const clientId of remoteHolders) {
+        this.rehomeRemoteClientAfterFolderClose(clientId, closedCwd);
+      }
+    }
+
+    // Clients whose selected repo was the closed folder (even with no session).
+    for (const clientId of this.remoteClients.clients()) {
+      const cwd = this.remoteClients.cwdIfPresent(clientId);
+      if (cwd && pathBoundToClosedFolder(cwd, closedCwd, pathsEqual)) {
+        this.remoteClients.deleteActive(clientId);
+        this.rehomeRemoteClientAfterFolderClose(clientId, closedCwd);
+      }
+    }
+
+    this.invalidateImageHandlesUnder(closedCwd);
+
+    this.worktreeCache = this.worktreeCache.filter(
+      (w) =>
+        !pathsEqual(w.sourceRepo, closedCwd) &&
+        !pathBoundToClosedFolder(w.path, closedCwd, pathsEqual),
+    );
+
+    // Drop worktree meta that pointed at the closed folder so a later resume
+    // cannot re-authorize via overrides alone (trusted set no longer includes it).
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    let metaChanged = false;
+    const nextMeta: SessionMetaOverrides = { ...overrides };
+    for (const [id, o] of Object.entries(overrides)) {
+      if (
+        (o.worktreePath && pathBoundToClosedFolder(o.worktreePath, closedCwd, pathsEqual)) ||
+        (o.sourceGitRoot && pathsEqual(o.sourceGitRoot, closedCwd))
+      ) {
+        const { worktreePath: _wp, worktreeLabel: _wl, sourceGitRoot: _sg, ...rest } = o;
+        nextMeta[id] = rest;
+        metaChanged = true;
+      }
+    }
+    if (metaChanged) void this.state.update(SESSION_META_KEY, nextMeta);
+
+    this.host.appendLine(`[auth] revoked project folder ${closedCwd} (epoch=${this.authEpoch})`);
+  }
+
+  /** Re-point a remote tab at a remaining open folder, or leave it unbound. */
+  private rehomeRemoteClientAfterFolderClose(clientId: string, closedCwd: string): void {
+    const next =
+      this.openWorkspaceFolders().find((c) => !pathsEqual(c, closedCwd)) ||
+      this.host.workspaceRoot() ||
+      "";
+    try {
+      if (next && this.isAuthorizedCwd(next)) {
+        this.remoteClients.select(clientId, next);
+      } else if (this.remoteClients.cwdIfPresent(clientId)) {
+        // Keep the client alive but clear the active session; bound-cwd checks
+        // refuse ops until the tab selects an authorized repo.
+        this.remoteClients.deleteActive(clientId);
+        // Leave *client state* pointing at the closed path so selectRepo is
+        // required (isAuthorizedCwd(closed) is false → send/cancel refused).
+        // Outbound `repos`/`initialState` scrub that path to empty — the choke
+        // point rejects a closed selectedCwd on the wire.
+      }
+      this.sendRemoteRepoCatalog(clientId);
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: "That project folder was closed on the desktop. Select another project to continue.",
+      });
+    } catch (e) {
+      this.host.appendLine(
+        `[auth] rehome remote client failed: ${(e as Error)?.message ?? e}`,
+      );
+    }
+  }
+
+  private invalidateImageHandlesUnder(closedCwd: string): void {
+    const handles = imageHandlesToRevoke(this.fullImagePaths, closedCwd, pathsEqual);
+    for (const handle of handles) {
+      const p = this.fullImagePaths.get(handle);
+      this.fullImagePaths.delete(handle);
+      if (p && this.fullImageHandles.get(p) === handle) this.fullImageHandles.delete(p);
+    }
+  }
+
+  /**
+   * Cancel local + remote voice bound to a just-closed project folder so a late
+   * transcript cannot land on a rehomed session or different focused project.
+   */
+  private revokeVoiceForClosedFolder(closedCwd: string): void {
+    if (
+      (this.localVoiceCwd && pathBoundToClosedFolder(this.localVoiceCwd, closedCwd, pathsEqual)) ||
+      (this.localVoiceCredentialCwd &&
+        pathBoundToClosedFolder(this.localVoiceCredentialCwd, closedCwd, pathsEqual))
+    ) {
+      this.stopVoiceInput();
+    }
+    for (const clientId of [...this.remoteVoice.keys()]) {
+      const entry = this.remoteVoice.get(clientId);
+      if (!entry) continue;
+      const sessCwd = this.sessionCwd(entry.session);
+      if (
+        pathBoundToClosedFolder(entry.credentialCwd, closedCwd, pathsEqual) ||
+        sessionBoundToClosedFolder(
+          sessCwd,
+          entry.session.worktree?.path,
+          entry.session.worktree?.sourceGitRoot,
+          closedCwd,
+          pathsEqual,
+        )
+      ) {
+        this.dropRemoteVoice(clientId);
+      }
+    }
+  }
+
   private async selectRemoteRepo(clientId: string, cwd: string): Promise<void> {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    // Same catalog the client was sent (open folders on desktop, full on VS Code).
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit || !hit.available) return;
     if (this.remoteVoice.has(clientId)) void this.handleRemoteVoiceStop(clientId, true);
     this.parkRemoteSession(clientId);
@@ -2318,7 +3049,7 @@ See design doc for the full state machine diagram.`;
   }
 
   private async toggleRepoPin(cwd: string, pinned: boolean): Promise<void> {
-    const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) return;
     const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
     const key = normalizeRepoPath(hit.cwd);
@@ -2329,12 +3060,15 @@ See design doc for the full state machine diagram.`;
     this.postRepoCatalog();
   }
 
-  /** Record where a project belongs in the remote rail. Both answers are stored,
+  /** Record where a project belongs in the rail. Both answers are stored,
    *  including "not archived" — that one exists to hold a long-idle project in
    *  view against the rail's own age rule, so forgetting it is not the same as
-   *  storing it (see RepoArchiveChoice). Nothing here changes what VS Code
-   *  shows; the catalog reports the choice and the browser client acts on it. */
+   *  storing it (see RepoArchiveChoice). No-op when the host cannot archive
+   *  (desktop curated open/close) — the shared repo-archives.json file is
+   *  simply ignored, so a project archived in VS Code and then opened on the
+   *  desktop still shows. */
   private async setRepoArchived(cwd: string, archived: boolean): Promise<void> {
+    if (!this.host.canArchiveRepos) return;
     const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) return;
     const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
@@ -2358,7 +3092,11 @@ See design doc for the full state machine diagram.`;
       // cwd (already gated against the catalog), and falling back to whatever
       // repo happens to be selected would file the pin under the wrong project.
       const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd;
-      if (pinned && !home) return null; // nothing to write
+      if (!home) return null; // nothing to write (pin or unpin)
+      // Authorization is not only "cwd was once in the catalog": a remote client
+      // that knows a session id must not mutate pin state for a closed project.
+      // No protocol change — wire still allows optional cwd; we re-check home.
+      if (!this.isAuthorizedCwd(home)) return null;
       const next: SessionMetaOverrides = { ...overrides };
       const entry = { ...(existing ?? {}) };
       if (pinned) {
@@ -2416,11 +3154,15 @@ See design doc for the full state machine diagram.`;
    *  actually holds a pin — not one per repo in the catalog. */
   private buildPinnedSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    // Enforce authorization at build time — never trust pin metadata alone.
+    const authorized = this.authorizedSessionCwds();
     const grokHome = resolveGrokHome(process.env);
-    const log = (m: string) => this.output.appendLine(m);
+    const log = (m: string) => this.host.appendLine(m);
     const byCwd = new Map<string, { cwd: string; ids: string[] }>();
     for (const [id, o] of Object.entries(overrides)) {
       if (typeof o?.pinnedAt !== "number" || !o.pinnedCwd) continue;
+      // Closed project: skip the whole bucket before any disk scan.
+      if (!authorizedListCwd(o.pinnedCwd, authorized, pathsEqual)) continue;
       const key = normalizeFsPath(o.pinnedCwd);
       const bucket = byCwd.get(key) ?? { cwd: o.pinnedCwd, ids: [] };
       bucket.ids.push(id);
@@ -2440,18 +3182,28 @@ See design doc for the full state machine diagram.`;
       ));
     }
     // Newest pin on top — the same rule the repo rows use, and the one that
-    // matches "I just pinned this, where did it go".
-    entries.sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
+    // matches "I just pinned this, where did it go". Defense in depth: drop
+    // any entry whose cwd slipped past the bucket gate.
+    const filtered = filterEntriesByAuthorizedCwd(entries, authorized, pathsEqual);
+    filtered.sort((a, b) => (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0));
     const dots: Record<string, Dot> = {};
-    for (const e of entries) dots[e.id] = this.dotForId(e.id);
-    return { entries, dots };
+    for (const e of filtered) dots[e.id] = this.dotForId(e.id);
+    return { entries: filtered, dots };
   }
 
   private postPinnedSessions(clientId?: string): void {
-    if (!clientId && !this.remoteClients.clients().length) return;
+    const hasRemote = this.remoteClients.clients().length > 0;
+    const hasLocalRail = this.host.canSwitchWorkspaceFolder;
+    if (!clientId && !hasRemote && !hasLocalRail) return;
+    // Built against the live authorized set for every recipient (same open set
+    // on desktop; full catalog on VS Code).
     const msg: HostMsg = { type: "pinnedSessions", ...this.buildPinnedSessions() };
-    if (clientId) this.sendRemoteClient(clientId, msg);
-    else for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, msg);
+    if (clientId) {
+      this.sendRemoteClient(clientId, msg);
+      return;
+    }
+    if (hasLocalRail) this.postLocal(msg);
+    for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, msg);
   }
 
   private annotateWorktreeLabels(
@@ -2480,16 +3232,29 @@ See design doc for the full state machine diagram.`;
    * Forward generated media (grok's `/imagine` image or `/imagine-video` video)
    * to the webview. Remote URLs pass through as a link. File paths — how grok
    * writes media into its session dir — are served via `asWebviewUri` when they
-   * live under a `localResourceRoots` entry (the grok home is one), so the
-   * webview streams the file straight from disk. That matters for video: a
-   * multi-MB clip base64-inlined into a single `postMessage` was silently
-   * dropped, which is why `/imagine-video` never rendered. Files outside the
-   * served roots fall back to a base64 `data:` URI. Best-effort: a failure just
-   * drops the media rather than breaking the turn.
+   * are **trusted** generated media under the Grok home (canonical containment
+   * + sessions/…/images|videos/ shape), so big videos stream from disk.
+   *
+   * Paths outside that provenance still render via a size-capped base64 data:
+   * URI (v3.1.0 behaviour restored). Reachable only from ACP `mediaContent`
+   * (agent over stdio); the agent already has full filesystem access, so
+   * showing the picture to the same authenticated user adds no capability.
+   * Still refuse `auth.json` by name, and never weaken renderer-facing
+   * `app-resource://` registry containment.
+   * Best-effort: a failure just drops the media rather than breaking the turn.
    */
   private async postGeneratedMedia(m: MediaRef, session: Session, gen: number): Promise<void> {
     try {
       if (m.kind === "data") {
+        // Same 8 MiB bound as the file-path fallback — ACP inline blocks used
+        // to bypass it and could still balloon the DOM / relay.
+        const decoded = base64DecodedByteLength(m.data);
+        if (decoded > MAX_INLINE_MEDIA_BYTES) {
+          this.host.appendLine(
+            `[media] refused oversized inline media (${decoded} > ${MAX_INLINE_MEDIA_BYTES})`,
+          );
+          return;
+        }
         this.emit(session, { type: "media", media: m.media, src: `data:${m.mimeType};base64,${m.data}` });
         return;
       }
@@ -2497,30 +3262,46 @@ See design doc for the full state machine diagram.`;
         this.emit(session, { type: "media", media: m.media, url: m.uri });
         return;
       }
+      // Canonical refuse: symlink chart.png → auth.json must not inline secrets.
+      if (isRefusedMediaPath(m.path, (p) => fs.realpathSync(p))) {
+        this.host.appendLine(`[media] refused media path whose canonical target is a secret name`);
+        return;
+      }
       const mime = m.mimeType || guessMediaMime(m.path);
-      // Served from disk when the file is under a localResourceRoot (grok home):
-      // the webview pulls bytes lazily, so even a big video renders.
+      // Trusted session media: stream from disk when the webview can.
       const webview = this.view?.webview;
       if (webview && this.isServableFromDisk(m.path)) {
-        const src = webview.asWebviewUri(vscode.Uri.file(m.path)).toString();
+        const src = webview.asWebviewUri(Uri.file(m.path));
         this.emit(session, { type: "media", media: m.media, src, mimeType: mime, path: m.path });
         return;
       }
-      // Outside the served roots — inline as base64 so it still renders.
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(m.path));
+      // Outside the served roots (or no asWebviewUri) — inline as base64 so a
+      // workspace chart the agent wrote still appears. Size-capped so a huge
+      // file cannot balloon the DOM / relay frame.
+      const bytes = await this.host.fs.readFile(Uri.file(m.path));
       if (gen !== session.gen) return;
+      if (bytes.byteLength > MAX_INLINE_MEDIA_BYTES) {
+        this.host.appendLine(
+          `[media] refused oversized media for data: inline (${bytes.byteLength} > ${MAX_INLINE_MEDIA_BYTES}): ${m.path}`,
+        );
+        return;
+      }
       const b64 = Buffer.from(bytes).toString("base64");
       this.emit(session, { type: "media", media: m.media, src: `data:${mime};base64,${b64}`, path: m.path });
     } catch (e) {
-      this.output.appendLine(`[media] failed to forward generated media: ${(e as Error).message}`);
+      this.host.appendLine(`[media] failed to forward generated media: ${(e as Error).message}`);
     }
   }
 
-  /** True when `p` resolves inside the grok home — the localResourceRoot grok
-   * generated media lives under, so `asWebviewUri` can serve it from disk. */
+  /**
+   * True when `p` is trusted generated media under the Grok home: realpath
+   * stays inside `~/.grok` and the path matches sessions/…/images|videos/.
+   * Lexical-only checks would let a symlink escape and still pass.
+   */
   private isServableFromDisk(p: string): boolean {
     try {
-      return isPathInside(resolveGrokHome(), p);
+      const home = resolveGrokHome();
+      return isTrustedGeneratedMediaPath(p, home, (candidate) => fs.realpathSync(candidate));
     } catch {
       return false;
     }
@@ -2549,12 +3330,15 @@ See design doc for the full state machine diagram.`;
 
       if (msg.action === "open") {
         const pngBytes = toBytes(msg.png);
+        // Node fs against globalStorage's fsPath — same as v3.1.0 (extension host
+        // sees the remote disk when running remotely).
         const dir = path.join(this.context.globalStorageUri.fsPath, "exports");
         fs.mkdirSync(dir, { recursive: true });
         const stamp = Date.now();
         const file = path.join(dir, `${base}-${stamp}.${pngBytes ? "png" : "svg"}`);
         fs.writeFileSync(file, pngBytes ?? (msg.svg ?? ""), pngBytes ? undefined : "utf8");
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(file));
+        // Host-created path under globalStorage — not a renderer-supplied path.
+        await this.host.openHostResolvedPath(file);
         return;
       }
 
@@ -2566,29 +3350,29 @@ See design doc for the full state machine diagram.`;
         { label: `SVG — for dark background${mark("dark")}`, description: "transparent, light ink", fmt: "svgDark" },
         { label: `SVG — for light background${mark("light")}`, description: "transparent, dark ink", fmt: "svgLight" },
       ];
-      const pick = await vscode.window.showQuickPick(items, {
+      const pick = await this.host.showQuickPick(items, {
         placeHolder: `Export ${base} as…`,
       });
       if (!pick) return;
 
       const ext = pick.fmt === "png" ? "png" : "svg";
       const defaultName = `${base}.${ext}`;
-      const defaultUri = vscode.Uri.joinPath(vscode.Uri.file(this.sessionCwd(session)), defaultName);
+      const defaultPath = path.join(this.sessionCwd(session), defaultName);
       const filters: Record<string, string[]> =
         ext === "png" ? { "PNG image": ["png"] } : { "SVG image": ["svg"] };
-      const target = await vscode.window.showSaveDialog({ defaultUri, filters });
+      const target = await this.host.showSaveDialog({ defaultPath, filters });
       if (!target) return;
 
       if (pick.fmt === "png") {
         const pngBytes = toBytes(msg.png);
-        fs.writeFileSync(target.fsPath, pngBytes ?? Buffer.from(msg.svgDark ?? "", "utf8"));
+        fs.writeFileSync(target, pngBytes ?? Buffer.from(msg.svgDark ?? "", "utf8"));
       } else {
         const svg = pick.fmt === "svgDark" ? msg.svgDark : msg.svgLight;
-        fs.writeFileSync(target.fsPath, svg ?? "", "utf8");
+        fs.writeFileSync(target, svg ?? "", "utf8");
       }
     } catch (e) {
-      this.output.appendLine(`[export] failed: ${(e as Error).message}`);
-      void vscode.window.showErrorMessage(`Export failed: ${(e as Error).message}`);
+      this.host.appendLine(`[export] failed: ${(e as Error).message}`);
+      void this.host.showErrorMessage(`Export failed: ${(e as Error).message}`);
     }
   }
 
@@ -2599,13 +3383,13 @@ See design doc for the full state machine diagram.`;
    */
   async logout(): Promise<void> {
     const cliPath = this.cliPath || locateGrokCli(
-      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
       return;
     }
-    const choice = await vscode.window.showWarningMessage(
+    const choice = await this.host.showWarningMessage(
       "Sign out of Grok? This clears the CLI's cached credentials.",
       { modal: true },
       "Sign Out",
@@ -2618,13 +3402,13 @@ See design doc for the full state machine diagram.`;
     this.focused = this.newLocalSession();
     // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
     // is a parser error (see runMcpList).
-    vscode.window.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
+    this.host.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
     this.post({ type: "clearMessages" });
     this.post({ type: "onboarding", state: "auth-required" });
   }
 
   dispose(): void {
-    void vscode.commands.executeCommand("setContext", "grok.composerFocus", false);
+    void this.host.setContext("grok.composerFocus", false);
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
     this.uplink?.dispose();
     this.uplink = undefined;
@@ -2660,7 +3444,7 @@ See design doc for the full state machine diagram.`;
       const { stdout } = await execGrokCli(cliPath, ["--version"], { timeout });
       return stdout?.trim() ?? "";
     } catch (e) {
-      this.output.appendLine(`grok --version failed: ${(e as Error).message}`);
+      this.host.appendLine(`grok --version failed: ${(e as Error).message}`);
       return "";
     }
   }
@@ -2670,28 +3454,28 @@ See design doc for the full state machine diagram.`;
   private async maybeUpdateCliOnUpgrade(cliPath: string): Promise<void> {
     if (this.cliUpdateChecked) return;
     this.cliUpdateChecked = true;
-    const current = (this.context.extension.packageJSON as { version?: string })?.version ?? "";
+    const current = this.context.extensionVersion;
     const lastSeen = this.state.get<string>(CLI_UPDATE_VERSION_KEY);
     try {
       if (!extensionWasUpgraded(lastSeen, current)) return;
       const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
       if (!policy.allow) {
-        this.output.appendLine(
+        this.host.appendLine(
           `Extension upgraded ${lastSeen} → ${current}; skipping silent CLI update (${policy.note}).`,
         );
         return;
       }
       const args = policy.target ? ["update", "--version", policy.target] : ["update"];
-      this.output.appendLine(
+      this.host.appendLine(
         `Extension upgraded ${lastSeen} → ${current}; updating grok CLI (silent: ${args.join(" ")}).`,
       );
       this.post({ type: "cliUpdating" });
       try {
         const { stdout, stderr } = await execGrokCli(cliPath, args, { timeout: 180_000 });
-        if (stdout?.trim()) this.output.appendLine(stdout.trim());
-        if (stderr?.trim()) this.output.appendLine(stderr.trim());
+        if (stdout?.trim()) this.host.appendLine(stdout.trim());
+        if (stderr?.trim()) this.host.appendLine(stderr.trim());
       } catch (e) {
-        this.output.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
+        this.host.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
       }
     } finally {
       void this.state.update(CLI_UPDATE_VERSION_KEY, current);
@@ -2705,8 +3489,8 @@ See design doc for the full state machine diagram.`;
     const installed = parseGrokVersion(versionOutput)?.join(".");
     if (!installed) {
       const message = `Could not verify the grok CLI version; this extension requires grok ${GROK_REQUIRED_VERSION} or newer.`;
-      this.output.appendLine(`${message} Continuing best-effort with the current binary.`);
-      void vscode.window.showWarningMessage(message);
+      this.host.appendLine(`${message} Continuing best-effort with the current binary.`);
+      void this.host.showWarningMessage(message);
       return {
         planModeAvailable: false,
         planModeUnavailableReason:
@@ -2716,8 +3500,8 @@ See design doc for the full state machine diagram.`;
     }
     if (isGrokVersionBelowRequired(versionOutput)) {
       const message = `grok CLI ${installed} is below required version ${GROK_REQUIRED_VERSION}; Plan mode is unavailable.`;
-      this.output.appendLine(message);
-      void vscode.window.showWarningMessage(message);
+      this.host.appendLine(message);
+      void this.host.showWarningMessage(message);
       return {
         planModeAvailable: false,
         planModeUnavailableReason:
@@ -2751,7 +3535,7 @@ See design doc for the full state machine diagram.`;
     fromVersion: string,
     reason: "proactive" | "reactive",
   ): Promise<boolean> {
-    this.output.appendLine(
+    this.host.appendLine(
       `grok CLI ${fromVersion} has the stdio regression (issue #22, ${reason}); ` +
         `pinning to ${GROK_STDIO_DOWNGRADE_TARGET}.`,
     );
@@ -2762,15 +3546,15 @@ See design doc for the full state machine diagram.`;
         ["update", "--version", GROK_STDIO_DOWNGRADE_TARGET],
         { timeout: 180_000 },
       );
-      if (stdout?.trim()) this.output.appendLine(stdout.trim());
-      if (stderr?.trim()) this.output.appendLine(stderr.trim());
+      if (stdout?.trim()) this.host.appendLine(stdout.trim());
+      if (stderr?.trim()) this.host.appendLine(stderr.trim());
       const detail = reason === "proactive"
         ? `Grok CLI ${fromVersion} has a known Windows startup issue (issue #22). Switched to the supported version ${GROK_STDIO_DOWNGRADE_TARGET}.`
         : `Grok CLI ${fromVersion} failed to start a session (issue #22). Switched to the supported version ${GROK_STDIO_DOWNGRADE_TARGET} and retrying.`;
-      void vscode.window.showInformationMessage(detail);
+      void this.host.showInformationMessage(detail);
       return true;
     } catch (e) {
-      this.output.appendLine(`grok recovery update to ${GROK_STDIO_DOWNGRADE_TARGET} failed: ${(e as Error).message}`);
+      this.host.appendLine(`grok recovery update to ${GROK_STDIO_DOWNGRADE_TARGET} failed: ${(e as Error).message}`);
       return false;
     }
   }
@@ -2782,7 +3566,7 @@ See design doc for the full state machine diagram.`;
    */
   private async checkGrokUpdate(): Promise<void> {
     const cliPath = this.cliPath || locateGrokCli(
-      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
       this.post({ type: "grokUpdateStatus", error: "grok CLI not found" });
@@ -2807,7 +3591,7 @@ See design doc for the full state machine diagram.`;
         policy,
       });
     } catch (e) {
-      this.output.appendLine(`grok update --check failed: ${(e as Error).message}`);
+      this.host.appendLine(`grok update --check failed: ${(e as Error).message}`);
       this.post({ type: "grokUpdateStatus", error: (e as Error).message, policy });
     }
   }
@@ -2821,7 +3605,7 @@ See design doc for the full state machine diagram.`;
    */
   private async updateGrokCliOnDemand(): Promise<void> {
     const cliPath = this.cliPath || locateGrokCli(
-      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
@@ -2832,7 +3616,7 @@ See design doc for the full state machine diagram.`;
     // unsupported Windows build even if the message arrives some other way.
     const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
     if (!policy.allow) {
-      void vscode.window.showInformationMessage(
+      void this.host.showInformationMessage(
         policy.note ?? "Grok CLI updates are paused for compatibility.",
       );
       return;
@@ -2847,7 +3631,7 @@ See design doc for the full state machine diagram.`;
       (s) => s.status === "working" || s.status === "needs-you",
     ).length;
     if (busy > 0) {
-      const choice = await vscode.window.showWarningMessage(
+      const choice = await this.host.showWarningMessage(
         `Updating the Grok Build CLI will stop ${busy} session${busy === 1 ? "" : "s"} currently in progress. Continue?`,
         { modal: true },
         "Update Anyway",
@@ -2887,19 +3671,19 @@ See design doc for the full state machine diagram.`;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { stdout, stderr } = await execGrokCli(cliPath, updateArgs, { timeout: 180_000 });
-        if (stdout?.trim()) this.output.appendLine(stdout.trim());
-        if (stderr?.trim()) this.output.appendLine(stderr.trim());
+        if (stdout?.trim()) this.host.appendLine(stdout.trim());
+        if (stderr?.trim()) this.host.appendLine(stderr.trim());
         return true;
       } catch (e) {
         const msg = (e as Error).message;
         if (attempt === 0 && isLockedBinaryError(msg)) {
-          this.output.appendLine("grok update hit a locked binary; pausing then retrying once…");
+          this.host.appendLine("grok update hit a locked binary; pausing then retrying once…");
           await new Promise((r) => setTimeout(r, 2000));
           continue;
         }
-        this.output.appendLine(`grok update failed: ${msg}`);
+        this.host.appendLine(`grok update failed: ${msg}`);
         if (notifyFailure) {
-          void vscode.window.showWarningMessage(`Grok Build update failed: ${msg}`);
+          void this.host.showWarningMessage(`Grok Build update failed: ${msg}`);
         }
         return false;
       }
@@ -2911,7 +3695,7 @@ See design doc for the full state machine diagram.`;
    *  (reasoning effort, cross-agent model). Returns the chosen restart mode, or
    *  undefined if the user dismissed the dialog. */
   private async pickRestartMode(message: string): Promise<"clear" | "summarize" | undefined> {
-    const choice = await vscode.window.showInformationMessage(
+    const choice = await this.host.showInformationMessage(
       message,
       "Summarize & Restart",
       "Just Restart",
@@ -2973,7 +3757,7 @@ See design doc for the full state machine diagram.`;
     try {
       deleteSessionDir({ fs: defaultFs, grokHome, cwd, id: oldId });
     } catch (e) {
-      this.output.appendLine(`[sessions] could not discard empty session ${oldId}: ${(e as Error).message}`);
+      this.host.appendLine(`[sessions] could not discard empty session ${oldId}: ${(e as Error).message}`);
     }
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // carrySessionName only moves customName — also carry worktree binding so a
@@ -2997,6 +3781,40 @@ See design doc for the full state machine diagram.`;
   }
 
   private async startSession(resumeId?: string, target: Session = this.focused): Promise<AcpClient | undefined> {
+    // Desktop with no open folder: empty rail is valid — do not spawn grok
+    // against process.cwd(). Adding a folder starts a session via select/switch.
+    if (
+      this.host.canSwitchWorkspaceFolder &&
+      !this.openWorkspaceFolders().length &&
+      !resumeId &&
+      !target.cwd
+    ) {
+      this.postRepoCatalog();
+      this.postSessionsList();
+      return undefined;
+    }
+    // Resume / held-session paths set target.cwd before start. A closed folder
+    // must not restart just because resumeId is set (empty-open-set guard above
+    // only covers the no-cwd case).
+    if (
+      this.host.canSwitchWorkspaceFolder &&
+      target.cwd &&
+      !this.isAuthorizedCwd(target.cwd)
+    ) {
+      this.host.appendLine(
+        `[sessions] refused startSession (cwd not authorized): ${target.cwd}` +
+          (resumeId ? ` resumeId=${resumeId}` : ""),
+      );
+      this.postRepoCatalog();
+      this.postSessionsList();
+      return undefined;
+    }
+    // A repository that ships its own always-approve config gets consent first.
+    // Deliberately here, before anything is mutated: nothing has been touched
+    // yet, so declining is a clean no-op rather than a half-started session.
+    if (!(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
+      return undefined;
+    }
     // The session this start (re)builds. Today always the focused one (pool-of-1);
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
@@ -3040,7 +3858,7 @@ See design doc for the full state machine diagram.`;
     // flash while the session spins up and primes. Resumed sessions stay
     // verdict-driven (plan-restore decides), so they don't pre-apply it.
     const rememberedYolo = startsInYolo(
-      vscode.workspace.getConfiguration("grok").get<string>("defaultMode", ""),
+      this.host.getConfiguration("grok").get<string>("defaultMode", ""),
       !!resumeId,
     );
     // grok's own `permission_mode = "always-approve"` (config.toml, set via
@@ -3083,7 +3901,7 @@ See design doc for the full state machine diagram.`;
     // both clear this startup lock below.
     this.emit(session, { type: "setBusy", value: true, locked: true });
 
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
     this.cliPath = cliPath || undefined;
     if (!cliPath) {
@@ -3133,15 +3951,15 @@ See design doc for the full state machine diagram.`;
       cwd,
       env,
       effort,
-      log: (msg) => this.output.appendLine(msg),
+      log: (msg) => this.host.appendLine(msg),
     });
     session.client = client;
 
     // fs handlers (mandatory — the agent calls these to read/write files)
     client.fsRead = async (p: string) => {
       try {
-        const uri = vscode.Uri.file(p);
-        const bytes = await vscode.workspace.fs.readFile(uri);
+        // Agent paths are genuine workspace disk paths on the extension host.
+        const bytes = await this.host.fs.readFile(Uri.file(p));
         return Buffer.from(bytes).toString("utf8");
       } catch {
         return fs.readFileSync(p, "utf8");
@@ -3149,10 +3967,8 @@ See design doc for the full state machine diagram.`;
     };
     client.fsWrite = async (p: string, content: string) => {
       try {
-        const uri = vscode.Uri.file(p);
-        const dir = vscode.Uri.file(path.dirname(p));
-        await vscode.workspace.fs.createDirectory(dir);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+        await this.host.fs.createDirectory(Uri.file(path.dirname(p)));
+        await this.host.fs.writeFile(Uri.file(p), Buffer.from(content, "utf8"));
       } catch {
         fs.mkdirSync(path.dirname(p), { recursive: true });
         fs.writeFileSync(p, content, "utf8");
@@ -3296,7 +4112,7 @@ See design doc for the full state machine diagram.`;
     client.on("taskBackgrounded", (u: any) => {
       if (gen !== session.gen) return;
       const cmd = typeof u?.command === "string" ? u.command : "";
-      this.output.appendLine(`[task] backgrounded: ${cmd.slice(0, 200)}`);
+      this.host.appendLine(`[task] backgrounded: ${cmd.slice(0, 200)}`);
     });
     client.on("taskCompleted", (u: any) => {
       if (gen !== session.gen) return;
@@ -3311,9 +4127,9 @@ See design doc for the full state machine diagram.`;
       const ok = exit == null || exit === 0;
       const label = summarizeBackgroundCommand(cmd);
       const text = `Grok background task ${ok ? "completed" : `exited (code ${exit})`}${label ? `: ${label}` : ""}`;
-      this.output.appendLine(`[task] ${text}`);
-      void vscode.window.showInformationMessage(text, "Show Logs").then((choice) => {
-        if (choice === "Show Logs") this.output.show();
+      this.host.appendLine(`[task] ${text}`);
+      void this.host.showInformationMessage(text, "Show Logs").then((choice) => {
+        if (choice === "Show Logs") this.host.showOutput();
       });
     });
     client.on("toolCall", (u) => {
@@ -3336,7 +4152,7 @@ See design doc for the full state machine diagram.`;
         (typeof u?.planText === "string" ? u.planText : "") ||
         (typeof u?.content === "string" ? u.content : "") ||
         (typeof u?.content?.text === "string" ? u.content.text : "");
-      this.output.appendLine(`[plan] event payload keys: ${Object.keys(u ?? {}).join(", ")}`);
+      this.host.appendLine(`[plan] event payload keys: ${Object.keys(u ?? {}).join(", ")}`);
     });
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
@@ -3536,7 +4352,7 @@ See design doc for the full state machine diagram.`;
       this.detachClient(session);
       void client.dispose();
     });
-    client.on("stderr", (text: string) => this.output.append(text));
+    client.on("stderr", (text: string) => this.host.append(text));
 
     try {
       await client.start();
@@ -3568,15 +4384,16 @@ See design doc for the full state machine diagram.`;
         } else if (planSource === "disk") {
           // Legacy session (no per-plan persistence): fall back to the on-disk
           // latest plan, which we'll render at the bottom after replay.
-          const planPath = path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), resumeId, "plan.md");
-          if (fs.existsSync(planPath)) {
+          const sessDir = sessionDirFor(resolveGrokHome(process.env), cwd, resumeId, { fs: defaultFs });
+          const planPath = sessDir ? path.join(sessDir, "plan.md") : "";
+          if (planPath && fs.existsSync(planPath)) {
             try {
               const planText = fs.readFileSync(planPath, "utf8");
               let snapshot: { path: string; name: string } | undefined;
               try {
                 snapshot = await this.createPlanReviewSnapshot(planText, resumeId);
               } catch (e) {
-                this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+                this.host.appendLine(`[plan-review] ${(e as Error).message}`);
               }
               this.emit(session, {
                 type: "planHistoryQueue",
@@ -3589,7 +4406,7 @@ See design doc for the full state machine diagram.`;
               });
               session.lastPlanText = planText;
             } catch (e) {
-              this.output.appendLine(`[plan-restore] ${(e as Error).message}`);
+              this.host.appendLine(`[plan-restore] ${(e as Error).message}`);
             }
           }
         }
@@ -3605,7 +4422,7 @@ See design doc for the full state machine diagram.`;
             // loaded and replayed; just keep its own model instead of letting the
             // whole resume crash with "Grok exited (code null)".
             if (!isIncompatibleAgentError(e)) throw e;
-            this.output.appendLine(
+            this.host.appendLine(
               `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
             );
           }
@@ -3655,17 +4472,17 @@ See design doc for the full state machine diagram.`;
           // so it stops being stale, and just log it; no popup nag. An EMPTY
           // default means "CLI default" and never reaches here (the `defaultModel &&`
           // guard above), so a fresh install's empty default is left untouched.
-          this.output.appendLine(
+          this.host.appendLine(
             `[startup] Default model '${defaultModel}' is not available; switching grok.defaultModel to '${client.currentModelId}'.`,
           );
-          const cfg = vscode.workspace.getConfiguration("grok");
+          const cfg = this.host.getConfiguration("grok");
           const scope = cfg.inspect<string>("defaultModel");
           const target =
             scope?.workspaceFolderValue !== undefined
-              ? vscode.ConfigurationTarget.WorkspaceFolder
+              ? "workspaceFolder"
               : scope?.workspaceValue !== undefined
-                ? vscode.ConfigurationTarget.Workspace
-                : vscode.ConfigurationTarget.Global;
+                ? "workspace"
+                : "global";
           void cfg.update("defaultModel", client.currentModelId, target);
         }
       }
@@ -3776,7 +4593,19 @@ See design doc for the full state machine diagram.`;
     switch (msg.type) {
       case "ready":
         this.postInitialState();
-        this.postRepoCatalog();
+        // Rehydrate already posts catalog + sessions. Cold start needs an early
+        // disk list so the rail is not empty while startSession runs — but the
+        // catalog scan is deferred so ready returns and the UI paints first
+        // (large histories must not block activation).
+        if (
+          !shouldRehydrateOnWebviewReady(
+            this.host.webviewReloadsUnderLiveSession,
+            !!this.focused.client,
+          )
+        ) {
+          this.postRepoCatalog();
+          setImmediate(() => this.postSessionsList());
+        }
         break;
       case "remotePreferences":
         if (origin === "remote" && clientId) {
@@ -3797,7 +4626,7 @@ See design doc for the full state machine diagram.`;
         break;
       case "composerFocus":
         if (origin === "local") {
-          await vscode.commands.executeCommand("setContext", "grok.composerFocus", !!msg.focused);
+          await this.host.setContext("grok.composerFocus", !!msg.focused);
         }
         break;
       case "summarizeSpeech": {
@@ -3813,7 +4642,7 @@ See design doc for the full state machine diagram.`;
         const text = await summarizeForSpeech(
           msg.text,
           this.resolveVoiceApiKey(session.cwd || this.workspaceRoot()),
-          (line) => this.output.appendLine(line),
+          (line) => this.host.appendLine(line),
         );
         const response: HostMsg = { type: "speechSummary", requestId: msg.requestId, text };
         if (requester) this.sendRemoteRequester(requester, response);
@@ -3828,6 +4657,12 @@ See design doc for the full state machine diagram.`;
         // Unknown handle: say nothing. The overlay keeps showing the thumbnail,
         // and a probe learns nothing about what does or does not exist on disk.
         if (!source) break;
+        // Revalidate against the current open set — a handle minted while a
+        // folder was open must not survive closing that folder.
+        if (!this.isImagePathAuthorizedNow(source)) {
+          this.host.appendLine(`[remote] refused imageFull (path no longer authorized)`);
+          break;
+        }
         const src = await this.renderFullImage(source);
         this.sendRemoteRequester(requester, { type: "imageFull", fullId: msg.fullId, src });
         break;
@@ -3836,7 +4671,7 @@ See design doc for the full state machine diagram.`;
         let queuedSendCommit: { text: string } | undefined;
         if (origin === "remote" && msg.queuedSendId) {
           if (session.completedQueuedSendIds.includes(msg.queuedSendId)) {
-            this.output.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
+            this.host.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
             break;
           }
           const dispatch = session.queuedSendDispatch;
@@ -3845,7 +4680,7 @@ See design doc for the full state machine diagram.`;
             dispatch.id !== msg.queuedSendId ||
             dispatch.text.trim() !== msg.text.trim()
           ) {
-            this.output.appendLine(`[queue] ignored stale or mismatched remote dequeue ${msg.queuedSendId}`);
+            this.host.appendLine(`[queue] ignored stale or mismatched remote dequeue ${msg.queuedSendId}`);
             break;
           }
           session.completedQueuedSendIds.push(dispatch.id);
@@ -3858,7 +4693,7 @@ See design doc for the full state machine diagram.`;
           origin === "remote" &&
           session.queuedSendDispatch?.text.trim() === msg.text.trim()
         ) {
-          this.output.appendLine("[queue] ignored an unidentifiable legacy dequeue echo");
+          this.host.appendLine("[queue] ignored an unidentifiable legacy dequeue echo");
           break;
         }
         try {
@@ -3920,8 +4755,15 @@ See design doc for the full state machine diagram.`;
         await this.forkFocusedSession(session, requester);
         break;
       case "newWorktreeSession":
-        await this.newWorktreeSession();
+        await this.newWorktreeSession({ fromRemote: origin === "remote" });
         break;
+      case "setAppPurpose": {
+        const purpose = parseAppPurpose(msg.value);
+        await this.state.update(APP_PURPOSE_KEY, purpose);
+        // Mirror to every open view (local + remote) so disclosure stays in sync.
+        this.post({ type: "appPurpose", value: purpose });
+        break;
+      }
       case "applyWorktree":
         // The webview's custom confirm already ran (native modals stay only on
         // the Command-Palette path).
@@ -3937,9 +4779,7 @@ See design doc for the full state machine diagram.`;
         await this.unlinkRemoteDevice();
         break;
       case "openRemotePortal":
-        void vscode.env.openExternal(vscode.Uri.parse(
-          httpBaseFromRelayUrl(REMOTE_RELAY_URL) + (msg.withHint ? "/?remoteHint=1" : ""),
-        ));
+        void this.host.openExternal(httpBaseFromRelayUrl(REMOTE_RELAY_URL) + (msg.withHint ? "/?remoteHint=1" : ""));
         break;
       case "rewindSession":
         await this.rewindFocusedSession(
@@ -4017,32 +4857,29 @@ See design doc for the full state machine diagram.`;
         const ref = parseFileRef(msg.path);
         let p = ref.path;
         if (!path.isAbsolute(p)) p = path.join(this.sessionCwd(session), p);
-        const uri = vscode.Uri.file(p);
         if (ref.startLine != null) {
           const startLine = Math.max(0, ref.startLine - 1);
           const endLine = ref.endLine != null ? Math.max(startLine, ref.endLine - 1) : startLine;
           try {
-            const doc = await vscode.workspace.openTextDocument(uri);
-            await vscode.window.showTextDocument(doc, {
-              selection: new vscode.Range(startLine, 0, endLine, Number.MAX_SAFE_INTEGER),
+            await this.host.openTextFile(p, {
+              selection: {
+                start: { line: startLine, character: 0 },
+                end: { line: endLine, character: Number.MAX_SAFE_INTEGER },
+              },
             });
           } catch {
-            void vscode.commands.executeCommand("vscode.open", uri);
+            void this.host.openResource(p);
           }
         } else {
-          void vscode.commands.executeCommand("vscode.open", uri);
+          void this.host.openResource(p);
         }
         break;
       }
       case "openUrl":
-        void vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        void this.host.openExternal(msg.url);
         break;
       case "openText": {
-        const doc = await vscode.workspace.openTextDocument({
-          content: msg.content,
-          language: msg.language,
-        });
-        await vscode.window.showTextDocument(doc);
+        await this.host.openUntitledText(msg.content, msg.language);
         break;
       }
       case "openDiff":
@@ -4060,7 +4897,12 @@ See design doc for the full state machine diagram.`;
         await this.exportExpr(msg, session);
         break;
       case "dropFile":
-        await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, attachmentOwner));
+        // Desktop rewrites a host-minted handle to path before this runs; VS Code
+        // still posts a path from drag-drop. Missing path is a no-op (forged
+        // handle already refused at the Electron gate).
+        if (typeof msg.path === "string" && msg.path.length > 0) {
+          await this.trackAttach(this.addDroppedFile(msg.path, msg.shift, attachmentOwner));
+        }
         break;
       case "pasteImage":
         await this.trackAttach(this.addPastedImage(
@@ -4119,7 +4961,7 @@ See design doc for the full state machine diagram.`;
       case "setEffort": {
         if (session.priming) break; // ignore changes fired mid-session-start (see switchModel)
         const newLevel = msg.level;
-        const cfg2 = vscode.workspace.getConfiguration("grok");
+        const cfg2 = this.host.getConfiguration("grok");
 
         if (!session.hasHistory || !session.client) {
           // As with a model switch on an empty session: restart without the summarize-vs-restart
@@ -4127,7 +4969,7 @@ See design doc for the full state machine diagram.`;
           // history (a dead client on a session WITH history must keep that history).
           const wasEmpty = !session.hasHistory;
           const discardId = session.activeSessionId;
-          await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
+          await cfg2.update("defaultEffort", newLevel, "global");
           await this.startSession(undefined, session);
           if (wasEmpty) this.discardRestartedEmptySession(discardId, session);
           break;
@@ -4144,7 +4986,7 @@ See design doc for the full state machine diagram.`;
         if (newLevel && session.client.currentModelSupportsEffort()) {
           const applied = await session.client.setReasoningEffort(newLevel).catch(() => false);
           if (applied) {
-            await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
+            await cfg2.update("defaultEffort", newLevel, "global");
             break;
           }
         }
@@ -4159,28 +5001,18 @@ See design doc for the full state machine diagram.`;
         }
         const mode = await this.pickRestartMode("Changing reasoning effort requires restarting the session.");
         if (!mode) break; // dismissed — leave defaultEffort untouched
-        await cfg2.update("defaultEffort", newLevel, vscode.ConfigurationTarget.Global);
+        await cfg2.update("defaultEffort", newLevel, "global");
         await this.restartSession(mode, session);
         break;
       }
       case "openGlobalConfig": {
-        const home = process.env.HOME || process.env.USERPROFILE || "";
-        const globalCfg = path.join(home, ".grok", "config.toml");
-        if (!fs.existsSync(globalCfg)) {
-          fs.mkdirSync(path.dirname(globalCfg), { recursive: true });
-          fs.writeFileSync(globalCfg, "# Grok global configuration\n");
-        }
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(globalCfg));
+        // Intent only — host resolves ~/.grok/config.toml (never a renderer path).
+        await this.host.openGlobalConfig();
         break;
       }
       case "openProjectConfig": {
-        const cwd2 = this.sessionCwd(session);
-        const projCfg = path.join(cwd2, ".grok", "config.toml");
-        if (!fs.existsSync(projCfg)) {
-          fs.mkdirSync(path.dirname(projCfg), { recursive: true });
-          fs.writeFileSync(projCfg, "# Grok project configuration\n# MCP servers here apply to this workspace only.\n");
-        }
-        await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(projCfg));
+        // Intent only — host resolves project .grok/config.toml from session cwd.
+        await this.host.openProjectConfig(this.sessionCwd(session));
         break;
       }
       case "runMcpList": {
@@ -4191,18 +5023,21 @@ See design doc for the full state machine diagram.`;
         // directly sidesteps shell quoting entirely and behaves the same on
         // PowerShell, cmd, and POSIX shells.
         const mcpCli = this.cliPath || locateGrokCli(
-          vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+          this.host.getConfiguration("grok").get<string>("cliPath", ""),
         );
         const mcpCwd = this.sessionCwd(session);
         const term = mcpCli
-          ? vscode.window.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
-          : vscode.window.createTerminal("Grok MCP");
+          ? this.host.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
+          : this.host.createTerminal("Grok MCP");
         term.show();
         if (!mcpCli) term.sendText("grok mcp list");
         break;
       }
       case "showLogs":
-        this.output.show();
+        this.host.showOutput();
+        break;
+      case "openSettings":
+        await this.host.openSettings(typeof msg.section === "string" ? msg.section : "grok");
         break;
       case "moveView": {
         // Gear -> Config & debug -> Move view. Each destination targets an
@@ -4210,57 +5045,52 @@ See design doc for the full state machine diagram.`;
         // unknown location falls back to the built-in destination picker
         // preselected on our view (the view-id argument also sidesteps the
         // focusedView context, which Cursor never sets for webview views).
-        const containerId = moveViewContainerFor(msg.location);
-        if (containerId) {
-          await vscode.commands.executeCommand("vscode.moveViews", {
-            viewIds: [GROK_VIEW_ID],
-            destinationId: containerId,
-          });
-          await vscode.commands.executeCommand(`${GROK_VIEW_ID}.focus`);
-        } else {
-          await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
-        }
+        await this.host.relocateView(GROK_VIEW_ID, moveViewContainerFor(msg.location));
         break;
       }
       case "setShowThinking":
         // Persist globally (like the other display prefs); the config watcher
         // re-posts the value, keeping every open webview in sync.
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("showThinking", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("showThinking", !!msg.value, "global");
         break;
       case "setExpandCommandOutputs":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("expandCommandOutputs", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("expandCommandOutputs", !!msg.value, "global");
         break;
       case "setSteerByDefault":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("steerByDefault", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("steerByDefault", !!msg.value, "global");
         break;
       case "setSoundNotifications":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("soundNotifications", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("soundNotifications", !!msg.value, "global");
         break;
       case "setProcessingSound":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("processingSound", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("processingSound", !!msg.value, "global");
         break;
       case "setReadRepliesAloud":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("readRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("readRepliesAloud", !!msg.value, "global");
         break;
       case "setSummarizeRepliesAloud":
-        await vscode.workspace
-          .getConfiguration("grok")
-          .update("summarizeRepliesAloud", !!msg.value, vscode.ConfigurationTarget.Global);
+        await this.host.getConfiguration("grok")
+          .update("summarizeRepliesAloud", !!msg.value, "global");
         break;
       case "runInstallCmd": {
-        const term = vscode.window.createTerminal("Install Grok");
+        // Host-owned confirmation, because this is one of the two messages that
+        // run something. The renderer does not supply the command — it is the
+        // fixed x.ai installer — so a compromised renderer cannot choose WHAT
+        // runs, only trigger it. Confirming closes that anyway: the desktop
+        // dispatcher authorizes on "the message came from the main frame", not
+        // on a user gesture, and this is cheap where a general fix is not.
+        if (!(await this.confirmHostExecute(
+          "Install the Grok Build CLI?",
+          "This runs the official installer from x.ai in a terminal.",
+          "Install",
+        ))) break;
+        const term = this.host.createTerminal("Install Grok");
         term.show();
         // Windows ships a native CLI installed via PowerShell; the default VS Code
         // terminal there is PowerShell, so use its syntax. Everything else is POSIX.
@@ -4274,7 +5104,7 @@ See design doc for the full state machine diagram.`;
       }
       case "runGrokLogin": {
         const cliPath = this.cliPath || locateGrokCli(
-          vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+          this.host.getConfiguration("grok").get<string>("cliPath", ""),
         );
         if (!cliPath) {
           this.post({ type: "onboarding", state: "missing-cli" });
@@ -4282,7 +5112,7 @@ See design doc for the full state machine diagram.`;
         }
         // shellPath/shellArgs, not sendText — a quoted path typed into
         // PowerShell is a parser error (see runMcpList).
-        const term = vscode.window.createTerminal({ name: "Grok Login", shellPath: cliPath, shellArgs: ["login"] });
+        const term = this.host.createTerminal({ name: "Grok Login", shellPath: cliPath, shellArgs: ["login"] });
         term.show();
         break;
       }
@@ -4296,6 +5126,11 @@ See design doc for the full state machine diagram.`;
         await this.checkGrokUpdate();
         break;
       case "updateGrok":
+        if (!(await this.confirmHostExecute(
+          "Update the Grok Build CLI?",
+          "This runs the CLI's own updater.",
+          "Update",
+        ))) break;
         await this.updateGrokCliOnDemand();
         break;
       case "listSessions":
@@ -4309,24 +5144,23 @@ See design doc for the full state machine diagram.`;
         break;
       case "listRepoSessions":
         // Preview rows for a repo WITHOUT selecting it (the projects rail).
-        // Remote-only: the VS Code webview has no rail and is locked to its own
-        // workspace, so answering it locally would be the one path that hands
-        // the local view another repo's history.
+        // Local answers when the host can switch folders (desktop rail); VS Code
+        // never posts this (no rail mount), so the local branch is inert there.
         if (origin === "remote" && clientId) {
           this.sendRepoSessionsPreview(clientId, msg.cwd, msg.limit);
+        } else {
+          this.sendLocalRepoSessionsPreview(msg.cwd, msg.limit);
         }
         break;
       case "toggleSessionPin":
-        // Rail-only affordance, so remote-only: the VS Code history popover
-        // offers no pin, and answering it locally would write state no local
-        // surface can show or undo.
-        if (origin === "remote" && clientId) {
+        // Rail pin. Remote always; local when multi-folder desktop has a rail.
+        if (origin === "remote" || this.host.canSwitchWorkspaceFolder) {
           await this.toggleSessionPin(msg.id, msg.cwd, msg.pinned);
         }
         break;
       case "selectRepo":
-        if (origin === "remote" && clientId) this.selectRemoteRepo(clientId, msg.cwd);
-        else this.selectRepo(msg.cwd);
+        if (origin === "remote" && clientId) await this.selectRemoteRepo(clientId, msg.cwd);
+        else await this.selectRepo(msg.cwd);
         break;
       case "setRepoArchived":
         await this.setRepoArchived(msg.cwd, msg.archived);
@@ -4360,7 +5194,7 @@ See design doc for the full state machine diagram.`;
           const index = await this.mentionFileIndexForCwd(this.sessionCwd(session));
           files = filterMentionFiles(index.rels, msg.query);
         } catch (e) {
-          this.output.appendLine(`[mention] index failed: ${(e as Error).message}`);
+          this.host.appendLine(`[mention] index failed: ${(e as Error).message}`);
         }
         if (requester) {
           this.sendRemoteRequester(requester, { type: "mentionResults", query: msg.query, files });
@@ -4381,7 +5215,7 @@ See design doc for the full state machine diagram.`;
           try {
             catalogMatch = (await this.mentionFileIndexForCwd(workspaceRoot)).absByRel.get(msg.relPath);
           } catch (e) {
-            this.output.appendLine(`[mention] index failed while validating remote pick: ${(e as Error).message}`);
+            this.host.appendLine(`[mention] index failed while validating remote pick: ${(e as Error).message}`);
           }
         } else {
           // Local picks preserve the #69 fallback for a result whose cached/open
@@ -4389,7 +5223,7 @@ See design doc for the full state machine diagram.`;
           try {
             catalogMatch = (await this.mentionFileIndexForCwd(workspaceRoot)).absByRel.get(msg.relPath);
           } catch (e) {
-            this.output.appendLine(`[mention] index failed while validating local pick: ${(e as Error).message}`);
+            this.host.appendLine(`[mention] index failed while validating local pick: ${(e as Error).message}`);
           }
           if (pathsEqual(workspaceRoot, this.workspaceRoot())) {
             openTabMatch = this.openWorkspaceFileEntries().find((e) => e.rel === msg.relPath)?.abs;
@@ -4477,6 +5311,8 @@ See design doc for the full state machine diagram.`;
     // and reads no disk until a pin actually exists.
     this.postPinnedSessions();
     for (const clientId of this.remoteClients.clients()) {
+      // Per-tab cwd may still name a closed project after revoke leaves it for
+      // selectRepo — buildSessionsList enforces the live authorized set.
       const cwd = this.remoteClients.cwd(clientId);
       const activeId = this.remoteActiveSessionId(clientId);
       this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, activeId));
@@ -4493,9 +5329,26 @@ See design doc for the full state machine diagram.`;
     const offset = Math.max(0, opts?.offset ?? 0);
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const query = (opts?.query ?? "").trim().toLowerCase();
+    // Authorization at the point of build: stale per-tab / selected cwd must not
+    // scan a closed project's session catalog (round 12).
+    const listCwd = authorizedListCwd(cwd, this.authorizedSessionCwds(), pathsEqual);
+    if (!listCwd) {
+      return {
+        type: "sessions",
+        entries: [],
+        activeId: null,
+        dots: {},
+        offset,
+        total: 0,
+        hasMore: false,
+        nextOffset: offset,
+        query: opts?.query ?? "",
+      };
+    }
+    cwd = listCwd;
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const log = (m: string) => this.output.appendLine(m);
+    const log = (m: string) => this.host.appendLine(m);
 
     // Best-effort refresh so worktree sessions appear without a create this window.
     // Fire-and-forget: a late refresh just needs another list open to show up.
@@ -4647,10 +5500,10 @@ See design doc for the full state machine diagram.`;
     if (!session.hasHistory) return "New session";
     try {
       const cwd = this.sessionCwd(session);
-      const raw = JSON.parse(fs.readFileSync(
-        path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), id, "summary.json"),
-        "utf8",
-      ));
+      const grokHome = resolveGrokHome(process.env);
+      const sessDir = sessionDirFor(grokHome, cwd, id, { fs: defaultFs });
+      if (!sessDir) throw new Error("no session dir");
+      const raw = JSON.parse(fs.readFileSync(path.join(sessDir, "summary.json"), "utf8"));
       const title = cliSessionTitle(raw?.session_summary, raw?.generated_title);
       if (title) return fallbackName(title, Date.now());
     } catch {
@@ -4773,7 +5626,8 @@ See design doc for the full state machine diagram.`;
    *  and then act, so the selection only ever added a step to the same reach. */
   private remoteRepoScope(clientId: string, requestedCwd?: string): string | undefined {
     if (requestedCwd) {
-      const hit = this.repoCatalog().find((r) => pathsEqual(r.cwd, requestedCwd));
+      // Host catalog the client was told about (open folders on desktop).
+      const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, requestedCwd));
       // The host's own spelling, never the client's.
       if (hit?.available) return hit.cwd;
       return undefined;
@@ -4786,9 +5640,10 @@ See design doc for the full state machine diagram.`;
    *  as its cwd, because that is where its transcript lives, and a worktree is
    *  deliberately not a catalog row (see sessionCwdsForRepo) — so scoping by
    *  catalog alone refused every action on one. The catalog is still the whole
-   *  boundary: the parent has to be a repo this host discovered for itself. */
+   *  boundary: the parent has to be a repo this host exposes (open on desktop,
+   *  discovered on VS Code). */
   private repoOwningSessionCwd(cwd: string, overrides: SessionMetaOverrides): string | undefined {
-    return this.repoCatalog().find(
+    return this.localRepoCatalogEntries().find(
       (r) => r.available && this.sessionCwdsForRepo(r.cwd, overrides).some((c) => pathsEqual(c, cwd)),
     )?.cwd;
   }
@@ -4839,7 +5694,7 @@ See design doc for the full state machine diagram.`;
     miss: { reason: "scope" | "gone"; repoCwd?: string },
   ): void {
     if (miss.reason === "gone") {
-      this.output.appendLine(`[remote] dropped ${action}Session for ${id} (no longer in ${miss.repoCwd})`);
+      this.host.appendLine(`[remote] dropped ${action}Session for ${id} (no longer in ${miss.repoCwd})`);
       // Refresh what the client is looking at rather than argue with it: the row
       // it acted on is stale, so the honest repair is to make the row disappear.
       this.postSessionsList();
@@ -4850,7 +5705,7 @@ See design doc for the full state machine diagram.`;
       });
       return;
     }
-    this.output.appendLine(`[remote] refused ${action}Session for ${id} (session is outside every known project)`);
+    this.host.appendLine(`[remote] refused ${action}Session for ${id} (session is outside every known project)`);
     this.sendRemoteClient(clientId, {
       type: "error",
       text: `Could not ${action} this conversation because it does not belong to a project this computer knows about.`,
@@ -4933,7 +5788,7 @@ See design doc for the full state machine diagram.`;
     if (origin === "remote" && clientId) {
       this.sendRemoteClient(clientId, { type: "error", text });
     } else {
-      void vscode.window.showInformationMessage(text);
+      void this.host.showInformationMessage(text);
     }
   }
 
@@ -4968,9 +5823,9 @@ See design doc for the full state machine diagram.`;
       );
       return;
     }
-    if (level === "error") void vscode.window.showErrorMessage(text);
-    else if (level === "warning") void vscode.window.showWarningMessage(text);
-    else void vscode.window.showInformationMessage(text);
+    if (level === "error") void this.host.showErrorMessage(text);
+    else if (level === "warning") void this.host.showWarningMessage(text);
+    else void this.host.showInformationMessage(text);
   }
 
   private async deleteSession(
@@ -4990,7 +5845,7 @@ See design doc for the full state machine diagram.`;
     }
     const authorizedRemoteCwd = target?.cwd;
     if (this.isSessionLoadReserved(id)) {
-      this.output.appendLine(`[sessions] refused delete of reserved session ${id}`);
+      this.host.appendLine(`[sessions] refused delete of reserved session ${id}`);
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
@@ -5008,7 +5863,7 @@ See design doc for the full state machine diagram.`;
         : live === this.focused
     );
     if (live && this.sessionHasLiveOwner(live) && !requesterWatches) {
-      this.output.appendLine(`[sessions] refused delete of live session ${id} owned elsewhere`);
+      this.host.appendLine(`[sessions] refused delete of live session ${id} owned elsewhere`);
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
@@ -5037,7 +5892,7 @@ See design doc for the full state machine diagram.`;
         id,
       });
     } catch (e) {
-      this.output.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
+      this.host.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
     }
     this.sessionCache.delete(id);
     this.removePlanReviews(id); // snapshots live outside grok's session dir
@@ -5078,10 +5933,10 @@ See design doc for the full state machine diagram.`;
       ? this.remoteRepoScope(clientId, requestedCwd)
       : requestedCwd;
     if (!selectedCwd) {
-      this.output.appendLine("[remote] dropped clearAllSessions (cwd is not a known repository)");
+      this.host.appendLine("[remote] dropped clearAllSessions (cwd is not a known repository)");
       return;
     }
-    const repo = this.repoCatalog().find((r) => pathsEqual(r.cwd, selectedCwd));
+    const repo = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, selectedCwd));
     if (!repo) return;
     const cwd = repo.cwd;
     const grokHome = resolveGrokHome(process.env);
@@ -5137,7 +5992,7 @@ See design doc for the full state machine diagram.`;
           exceptIds: protectedIds,
         })) removedIds.add(id);
       } catch (e) {
-        this.output.appendLine(
+        this.host.appendLine(
           `[sessions] clear-all failed for ${sessionCwd}: ${(e as Error).message}`,
         );
       }
@@ -5183,20 +6038,20 @@ See design doc for the full state machine diagram.`;
   }
 
   private async pickFileFromComputer(): Promise<void> {
-    const picked = await vscode.window.showOpenDialog({
+    const picked = await this.host.showOpenDialog({
       canSelectFiles: true,
       canSelectFolders: false,
       canSelectMany: true,
       openLabel: "Add to chat",
     });
     if (!picked || picked.length === 0) return;
-    for (const uri of picked) {
+    for (const filePath of picked) {
       try {
-        await this.addDroppedFile(uri.fsPath, false);
+        await this.addDroppedFile(filePath, false);
       } catch (e) {
         // Per-file: one unreadable pick must not abort the rest of a multi-select.
-        this.output.appendLine(`[image] could not attach ${uri.fsPath}: ${(e as Error).message}`);
-        void vscode.window.showErrorMessage(`Grok: could not attach ${path.basename(uri.fsPath)} — ${(e as Error).message}`);
+        this.host.appendLine(`[image] could not attach ${filePath}: ${(e as Error).message}`);
+        void this.host.showErrorMessage(`Grok: could not attach ${path.basename(filePath)} — ${(e as Error).message}`);
       }
     }
     this.revealAndFocusComposer();
@@ -5230,7 +6085,7 @@ See design doc for the full state machine diagram.`;
   }
 
   private async buildMentionIndex(): Promise<{ rels: string[]; absByRel: Map<string, string> }> {
-    const cfg = vscode.workspace.getConfiguration();
+    const cfg = this.host.getConfiguration();
     // findFiles' default excludes are files.exclude ONLY — node_modules lives in
     // search.exclude, so both must be merged in or the index is dependency soup.
     const exclude = buildExcludeGlob([
@@ -5240,15 +6095,17 @@ See design doc for the full state machine diagram.`;
     // Cap is user-tunable (`grok.mentionIndexLimit`) — large monorepos that hit
     // the default 5000 can miss files from `@` autocomplete (#69).
     const limit = clampMentionIndexLimit(
-      vscode.workspace.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
+      this.host.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
     );
-    const uris = await vscode.workspace.findFiles("**/*", exclude, limit);
+    const uris = await this.host.findFiles("**/*", exclude, limit);
     const absByRel = new Map<string, string>();
     for (const uri of uris) {
       // Default asRelativePath prefixes the folder name only in a multi-root
-      // workspace — exactly when the prefix is needed to disambiguate.
-      const rel = normalizeRelPath(vscode.workspace.asRelativePath(uri));
-      if (!absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
+      // workspace — exactly when the prefix is needed to disambiguate. Pass the
+      // full Uri so remote schemes match workspace folders (path-only fails).
+      const rel = normalizeRelPath(this.host.asRelativePath(uri));
+      const abs = uri.fsPath;
+      if (!absByRel.has(rel)) absByRel.set(rel, abs);
     }
     return { rels: orderMentionIndex([...absByRel.keys()]), absByRel };
   }
@@ -5256,25 +6113,10 @@ See design doc for the full state machine diagram.`;
   /** Currently open workspace text tabs as `{rel, abs}` for mention merge.
    *  Non-file schemes and paths outside the workspace are skipped. */
   private openWorkspaceFileEntries(): Array<{ rel: string; abs: string }> {
-    const out: Array<{ rel: string; abs: string }> = [];
-    const seen = new Set<string>();
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        const input = tab.input;
-        if (!(input instanceof vscode.TabInputText)) continue;
-        const uri = input.uri;
-        if (uri.scheme !== "file") continue;
-        if (!vscode.workspace.getWorkspaceFolder(uri)) continue;
-        const abs = uri.fsPath;
-        if (seen.has(abs)) continue;
-        seen.add(abs);
-        out.push({
-          rel: normalizeRelPath(vscode.workspace.asRelativePath(uri)),
-          abs,
-        });
-      }
-    }
-    return out;
+    return this.host.openWorkspaceTextFiles().map((e) => ({
+      rel: normalizeRelPath(e.rel),
+      abs: e.abs,
+    }));
   }
 
   /** Resolve the xAI key for Speech-to-Text: the `grok.voiceApiKey` setting,
@@ -5283,7 +6125,7 @@ See design doc for the full state machine diagram.`;
    *  (`~/.grok/auth.json`) — so Voice works out of the box for a signed-in user,
    *  no separate console.x.ai key needed (#51). */
   private resolveVoiceApiKey(cwd: string): string | undefined {
-    const setting = vscode.workspace.getConfiguration("grok").get<string>("voiceApiKey", "");
+    const setting = this.host.getConfiguration("grok").get<string>("voiceApiKey", "");
     const env = { ...process.env, ...this.readDotEnv(cwd) } as Record<string, string | undefined>;
     // Explicit config wins and short-circuits — only touch the credential file
     // when nothing explicit is set (least-privilege; the login token is a
@@ -5300,7 +6142,7 @@ See design doc for the full state machine diagram.`;
    *  can show a "needs setup" hint up front instead of only failing on click. */
   /** Chat-panel zoom factor (1.0 = 100%). Clamped to the declared 60–300% range. */
   private chatFontScale(): number {
-    const pct = vscode.workspace.getConfiguration("grok").get<number>("chatFontScale", 100);
+    const pct = this.host.getConfiguration("grok").get<number>("chatFontScale", 100);
     const n = Number.isFinite(pct) ? (pct as number) : 100;
     return Math.min(300, Math.max(60, n)) / 100;
   }
@@ -5321,7 +6163,7 @@ See design doc for the full state machine diagram.`;
   /** grok.showThinking (#26) — whether grok's reasoning traces are shown. Off by
    *  default; hidden traces are replaced by a lightweight "Thinking…" indicator. */
   private showThinking(): boolean {
-    return vscode.workspace.getConfiguration("grok").get<boolean>("showThinking", false);
+    return this.host.getConfiguration("grok").get<boolean>("showThinking", false);
   }
 
   private postShowThinking(): void {
@@ -5349,13 +6191,13 @@ See design doc for the full state machine diagram.`;
     // installs included — only the probe script uses DEV).
     try {
       const enabled = shouldSendTelemetry(
-        vscode.env.isTelemetryEnabled,
-        vscode.workspace.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
-        this.context.extension.id === OFFICIAL_EXTENSION_ID,
+        this.host.isTelemetryEnabled,
+        this.host.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
+        this.context.extensionId === OFFICIAL_EXTENSION_ID,
       );
       if (!enabled) return;
-      const cfg = vscode.workspace.getConfiguration("grok");
-      const appVersion = (this.context.extension.packageJSON as { version?: string })?.version ?? "";
+      const cfg = this.host.getConfiguration("grok");
+      const appVersion = this.context.extensionVersion;
       const remoteClientId = origin === "remote"
         ? this.remoteClients.clientsForActiveValue(session)[0]
         : undefined;
@@ -5379,14 +6221,14 @@ See design doc for the full state machine diagram.`;
           remoteFontScale: remotePreferences?.fontScale,
           remoteReadRepliesAloud: remotePreferences?.readRepliesAloud,
           ...sessionStartSurface(origin, remotePreferences?.usesTouch),
-          host: vscode.env.appName || undefined,
+          host: this.host.appName || undefined,
         },
         {
           appVersion,
           osName: osNameFromPlatform(process.platform),
           osVersion: os.release(),
-          locale: vscode.env.language || "",
-          isDebug: this.context.extensionMode !== vscode.ExtensionMode.Production,
+          locale: this.host.language || "",
+          isDebug: !this.context.isProduction,
         },
         randomUUID(),
         new Date().toISOString(),
@@ -5406,22 +6248,23 @@ See design doc for the full state machine diagram.`;
       sendPhrase: this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
     });
     for (const clientId of this.remoteClients.clients()) {
+      // Scope = the project whose config we resolved. Classification is "scope"
+      // so a closed/re-homed tab cannot receive the prior project's prefs.
       const remoteCwd = this.sessionCwd(this.remoteSessionFor(clientId));
       this.sendRemoteClient(clientId, {
         type: "voiceConfigured",
         value: !!this.resolveVoiceApiKey(remoteCwd),
         sendPhrase: this.voiceSetting(remoteCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
-      });
+      }, remoteCwd);
     }
   }
 
   private voiceSetting<T>(cwd: string, key: string, fallback: T): T {
-    const resource = vscode.Uri.file(cwd);
-    const cfg = vscode.workspace.getConfiguration("grok", resource);
+    const cfg = this.host.getConfiguration("grok", cwd);
     return voiceSettingForRepo(
       cfg.get<T>(key),
       cfg.inspect<T>(key),
-      !!vscode.workspace.getWorkspaceFolder(resource),
+      this.host.isInWorkspace(cwd),
       fallback,
     );
   }
@@ -5431,19 +6274,20 @@ See design doc for the full state machine diagram.`;
     const key = normalizeRepoPath(cwd);
     const cached = this.remoteMentionIndexes.get(key);
     if (cached && Date.now() - cached.at < MENTION_INDEX_TTL_MS) return cached;
-    const cfg = vscode.workspace.getConfiguration();
+    const cfg = this.host.getConfiguration();
     const exclude = buildExcludeGlob([
       cfg.get<Record<string, unknown>>("files.exclude"),
       cfg.get<Record<string, unknown>>("search.exclude"),
     ]);
     const limit = clampMentionIndexLimit(
-      vscode.workspace.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
+      this.host.getConfiguration("grok").get<number>("mentionIndexLimit", MENTION_INDEX_LIMIT),
     );
-    const uris = await vscode.workspace.findFiles(new vscode.RelativePattern(cwd, "**/*"), exclude, limit);
+    const uris = await this.host.findFiles({ base: cwd, pattern: "**/*" }, exclude, limit);
     const absByRel = new Map<string, string>();
     for (const uri of uris) {
-      const rel = normalizeRelPath(path.relative(cwd, uri.fsPath));
-      if (rel && !absByRel.has(rel)) absByRel.set(rel, uri.fsPath);
+      const abs = uri.fsPath;
+      const rel = normalizeRelPath(path.relative(cwd, abs));
+      if (rel && !absByRel.has(rel)) absByRel.set(rel, abs);
     }
     const value = { at: Date.now(), rels: orderMentionIndex([...absByRel.keys()]), absByRel };
     this.remoteMentionIndexes.set(key, value);
@@ -5452,15 +6296,15 @@ See design doc for the full state machine diagram.`;
 
   /** Show actionable guidance for setting up the voice API key. */
   private async promptVoiceKeySetup(): Promise<void> {
-    const pick = await vscode.window.showErrorMessage(
+    const pick = await this.host.showErrorMessage(
       "Voice control needs an xAI Speech-to-Text key. Sign in with `grok login` and it reuses that token automatically — or set grok.voiceApiKey, or GROK_VOICE_API_KEY / XAI_API_KEY in your workspace .env for a dedicated console.x.ai key.",
       "Open Settings",
       "Get a Key",
     );
     if (pick === "Open Settings") {
-      await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+      await this.host.openSettings("grok.voiceApiKey");
     } else if (pick === "Get a Key") {
-      await vscode.env.openExternal(vscode.Uri.parse("https://console.x.ai"));
+      await this.host.openExternal("https://console.x.ai");
     }
   }
 
@@ -5476,7 +6320,7 @@ See design doc for the full state machine diagram.`;
       this.sendRemoteClient(clientId, { type: "error", text: message });
     } else {
       this.postLocal({ type: "voiceError" });
-      void vscode.window.showWarningMessage(message);
+      void this.host.showWarningMessage(message);
     }
   }
 
@@ -5505,7 +6349,7 @@ See design doc for the full state machine diagram.`;
       return;
     }
     this.localVoiceCredentialCwd = credentialCwd;
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const ffmpegPath = cfg.get<string>("ffmpegPath", "") || "ffmpeg";
     const device = cfg.get<string>("voiceInputDevice", "") || undefined;
 
@@ -5518,7 +6362,7 @@ See design doc for the full state machine diagram.`;
 
     const tmp = path.join(os.tmpdir(), `grok-voice-${Date.now()}.wav`);
     try {
-      await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.output.appendLine(m) });
+      await this.voiceRecorder.start({ ffmpegPath, outputPath: tmp, device, log: (m) => this.host.appendLine(m) });
       if (generation !== this.voiceGeneration) {
         this.voiceRecorder.cancel();
         try { fs.unlinkSync(tmp); } catch { /* best effort */ }
@@ -5532,15 +6376,15 @@ See design doc for the full state machine diagram.`;
         return;
       }
       const msg = (e as Error).message;
-      this.output.appendLine(`[voice] start failed: ${msg}`);
+      this.host.appendLine(`[voice] start failed: ${msg}`);
       // ffmpeg-missing is the common, fixable case — offer a jump to its setting.
       if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        const pick = await this.host.showErrorMessage(msg, "Open Settings");
         if (pick === "Open Settings") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
+          await this.host.openSettings("grok.ffmpegPath");
         }
       } else {
-        vscode.window.showErrorMessage(msg);
+        this.host.showErrorMessage(msg);
       }
       this.releaseVoice(cwd);
       this.localVoiceCwd = undefined;
@@ -5568,7 +6412,7 @@ See design doc for the full state machine diagram.`;
     // Resolve the Windows mic once so per-message restarts don't re-enumerate.
     let resolved = device;
     if (process.platform === "win32" && !resolved) {
-      try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.output.appendLine(m)); } catch { /* streamer surfaces it */ }
+      try { resolved = await resolveWindowsAudioDevice(ffmpegPath, (m) => this.host.appendLine(m)); } catch { /* streamer surfaces it */ }
     }
     if (generation !== this.voiceGeneration) return;
     this.voiceStreamCtx = { key, ffmpegPath, device: resolved, phrase, keyterms, language, generation };
@@ -5610,14 +6454,14 @@ See design doc for the full state machine diagram.`;
     streamer.on("error", (e: Error) => {
       if (!isCurrent()) return;
       streamer.cancel();
-      this.output.appendLine(`[voice] stream error: ${e.message}`);
+      this.host.appendLine(`[voice] stream error: ${e.message}`);
       if (!this.voiceFinalizing) {
         if (/\b(401|403)\b|rejected/i.test(e.message)) {
-          void vscode.window.showErrorMessage(e.message, "Open Settings").then((pick) => {
-            if (pick === "Open Settings") void vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+          void this.host.showErrorMessage(e.message, "Open Settings").then((pick) => {
+            if (pick === "Open Settings") void this.host.openSettings("grok.voiceApiKey");
           });
         } else {
-          vscode.window.showErrorMessage(`Voice transcription failed: ${e.message}`);
+          this.host.showErrorMessage(`Voice transcription failed: ${e.message}`);
         }
         this.postLocal({ type: "voiceError" });
       }
@@ -5635,7 +6479,7 @@ See design doc for the full state machine diagram.`;
         device: ctx.device,
         keyterms: ctx.keyterms,
         language: ctx.language,
-        log: (m) => this.output.appendLine(m),
+        log: (m) => this.host.appendLine(m),
       });
       if (!isCurrent()) { streamer.cancel(); return; }
       this.postLocal({ type: "voiceState", status: "listening" });
@@ -5644,21 +6488,21 @@ See design doc for the full state machine diagram.`;
       this.voiceStreamer = undefined;
       this.voiceStreamCtx = undefined;
       const msg = (e as Error).message;
-      this.output.appendLine(`[voice] stream start failed: ${msg}`);
+      this.host.appendLine(`[voice] stream start failed: ${msg}`);
       if (/ffmpeg/i.test(msg)) {
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        const pick = await this.host.showErrorMessage(msg, "Open Settings");
         if (pick === "Open Settings") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.ffmpegPath");
+          await this.host.openSettings("grok.ffmpegPath");
         }
       } else if (/\b(401|403)\b|rejected/i.test(msg)) {
         // Auth handshake rejection — msg is already the source-aware guidance
         // (re-login or set a dedicated key); offer the settings shortcut.
-        const pick = await vscode.window.showErrorMessage(msg, "Open Settings");
+        const pick = await this.host.showErrorMessage(msg, "Open Settings");
         if (pick === "Open Settings") {
-          await vscode.commands.executeCommand("workbench.action.openSettings", "grok.voiceApiKey");
+          await this.host.openSettings("grok.voiceApiKey");
         }
       } else {
-        vscode.window.showErrorMessage(msg);
+        this.host.showErrorMessage(msg);
       }
       this.releaseVoice(this.localVoiceCwd);
       this.localVoiceCwd = undefined;
@@ -5773,8 +6617,8 @@ See design doc for the full state machine diagram.`;
       }
     } catch (e) {
       if (generation !== this.voiceGeneration) return;
-      this.output.appendLine(`[voice] stop failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
+      this.host.appendLine(`[voice] stop failed: ${(e as Error).message}`);
+      this.host.showErrorMessage(`Voice recording failed: ${(e as Error).message}`);
       this.releaseVoice(this.localVoiceCwd);
       this.localVoiceCwd = undefined;
       this.localVoiceCredentialCwd = undefined;
@@ -5784,22 +6628,22 @@ See design doc for the full state machine diagram.`;
     const tempPath = this.voiceTempPath;
     this.postLocal({ type: "voiceState", status: "transcribing" });
     try {
-      const raw = await transcribeAudio(wavPath, key, (m) => this.output.appendLine(m));
+      const raw = await transcribeAudio(wavPath, key, (m) => this.host.appendLine(m));
       if (generation !== this.voiceGeneration) return;
       // Strip a trailing "grok send" (configurable) so dictation can submit
       // hands-free. The webview inserts `text` and, if `send`, fires the send.
       const sendPhrase = this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
       const { text, send } = parseVoiceCommand(raw, sendPhrase);
       if (!text && !send) {
-        vscode.window.showInformationMessage("Voice control: nothing was transcribed (silence?).");
+        this.host.showInformationMessage("Voice control: nothing was transcribed (silence?).");
         this.postLocal({ type: "voiceError" });
         return;
       }
       this.postLocal({ type: "voiceTranscript", text, send });
     } catch (e) {
       if (generation !== this.voiceGeneration) return;
-      this.output.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
-      vscode.window.showErrorMessage((e as Error).message);
+      this.host.appendLine(`[voice] transcription failed: ${(e as Error).message}`);
+      this.host.showErrorMessage((e as Error).message);
       this.postLocal({ type: "voiceError" });
     } finally {
       try { if (tempPath) fs.unlinkSync(tempPath); } catch { /* best effort */ }
@@ -5821,7 +6665,11 @@ See design doc for the full state machine diagram.`;
     const current = () => this.remoteVoice.get(clientId) === entry && entry.streamer === streamer;
     streamer.on("partial", (ev: { text: string; speechFinal: boolean }) => {
       if (!current()) return;
-      this.sendRemoteClient(clientId, { type: "voicePartial", text: ev.text });
+      this.sendRemoteClient(
+        clientId,
+        { type: "voicePartial", text: ev.text },
+        entry.credentialCwd,
+      );
       if (ev.speechFinal && entry.phrase) {
         const parsed = parseVoiceCommand(ev.text, entry.phrase);
         if (parsed.send) void this.commitRemoteVoice(clientId, parsed.text);
@@ -5832,14 +6680,14 @@ See design doc for the full state machine diagram.`;
     });
     streamer.on("error", (e: Error) => {
       if (!current() || entry.finalizing) return;
-      this.output.appendLine(`[remote-voice] stream error: ${e.message}`);
+      this.host.appendLine(`[remote-voice] stream error: ${e.message}`);
       this.failRemoteVoice(clientId, e.message);
     });
     await streamer.start({
       apiKey: key,
       keyterms: entry.keyterms,
       language: entry.language,
-      log: (m) => this.output.appendLine(`[remote] ${m}`),
+      log: (m) => this.host.appendLine(`[remote] ${m}`),
     });
     if (!current()) {
       streamer.cancel();
@@ -5858,7 +6706,7 @@ See design doc for the full state machine diagram.`;
   private async handleRemoteVoiceStart(clientId: string, session: Session): Promise<void> {
     const credentialCwd = this.sessionCwd(session);
     if (!this.resolveVoiceApiKey(credentialCwd)) {
-      this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false });
+      this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false }, credentialCwd);
       this.sendRemoteClient(clientId, { type: "voiceError" });
       this.sendRemoteClient(clientId, { type: "error", text: "Voice control needs an xAI Speech-to-Text key on the host." });
       return;
@@ -5928,7 +6776,11 @@ See design doc for the full state machine diagram.`;
     if (!entry.ingress.restarting()) return;
     const old = entry.streamer;
     old.cancel();
-    this.sendRemoteClient(clientId, { type: "voiceSubmit", text: text.trim() });
+    this.sendRemoteClient(
+      clientId,
+      { type: "voiceSubmit", text: text.trim() },
+      entry.credentialCwd,
+    );
     try {
       await this.startRemotePcm(clientId, entry);
     } catch (e) {
@@ -5960,10 +6812,18 @@ See design doc for the full state machine diagram.`;
       return;
     }
     if (send) {
-      this.sendRemoteClient(clientId, { type: "voiceSubmit", text: text.trim() });
+      this.sendRemoteClient(
+        clientId,
+        { type: "voiceSubmit", text: text.trim() },
+        entry.credentialCwd,
+      );
       this.sendRemoteClient(clientId, { type: "voiceState", status: "idle" });
     } else {
-      this.sendRemoteClient(clientId, { type: "voiceTranscript", text, send: false });
+      this.sendRemoteClient(
+        clientId,
+        { type: "voiceTranscript", text, send: false },
+        entry.credentialCwd,
+      );
     }
   }
 
@@ -6014,8 +6874,8 @@ See design doc for the full state machine diagram.`;
     // Unique key per diff so sequential edits to the same file don't collide on
     // the content map. The trailing real filename gives VS Code the language.
     const key = String(this.diffSeq++);
-    const left = vscode.Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/before/${base}` });
-    const right = vscode.Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/after/${base}` });
+    const left = Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/before/${base}` });
+    const right = Uri.from({ scheme: GROK_DIFF_SCHEME, path: `/${key}/after/${base}` });
     this.diffProvider.set(left, sides.oldText);
     this.diffProvider.set(right, sides.newText);
     if (requestId !== undefined) {
@@ -6029,17 +6889,14 @@ See design doc for the full state machine diagram.`;
     // immediately clickable. `selection` opens a whole-file diff on the edit
     // instead of at line 1 (#66) — harmless at 0 when expansion fell back.
     const at = sides.firstChangedLine;
-    await vscode.commands.executeCommand(
-      "vscode.diff",
-      left,
-      right,
-      `Grok proposed: ${base}`,
-      {
-        preview: true,
-        preserveFocus: true,
-        selection: new vscode.Range(at, 0, at, 0),
-      } as vscode.TextDocumentShowOptions,
-    );
+    await this.host.openDiff(left, right, `Grok proposed: ${base}`, {
+      preview: true,
+      preserveFocus: true,
+      selection: {
+        start: { line: at, character: 0 },
+        end: { line: at, character: 0 },
+      },
+    });
   }
 
   /**
@@ -6050,7 +6907,21 @@ See design doc for the full state machine diagram.`;
    */
   private readFileForDiff(filePath: string): string | undefined {
     try {
-      const abs = path.isAbsolute(filePath) ? filePath : path.join(this.sessionCwd(), filePath);
+      const session = this.focused;
+      let abs = path.isAbsolute(filePath)
+        ? filePath
+        : path.join(this.sessionCwd(session), filePath);
+      // Desktop: revalidate containment + executable policy immediately before
+      // the read (same TOCTOU class as openFsPath / file-tree open). Use only
+      // the path returned by that check — never the pre-authorize string.
+      // VS Code keeps the plain read (v3.1.0 behaviour).
+      if (this.host.canSwitchWorkspaceFolder) {
+        const check = revalidateOpenFileForUse(abs, {
+          allowedRoots: this.desktopAuthRoots(session),
+        });
+        if (!check.ok) return undefined;
+        abs = check.absPath;
+      }
       const stat = fs.statSync(abs);
       if (!stat.isFile() || stat.size > MAX_DIFF_EXPAND_BYTES) return undefined;
       return fs.readFileSync(abs, "utf8");
@@ -6067,19 +6938,8 @@ See design doc for the full state machine diagram.`;
     this.closeDiffUris(uris);
   }
 
-  private closeDiffUris(uris: { left: vscode.Uri; right: vscode.Uri }): void {
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        const input = tab.input;
-        if (
-          input instanceof vscode.TabInputTextDiff &&
-          input.original.toString() === uris.left.toString() &&
-          input.modified.toString() === uris.right.toString()
-        ) {
-          void vscode.window.tabGroups.close(tab);
-        }
-      }
-    }
+  private closeDiffUris(uris: { left: Uri; right: Uri }): void {
+    this.host.closeDiffTabs(uris.left, uris.right);
     this.diffProvider.delete(uris.left, uris.right);
   }
 
@@ -6089,7 +6949,7 @@ See design doc for the full state machine diagram.`;
     try {
       snapshot = await this.createPlanReviewSnapshot(plan);
     } catch (e) {
-      this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+      this.host.appendLine(`[plan-review] ${(e as Error).message}`);
     }
     if (gen !== session.gen) return;
     // Host ownership begins only after the snapshot's generation check. Re-focus
@@ -6113,7 +6973,7 @@ See design doc for the full state machine diagram.`;
         const snapshot = await this.createPlanReviewSnapshot(plan.text, sessionId);
         out.push({ ...plan, planPath: snapshot.path, planName: snapshot.name });
       } catch (e) {
-        this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+        this.host.appendLine(`[plan-review] ${(e as Error).message}`);
         out.push(plan);
       }
     }
@@ -6125,12 +6985,13 @@ See design doc for the full state machine diagram.`;
    *  every deleted session left its plan Markdown behind forever. Best-effort:
    *  losing a scratch snapshot is never worth failing a delete over. */
   private removePlanReviews(sessionId: string): void {
-    const dir = vscode.Uri.joinPath(
+    // Keep globalStorageUri identity so remote storage stays on the remote fs.
+    const dir = Uri.joinPath(
       this.context.globalStorageUri,
       "plan-reviews",
       sanitizePlanReviewFilePart(sessionId).slice(0, 80),
     );
-    void vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false }).then(
+    void this.host.fs.delete(dir, { recursive: true, useTrash: false }).then(
       undefined,
       () => { /* never existed, or already gone */ },
     );
@@ -6184,38 +7045,40 @@ See design doc for the full state machine diagram.`;
     const sessionPart = sanitizePlanReviewFilePart(
       sessionId ?? this.focused.activeSessionId ?? this.focused.client?.sessionId ?? "session",
     ).slice(0, 80);
-    const dir = vscode.Uri.joinPath(this.context.globalStorageUri, "plan-reviews", sessionPart);
-    await vscode.workspace.fs.createDirectory(dir);
+    // Join under globalStorageUri so workspace.fs targets the same scheme VS Code
+    // gave us (vscode-remote on remote hosts — never rebuild with Uri.file).
+    const dir = Uri.joinPath(this.context.globalStorageUri, "plan-reviews", sessionPart);
+    await this.host.fs.createDirectory(dir);
     // Content-addressed, so re-snapshotting the same plan on every restore
     // reuses one file instead of writing a new one forever.
-    const uri = vscode.Uri.joinPath(dir, planReviewFileName(content));
+    const fileUri = Uri.joinPath(dir, planReviewFileName(content));
     let existing: string | undefined;
     try {
-      existing = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString("utf8");
+      existing = Buffer.from(await this.host.fs.readFile(fileUri)).toString("utf8");
     } catch { /* first time for this plan */ }
     if (existing !== content) {
       // Different content under the same name means a hash collision — fall back
       // to a unique name rather than overwriting someone else's plan.
-      const target = existing === undefined ? uri : await this.uniquePlanReviewUri(dir, planReviewFileName(content));
-      await vscode.workspace.fs.writeFile(target, Buffer.from(content, "utf8"));
+      const target = existing === undefined ? fileUri : await this.uniquePlanReviewUri(dir, planReviewFileName(content));
+      await this.host.fs.writeFile(target, Buffer.from(content, "utf8"));
       return { path: target.fsPath, name: path.basename(target.fsPath) };
     }
-    return { path: uri.fsPath, name: path.basename(uri.fsPath) };
+    return { path: fileUri.fsPath, name: path.basename(fileUri.fsPath) };
   }
 
-  private async uniquePlanReviewUri(dir: vscode.Uri, fileName: string): Promise<vscode.Uri> {
+  private async uniquePlanReviewUri(dir: Uri, fileName: string): Promise<Uri> {
     const ext = path.extname(fileName);
     const stem = path.basename(fileName, ext);
     for (let i = 0; i < 100; i += 1) {
       const suffix = i === 0 ? "" : `-${i + 1}`;
-      const uri = vscode.Uri.joinPath(dir, `${stem}${suffix}${ext}`);
+      const candidate = Uri.joinPath(dir, `${stem}${suffix}${ext}`);
       try {
-        await vscode.workspace.fs.stat(uri);
+        await this.host.fs.stat(candidate);
       } catch {
-        return uri;
+        return candidate;
       }
     }
-    return vscode.Uri.joinPath(dir, `${stem}-${Date.now()}${ext}`);
+    return Uri.joinPath(dir, `${stem}-${Date.now()}${ext}`);
   }
 
   /** Track an in-flight attachment-staging op (paste / drop / pick). Message
@@ -6262,6 +7125,8 @@ See design doc for the full state machine diagram.`;
    * with no live session at all (paste during startup/onboarding just works).
    */
   private imageStagingDir(): string {
+    // Node-fs staging path — genuine local disk on the extension host (v3.1.0
+    // also used globalStorageUri.fsPath here; not a workspace.fs address).
     return path.join(this.context.globalStorageUri.fsPath, "image-staging");
   }
 
@@ -6328,7 +7193,7 @@ See design doc for the full state machine diagram.`;
           : prepared.reason === "empty"
             ? "the file is empty"
             : "the file data is invalid";
-      this.output.appendLine(`[upload] rejected ${suppliedName}: ${detail}`);
+      this.host.appendLine(`[upload] rejected ${suppliedName}: ${detail}`);
       this.reportRequester(requester, "error", `Could not attach document — ${detail}.`);
       return;
     }
@@ -6342,7 +7207,7 @@ See design doc for the full state machine diagram.`;
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       void fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
-      this.output.appendLine(`[upload] staging failed for ${prepared.name}: ${(e as Error).message}`);
+      this.host.appendLine(`[upload] staging failed for ${prepared.name}: ${(e as Error).message}`);
       this.reportRequester(requester, "error", `Could not attach document — ${(e as Error).message}`);
     }
   }
@@ -6379,7 +7244,7 @@ See design doc for the full state machine diagram.`;
       try {
         await fs.promises.rm(dir, { recursive: true, force: true });
       } catch (e) {
-        this.output.appendLine(`[upload] could not remove staged document directory: ${(e as Error).message}`);
+        this.host.appendLine(`[upload] could not remove staged document directory: ${(e as Error).message}`);
       }
     }
   }
@@ -6444,7 +7309,7 @@ See design doc for the full state machine diagram.`;
       const session = await this.stageImageAttachment(bytes, mimeType, undefined, owner, previewId);
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
-      this.output.appendLine(`[image] paste failed: ${(e as Error).message}`);
+      this.host.appendLine(`[image] paste failed: ${(e as Error).message}`);
       this.reportRequester(requester, "error", `Grok: could not attach the pasted image — ${(e as Error).message}`);
     }
   }
@@ -6488,7 +7353,7 @@ See design doc for the full state machine diagram.`;
         if (imported === undefined) return undefined; // tab gone — not a path chip either
         if (imported) return imported;
       } catch (e) {
-        this.output.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
+        this.host.appendLine(`[image] import failed for ${absPath}: ${(e as Error).message}`);
       }
       // Oversized / unreadable-as-image → fall through to a plain path chip,
       // the pre-vision behavior (grok decides how to consume the path).
@@ -6565,7 +7430,7 @@ See design doc for the full state machine diagram.`;
       endTurn(session, token);
       return;
     }
-    this.output.appendLine("[turn] cancel went unanswered; restarting this session's CLI");
+    this.host.appendLine("[turn] cancel went unanswered; restarting this session's CLI");
     // Said BEFORE the restart, deliberately. startSession unlocks the composer
     // and flushes any queued sends itself, so a notice emitted afterwards could
     // land behind that queued turn's userMessage/agentStart — reading as if the
@@ -6653,8 +7518,20 @@ See design doc for the full state machine diagram.`;
       if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
       return;
     }
+    // Priming window (spawn → session/new|load): the client object may exist
+    // while sessionId is still unset. A prompt then throws "no session" after
+    // consuming chips — work loss. Queue until startSession flushes on ready.
+    if (session.client && !sessionReadyForPrompt(session)) {
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
+      return;
+    }
     const client = session.client ?? await this.ensureClient(session);
     if (!client) return;
+    // ensureClient may return mid-startSession; re-check before committing work.
+    if (!sessionReadyForPrompt(session)) {
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
+      return;
+    }
     const gen = session.gen;
 
     // An attachment posted before send has started staging (message ordering),
@@ -6878,7 +7755,7 @@ See design doc for the full state machine diagram.`;
     if (!isAuthErrorText(errorText) && !isCredentialError(err)) return false;
     const resumeId = beginAuthRecovery(session);
     if (!resumeId) return false;
-    this.output.appendLine(`[auth] recoverable token error — reloading session + resending: ${errorText}`);
+    this.host.appendLine(`[auth] recoverable token error — reloading session + resending: ${errorText}`);
 
     // Fresh process, current disk token. Rebuild this same pool member and replay
     // its history from disk. Its generation + authRecoveryTried guards are both
@@ -6972,22 +7849,33 @@ See design doc for the full state machine diagram.`;
     this.sessionCache.delete(sid);
   }
 
+  /** Global "Use this app for" from ~/.grok/client-state (absent → Knowledge work). */
+  private appPurpose(): AppPurpose {
+    return parseAppPurpose(this.state.get<string>(APP_PURPOSE_KEY));
+  }
+
   private buildInitialStateMsg(): HostMsg {
-    const cfg = vscode.workspace.getConfiguration("grok");
+    const cfg = this.host.getConfiguration("grok");
     const cwd = this.workspaceRoot();
     return {
       type: "initialState",
       effort: cfg.get("defaultEffort", ""),
       cwd,
       useCtrlEnter: cfg.get("useCtrlEnterToSend", false),
-      extVersion: (this.context.extension.packageJSON as { version?: string })?.version ?? "",
+      extVersion: this.context.extensionVersion,
       showThinking: cfg.get("showThinking", false),
       expandCommandOutputs: cfg.get("expandCommandOutputs", false),
       steerByDefault: cfg.get("steerByDefault", false),
       soundNotifications: cfg.get("soundNotifications", false),
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
-      capabilities: HOST_CAPABILITIES,
+      appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
+      // Wire baseline + host-kind UI affordances (gear Move view / Show logs).
+      capabilities: {
+        ...HOST_CAPABILITIES,
+        relocateView: this.host.canRelocateView,
+        showOutput: this.host.canShowOutput,
+      },
     };
   }
 
@@ -6995,19 +7883,66 @@ See design doc for the full state machine diagram.`;
     this.post(this.buildInitialStateMsg());
     this.post({
       type: "summarizeRepliesAloud",
-      value: vscode.workspace.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
+      value: this.host.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
     });
     // Sync the active-editor context chip into the fresh webview (the config
     // gate + no-editor case live inside refreshImplicitChip).
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     void this.postRemoteStatus();
+    // Host-declared capability (not incidental focused.client): only Electron
+    // sets webviewReloadsUnderLiveSession. VS Code is false by construction, so
+    // a view move / "Reload Webviews" that recreates the webview under a live
+    // client still takes the v3.1.0 startSession path below.
+    if (shouldRehydrateOnWebviewReady(this.host.webviewReloadsUnderLiveSession, !!this.focused.client)) {
+      this.rehydrateWebviewFromFocused();
+      return;
+    }
     // Sweep abandoned empty sessions once the first session is live (so the
     // newly-focused session is excluded from the sweep). This is the run that
     // collects what the last window left behind when it closed without a prompt.
+    // Re-post the session list after start so a live empty "New session" row and
+    // any id assigned by session/new land on the selected project's rail (ready
+    // already pushed the disk list before the agent was up).
     void this.startSession().then(() => {
+      this.postSessionsList();
       this.sweepEmptySessions();
     });
+  }
+
+  /**
+   * Replay the focused session into a freshly-booted webview without restarting
+   * the ACP process. Used when the document reloads (Electron) but the sidebar
+   * controller still holds a live pool member.
+   */
+  private rehydrateWebviewFromFocused(): void {
+    const session = this.focused;
+    const wv = this.view?.webview;
+    if (!wv) return;
+    this.touch(session);
+    this.markRead(session);
+    void wv.postMessage({ type: "clearMessages" });
+    void wv.postMessage({ type: "historyReplay", active: true });
+    for (const m of session.buffer) {
+      void wv.postMessage(this.localizeHistoryMessage(m, wv));
+    }
+    void wv.postMessage({ type: "historyReplay", active: false });
+    for (const m of sessionUiSnapshot(
+      session,
+      this.displayMode(session),
+      this.localPreviewChips(session, wv),
+    )) {
+      void wv.postMessage(m);
+    }
+    // Restore turn chrome the buffer does not carry (busy is event-sourced live).
+    // During priming the client exists but has no session id yet — keep the
+    // startup lock so a reload cannot unlock the composer into a lost prompt.
+    const chrome = rehydrateBusyChrome(session);
+    void wv.postMessage({ type: "setBusy", value: chrome.value, locked: chrome.locked });
+    this.postMode();
+    this.postRepoCatalog();
+    this.postSessionsList();
+    this.postSessionName(session);
   }
 
   private postChips(session: Session = this.focused): void {
@@ -7020,17 +7955,18 @@ See design doc for the full state machine diagram.`;
     this.sendRemoteSession(session, remoteMessage);
   }
 
-  private localPreviewChips(session: Session, webview: vscode.Webview): FileChip[] {
+  private localPreviewChips(session: Session, webview: HostWebview): FileChip[] {
     return session.chips.map((chip) => isImageChip(chip)
-      ? { ...chip, previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+      // Staging paths are genuine local disk (Uri.file roots).
+      ? { ...chip, previewSrc: webview.asWebviewUri(Uri.file(chip.path)) }
       : chip);
   }
 
-  private localizeHistoryMessage(message: HostMsg, webview: vscode.Webview): HostMsg {
+  private localizeHistoryMessage(message: HostMsg, webview: HostWebview): HostMsg {
     if (message.type === "userMessage" && message.chips) {
       return { ...message, chips: message.chips.map((chip) => isImageChip(chip)
         ? { ...chip, ...(fs.existsSync(chip.path)
-          ? { previewSrc: webview.asWebviewUri(vscode.Uri.file(chip.path)).toString() }
+          ? { previewSrc: webview.asWebviewUri(Uri.file(chip.path)) }
           : {}) }
         : chip) };
     }
@@ -7038,7 +7974,7 @@ See design doc for the full state machine diagram.`;
       return {
         ...message,
         images: message.images.map((image) => image.path && fs.existsSync(image.path)
-          ? { ...image, previewSrc: webview.asWebviewUri(vscode.Uri.file(image.path)).toString() }
+          ? { ...image, previewSrc: webview.asWebviewUri(Uri.file(image.path)) }
           : image),
       };
     }
@@ -7079,42 +8015,99 @@ See design doc for the full state machine diagram.`;
     this.view?.webview.postMessage(message);
   }
 
-  /** Target one opaque relay clientId. */
-  private sendRemoteClient(clientId: string, message: HostMsg): void {
-    this.postTap?.("remote", message, [clientId]);
+  /**
+   * Sidebar orchestration for remote HostMsgs: pre-authorize (so postTap and
+   * logs see the drop), transform media, then hand off to {@link RemoteUplink}.
+   *
+   * **The hard authorization boundary is inside RemoteUplink** — every socket
+   * write (`broadcast` / `broadcastTo` / catch-up `snapshot`) re-checks
+   * {@link mayDeliverRemoteHostMsg}. A new sender that forgot this method still
+   * cannot put project data on the wire. Live fan-out still routes here so
+   * transforms and the test postTap stay in one place.
+   *
+   * `scopeCwd` is the session or repo cwd that owns the payload. Required for
+   * conversation/session types; list frames are checked against their entries;
+   * device prefs and errors need no scope.
+   */
+  private deliverRemote(
+    clientIds: readonly string[],
+    message: HostMsg,
+    scopeCwd?: string,
+  ): void {
+    if (clientIds.length === 0) return;
+    const authorized = this.authorizedSessionCwds();
+    if (!mayDeliverRemoteHostMsg(message, authorized, scopeCwd, pathsEqual)) {
+      this.host.appendLine(
+        `[remote] dropped ${message.type} (project scope not authorized: ${scopeCwd ?? "<none>"})`,
+      );
+      return;
+    }
+    this.postTap?.("remote", message, [...clientIds]);
     const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
-    if (out) this.uplink?.broadcastTo([clientId], out);
+    if (!out) return;
+    // Pass scope through so the uplink gate does not re-derive from a stale
+    // per-tab mapping for multi-client session fan-out.
+    this.uplink?.broadcastTo([...clientIds], out, scopeCwd);
+  }
+
+  /** Target one opaque relay clientId. */
+  private sendRemoteClient(clientId: string, message: HostMsg, scopeCwd?: string): void {
+    // Derive scope when the caller did not pass one: message field → active
+    // session cwd. Never invent a grant from a stale per-tab repo selection alone
+    // for conversation types (that is exactly the close-ordering hole).
+    let scope = scopeCwd;
+    if (scope === undefined) {
+      if (message.type === "sessionName") scope = message.cwd;
+      else if (message.type === "repoSessions") scope = message.cwd;
+      else {
+        const active = this.remoteClients.active(clientId);
+        if (active) scope = this.sessionCwd(active);
+      }
+    }
+    this.deliverRemote([clientId], message, scope);
   }
 
   private sendRemoteRepo(cwd: string, message: HostMsg): void {
-    const clientIds = this.remoteClients.clientsForCwd(cwd);
-    this.postTap?.("remote", message, clientIds);
-    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
-    if (!out) return;
-    this.uplink?.broadcastTo(clientIds, out);
+    // Repo-scoped fan-out (dots, etc.): the named cwd is the authorization scope.
+    this.deliverRemote(this.remoteClients.clientsForCwd(cwd), message, cwd);
   }
 
   private sendRemoteSession(session: Session, message: HostMsg): void {
+    const scope = this.sessionCwd(session);
+    // Belt: refuse before iterating so a disposed/closed-folder session cannot
+    // drip transcript to any remaining holder.
+    if (!mayDeliverRemoteHostMsg(message, this.authorizedSessionCwds(), scope, pathsEqual)) {
+      this.host.appendLine(
+        `[remote] dropped ${message.type} for session (cwd not authorized: ${scope})`,
+      );
+      return;
+    }
     for (const clientId of this.remoteClients.clients()) {
       if (this.remoteClients.active(clientId) === session) {
-        this.sendRemoteClient(clientId, message);
+        this.sendRemoteClient(clientId, message, scope);
       }
     }
   }
 
   private sendRemoteHistorySnapshot(session: Session): void {
+    const scope = this.sessionCwd(session);
+    if (!this.isAuthorizedCwd(scope)) {
+      this.host.appendLine(
+        `[remote] dropped history snapshot (cwd not authorized: ${scope})`,
+      );
+      return;
+    }
     const clientIds = this.remoteClients.clientsForActiveValue(session);
     if (clientIds.length === 0) return;
     const snapshot = bracketRemoteSnapshot(session.buffer);
     for (const clientId of clientIds) {
-      for (const message of snapshot) this.sendRemoteClient(clientId, message);
+      for (const message of snapshot) this.sendRemoteClient(clientId, message, scope);
     }
   }
 
   private broadcastRemoteDevice(message: HostMsg): void {
-    this.postTap?.("remote", message, this.remoteClients.clients());
-    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
-    if (out) this.uplink?.broadcast(out);
+    // Device-global prefs only (DEVICE_GLOBAL_REMOTE_TYPES) — no project scope.
+    this.deliverRemote(this.remoteClients.clients(), message, undefined);
   }
 
   /** Test-only tap on the split posts. Never assigned in a released build:
@@ -7220,7 +8213,8 @@ See design doc for the full state machine diagram.`;
         const session = new Session();
         session.cwd = cwd;
         session.activeSessionId = id;
-        session.client = { dispose() {} } as AcpClient;
+        // sessionId is required for sessionReadyForPrompt (flush + send).
+        session.client = { dispose() {}, sessionId: id } as AcpClient;
         session.hasHistory = hasHistory;
         session.chips = chips;
         session.buffer.push(...messages);
@@ -7231,7 +8225,7 @@ See design doc for the full state machine diagram.`;
         const session = this.newLocalSession();
         session.cwd = cwd;
         session.activeSessionId = id;
-        session.client = { dispose() {} } as AcpClient;
+        session.client = { dispose() {}, sessionId: id } as AcpClient;
         session.hasHistory = true;
         this.pool.add(session);
       },
@@ -7256,6 +8250,7 @@ See design doc for the full state machine diagram.`;
         const session = new Session();
         session.cwd = cwd;
         session.activeSessionId = id;
+        // Priming: client may exist without a session id (spawn window).
         session.client = { dispose() {} } as AcpClient;
         session.priming = true;
         session.queuedSends = [queuedText];
@@ -7271,6 +8266,7 @@ See design doc for the full state machine diagram.`;
         session.cwd = cwd;
         session.activeSessionId = id;
         session.client = {
+          sessionId: id,
           availableCommands: [],
           dispose() {},
           prompt: async (_blocks: Parameters<AcpClient["prompt"]>[0]) => {
@@ -7680,7 +8676,7 @@ See design doc for the full state machine diagram.`;
     try {
       deleteSessionDir({ fs: defaultFs, grokHome, cwd, id });
     } catch (e) {
-      this.output.appendLine(`[sessions] could not remove empty session ${id}: ${(e as Error).message}`);
+      this.host.appendLine(`[sessions] could not remove empty session ${id}: ${(e as Error).message}`);
     }
     if (overrides[id]) {
       void this.removeUploadsForSessions([id], overrides);
@@ -7718,7 +8714,7 @@ See design doc for the full state machine diagram.`;
   private sweepEmptySessions(cwd: string = this.workspaceRoot()): void {
     if (!cwd) return;
     const grokHome = resolveGrokHome(process.env);
-    const log = (m: string) => this.output.appendLine(m);
+    const log = (m: string) => this.host.appendLine(m);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // A session with a live process re-persists itself the moment it is touched,
     // so deleting one is at best pointless and at worst races the CLI. The same
@@ -7739,7 +8735,6 @@ See design doc for the full state machine diagram.`;
       proven = new Set<string>();
       this.provenNonEmpty.set(repoKey, proven);
     }
-    const sessDir = sessionsDirFor(grokHome, cwd);
     const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
     const removed: string[] = [];
     const now = Date.now();
@@ -7748,9 +8743,12 @@ See design doc for the full state machine diagram.`;
       // The index is already sorted newest-first, so this could break — but a
       // clock skew or a touched file would then silently end the scan early.
       if (now - mtimeMs < GrokSidebar.SWEEP_MIN_AGE_MS) continue;
+      // Alias-aware: session may live under a differently-cased catalog leaf.
+      const sessDir = sessionDirFor(grokHome, cwd, id, { fs: defaultFs });
+      if (!sessDir) continue;
       let raw: any;
       try {
-        raw = JSON.parse(defaultFs.readFileSync(path.join(sessDir, id, "summary.json"), "utf8"));
+        raw = JSON.parse(defaultFs.readFileSync(path.join(sessDir, "summary.json"), "utf8"));
       } catch {
         continue;
       }
@@ -7761,7 +8759,7 @@ See design doc for the full state machine diagram.`;
       // anything, so it is reported as such rather than as "no history".
       let chatHistory: string | undefined;
       let historyUnreadable = false;
-      const historyPath = path.join(sessDir, id, "chat_history.jsonl");
+      const historyPath = path.join(sessDir, "chat_history.jsonl");
       try {
         chatHistory = defaultFs.readFileSync(historyPath, "utf8");
       } catch {
@@ -7893,6 +8891,16 @@ See design doc for the full state machine diagram.`;
       this.setMetaUnread(session.activeSessionId, true, status === "error");
     }
     this.pushDot(session);
+    // Wake lock: a turn starting or ending can change turnInFlight.
+    this.refreshKeepAwake();
+  }
+
+  /** True when any live pool member is mid-turn or waiting on the user. */
+  private anyTurnInFlight(): boolean {
+    for (const s of this.pool) {
+      if (s.status === "working" || s.status === "needs-you") return true;
+    }
+    return false;
   }
 
   /** Push just this session's recomputed dot to the webview (cheap — no disk read
@@ -8109,7 +9117,7 @@ See design doc for the full state machine diagram.`;
     const claim = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
     if (!claim) {
       const selectedCwd = this.remoteClients.cwd(clientId);
-      this.output.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
+      this.host.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
       this.sendRemoteClient(clientId, {
         type: "error",
         text: "Could not restore this conversation because it is already being opened in another tab or the VS Code view.",
@@ -8125,7 +9133,7 @@ See design doc for the full state machine diagram.`;
       return;
     }
     if (claim.joined) {
-      this.output.appendLine(`[remote] joined in-flight session load for the same logical tab`);
+      this.host.appendLine(`[remote] joined in-flight session load for the same logical tab`);
       await claim.reservation.completion;
       return;
     }
@@ -8200,7 +9208,7 @@ See design doc for the full state machine diagram.`;
     // refused: emit() fans every frame of a session to the focused webview and
     // to each remote holder, so the desk and the phone stay in sync.
     if (conflictingOwner) {
-      this.output.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
+      this.host.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
       this.sendRemoteClient(clientId, {
         type: "error",
         text: "Could not restore this conversation because it is already open in another tab.",
@@ -8218,7 +9226,7 @@ See design doc for the full state machine diagram.`;
     for (const session of this.pool) {
       if (session.activeSessionId === id && session.client) {
         if (!sessionCwdBelongsToRepo(this.sessionCwd(session), allowedCwds, pathsEqual)) {
-          this.output.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
+          this.host.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
           this.sendRemoteClient(clientId, {
             type: "error",
             text: "Could not restore this tab's conversation because its repository is no longer selected or available.",
@@ -8240,17 +9248,22 @@ See design doc for the full state machine diagram.`;
       }
     }
     const cachedCwd = this.sessionCache.get(id)?.entry.cwd;
-    const candidates = [...new Set([
-      ...(sessionCwd ? [sessionCwd] : []),
-      ...(cachedCwd ? [cachedCwd] : []),
-      ...allowedCwds,
-    ])].filter((cwd) => sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual));
-    const actualCwd = candidates.find((cwd) =>
-      indexSessions({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd })
-        .some((entry) => entry.id === id),
-    );
+    // Same property as local resume: message cwd is only a look-first among
+    // already-authorized repo catalogs; process root comes from disk.
+    const actualCwd = findSessionCatalogCwd({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      id,
+      candidates: orderedResumeCwdCandidates({
+        messageCwd: sessionCwd,
+        trustedCwds: allowedCwds,
+        metaWorktreePath: overrides[id]?.worktreePath,
+        cachedCwd,
+        sameCwd: pathsEqual,
+      }),
+    });
     if (!actualCwd) {
-      this.output.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
+      this.host.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
       this.sendRemoteClient(clientId, {
         type: "error",
         text: "Could not restore this tab's previous conversation. It may have been deleted, or its repository may no longer be available. Start a new session explicitly to continue.",
@@ -8310,8 +9323,8 @@ See design doc for the full state machine diagram.`;
   private async openSession(id: string, sessionCwd?: string): Promise<void> {
     const claim = this.reserveSessionLoad(id);
     if (!claim) {
-      this.output.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
-      void vscode.window.showInformationMessage(
+      this.host.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
+      void this.host.showInformationMessage(
         "This conversation is already being opened in another tab or view.",
       );
       return;
@@ -8329,6 +9342,45 @@ See design doc for the full state machine diagram.`;
     // this repo's history — and the moment the session they just left became
     // abandonable. Only on success: a load that threw has told us nothing.
     this.sweepEmptySessions(this.sessionCwd(this.focused));
+  }
+
+  /**
+   * Host-trusted directories that may hold a session catalog for local resume,
+   * list, select, and desktop file authorization.
+   *
+   * **Desktop** (`canSwitchWorkspaceFolder`): exactly the configured open
+   * folders plus worktrees authorized for sessions within them. The full
+   * historical `discoverRepos` catalog is deliberately excluded — a closed
+   * repo must not become a process cwd or widen {@link desktopAuthRoots}.
+   *
+   * **VS Code**: the full historical catalog (history can span any discovered
+   * checkout under grok home). That is the v3.1.0 behaviour and must not regress.
+   */
+  private localTrustedSessionCwds(overrides: SessionMetaOverrides): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (cwd: string | undefined) => {
+      if (!cwd) return;
+      const key = normalizeRepoPath(cwd);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(cwd);
+    };
+    if (this.host.canSwitchWorkspaceFolder) {
+      for (const repoCwd of this.openWorkspaceFolders()) {
+        for (const c of this.sessionCwdsForRepo(repoCwd, overrides)) add(c);
+      }
+      // Active root as a backstop if the folders list is empty mid-init.
+      add(this.workspaceRoot());
+      return out;
+    }
+    // VS Code: full historical catalog.
+    add(this.workspaceRoot());
+    if (this.selectedRepoCwd) add(this.selectedRepoCwd);
+    for (const repo of this.repoCatalog()) {
+      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c);
+    }
+    return out;
   }
 
   private async openSessionReserved(id: string, sessionCwd?: string): Promise<void> {
@@ -8352,18 +9404,66 @@ See design doc for the full state machine diagram.`;
     const held = this.remoteClients.clients()
       .map((clientId) => this.remoteClients.active(clientId))
       .find((s): s is Session => !!s && s.activeSessionId === id);
-    this.focused = held ?? this.newLocalSession();
+    if (held) {
+      // Keep the host-owned cwd on the held object. A forged resumeSession.cwd
+      // must not re-home an existing process or widen desktopAuthRoots.
+      // A held session whose folder was closed is no longer authorized — do not
+      // adopt/restart it (startSession would also refuse; fail closed here).
+      if (
+        this.host.canSwitchWorkspaceFolder &&
+        held.cwd &&
+        !this.isAuthorizedCwd(held.cwd)
+      ) {
+        this.host.appendLine(
+          `[sessions] refused held-session adopt (cwd not authorized): ${held.cwd}`,
+        );
+        void this.host.showInformationMessage(
+          "Could not restore this conversation — its project folder is no longer open.",
+        );
+        await this.startSession();
+        this.postRepoCatalog();
+        return;
+      }
+      this.focused = held;
+      this.pool.add(this.focused);
+      await this.startSession(id);
+      this.markRead(this.focused);
+      this.postRepoCatalog();
+      return;
+    }
+    this.focused = this.newLocalSession();
     this.pool.add(this.focused);
-    // Resolve cwd: explicit (history row) → meta worktree → cache → workspace.
+    // Session cwd is resolved host-side from the on-disk catalog. The message
+    // may name an id (and optionally a look-first cwd that must already be
+    // trusted); it never supplies the process root.
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const o = overrides[id];
-    const cwd =
-      sessionCwd ||
-      o?.worktreePath ||
-      this.sessionCache.get(id)?.entry.cwd ||
-      this.workspaceRoot();
+    const candidates = orderedResumeCwdCandidates({
+      messageCwd: sessionCwd,
+      trustedCwds: this.localTrustedSessionCwds(overrides),
+      metaWorktreePath: o?.worktreePath,
+      cachedCwd: this.sessionCache.get(id)?.entry.cwd,
+      sameCwd: pathsEqual,
+    });
+    const cwd = findSessionCatalogCwd({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      id,
+      candidates,
+    });
+    if (!cwd) {
+      this.host.appendLine(
+        `[sessions] refused resumeSession (session ${id} not found under any trusted catalog cwd)`,
+      );
+      void this.host.showInformationMessage(
+        "Could not restore this conversation. It may have been deleted. Starting a new session.",
+      );
+      await this.startSession();
+      this.postRepoCatalog();
+      return;
+    }
     this.focused.cwd = cwd;
-    if (o?.worktreePath) {
+    if (o?.worktreePath && pathsEqual(o.worktreePath, cwd)) {
       this.focused.worktree = {
         path: o.worktreePath,
         label: o.worktreeLabel || path.basename(o.worktreePath),
@@ -8399,14 +9499,11 @@ See design doc for the full state machine diagram.`;
 
   private watchActiveEditor(): void {
     this.editorWatcher?.dispose();
-    this.editorWatcher = vscode.Disposable.from(
-      vscode.window.onDidChangeActiveTextEditor(() => this.refreshImplicitChip()),
-      vscode.window.onDidChangeTextEditorSelection((e) => {
-        // Split editors can hold several TextEditors on one document — only the
-        // active one's selection drives the context chip.
-        if (e.textEditor !== vscode.window.activeTextEditor) return;
-        this.refreshImplicitChip();
-      }),
+    this.editorWatcher = disposeAll(
+      this.host.onDidChangeActiveTextEditor(() => this.refreshImplicitChip()),
+      // Host already filters to the active editor (split editors that are not
+      // active must not drive the context chip).
+      this.host.onDidChangeActiveTextEditorSelection(() => this.refreshImplicitChip()),
     );
   }
 
@@ -8423,11 +9520,10 @@ See design doc for the full state machine diagram.`;
    *  `forcePost` is for a fresh webview, which needs the current state even
    *  when it hasn't changed. */
   private refreshImplicitChip(forcePost = false): void {
-    const includeActive = vscode.workspace
-      .getConfiguration("grok")
+    const includeActive = this.host.getConfiguration("grok")
       .get<boolean>("includeActiveFileByDefault", true);
     const prev = this.chips.find(isImplicitChip);
-    const editor = vscode.window.activeTextEditor;
+    const editor = this.host.getActiveTextEditor();
 
     if (!includeActive || !editor || editor.document.uri.scheme !== "file") {
       // No chip to show — and if one is lingering, the webview must hear about
@@ -8438,7 +9534,7 @@ See design doc for the full state machine diagram.`;
     }
 
     const absPath = editor.document.uri.fsPath;
-    const relPath = vscode.workspace.asRelativePath(editor.document.uri);
+    const relPath = this.host.asRelativePath(editor.document.uri);
     let selStart: number | undefined;
     let selEnd: number | undefined;
     if (!editor.selection.isEmpty) {
@@ -8489,7 +9585,7 @@ See design doc for the full state machine diagram.`;
     if (this.oauthShadowWarningShown || this.state.get<boolean>(OAUTH_SHADOW_WARNING_KEY, false)) return;
     this.oauthShadowWarningShown = true;
     void this.state.update(OAUTH_SHADOW_WARNING_KEY, true);
-    void vscode.window.showWarningMessage(
+    void this.host.showWarningMessage(
       "Grok is using its cached OAuth session, so XAI_API_KEY is currently ignored. To use the API key, run `grok logout`, then start a new session.",
     );
   }
@@ -8517,7 +9613,7 @@ See design doc for the full state machine diagram.`;
     }
 
     if (Object.keys(dotEnv).length > 0) {
-      this.output.appendLine(`[env] loaded ${Object.keys(dotEnv).length} var(s) from .env`);
+      this.host.appendLine(`[env] loaded ${Object.keys(dotEnv).length} var(s) from .env`);
     }
     return env;
   }
@@ -8561,6 +9657,28 @@ See design doc for the full state machine diagram.`;
       }
     }
     return handle;
+  }
+
+  /** Fetch-time revalidation for remote image handles (open-set + session media). */
+  private isImagePathAuthorizedNow(imagePath: string): boolean {
+    const authorized = this.authorizedSessionCwds();
+    let home: string | undefined;
+    try {
+      home = resolveGrokHome(process.env);
+    } catch {
+      home = undefined;
+    }
+    return imagePathStillAuthorized(imagePath, authorized, {
+      grokHome: home,
+      sameCwd: pathsEqual,
+      isTrustedGeneratedMedia: (p) => {
+        try {
+          return !!home && isTrustedGeneratedMediaPath(p, home, (c) => fs.realpathSync(c));
+        } catch {
+          return false;
+        }
+      },
+    });
   }
 
   /** Render a bigger version for a remote's tap. Undefined when the source is
@@ -8623,15 +9741,40 @@ See design doc for the full state machine diagram.`;
         return;
       }
       if (!allowFromRemote(m.type, GrokSidebar.REMOTE_TIER)) {
-        this.output.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
+        this.host.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
         return;
       }
       if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
-        this.output.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
+        this.host.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
         return;
       }
+      // Messages with no cwd still act on a bound session / client-selected
+      // repo. A closed folder must revoke those ops even when allowRemoteRepoTarget
+      // returns true (its default branch). selectRepo is the escape hatch to a
+      // still-authorized target and is gated only by the message cwd above.
+      if (m.type !== "selectRepo") {
+        const active = this.remoteClients.active(clientId);
+        const boundCwd = active
+          ? this.sessionCwd(active)
+          : this.remoteClients.cwdIfPresent(clientId);
+        // Fresh tab with no binding yet may still only call ready / list — if
+        // it has a client cwd (after ready), that cwd must remain authorized.
+        if (
+          boundCwd !== undefined &&
+          !remoteBoundCwdStillAuthorized(boundCwd, this.authorizedSessionCwds(), pathsEqual)
+        ) {
+          this.host.appendLine(
+            `[remote] dropped ${m.type} (bound cwd no longer authorized: ${boundCwd})`,
+          );
+          this.sendRemoteClient(clientId, {
+            type: "error",
+            text: "That project folder is no longer open on the desktop. Select another project to continue.",
+          });
+          return;
+        }
+      }
       if (!this.remoteClients.isCurrent(clientId)) {
-        this.output.appendLine(`[remote] dropped ${m.type} from a superseded tab connection`);
+        this.host.appendLine(`[remote] dropped ${m.type} from a superseded tab connection`);
         this.sendRemoteClient(clientId, {
           type: "error",
           text: "This page's remote connection was replaced by another tab. Open AFK Pilot in a new tab to reconnect independently.",
@@ -8663,14 +9806,14 @@ See design doc for the full state machine diagram.`;
           : this.onMessage(m, "remote", clientId);
       void operation.catch((e) => {
         const detail = (e as Error)?.message ?? String(e);
-        this.output.appendLine(`[remote] ${m.type} failed: ${detail}`);
+        this.host.appendLine(`[remote] ${m.type} failed: ${detail}`);
         this.sendRemoteRequester(requester, {
           type: "error",
           text: `Grok: ${m.type} failed — ${detail}`,
         });
       });
     } catch (e) {
-      this.output.appendLine(`[remote] dropped malformed frame: ${(e as Error)?.message ?? String(e)}`);
+      this.host.appendLine(`[remote] dropped malformed frame: ${(e as Error)?.message ?? String(e)}`);
     }
   }
 
@@ -8683,7 +9826,7 @@ See design doc for the full state machine diagram.`;
           type: "error",
           text: "This page's remote connection was replaced by another tab. Open AFK Pilot in a new tab to reconnect independently.",
         });
-        this.output.appendLine(`[remote] handed tab ownership from ${superseded} to ${clientId}`);
+        this.host.appendLine(`[remote] handed tab ownership from ${superseded} to ${clientId}`);
       }
     }
     if (!this.remoteClients.isCurrent(clientId)) return;
@@ -8718,13 +9861,34 @@ See design doc for the full state machine diagram.`;
    *  Idempotent. */
   private async maybeStartUplink(): Promise<void> {
     if (this.uplink) return;
-    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    const token = await this.readDeviceToken();
     if (!token) return; // not linked yet — the link command starts the uplink itself
     const uplink = new RemoteUplink({
       relayUrl: REMOTE_RELAY_URL,
       token,
       deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
       snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
+      // Socket-level project gate — also covers the catch-up snapshot path,
+      // which never enters deliverRemote.
+      auth: {
+        authorizedCwds: () => this.authorizedSessionCwds(),
+        scopeCwdForClient: (clientId) => {
+          const active = this.remoteClients.active(clientId);
+          if (active) return this.sessionCwd(active);
+          return this.remoteClients.cwd(clientId);
+        },
+        // Repo fan-out uses selected cwd; session fan-out uses active session
+        // cwd. Either counts as ownership of that scope (default ownership
+        // only compares scopeCwdForClient, which is session-first).
+        clientOwnsScope: (clientId, scopeCwd) => {
+          const selected = this.remoteClients.cwdIfPresent(clientId);
+          if (selected && pathsEqual(selected, scopeCwd)) return true;
+          const active = this.remoteClients.active(clientId);
+          if (active && pathsEqual(this.sessionCwd(active), scopeCwd)) return true;
+          return false;
+        },
+        sameCwd: pathsEqual,
+      },
       onClientReady: (clientId, tabToken) => this.handleRemoteClientReady(clientId, tabToken),
       onClientLeft: (clientId) => {
         this.releaseRemoteClient(clientId);
@@ -8734,11 +9898,27 @@ See design doc for the full state machine diagram.`;
         void this.handleRemoteCredentialRevoked(token, uplink);
       },
       onClientMessage: (clientId, m) => this.handleRemoteMessage(clientId, m),
-      log: (l) => this.output.appendLine(l),
+      log: (l) => this.host.appendLine(l),
     });
     this.uplink = uplink;
     uplink.start();
     this.refreshKeepAwake();
+  }
+
+  /**
+   * Read the stored device token without failing startup when ciphertext is
+   * undecryptable (keychain unavailable / key rotated). Returns undefined and
+   * logs — treat as "not linked".
+   */
+  private async readDeviceToken(): Promise<string | undefined> {
+    try {
+      return await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    } catch (e) {
+      this.host.appendLine(
+        `[remote] stored device token unreadable (treating as unlinked): ${(e as Error)?.message ?? e}`,
+      );
+      return undefined;
+    }
   }
 
   private async handleRemoteCredentialRevoked(
@@ -8748,7 +9928,7 @@ See design doc for the full state machine diagram.`;
     // A replaced/disposed uplink may deliver a late close event. Only the
     // currently-owned connection is allowed to clear the credential it used.
     if (this.uplink !== revokedUplink) return;
-    const storedToken = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    const storedToken = await this.readDeviceToken();
     if (this.uplink !== revokedUplink || storedToken !== revokedToken) return;
 
     this.clearRemoteRuntime();
@@ -8756,23 +9936,23 @@ See design doc for the full state machine diagram.`;
     try {
       await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
     } catch (e) {
-      this.output.appendLine(`[remote] failed to clear revoked device token: ${(e as Error)?.message ?? e}`);
+      this.host.appendLine(`[remote] failed to clear revoked device token: ${(e as Error)?.message ?? e}`);
       const retry = "Retry unlink";
-      void vscode.window.showErrorMessage(
+      void this.host.showErrorMessage(
         "AFK Pilot access was revoked, but the stored device token could not be cleared.",
         retry,
       ).then((choice) => {
-        if (choice === retry) void vscode.commands.executeCommand("grok.unlinkRemote");
+        if (choice === retry) void this.host.unlinkRemote();
       });
       return;
     }
 
     const relink = "Link this device again";
-    void vscode.window.showWarningMessage(
+    void this.host.showWarningMessage(
       "AFK Pilot access for this device was revoked, so it has been unlinked. Link it again to continue remotely.",
       relink,
     ).then((choice) => {
-      if (choice === relink) void vscode.commands.executeCommand("grok.linkRemote");
+      if (choice === relink) void this.host.linkRemote();
     });
   }
 
@@ -8784,18 +9964,26 @@ See design doc for the full state machine diagram.`;
     this.refreshKeepAwake();
   }
 
-  /** Re-assert the wake lock against the current (setting, linked) state. Called
-   *  after every event that can change either; both start and stop are
+  /** Re-assert the wake lock against linked / turn-in-flight / setting. Called
+   *  after every event that can change those; both start and stop are
    *  idempotent, so callers never have to know the previous state. Wrapped
    *  because keeping the machine awake is never worth failing a link/unlink or a
-   *  config change over. */
+   *  config change over. The opt-out key remains `grok.remote.keepAwake` (ships
+   *  today) even though local turns are now covered too. */
   private refreshKeepAwake(): void {
     try {
-      const enabled = vscode.workspace.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
-      if (shouldKeepAwake({ enabled, linked: !!this.uplink })) this.keepAwake.start();
-      else this.keepAwake.stop();
+      const enabled = this.host.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
+      if (shouldKeepAwake({
+        enabled,
+        linked: !!this.uplink,
+        turnInFlight: this.anyTurnInFlight(),
+      })) {
+        this.keepAwake.start();
+      } else {
+        this.keepAwake.stop();
+      }
     } catch (e) {
-      this.output.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
+      this.host.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
     }
   }
 
@@ -8810,8 +9998,9 @@ See design doc for the full state machine diagram.`;
       // Already persisted by the time this returns — getOrCreate writes the file
       // synchronously — so a first-ever link cannot outrun persistence and needs
       // no second write. Re-writing it would only add a way to mark the key
-      // degraded on a link.
-      const installId = this.installId();
+      // degraded on a link. Desktop appends `:desktop` (host capability) so the
+      // relay shares one device-cap slot with the same machine's VS Code install.
+      const installId = formatRemoteInstallId(this.installId(), this.host.remoteInstallIdSuffix);
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8821,10 +10010,10 @@ See design doc for the full state machine diagram.`;
       });
       if (!startRes.ok) throw new Error(`link/start ${startRes.status}`);
       const { code } = (await startRes.json()) as { code: string };
-      void vscode.env.openExternal(vscode.Uri.parse(`${base}/link?code=${encodeURIComponent(code)}`));
-      const token = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Approve this device in the browser (code ${code})…`, cancellable: true },
-        (_p, cancel) => this.pollLinkApproval(base, code, cancel),
+      void this.host.openExternal(`${base}/link?code=${encodeURIComponent(code)}`);
+      const token = await this.host.withProgress(
+        { title: `Approve this device in the browser (code ${code})…`, cancellable: true },
+        (cancel) => this.pollLinkApproval(base, code, cancel),
       );
       if (!token) return; // cancelled / expired — poll loop already surfaced why
       await this.context.secrets.store(GrokSidebar.DEVICE_TOKEN_SECRET, token);
@@ -8832,13 +10021,13 @@ See design doc for the full state machine diagram.`;
       this.uplink = undefined;
       await this.maybeStartUplink();
       this.post({ type: "remoteStatus", linked: true });
-      void vscode.window.showInformationMessage("Remote device linked — this workspace is now reachable from the web client.");
+      void this.host.showInformationMessage("Remote device linked — this workspace is now reachable from the web client.");
     } catch (e) {
-      void vscode.window.showErrorMessage(`Remote link failed: ${(e as Error)?.message ?? String(e)}`);
+      void this.host.showErrorMessage(`Remote link failed: ${(e as Error)?.message ?? String(e)}`);
     }
   }
 
-  private async pollLinkApproval(base: string, code: string, cancel: vscode.CancellationToken): Promise<string | undefined> {
+  private async pollLinkApproval(base: string, code: string, cancel: HostCancellationToken): Promise<string | undefined> {
     const deadline = Date.now() + 5 * 60_000;
     while (Date.now() < deadline && !cancel.isCancellationRequested) {
       await new Promise((r) => setTimeout(r, 2000));
@@ -8851,7 +10040,7 @@ See design doc for the full state machine diagram.`;
       const body = (await res.json()) as { status: string; token?: string };
       if (body.status === "approved" && body.token) return body.token;
       if (body.status === "expired" || body.status === "unknown") {
-        void vscode.window.showErrorMessage("Remote link code expired — run the link command again.");
+        void this.host.showErrorMessage("Remote link code expired — run the link command again.");
         return undefined;
       }
     }
@@ -8864,8 +10053,9 @@ See design doc for the full state machine diagram.`;
     // on the account and keeps counting against the relay's device cap (a
     // locally-unlinked machine used to block relinking at the free tier's
     // 1-device limit). Local unlink proceeds regardless — offline stays a
-    // working kill-switch.
-    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    // working kill-switch, including when the OS keychain cannot decrypt the
+    // stored ciphertext (get throws; delete still drops the bytes).
+    const token = await this.readDeviceToken();
     if (token) {
       try {
         await fetch(`${httpBaseFromRelayUrl(REMOTE_RELAY_URL)}/api/device/unlink`, {
@@ -8874,59 +10064,86 @@ See design doc for the full state machine diagram.`;
           signal: AbortSignal.timeout(5000),
         });
       } catch (e) {
-        this.output.appendLine(`[remote] server-side unlink failed (local unlink continues): ${(e as Error)?.message ?? e}`);
+        this.host.appendLine(`[remote] server-side unlink failed (local unlink continues): ${(e as Error)?.message ?? e}`);
       }
     }
-    await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
+    try {
+      await this.context.secrets.delete(GrokSidebar.DEVICE_TOKEN_SECRET);
+    } catch (e) {
+      this.host.appendLine(`[remote] failed to clear device token: ${(e as Error)?.message ?? e}`);
+      void this.host.showErrorMessage(
+        "Could not clear the stored device token. Try again, or remove it from OS secure storage.",
+      );
+      // Still tear the runtime down so the machine stops advertising.
+    }
     this.clearRemoteRuntime();
     this.post({ type: "remoteStatus", linked: false });
-    void vscode.window.showInformationMessage("Remote device unlinked.");
+    void this.host.showInformationMessage("Remote device unlinked.");
   }
 
   /** Tell the webview whether this machine holds a relay device token (drives
    *  the gear "AFK Pilot" section's sign-in vs account/sign-out items). */
   private async postRemoteStatus(): Promise<void> {
-    const token = await this.context.secrets.get(GrokSidebar.DEVICE_TOKEN_SECRET);
+    const token = await this.readDeviceToken();
     this.post({ type: "remoteStatus", linked: !!token });
   }
 
   /** Ordered catch-up built from this client's cwd and active remote session. */
   private buildRemoteSnapshot(clientId: string): HostMsg[] {
     const cwd = this.remoteClients.cwd(clientId);
+    // Live authorized set for this host — not "whatever the tab last selected".
+    const authorized = this.authorizedSessionCwds();
+    const listCwd = authorizedListCwd(cwd, authorized, pathsEqual);
     const session = this.remoteSessionFor(clientId);
-    const entries = this.repoCatalog();
-    const initial = { ...this.buildInitialStateMsg(), cwd };
+    // Catalog is already open-folder-filtered on desktop; still the sole source.
+    const entries = this.localRepoCatalogEntries();
+    // Never put a closed cwd on the wire (choke point rejects it); empty = unbound.
+    const initial = { ...this.buildInitialStateMsg(), cwd: listCwd ?? "" };
     const sessionCwd = this.sessionCwd(session);
-    const phrase = this.voiceSetting(sessionCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE);
+    const sessionCwdOk = !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
+    const phrase = this.voiceSetting(
+      sessionCwdOk ? sessionCwd : this.workspaceRoot(),
+      "voiceSendPhrase",
+      DEFAULT_SEND_PHRASE,
+    );
     const snap: HostMsg[] = [];
     snap.push(initial);
     snap.push({ type: "clearMessages" });
-    if (!session.replaying) snap.push(...bracketRemoteSnapshot(session.buffer));
-    snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
-    if (session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
+    // Conversation buffer only when the bound session still lives under an
+    // authorized cwd (revoke disposes doomed sessions; this is the belt).
+    if (sessionCwdOk && !session.replaying) {
+      snap.push(...bracketRemoteSnapshot(session.buffer));
+    }
+    if (sessionCwdOk) {
+      snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
+    }
+    if (sessionCwdOk && session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
       const text = this.queuedSendReadyText(session);
       if (text) session.queuedSendDispatch = { id: randomUUID(), text };
     }
-    if (session.queuedSendDispatch) {
+    if (sessionCwdOk && session.queuedSendDispatch) {
       snap.push({ type: "submitQueuedSend", ...session.queuedSendDispatch });
     }
     snap.push({
       type: "voiceConfigured",
-      value: !!this.resolveVoiceApiKey(sessionCwd),
+      value: !!this.resolveVoiceApiKey(sessionCwdOk ? sessionCwd : this.workspaceRoot()),
       sendPhrase: phrase,
     });
     const activeVoice = this.remoteVoice.get(clientId);
     if (activeVoice) {
       snap.push({ type: "voiceState", status: activeVoice.finalizing ? "transcribing" : "listening" });
     }
-    snap.push({
-      type: "repos",
-      entries,
-      selectedCwd: cwd,
-      activeCwd: this.sessionCwd(session),
-    });
-    snap.push(this.buildSessionsList(cwd, undefined, this.remoteActiveSessionId(clientId)));
-    if (session.activeSessionId) {
+    // Scrubbed selected/active; entries are the open-folder catalog only.
+    snap.push(this.buildRemoteReposMsg(clientId, entries));
+    // buildSessionsList re-checks authorization (empty list if listCwd missing).
+    snap.push(
+      this.buildSessionsList(
+        listCwd ?? "",
+        undefined,
+        sessionCwdOk ? this.remoteActiveSessionId(clientId) : null,
+      ),
+    );
+    if (sessionCwdOk && session.activeSessionId) {
       snap.push({
         type: "sessionName",
         sessionId: session.activeSessionId,
@@ -8937,6 +10154,7 @@ See design doc for the full state machine diagram.`;
     // Pins belong in the snapshot, not behind a `ready` handler: `ready` from a
     // remote is answered HERE and never reaches onMessage's switch, so anything
     // pushed from there would simply never arrive on a fresh tab or a reconnect.
+    // buildPinnedSessions filters to the live authorized set.
     snap.push({ type: "pinnedSessions", ...this.buildPinnedSessions() });
     const out: HostMsg[] = [];
     for (const m of snap) {
@@ -8946,12 +10164,54 @@ See design doc for the full state machine diagram.`;
     return out;
   }
 
-  private getHtml(webview: vscode.Webview): string {
+  private getHtml(webview: HostWebview): string {
     const nonce = getNonce();
+    // Join under extensionUri so remote hosts keep vscode-remote:// (Uri.file
+    // on extensionPath.fsPath would point the webview at a missing local path).
     const mediaUri = (file: string) =>
-      webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", file));
+      webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "media", file));
     const resourceUri = (file: string) =>
-      webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "resources", file));
+      webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "resources", file));
+
+    // Desktop multi-folder: host ships the rail mount. VS Code never does —
+    // absence of `#projects-rail` is the property that keeps the extension's
+    // UI single-column even when a `repos` frame arrives for clear-all.
+    // Chrome mirrors AFK Pilot: brand + panel toggle, search, scroll, footer
+    // theme toggle (no account avatar). chat.js only empties #rail-scroll.
+    const railMark = this.host.canSwitchWorkspaceFolder
+      ? resourceUri("grok-icon.svg")
+      : "";
+    const railMount = this.host.canSwitchWorkspaceFolder
+      ? `
+  <aside id="projects-rail" class="projects-rail" hidden aria-label="Projects">
+    <div class="rail-top">
+      <span class="rail-brand" title="Grok Build Desktop">
+        <span class="mark" style="--rail-mark:url('${railMark}')" aria-hidden="true"></span>
+        <span class="wordmark"><b>Grok</b> <span class="dim">Build</span></span>
+      </span>
+      <button id="desk-rail-toggle" class="rail-icon-btn" type="button" title="Hide projects" aria-label="Hide projects" aria-expanded="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>
+      </button>
+    </div>
+    <div class="rail-search-wrap">
+      <span class="rail-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </span>
+      <input id="rail-search" class="rail-search" type="search" placeholder="Filter projects…" autocomplete="off" spellcheck="false" aria-label="Filter projects" />
+    </div>
+    <div id="rail-scroll" class="rail-scroll"></div>
+    <div class="rail-foot">
+      <div class="rail-user" aria-hidden="true"></div>
+      <button id="rail-gear-btn" class="rail-icon-btn" type="button" title="Settings" aria-label="Settings" hidden></button>
+      <button id="desk-theme-toggle" class="rail-icon-btn" type="button" title="Toggle theme" aria-label="Toggle light and dark theme">
+        <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12H5M19 12h2.5M4.2 19.8L6 18M18 6l1.8-1.8"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.2 6.2 0 0 0 10.5 10.5z"/></svg>
+      </button>
+    </div>
+  </aside>`
+      : "";
+    const openMain = this.host.canSwitchWorkspaceFolder ? `<div class="app-main">` : "";
+    const closeMain = this.host.canSwitchWorkspaceFolder ? `</div>` : "";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -8972,7 +10232,8 @@ See design doc for the full state machine diagram.`;
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
 </head>
 <body class="desk${this.showThinking() ? "" : " thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
-
+${railMount}
+${openMain}
   <header class="top-bar">
     <div id="session-name-chip" class="session-name-chip" hidden>
       <button id="session-name-label" class="session-name-label" type="button"></button>
@@ -9031,6 +10292,7 @@ See design doc for the full state machine diagram.`;
     <div id="slash-popover" class="slash-popover" hidden></div>
     <div id="mention-popover" class="slash-popover mention-popover" hidden></div>
   </footer>
+${closeMain}
 
   <script nonce="${nonce}">
     // Configure MathJax before its bundle loads. We drive typesetting manually

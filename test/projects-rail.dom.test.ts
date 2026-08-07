@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { bootWebview, click, dispatch } from "./webview-harness";
 
 // The rail is the relay page's surface: `#projects-rail` lives in web/chat.html,
@@ -65,14 +68,25 @@ const menuItem = (menu: Element, label: string) =>
     .find((b) => (b.textContent || "").includes(label)) as HTMLElement | undefined;
 
 describe("projects rail", () => {
-  it("never mounts in VS Code, even if the element is present", () => {
-    // `IS_REMOTE` is the gate, not the element — so a stray mount cannot switch
-    // the rail on in a webview where the window already IS the repo.
-    const { doc, window, posted } = bootWebview({ beforeScripts: withRail });
+  it("does not mount without a #projects-rail element, even when repos arrives", () => {
+    // Regression guard for VS Code: getHtml never includes the mount, so a
+    // `repos` frame (sent for clear-all naming) must not light a rail column.
+    const { doc, window, posted } = bootWebview({});
     dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
-    expect(rail(doc).hidden).toBe(true);
+    expect(doc.body.classList.contains("has-rail")).toBe(false);
     expect(doc.querySelectorAll(".rail-repo")).toHaveLength(0);
     expect(posted.filter((p) => p.type === "listRepoSessions")).toEqual([]);
+  });
+
+  it("mounts for a non-remote host when the rail element exists and repos arrives", () => {
+    // Desktop multi-folder: no IS_REMOTE, but host shipped the mount + catalog.
+    // Capability gate is mount + reposKnown — not the remote flag.
+    const { doc, window } = bootWebview({ beforeScripts: withRail });
+    expect(rail(doc).hidden).toBe(true);
+    dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    expect(rail(doc).hidden).toBe(false);
+    expect(doc.body.classList.contains("has-rail")).toBe(true);
+    expect(repoNames(doc)).toContain("alpha");
   });
 
   it("stays hidden until the host proves it speaks `repos`", () => {
@@ -126,6 +140,26 @@ describe("projects rail", () => {
   it("keeps the selected project in place until its own list arrives", () => {
     const { doc } = boot("/work/alpha");
     expect(repoNames(doc)[0]).toBe("alpha");
+  });
+
+  // Cold start used to leave the selected project on "No sessions yet" while
+  // sibling `repoSessions` previews filled in — because `railSelectedRows`
+  // starts empty and was treated as a known-empty list. Empty + unknown must
+  // read as loading; empty only after an unfiltered `sessions` frame is real.
+  it("shows Loading for the selected project until sessions arrives, not No sessions yet", () => {
+    const { doc, window } = boot("/work/alpha");
+    const notes = () => {
+      const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return [...alpha.querySelectorAll(".rail-note")].map((e) => e.textContent);
+    };
+    expect(notes()).toContain("Loading…");
+    expect(notes()).not.toContain("No sessions yet");
+
+    dispatch(window, sessionsFrame([]));
+    expect(notes()).toContain("No sessions yet");
+
+    dispatch(window, sessionsFrame([row("a1", "/work/alpha", "real history", 9)]));
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["real history"]);
   });
 
   // Two empty projects tie on activity, and the tie used to break on the
@@ -294,9 +328,15 @@ describe("projects rail", () => {
     expect(sessionNames(doc, alphaIndex)).toEqual(["one", "two", "three"]);
 
     const more = doc.querySelectorAll(".rail-repo")[alphaIndex].querySelector(".rail-more") as HTMLElement;
-    expect(more.textContent).toBe("Show 1 more");
+    // One step, no counters — never "Show N more" (three disagreeing totals).
+    expect(more.textContent).toBe("Show more");
+    expect(more.textContent).not.toMatch(/\d/);
     click(window, more);
     expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["one", "two", "three", "four"]);
+    const less = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
+      .querySelector(".rail-more") as HTMLElement;
+    expect(less.textContent).toBe("Show less");
+    expect(less.textContent).not.toMatch(/\d/);
   });
 
   it("reopens a session in its own repo, carrying that session's cwd", () => {
@@ -378,16 +418,17 @@ describe("projects rail", () => {
   });
 
   // Two caps deep: the host's `total` counts hidden subagent rows, and expansion
-  // itself stops at RAIL_EXPANDED. Either one alone makes the label a lie.
-  it("promises only the rows expanding can actually reveal", () => {
+  // itself stops at RAIL_EXPANDED. The control never prints a count (scar: a
+  // "Show 25 more" once revealed 17 and stranded 8).
+  it("reveals up to the expand cap with an unnumbered Show more", () => {
     const { doc, window } = boot();
     dispatch(window, sessionsFrame(
       Array.from({ length: 28 }, (_, i) => row(`a${i}`, "/work/alpha", `s${i}`, 100 - i)),
     ));
     const more = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
       .querySelector(".rail-more") as HTMLElement;
-    // 20 reachable, 3 shown — not 25.
-    expect(more.textContent).toBe("Show 17 more");
+    expect(more.textContent).toBe("Show more");
+    expect(more.textContent).not.toMatch(/\d/);
     click(window, more);
     expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toHaveLength(20);
   });
@@ -496,7 +537,10 @@ describe("projects rail", () => {
         pinned("a1", "/work/alpha", "alpha thing", 10),
       ]));
       const heads = [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
-      expect(heads).toEqual(["Pinned", "Projects"]);
+      // RECENT also lists pinned rows (duplication intentional).
+      expect(heads[0]).toBe("Pinned");
+      expect(heads).toContain("Projects");
+      expect(heads).toContain("Recent");
       expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
         .toEqual(["beta thing", "alpha thing"]);
     });
@@ -584,10 +628,34 @@ describe("projects rail", () => {
       ]);
     });
 
-    it("shows no pin glyph on any row — the Pinned group carries that", () => {
-      const { doc, window } = boot();
+    it("shows a filled pin on pinned rows and outline on others (hover control)", () => {
+      const { doc, window } = boot("/work/alpha");
       dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
-      expect(doc.querySelectorAll(".rail-pin-mark")).toHaveLength(0);
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const pinnedBtn = doc.querySelector(".rail-pinned .rail-pin-btn") as HTMLElement;
+      expect(pinnedBtn).toBeTruthy();
+      expect(pinnedBtn.classList.contains("active")).toBe(true);
+      // Filled variant uses fill="currentColor" on the pin head path.
+      expect(pinnedBtn.innerHTML).toMatch(/fill="currentColor"/);
+      const projectRow = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")]
+        .querySelector(".rail-pin-btn") as HTMLElement;
+      expect(projectRow).toBeTruthy();
+      expect(projectRow.classList.contains("active")).toBe(false);
+      expect(projectRow.innerHTML).not.toMatch(/fill="currentColor"/);
+    });
+
+    it("pins from the session-row hover control in one click", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, pinnedFrame([]));
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha/wt", "alpha one", 9)]));
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const pinBtn = section.querySelector(".rail-pin-btn") as HTMLElement;
+      click(window, pinBtn);
+      expect(posted.filter((p) => p.type === "toggleSessionPin")).toEqual([
+        { type: "toggleSessionPin", id: "a1", cwd: "/work/alpha/wt", pinned: true },
+      ]);
+      // Row click is not fired by the pin control.
+      expect(posted.filter((p) => p.type === "resumeSession")).toEqual([]);
     });
 
     // The menu button is a real <button> inside a row that also answers
@@ -714,8 +782,8 @@ describe("projects rail", () => {
 
     const heads = (doc: Document) =>
       [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
-    const sectionRepos = (doc: Document, index: number) =>
-      [...doc.querySelectorAll(".rail-list")[index].querySelectorAll(".rail-repo-label")]
+    const sectionRepos = (doc: Document, which: "projects" | "archived") =>
+      [...(doc.querySelector(`.rail-list.rail-${which}`)?.querySelectorAll(".rail-repo-label") ?? [])]
         .map((e) => e.textContent);
 
     /** Five projects: one selected, three recent (which the floor would protect
@@ -746,24 +814,30 @@ describe("projects rail", () => {
       return h;
     }
 
-    it("drops long-idle projects into a folded Archived section", () => {
+    it("drops long-idle projects into a folded Project Archive section", () => {
       const { doc } = bootArchive();
-      expect(heads(doc)).toEqual(["Projects", "Archived"]);
-      expect(sectionRepos(doc, 0)).toEqual(["home", "one", "two", "three"]);
-      // Folded by default — the section exists to be out of the way — so the
-      // count is the only thing it can say about itself.
-      expect(doc.querySelectorAll(".rail-list")).toHaveLength(1);
-      expect(doc.querySelector(".rail-head-count")?.textContent).toBe("2");
+      // RECENT is present once sessions load; Project Archive is folded (no list).
+      expect(heads(doc)).toContain("Projects");
+      expect(heads(doc)).toContain("Project Archive");
+      expect(heads(doc)).toContain("Recent");
+      expect(sectionRepos(doc, "projects")).toEqual(["home", "one", "two", "three"]);
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      // No count badge on the group header (styled like the others).
+      expect(doc.querySelector(".rail-head-count")).toBe(null);
     });
 
-    it("opens and remembers the Archived section", () => {
+    it("opens and remembers the Project Archive section", () => {
       const { doc, window } = bootArchive();
-      click(window, doc.querySelector(".rail-head-btn") as HTMLElement);
-      expect(sectionRepos(doc, 1)).toEqual(["stale", "ancient"]);
+      const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Project Archive")) as HTMLElement;
+      click(window, archivedBtn);
+      expect(sectionRepos(doc, "archived")).toEqual(["stale", "ancient"]);
       // Whether it is open is the same kind of answer as a project fold, so it
       // keeps the same company and survives a reload.
       const key = Object.keys(window.localStorage).find((k) => k.startsWith("grok.remote.railShape"));
-      expect(JSON.parse(window.localStorage.getItem(key as string)).archiveOpen).toBe(true);
+      const saved = JSON.parse(window.localStorage.getItem(key as string));
+      expect(saved.groupCollapsed.archived).toBe(false);
+      expect(saved.archiveOpen).toBe(true);
     });
 
     // Coming back from three weeks away must not archive everything at once and
@@ -791,8 +865,12 @@ describe("projects rail", () => {
         });
       }
       // The three newest besides the one you are in, plus the one you are in.
-      expect(sectionRepos(h.doc, 0)).toEqual(["home", "a", "b", "c"]);
-      expect(h.doc.querySelector(".rail-head-count")?.textContent).toBe("1");
+      expect(sectionRepos(h.doc, "projects")).toEqual(["home", "a", "b", "c"]);
+      expect(h.doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      // One age-archived project remains folded under Project Archive.
+      const archivedBtn = [...h.doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Project Archive"));
+      expect(archivedBtn).toBeTruthy();
     });
 
     // The age rule needs to know when a project was last worked in, and the only
@@ -816,15 +894,16 @@ describe("projects rail", () => {
 
       // No `repoSessions` ever answers — the whole point. Not even the projects
       // past the floor may be archived.
-      expect(h.doc.querySelector(".rail-head-fold")).toBe(null);
-      expect(sectionRepos(h.doc, 0)).toHaveLength(5);
+      expect([...h.doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent))
+        .not.toContain("Project Archive");
+      expect(sectionRepos(h.doc, "projects")).toHaveLength(5);
     });
 
     // A rail that files the conversation on screen under "Archived" is
     // describing the screen wrongly, whatever the dates say.
     it("never archives the project you are reading", () => {
       const { doc } = bootArchive({ home: { archived: true, archivedAt: Date.now() } });
-      expect(sectionRepos(doc, 0)).toContain("home");
+      expect(sectionRepos(doc, "projects")).toContain("home");
     });
 
     it("archives on request, and asks the host to remember it", () => {
@@ -845,14 +924,15 @@ describe("projects rail", () => {
     // exactly where it is most likely to be used.
     it("honours an explicit archive on a project the floor protects", () => {
       const { doc } = bootArchive({ one: { archived: true, archivedAt: Date.now() } });
-      expect(sectionRepos(doc, 0)).toEqual(["home", "two", "three"]);
-      expect(doc.querySelector(".rail-head-count")?.textContent).toBe("3");
+      expect(sectionRepos(doc, "projects")).toEqual(["home", "two", "three"]);
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      expect(heads(doc)).toContain("Project Archive");
     });
 
     // The whole reason the choice is a timestamp rather than a flag.
     it("brings a project back the moment it is worked in again", () => {
       const { doc, window } = bootArchive({ stale: { archived: true, archivedAt: ago(10) } });
-      expect(sectionRepos(doc, 0)).not.toContain("stale");
+      expect(sectionRepos(doc, "projects")).not.toContain("stale");
 
       dispatch(window, {
         type: "repoSessions",
@@ -861,24 +941,26 @@ describe("projects rail", () => {
         dots: {},
         total: 1,
       });
-      expect(sectionRepos(doc, 0)).toContain("stale");
+      expect(sectionRepos(doc, "projects")).toContain("stale");
     });
 
     // "Keep showing me this one" is a real, stored answer — not the absence of
     // one. Without it the age rule would undo the unarchive on the next render.
     it("keeps an unarchived project visible however idle it is", () => {
       const { doc } = bootArchive({ ancient: { archived: false, archivedAt: Date.now() } });
-      expect(sectionRepos(doc, 0)).toContain("ancient");
+      expect(sectionRepos(doc, "projects")).toContain("ancient");
     });
 
     it("moves an archived project back from its own menu", () => {
       const { doc, window, posted } = bootArchive();
-      click(window, doc.querySelector(".rail-head-btn") as HTMLElement);
-      const archivedSection = doc.querySelectorAll(".rail-list")[1];
+      const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Project Archive")) as HTMLElement;
+      click(window, archivedBtn);
+      const archivedSection = doc.querySelector(".rail-list.rail-archived") as HTMLElement;
       const menu = openMenu(window, archivedSection.querySelector(".rail-repo-head") as HTMLElement);
       // The verb follows the SECTION, not the stored flag: these two were
       // archived by age and carry no flag at all, so reading the flag would
-      // offer "Archive" on a row already sitting under Archived.
+      // offer "Archive" on a row already sitting under Project Archive.
       expect(menuItem(menu, "Archive project")).toBe(undefined);
       click(window, menuItem(menu, "Move to Projects") as HTMLElement);
       expect(posted.filter((p) => p.type === "setRepoArchived")).toEqual([
@@ -888,17 +970,19 @@ describe("projects rail", () => {
 
     // A query answered with "No matches." while the project sits collapsed two
     // inches below is simply wrong.
-    it("reaches into Archived when searching, and opens it", () => {
+    it("reaches into Project Archive when searching, and opens it", () => {
       const { doc, window } = bootArchive();
       const search = doc.getElementById("rail-search") as HTMLInputElement;
       search.value = "ancient";
       search.dispatchEvent(new (window as any).Event("input", { bubbles: true }));
 
-      expect(heads(doc)).toEqual(["Archived"]);
-      expect(sectionRepos(doc, 0)).toEqual(["ancient"]);
+      expect(heads(doc)).toEqual(["Recent", "Project Archive"]);
+      expect(sectionRepos(doc, "archived")).toEqual(["ancient"]);
       // …and says why it cannot be folded while the search is holding it open,
       // rather than offering a button whose click the next render undoes.
-      expect((doc.querySelector(".rail-head-btn") as HTMLButtonElement).disabled).toBe(true);
+      const archivedBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Project Archive")) as HTMLButtonElement;
+      expect(archivedBtn.disabled).toBe(true);
     });
 
     // Capability, never a version: a host that cannot record the choice must not
@@ -922,9 +1006,9 @@ describe("projects rail", () => {
       dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
 
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      const twisty = alpha().querySelector(".rail-twisty") as HTMLButtonElement;
-      expect(twisty.disabled).toBe(false);
-      click(window, twisty);
+      const head = alpha().querySelector(".rail-repo-head") as HTMLElement;
+      expect(head.getAttribute("aria-expanded")).toBe("true");
+      click(window, head);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
 
       // Holding the current project open forever made the one section you most
@@ -941,7 +1025,7 @@ describe("projects rail", () => {
       const { doc, window } = boot("/work/alpha");
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-      click(window, alpha().querySelector(".rail-twisty") as HTMLElement);
+      click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
 
       // The host names the worktree, not the checkout — and it lands BEFORE the
@@ -964,7 +1048,7 @@ describe("projects rail", () => {
       const { doc, window } = boot("/work/alpha");
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
       const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
-      click(window, alpha().querySelector(".rail-twisty") as HTMLElement);
+      click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
 
       // The conversation is opened from somewhere else — a phone, the desk, the
@@ -972,5 +1056,342 @@ describe("projects rail", () => {
       dispatch(window, { ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]), activeId: "a1" });
       expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
     });
+  });
+
+  // ---- Rail redesign: four groups, chevron-after, folder icons, collapse ----
+  describe("rail redesign (four groups)", () => {
+    const pinnedFrame = (entries: unknown[]) => ({ type: "pinnedSessions", entries, dots: {} });
+    const pinned = (id: string, cwd: string, name: string, at: number, updatedAt = at) =>
+      ({ ...row(id, cwd, name, updatedAt), pinnedAt: at });
+
+    it("renders PINNED, RECENT, PROJECTS, PROJECT ARCHIVE in that order when all apply", () => {
+      // Explicit archive (not age): the always-visible floor keeps a lone
+      // idle project in Projects, so age alone cannot produce archive here.
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: Date.now(), archived: false, archivedAt: 0 },
+        { cwd: "/work/old", label: "old", available: true, pinned: false, updatedAt: Date.now(), archived: true, archivedAt: Date.now() - 1000 },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", Date.now())]));
+      dispatch(h.window, {
+        type: "repoSessions",
+        cwd: "/work/old",
+        entries: [row("o1", "/work/old", "old one", Date.now() - 5000)],
+        dots: {},
+        total: 1,
+      });
+      dispatch(h.window, pinnedFrame([pinned("h1", "/work/home", "home one", 50, Date.now())]));
+
+      const titles = [...h.doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
+      expect(titles).toEqual(["Pinned", "Recent", "Projects", "Project Archive"]);
+    });
+
+    it("all group labels use .rail-head and share bold uppercase CSS treatment", async () => {
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: Date.now(), archived: false, archivedAt: 0 },
+        { cwd: "/work/old", label: "old", available: true, pinned: false, updatedAt: Date.now(), archived: true, archivedAt: Date.now() - 1000 },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", Date.now())]));
+      dispatch(h.window, {
+        type: "repoSessions",
+        cwd: "/work/old",
+        entries: [row("o1", "/work/old", "old one", Date.now() - 5000)],
+        dots: {},
+        total: 1,
+      });
+      dispatch(h.window, pinnedFrame([pinned("h1", "/work/home", "home one", 50, Date.now())]));
+
+      const groupHeads = [...h.doc.querySelectorAll(".rail-head")] as HTMLElement[];
+      expect(groupHeads).toHaveLength(4);
+      for (const head of groupHeads) {
+        // Static PINNED is .rail-head alone; the others are .rail-head.rail-head-fold.
+        expect(head.classList.contains("rail-head")).toBe(true);
+        const title = head.querySelector(".rail-head-title") as HTMLElement;
+        expect(title).toBeTruthy();
+        // Applied styles live on the shared class (and .rail-head-title / btn).
+        // happy-dom may not load chat.css, so assert the class contract + source.
+        expect(title.className).toBe("rail-head-title");
+      }
+      // Source-level: chat.css forces uppercase + 700 on every group path.
+      // (happy-dom may not apply the stylesheet; this still fails if the rule is removed.)
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const css = readFileSync(join(__dirname, "..", "media", "chat.css"), "utf8");
+      expect(css).toMatch(/\.rail-head-title\s*\{[^}]*font-weight:\s*700/s);
+      expect(css).toMatch(/\.rail-head-title\s*\{[^}]*text-transform:\s*uppercase/s);
+      expect(css).toMatch(/\.rail-head-btn\s*\{[^}]*font-weight:\s*700/s);
+      expect(css).toMatch(/\.rail-head-btn\s*\{[^}]*text-transform:\s*uppercase/s);
+    });
+
+    it("omits Project Archive and archive actions when the host omits archive fields (desktop)", () => {
+      // Capability = presence of `archived` on rows. Desktop strips the fields;
+      // age rule and Archive menu must not run.
+      const day = 24 * 60 * 60 * 1000;
+      const t = (days: number) => Date.now() - days * day;
+      const catalog = [
+        { cwd: "/work/home", label: "home", available: true, pinned: false, updatedAt: t(0) },
+        { cwd: "/work/stale", label: "stale", available: true, pinned: false, updatedAt: t(80) },
+        { cwd: "/work/ancient", label: "ancient", available: true, pinned: false, updatedAt: t(400) },
+      ];
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, { type: "repos", entries: catalog, selectedCwd: "/work/home", activeCwd: "/work/home" });
+      dispatch(h.window, sessionsFrame([row("h1", "/work/home", "home one", t(0))]));
+      for (const r of catalog.slice(1)) {
+        dispatch(h.window, {
+          type: "repoSessions",
+          cwd: r.cwd,
+          entries: [row(`${r.label}1`, r.cwd, `${r.label} one`, r.updatedAt)],
+          dots: {},
+          total: 1,
+        });
+      }
+      const { doc, window } = h;
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+      expect([...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent)).not.toContain(
+        "Project Archive",
+      );
+      // All three stay under Projects (age rule disabled).
+      const projectLabels = [
+        ...(doc.querySelector(".rail-list.rail-projects")?.querySelectorAll(".rail-repo-label") ?? []),
+      ].map((e) => e.textContent).sort();
+      expect(projectLabels).toEqual(["ancient", "home", "stale"]);
+      const menu = openMenu(window, doc.querySelector(".rail-repo-head") as HTMLElement);
+      const labels = [...menu.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
+      expect(labels.some((l) => /archive/i.test(l))).toBe(false);
+    });
+
+    it("omits Project Archive when no project is archived (deliberate, not a bug)", () => {
+      // All projects active — no empty archive band.
+      const { doc } = boot();
+      const titles = [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
+      expect(titles).not.toContain("Project Archive");
+      expect(doc.querySelector(".rail-list.rail-archived")).toBe(null);
+    });
+
+    it("PINNED is not collapsible — no head button, no chevron", () => {
+      const { doc, window } = boot();
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta thing", 20)]));
+      const pinnedHead = [...doc.querySelectorAll(".rail-head")]
+        .find((h) => h.querySelector(".rail-head-title")?.textContent === "Pinned") as HTMLElement;
+      expect(pinnedHead).toBeTruthy();
+      expect(pinnedHead.querySelector(".rail-head-btn")).toBe(null);
+      expect(pinnedHead.querySelector(".rail-head-twisty")).toBe(null);
+      expect(doc.querySelector(".rail-list.rail-pinned")).toBeTruthy();
+    });
+
+    it("group headers put the chevron after the label", () => {
+      const { doc, window } = boot();
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      expect(recentBtn).toBeTruthy();
+      const kids = [...recentBtn.children].map((c) => c.className);
+      const titleIdx = kids.findIndex((c) => c.includes("rail-head-title"));
+      const twistyIdx = kids.findIndex((c) => c.includes("rail-head-twisty"));
+      expect(titleIdx).toBeGreaterThanOrEqual(0);
+      expect(twistyIdx).toBeGreaterThan(titleIdx);
+    });
+
+    it("collapses and remembers RECENT / PROJECTS", () => {
+      const { doc, window } = boot();
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      expect(doc.querySelector(".rail-list.rail-recent")).toBeTruthy();
+      expect(doc.querySelector(".rail-list.rail-projects")).toBeTruthy();
+
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      click(window, recentBtn);
+      expect(doc.querySelector(".rail-list.rail-recent")).toBe(null);
+
+      const projectsBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Projects")) as HTMLElement;
+      click(window, projectsBtn);
+      expect(doc.querySelector(".rail-list.rail-projects")).toBe(null);
+
+      const key = Object.keys(window.localStorage).find((k) => k.startsWith("grok.remote.railShape"));
+      const saved = JSON.parse(window.localStorage.getItem(key as string));
+      expect(saved.groupCollapsed.recent).toBe(true);
+      expect(saved.groupCollapsed.projects).toBe(true);
+    });
+
+    it("RECENT merges sessions across projects, including pinned, newest first", () => {
+      const { doc, window } = boot();
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha recent", 100)]));
+      dispatch(window, {
+        type: "repoSessions",
+        cwd: "/work/beta",
+        entries: [row("b1", "/work/beta", "beta older", 50)],
+        dots: {},
+        total: 1,
+      });
+      dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta older", 9, 50)]));
+
+      const recentNames = [...doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")]
+        .map((e) => e.textContent);
+      expect(recentNames).toEqual(["alpha recent", "beta older"]);
+      // Pinned still has its own copy.
+      expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
+        .toEqual(["beta older"]);
+      // And PROJECTS still lists alpha's row under the project.
+      expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toContain("alpha recent");
+    });
+
+    it("RECENT Show more / Show less has no digits", () => {
+      const { doc, window } = boot();
+      const many = Array.from({ length: 5 }, (_, i) =>
+        row(`a${i}`, "/work/alpha", `s${i}`, 100 - i),
+      );
+      dispatch(window, sessionsFrame(many));
+      const more = doc.querySelector(".rail-list.rail-recent .rail-more") as HTMLElement;
+      expect(more.textContent).toBe("Show more");
+      expect(more.textContent).not.toMatch(/\d/);
+      expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(3);
+      click(window, more);
+      expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(5);
+      const less = doc.querySelector(".rail-list.rail-recent .rail-more") as HTMLElement;
+      expect(less.textContent).toBe("Show less");
+      expect(less.textContent).not.toMatch(/\d/);
+    });
+
+    it("project rows use folder-closed when collapsed and folder-open when expanded", () => {
+      const { doc, window } = boot("/work/alpha");
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const twisty = () => alpha().querySelector(".rail-twisty") as HTMLElement;
+      // Expanded: ONE flag drives icon + session list (data-expanded + folder-open).
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Expanded: folder-open path includes m6 14 (open flap).
+      expect(twisty().innerHTML).toMatch(/m6 14/);
+      expect(twisty().innerHTML).not.toMatch(/M2 10h20/);
+      expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
+      // Icon and list cannot disagree: sessions present ⇒ open icon path.
+      expect(!!alpha().querySelector(".rail-sessions")).toBe(
+        /m6 14/.test(twisty().innerHTML),
+      );
+      // Folder is an indicator (not a button); the whole head toggles.
+      expect(twisty().tagName).toBe("SPAN");
+      click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
+      // Collapsed: folder-closed has M2 10h20; no sessions; data-expanded=0.
+      expect(alpha().getAttribute("data-expanded")).toBe("0");
+      expect(twisty().innerHTML).toMatch(/M2 10h20/);
+      expect(twisty().innerHTML).not.toMatch(/m6 14/);
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+      expect(!!alpha().querySelector(".rail-sessions")).toBe(
+        /m6 14/.test(twisty().innerHTML),
+      );
+    });
+
+    it("the whole project header toggles expand; hover actions do not", () => {
+      const { doc, window, posted } = boot("/work/alpha");
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      const alpha = () => doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      const head = () => alpha().querySelector(".rail-repo-head") as HTMLElement;
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Click the label area (not the folder alone) — whole head is the control.
+      click(window, alpha().querySelector(".rail-repo-label") as HTMLElement);
+      expect(alpha().getAttribute("data-expanded")).toBe("0");
+      expect(alpha().querySelector(".rail-sessions")).toBe(null);
+      click(window, head());
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Hover action (+ New) must not toggle.
+      const before = posted.length;
+      const add = alpha().querySelector(".rail-repo-actions .rail-action-btn") as HTMLElement;
+      click(window, add);
+      expect(alpha().getAttribute("data-expanded")).toBe("1");
+      // Selected project's + posts newSession (does not fold).
+      expect(posted.slice(before).some((p) => p.type === "newSession")).toBe(true);
+    });
+
+    it("hidden hover actions are absolutely positioned so they do not reserve label width", () => {
+      // Assert the CSS contract: actions overlay (position:absolute) on hover-capable
+      // surfaces. A layout-space reservation would reintroduce early title truncation.
+      const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css");
+      const css = fs.readFileSync(cssPath, "utf8");
+      // Overlay path (default).
+      expect(css).toMatch(
+        /\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]*position:\s*absolute/s,
+      );
+      // Touch / no-hover: back to in-flow reservation.
+      expect(css).toMatch(
+        /@media\s*\(hover:\s*none\)\s*\{[\s\S]*?\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]*position:\s*static/,
+      );
+    });
+
+    it("hover action buttons sit flat on the row hover surface (no darker chip)", () => {
+      const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css");
+      const css = fs.readFileSync(cssPath, "utf8");
+      const hoverRule = css.match(
+        /\.rail-action-btn:hover\s*,\s*\.rail-action-btn\.active\s*\{[^}]+\}/,
+      );
+      expect(hoverRule?.[0]).toMatch(/background:\s*transparent/);
+      expect(hoverRule?.[0]).not.toContain("toolbar-hoverBackground");
+      // Scrim uses the row hover token so controls are not a second layer.
+      expect(css).toMatch(
+        /\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]*--rail-hover-bg/s,
+      );
+    });
+
+    it("a host that never mounts #projects-rail never renders the rail (VS Code property)", () => {
+      // Same guard as the top-level test — kept next to the redesign so a
+      // regression that lights the rail without a mount fails this suite hard.
+      const { doc, window } = bootWebview({});
+      dispatch(window, {
+        type: "repos",
+        entries: repos,
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+      expect(doc.getElementById("projects-rail")).toBe(null);
+      expect(doc.body.classList.contains("has-rail")).toBe(false);
+      expect(doc.querySelectorAll(".rail-head-title")).toHaveLength(0);
+      expect(doc.querySelectorAll(".rail-session")).toHaveLength(0);
+    });
+  });
+});
+
+// "Continue in a new chat" used to sit in the composer's settings popover
+// beside model and effort. Those two say how the agent ANSWERS; forking makes a
+// different conversation — which is what the ⋯ menu is already for (Rename,
+// Pin, Delete). Moving it leaves the composer popover holding model and effort
+// alone. Owner, 2026-08-07.
+describe("continue-in-a-new-chat lives in the session ⋯ menu", () => {
+  const pinnedFrame = (entries: unknown[]) => ({ type: "pinnedSessions", entries, dots: {} });
+  it("offers it on the conversation you are actually in", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const menu = openMenu(window, section.querySelector(".rail-session") as HTMLElement);
+    const item = menuItem(menu, "Continue in a new chat");
+    expect(item).toBeTruthy();
+    click(window, item!);
+    // Knowledge work is the default, so there is one destination and no popup.
+    expect(posted.find((p) => p.type === "forkSession")).toBeTruthy();
+  });
+
+  it("withholds it from other rows — a fork continues from the LIVE transcript", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const rows = section.querySelectorAll(".rail-session");
+    // Second row is not the live conversation — offering a fork there would
+    // promise to continue from a transcript this client does not have.
+    const menu = openMenu(window, rows[1] as HTMLElement);
+    expect(menuItem(menu, "Continue in a new chat")).toBeUndefined();
+    expect(menuItem(menu, "Delete")).toBeTruthy();
   });
 });

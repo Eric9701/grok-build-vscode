@@ -319,6 +319,61 @@ export function turnIsInFlight(session: Session): boolean {
   return session.turnToken !== undefined;
 }
 
+/**
+ * True when the ACP session can accept `session/prompt` (spawn finished and
+ * session/new|load returned an id). During the priming window the client object
+ * may already exist while `sessionId` is still unset — a prompt then throws
+ * "no session" after consuming chips. Callers must queue instead.
+ */
+export function sessionReadyForPrompt(session: Session): boolean {
+  return !!session.client && !session.priming && !!session.client.sessionId;
+}
+
+/**
+ * Busy chrome restored after a webview reload reattaches to a live session.
+ * Keeps the startup lock while priming (or while the client has no session id
+ * yet) so a rehydrate cannot unlock the composer into a work-losing send.
+ */
+export function rehydrateBusyChrome(session: Session): { value: boolean; locked: boolean } {
+  if (!sessionReadyForPrompt(session)) {
+    return { value: true, locked: true };
+  }
+  const busy =
+    session.status === "working" ||
+    session.status === "needs-you" ||
+    session.turnToken !== undefined;
+  return { value: busy, locked: false };
+}
+
+/**
+ * True while this session has something to lose — the agent is working, waiting
+ * on an answer it will resume from, or still starting up with input already
+ * queued behind it.
+ *
+ * Closing a project folder disposes its sessions and force-kills the agent
+ * process (a hard kill on Windows), so this predicate is the difference between
+ * a clean close and work discarded without a word.
+ *
+ * The startup clause is the one that is easy to get wrong, and it was: an
+ * earlier version of this checked only status and token, and reported "nothing
+ * running" for a session whose process was still spawning — precisely the
+ * window where a slow start leaves queued input sitting unsent.
+ * `rehydrateBusyChrome` treats that state as busy-and-locked for the same
+ * reason. It cannot simply defer to `sessionReadyForPrompt`, though: that is
+ * false for a brand-new session which has never started at all, and warning
+ * about those would fire on every close.
+ *
+ * Broader than `turnIsInFlight`, which only asks whether a token exists.
+ */
+export function sessionHasWorkInFlight(session: Session): boolean {
+  if (session.status === "working" || session.status === "needs-you") return true;
+  if (session.turnToken !== undefined) return true;
+  // Starting: `priming` covers the spawn window before the client object even
+  // exists; the second clause covers a client whose session/new has not
+  // returned an id yet. A session with neither has never been started.
+  return session.priming || (!!session.client && !session.client.sessionId);
+}
+
 export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
   if (session.queuedSendCommit) return undefined;
   const queued = session.queuedSends[0] ?? "";

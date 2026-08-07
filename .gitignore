@@ -1,6 +1,7 @@
 node_modules/
 out/
 out-integration/
+dist-desktop/
 *.vsix
 !releases/*.vsix
 .vscode-test/
@@ -19,3 +20,14 @@ terminals/
 
 # Ad-hoc raw-output dirs an agent may leave behind while verifying
 .verification/
+
+# Scratch build + probe used by test/sidebar-portable.test.ts, which compiles
+# the current source to a temp dir and loads it in a child process where
+# resolving `vscode` throws — proving sidebar.ts stays loadable outside the
+# extension host. Both are removed in a `finally`; these entries only catch a
+# crashed run.
+.tmp-sidebar-portable-out/
+.tmp-sidebar-portable-probe.cjs
+
+# Ad-hoc screenshot/probe scripts an agent may leave behind
+.tmp-*

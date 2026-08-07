@@ -1,14 +1,20 @@
-# Grok Build for VS Code (Community)
+# Grok Build (Community)
 
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE) [![VS Code](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com) [![Cursor](https://badgen.net/badge/Cursor/Extension/007ACC)](https://cursor.com) [![The Product Compass](https://img.shields.io/badge/The%20Product%20Compass-productcompass.pm-FF6B35)](https://www.productcompass.pm)
 
 > **GUI for Grok Build CLI (incl. Grok 4.5)** — not affiliated with or endorsed by xAI. *Grok*, *Grok Build*, and *xAI* are trademarks of xAI; this project uses those names only to describe what it's compatible with.
 
-The GUI for **Grok Build CLI** (incl. **Grok 4.5**), right in your editor — with **Remote Control**: pair **[AFK Pilot](https://afkpilot.com)** once and watch, approve, and steer your agent from your phone or any browser while away from your desk. Drop open files in as `@`-context, run **multiple sessions** at once, keep **resumable chat history**, generate **images & video inline**, and dictate by **voice**. If you'd rather stay in VS Code than a terminal, this brings Grok Build's agent into your sidebar.
+Two ways to use the same agent UI on top of the **Grok Build CLI**:
 
-No manual setup: the extension **walks you through installing the `grok` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key** — right from the sidebar, one click per step.
+| | **VS Code extension** | **Grok Build Desktop** |
+|---|---|---|
+| **What** | Sidebar chat inside VS Code / Cursor | Standalone Electron app (no editor required) |
+| **Get it** | [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.grok-vscode-phuryn) · [Open VSX](https://open-vsx.org/extension/PawelHuryn/grok-vscode-phuryn) | [GitHub Releases](https://github.com/phuryn/grok-build-vscode/releases) (see [Desktop install](#grok-build-desktop)) |
+| **Best when** | You already live in the editor | You want the agent as its own window |
 
-**Install free from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.grok-vscode-phuryn) or [Open VSX Registry](https://open-vsx.org/extension/PawelHuryn/grok-vscode-phuryn)**
+Both speak JSON-RPC to `grok agent stdio`, share chat history under `~/.grok`, and support **Remote Control** via **[AFK Pilot](https://afkpilot.com)** — pair once and watch, approve, and steer from your phone or any browser. Drop files in as `@`-context, run **multiple sessions**, generate **images & video inline**, and dictate by **voice**.
+
+No manual setup on either host: onboarding **walks you through installing the `grok` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key**.
 
 ![Grok Build in the VS Code sidebar, running Grok 4.5](docs/screenshots/grok_4.5.png)
 
@@ -18,7 +24,7 @@ No manual setup: the extension **walks you through installing the `grok` CLI and
 
 ## Why use this?
 
-If you live in your editor, this puts Grok Build right next to your code — a graphical workflow on top of the CLI: the **native diff editor** on every proposed edit, your **open files and selection as context**, **parallel sessions** with status dots, **resumable history**, **inline images & video**, and **voice dictation**. The CLI does the heavy lifting; this is the GUI for when you'd rather not be in a terminal.
+If you live in your editor **or** want a dedicated agent window, this puts Grok Build in a graphical workflow on top of the CLI: **diff preview** on every proposed edit, **open files and selection as context**, **parallel sessions** with status dots, **resumable history**, **inline images & video**, and **voice dictation**. The CLI does the heavy lifting; these hosts are the GUI for when you'd rather not be in a terminal.
 
 ### Features & capabilities
 
@@ -225,6 +231,8 @@ Gear → the effort dots next to the model, `none` → `xhigh`. On recent CLIs i
 
 ## Install
 
+### VS Code / Cursor extension
+
 **1. Install the extension.** In VS Code or Cursor, open **Extensions** (`Ctrl/Cmd+Shift+X`) and search **"Grok Build for VS Code (Community)"** — or install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.grok-vscode-phuryn) / [Open VSX Registry](https://open-vsx.org/extension/PawelHuryn/grok-vscode-phuryn).
 
 **2. Open Grok and sign in.** Press `Ctrl/Cmd+;`. The sidebar **walks you through installing the `grok` CLI and signing in** — one click per step, with your SuperGrok / X Premium+ subscription or an xAI API key. That's the whole setup.
@@ -233,13 +241,36 @@ Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). P
 
 > Prefer the terminal, building from source, or installing into several IDEs at once? See **[docs/INSTALL.md](docs/INSTALL.md)**.
 
+### Grok Build Desktop
+
+Standalone app for **macOS** (Apple Silicon + Intel) and **Windows** (x64). Same agent UI as the extension; no VS Code required.
+
+**1. Download** the installer for your platform from the latest [GitHub Release](https://github.com/phuryn/grok-build-vscode/releases). Asset names:
+
+| Platform | File |
+|---|---|
+| macOS Apple Silicon | `Grok-Build-Desktop-<version>-mac-arm64.dmg` |
+| macOS Intel | `Grok-Build-Desktop-<version>-mac-x64.dmg` |
+| Windows x64 | `Grok-Build-Desktop-<version>-win-x64.exe` |
+
+(Zip archives are also published for macOS: `…-mac-arm64.zip` / `…-mac-x64.zip`.)
+
+**2. Install and open** the app, then pick a project folder (File → Add Project Folder). Onboarding installs the `grok` CLI and signs you in the same way as the extension.
+
+**Unsigned builds (today).** There is no Apple or Microsoft signing certificate yet, so the OS will warn on first open:
+
+- **macOS:** Gatekeeper may say the app “cannot be opened because it is from an unidentified developer.” Right-click the app → **Open**, or System Settings → Privacy & Security → **Open Anyway**.
+- **Windows:** SmartScreen may show “Windows protected your PC.” Choose **More info** → **Run anyway**.
+
+Details, build-from-source, and signing notes: **[docs/desktop.md](docs/desktop.md)**.
+
 ---
 
 ## Quick start
 
-1. **Open** the Grok view (`Ctrl/Cmd+;`, or **Grok: Open** from the command palette) — it lives in the Secondary Side Bar by default.
+1. **Open** Grok — in VS Code: `Ctrl/Cmd+;` (Secondary Side Bar by default); in Desktop: launch the app and add a project folder.
 2. **Type a prompt** and press **Enter**. Grok streams its answer, showing a *Thinking…* line while it reasons. Want the full reasoning inline? Turn on **Show thinking traces** in the gear menu → *Config & debug*.
-3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit in the native **diff editor**, with full-file context focused on the first changed line, then *Allow once / always / Reject*.
+3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit (native diff in VS Code; in-app viewer on Desktop), then *Allow once / always / Reject*.
 4. **Pick your mode** (Agent / Plan / Auto accept), **model**, and **reasoning effort** from the bottom toolbar and gear menu.
 5. **Resume anytime** — the clock icon lists past sessions for this project.
 
@@ -327,14 +358,20 @@ Full diagram, message flow, module map, and design notes: **[docs/architecture.m
 
 ```bash
 npm install
-npm test         # grok-free unit/DOM/fake-CLI integration suite
-npm run test:integration # grok-free real VS Code Extension Host smoke (also required by CI)
-npm run package  # → grok-vscode-phuryn-<version>.vsix
+npm test              # grok-free unit/DOM/fake-CLI integration suite
+npm run test:integration  # real VS Code Extension Host smoke (also required by CI)
+npm run test:desktop  # real Electron window + fake CLI (desktop host)
+npm run package       # → grok-vscode-phuryn-<version>.vsix (marketplace README only)
+npm run desktop       # run Desktop from the compile tree
+npm run dist:win      # Windows x64 installer → dist-desktop/
+npm run dist:mac      # macOS arm64 + x64 (must run on macOS)
 ```
 
-`npm test` is grok-free and never spawns the real binary. CI also requires the separate `npm run test:integration` Electron smoke. An on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, native plan verdicts, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy: **[CLAUDE.md](CLAUDE.md#test-taxonomy--three-layers)**. Architecture and module map: **[docs/architecture.md](docs/architecture.md)**.
+`npm test` is grok-free and never spawns the real binary. CI also requires the separate `npm run test:integration` Electron smoke. An on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, native plan verdicts, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy: **[CLAUDE.md](CLAUDE.md#test-taxonomy--three-layers)**. Architecture: **[docs/architecture.md](docs/architecture.md)**. Desktop packaging: **[docs/desktop.md](docs/desktop.md)**.
 
-**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the 1657-test grok-free suite is the floor — every change keeps it green.
+The Marketplace / Open VSX description is **[README.marketplace.md](README.marketplace.md)** (extension only). `npm run package` always passes `--readme-path README.marketplace.md` so the GitHub dual-host README cannot ship as the store listing by accident.
+
+**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the grok-free suite is the floor — every change keeps it green.
 
 </details>
 
@@ -357,4 +394,4 @@ More: [docs/privacy.md](docs/privacy.md).
 
 ## License & attribution
 
-Licensed under the **Functional Source License, Version 1.1, MIT Future License (FSL-1.1-MIT)** — see [LICENSE](LICENSE). In short: use, modify, and redistribute freely for any purpose **except** offering a competing commercial product or service; each release automatically becomes plain **MIT two years after publication**. Versions up to and including 1.8.1 were published under MIT and remain MIT. The copyright notice and license text must travel with all copies, including compiled builds — if you're reusing this project, see [docs/attribution.md](docs/attribution.md) for how to credit it properly.
+Licensed under the **Functional Source License, Version 1.1, MIT Future License (FSL-1.1-MIT)** — see [LICENSE](LICENSE). In short: use, modify, and redistribute freely for any purpose **except** offering a competing commercial product or service. Versions up to and including 1.8.1 were published under MIT and remain MIT. The copyright notice and license text must travel with all copies, including compiled builds — if you're reusing this project, see [docs/attribution.md](docs/attribution.md) for how to credit it properly.

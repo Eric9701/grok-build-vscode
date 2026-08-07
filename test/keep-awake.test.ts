@@ -14,11 +14,18 @@ import {
 const HOST_PID = 4242;
 
 describe("keep-awake policy", () => {
-  it("holds the lock only when the setting is on AND the device is linked", () => {
+  it("holds the lock when enabled AND (linked OR a turn is in flight)", () => {
     expect(shouldKeepAwake({ enabled: true, linked: true })).toBe(true);
     expect(shouldKeepAwake({ enabled: true, linked: false })).toBe(false);
     expect(shouldKeepAwake({ enabled: false, linked: true })).toBe(false);
     expect(shouldKeepAwake({ enabled: false, linked: false })).toBe(false);
+    // Local turn without AFK Pilot link — the desktop/VS Code walk-away case.
+    expect(shouldKeepAwake({ enabled: true, linked: false, turnInFlight: true })).toBe(true);
+    expect(shouldKeepAwake({ enabled: true, linked: true, turnInFlight: true })).toBe(true);
+    // Opt-out still wins even mid-turn.
+    expect(shouldKeepAwake({ enabled: false, linked: false, turnInFlight: true })).toBe(false);
+    // turnInFlight false is explicit rest.
+    expect(shouldKeepAwake({ enabled: true, linked: false, turnInFlight: false })).toBe(false);
   });
 });
 

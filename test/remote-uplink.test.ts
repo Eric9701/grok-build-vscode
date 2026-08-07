@@ -1,4 +1,9 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { HostMsg } from "../src/protocol";
+import { pathsEqual } from "../src/worktree";
 
 const wsMock = vi.hoisted(() => {
   const sockets: any[] = [];
@@ -24,7 +29,32 @@ const wsMock = vi.hoisted(() => {
 
 vi.mock("ws", () => ({ default: wsMock.FakeWebSocket }));
 
-import { RemoteUplink } from "../src/remote-uplink";
+import {
+  filterAuthorizedOutbound,
+  filterRecipientsOwningScope,
+  RemoteUplink,
+  type RemoteUplinkAuth,
+} from "../src/remote-uplink";
+
+function openAuth(open: string[] = ["/work/open"]): RemoteUplinkAuth {
+  return {
+    authorizedCwds: () => open,
+    scopeCwdForClient: () => open[0],
+    sameCwd: pathsEqual,
+  };
+}
+
+function makeUplink(overrides: Partial<ConstructorParameters<typeof RemoteUplink>[0]> = {}) {
+  return new RemoteUplink({
+    relayUrl: "ws://relay",
+    token: "token",
+    snapshot: () => [],
+    auth: openAuth(),
+    onClientMessage: () => {},
+    log: () => {},
+    ...overrides,
+  });
+}
 
 describe("RemoteUplink client identity and targeted sends", () => {
   beforeEach(() => { wsMock.sockets.length = 0; });
@@ -34,21 +64,18 @@ describe("RemoteUplink client identity and targeted sends", () => {
     const ready: Array<{ clientId: string; tabToken?: string }> = [];
     const left: string[] = [];
     const rosters: string[][] = [];
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
-      token: "token",
+    const uplink = makeUplink({
       snapshot: (clientId) => [{ type: "error", text: `snapshot:${clientId}` }],
       onClientReady: (clientId, tabToken) => ready.push({ clientId, tabToken }),
       onClientLeft: (clientId) => left.push(clientId),
       onClientRoster: (clientIds) => rosters.push(clientIds),
       onClientMessage: (clientId, msg) => received.push({ clientId, msg }),
-      log: () => {},
     });
     uplink.start();
     const socket = wsMock.sockets[0];
     socket.emit("open");
 
-    uplink.broadcastTo(["tab-a", "tab-b"], { type: "messageChunk", text: "shared" });
+    uplink.broadcastTo(["tab-a", "tab-b"], { type: "error", text: "shared" });
     socket.emit("message", Buffer.from(JSON.stringify({
       t: "msg", clientId: "tab-b", msg: { type: "send", text: "hello" },
     })));
@@ -63,7 +90,7 @@ describe("RemoteUplink client identity and targeted sends", () => {
     expect(socket.sent.map(JSON.parse)).toContainEqual({
       t: "host-to",
       clientIds: ["tab-a", "tab-b"],
-      msg: { type: "messageChunk", text: "shared" },
+      msg: { type: "error", text: "shared" },
     });
     expect(received).toEqual([{ clientId: "tab-b", msg: { type: "send", text: "hello" } }]);
     expect(ready).toEqual([{ clientId: "tab-a", tabToken: "0123456789abcdef01234567" }]);
@@ -80,13 +107,8 @@ describe("RemoteUplink client identity and targeted sends", () => {
   it("rebuilds an authoritative roster after reconnect so outage ghosts can be removed", async () => {
     vi.useFakeTimers();
     const rosters: string[][] = [];
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
-      token: "token",
-      snapshot: () => [],
+    const uplink = makeUplink({
       onClientRoster: (clientIds) => rosters.push(clientIds),
-      onClientMessage: () => {},
-      log: () => {},
     });
     uplink.start();
     const first = wsMock.sockets[0];
@@ -111,12 +133,9 @@ describe("RemoteUplink client identity and targeted sends", () => {
     vi.useFakeTimers();
     const revoked = vi.fn();
     const logs: string[] = [];
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
+    const uplink = makeUplink({
       token: "revoked-token",
-      snapshot: () => [],
       onCredentialRevoked: revoked,
-      onClientMessage: () => {},
       log: (line) => logs.push(line),
     });
     uplink.start();
@@ -134,13 +153,8 @@ describe("RemoteUplink client identity and targeted sends", () => {
   it("keeps retrying transient 1011 closes", async () => {
     vi.useFakeTimers();
     const revoked = vi.fn();
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
-      token: "token",
-      snapshot: () => [],
+    const uplink = makeUplink({
       onCredentialRevoked: revoked,
-      onClientMessage: () => {},
-      log: () => {},
     });
     uplink.start();
 
@@ -155,13 +169,8 @@ describe("RemoteUplink client identity and targeted sends", () => {
 
   it("does not treat a dispose-driven 4001 close as revocation", () => {
     const revoked = vi.fn();
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
-      token: "token",
-      snapshot: () => [],
+    const uplink = makeUplink({
       onCredentialRevoked: revoked,
-      onClientMessage: () => {},
-      log: () => {},
     });
     uplink.start();
     const socket = wsMock.sockets[0];
@@ -174,13 +183,8 @@ describe("RemoteUplink client identity and targeted sends", () => {
 
   it("finishes roster reconciliation when a client leaves during reconnect replay", () => {
     const rosters: string[][] = [];
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
-      token: "token",
-      snapshot: () => [],
+    const uplink = makeUplink({
       onClientRoster: (clientIds) => rosters.push(clientIds),
-      onClientMessage: () => {},
-      log: () => {},
     });
     uplink.start();
     const socket = wsMock.sockets[0];
@@ -196,10 +200,7 @@ describe("RemoteUplink client identity and targeted sends", () => {
 
   it("contains a synchronous client callback failure inside the websocket listener", () => {
     const logs: string[] = [];
-    const uplink = new RemoteUplink({
-      relayUrl: "ws://relay",
-      token: "token",
-      snapshot: () => [],
+    const uplink = makeUplink({
       onClientMessage: () => { throw new Error("bad frame"); },
       log: (line) => logs.push(line),
     });
@@ -210,5 +211,250 @@ describe("RemoteUplink client identity and targeted sends", () => {
     })))).not.toThrow();
     expect(logs).toContain("[remote] dropped malformed client message: bad frame");
     uplink.dispose();
+  });
+});
+
+describe("RemoteUplink socket-level project authorization", () => {
+  beforeEach(() => { wsMock.sockets.length = 0; });
+
+  const caps = {
+    uploadFile: true,
+    remoteVoice: true,
+    deleteActiveSession: true,
+  };
+  const closedChunk: HostMsg = { type: "messageChunk", text: "secret from closed" };
+  const deviceOk: HostMsg = { type: "error", text: "ok" };
+  const closedRepos: HostMsg = {
+    type: "repos",
+    entries: [{
+      cwd: "/work/closed",
+      label: "Closed",
+      available: true,
+      pinned: false,
+      updatedAt: 1,
+    }],
+    selectedCwd: "/work/closed",
+    activeCwd: "/work/closed",
+  };
+  const openRepos: HostMsg = {
+    type: "repos",
+    entries: [{
+      cwd: "/work/open",
+      label: "Open",
+      available: true,
+      pinned: false,
+      updatedAt: 1,
+    }],
+    selectedCwd: "/work/open",
+    activeCwd: "/work/open",
+  };
+  const closedInitial: HostMsg = {
+    type: "initialState",
+    effort: "",
+    cwd: "/work/closed",
+    useCtrlEnter: false,
+    extVersion: "0",
+    showThinking: false,
+    expandCommandOutputs: false,
+    steerByDefault: false,
+    soundNotifications: false,
+    processingSound: false,
+    readRepliesAloud: false,
+    capabilities: caps,
+  };
+  const unboundInitial: HostMsg = {
+    type: "initialState",
+    effort: "",
+    cwd: "",
+    useCtrlEnter: false,
+    extVersion: "0",
+    showThinking: false,
+    expandCommandOutputs: false,
+    steerByDefault: false,
+    soundNotifications: false,
+    processingSound: false,
+    readRepliesAloud: false,
+    capabilities: caps,
+  };
+
+  it("filterAuthorizedOutbound scrubs closed-project conversation and catalog frames", () => {
+    const open = ["/work/open"];
+    const voiceCfg: HostMsg = {
+      type: "voiceConfigured",
+      value: true,
+      sendPhrase: "from-closed-project",
+    };
+    const kept = filterAuthorizedOutbound(
+      [
+        deviceOk,
+        closedChunk,
+        closedRepos,
+        openRepos,
+        closedInitial,
+        voiceCfg,
+        { type: "clearMessages" },
+      ],
+      open,
+      "/work/closed", // stale session scope
+      pathsEqual,
+    );
+    // voiceConfigured is project-scoped: closed scope must drop it too.
+    expect(kept.map((m) => m.type)).toEqual(["error", "repos", "clearMessages"]);
+    expect(kept.find((m) => m.type === "repos")).toEqual(openRepos);
+    expect(kept.some((m) => m.type === "voiceConfigured")).toBe(false);
+  });
+
+  it("mutation: without the filter a closed-project snapshot would leave intact", () => {
+    const leaky = [closedChunk, closedRepos, closedInitial];
+    // Old path: snapshotFrame(clientId, rawMsgs) with no gate.
+    expect(leaky).toHaveLength(3);
+    const scrubbed = filterAuthorizedOutbound(leaky, ["/work/open"], "/work/closed", pathsEqual);
+    expect(scrubbed).toEqual([]);
+  });
+
+  it("refuses broadcastTo of conversation payload under a closed scope", () => {
+    const logs: string[] = [];
+    const uplink = makeUplink({
+      auth: openAuth(["/work/open"]),
+      log: (l) => logs.push(l),
+    });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+    socket.emit("open");
+
+    uplink.broadcastTo(["tab"], closedChunk, "/work/closed");
+    expect(socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to")).toEqual([]);
+    expect(logs.some((l) => l.includes("dropped messageChunk"))).toBe(true);
+
+    uplink.broadcastTo(["tab"], closedChunk, "/work/open");
+    expect(socket.sent.map(JSON.parse)).toContainEqual({
+      t: "host-to",
+      clientIds: ["tab"],
+      msg: closedChunk,
+    });
+    uplink.dispose();
+  });
+
+  it("refuses broadcastTo when a recipient does not own the scope", () => {
+    const logs: string[] = [];
+    const scopes: Record<string, string> = {
+      "tab-a": "/work/a",
+      "tab-b": "/work/b",
+    };
+    const uplink = makeUplink({
+      auth: {
+        authorizedCwds: () => ["/work/a", "/work/b"],
+        scopeCwdForClient: (id) => scopes[id],
+        sameCwd: pathsEqual,
+      },
+      log: (l) => logs.push(l),
+    });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+    socket.emit("open");
+
+    // Caller incorrectly includes tab-b under /work/a — ownership filter drops it.
+    uplink.broadcastTo(["tab-a", "tab-b"], closedChunk, "/work/a");
+    const hostTo = socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to");
+    expect(hostTo).toEqual([
+      {
+        t: "host-to",
+        clientIds: ["tab-a"],
+        msg: closedChunk,
+      },
+    ]);
+    expect(logs.some((l) => l.includes("does not own scope") && l.includes("tab-b"))).toBe(true);
+
+    // No owners at all → no write.
+    socket.sent.length = 0;
+    uplink.broadcastTo(["tab-b"], closedChunk, "/work/a");
+    expect(socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to")).toEqual([]);
+    uplink.dispose();
+  });
+
+  it("filterRecipientsOwningScope is pure and mutation-checked", () => {
+    const auth: RemoteUplinkAuth = {
+      authorizedCwds: () => ["/a", "/b"],
+      scopeCwdForClient: (id) => (id === "x" ? "/a" : "/b"),
+      sameCwd: pathsEqual,
+    };
+    expect(filterRecipientsOwningScope(["x", "y"], "/a", auth)).toEqual(["x"]);
+    expect(filterRecipientsOwningScope(["y"], "/a", auth)).toEqual([]);
+    // Richer ownership (repo select vs session cwd).
+    const rich: RemoteUplinkAuth = {
+      ...auth,
+      clientOwnsScope: (id, scope) => id === "y" && scope === "/a",
+    };
+    expect(filterRecipientsOwningScope(["x", "y"], "/a", rich)).toEqual(["y"]);
+
+    // Mutation: without the filter, both ids would ship under a forged multi-client list.
+    const withoutFilter = ["x", "y"];
+    expect(withoutFilter).toContain("y");
+    expect(filterRecipientsOwningScope(withoutFilter, "/a", auth)).not.toContain("y");
+  });
+
+  it("source gate: deliver/broadcastTo ownership filter is on the write path", () => {
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "remote-uplink.ts"),
+      "utf8",
+    );
+    expect(src).toContain("filterRecipientsOwningScope");
+    expect(src).toMatch(/deliver\([\s\S]*filterRecipientsOwningScope/);
+    expect(src).toContain("does not own scope");
+    // Sidebar wires clientOwnsScope for repo + session ownership.
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    expect(sidebar).toContain("clientOwnsScope:");
+  });
+
+  it("scrubs closed-project data out of the catch-up snapshot frame", () => {
+    const logs: string[] = [];
+    const uplink = makeUplink({
+      auth: {
+        authorizedCwds: () => ["/work/open"],
+        // Tab still bound to closed session cwd (revoke race / stale mapping).
+        scopeCwdForClient: () => "/work/closed",
+        sameCwd: pathsEqual,
+      },
+      snapshot: () => [
+        deviceOk,
+        closedChunk,
+        closedRepos,
+        openRepos,
+        { type: "clearMessages" },
+        unboundInitial,
+      ],
+      log: (l) => logs.push(l),
+    });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+    socket.emit("open");
+    socket.emit("message", Buffer.from(JSON.stringify({ t: "client-ready", clientId: "tab-a" })));
+
+    const snap = socket.sent.map(JSON.parse).find((f: { t: string }) => f.t === "snapshot");
+    expect(snap).toBeDefined();
+    expect(snap.msgs.map((m: HostMsg) => m.type)).toEqual([
+      "error",
+      "repos",
+      "clearMessages",
+      "initialState",
+    ]);
+    expect(snap.msgs.find((m: HostMsg) => m.type === "repos")).toEqual(openRepos);
+    expect(logs.some((l) => l.includes("scrubbed"))).toBe(true);
+    uplink.dispose();
+  });
+
+  it("mutation: snapshot path without uplink gate would deliver closed transcript", () => {
+    // Documents the hole deliverRemote never covered: client-ready → snapshotFrame
+    // used opts.snapshot() bytes directly. With the gate, closed chunks are gone.
+    const raw = [closedChunk, deviceOk];
+    const scopeClosed = "/work/closed";
+    const withoutGate = raw; // old
+    expect(withoutGate.some((m) => m.type === "messageChunk")).toBe(true);
+    const withGate = filterAuthorizedOutbound(raw, ["/work/open"], scopeClosed, pathsEqual);
+    expect(withGate.some((m) => m.type === "messageChunk")).toBe(false);
+    expect(withGate).toEqual([deviceOk]);
   });
 });

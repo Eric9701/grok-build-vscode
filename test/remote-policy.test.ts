@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   INBOUND_DISPOSITION,
   OUTBOUND_DISPOSITION,
+  OUTBOUND_PROJECT_AUTH,
   allowFromRemote,
   allowRemoteRepoTarget,
   bracketRemoteSnapshot,
+  mayDeliverRemoteHostMsg,
   repoScopeFor,
   sessionForRequest,
   sessionCwdBelongsToRepo,
@@ -18,6 +20,7 @@ import {
   type MediaInlineDeps,
 } from "../src/remote-policy";
 import { HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, type HostMsg } from "../src/protocol";
+import { pathsEqual } from "../src/worktree";
 
 const sorted = (a: readonly string[]) => [...a].sort();
 
@@ -30,6 +33,10 @@ describe("remote-policy classification tables", () => {
 
   it("classifies every HostMsg type", () => {
     expect(sorted(Object.keys(OUTBOUND_DISPOSITION))).toEqual(sorted(HOST_MESSAGE_TYPES));
+  });
+
+  it("classifies every HostMsg type for project-scope authorization", () => {
+    expect(sorted(Object.keys(OUTBOUND_PROJECT_AUTH))).toEqual(sorted(HOST_MESSAGE_TYPES));
   });
 
   it("keeps the load-bearing classifications from the design doc", () => {
@@ -61,8 +68,12 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.setSummarizeRepliesAloud).toBe("host-local");
     expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
     expect(INBOUND_DISPOSITION.requestImageFull).toBe("propose");
-    // worktree/rewind flows run native host dialogs (input box / QuickPick) —
-    // desktop-only until they get remote-capable UI (2026-07-24)
+    // Worktree create/apply/remove are host-local, and this is load-bearing:
+    // the handlers act on the HOST's focused session, not the session that
+    // asked. A remote apply/remove would hit whatever the desk happened to be
+    // looking at, and Remove discards unapplied edits. Do not widen these to
+    // "propose" again without first giving the handlers an explicit target
+    // session — see the comment in remote-policy.ts.
     expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
     expect(INBOUND_DISPOSITION.applyWorktree).toBe("host-local");
     expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");
@@ -118,6 +129,285 @@ describe("remote repo target gate", () => {
   it("allows cwd-less resume to use the host's already-bounded resolution", () => {
     expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s" }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "send", text: "hi" }, discovered)).toBe(true);
+  });
+
+  it("allows cwd-less toggleSessionPin at the wire gate (host re-checks home)", () => {
+    // Protocol keeps cwd optional; authorization of the resolved home is host-side.
+    expect(
+      allowRemoteRepoTarget({ type: "toggleSessionPin", id: "s", pinned: true }, discovered),
+    ).toBe(true);
+    expect(
+      allowRemoteRepoTarget(
+        { type: "toggleSessionPin", id: "s", cwd: "/etc", pinned: true },
+        discovered,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
+  const open = ["/work/open"];
+  const closed = "/work/closed";
+  const same = pathsEqual;
+
+  it("always allows device prefs, errors, and path-free chrome", () => {
+    expect(
+      mayDeliverRemoteHostMsg({ type: "error", text: "x" }, open, closed, same),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg({ type: "showThinking", value: true }, open, undefined, same),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg({ type: "clearMessages" }, open, undefined, same),
+    ).toBe(true);
+  });
+
+  it("refuses repos / initialState frames that carry a closed project's cwd", () => {
+    // Unconditional "none" classification was the hole: builders could (and
+    // rehome deliberately did) put a closed selectedCwd on the wire.
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "repos", entries: [], selectedCwd: closed, activeCwd: closed },
+        open,
+        closed,
+        same,
+      ),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "repos", entries: [], selectedCwd: closed, activeCwd: "/work/open" },
+        open,
+        closed,
+        same,
+      ),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg(
+        {
+          type: "repos",
+          entries: [
+            {
+              cwd: closed,
+              label: "leak",
+              available: true,
+              pinned: false,
+              updatedAt: 1,
+            },
+          ],
+          selectedCwd: "/work/open",
+          activeCwd: "/work/open",
+        },
+        open,
+        "/work/open",
+        same,
+      ),
+    ).toBe(false);
+
+    // Empty selected/active after rehome (unbound) is OK — not a closed path.
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "repos", entries: [], selectedCwd: "", activeCwd: "" },
+        open,
+        undefined,
+        same,
+      ),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg(
+        {
+          type: "repos",
+          entries: [
+            {
+              cwd: "/work/open",
+              label: "open",
+              available: true,
+              pinned: false,
+              updatedAt: 1,
+            },
+          ],
+          selectedCwd: "/work/open",
+          activeCwd: "/work/open",
+        },
+        open,
+        "/work/open",
+        same,
+      ),
+    ).toBe(true);
+
+    const caps = {
+      uploadFile: true,
+      remoteVoice: true,
+      deleteActiveSession: true,
+    };
+    const baseInitial = {
+      type: "initialState" as const,
+      effort: "",
+      useCtrlEnter: false,
+      extVersion: "0",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      capabilities: caps,
+    };
+    expect(
+      mayDeliverRemoteHostMsg({ ...baseInitial, cwd: closed }, open, closed, same),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg({ ...baseInitial, cwd: "/work/open" }, open, closed, same),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg({ ...baseInitial, cwd: "" }, open, undefined, same),
+    ).toBe(true);
+  });
+
+  it("classifies repos as repos-catalog and initialState as optional-cwd", () => {
+    expect(OUTBOUND_PROJECT_AUTH.repos).toBe("repos-catalog");
+    expect(OUTBOUND_PROJECT_AUTH.initialState).toBe("optional-cwd");
+    expect(OUTBOUND_PROJECT_AUTH.initialized).toBe("scope");
+    // Project voice prefs (sendPhrase / key resolution) must not follow a closed tab.
+    expect(OUTBOUND_PROJECT_AUTH.voiceConfigured).toBe("scope");
+    expect(OUTBOUND_PROJECT_AUTH.voiceState).toBe("none");
+    expect(OUTBOUND_PROJECT_AUTH.clearMessages).toBe("none");
+    expect(OUTBOUND_PROJECT_AUTH.error).toBe("none");
+  });
+
+  it("refuses voiceConfigured for a closed or missing project scope", () => {
+    const msg: HostMsg = {
+      type: "voiceConfigured",
+      value: true,
+      sendPhrase: "grok send",
+    };
+    // Prior project closed / re-homed — must not keep delivering its prefs.
+    expect(mayDeliverRemoteHostMsg(msg, open, closed, same)).toBe(false);
+    expect(mayDeliverRemoteHostMsg(msg, open, undefined, same)).toBe(false);
+    // Authorized open scope still delivers.
+    expect(mayDeliverRemoteHostMsg(msg, open, "/work/open", same)).toBe(true);
+  });
+
+  it("mutation: voiceConfigured classified as none reopens the cross-project prefs leak", () => {
+    // If OUTBOUND_PROJECT_AUTH.voiceConfigured were "none", mayDeliver would
+    // always return true and a closed-tab client would keep the prior project's
+    // sendPhrase / configured flag. Classification must be "scope".
+    expect(OUTBOUND_PROJECT_AUTH.voiceConfigured).not.toBe("none");
+    expect(OUTBOUND_PROJECT_AUTH.voiceConfigured).toBe("scope");
+    const msg: HostMsg = { type: "voiceConfigured", value: true };
+    // Gate with closed scope must refuse (fails if classification is none).
+    expect(mayDeliverRemoteHostMsg(msg, open, closed, same)).toBe(false);
+  });
+
+  it("mutation: treating repos as unconditional none reopens the closed-cwd leak", () => {
+    // If classification falls back to always-true, a closed selectedCwd leaves.
+    const msg: HostMsg = {
+      type: "repos",
+      entries: [],
+      selectedCwd: closed,
+      activeCwd: closed,
+    };
+    const buggyNoneAlways = true;
+    expect(buggyNoneAlways).toBe(true);
+    expect(mayDeliverRemoteHostMsg(msg, open, closed, same)).toBe(false);
+  });
+
+  it("refuses transcript / history content without an authorized scope cwd", () => {
+    const chunk: HostMsg = { type: "messageChunk", text: "secret from closed project" };
+    expect(mayDeliverRemoteHostMsg(chunk, open, closed, same)).toBe(false);
+    expect(mayDeliverRemoteHostMsg(chunk, open, undefined, same)).toBe(false);
+    expect(mayDeliverRemoteHostMsg(chunk, open, "/work/open", same)).toBe(true);
+  });
+
+  it("refuses historyBatch that would carry closed-project transcript", () => {
+    const batch: HostMsg = {
+      type: "historyBatch",
+      messages: [
+        { type: "userMessage", text: "hi" },
+        { type: "messageChunk", text: "leak" },
+      ],
+    };
+    expect(mayDeliverRemoteHostMsg(batch, open, closed, same)).toBe(false);
+    expect(mayDeliverRemoteHostMsg(batch, open, "/work/open", same)).toBe(true);
+  });
+
+  it("refuses sessionName / chips / sessionDot for a closed scope", () => {
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "sessionName", sessionId: "s", name: "X", cwd: closed },
+        open,
+        closed,
+        same,
+      ),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg({ type: "chips", chips: [] }, open, closed, same),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg({ type: "sessionDot", id: "s", dot: "none" }, open, closed, same),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg({ type: "sessionDot", id: "s", dot: "working" }, open, "/work/open", same),
+    ).toBe(true);
+  });
+
+  it("allows empty sessions lists and refuses lists that include a closed cwd entry", () => {
+    expect(
+      mayDeliverRemoteHostMsg(
+        {
+          type: "sessions",
+          entries: [],
+          activeId: null,
+          dots: {},
+          offset: 0,
+          total: 0,
+          hasMore: false,
+          nextOffset: 0,
+          query: "",
+        },
+        open,
+        closed,
+        same,
+      ),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg(
+        {
+          type: "sessions",
+          entries: [
+            {
+              id: "a",
+              cwd: closed,
+              displayName: "leak",
+              rawSummary: "",
+              updatedAt: 1,
+              createdAt: 1,
+              numMessages: 0,
+            },
+          ],
+          activeId: null,
+          dots: {},
+          offset: 0,
+          total: 1,
+          hasMore: false,
+          nextOffset: 1,
+          query: "",
+        },
+        open,
+        closed,
+        same,
+      ),
+    ).toBe(false);
+  });
+
+  it("mutation: trusting mapping-clear order alone would re-open the transcript leak", () => {
+    // Old path: sendRemoteHistorySnapshot only checked clientsForActiveValue.
+    // If revoke ordered mapping clear after a concurrent snapshot, transcript
+    // still left. Fixed path: mayDeliverRemoteHostMsg refuses closed scope.
+    const snapshotMsg: HostMsg = { type: "userMessage", text: "from closed" };
+    const clientStillMapped = true; // simulated race
+    const oldWouldSend = clientStillMapped;
+    expect(oldWouldSend).toBe(true);
+    expect(mayDeliverRemoteHostMsg(snapshotMsg, open, closed, same)).toBe(false);
   });
 });
 

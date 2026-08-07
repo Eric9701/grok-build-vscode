@@ -133,13 +133,17 @@ export interface RepoListEntry {
   pinnedAt?: number;
   updatedAt: number;
   worktreeLabel?: string;
-  /** The stored choice above, flattened for the wire. Always present — a host
-   *  that knows about archiving says so on every row, which is how the browser
-   *  client tells "nothing archived" from "this host cannot archive" without
-   *  asking a version number. Ordering here deliberately ignores both: the VS
-   *  Code repo picker reads this same list and must not change. */
-  archived: boolean;
-  archivedAt: number;
+  /**
+   * Archive choice flattened for the wire. **Present when the host supports
+   * archiving** (VS Code / discovered list) — even when nothing is archived,
+   * which is how the client tells "nothing archived" from "this host cannot
+   * archive" without a version number. **Omitted** when the host's project
+   * list is curated open/close (desktop): close already removes a row, so
+   * archive would be a second weaker mechanism. Ordering in
+   * {@link discoverRepos} deliberately ignores these fields.
+   */
+  archived?: boolean;
+  archivedAt?: number;
 }
 
 /** Move a renamed session's `customName` from one id to another and drop the source entry. Used when
@@ -194,22 +198,26 @@ export interface ListDeps {
   grokHome: string;
   cwd: string;
   overrides: SessionMetaOverrides;
+  platform?: NodeJS.Platform;
   now?: () => number;
   log?: (msg: string) => void;
 }
 
-export interface DeleteDeps {
-  fs: FsLike;
-  grokHome: string;
-  cwd: string;
-  id: string;
+/**
+ * Percent-encoded leaf under `sessions/` for a given cwd string.
+ * Mirrors grok's URL-encoded layout exactly — casing of `cwd` is preserved,
+ * so `c:\…` and `C:\…` become distinct leaves on disk.
+ */
+export function encodeSessionCatalogLeaf(cwd: string): string {
+  const encoded = encodeURIComponent(cwd);
+  return encoded === "" ? "%00" : encoded === "." ? "%2E" : encoded === ".." ? "%2E%2E" : encoded;
 }
 
-/** Build the directory grok uses for sessions rooted at `cwd`. Mirrors grok's URL-encoded layout. */
+/** Build the directory grok uses for sessions rooted at `cwd`. Exact cwd encode
+ *  (CLI write path). Prefer {@link sessionCatalogDirs} / {@link sessionDirFor}
+ *  with `fs` when *reading* history — those merge case-aliases on Windows. */
 export function sessionsDirFor(grokHome: string, cwd: string): string {
-  const encoded = encodeURIComponent(cwd);
-  const safeCatalog = encoded === "" ? "%00" : encoded === "." ? "%2E" : encoded === ".." ? "%2E%2E" : encoded;
-  return path.join(grokHome, "sessions", safeCatalog);
+  return path.join(grokHome, "sessions", encodeSessionCatalogLeaf(cwd));
 }
 
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -223,17 +231,121 @@ export function isValidSessionId(id: unknown): id is string {
     id !== "constructor";
 }
 
+/** True when `candidate` is a direct child of `base` (no `..` escape). */
+export function isSessionDirChild(
+  base: string,
+  candidate: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const b = path.normalize(base);
+  const parent = path.dirname(path.normalize(candidate));
+  return platform === "win32"
+    ? parent.toLowerCase() === b.toLowerCase()
+    : parent === b;
+}
+
+/**
+ * Every on-disk `sessions/<urlencoded-cwd>` directory that is the **same project**
+ * as `cwd` under {@link normalizeRepoPath} (case-insensitive on Windows, exact
+ * elsewhere). Exact encode of `cwd` is listed first when present.
+ *
+ * Indexes already split across drive-letter casings (real machines) are merged
+ * at read time — we do not rename or delete either leaf. New sessions still land
+ * under whatever casing the live CLI process uses.
+ */
+export function sessionCatalogDirs(deps: {
+  fs: Pick<FsLike, "existsSync" | "readdirSync">;
+  grokHome: string;
+  cwd: string;
+  platform?: NodeJS.Platform;
+}): string[] {
+  const platform = deps.platform ?? process.platform;
+  const targetKey = normalizeRepoPath(deps.cwd, platform);
+  if (!targetKey) return [];
+
+  const sessionsRoot = path.join(deps.grokHome, "sessions");
+  const exact = path.normalize(sessionsDirFor(deps.grokHome, deps.cwd));
+  const out: string[] = [];
+  // Case-sensitive on the *path string*: catalog leaves that differ only by
+  // encoded drive-letter case (`c%3A…` vs `C%3A…`) must both be scanned. Folding
+  // the full path would collapse them and hide one side of a split index.
+  // (On NTFS those leaves usually can't coexist as siblings — scanning the same
+  // physical dir twice is fine; session ids are de-duped by the caller.)
+  const seen = new Set<string>();
+  const add = (dir: string) => {
+    const n = path.normalize(dir);
+    if (seen.has(n)) return;
+    seen.add(n);
+    out.push(n);
+  };
+
+  // Prefer the exact encode of the live cwd first (CLI write path for new sessions).
+  try {
+    if (deps.fs.existsSync(exact)) add(exact);
+  } catch {
+    /* best-effort */
+  }
+
+  try {
+    if (!deps.fs.existsSync(sessionsRoot)) return out;
+    for (const name of deps.fs.readdirSync(sessionsRoot)) {
+      let decoded = "";
+      try {
+        decoded = decodeURIComponent(name).trim();
+      } catch {
+        continue;
+      }
+      if (!decoded || normalizeRepoPath(decoded, platform) !== targetKey) continue;
+      // Use the *readdir* leaf name so we open the on-disk casing, not a
+      // reconstructed encode that can miss a case-sensitive store.
+      add(path.join(sessionsRoot, name));
+    }
+  } catch {
+    /* readdir failed — exact alone is still useful when present */
+  }
+  return out;
+}
+
+export interface SessionDirOpts {
+  /** When set, prefer an existing id under any case-alias of `cwd`. */
+  fs?: Pick<FsLike, "existsSync" | "readdirSync">;
+  platform?: NodeJS.Platform;
+}
+
 /** Resolve one session directory and independently prove it is a direct child
- * of the cwd's sessions directory. Undefined means the caller must not touch
- * the filesystem for the supplied id. */
-export function sessionDirFor(grokHome: string, cwd: string, id: unknown): string | undefined {
+ * of a catalog directory for `cwd`. With `opts.fs`, searches every case-alias
+ * so a session stored under `c:\…` is found when the workspace is `C:\…`.
+ * Without a hit (or without `fs`), returns the exact-encode path for `cwd`
+ * (CLI write layout). Undefined means the caller must not touch the filesystem. */
+export function sessionDirFor(
+  grokHome: string,
+  cwd: string,
+  id: unknown,
+  opts?: SessionDirOpts,
+): string | undefined {
   if (!isValidSessionId(id)) return undefined;
+  const platform = opts?.platform ?? process.platform;
+
+  if (opts?.fs) {
+    for (const base of sessionCatalogDirs({
+      fs: opts.fs,
+      grokHome,
+      cwd,
+      platform,
+    })) {
+      const candidate = path.join(base, id);
+      if (!isSessionDirChild(base, candidate, platform)) continue;
+      try {
+        if (opts.fs.existsSync(candidate)) return candidate;
+      } catch {
+        /* try next alias */
+      }
+    }
+  }
+
   const base = path.normalize(sessionsDirFor(grokHome, cwd));
   const candidate = path.join(base, id);
-  const same = process.platform === "win32"
-    ? path.dirname(candidate).toLowerCase() === base.toLowerCase()
-    : path.dirname(candidate) === base;
-  return same ? candidate : undefined;
+  return isSessionDirChild(base, candidate, platform) ? candidate : undefined;
 }
 
 /** Stable repo identity for globalState and remote-policy comparisons. */
@@ -326,12 +438,19 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
       isManagedWorktree(cwd)
     ) continue;
     const key = normalizeRepoPath(cwd, platform);
-    if (!key || byKey.has(key)) continue;
+    if (!key) continue;
     let available = false;
     try { available = deps.fs.statSync(cwd).isDirectory(); } catch { /* unavailable */ }
     if (!available) continue;
     let updatedAt = 0;
     try { updatedAt = deps.fs.statSync(path.join(sessionsRoot, name)).mtimeMs; } catch { /* best effort */ }
+    const existing = byKey.get(key);
+    if (existing) {
+      // Same project under a different cwd casing (Windows drive letter, etc.):
+      // keep one row, take the freshest catalog mtime so neither side is lost.
+      existing.updatedAt = Math.max(existing.updatedAt, updatedAt);
+      continue;
+    }
     const pin = deps.pins[key];
     byKey.set(key, {
       cwd,
@@ -477,40 +596,190 @@ export interface IndexDeps {
   fs: FsLike;
   grokHome: string;
   cwd: string;
+  /** Defaults to process.platform — inject `win32` in tests for case-fold merge. */
+  platform?: NodeJS.Platform;
   log?: (msg: string) => void;
+}
+
+/**
+ * Order of directories to search when resuming a session by id.
+ *
+ * A renderer may *name* a session id and optionally suggest a cwd (history-row
+ * convenience). Host-owned inputs (`metaWorktreePath`, `cachedCwd`, every
+ * entry of `trustedCwds`) are the only directories that may ever appear.
+ * `messageCwd` is included **only** when it already equals a trusted catalog
+ * cwd — never as an unauthenticated process root.
+ */
+export function orderedResumeCwdCandidates(opts: {
+  messageCwd?: string;
+  trustedCwds: readonly string[];
+  metaWorktreePath?: string;
+  cachedCwd?: string;
+  sameCwd?: (a: string, b: string) => boolean;
+}): string[] {
+  const same = opts.sameCwd ?? ((a, b) => normalizeRepoPath(a) === normalizeRepoPath(b));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (cwd: string | undefined) => {
+    if (!cwd || typeof cwd !== "string") return;
+    const key = normalizeRepoPath(cwd);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(cwd);
+  };
+  // UI convenience: look first where the row claimed, but only if host-trusted.
+  if (
+    opts.messageCwd &&
+    opts.trustedCwds.some((t) => same(t, opts.messageCwd!))
+  ) {
+    add(opts.messageCwd);
+  }
+  add(opts.metaWorktreePath);
+  add(opts.cachedCwd);
+  for (const t of opts.trustedCwds) add(t);
+  return out;
+}
+
+/**
+ * Resolve the process cwd for a resume by finding which **catalog** directory
+ * actually holds `id` on disk. Returns undefined when no candidate contains
+ * the session — callers must not fall back to a renderer-supplied path.
+ */
+export function findSessionCatalogCwd(deps: {
+  fs: Pick<FsLike, "existsSync" | "readdirSync">;
+  grokHome: string;
+  id: string;
+  candidates: readonly string[];
+  platform?: NodeJS.Platform;
+}): string | undefined {
+  const { fs, grokHome, id, candidates } = deps;
+  const platform = deps.platform ?? process.platform;
+  if (!isValidSessionId(id)) return undefined;
+  const seen = new Set<string>();
+  for (const cwd of candidates) {
+    if (!cwd || typeof cwd !== "string") continue;
+    const key = normalizeRepoPath(cwd, platform);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    // Alias-aware lookup: session may live under a differently-cased catalog leaf.
+    const dir = sessionDirFor(grokHome, cwd, id, { fs, platform });
+    if (!dir) continue;
+    try {
+      if (fs.existsSync(path.join(dir, "summary.json"))) return cwd;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return undefined;
 }
 
 /** Cheap ordering pass: every session id newest-first by `summary.json` mtime, WITHOUT reading or
  *  parsing any summary content. One `stat` per dir instead of a `stat` + `read` + `JSON.parse`, so
  *  it stays fast even with thousands of sessions. The caller reads (via `readSessionEntries`) only
  *  the window it actually shows. mtime is an approximate sort key; the exact `updated_at` order is
- *  re-applied within the loaded page after reading. */
+ *  re-applied within the loaded page after reading.
+ *
+ *  Scans **all case-aliases** of `cwd` ({@link sessionCatalogDirs}) so a Windows project split
+ *  across `c:\…` and `C:\…` catalog leaves returns the union. Duplicate ids keep the higher mtime. */
 export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
   const { fs, grokHome, cwd, log } = deps;
-  const dir = sessionsDirFor(grokHome, cwd);
-  if (!fs.existsSync(dir)) return [];
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch (e) {
-    log?.(`[sessions] failed to read ${dir}: ${(e as Error).message}`);
-    return [];
-  }
-  const out: SessionIndexEntry[] = [];
-  for (const name of names) {
-    const resolvedSessionDir = sessionDirFor(grokHome, cwd, name);
-    if (!resolvedSessionDir) continue;
-    const summaryPath = path.join(resolvedSessionDir, "summary.json");
-    let st: { mtimeMs: number };
+  const platform = deps.platform ?? process.platform;
+  const catalogs = sessionCatalogDirs({ fs, grokHome, cwd, platform });
+  if (!catalogs.length) return [];
+  const byId = new Map<string, number>();
+  for (const dir of catalogs) {
+    let names: string[];
     try {
-      // A stat on summary.json doubles as the "is this a real session dir?" check: a stray file
-      // entry (or a dir without summary.json) makes the join non-existent and statSync throws.
-      st = fs.statSync(summaryPath);
-    } catch {
+      names = fs.readdirSync(dir);
+    } catch (e) {
+      log?.(`[sessions] failed to read ${dir}: ${(e as Error).message}`);
       continue;
     }
-    out.push({ id: name, mtimeMs: st.mtimeMs });
+    for (const name of names) {
+      if (!isValidSessionId(name)) continue;
+      const resolvedSessionDir = path.join(dir, name);
+      if (!isSessionDirChild(dir, resolvedSessionDir, platform)) continue;
+      const summaryPath = path.join(resolvedSessionDir, "summary.json");
+      let st: { mtimeMs: number };
+      try {
+        // A stat on summary.json doubles as the "is this a real session dir?" check: a stray file
+        // entry (or a dir without summary.json) makes the join non-existent and statSync throws.
+        st = fs.statSync(summaryPath);
+      } catch {
+        continue;
+      }
+      const prev = byId.get(name);
+      if (prev === undefined || st.mtimeMs > prev) byId.set(name, st.mtimeMs);
+    }
   }
+  const out: SessionIndexEntry[] = [...byId.entries()].map(([id, mtimeMs]) => ({ id, mtimeMs }));
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+/**
+ * True when a parsed `summary.json` is minimally well-formed for discovery
+ * seeding. Mtime-only dirs (empty/`{}`/non-JSON) must not count toward the
+ * auto-open threshold — otherwise a planted tree of empty summaries would
+ * open an arbitrary directory as a trusted root.
+ */
+export function isWellFormedSessionSummary(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const o = raw as Record<string, unknown>;
+  // Real grok summaries carry info and/or activity fields. Require at least one.
+  if (o.info && typeof o.info === "object") return true;
+  if (typeof o.updated_at === "string" && o.updated_at.length > 0) return true;
+  if (typeof o.created_at === "string" && o.created_at.length > 0) return true;
+  if (typeof o.num_messages === "number" && Number.isFinite(o.num_messages)) return true;
+  if (typeof o.session_summary === "string") return true;
+  if (typeof o.generated_title === "string") return true;
+  return false;
+}
+
+/**
+ * Like {@link indexSessions}, but only counts sessions whose `summary.json`
+ * parses as a minimally well-formed object. Used by desktop discovery seeding
+ * so mtime-shaped empty files cannot satisfy the threshold.
+ */
+export function indexWellFormedSessions(deps: IndexDeps): SessionIndexEntry[] {
+  const { fs, grokHome, cwd, log } = deps;
+  const platform = deps.platform ?? process.platform;
+  const catalogs = sessionCatalogDirs({ fs, grokHome, cwd, platform });
+  if (!catalogs.length) return [];
+  const byId = new Map<string, number>();
+  for (const dir of catalogs) {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch (e) {
+      log?.(`[sessions] failed to read ${dir}: ${(e as Error).message}`);
+      continue;
+    }
+    for (const name of names) {
+      if (!isValidSessionId(name)) continue;
+      const resolvedSessionDir = path.join(dir, name);
+      if (!isSessionDirChild(dir, resolvedSessionDir, platform)) continue;
+      const summaryPath = path.join(resolvedSessionDir, "summary.json");
+      let st: { mtimeMs: number };
+      let rawText: string;
+      try {
+        st = fs.statSync(summaryPath);
+        rawText = fs.readFileSync(summaryPath, "utf8");
+      } catch {
+        continue;
+      }
+      let raw: unknown;
+      try {
+        raw = JSON.parse(rawText);
+      } catch {
+        continue;
+      }
+      if (!isWellFormedSessionSummary(raw)) continue;
+      const prev = byId.get(name);
+      if (prev === undefined || st.mtimeMs > prev) byId.set(name, st.mtimeMs);
+    }
+  }
+  const out: SessionIndexEntry[] = [...byId.entries()].map(([id, mtimeMs]) => ({ id, mtimeMs }));
   out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return out;
 }
@@ -521,6 +790,7 @@ export interface ReadEntriesDeps {
   cwd: string;
   ids: string[];
   overrides: SessionMetaOverrides;
+  platform?: NodeJS.Platform;
   now?: () => number;
   log?: (msg: string) => void;
 }
@@ -530,10 +800,11 @@ export interface ReadEntriesDeps {
  *  content, so callers keep it to the visible window. */
 export function readSessionEntries(deps: ReadEntriesDeps): SessionListEntry[] {
   const { fs, grokHome, cwd, ids, overrides, log } = deps;
+  const platform = deps.platform ?? process.platform;
   const now = deps.now ? deps.now() : Date.now();
   const out: SessionListEntry[] = [];
   for (const id of ids) {
-    const resolvedSessionDir = sessionDirFor(grokHome, cwd, id);
+    const resolvedSessionDir = sessionDirFor(grokHome, cwd, id, { fs, platform });
     if (!resolvedSessionDir) continue;
     const summaryPath = path.join(resolvedSessionDir, "summary.json");
     let raw: any;
@@ -561,9 +832,16 @@ export interface ContextUsage {
  *  It's also the only source of a count before any live turn has run, i.e. on
  *  a cold restore. Null when the file is missing/unreadable or the count isn't
  *  a positive number. Pure. */
-export function readContextUsage(deps: { fs: FsLike; grokHome: string; cwd: string; id: string }): ContextUsage | null {
+export function readContextUsage(deps: {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  id: string;
+  platform?: NodeJS.Platform;
+}): ContextUsage | null {
   const { fs, grokHome, cwd, id } = deps;
-  const resolvedSessionDir = sessionDirFor(grokHome, cwd, id);
+  const platform = deps.platform ?? process.platform;
+  const resolvedSessionDir = sessionDirFor(grokHome, cwd, id, { fs, platform });
   if (!resolvedSessionDir) return null;
   const signalsPath = path.join(resolvedSessionDir, "signals.json");
   try {
@@ -583,14 +861,16 @@ export function readContextUsage(deps: { fs: FsLike; grokHome: string; cwd: stri
  *  paths. Kept for callers that genuinely need the whole list at once. */
 export function listSessions(deps: ListDeps): SessionListEntry[] {
   const { fs, grokHome, cwd, overrides, log } = deps;
+  const platform = deps.platform ?? process.platform;
   const now = deps.now ? deps.now() : Date.now();
-  const index = indexSessions({ fs, grokHome, cwd, log });
+  const index = indexSessions({ fs, grokHome, cwd, platform, log });
   const out = readSessionEntries({
     fs,
     grokHome,
     cwd,
     ids: index.map((e) => e.id),
     overrides,
+    platform,
     now: () => now,
     log,
   });
@@ -745,10 +1025,11 @@ export function isEmptySession(
   return isPrimerSummary(title);
 }
 
-/** Remove the on-disk session directory. No-op if missing. */
+/** Remove the on-disk session directory. No-op if missing. Searches case-aliases. */
 export function deleteSessionDir(deps: DeleteDeps): void {
   const { fs, grokHome, cwd, id } = deps;
-  const dir = sessionDirFor(grokHome, cwd, id);
+  const platform = deps.platform ?? process.platform;
+  const dir = sessionDirFor(grokHome, cwd, id, { fs, platform });
   if (!dir) return;
   if (!fs.existsSync(dir)) return;
   if (fs.rmSync) {
@@ -762,43 +1043,59 @@ export interface ClearDeps {
   fs: FsLike;
   grokHome: string;
   cwd: string;
+  platform?: NodeJS.Platform;
   /** Session id to keep (the live/focused one — grok re-persists it, so deleting it wouldn't stick). */
   exceptId?: string;
   /** Session ids to keep when more than one live view owns history in this cwd. */
   exceptIds?: Iterable<string>;
 }
 
-/** Remove every session directory under `cwd`, optionally keeping selected ids. Returns the ids it removed.
- *  Best-effort: a directory that fails to remove is skipped, not thrown, so one locked dir doesn't
- *  abort the sweep. The directory name is the session id (mirrors `deleteSessionDir`). */
+export interface DeleteDeps {
+  fs: FsLike;
+  grokHome: string;
+  cwd: string;
+  id: string;
+  platform?: NodeJS.Platform;
+}
+
+/** Remove every session directory under `cwd` (all case-aliases), optionally keeping selected ids.
+ *  Returns the ids it removed. Best-effort: a directory that fails to remove is skipped, not thrown,
+ *  so one locked dir doesn't abort the sweep. The directory name is the session id. */
 export function clearSessions(deps: ClearDeps): string[] {
   const { fs, grokHome, cwd, exceptId, exceptIds } = deps;
+  const platform = deps.platform ?? process.platform;
   const kept = new Set(exceptIds);
   if (exceptId) kept.add(exceptId);
-  const dir = sessionsDirFor(grokHome, cwd);
-  if (!fs.existsSync(dir)) return [];
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
+  const catalogs = sessionCatalogDirs({ fs, grokHome, cwd, platform });
+  if (!catalogs.length) return [];
   const removed: string[] = [];
-  for (const name of entries) {
-    if (kept.has(name)) continue;
-    const full = sessionDirFor(grokHome, cwd, name);
-    if (!full) continue;
+  const removedSet = new Set<string>();
+  for (const dir of catalogs) {
+    let entries: string[];
     try {
-      if (!fs.statSync(full).isDirectory()) continue;
+      entries = fs.readdirSync(dir);
     } catch {
       continue;
     }
-    try {
-      if (fs.rmSync) fs.rmSync(full, { recursive: true, force: true });
-      else fs.rmdirSync(full, { recursive: true });
-      removed.push(name);
-    } catch {
-      continue;
+    for (const name of entries) {
+      if (kept.has(name) || !isValidSessionId(name)) continue;
+      const full = path.join(dir, name);
+      if (!isSessionDirChild(dir, full, platform)) continue;
+      try {
+        if (!fs.statSync(full).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      try {
+        if (fs.rmSync) fs.rmSync(full, { recursive: true, force: true });
+        else fs.rmdirSync(full, { recursive: true });
+        if (!removedSet.has(name)) {
+          removedSet.add(name);
+          removed.push(name);
+        }
+      } catch {
+        continue;
+      }
     }
   }
   return removed;
