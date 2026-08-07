@@ -79,7 +79,7 @@ That is the largest install-conversion friction until certificates exist.
 
 ### macOS (Gatekeeper)
 
-On first open of an unsigned `.app` / `.dmg` download, macOS typically shows:
+On first open of a signed-but-not-notarised download, macOS shows:
 
 > “Grok Build Desktop” cannot be opened because it is from an unidentified developer.
 
@@ -87,6 +87,21 @@ On first open of an unsigned `.app` / `.dmg` download, macOS typically shows:
 
 1. Right-click (or Control-click) the app → **Open** → **Open**, or
 2. System Settings → **Privacy & Security** → scroll to the blocked-app message → **Open Anyway**.
+
+**The failure mode one step worse than that**, and what 3.2.2 shipped:
+
+> “Grok Build Desktop” is damaged and can’t be opened. You should move it to the Trash.
+
+That is not a corrupt download and neither workaround above clears it. Repackaging
+Electron invalidates the signature it ships with, and on Apple silicon a bundle
+with **no** valid signature is refused outright rather than merely distrusted —
+so there is no right-click → Open escape to offer. `afterPack`
+(`scripts/adhoc-sign-mac.cjs`) now ad-hoc signs the bundle, which makes it
+loadable and puts users back on the ordinary prompt above. An ad-hoc signature
+confers no trust; it is a floor, not a destination.
+
+A user already holding a 3.2.2 download can recover it by dropping the quarantine
+flag: `xattr -dr com.apple.quarantine "/Applications/Grok Build Desktop.app"`.
 
 **To remove the warning for real:** Apple Developer Program membership +
 Developer ID Application certificate, codesign the app (hardened runtime +

@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.3 — 2026-08-07
+
+### Fixed
+
+- **Grok Build Desktop opens on macOS.** Earlier builds were refused outright — *"Grok Build Desktop is damaged and can't be opened"* — because the app carried no signature at all, which Apple silicon will not load. It is now ad-hoc signed, so macOS asks whether to open it (*right-click → Open*, or *Privacy & Security → Open Anyway*) instead of telling you to bin it. Still not notarised; a certificate is on the way. If you already downloaded an earlier build, `xattr -dr com.apple.quarantine "/Applications/Grok Build Desktop.app"` recovers it.
+
 ## 3.2.2 — 2026-08-07
 
 ### Fixed

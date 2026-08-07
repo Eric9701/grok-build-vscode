@@ -36,6 +36,9 @@ files:
 
 asar: true
 
+# macOS only (the hook returns immediately on every other platform).
+afterPack: scripts/adhoc-sign-mac.cjs
+
 # Predictable GitHub Release asset names for the download page:
 #   Grok-Build-Desktop-<version>-mac-arm64.dmg
 #   Grok-Build-Desktop-<version>-mac-x64.dmg
@@ -65,10 +68,16 @@ publish: null
 mac:
   icon: resources/grok-icon-round-512.png
   category: public.app-category.developer-tools
-  # Unsigned — no Apple Developer certificate yet.
+  # No Developer ID certificate yet, so electron-builder signs nothing…
   identity: null
   hardenedRuntime: false
   gatekeeperAssess: false
+  # …and afterPack ad-hoc signs instead. NOT optional decoration: repackaging
+  # invalidates the signature Electron ships with, and on Apple silicon a bundle
+  # with no valid signature is refused outright — "Grok Build Desktop is damaged
+  # and can't be opened", with no right-click → Open escape. 3.2.2 shipped that.
+  # An ad-hoc signature does not make the app trusted; it makes it loadable, so
+  # the block becomes the ordinary prompt Open Anyway clears. See the hook.
   target:
     - target: dmg
       arch:
