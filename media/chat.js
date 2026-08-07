@@ -4465,7 +4465,21 @@
     if (!menuSlot) return;
 
     menuSlot.innerHTML = "";
-    const record = activeSessionRecord();
+    // Fall back to what we already know rather than degrading the menu.
+    // activeSessionRecord() searches the loaded lists, and a conversation can be
+    // the live one before it appears in any of them — right after a fork, most
+    // visibly. The menu then dropped to New-only, and came back later when a
+    // list happened to refresh, which read as options randomly disappearing.
+    // This menu acts on the conversation you are IN; its id and cwd are state we
+    // hold, so a missing list entry is not a reason to withhold Rename, Delete
+    // or Continue in a new chat.
+    const record = activeSessionRecord() || (state.activeSessionId
+      ? {
+          id: state.activeSessionId,
+          cwd: state.activeRepoCwd || state.selectedRepoCwd || "",
+          displayName: activeSessionName() || "",
+        }
+      : null);
     const cwd = record?.cwd || state.selectedRepoCwd || state.activeRepoCwd;
     const repo = state.repos.find((r) => sameCwd(r.cwd, cwd)) || { cwd: cwd || "", available: true };
     // This menu hangs off the conversation NAME at the top of the panel, so
