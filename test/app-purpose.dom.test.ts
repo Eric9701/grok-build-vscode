@@ -536,19 +536,19 @@ describe("continue-in-a-new-chat picker is visible from the session menu", () =>
   // there. So it wrote into a hidden, unpositioned element: no visible response
   // at all, and on the one occasion it did appear it sat in the corner of the
   // window anchored to nothing.
-  it("unhides and positions the popover before rendering into it", () => {
+  it("centres itself and offers no way back to a gear it did not come from", () => {
     const src = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.js"),
       "utf8",
     );
     const start = src.indexOf("function renderContinueDestinationPicker(");
     expect(start).toBeGreaterThan(0);
-    const body = src.slice(start, start + 900);
-    expect(body).toContain("gearPopover.hidden");
-    expect(body).toContain("positionGearPopover");
-    // Positioned BEFORE it is shown, or it paints once in the wrong place.
-    expect(body.indexOf("positionGearPopover")).toBeLessThan(
-      body.indexOf("gearPopover.hidden = false"),
-    );
+    const body = src.slice(start, start + 1800);
+    // Centred, because it is reached from the conversation's overflow menu and
+    // has no gear button to anchor to.
+    expect(body).toContain("popover-centered");
+    expect(body).toContain("gearPopover.hidden = false");
+    // No back link: it would return you to a panel you were never in.
+    expect(body).not.toContain("popover-back");
   });
 });

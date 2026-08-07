@@ -3878,3 +3878,21 @@ mjx-container[display="true"] {
   #context-popover .popover-section-toggle,
   #context-popover .popover-section-toggle + div { display: none; }
 }
+
+/* The "continue in a new chat" destination question. Reached from the
+   conversation's overflow menu rather than the gear, so there is no button to
+   anchor to — centring it puts it where the eye already is, and stops it
+   appearing in a corner attached to nothing. Overrides the inline top/left the
+   anchored path sets, hence !important. */
+.toolbar-popover.popover-centered,
+#gear-popover.popover-centered {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%);
+  min-width: 320px;
+  max-width: min(420px, 90vw);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}

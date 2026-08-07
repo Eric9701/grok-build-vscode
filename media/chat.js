@@ -2054,6 +2054,7 @@
   function renderGearMain() {
     state.gearView = "main";
     gearPopover.innerHTML = "";
+    gearPopover.classList.remove("popover-centered");
 
     // Two surfaces, one popover. With a rail gear the composer holds what is
     // about THIS CONVERSATION (model, effort, where it continues) and the rail
@@ -2319,12 +2320,16 @@
     // conversation's overflow menu, where it is not — so the picker rendered
     // into a hidden, unpositioned element: nothing happened at all, and when it
     // did show it sat in the corner of the window with no anchor.
-    if (gearPopover.hidden) {
-      positionGearPopover(activeGearButton());
-      gearPopover.hidden = false;
-    }
-    addGearItem('<span class="popover-back">← Continue in a new chat</span>', renderGearMain);
-    addSection("Where?");
+    // Centred, and with no way "back". Both follow from where this is reached
+    // from now: the conversation's ⋯ menu, in the top bar or the rail — never
+    // the gear. A back arrow to the gear's main panel would return you to a
+    // place you were not, and anchoring the panel to a gear button you did not
+    // press puts it nowhere near the pointer. It is a question — where should
+    // this continue? — so it behaves like one: centred, dismissed by clicking
+    // away or Escape.
+    gearPopover.classList.add("popover-centered");
+    gearPopover.hidden = false;
+    addSection("Continue in a new chat");
     dests.forEach((d, i) => {
       const el = document.createElement("div");
       el.className = "toolbar-popover-item" + (i === 0 ? " active" : "");
@@ -2763,6 +2768,7 @@
   }
 
   function openGearPopover(fromBtn) {
+    gearPopover.classList.remove("popover-centered");
     // Which button was pressed decides which sections render. Without a rail
     // gear both surfaces collapse into the composer one, so this is inert there.
     const surface = fromBtn && fromBtn.id === "rail-gear-btn" ? "rail" : "composer";
