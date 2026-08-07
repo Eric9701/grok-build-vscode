@@ -105,10 +105,12 @@ import {
   resolveMentionAttachmentPath,
 } from "./mention";
 import {
+  alwaysApproveSource,
   configForcesAlwaysApprove,
   globalConfigPath,
   projectConfigPath,
 } from "./grok-config";
+import { sessionScopedRoots } from "./auth-roots";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import {
   prepareFileUpload,
@@ -846,6 +848,86 @@ See design doc for the full state machine diagram.`;
    *  `.grok/config.toml` overrides global `~/.grok/config.toml`. Read fresh on
    *  each session start — it's a couple of small file reads, and the user may
    *  edit the config between sessions. Any read error → false (treat as normal). */
+  /**
+   * Confirmation for the handful of messages that make the host RUN something.
+   *
+   * The desktop dispatcher authorizes on "this came from the main window's main
+   * frame", which proves origin but not intent — there is no user-gesture
+   * notion, so anything able to post a message can trigger these. A per-
+   * capability model is the real answer; until then these two get a dialog the
+   * renderer cannot draw or dismiss, which is what makes it worth anything.
+   */
+  private async confirmHostExecute(
+    title: string,
+    detail: string,
+    confirmLabel: string,
+  ): Promise<boolean> {
+    const ok = await this.host.showWarningMessage(
+      `${title}
+
+${detail}`,
+      { modal: true },
+      confirmLabel,
+    );
+    return ok === confirmLabel;
+  }
+
+  /** Which config forced always-approve, if any. See alwaysApproveSource. */
+  private autoApproveSource(cwd: string = this.workspaceRoot()): "project" | "global" | undefined {
+    const readSafe = (p?: string): string | undefined => {
+      if (!p) return undefined;
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return undefined;
+      }
+    };
+    return alwaysApproveSource({
+      project: cwd ? readSafe(projectConfigPath(cwd)) : undefined,
+      global: readSafe(globalConfigPath()),
+    });
+  }
+
+  /** Roots whose repo-supplied always-approve the user has accepted this run. */
+  private readonly autoApproveConsented = new Set<string>();
+
+  /**
+   * Consent for a repository that ships its own always-approve config, asked
+   * once per project root per run.
+   *
+   * This is the one setting a *repository* can use to switch off every
+   * permission prompt the agent would otherwise hit before writing files or
+   * running commands — and cloning the repo is enough to carry it, because a
+   * project .grok/config.toml overrides the user's own.
+   *
+   * grok applies the file itself, server-side, so declining cannot un-apply it.
+   * Declining therefore refuses to start the session at all, which is the only
+   * honest option available from here.
+   */
+  private async confirmRepoForcedAutoApprove(cwd: string): Promise<boolean> {
+    if (!cwd || this.autoApproveSource(cwd) !== "project") return true;
+    const key = process.platform === "win32" ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
+    if (this.autoApproveConsented.has(key)) return true;
+    const ok = await this.host.showWarningMessage(
+      `"${path.basename(cwd)}" turns off every permission prompt.
+
+` +
+        `This project ships a .grok/config.toml setting permission_mode = "always-approve", which ` +
+        `overrides your own setting. The agent will edit files and run commands here without asking ` +
+        `you first.
+
+Only continue if you trust this code.`,
+      { modal: true },
+      "Continue anyway",
+    );
+    if (ok !== "Continue anyway") {
+      this.host.appendLine(`[trust] declined: ${cwd} forces always-approve`);
+      return false;
+    }
+    this.autoApproveConsented.add(key);
+    return true;
+  }
+
   private configForcesAutoApprove(cwd: string = this.workspaceRoot()): boolean {
     const readSafe = (p?: string): string | undefined => {
       if (!p) return undefined;
@@ -2649,10 +2731,16 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Roots the desktop trust boundary may open files under. On desktop this is
-   * exactly the host-owned open-folder set (plus worktrees authorized for
-   * sessions within those folders) — never a historical catalog cwd the user
-   * has not opened. Used by ElectronWebview policy, not the message schema gate.
+   * Roots the desktop trust boundary may open files under, for THIS session.
+   *
+   * Two conditions, both necessary. The folder must be in the host-owned open
+   * set — never a historical catalog cwd the user has not opened — AND it must
+   * belong to the session the message came from. The second used to be missing:
+   * the parameter was accepted and then ignored on desktop, so every open
+   * project was a legal target and a message from a session in repo A could
+   * open or diff a file in repo B merely because B was also open. Being open is
+   * what makes a folder reachable at all; it is not what makes it this
+   * session's business.
    */
   desktopAuthRoots(session: Session = this.focused): string[] {
     const roots: string[] = [];
@@ -2666,11 +2754,13 @@ See design doc for the full state machine diagram.`;
       roots.push(abs);
     };
     if (this.host.canSwitchWorkspaceFolder) {
-      // Same set resume / list / select consult — one host-owned open-folder
-      // property. Session cwd outside that set must not widen openFile/openDiff.
-      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-      for (const c of this.localTrustedSessionCwds(overrides)) add(c);
-      return roots;
+      return sessionScopedRoots({
+        sessionCwd: this.sessionCwd(session),
+        worktreePath: session.worktree?.path,
+        worktreeSourceRoot: session.worktree?.sourceGitRoot,
+        activeRoot: this.workspaceRoot(),
+        isAuthorized: (cwd) => this.isAuthorizedCwd(cwd),
+      });
     }
     add(this.sessionCwd(session));
     if (session.worktree?.path) add(session.worktree.path);
@@ -3717,6 +3807,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       );
       this.postRepoCatalog();
       this.postSessionsList();
+      return undefined;
+    }
+    // A repository that ships its own always-approve config gets consent first.
+    // Deliberately here, before anything is mutated: nothing has been touched
+    // yet, so declining is a clean no-op rather than a half-started session.
+    if (!(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
       return undefined;
     }
     // The session this start (re)builds. Today always the focused one (pool-of-1);
@@ -4983,6 +5079,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           .update("summarizeRepliesAloud", !!msg.value, "global");
         break;
       case "runInstallCmd": {
+        // Host-owned confirmation, because this is one of the two messages that
+        // run something. The renderer does not supply the command — it is the
+        // fixed x.ai installer — so a compromised renderer cannot choose WHAT
+        // runs, only trigger it. Confirming closes that anyway: the desktop
+        // dispatcher authorizes on "the message came from the main frame", not
+        // on a user gesture, and this is cheap where a general fix is not.
+        if (!(await this.confirmHostExecute(
+          "Install the Grok Build CLI?",
+          "This runs the official installer from x.ai in a terminal.",
+          "Install",
+        ))) break;
         const term = this.host.createTerminal("Install Grok");
         term.show();
         // Windows ships a native CLI installed via PowerShell; the default VS Code
@@ -5019,6 +5126,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.checkGrokUpdate();
         break;
       case "updateGrok":
+        if (!(await this.confirmHostExecute(
+          "Update the Grok Build CLI?",
+          "This runs the CLI's own updater.",
+          "Update",
+        ))) break;
         await this.updateGrokCliOnDemand();
         break;
       case "listSessions":

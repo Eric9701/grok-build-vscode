@@ -2830,12 +2830,20 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
       expect(trustBody).toContain("// VS Code");
       expect(trustBody.slice(trustBody.indexOf("// VS Code"))).toContain("this.repoCatalog()");
 
-      // desktopAuthRoots on desktop reuses localTrustedSessionCwds (one set).
+      // desktopAuthRoots asks the ONE shared authorization query rather than
+      // recomputing an open set of its own — isAuthorizedCwd is
+      // localTrustedSessionCwds behind a name, so a second source of truth
+      // cannot drift away from resume/list/select.
       const authStart = sidebar.indexOf("desktopAuthRoots(session");
       const authEnd = sidebar.indexOf("async addProjectFolder", authStart);
       const authBody = sidebar.slice(authStart, authEnd);
-      expect(authBody).toContain("localTrustedSessionCwds");
+      expect(authBody).toContain("isAuthorizedCwd");
       expect(authBody).toContain("canSwitchWorkspaceFolder");
+      // And it is SESSION-scoped, not "every folder that happens to be open".
+      // The parameter used to be accepted and then ignored on desktop, which
+      // let a message from a session in repo A open a file in repo B.
+      expect(authBody).toContain("this.sessionCwd(session)");
+      expect(authBody).not.toContain("for (const c of this.localTrustedSessionCwds");
     } finally {
       fs.rmSync(base, { recursive: true, force: true });
     }

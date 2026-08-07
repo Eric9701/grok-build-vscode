@@ -95,8 +95,32 @@ export function configForcesAlwaysApprove(input: {
   project?: string;
   global?: string;
 }): boolean {
+  return alwaysApproveSource(input) !== undefined;
+}
+
+/**
+ * WHICH config turned auto-approve on — and the distinction is a security
+ * boundary, not a detail.
+ *
+ * A global `~/.grok/config.toml` is the user's own standing choice, made in
+ * their own TUI. A project `.grok/config.toml` ships inside a repository, so
+ * cloning someone's code is enough to carry it, and it takes precedence. That
+ * means opening an untrusted repo can switch off every permission prompt the
+ * agent would otherwise hit before writing files or running commands.
+ *
+ * grok honours the file itself, server-side, and still reports plain agent mode
+ * over ACP — so this cannot be prevented from here, only noticed. Refusing to
+ * read it would be strictly worse: the CLI would auto-approve anyway and the UI
+ * would show "Agent" while it happened. Noticing is what makes consent possible.
+ */
+export function alwaysApproveSource(input: {
+  project?: string;
+  global?: string;
+}): "project" | "global" | undefined {
   const projectMode = input.project != null ? readUiPermissionMode(input.project) : undefined;
-  const effective =
-    projectMode ?? (input.global != null ? readUiPermissionMode(input.global) : undefined);
-  return isAlwaysApprovePermission(effective);
+  if (projectMode !== undefined) {
+    return isAlwaysApprovePermission(projectMode) ? "project" : undefined;
+  }
+  const globalMode = input.global != null ? readUiPermissionMode(input.global) : undefined;
+  return isAlwaysApprovePermission(globalMode) ? "global" : undefined;
 }
