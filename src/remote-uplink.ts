@@ -21,7 +21,7 @@ import {
   nextBackoffMs,
   INITIAL_BACKOFF_MS,
 } from "./remote-frames";
-import { mayDeliverRemoteHostMsg } from "./remote-policy";
+import { isSelfScopedOutbound, mayDeliverRemoteHostMsg } from "./remote-policy";
 
 /**
  * Live project-scope inputs for the outbound write gate. Re-read on every
@@ -173,7 +173,13 @@ export class RemoteUplink {
   deliver(target: RemoteDeliveryTarget, msg: HostMsg): void {
     const unique = [...new Set(target.clientIds)];
     if (!unique.length || this.ws?.readyState !== WebSocket.OPEN) return;
-    const scopeCwd = target.scopeCwd;
+    // A frame that names its own project (`repoSessions`, `sessionName`) is
+    // ABOUT that project, not payload from the recipient's conversation, so the
+    // ownership filter below must not see it: the rail asks about a sibling
+    // project by design and every answer was being dropped as "does not own
+    // scope". authorizeWrite still checks the frame's own cwd against the live
+    // authorized set, so this widens delivery, never authorization.
+    const scopeCwd = isSelfScopedOutbound(msg.type) ? undefined : target.scopeCwd;
 
     if (scopeCwd !== undefined) {
       const owners = filterRecipientsOwningScope(unique, scopeCwd, this.opts.auth);

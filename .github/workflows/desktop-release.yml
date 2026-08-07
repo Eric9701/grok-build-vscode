@@ -6,12 +6,18 @@
 # installers come out of the same commit and the same npm ci, rather than one
 # from CI and one from whatever happened to be on a laptop.
 #
-# Nothing is signed. `identity: null` (mac) and `signAndEditExecutable: false`
-# (win) in electron-builder.yml are deliberate: there is no Apple Developer
-# certificate and no Authenticode certificate yet, so first-run Gatekeeper and
-# SmartScreen warnings are expected and are called out on the download page.
-# When certificates exist, add them as secrets and drop those two lines — the
-# rest of this file does not change.
+# Nothing is signed. `identity: null` (mac) in electron-builder.yml is
+# deliberate: there is no Apple Developer certificate and no Authenticode
+# certificate yet, so first-run Gatekeeper and SmartScreen warnings are expected
+# and are called out on the download page. When certificates exist, add them as
+# secrets and drop that line — the rest of this file does not change.
+#
+# There is deliberately NO `signAndEditExecutable: false` on the Windows side.
+# It reads as "we are unsigned, so skip signing", but it also skips the EDIT
+# half — rcedit, which stamps the icon and version metadata onto the .exe — and
+# 3.2.0 shipped wearing Electron's atom on the Start menu and taskbar because of
+# it. electron-builder already skips signing on its own when no certificate is
+# configured; it logs "no signing info identified" and carries on.
 #
 # Manual by design. Publishing installers is the owner's call, so this never
 # fires on a push: dispatch it, and it uploads to the run's artifacts. Only a

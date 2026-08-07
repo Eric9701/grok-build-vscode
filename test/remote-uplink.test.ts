@@ -372,6 +372,49 @@ describe("RemoteUplink socket-level project authorization", () => {
     uplink.dispose();
   });
 
+  it("delivers a sibling project's rail preview to a tab that does not own it", () => {
+    // The regression that put "Update Grok Build to preview" on the phone
+    // against a fully current desktop: the rail asks for a preview of a project
+    // the tab is NOT working in, the host answered, and the ownership filter
+    // ate every answer because the frame's own cwd was passed as the delivery
+    // scope. Frames that carry their own cwd are ABOUT a project, not payload
+    // FROM the recipient's conversation.
+    const logs: string[] = [];
+    const preview: HostMsg = {
+      type: "repoSessions",
+      cwd: "/work/sibling",
+      entries: [{ id: "s1", title: "In the other project", cwd: "/work/sibling" } as any],
+      dots: {},
+      total: 1,
+    };
+    const uplink = makeUplink({
+      auth: {
+        // Both projects are open; the tab is working in /work/a.
+        authorizedCwds: () => ["/work/a", "/work/sibling"],
+        scopeCwdForClient: () => "/work/a",
+        sameCwd: pathsEqual,
+      },
+      log: (l) => logs.push(l),
+    });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+    socket.emit("open");
+
+    uplink.broadcastTo(["tab-a"], preview, "/work/sibling");
+    expect(socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to")).toEqual([
+      { t: "host-to", clientIds: ["tab-a"], msg: preview },
+    ]);
+    expect(logs.some((l) => l.includes("does not own scope"))).toBe(false);
+
+    // Authorization is untouched: a project that is not open is still refused,
+    // and the frame's OWN cwd is what decides — not the scope argument.
+    socket.sent.length = 0;
+    const closedPreview = { ...preview, cwd: "/work/closed", entries: [] } as HostMsg;
+    uplink.broadcastTo(["tab-a"], closedPreview, "/work/closed");
+    expect(socket.sent.map(JSON.parse).filter((f: { t: string }) => f.t === "host-to")).toEqual([]);
+    uplink.dispose();
+  });
+
   it("filterRecipientsOwningScope is pure and mutation-checked", () => {
     const auth: RemoteUplinkAuth = {
       authorizedCwds: () => ["/a", "/b"],

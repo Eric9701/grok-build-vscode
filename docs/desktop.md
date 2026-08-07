@@ -42,6 +42,22 @@ Artifacts land in `dist-desktop/` (gitignored). The VS Code VSIX path is unchang
 `npm run package` still produces `grok-vscode-phuryn-<version>.vsix` and still
 excludes all desktop sources via `.vscodeignore`.
 
+**If `dist:win` fails on `Cannot create symbolic link` (local Windows only):**
+electron-builder downloads its `winCodeSign` bundle for `rcedit` / `signtool`,
+and that archive contains macOS symlinks a normal Windows account may not create
+— it retries four times and gives up. CI is unaffected (the runner can). Extract
+it once, without the macOS half, and every later build finds it cached:
+
+```bash
+CACHE="$LOCALAPPDATA/electron-builder/Cache/winCodeSign"
+node_modules/7zip-bin/win/x64/7za.exe x -snld -y "$CACHE"/*.7z \
+  "-o$CACHE/winCodeSign-2.6.0" -x'!darwin'
+rm -rf "$CACHE"/[0-9]*        # the abandoned retry directories
+```
+
+Enabling Windows Developer Mode is the other fix; it grants the symlink
+privilege so the normal download path works.
+
 ### Cross-build limits
 
 | From → produces | Windows installer | macOS installers | Linux AppImage |

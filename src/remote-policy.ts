@@ -647,6 +647,26 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
 };
 
 /**
+ * Frames that carry their own authorization cwd and are therefore ABOUT a
+ * project rather than payload FROM the recipient's conversation.
+ *
+ * This distinction is not cosmetic. The uplink filters recipients to the tab
+ * that owns a delivery's scope, which is right for transcript and wrong here:
+ * the projects rail asks for a preview of a SIBLING project on purpose, so
+ * "the recipient does not own this cwd" is the normal case, not an attack.
+ * Treating them alike silently dropped every `repoSessions` answer over the
+ * relay — the phone's rail then sat on "Update Grok Build to preview" forever
+ * against a host that was perfectly current and had already answered.
+ *
+ * Authorization is unchanged either way: {@link mayDeliverRemoteHostMsg} checks
+ * the frame's OWN `cwd` against the live authorized set and ignores the scope
+ * argument for these types.
+ */
+export function isSelfScopedOutbound(type: HostMsg["type"]): boolean {
+  return OUTBOUND_PROJECT_AUTH[type] === "message-cwd";
+}
+
+/**
  * Sole authorization predicate for remote HostMsg delivery. Callers pass the
  * session/repo cwd as `scopeCwd` for `scope` types; list frames are checked
  * against their entries (and `message-cwd` against the frame's own field).

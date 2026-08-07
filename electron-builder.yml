@@ -15,6 +15,10 @@ directories:
 extraMetadata:
   main: out/desktop/main.js
   name: grok-build-desktop
+  # rcedit stamps `description` as the .exe FileDescription, which is the label
+  # Windows shows in Task Manager and the UAC prompt. package.json's is the
+  # marketplace blurb — a 300-character paragraph in a column meant for a name.
+  description: Grok Build Desktop (Community)
 
 # Layout inside app.asar (or app/ when --dir):
 #   package.json, out/**, media/**, resources/**, LICENSE, node_modules/{ws,jpeg-js}
@@ -42,18 +46,24 @@ artifactName: Grok-Build-Desktop-${version}-${os}-${arch}.${ext}
 # No auto-update publish channel yet (see docs/desktop.md).
 publish: null
 
-# App icon for installers. Round, with transparency outside the disc: the square
-# version sat on an opaque white tile, which reads as a sticker on a dark Windows
-# taskbar and does not match how macOS masks dock icons either. A plain
-# transparent background was not an option — the mark itself is dark, so it would
-# vanish in dark mode.
+# App icon. Round, with transparency outside the disc: the square version sat on
+# an opaque white tile, which reads as a sticker on a dark Windows taskbar and
+# does not match how macOS masks dock icons either. A plain transparent
+# background was not an option — the mark itself is dark, so it would vanish in
+# dark mode.
 #
 # NOT resources/grok-icon.png: that one is the VS Code marketplace listing icon
 # and is deliberately left alone.
-# electron-builder requires >=256 for NSIS / macOS targets.
-icon: resources/grok-icon-round-512.png
+#
+# Set PER PLATFORM, not once at the root. A root-level `icon` did not reach the
+# packaged executable — 3.2.0 installed with Electron's atom on the Start menu
+# entry and the taskbar, while the installer .exe (which NSIS resolves
+# separately) correctly showed the Grok mark. `resources/icon.ico` doubles as
+# the conventional buildResources name, so it is found even if a block is ever
+# dropped. electron-builder requires >=256 for NSIS / macOS targets.
 
 mac:
+  icon: resources/grok-icon-round-512.png
   category: public.app-category.developer-tools
   # Unsigned — no Apple Developer certificate yet.
   identity: null
@@ -77,8 +87,17 @@ dmg:
   title: Grok Build Desktop ${version} ${arch}
 
 win:
-  # Unsigned — no Authenticode certificate yet.
-  signAndEditExecutable: false
+  # An explicit multi-size .ico rather than relying on the PNG conversion, so
+  # every Windows surface draws the same mark at every size.
+  icon: resources/icon.ico
+  # `signAndEditExecutable: false` used to sit here, reasoning "unsigned, so
+  # nothing to sign". It does more than its first word says: it also skips the
+  # EDIT step (rcedit), which is what stamps the icon and version metadata onto
+  # the .exe. That is why 3.2.0 installed with Electron's atom on the Start menu
+  # and the taskbar while the installer itself looked right — NSIS resolves its
+  # own icons separately. It was never needed: with no certificate configured
+  # electron-builder already logs "no signing info identified, signing is
+  # skipped" and moves on.
   target:
     - target: nsis
       arch:
@@ -86,6 +105,12 @@ win:
 
 nsis:
   oneClick: false
+  # The wizard's own icons are resolved separately from `win.icon` and from each
+  # other, so name all three: the installer .exe as Explorer draws it, the
+  # uninstaller, and the small mark in the wizard header.
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  installerHeaderIcon: resources/icon.ico
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
@@ -94,6 +119,7 @@ nsis:
   artifactName: Grok-Build-Desktop-${version}-${os}-${arch}.${ext}
 
 linux:
+  icon: resources/grok-icon-round-512.png
   category: Development
   target:
     - target: AppImage
