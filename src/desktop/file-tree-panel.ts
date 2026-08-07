@@ -468,16 +468,20 @@ body.desk-ft-viewing .desk-ft-viewer {
 .desk-ft-open-ext {
   flex: 0 0 auto;
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  padding: 2px 6px;
-  white-space: nowrap;
 }
+.desk-ft-open-ext svg { display: block; }
 .desk-ft-open-ext:hover {
   color: var(--vscode-foreground, #ccc);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
@@ -514,18 +518,25 @@ body.desk-ft-viewing .desk-ft-viewer {
   margin-left: 2px;
 }
 .desk-ft-viewer-action {
+  /* Icon-only: a square target rather than text padding, so the four actions
+     read as one control group instead of four differently-sized chips. */
   flex: 0 0 auto;
-  border: 1px solid var(--vscode-editorWidget-border, #454545);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: var(--vscode-button-secondaryBackground, #3a3d41);
-  color: var(--vscode-foreground, #ccc);
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  padding: 2px 7px;
-  white-space: nowrap;
 }
+.desk-ft-viewer-action svg { display: block; }
 .desk-ft-viewer-action:hover:not(:disabled) {
+  color: var(--vscode-foreground, #ccc);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
 }
 .desk-ft-viewer-action:disabled {
@@ -533,7 +544,16 @@ body.desk-ft-viewing .desk-ft-viewer {
   opacity: 0.45;
 }
 .desk-ft-viewer-action.desk-ft-active {
-  border-color: var(--vscode-focusBorder, #007fd4);
+  /* Which of Preview/Edit-source you are in. Filled rather than outlined —
+     an outline alone is easy to miss at 15px. */
+  color: var(--vscode-foreground, #ccc);
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  border-color: var(--vscode-editorWidget-border, #454545);
+}
+.desk-ft-viewer-action:focus-visible,
+.desk-ft-open-ext:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  outline-offset: 1px;
 }
 .desk-ft-editor {
   display: block;
@@ -675,6 +695,28 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   // Keep in sync with src/desktop/file-icons.ts fileIconId().
   const iconIdFn = fileIconId.toString();
   return `(() => {
+  // Lucide (ISC), inlined rather than fetched: the panel is injected into an
+  // already-loaded document and must not depend on another network or disk read
+  // to draw its own toolbar. currentColor throughout so they follow the theme
+  // the way the rest of the chrome does.
+  const FT_ICON = {
+    // book-open-text
+    preview:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/></svg>',
+    // code
+    code:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>',
+    // pencil
+    edit:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>',
+    // save
+    save:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg>',
+    // app-window
+    openExternal:
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/></svg>',
+  };
+
   const api = window.grokDesktopFileTree;
   if (!api || typeof api.list !== "function") return { ok: false, reason: "no bridge" };
 
@@ -1349,37 +1391,50 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     });
 
     if (currentFile && (currentFile.kind === "markdown" || currentFile.kind === "text" || currentFile.kind === "json")) {
+      const action = (icon, label, onClick, extraClass) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "desk-ft-viewer-action" + (extraClass ? " " + extraClass : "");
+        b.innerHTML = icon;
+        // Icon-only, so the accessible name and the tooltip are the only label
+        // there is — both, not one: title alone is invisible to a screen reader
+        // and aria-label alone shows nothing on hover.
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        b.addEventListener("click", onClick);
+        crumb.appendChild(b);
+        return b;
+      };
+
       if (currentFile.kind === "markdown") {
-        const preview = document.createElement("button");
-        preview.type = "button";
-        preview.className = "desk-ft-viewer-action" + (currentFile.mode === "preview" ? " desk-ft-active" : "");
-        preview.textContent = "Preview";
-        preview.addEventListener("click", () => setViewerMode("preview", currentFile.editing));
-        crumb.appendChild(preview);
-        const code = document.createElement("button");
-        code.type = "button";
-        code.className = "desk-ft-viewer-action" + (currentFile.mode === "code" ? " desk-ft-active" : "");
-        code.textContent = "Code";
-        code.addEventListener("click", () => setViewerMode("code", true));
-        crumb.appendChild(code);
+        // Markdown gets Preview/Code and NOT Edit: switching to Code already
+        // makes the source editable, so an Edit button beside it would be a
+        // second control for the thing you just did.
+        action(
+          FT_ICON.preview,
+          "Preview",
+          () => setViewerMode("preview", currentFile.editing),
+          currentFile.mode === "preview" ? "desk-ft-active" : "",
+        );
+        action(
+          FT_ICON.code,
+          "Edit source",
+          () => setViewerMode("code", true),
+          currentFile.mode === "code" ? "desk-ft-active" : "",
+        );
+      } else if (!currentFile.editing) {
+        // Plain text and JSON have no rendered form to toggle against, so Edit
+        // is the only way in.
+        action(FT_ICON.edit, "Edit", () => setViewerMode("code", true));
       }
-      if (!currentFile.editing) {
-        const edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "desk-ft-viewer-action";
-        edit.textContent = "Edit";
-        edit.title = "Edit this text file";
-        edit.addEventListener("click", () => setViewerMode("code", true));
-        crumb.appendChild(edit);
-      }
+
       if (currentFile.editing) {
-        const save = document.createElement("button");
-        save.type = "button";
-        save.className = "desk-ft-viewer-action desk-ft-save";
-        save.textContent = "Save";
-        save.title = "Save (Ctrl+S / Cmd+S)";
-        save.addEventListener("click", () => { void saveFile(); });
-        crumb.appendChild(save);
+        action(
+          FT_ICON.save,
+          "Save (Ctrl+S)",
+          () => { void saveFile(); },
+          "desk-ft-save",
+        );
       }
       const dot = document.createElement("span");
       dot.className = "desk-ft-dirty-dot";
@@ -1391,8 +1446,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     const openExt = document.createElement("button");
     openExt.type = "button";
     openExt.className = "desk-ft-open-ext";
-    openExt.textContent = "Open in default app";
-    openExt.title = "Open this file in the system default application";
+    openExt.innerHTML = FT_ICON.openExternal;
+    openExt.title = "Open in default app";
+    openExt.setAttribute("aria-label", "Open in default app");
     openExt.addEventListener("click", async () => {
       try { await api.open(relPath); } catch (_) { /* */ }
     });

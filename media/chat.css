@@ -221,7 +221,16 @@ body.rail-resizing * {
   border-radius: 6px;
   cursor: pointer;
 }
-.rail-icon-btn:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+/* Derived from the FOREGROUND, not a fixed surface token. These buttons only
+   appear on a row that is itself hovered or actively selected, and
+   toolbar-hoverBackground is close enough to both row highlights that the
+   button had no visible edge — you could not tell the pin was a button until
+   you clicked it. A translucent tint of the text colour keeps a constant step
+   above whatever the row is doing underneath, in either theme. */
+.rail-icon-btn:hover {
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
+}
 .rail-icon-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .rail-icon-btn svg { width: 16px; height: 16px; display: block; }
 .rail-toolbar {

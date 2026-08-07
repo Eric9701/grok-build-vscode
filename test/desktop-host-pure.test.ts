@@ -2328,10 +2328,16 @@ describe("file-tree editing panel contract", () => {
   it("has the Markdown default preview, edit/save controls, scoped save shortcut, and safe confirmations", () => {
     const src = fileTreePanelBootSource();
     expect(src).toContain('mode: result.kind === "markdown" ? "preview"');
-    expect(src).toContain('textContent = "Preview"');
-    expect(src).toContain('textContent = "Code"');
-    expect(src).toContain('textContent = "Edit"');
-    expect(src).toContain('textContent = "Save"');
+    // Icon buttons now, so the assertion is on the accessible name rather than
+    // visible text — that is what a user of either eyes or a screen reader
+    // actually gets. "Edit" is deliberately absent for Markdown: Edit source
+    // already makes it editable, so a separate Edit would be a second control
+    // for the thing you just did.
+    expect(src).toContain('"Preview"');
+    expect(src).toContain('"Edit source"');
+    expect(src).toContain('aria-label');
+    expect(src).toContain("FT_ICON.save");
+    expect(src).toContain('"Save (Ctrl+S)"');
     expect(src).toContain('event.ctrlKey || event.metaKey');
     expect(src).toContain('event.preventDefault();');
     expect(src).toContain('confirmLabel: "Discard"');
