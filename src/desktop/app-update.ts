@@ -90,8 +90,11 @@ export function pickLatestDesktopRelease(
   let best: { version: string; url: string; semver: Semver } | null = null;
   for (const r of releases) {
     if (!r || r.draft) continue;
-    // Stable channel only — pre-releases are opt-in elsewhere.
-    if (r.prerelease) continue;
+    // Pre-releases COUNT. Skipping them is the usual default and it was exactly
+    // wrong here: the desktop app ships pre-release while it is unsigned, so a
+    // stable-only check would never fire for the very users this exists to
+    // reach — everyone on the first builds, told about nothing, forever.
+    // Drafts stay excluded because their assets 404 for anonymous downloads.
     const assets = Array.isArray(r.assets) ? r.assets : [];
     if (!assets.some((a: { name?: string }) => isDesktopInstallerAsset(a?.name))) continue;
     const tag = r.tag_name || r.name || "";

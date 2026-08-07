@@ -45,6 +45,15 @@ export interface FileTreeIpcOptions {
   revealSinkPath?: string;
 }
 
+/** Same-file test that tolerates separator and drive-letter case on Windows. */
+function pathsEquivalent(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const resolved = path.resolve(p);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return norm(a) === norm(b);
+}
+
 let handlersRegistered = false;
 let closeBoundWindow: BrowserWindow | null = null;
 let closeBoundHandler: ((event: ElectronEvent) => void) | null = null;
@@ -242,10 +251,25 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
       relPath?: unknown;
       text?: unknown;
       stamp?: unknown;
+      absPath?: unknown;
     };
     if (typeof request.relPath !== "string" || typeof request.text !== "string") {
       return { ok: false as const, reason: "invalid save request" };
     }
+    // A save carries the absolute path it was READ at, and it must still be the
+    // path this relPath resolves to under the CURRENT root.
+    //
+    // Without this the save carried only a relative path, and the root was read
+    // fresh here — so a tab still open on repo A, saved after the active folder
+    // moved to repo B, wrote A's text into B's same-named file. The mtime stamp
+    // caught the common case, and then offered Overwrite, which completed the
+    // loss. A path that no longer means what it meant is not a conflict to
+    // resolve; it is a different file.
+    if (typeof request.absPath !== "string" || !request.absPath) {
+      return { ok: false as const, reason: "invalid save request" };
+    }
+    // The comparison itself lives in writeTreeFile, beside the stamp check, so
+    // it is decidable from arguments and cannot be skipped by a caller.
     const stamp = request.stamp as Partial<TreeFileStamp> | undefined;
     if (
       !stamp ||
@@ -256,6 +280,7 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     }
     const result = writeTreeFile(root, request.relPath, request.text, stamp as TreeFileStamp, {
       isExecutableOpenTarget: (absPath) => isExecutableOpenTarget(absPath),
+      expectedAbsPath: request.absPath,
     });
     if (!result.ok) {
       opts.log(`[desk-ft] save rejected: ${result.reason} (${request.relPath})`);

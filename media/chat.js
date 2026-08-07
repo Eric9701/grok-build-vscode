@@ -1294,6 +1294,18 @@
   window.__grokRenderMarkdown = (raw) => renderMarkdown(String(raw == null ? "" : raw));
 
   function renderMarkdown(raw) {
+    // Normalise line endings FIRST. Everything below splits on a newline and
+    // then tests each line with $-anchored patterns -- and a carriage return
+    // is a line terminator in JS regex, so `.` cannot match one. On a CRLF
+    // file every $-anchored rule therefore failed at the final character:
+    // headings kept their hashes and bullets kept their dashes, falling
+    // through to the paragraph path, while tables, links and bold (not
+    // $-anchored) carried on working. That combination is what made it look
+    // like the renderer was mostly fine.
+    //
+    // Surfaced in the desktop file panel because it renders whole files off
+    // disk and most files on Windows are CRLF -- but it was never panel-only.
+    raw = String(raw == null ? "" : raw).replace(/\r\n?/g, "\n");
     const codeBlocks = [];
     // Fence is 3+ backticks; the closing fence must be the SAME length (\1
     // backreference). This lets an outer block fenced by 4/5 backticks wrap an

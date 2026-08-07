@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { alwaysApproveSource, configForcesAlwaysApprove } from "../src/grok-config";
 import { sessionScopedRoots } from "../src/auth-roots";
-import { resolveTreePath } from "../src/desktop/file-tree";
+import { resolveTreePath, writeTreeFile } from "../src/desktop/file-tree";
 
 // Platform-injected fs stubs so both path worlds are testable from either OS —
 // the whole reason the bug below survived is that nothing exercised POSIX.
@@ -233,5 +233,89 @@ describe("POSIX absolute paths are recognised as absolute", () => {
     const r = resolveTreePath("C:\proj", "/src/main.ts", "win32", win32Fs);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.relPath).toBe("src/main.ts");
+  });
+});
+
+describe("a save cannot follow the workspace to another project", () => {
+  // Found by review, hours before release. A tab left open on repo A and saved
+  // after the active folder moved to repo B wrote A's text into B's same-named
+  // file: the save carried only a relative path and the host resolved it
+  // against whatever root was current. The mtime stamp caught the common case
+  // and then offered Overwrite, which completed the loss.
+  const ipcSrc = () =>
+    fs.readFileSync(path.join(__dirname, "..", "src", "desktop", "file-tree-ipc.ts"), "utf8");
+
+  it("the save handler refuses when the read-time path no longer resolves there", () => {
+    const src = ipcSrc();
+    const start = src.indexOf("ipcMain.handle(CH_SAVE");
+    expect(start).toBeGreaterThan(0);
+    const body = src.slice(start, src.indexOf("const win = opts.getMainWindow()", start));
+    // The handler's job is to PASS the binding; the comparison itself lives in
+    // writeTreeFile, beside the stamp check, where it is decidable from
+    // arguments and cannot be skipped by a caller. Behavioural coverage of the
+    // comparison is below.
+    expect(body).toContain("request.absPath");
+    expect(body).toContain("expectedAbsPath");
+  });
+
+  it("the panel sends the path it read, on both the normal and overwrite paths", () => {
+    // Overwrite is the dangerous one: it is the branch the user reaches AFTER
+    // being told the file changed, so it must carry the binding too.
+    const panel = fs.readFileSync(
+      path.join(__dirname, "..", "src", "desktop", "file-tree-panel.ts"),
+      "utf8",
+    );
+    const saves = panel.match(/api\.save\(\{[^}]*\}/g) || [];
+    expect(saves.length).toBeGreaterThanOrEqual(2);
+    for (const call of saves) expect(call).toContain("absPath");
+  });
+});
+
+describe("writeTreeFile refuses a path that has moved projects", () => {
+  // Behavioural, not structural: the earlier version of this test asserted on
+  // the source text and survived replacing the whole guard with `if (false)`.
+  const stamp = { mtimeMs: 1, size: 1 };
+  const opts = {
+    platform: "linux" as NodeJS.Platform,
+    isExecutableOpenTarget: () => false,
+    readFileSync: () => Buffer.from("x"),
+    writeFileSync: () => {},
+    renameSync: () => {},
+    unlinkSync: () => {},
+    pathFs: {
+      realpathSync: (p: string) => p,
+      existsSync: () => true,
+      statSync: () => ({
+        isFile: () => true,
+        isDirectory: () => false,
+        isSymbolicLink: () => false,
+        mtimeMs: 1,
+        size: 1,
+        mode: 0o644,
+      }),
+      lstatSync: () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false }),
+      readdirSync: () => [],
+      sep: "/",
+    },
+  } as never;
+
+  it("refuses when the same relPath now resolves under a different root", () => {
+    // The tab was read at /work/repo-a/README.md; the active folder has since
+    // moved to repo-b, where README.md is a completely different file.
+    const r = writeTreeFile("/work/repo-b", "README.md", "A's text", stamp, {
+      ...(opts as object),
+      expectedAbsPath: "/work/repo-a/README.md",
+    } as never);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("workspace changed");
+  });
+
+  it("allows the write when the path still means the same file", () => {
+    const r = writeTreeFile("/work/repo-a", "README.md", "A's text", stamp, {
+      ...(opts as object),
+      expectedAbsPath: "/work/repo-a/README.md",
+    } as never);
+    // Reaches past the binding check (whatever else it then decides).
+    if (!r.ok) expect(r.reason).not.toBe("workspace changed");
   });
 });

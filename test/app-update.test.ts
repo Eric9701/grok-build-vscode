@@ -100,9 +100,12 @@ describe("pickLatestDesktopRelease / noticeIfUpdateAvailable", () => {
       assets: [{ name: "Grok-Build-Desktop-9.9.9-win-x64.exe" }],
     },
     {
+      // Not a pre-release any more: this app SHIPS pre-release, so excluding
+      // them would have meant never notifying the users it exists for. The
+      // fixture keeps a non-installer release instead, which is the real reason
+      // a release gets skipped.
       tag_name: "v9.8.8",
-      prerelease: true,
-      assets: [{ name: "Grok-Build-Desktop-9.8.8-win-x64.exe" }],
+      assets: [{ name: "grok-vscode-phuryn-9.8.8.vsix" }],
     },
   ];
 
@@ -138,5 +141,28 @@ describe("updateAvailable remote policy (host-local both ways)", () => {
 
   it("keeps openUpdateRelease inbound host-local so a phone cannot open desk updates", () => {
     expect(INBOUND_DISPOSITION.openUpdateRelease).toBe("host-local");
+  });
+});
+
+describe("pre-releases count", () => {
+  // The desktop app ships pre-release while it is unsigned. A stable-only check
+  // is the usual default and was exactly wrong here: it would never fire for
+  // anyone on the first builds — the very users the notice exists to reach.
+  const asset = { name: "Grok-Build-Desktop-3.3.0-win-x64.exe", browser_download_url: "https://x/y" };
+
+  it("notifies about a newer pre-release", () => {
+    const notice = pickLatestDesktopRelease([
+      { tag_name: "v3.3.0", draft: false, prerelease: true, assets: [asset] },
+    ]);
+    expect(notice).not.toBeNull();
+    expect(notice!.version).toContain("3.3.0");
+  });
+
+  it("still ignores drafts, whose assets 404 for anonymous downloads", () => {
+    expect(
+      pickLatestDesktopRelease([
+        { tag_name: "v3.3.0", draft: true, prerelease: true, assets: [asset] },
+      ]),
+    ).toBeNull();
   });
 });

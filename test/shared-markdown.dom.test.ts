@@ -60,3 +60,42 @@ describe("shared markdown renderer (window.__grokRenderMarkdown)", () => {
     expect(() => fn(undefined)).not.toThrow();
   });
 });
+
+describe("CRLF files render like LF ones", () => {
+  // Most files on Windows are CRLF, and the desktop panel renders whole files
+  // off disk, so this was the normal case rather than an edge one.
+  //
+  // The renderer splits on a newline and then tests each line with $-anchored
+  // patterns. A carriage return is a line terminator in JS regex, so `.` cannot
+  // match one, and every $-anchored rule failed at the final character:
+  // headings kept their hashes, bullets kept their dashes, and both fell
+  // through to the paragraph path. Tables, links and bold are not $-anchored,
+  // so they kept working — which is why it looked like the renderer was mostly
+  // fine, and why this survived review.
+  const CRLF = "# Title\r\n\r\n## Section\r\n\r\n- one\r\n- two\r\n\r\n1. first\r\n";
+
+  it("renders headings from a CRLF document", () => {
+    const out = render(CRLF);
+    expect(out).toContain("<h1");
+    expect(out).toContain("<h2");
+    expect(out).not.toContain("# Title");
+    expect(out).not.toContain("## Section");
+  });
+
+  it("renders bullets and numbered lists from a CRLF document", () => {
+    const out = render(CRLF);
+    expect(out).toContain("<ul");
+    expect(out).toContain("<ol");
+    expect(out).toContain("<li");
+  });
+
+  it("produces exactly the same html as the LF form", () => {
+    // The strongest statement of the rule: line endings must not be able to
+    // change the output at all.
+    expect(render(CRLF)).toBe(render(CRLF.replace(/\r\n/g, "\n")));
+  });
+
+  it("survives a lone-CR document", () => {
+    expect(render("# Old Mac\r\r- item\r")).toContain("<h1");
+  });
+});

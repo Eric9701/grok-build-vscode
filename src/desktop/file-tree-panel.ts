@@ -1829,6 +1829,10 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       originalText: result.text || "",
       // Per-tab conflict stamp — never share across files.
       stamp: result.stamp || (result.details && result.details.stamp),
+      // The absolute path this tab was READ at. Sent back on save so the host
+      // can refuse if the same relative path now resolves somewhere else —
+      // otherwise a tab left open on one project writes into the next one.
+      absPath: result.absPath,
       dataUrl: result.dataUrl,
       mode: result.kind === "markdown" ? "preview" : "read",
       editing: false,
@@ -1856,7 +1860,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     setViewerNotice("");
     let result;
     try {
-      result = await api.save({ relPath: file.relPath, text, stamp: file.stamp });
+      result = await api.save({ relPath: file.relPath, text, stamp: file.stamp, absPath: file.absPath });
     } catch (e) {
       setViewerNotice(String((e && e.message) || e));
       return false;
@@ -1890,7 +1894,7 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
         // Stamp is still per-file — only refresh THIS tab's version.
         file.stamp = fresh.stamp || fresh.details.stamp;
         let overwrite;
-        try { overwrite = await api.save({ relPath: file.relPath, text, stamp: file.stamp }); } catch (_) { overwrite = null; }
+        try { overwrite = await api.save({ relPath: file.relPath, text, stamp: file.stamp, absPath: file.absPath }); } catch (_) { overwrite = null; }
         if (overwrite && overwrite.ok) {
           file.text = text;
           file.originalText = text;

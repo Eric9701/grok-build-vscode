@@ -101,6 +101,18 @@ export interface WriteTreeFileOptions {
   unlinkSync?: (p: string) => void;
   /** Supplied by the host so writes use the same executable policy as opens. */
   isExecutableOpenTarget: (p: string) => boolean;
+  /**
+   * The absolute path this content was READ at. When given, the write refuses
+   * unless `relPath` still resolves there under `root`.
+   *
+   * The stamp answers "did this file change?"; this answers the question that
+   * comes first -- "is this still the same file?". A tab left open on one
+   * project and saved after the active folder moved to another resolved its
+   * relative path against the new root and wrote into the other project's
+   * same-named file. The stamp caught the common case and then offered
+   * Overwrite, which completed the loss.
+   */
+  expectedAbsPath?: string;
 }
 
 const defaultTreeFs: TreePathFs = {
@@ -616,6 +628,20 @@ export function writeTreeFile(
 
   const resolved = resolveTreePath(root, relPath, platform, pathFs);
   if (!resolved.ok) return { ok: false, reason: resolved.reason };
+  // Same file, not just same relative name. See expectedAbsPath.
+  if (options.expectedAbsPath) {
+    // Normalise separators and (on Windows) case, but do NOT re-resolve through
+    // the host path module: `platform` is injectable, and resolving a posix
+    // path on a Windows box mixes the two worlds and fails a comparison that
+    // should have passed.
+    const norm = (p: string) => {
+      const slashed = p.replace(/\\/g, "/").replace(/\/+$/, "");
+      return platform === "win32" ? slashed.toLowerCase() : slashed;
+    };
+    if (norm(resolved.absPath) !== norm(options.expectedAbsPath)) {
+      return { ok: false, reason: "workspace changed" };
+    }
+  }
   const realAtCheck = canonicalPath(resolved.absPath, pathFs);
 
   let st: fs.Stats;
