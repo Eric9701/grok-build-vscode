@@ -225,18 +225,17 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   clearQueuedSends: "propose",
   steerSend: "propose",
   forkSession: "propose",
-  // Worktree create/apply/remove and rewind are driven by native VS Code UI on
-  // the host (input box for the worktree label, confirms, QuickPick) — a remote
-  // tap would stall on a dialog nobody at the desk can see. Desktop-only until
-  // the flows get remote-capable UI (2026-07-24; the remote client also hides
-  // these gear items).
-  newWorktreeSession: "host-local",
-  applyWorktree: "host-local",
-  removeWorktree: "host-local",
+  // Worktree create/apply/remove: allowed from remote (2026-08-07). Authorization
+  // (git-list / path containment) is unchanged — this only widens who may ask.
+  // Create skips the host input box for remote origin (auto label) so a phone
+  // tap never stalls on a desk dialog. Apply/Remove already confirm in-webview.
+  newWorktreeSession: "propose",
+  applyWorktree: "propose",
+  removeWorktree: "propose",
+  // Rewind discards work already on disk — stays host-local. Desktop (local
+  // host) supports it via confirmInChat; remote must not.
   rewindSession: "host-local",
-  // Edit-and-resend is a rewind underneath (native modal confirm), so it carries
-  // the same desktop-only restriction — and it discards code, which a remote tap
-  // must not trigger against a desk nobody is watching.
+  // Edit-and-resend is a rewind underneath, so the same host-local gate.
   editLastMessage: "host-local",
   // The last gate before a rewind reverts files — only the local webview answers.
   uiConfirmAnswer: "host-local",
@@ -274,6 +273,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   openProjectConfig: "host-local",
   runMcpList: "host-local",
   showLogs: "host-local",
+  openSettings: "host-local",
   moveView: "host-local",
   dropFile: "host-local",
   pickFile: "host-local",
@@ -291,6 +291,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setProcessingSound: "host-local",
   setReadRepliesAloud: "host-local",
   setSummarizeRepliesAloud: "host-local",
+  // Machine-global disclosure preference in ~/.grok/client-state — the web
+  // client inherits and may set it (host-owned store, not VS Code settings).
+  setAppPurpose: "propose",
   // A remote may spend one extra xAI call to shorten text it is about to speak.
   // The host independently requires that tab's reported TTS + summary prefs.
   summarizeSpeech: "propose",
@@ -413,6 +416,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   voiceError: "mirror",
   initialState: "mirror",
   showThinking: "mirror",
+  appPurpose: "mirror",
   fontScale: "mirror",
   grokUpdateStatus: "mirror",
   initialized: "mirror",
@@ -522,6 +526,7 @@ export type OutboundProjectAuth =
 export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth> = {
   // Device-global / host chrome — not project data.
   showThinking: "none",
+  appPurpose: "none",
   fontScale: "none",
   grokUpdateStatus: "none",
   cliUpdating: "none",

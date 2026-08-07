@@ -68,11 +68,11 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.setSummarizeRepliesAloud).toBe("host-local");
     expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
     expect(INBOUND_DISPOSITION.requestImageFull).toBe("propose");
-    // worktree/rewind flows run native host dialogs (input box / QuickPick) —
-    // desktop-only until they get remote-capable UI (2026-07-24)
-    expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
-    expect(INBOUND_DISPOSITION.applyWorktree).toBe("host-local");
-    expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");
+    // Worktree create/apply/remove are remote-allowed (authorization unchanged);
+    // rewind stays host-local — it discards work already on disk.
+    expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("propose");
+    expect(INBOUND_DISPOSITION.applyWorktree).toBe("propose");
+    expect(INBOUND_DISPOSITION.removeWorktree).toBe("propose");
     expect(INBOUND_DISPOSITION.rewindSession).toBe("host-local");
     // relay account actions manage THIS machine's device token
     expect(INBOUND_DISPOSITION.remoteSignIn).toBe("host-local");

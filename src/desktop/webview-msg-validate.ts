@@ -80,6 +80,9 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "openProjectConfig":
     case "runMcpList":
     case "showLogs":
+    case "openSettings":
+      if (type === "openSettings" && raw.section !== undefined && !isString(raw.section)) return null;
+      break;
     case "runInstallCmd":
     case "runGrokLogin":
     case "logout":
@@ -154,6 +157,9 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       } else if (!isBoolean(raw.value)) {
         return null;
       }
+      break;
+    case "setAppPurpose":
+      if (raw.value !== "knowledge" && raw.value !== "coding") return null;
       break;
     case "summarizeSpeech":
       if (!isNumber(raw.requestId) || !isString(raw.text)) return null;

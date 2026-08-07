@@ -211,6 +211,12 @@ import {
   parseRunProgressUpdate,
   workflowControlCommand,
 } from "./run-progress";
+import {
+  APP_PURPOSE_KEY,
+  DEFAULT_APP_PURPOSE,
+  parseAppPurpose,
+  type AppPurpose,
+} from "./app-purpose";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -462,7 +468,7 @@ export class GrokSidebar {
   // remote turn. `grok.remote.keepAwake` is the opt-out. See src/keep-awake.ts.
   private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
-    "showThinking", "fontScale", "grokUpdateStatus", "cliUpdating",
+    "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
     "onboarding", "expandCommandOutputs", "steerByDefault", "soundNotifications",
   ]);
   private cliPath?: string;
@@ -1845,7 +1851,13 @@ See design doc for the full state machine diagram.`;
    * fresh session whose cwd is that worktree. Edits stay out of the main
    * checkout until the user runs Apply Worktree.
    */
-  async newWorktreeSession(): Promise<void> {
+  /**
+   * Create an isolated worktree session. Authorization (git worktree list /
+   * path containment) is unchanged for remote callers — only the label prompt
+   * is skipped when `fromRemote` is true so a phone tap never stalls on a desk
+   * input box (auto-named worktree instead).
+   */
+  async newWorktreeSession(opts?: { fromRemote?: boolean }): Promise<void> {
     // No worktree-from-worktree — checkouts stay singular. The gear hides this
     // inside a worktree; guard the Command-Palette path too.
     if (this.focused.worktree) {
@@ -1859,13 +1871,18 @@ See design doc for the full state machine diagram.`;
         "Worktree sessions need a git repository. Open a folder that is a git checkout (or run git init).",
       );
     }
-    const rawLabel = await this.host.showInputBox({
-      prompt: "Worktree label (optional)",
-      placeHolder: "e.g. feat-auth — leave blank for an auto name",
-      ignoreFocusOut: true,
-    });
-    if (rawLabel === undefined) return; // cancelled
-    const label = sanitizeWorktreeLabel(rawLabel);
+    // Remote origin: skip the host input box (invisible to the phone). Local
+    // and Command Palette still prompt for an optional label.
+    let label = "";
+    if (!opts?.fromRemote) {
+      const rawLabel = await this.host.showInputBox({
+        prompt: "Worktree label (optional)",
+        placeHolder: "e.g. feat-auth — leave blank for an auto name",
+        ignoreFocusOut: true,
+      });
+      if (rawLabel === undefined) return; // cancelled
+      label = sanitizeWorktreeLabel(rawLabel);
+    }
 
     await this.host.withProgress(
       { title: "Creating git worktree…", cancellable: false },
@@ -4614,8 +4631,15 @@ See design doc for the full state machine diagram.`;
         await this.forkFocusedSession(session, requester);
         break;
       case "newWorktreeSession":
-        await this.newWorktreeSession();
+        await this.newWorktreeSession({ fromRemote: origin === "remote" });
         break;
+      case "setAppPurpose": {
+        const purpose = parseAppPurpose(msg.value);
+        await this.state.update(APP_PURPOSE_KEY, purpose);
+        // Mirror to every open view (local + remote) so disclosure stays in sync.
+        this.post({ type: "appPurpose", value: purpose });
+        break;
+      }
       case "applyWorktree":
         // The webview's custom confirm already ran (native modals stay only on
         // the Command-Palette path).
@@ -4887,6 +4911,9 @@ See design doc for the full state machine diagram.`;
       }
       case "showLogs":
         this.host.showOutput();
+        break;
+      case "openSettings":
+        await this.host.openSettings(typeof msg.section === "string" ? msg.section : "grok");
         break;
       case "moveView": {
         // Gear -> Config & debug -> Move view. Each destination targets an
@@ -7682,6 +7709,11 @@ See design doc for the full state machine diagram.`;
     this.sessionCache.delete(sid);
   }
 
+  /** Global "Use this app for" from ~/.grok/client-state (absent → Knowledge work). */
+  private appPurpose(): AppPurpose {
+    return parseAppPurpose(this.state.get<string>(APP_PURPOSE_KEY));
+  }
+
   private buildInitialStateMsg(): HostMsg {
     const cfg = this.host.getConfiguration("grok");
     const cwd = this.workspaceRoot();
@@ -7697,6 +7729,7 @@ See design doc for the full state machine diagram.`;
       soundNotifications: cfg.get("soundNotifications", false),
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
+      appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
       // Wire baseline + host-kind UI affordances (gear Move view / Show logs).
       capabilities: {
         ...HOST_CAPABILITIES,
@@ -10029,6 +10062,7 @@ See design doc for the full state machine diagram.`;
     <div id="rail-scroll" class="rail-scroll"></div>
     <div class="rail-foot">
       <div class="rail-user" aria-hidden="true"></div>
+      <button id="rail-gear-btn" class="rail-icon-btn" type="button" title="Settings" aria-label="Settings" hidden></button>
       <button id="desk-theme-toggle" class="rail-icon-btn" type="button" title="Toggle theme" aria-label="Toggle light and dark theme">
         <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12H5M19 12h2.5M4.2 19.8L6 18M18 6l1.8-1.8"/></svg>
         <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.2 6.2 0 0 0 10.5 10.5z"/></svg>

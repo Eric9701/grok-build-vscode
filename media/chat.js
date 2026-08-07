@@ -535,6 +535,11 @@
     // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
     // async grokUpdateStatus only re-renders About when it's the visible view.
     gearView: "main",
+    // Which button opened the popover: "composer" (this conversation — model,
+    // effort, where it continues) or "rail" (the app — account, purpose,
+    // settings, about). Only meaningful once a rail gear exists; in VS Code the
+    // one composer button owns both and this stays inert.
+    gearSurface: "composer",
     // Latest `grok update --check` result for the About panel: { checking } while
     // in flight, then { current, latest, updateAvailable, error }.
     grokUpdate: null,
@@ -555,6 +560,7 @@
     // a lightweight "Thinking…" indicator stands in while grok reasons (and no
     // tool/Grokking indicator is already showing). Toggle lives in gear → Config
     // & debug. The host posts the real value on init and on config change.
+    // Effective display also requires Coding app-purpose (see isCodingPurpose).
     showThinking: false,
     thinkingIndicatorEl: null,
     // Command rows awaiting their output ({command, details, done}) — the
@@ -564,7 +570,14 @@
     // grok.expandCommandOutputs (persisted, global): the standing DEFAULT for
     // new content — command IN/OUT details pre-open, and command-bearing groups
     // auto-open. Command scope only (explore/edit groups stay collapsed).
+    // Effective expand also requires Coding app-purpose.
     expandCommandOutputs: false,
+    // Global "Use this app for" — Knowledge work (default) | Coding. Absent from
+    // an older host means Knowledge work (smaller surface). Stored on the host
+    // in ~/.grok/client-state; never invent a second store.
+    appPurpose: "knowledge",
+    // CLI worktree RPCs assumed supported until create returns unsupported.
+    worktreeSupported: true,
     // grok.steerByDefault (persisted, global): when true a message sent while
     // grok is working SKIPS the queue and is interjected into the running turn.
     // False = today's behavior (queue, with an on-demand Steer button).
@@ -636,6 +649,11 @@
     square: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>`,
     spinner: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
     gear: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`,
+    // lucide settings-2 (sliders). The composer button wears this once the rail
+    // has taken the app-level settings: sliders read as "adjust what's in front
+    // of me", the gear as "configure the product". Two gears side by side read
+    // as a duplicate; these two do not.
+    settings2: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>`,
     shield: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>`,
     bot: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`,
     listTree: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></svg>`,
@@ -1265,6 +1283,14 @@
     return `<code class="diff-code">${body}</code>`;
   }
 
+  // Published for the desktop file panel, which is injected into THIS document
+  // after load and previews `.md` files. It used to carry its own ~35-line
+  // subset (h1–h3, fences, bold) so bullets and tables simply did not render.
+  // One renderer, one set of behaviours — and it is safe for repo content
+  // because `inline()` escapes &, < and > before doing anything else, so raw
+  // HTML in a README cannot become live markup.
+  window.__grokRenderMarkdown = (raw) => renderMarkdown(String(raw == null ? "" : raw));
+
   function renderMarkdown(raw) {
     const codeBlocks = [];
     // Fence is 3+ backticks; the closing fence must be the SAME length (\1
@@ -1751,6 +1777,40 @@
 
   // ---------- gear popover ----------
 
+  /** Coding purpose unlocks worktrees, thinking traces, and tool-detail toggles. */
+  function isCodingPurpose() {
+    return state.appPurpose === "coding";
+  }
+
+  /** Knowledge work always hides traces; Coding honours the user toggle. */
+  function effectiveShowThinking() {
+    return isCodingPurpose() && !!state.showThinking;
+  }
+
+  /** Knowledge work never pre-expands tool details; Coding honours the toggle. */
+  function effectiveExpandCommandOutputs() {
+    return isCodingPurpose() && !!state.expandCommandOutputs;
+  }
+
+  function setAppPurpose(value) {
+    const next = value === "coding" ? "coding" : "knowledge";
+    if (state.appPurpose === next) return;
+    state.appPurpose = next;
+    vscode.postMessage({ type: "setAppPurpose", value: next });
+    applyThinkingVisibility();
+    applyExpandCommandOutputs();
+    // Re-render open gear panels so hidden items appear/disappear live.
+    if (!gearPopover.hidden) {
+      if (state.gearView === "main") renderGearMain();
+      else if (state.gearView === "config" || state.gearView === "basic" || state.gearView === "advanced") {
+        if (state.gearView === "basic") renderBasicSettingsPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+        else renderConfigDebugPanel();
+      }
+    }
+    syncGearPlacement();
+  }
+
   function addSection(label) {
     const el = document.createElement("div");
     el.className = "popover-section";
@@ -1981,6 +2041,21 @@
     state.gearView = "main";
     gearPopover.innerHTML = "";
 
+    // Two surfaces, one popover. With a rail gear the composer holds what is
+    // about THIS CONVERSATION (model, effort, where it continues) and the rail
+    // holds what is about THE APP (account, purpose, settings, about). Without
+    // one — VS Code — both flags are true and nothing is split, which is why
+    // this needs no host branch.
+    const split = railGearLive();
+    const showConversation = !split || state.gearSurface !== "rail";
+    const showApp = !split || state.gearSurface === "rail";
+
+    if (showConversation) renderGearConversation();
+    if (showApp) renderGearApp();
+  }
+
+  /** Model + effort, and where this conversation continues. */
+  function renderGearConversation() {
     // ── Model + effort header ─────────────────────────────────────────────
     const modelEffortSection = document.createElement("div");
     modelEffortSection.className = "popover-section popover-section-first";
@@ -2045,6 +2120,40 @@
     row.appendChild(dotsEl);
     gearPopover.appendChild(row);
 
+    // ── Session ───────────────────────────────────────────────────────────
+    // One entry: "Continue in a new chat" (fork ± worktree destination).
+    // Rewind lives on user bubbles, not here. This is about THIS conversation,
+    // so it rides with model/effort on the composer surface.
+    addSection("Session");
+    addGearItem(
+      `<span class="gear-lead">${ICON.gitFork}<span>Continue in a new chat</span></span>`,
+      () => { beginContinueInNewChat(); },
+    );
+    // Worktree Apply/Remove only while already in a worktree (Coding or not —
+    // you're already in one, so the controls must stay reachable).
+    if (state.isWorktree) {
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
+        closePopovers();
+        uiConfirm({
+          title: "Apply worktree?",
+          body: "Merges this worktree's edits back into the main checkout.",
+          confirmLabel: "Apply",
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); });
+      });
+      addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
+        closePopovers();
+        uiConfirm({
+          title: "Remove worktree?",
+          body: "This deletes the isolated checkout. Unapplied edits are lost.",
+          confirmLabel: "Remove",
+          danger: true,
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); });
+      });
+    }
+  }
+
+  /** The app itself: account, what it is used for, settings, about. */
+  function renderGearApp() {
     // ── Remote Control ────────────────────────────────────────────────────
     // The hosted relay account, on the machine that links itself — above
     // Session on purpose (it's about reaching this machine at all). Hidden in
@@ -2081,69 +2190,144 @@
       }
     }
 
-    // ── Session ───────────────────────────────────────────────────────────
-    // Session-LIFECYCLE actions live here; context actions (Compact) live on the
-    // context donut, next to the number that motivates them.
-    addSection("Session");
-    // Fork copies the CONVERSATION (not files). It's fine on a worktree too — the
-    // fork shares that checkout, the same as the Agent Dashboard already running
-    // parallel sessions on one repo; Remove worktree disposes both.
-    addGearItem(`<span class="gear-lead">${ICON.gitFork}<span>Fork conversation</span></span>`, () => {
-      vscode.postMessage({ type: "forkSession" });
-      closePopovers();
-    });
-    // Rewind needs a conversation to roll back — hide it on an empty session.
-    // Rewind + worktrees are desktop-only: their host flows still run native
-    // VS Code UI (QuickPick / input box / progress) a browser user can't see.
-    if (!IS_REMOTE && messagesEl.querySelector(".msg.user")) {
-      addGearItem(`<span class="gear-lead">${ICON.undo}<span>Rewind conversation</span></span>`, () => {
-        vscode.postMessage({ type: "rewindSession" });
-        closePopovers();
-      });
-    }
-    // Worktree = an isolated git checkout, in the one Session menu. New is hidden
-    // INSIDE a worktree (no worktree-from-worktree — checkouts stay singular);
-    // Apply merges edits back and Remove deletes the checkout, so both apply only
-    // to a worktree session. Apply/Remove confirm here (uiConfirm) — the host
-    // skips its native modal for the webview path.
-    if (!IS_REMOTE) {
-      if (!state.isWorktree) {
-        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>New worktree session</span></span>`, () => {
-          vscode.postMessage({ type: "newWorktreeSession" });
-          closePopovers();
-        });
-      } else {
-        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
-          closePopovers();
-          uiConfirm({
-            title: "Apply worktree?",
-            body: "Merges this worktree's edits back into the main checkout.",
-            confirmLabel: "Apply",
-          }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree" }); });
-        });
-        addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
-          closePopovers();
-          uiConfirm({
-            title: "Remove worktree?",
-            body: "This deletes the isolated checkout. Unapplied edits are lost.",
-            confirmLabel: "Remove",
-            danger: true,
-          }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree" }); });
-        });
-      }
-    }
+    // ── Use this app for ──────────────────────────────────────────────────
+    // Progressive disclosure: Knowledge work (default) hides worktrees,
+    // thinking traces and tool details; Coding unlocks them (still default off).
+    addSection("Use this app for");
+    addGearItem(
+      `<span title="Hides worktrees, thinking traces, and tool details. The default for knowledge work.">Knowledge work</span>${state.appPurpose !== "coding" ? '<span class="popover-check">✓</span>' : ""}`,
+      () => { setAppPurpose("knowledge"); renderGearMain(); gearPopover.hidden = false; },
+    );
+    addGearItem(
+      `<span title="Adds worktrees, thinking traces, and tool details (still off by default).">Coding</span>${state.appPurpose === "coding" ? '<span class="popover-check">✓</span>' : ""}`,
+      () => { setAppPurpose("coding"); renderGearMain(); gearPopover.hidden = false; },
+    );
 
-
-    // ── Other ─────────────────────────────────────────────────────────────
-    // Collapses the former Config / Account / Debug sections into sub-views
-    // (mirrors the Model picker), keeping the main menu short.
-    addSection("Other");
+    // ── Settings entry points ─────────────────────────────────────────────
+    // Desktop (rail) uses Basic / Advanced; VS Code keeps Config & debug and
+    // defers most prefs to VS Code settings. Gated on capabilities / rail, not
+    // an IS_DESKTOP flag.
+    if (railMount()) {
+      addSection("Settings");
+      addGearItem('<span>Basic settings</span><span class="popover-chevron">›</span>', () => renderBasicSettingsPanel());
+      addGearItem('<span>Advanced settings</span><span class="popover-chevron">›</span>', () => renderAdvancedSettingsPanel());
+    } else {
+      addSection("Other");
+      addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
+    }
     addGearItem('<span>Version &amp; about</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
-    addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
+    // Log out = Grok CLI credential. Not device unlink (portal only).
     addGearItem("<span>Log out</span>", () => {
       vscode.postMessage({ type: "logout" });
       closePopovers();
     });
+  }
+
+  /**
+   * Destinations under "Continue in a new chat".
+   * Knowledge work / unsupported worktrees / already-in-worktree → workspace only.
+   */
+  function continueChatDestinations() {
+    const dests = [
+      {
+        id: "workspace",
+        label: "Use this workspace",
+        description: "Continue from here in the current checkout",
+      },
+    ];
+    if (isCodingPurpose() && state.worktreeSupported && !state.isWorktree) {
+      dests.push({
+        id: "worktree",
+        label: "Use a new worktree",
+        description: "Continue from here in an isolated checkout",
+      });
+    }
+    return dests;
+  }
+
+  /** One destination → go straight there; several → destination picker. */
+  function beginContinueInNewChat() {
+    const dests = continueChatDestinations();
+    if (dests.length <= 1) {
+      runContinueDestination(dests[0] ? dests[0].id : "workspace");
+      return;
+    }
+    renderContinueDestinationPicker(dests);
+  }
+
+  function runContinueDestination(id) {
+    closePopovers();
+    if (id === "worktree") {
+      vscode.postMessage({ type: "newWorktreeSession" });
+    } else {
+      vscode.postMessage({ type: "forkSession" });
+    }
+  }
+
+  function renderContinueDestinationPicker(dests) {
+    state.gearView = "continue";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Continue in a new chat</span>', renderGearMain);
+    addSection("Where?");
+    dests.forEach((d, i) => {
+      const el = document.createElement("div");
+      el.className = "toolbar-popover-item" + (i === 0 ? " active" : "");
+      el.innerHTML =
+        `<span class="mode-item-body">` +
+          `<span class="mode-item-label">${escapeHtml(d.label)}</span>` +
+          `<span class="mode-item-desc">${escapeHtml(d.description)}</span>` +
+        `</span>`;
+      el.tabIndex = i === 0 ? 0 : -1;
+      el.onclick = (e) => {
+        e.stopPropagation();
+        runContinueDestination(d.id);
+      };
+      gearPopover.appendChild(el);
+      if (i === 0) {
+        // "Use this workspace" is the focused default so Enter does the common thing.
+        requestAnimationFrame(() => { try { el.focus(); } catch { /* */ } });
+      }
+    });
+  }
+
+  /** Basic prefs for rail hosts (desktop / web): sounds, TTS, steer, coding toggles. */
+  function renderBasicSettingsPanel() {
+    state.gearView = "basic";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Basic settings</span>', renderGearMain);
+    appendSharedPreferenceSwitches();
+  }
+
+  /** Advanced prefs for rail hosts: config files, MCP, Logs (not "Extension logs"). */
+  function renderAdvancedSettingsPanel() {
+    state.gearView = "advanced";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Advanced settings</span>', renderGearMain);
+    // Host-local config openers — hide on remote (policy-dropped).
+    if (!IS_REMOTE) {
+      addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "openGlobalConfig" });
+        closePopovers();
+      });
+      addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "openProjectConfig" });
+        closePopovers();
+      });
+      addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
+        vscode.postMessage({ type: "runMcpList" });
+        closePopovers();
+      });
+      // Desktop capability-hid this as "Show extension logs"; un-hide as "Logs".
+      const logsLabel = (state.hostCaps && state.hostCaps.showOutput === false)
+        ? "Logs"
+        : "Show extension logs";
+      addGearItem(`<span>${logsLabel}</span>`, () => {
+        vscode.postMessage({ type: "showLogs" });
+        closePopovers();
+      });
+    } else {
+      addGearInfo("<span>Host config is managed on the desk</span>");
+    }
   }
 
   // About: extension + Grok Build versions, update availability, and an action to
@@ -2238,84 +2422,76 @@
     );
   }
 
-  // Config & debug: the former Config + Debug items behind one sub-view.
-  function renderConfigDebugPanel() {
-    state.gearView = "config";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
-    // Show thinking traces (#26) — a switcher; off by default keeps grok's
-    // reasoning out of the way, on reveals it (incl. on already-loaded sessions).
-    addGearItem(
-      `<span title="Show Grok's reasoning (thinking) traces in chat, including on already-loaded sessions. Off by default — a lightweight &quot;Thinking…&quot; indicator stands in while Grok reasons.">Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
-      () => {
-        state.showThinking = !state.showThinking;
-        applyThinkingVisibility();
-        vscode.postMessage({ type: "setShowThinking", value: state.showThinking });
-        renderConfigDebugPanel(); // re-render so the switch reflects the new state
-      },
-    );
-    if (CLIENT_OWNS_FONT_SCALE) {
+  /**
+   * Shared preference switches used by Config & debug (VS Code) and Basic
+   * settings (rail hosts). `rerender` repaints the open panel after a toggle.
+   */
+  function appendSharedPreferenceSwitches(rerender) {
+    const paint = typeof rerender === "function"
+      ? rerender
+      : () => {
+          if (state.gearView === "basic") renderBasicSettingsPanel();
+          else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+          else renderConfigDebugPanel();
+        };
+
+    // Thinking + tool details only in Coding — Knowledge work hides the controls
+    // and forces traces/details off (see effectiveShowThinking).
+    if (isCodingPurpose()) {
+      addGearItem(
+        `<span title="Show Grok's reasoning (thinking) traces in chat, including on already-loaded sessions. Off by default — a lightweight &quot;Thinking…&quot; indicator stands in while Grok reasons.">Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
+        () => {
+          state.showThinking = !state.showThinking;
+          applyThinkingVisibility();
+          vscode.postMessage({ type: "setShowThinking", value: state.showThinking });
+          paint();
+        },
+      );
+      addGearItem(
+        `<span title="Pre-open each command's IN/OUT block and each edit's inline diff by default, instead of clicking a row (›) to expand it. Edit rows always show a +N −M change count either way.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
+        () => {
+          state.expandCommandOutputs = !state.expandCommandOutputs;
+          state.toolExpandOverride = null;
+          applyExpandCommandOutputs();
+          vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
+          paint();
+        },
+      );
+    }
+
+    // Font size: remote keeps the slider; desktop owns zoom via Ctrl/Cmd +/−/0
+    // (spec: not ported into the menu). VS Code uses host chatFontScale.
+    if (CLIENT_OWNS_FONT_SCALE && IS_REMOTE) {
       const fontRow = document.createElement("div");
       fontRow.className = "toolbar-popover-item remote-font-row";
-      const title = IS_REMOTE
-        ? "Chat text size on this device only. Independent of VS Code's own zoom — the desktop's setting never affects AFK Pilot."
-        : "Chat text size in this window. Ctrl/Cmd + +/−/0 or Ctrl/Cmd + scroll wheel also adjusts it.";
-      const aria = IS_REMOTE ? "AFK Pilot text size" : "Desktop text size";
       fontRow.innerHTML =
-        `<label for="remote-font-scale" title="${title}">Text size</label>` +
-        `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="${aria}">` +
+        `<label for="remote-font-scale" title="Chat text size on this device only. Independent of VS Code's own zoom — the desktop's setting never affects AFK Pilot.">Text size</label>` +
+        `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="AFK Pilot text size">` +
         `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
       const slider = fontRow.querySelector("input");
       const output = fontRow.querySelector("output");
-      slider.oninput = () => {
-        output.textContent = `${slider.value}%`;
-      };
-      slider.onchange = () => {
-        setClientFontScale(Number(slider.value) / 100);
-      };
+      slider.oninput = () => { output.textContent = `${slider.value}%`; };
+      slider.onchange = () => { setClientFontScale(Number(slider.value) / 100); };
       gearPopover.appendChild(fontRow);
     }
-    // Expand tool details (#41/#45) — the persisted default: pre-open every tool
-    // detail surface (a command's IN/OUT block, an edit's inline diff) + the
-    // groups that hold one. Named to match the "Expand/Collapse All Tool Details"
-    // commands. Flipping it clears the per-session Expand/Collapse All latch so the
-    // setting takes over (last action wins). Persisted via grok.expandCommandOutputs
-    // (the key is unchanged — only the user-facing label widened).
-    addGearItem(
-      `<span title="Pre-open each command's IN/OUT block and each edit's inline diff by default, instead of clicking a row (›) to expand it. Edit rows always show a +N −M change count either way.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
-      () => {
-        state.expandCommandOutputs = !state.expandCommandOutputs;
-        state.toolExpandOverride = null;
-        applyExpandCommandOutputs();
-        vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
-        renderConfigDebugPanel();
-      },
-    );
-    // Steer by default (#52) — how a message sent mid-turn behaves. Off keeps
-    // the queue (and the per-message Steer button); on skips the queue entirely.
-    // Hidden when the CLI can't interject: offering a switch that silently does
-    // nothing is worse than not offering it.
+
     if (state.steerSupported) {
       addGearItem(
         `<span title="Send straight into Grok's running turn instead of queueing until it finishes. Steering does not cancel the turn or discard work in progress. Plain text only — no attached files, editor context, or /commands.">Steer by default</span><span class="popover-switch${state.steerByDefault ? " on" : ""}" role="switch" aria-checked="${state.steerByDefault}"><span class="popover-switch-knob"></span></span>`,
         () => {
           state.steerByDefault = !state.steerByDefault;
           vscode.postMessage({ type: "setSteerByDefault", value: state.steerByDefault });
-          renderConfigDebugPanel();
+          paint();
         },
       );
     }
-    // Sound notifications (#59) — a short tone on turn completion / error, played
-    // only when the Grok panel isn't focused (notify me when I've stepped away).
     addGearItem(
       `<span title="Play a short sound when Grok finishes or errors — only when the Grok panel isn't focused. A rising chime for done, a lower tone for errors.">Sound notifications</span><span class="popover-switch${state.soundNotifications ? " on" : ""}" role="switch" aria-checked="${state.soundNotifications}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.soundNotifications = !state.soundNotifications;
         vscode.postMessage({ type: "setSoundNotifications", value: state.soundNotifications });
-        // Unlock the audio context on this user gesture so the first later beep
-        // is allowed (autoplay policy). A no-op when already running.
         if (state.soundNotifications) unlockAudio();
-        renderConfigDebugPanel();
+        paint();
       },
     );
     addGearItem(
@@ -2330,7 +2506,7 @@
           if (processingCueTimer != null) clearTimeout(processingCueTimer);
           processingCueTimer = null;
         }
-        renderConfigDebugPanel();
+        paint();
       },
     );
     if (ttsAvailable) {
@@ -2351,7 +2527,7 @@
               }
             }
           }
-          renderConfigDebugPanel();
+          paint();
         },
       );
       const summarizeEnabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
@@ -2376,7 +2552,7 @@
               value: state.summarizeRepliesAloud,
             });
           }
-          renderConfigDebugPanel();
+          paint();
         };
       } else {
         summarizeRow.setAttribute("aria-disabled", "true");
@@ -2386,6 +2562,14 @@
     } else {
       addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
     }
+  }
+
+  // Config & debug: VS Code composer-gear path (no rail). Host config + Move view.
+  function renderConfigDebugPanel() {
+    state.gearView = "config";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
+    appendSharedPreferenceSwitches(() => renderConfigDebugPanel());
     // Opening host config files, the MCP list, and the extension log channel are
     // all host-local (the messages are policy-dropped on remotes) — hide the whole
     // section in the browser client rather than show dead links.
@@ -2403,22 +2587,31 @@
         vscode.postMessage({ type: "runMcpList" });
         closePopovers();
       });
-      // showOutput: existing gear item (ungated before desktop). Absent flag
-      // means an older host that still supports logs — default ON, opt out with
-      // false (desktop). Positive-gating would hide working controls on v3.1.0.
-      if (!(state.hostCaps && state.hostCaps.showOutput === false)) {
-        addGearItem("<span>Show extension logs</span>", () => {
-          vscode.postMessage({ type: "showLogs" });
+      // showOutput false = desktop (logs to stdout); still offer "Logs" there.
+      // Absent / true = VS Code output channel ("Show extension logs").
+      const logsLabel = (state.hostCaps && state.hostCaps.showOutput === false)
+        ? "Logs"
+        : "Show extension logs";
+      addGearItem(`<span>${logsLabel}</span>`, () => {
+        vscode.postMessage({ type: "showLogs" });
+        closePopovers();
+      });
+      // Link into VS Code settings (owner of extension settings). Desktop's
+      // openSettings is a stub — hide when relocateView is already false AND
+      // showOutput is false (desktop host signature via capabilities).
+      const isDeskCaps = state.hostCaps &&
+        state.hostCaps.relocateView === false &&
+        state.hostCaps.showOutput === false;
+      if (!isDeskCaps) {
+        addGearItem('<span>Open VS Code settings</span><span class="popover-external">↗</span>', () => {
+          vscode.postMessage({ type: "openSettings", section: "grok" });
           closePopovers();
         });
       }
     }
-    // Move view: same polarity as showOutput — existed before the capability
-    // flag, so missing flags must still show it; only explicit false hides
-    // (desktop has no view containers).
+    // Move view: same polarity as before — missing flags still show; only
+    // explicit false hides (desktop has no view containers).
     if (!(state.hostCaps && state.hostCaps.relocateView === false)) {
-      // No addGearSep() here: .popover-section draws its own border-top, so a
-      // separator in front of a section header renders two rules.
       addSection("Move view");
       addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
         vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
@@ -2457,11 +2650,54 @@
     }
   }
 
-  function openGearPopover() {
+  /** The trigger for the surface currently being rendered. */
+  function activeGearButton() {
+    if (state.gearSurface === "rail") return document.getElementById("rail-gear-btn") || gearBtn;
+    return gearBtn;
+  }
+
+  /** Where app-level panels (settings, about) hang: the rail gear once it exists. */
+  function appSettingsButton() {
+    return document.getElementById("rail-gear-btn") || gearBtn;
+  }
+
+  /**
+   * Position the gear popover. Composer gear uses the existing absolute
+   * placement inside .composer; rail gear uses fixed coords so it is not
+   * clipped by the rail scroller.
+   */
+  function positionGearPopover(btn) {
+    const anchor = btn || activeGearButton();
+    if (anchor && anchor.id === "rail-gear-btn") {
+      const rect = anchor.getBoundingClientRect();
+      gearPopover.style.position = "fixed";
+      gearPopover.style.left = Math.min(window.innerWidth - GEAR_POPOVER_WIDTH, Math.max(8, rect.right + 6)) + "px";
+      gearPopover.style.bottom = Math.max(8, window.innerHeight - rect.bottom) + "px";
+      gearPopover.style.top = "auto";
+      gearPopover.style.right = "auto";
+      gearPopover.style.maxHeight = Math.min(420, window.innerHeight - 24) + "px";
+      // Fixed positioning with `right: auto` leaves the width shrink-to-fit and
+      // uncapped, so the Version & about panel's long strings stretched it most
+      // of the way across the window. The composer path is bounded by the
+      // composer; this one has to say so. Same number the left-clamp above
+      // reserves, so the popover can never be pushed off-screen.
+      gearPopover.style.maxWidth = Math.min(GEAR_POPOVER_WIDTH, window.innerWidth - 16) + "px";
+      return;
+    }
+    gearPopover.style.position = "";
+    gearPopover.style.maxHeight = "";
+    gearPopover.style.maxWidth = "";
+    positionPopover(gearPopover, gearBtn);
+  }
+
+  function openGearPopover(fromBtn) {
     if (!gearPopover.hidden) { closePopovers(); return; }
     closePopovers();
+    // Which button was pressed decides which sections render. Without a rail
+    // gear both surfaces collapse into the composer one, so this is inert there.
+    state.gearSurface = fromBtn && fromBtn.id === "rail-gear-btn" ? "rail" : "composer";
     renderGearMain();
-    positionPopover(gearPopover, gearBtn);
+    positionGearPopover(fromBtn || activeGearButton());
     gearPopover.hidden = false;
   }
 
@@ -2470,9 +2706,179 @@
   function openAboutPanel() {
     if (!gearPopover.hidden && state.gearView === "about") return;
     closePopovers();
+    // About is app-level, so it belongs to whichever button owns app settings.
+    const anchor = appSettingsButton();
+    state.gearSurface = anchor.id === "rail-gear-btn" ? "rail" : "composer";
     renderAboutPanel(true);
-    positionPopover(gearPopover, gearBtn);
+    positionGearPopover(anchor);
     gearPopover.hidden = false;
+  }
+
+  /**
+   * Rail hosts (desktop getHtml / AFK Pilot page) put the gear in the rail
+   * footer so web and desktop share one control by construction. VS Code has
+   * no rail mount, so the composer gear stays. No IS_DESKTOP flag.
+   */
+  function ensureRailGear() {
+    const foot = document.querySelector("#projects-rail .rail-foot");
+    if (!foot) return null;
+    let btn = document.getElementById("rail-gear-btn");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "rail-gear-btn";
+      btn.type = "button";
+      btn.className = "rail-icon-btn";
+      btn.title = "Settings";
+      btn.setAttribute("aria-label", "Settings");
+      // Leftmost in the footer on BOTH hosts. Anchoring it to the theme toggle
+      // instead only worked on desktop — the browser client's toggle carries no
+      // id, so the gear was appended and landed on the opposite side. First
+      // child needs nothing to look up.
+      foot.insertBefore(btn, foot.firstChild);
+    }
+    if (!btn.dataset.railGearWired) {
+      btn.dataset.railGearWired = "1";
+      btn.innerHTML = ICON.gear;
+      btn.title = "Settings";
+      btn.setAttribute("aria-label", "Settings");
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openGearPopover(btn);
+      });
+    }
+    return btn;
+  }
+
+  // ---------- draggable rail edge ----------
+  //
+  // The rail's own border, made draggable. Mounted here rather than in either
+  // host's markup so desktop and the browser client get it by construction —
+  // the same argument that put the gear in the rail. Inert in VS Code, which
+  // has no rail mount at all.
+  //
+  // The phone drawer is excluded by CSS, not by JS: web/chat.html owns the
+  // breakpoint that decides drawer-vs-docked, and that is the only place that
+  // knows. One definition of "is this a phone", not two.
+  // Width cap for the rail-anchored gear popover. Menu items and the About
+  // panel's version lines both live in here, so it has to fit "Grok Build for
+  // VS Code (Community)" wrapped without becoming a full-width sheet.
+  const GEAR_POPOVER_WIDTH = 240;
+
+  const RAIL_WIDTH_KEY = "rail-width";
+  const RAIL_WIDTH_MIN = 180;
+  const RAIL_CHAT_MIN = 360;
+
+  function clampRailWidth(px) {
+    const total = window.innerWidth || 1200;
+    // Whichever bites first: leave the chat a usable column, and never let the
+    // rail past half the window even on a very wide one.
+    const max = Math.max(RAIL_WIDTH_MIN, Math.min(Math.floor(total * 0.5), total - RAIL_CHAT_MIN));
+    const n = Math.round(Number(px));
+    if (!Number.isFinite(n)) return RAIL_WIDTH_MIN;
+    return Math.min(max, Math.max(RAIL_WIDTH_MIN, n));
+  }
+
+  function applyRailWidth(px, persist) {
+    const w = clampRailWidth(px);
+    document.documentElement.style.setProperty("--rail-width", w + "px");
+    if (persist) { try { localStorage.setItem(RAIL_WIDTH_KEY, String(w)); } catch (_) { /* */ } }
+    return w;
+  }
+
+  let railResizerWired = false;
+  function ensureRailResizer() {
+    const rail = railMount();
+    if (!rail || !rail.parentElement) return null;
+    let handle = document.getElementById("rail-resizer");
+    if (!handle) {
+      handle = document.createElement("div");
+      handle.id = "rail-resizer";
+      handle.className = "rail-resizer";
+      handle.setAttribute("role", "separator");
+      handle.setAttribute("aria-orientation", "vertical");
+      handle.setAttribute("aria-label", "Resize projects rail");
+      handle.title = "Drag to resize";
+      rail.parentElement.insertBefore(handle, rail.nextSibling);
+    }
+    if (!railResizerWired) {
+      railResizerWired = true;
+      // Restore the persisted width before the rail is first painted wide.
+      try {
+        const saved = localStorage.getItem(RAIL_WIDTH_KEY);
+        if (saved != null && saved !== "") applyRailWidth(saved, false);
+      } catch (_) { /* */ }
+
+      let dragging = false;
+      let startX = 0;
+      let startW = 0;
+      let lastW = 0;
+      handle.addEventListener("pointerdown", (e) => {
+        // getBoundingClientRect, not the stored value: the rail may be sitting
+        // at its CSS default having never been dragged.
+        startW = rail.getBoundingClientRect().width;
+        if (!startW) return;
+        dragging = true;
+        startX = e.clientX;
+        lastW = startW;
+        document.body.classList.add("rail-resizing");
+        handle.classList.add("rail-resizing");
+        try { handle.setPointerCapture(e.pointerId); } catch (_) { /* */ }
+        e.preventDefault();
+      });
+      handle.addEventListener("pointermove", (e) => {
+        // Rail is on the left: drag right → wider.
+        if (dragging) lastW = applyRailWidth(startW + (e.clientX - startX), false);
+      });
+      const end = (e) => {
+        if (!dragging) return;
+        dragging = false;
+        document.body.classList.remove("rail-resizing");
+        handle.classList.remove("rail-resizing");
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) { /* */ }
+        // Persist once, on release — not on every move. The value APPLIED, not
+        // a fresh measurement: the element may not have reflowed to the last
+        // move yet, and re-measuring would then persist a stale width.
+        applyRailWidth(lastW, true);
+      };
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+      // Re-clamp so shrinking the window cannot leave the rail overgrown.
+      window.addEventListener("resize", () => {
+        const cur = rail.getBoundingClientRect().width;
+        if (cur > 0) applyRailWidth(cur, false);
+      });
+    }
+    return handle;
+  }
+
+  /**
+   * True while the rail is showing its own gear — i.e. the app-level settings
+   * have a home outside the composer. The one latch both the placement and the
+   * icon derive from.
+   */
+  function railGearLive() {
+    return !!document.getElementById("rail-gear-btn") && railAvailable();
+  }
+
+  /**
+   * Split the settings surfaces rather than moving one button.
+   *
+   * The composer button NEVER disappears — Model and Effort is the highest-
+   * frequency control in the app and belongs next to the thing you type in.
+   * What changes is what it holds, and its icon follows that: sliders
+   * (settings-2) once the rail owns the app settings, the gear when it owns
+   * everything (VS Code, which has no rail). Derived from `railGearLive()`,
+   * not from a host flag.
+   */
+  function syncGearPlacement() {
+    const railGear = ensureRailGear();
+    ensureRailResizer();
+    const split = railGearLive();
+    gearBtn.hidden = false;
+    gearBtn.innerHTML = split ? ICON.settings2 : ICON.gear;
+    gearBtn.title = split ? "Model, effort and session" : "Settings";
+    gearBtn.setAttribute("aria-label", gearBtn.title);
+    if (railGear) railGear.hidden = !split;
   }
 
   function openModePopover() {
@@ -3471,6 +3877,7 @@
     closeRailMenu();
 
     root.innerHTML = "";
+    syncGearPlacement();
     const q = railFilterText();
     let shownAnything = false;
 
@@ -5187,11 +5594,11 @@
   // `detailShouldExpand` is group-agnostic.
   function groupShouldExpand(el) {
     if (state.toolExpandOverride !== null) return state.toolExpandOverride;
-    return state.expandCommandOutputs && !!(el && el.querySelector(".has-details"));
+    return effectiveExpandCommandOutputs() && !!(el && el.querySelector(".has-details"));
   }
   function detailShouldExpand() {
     if (state.toolExpandOverride !== null) return state.toolExpandOverride;
-    return state.expandCommandOutputs;
+    return effectiveExpandCommandOutputs();
   }
   // Open/close a group's body + chevron (safe on an in-progress group — the CSS
   // shows the chevron once `.expanded` is set even mid-run).
@@ -6379,7 +6786,7 @@
     hideGrokking(); // real content arrived — the Thinking block takes over
     // Traces hidden (the default): stand in with a "Thinking…" row. While
     // replaying a loaded session there's no live reasoning to indicate.
-    if (!state.showThinking && !state.replaying) showThinkingIndicator();
+    if (!effectiveShowThinking() && !state.replaying) showThinkingIndicator();
     state.activeUserEl = null;
     state.skipUserBubble = false; // marker-only verdict turn is over
     clearWelcome();
@@ -6930,8 +7337,8 @@
   // toggling is instant with no reload — and turning traces back on drops the
   // stand-in indicator.
   function applyThinkingVisibility() {
-    document.body.classList.toggle("thinking-hidden", !state.showThinking);
-    if (state.showThinking) hideThinkingIndicator();
+    document.body.classList.toggle("thinking-hidden", !effectiveShowThinking());
+    if (effectiveShowThinking()) hideThinkingIndicator();
   }
 
   // True when *something* already tells the user grok is mid-work or awaiting
@@ -6944,7 +7351,7 @@
       state.thinkingIndicatorEl ||
       state.activeToolGroupEl ||
       (state.activeAgentEl && (state.activeAgentRaw || "").trim()) ||
-      (state.showThinking && state.activeThoughtEl) ||
+      (effectiveShowThinking() && state.activeThoughtEl) ||
       messagesEl.querySelector(".card:not(.resolved)")
     );
   }
@@ -7103,7 +7510,7 @@
         // A permission arrival force-scrolls the transcript. Ignore pointer
         // targeting during that layout transition so a click intended for the
         // adjacent Thinking disclosure cannot land on Reject (#76).
-        if (state.showThinking) {
+        if (effectiveShowThinking()) {
           btn.classList.add("arming");
           setTimeout(() => btn.classList.remove("arming"), 1000);
         }
@@ -8892,6 +9299,8 @@
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
         if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
         if (typeof msg.processingSound === "boolean") state.processingSound = msg.processingSound;
+        // Absent appPurpose (older host) → Knowledge work — smaller surface.
+        state.appPurpose = msg.appPurpose === "coding" ? "coding" : "knowledge";
         if (typeof msg.readRepliesAloud === "boolean") {
           state.readRepliesAloud = msg.readRepliesAloud;
           if (IS_REMOTE && !state.remotePreferencesSupported) {
@@ -8900,6 +9309,8 @@
           }
         }
         applyThinkingVisibility();
+        applyExpandCommandOutputs();
+        syncGearPlacement();
         break;
       case "planModeAvailability":
         state.planModeAvailable = msg.available !== false;
@@ -8979,7 +9390,19 @@
         // initialState + is baked into the <body class> by the host to avoid a flash.
         state.showThinking = !!msg.value;
         applyThinkingVisibility();
-        if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
+        if (state.gearView === "config") renderConfigDebugPanel();
+        else if (state.gearView === "basic") renderBasicSettingsPanel();
+        break;
+      case "appPurpose":
+        // Live global disclosure preference (Knowledge work / Coding).
+        state.appPurpose = msg.value === "coding" ? "coding" : "knowledge";
+        applyThinkingVisibility();
+        applyExpandCommandOutputs();
+        if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
+        else if (state.gearView === "config") renderConfigDebugPanel();
+        else if (state.gearView === "basic") renderBasicSettingsPanel();
+        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
+        syncGearPlacement();
         break;
       case "fontScale":
         // Live chat-only zoom (grok.chatFontScale). Initial value is baked into

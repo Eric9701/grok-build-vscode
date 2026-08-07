@@ -14,7 +14,7 @@
   // copy and test/protocol.test.ts asserts the two are set-equal in both
   // directions (and that chat.js actually handles every host type).
   const HOST_MESSAGE_TYPES = [
-    "initialState", "planModeAvailability", "showThinking", "fontScale", "grokUpdateStatus", "initialized",
+    "initialState", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "initialized",
     "cliUpdating", "session", "sessionName", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "userMessage", "agentStart", "thoughtChunk",
@@ -29,8 +29,8 @@
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "remotePreferences", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
     "toggleChip", "openFile", "openUrl", "openText", "openDiff", "exportExpr", "setEffort",
-    "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "moveView",
-    "setShowThinking", "setExpandCommandOutputs",
+    "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "openSettings", "moveView",
+    "setShowThinking", "setAppPurpose", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
     "recheckConnection", "listSessions", "listRepoSessions", "selectRepo", "toggleRepoPin", "setRepoArchived", "toggleSessionPin", "resumeSession", "renameSession", "deleteSession",

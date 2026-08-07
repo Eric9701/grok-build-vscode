@@ -13,7 +13,7 @@
  *
  * File-type glyphs: Seti UI (MIT) via {@link buildFileIconDataUrlMap}.
  */
-import { buildFileIconDataUrlMap, fileIconId } from "./file-icons";
+import { buildFileIconDataUrlMap, fileIconId, monochromeIconIds } from "./file-icons";
 
 /** Styles scoped under `.desk-ft-*` — never bare element rules that could hit chat.
  *  Row rhythm reuses the rail CSS custom properties defined on `body` in chat.css
@@ -104,35 +104,37 @@ body.desk-ft-closed .desk-ft-resizer {
   z-index: 20;
   overflow: hidden;
 }
-/* Drag handle between chat column and file panel. */
+/* The border between chat column and file panel IS the drag handle: it
+   occupies exactly the 1px a divider would, has no fill of its own, and only
+   changes colour on hover/drag. The grab area is widened invisibly by ::after
+   so a 1px line is still easy to hit. */
 .desk-ft-resizer {
-  flex: 0 0 5px;
-  width: 5px;
+  box-sizing: border-box;
+  flex: 0 0 1px;
+  width: 1px;
   margin: 0;
   padding: 0;
   border: none;
   border-left: 1px solid var(--vscode-editorWidget-border, #454545);
-  border-right: 1px solid transparent;
   background: transparent;
   cursor: col-resize;
   z-index: 25;
   align-self: stretch;
-  /* Hit area slightly wider than the 5px visual line. */
   position: relative;
+  transition: border-left-color 100ms ease;
 }
+/* Invisible hit area — wider than the line, no paint of its own. */
 .desk-ft-resizer::after {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -3px;
-  right: -3px;
+  left: -4px;
+  right: -4px;
 }
 .desk-ft-resizer:hover,
 .desk-ft-resizer.desk-ft-resizing {
   border-left-color: var(--vscode-focusBorder, #007fd4);
-  background: var(--vscode-focusBorder, #007fd4);
-  opacity: 0.55;
 }
 body.desk-ft-resizing {
   cursor: col-resize !important;
@@ -257,6 +259,30 @@ body.desk-ft-viewing .desk-ft-body {
   height: var(--desk-ft-lead-size, 16px);
   display: block;
   object-fit: contain;
+}
+/* Seti glyphs with no fill of their own. Shown as a mask tinted by CSS rather
+   than an <img>, because an SVG with no fill defaults to BLACK and a data-URL
+   <img> cannot inherit a colour — a third of the set (rust, swift, vue, pdf,
+   lock, db, the generic text icon…) was near-invisible on the dark theme.
+
+   The tint is a THEME TOKEN, not opacity on the text colour: the desktop
+   defines --vscode-descriptionForeground explicitly for both modes (#9d9d9d
+   dark / #6e6e6e light), which lands at the same visual weight as the coloured
+   Seti glyphs sitting next to it rather than shouting over them. Opacity would
+   have given a different answer per background. */
+.desk-ft-icon-mono {
+  background-color: var(
+    --vscode-icon-foreground,
+    var(--vscode-descriptionForeground, currentColor)
+  );
+  -webkit-mask-image: var(--desk-ft-icon-mask);
+  mask-image: var(--desk-ft-icon-mask);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 .desk-ft-name {
   flex: 1 1 auto;
@@ -523,6 +549,54 @@ body.desk-ft-viewing .desk-ft-viewer {
   border-radius: 4px;
   overflow: auto;
 }
+/* Blocks the SHARED renderer emits. chat.css styles these only under
+   .msg.agent .body, so the preview needs its own presentation — but from the
+   same markup, which is what stops the two drifting the way the old private
+   parser did (it simply dropped bullets and tables). */
+.desk-ft-viewer-body .desk-ft-md ul,
+.desk-ft-viewer-body .desk-ft-md ol {
+  margin: 0.4em 0;
+  padding-left: 1.5em;
+}
+.desk-ft-viewer-body .desk-ft-md ul { list-style-type: disc; }
+.desk-ft-viewer-body .desk-ft-md ol { list-style-type: decimal; }
+.desk-ft-viewer-body .desk-ft-md li { margin: 0.15em 0; }
+.desk-ft-viewer-body .desk-ft-md li > ul { margin: 0.15em 0; list-style-type: circle; }
+.desk-ft-viewer-body .desk-ft-md li > ul ul { list-style-type: square; }
+.desk-ft-viewer-body .desk-ft-md blockquote {
+  margin: 0.5em 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--vscode-panel-border, #454545);
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+.desk-ft-viewer-body .desk-ft-md hr {
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border, #454545);
+  margin: 0.9em 0;
+}
+/* A table in a narrow panel scrolls INSIDE its own wrapper — letting it widen
+   the preview would push the whole panel sideways. */
+.desk-ft-viewer-body .desk-ft-md .md-table-wrap {
+  overflow-x: auto;
+  margin: 0.5em 0;
+  max-width: 100%;
+}
+.desk-ft-viewer-body .desk-ft-md table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.desk-ft-viewer-body .desk-ft-md th,
+.desk-ft-viewer-body .desk-ft-md td {
+  border: 1px solid var(--vscode-panel-border, #454545);
+  padding: 3px 7px;
+  text-align: left;
+  vertical-align: top;
+}
+.desk-ft-viewer-body .desk-ft-md th {
+  font-weight: 600;
+  background: var(--vscode-textCodeBlock-background, #1e1e1e);
+}
+.desk-ft-viewer-body .desk-ft-md a { color: var(--vscode-textLink-foreground, #4daafc); }
 .desk-ft-viewer-body img {
   max-width: 100%;
   height: auto;
@@ -540,6 +614,8 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   // Built as a function body so executeJavaScript can wrap it. No TypeScript —
   // this string runs in the renderer.
   const iconMap = buildFileIconDataUrlMap(iconsDir);
+  // Which of those are drawn in the row's own colour rather than shown as-is.
+  const monoIds = monochromeIconIds(iconsDir);
   // Compact extension → Seti id table for the renderer (mirrors fileIconId).
   // Keep in sync with src/desktop/file-icons.ts fileIconId().
   const iconIdFn = fileIconId.toString();
@@ -556,6 +632,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   const WIDTH_CHAT_MIN = 280;
   // Seti UI (MIT) data-URLs — bundled at inject time; no network fetch.
   const SETI_ICONS = ${JSON.stringify(iconMap)};
+  // Seti glyphs carrying no fill of their own — painted with the row's text
+  // colour instead of shown as-is, which would be black on a dark theme.
+  const SETI_MONO = new Set(${JSON.stringify(monoIds)});
   const fileIconId = ${iconIdFn};
   // Lucide panel-left / panel-right — same convention as AFK Pilot + Codex.
   const ICON_PANEL_LEFT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg>';
@@ -896,10 +975,13 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
 
   /** Seti UI icon id + data-URL for a *file* entry (dirs use chevron only). */
   function iconFor(kind, name) {
-    if (kind === "dir") return { id: "", src: "" };
-    const id = fileIconId(kind, name);
-    const src = SETI_ICONS[id] || SETI_ICONS.default || "";
-    return { id: id, src: src };
+    if (kind === "dir") return { id: "", src: "", mono: false };
+    let id = fileIconId(kind, name);
+    let src = SETI_ICONS[id];
+    // Falling back to \`default\` must also fall back to ITS colour treatment,
+    // not keep the requested id's — \`default\` is one of the mono glyphs.
+    if (!src) { id = SETI_ICONS.default ? "default" : id; src = SETI_ICONS.default || ""; }
+    return { id: id, src: src, mono: SETI_MONO.has(id) };
   }
 
   function escapeHtml(s) {
@@ -910,8 +992,21 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       .replace(/"/g, "&quot;");
   }
 
-  // Minimal markdown for read-only preview (not a full parser).
+  // Prefer the conversation's renderer — same document, already loaded, and it
+  // does bullets, tables, blockquotes, links and italics that the fallback
+  // below never did. The fallback stays for the case where chat.js has not
+  // finished evaluating when a preview opens; it is a degraded view of the same
+  // file, not a different one.
   function renderMarkdown(src) {
+    const shared = window.__grokRenderMarkdown;
+    if (typeof shared === "function") {
+      try { return shared(src); } catch (_) { /* fall through */ }
+    }
+    return renderMarkdownFallback(src);
+  }
+
+  // Minimal markdown for read-only preview (not a full parser).
+  function renderMarkdownFallback(src) {
     const lines = String(src).split(/\\r?\\n/);
     const out = [];
     let inCode = false;
@@ -1109,7 +1204,14 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
       lead.classList.add("desk-ft-icon");
       const ic = iconFor(entry.kind, entry.name);
       lead.setAttribute("data-icon", ic.id);
-      if (ic.src) {
+      if (ic.src && ic.mono) {
+        // No fill of its own: paint it with the row's text colour via a mask,
+        // so it follows the theme instead of rendering black on a dark one.
+        const glyph = document.createElement("span");
+        glyph.className = "desk-ft-icon-img desk-ft-icon-mono";
+        glyph.style.setProperty("--desk-ft-icon-mask", 'url("' + ic.src + '")');
+        lead.appendChild(glyph);
+      } else if (ic.src) {
         const img = document.createElement("img");
         img.className = "desk-ft-icon-img";
         img.src = ic.src;

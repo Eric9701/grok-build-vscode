@@ -5,6 +5,8 @@ import {
   buildFileIconDataUrlMap,
   defaultFileIconsDir,
   fileIconId,
+  isMonochromeIconSvg,
+  monochromeIconIds,
   resolveFileIconSrc,
 } from "../src/desktop/file-icons";
 import { FILE_TREE_PANEL_CSS, fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
@@ -130,6 +132,59 @@ describe("Seti icon assets", () => {
     // Row min-height still the rail density token (must not grow).
     expect(FILE_TREE_PANEL_CSS).toMatch(
       /\.desk-ft-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*30px\)/s,
+    );
+  });
+});
+
+describe("fill-less Seti glyphs are theme-tinted, not black", () => {
+  it("classifies by the SVG's own fill, not a hand-kept list", () => {
+    // A coloured glyph carries an explicit fill; a plain one carries none, and
+    // SVG then defaults it to BLACK — invisible on a dark theme.
+    expect(isMonochromeIconSvg('<svg><path fill="#cbcb41" d="M0 0"/></svg>')).toBe(false);
+    expect(isMonochromeIconSvg('<svg><path d="M0 0"/></svg>')).toBe(true);
+    // `fill="none"` is a stroke-drawn glyph, which is still uncoloured.
+    expect(isMonochromeIconSvg('<svg><path fill="none" stroke="#abc" d="M0 0"/></svg>')).toBe(true);
+  });
+
+  it("catches the generic text icon the user reported, and its whole class", () => {
+    const mono = new Set(monochromeIconIds(iconsDir));
+    // `.dockerignore` and every other unmapped file falls back to `default`.
+    expect(mono.has("default")).toBe(true);
+    // Not an isolated glyph — a third of the vendored set had the same defect.
+    expect(mono.size).toBeGreaterThan(20);
+    // Coloured glyphs must NOT be repainted, or Seti stops being Seti.
+    expect(mono.has("javascript")).toBe(false);
+    expect(mono.has("css")).toBe(false);
+  });
+
+  it("renders those as a currentColor-independent theme token, never opacity", () => {
+    const boot = fileTreePanelBootSource(iconsDir);
+    expect(boot).toContain("SETI_MONO");
+    expect(boot).toContain("desk-ft-icon-mono");
+    // The tint must resolve per theme — the desktop defines
+    // --vscode-descriptionForeground for BOTH light and dark.
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-icon-mono\s*\{[^}]*--vscode-descriptionForeground/s,
+    );
+    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-icon-mono\s*\{[^}]*mask-image/s);
+  });
+});
+
+describe("markdown preview uses the conversation's renderer", () => {
+  it("delegates to chat.js and keeps a fallback", () => {
+    const boot = fileTreePanelBootSource(iconsDir);
+    // One renderer for both surfaces — the private subset dropped bullets and
+    // tables entirely, which is exactly what this replaces.
+    expect(boot).toContain("window.__grokRenderMarkdown");
+    expect(boot).toContain("renderMarkdownFallback");
+  });
+
+  it("styles the blocks that renderer emits (bullets and tables)", () => {
+    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-md ul[\s\S]*list-style-type: disc/);
+    expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-md .md-table-wrap");
+    // A wide table must scroll inside the panel, not widen it.
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-md \.md-table-wrap\s*\{[^}]*overflow-x: auto/s,
     );
   });
 });

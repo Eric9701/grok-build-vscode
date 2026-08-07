@@ -281,6 +281,32 @@ export function buildFileIconDataUrlMap(iconsDir?: string): Record<string, strin
 }
 
 /**
+ * Seti ships two kinds of glyph: coloured ones carrying an explicit
+ * `fill="#rrggbb"` (js yellow, css blue…), and plain ones carrying none.
+ * SVG defaults a missing fill to BLACK, and a data-URL `<img>` cannot inherit
+ * `currentColor` — so the plain third of the set rendered near-invisible on a
+ * dark theme (`.dockerignore`, but also rust, swift, kotlin, vue, pdf, lock,
+ * db, settings…). These are the ids the renderer must paint itself, as a mask
+ * tinted with the row's own text colour: legible in BOTH themes, and still
+ * legible when the theme changes at runtime.
+ *
+ * Detected, not listed — a hand-kept list would silently miss the next icon
+ * added to the vendored set.
+ */
+export function isMonochromeIconSvg(svg: string): boolean {
+  return !/\bfill\s*=\s*["'](?!none["'])[^"']+["']/i.test(svg);
+}
+
+/** Ids from {@link buildFileIconDataUrlMap} that need `currentColor` tinting. */
+export function monochromeIconIds(iconsDir?: string): string[] {
+  const svgs = loadSetiIconSvgs(iconsDir ?? defaultFileIconsDir());
+  return Object.entries(svgs)
+    .filter(([, svg]) => isMonochromeIconSvg(svg))
+    .map(([id]) => id)
+    .sort();
+}
+
+/**
  * Pure: pick a data-URL for a tree entry from a preloaded map.
  * Falls back to `default`, then empty string.
  */

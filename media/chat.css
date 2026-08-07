@@ -110,7 +110,7 @@ body.has-rail .app-main {
 }
 #projects-rail,
 .projects-rail {
-  width: min(260px, 38vw);
+  width: var(--rail-width, min(260px, 38vw));
   flex-shrink: 0;
   height: 100%;
   display: flex;
@@ -122,6 +122,59 @@ body.has-rail .app-main {
 #projects-rail[hidden],
 .projects-rail[hidden] {
   display: none !important;
+}
+
+/* ---- draggable rail edge ----
+   Same treatment as the desktop file panel's divider: the handle IS the
+   border. It occupies exactly the 1px a static border would, paints nothing of
+   its own, and only changes colour on hover/drag. The grab area is widened
+   invisibly by ::after so a 1px target is still easy to hit.
+   Mounted next to the rail by chat.js, so both rail hosts get it by
+   construction. The phone drawer hides it — see web/chat.html, which owns the
+   drawer breakpoint. */
+.rail-resizer {
+  display: none;
+  box-sizing: border-box;
+  flex: 0 0 1px;
+  width: 1px;
+  /* Sits ON the rail's own border rather than next to it: 1px wide pulled 1px
+     left contributes zero width, so the layout is byte-identical to having no
+     handle at all. Deliberately NOT `border-right: none` on the rail — that
+     rule would also strip the phone drawer's border through the cascade, and
+     chat.css loads after the pages' own styles. Adding no width beats
+     subtracting one elsewhere. */
+  margin: 0 0 0 -1px;
+  align-self: stretch;
+  padding: 0;
+  border: none;
+  border-left: 1px solid transparent;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  z-index: 25;
+  transition: border-left-color 100ms ease;
+}
+/* Only once the rail is actually showing — an invisible drag handle floating
+   where no rail exists would resize nothing. */
+body.has-rail .rail-resizer { display: block; }
+body.rail-collapsed .rail-resizer { display: none; }
+/* Invisible hit area — wider than the line, no paint of its own. */
+.rail-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.rail-resizer:hover,
+.rail-resizer.rail-resizing {
+  border-left-color: var(--vscode-focusBorder, #007fd4);
+}
+body.rail-resizing,
+body.rail-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 .rail-top {
   display: flex;
@@ -224,12 +277,17 @@ body.has-rail .app-main {
 .rail-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* Packed left, with only the LAST control pushed to the far edge.
+     `space-between` spreads every child evenly, which was fine with two
+     (account | theme) but strands a third in the middle — the gear looked
+     centred in the rail rather than aligned with anything. */
+  justify-content: flex-start;
   flex: none;
   gap: 8px;
   padding: 8px 10px 10px 12px;
   border-top: 1px solid var(--vscode-panel-border);
 }
+.rail-foot > :last-child { margin-left: auto; }
 .rail-user { display: flex; align-items: center; min-width: 0; min-height: 30px; }
 /* Sticky section labels: full width so rows pass behind, not beside.
    All four groups (PINNED / RECENT / PROJECTS / PROJECT ARCHIVE) share this
@@ -2413,7 +2471,14 @@ textarea#input {
   padding: 6px 10px;
   font-size: 13px;
   color: var(--vscode-foreground);
+  /* The rail-anchored popover is width-capped, so a long product name or
+     version string has to wrap instead of forcing the box wider. Flex items
+     default to min-width:auto, which would refuse to shrink below the longest
+     word — this is what makes the cap actually bite. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
+.popover-info > * { min-width: 0; }
 /* Context popover (#53): a sub-row is a COMPONENT of the row above (cache read is
    part of input), so it's indented + muted to read as subordinate rather than as
    another top-level figure to add up. */

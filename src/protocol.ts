@@ -80,9 +80,11 @@ export type HostUiCapabilities = {
 };
 
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: HostUiCapabilities }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; /** Global "Use this app for" — absent on older hosts means Knowledge work. */ appPurpose?: "knowledge" | "coding"; capabilities: HostUiCapabilities }
   | { type: "planModeAvailability"; available: boolean; reason?: string }
   | { type: "showThinking"; value: boolean }
+  /** Live update of the global app-purpose preference (Knowledge work / Coding). */
+  | { type: "appPurpose"; value: "knowledge" | "coding" }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
   | { type: "soundNotifications"; value: boolean }
   | { type: "processingSound"; value: boolean }
@@ -275,8 +277,12 @@ export type WebviewMsg =
   | { type: "openProjectConfig" }
   | { type: "runMcpList" }
   | { type: "showLogs" }
+  /** Open the host settings UI (VS Code: workbench settings focused on grok). */
+  | { type: "openSettings"; section?: string }
   | { type: "moveView"; location: "panel" | "sidebar" | "auxiliarybar" }
   | { type: "setShowThinking"; value: boolean }
+  /** Persist the global "Use this app for" preference (Knowledge work / Coding). */
+  | { type: "setAppPurpose"; value: "knowledge" | "coding" }
   // grok.soundNotifications gear switch (#59) — persisted globally by the host.
   | { type: "setSoundNotifications"; value: boolean }
   | { type: "setProcessingSound"; value: boolean }
@@ -397,7 +403,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, planModeAvailability: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
+  initialState: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -420,8 +426,8 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
-  openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
-  setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
+  openProjectConfig: true, runMcpList: true, showLogs: true, openSettings: true, moveView: true,
+  setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
