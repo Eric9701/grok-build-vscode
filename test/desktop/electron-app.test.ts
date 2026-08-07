@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright";
+import { spawn } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -801,6 +802,85 @@ describe("desktop Electron app (real window + fake CLI)", () => {
       expect(colors.activeBg).not.toMatch(/rgb\(\s*9,\s*71,\s*113\s*\)/);
     }
   });
+});
+
+/**
+ * Single-instance lock: a second launch with the same profile must quit and
+ * leave the first process's window as the only live host (no second ACP pool).
+ * Spawn the second process via child_process — Playwright's electron.launch
+ * fails when the target exits before a window appears (the correct outcome).
+ */
+describe("desktop single-instance lock (real second launch)", () => {
+  it("second launch with the same profile exits without a second window", async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "grok-desk-si-ws-"));
+    const ud = fs.mkdtempSync(path.join(os.tmpdir(), "grok-desk-si-ud-"));
+    const cfg = path.join(ud, "test-config.json");
+    fs.writeFileSync(path.join(ws, "readme.txt"), "si\n");
+    fs.writeFileSync(cfg, JSON.stringify({ "grok.cliPath": fixtureCli() }), "utf8");
+
+    let first: ElectronApplication | undefined;
+    try {
+      first = await electron.launch({
+        executablePath: electronExe,
+        args: [mainJs, `--workspace=${ws}`, `--user-data-dir=${ud}`, `--config-json=${cfg}`],
+        env: stripElectronRunAsNode(process.env),
+        timeout: 60_000,
+      });
+      const win1 = await first.firstWindow({ timeout: 60_000 });
+      await win1.waitForSelector("#input", { timeout: 45_000 });
+      const windowsBefore = first.windows().length;
+      expect(windowsBefore).toBeGreaterThanOrEqual(1);
+
+      const secondExit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
+          const child = spawn(
+            electronExe,
+            [mainJs, `--workspace=${ws}`, `--user-data-dir=${ud}`, `--config-json=${cfg}`],
+            {
+              env: stripElectronRunAsNode(process.env),
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          const timer = setTimeout(() => {
+            try {
+              child.kill();
+            } catch {
+              /* */
+            }
+            reject(new Error("second instance did not exit within 15s"));
+          }, 15_000);
+          child.on("error", (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+          child.on("exit", (code, signal) => {
+            clearTimeout(timer);
+            resolve({ code, signal });
+          });
+        },
+      );
+      // Quit without a crash signal — lock denial is a clean exit.
+      expect(secondExit.signal).toBeNull();
+      expect(secondExit.code === 0 || secondExit.code === null).toBe(true);
+
+      // First host still alive with its original window count (no second sidebar).
+      expect(first.windows().length).toBe(windowsBefore);
+      await win1.waitForSelector("#input", { timeout: 5_000 });
+    } finally {
+      try {
+        await first?.close();
+      } catch {
+        /* */
+      }
+      for (const p of [ws, ud]) {
+        try {
+          fs.rmSync(p, { recursive: true, force: true });
+        } catch {
+          /* */
+        }
+      }
+    }
+  }, 90_000);
 });
 
 /**

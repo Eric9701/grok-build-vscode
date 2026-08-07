@@ -249,6 +249,22 @@ let mainWindow: BrowserWindow | null = null;
 let sidebar: GrokSidebar | null = null;
 let webview: ElectronWebview | null = null;
 
+// One process per profile: a second launch must focus the existing window, not
+// spawn another sidebar / ACP pool / remote uplink on the same device token.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  log("another instance already holds this profile; quitting");
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+  });
+}
+
 async function createApp(): Promise<void> {
   const args = earlyArgs;
   // Profile root = Electron userData (branded early above, or test override).
@@ -519,22 +535,24 @@ async function createApp(): Promise<void> {
   });
 }
 
-app.whenReady().then(() => {
-  void createApp().catch((e) => {
-    log(`startup failed: ${(e as Error).stack ?? e}`);
+if (gotSingleInstanceLock) {
+  app.whenReady().then(() => {
+    void createApp().catch((e) => {
+      log(`startup failed: ${(e as Error).stack ?? e}`);
+      app.quit();
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    sidebar?.dispose();
     app.quit();
   });
-});
 
-app.on("window-all-closed", () => {
-  sidebar?.dispose();
-  app.quit();
-});
-
-app.on("before-quit", () => {
-  try {
-    sidebar?.dispose();
-  } catch {
-    /* best-effort */
-  }
-});
+  app.on("before-quit", () => {
+    try {
+      sidebar?.dispose();
+    } catch {
+      /* best-effort */
+    }
+  });
+}

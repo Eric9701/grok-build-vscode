@@ -12,12 +12,13 @@
  * (worktree cwd + source git root) are supplied by the host — the message gate
  * alone has no session context.
  */
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseFileRef } from "../file-ref";
 import type { WebviewMsg } from "../protocol";
 import { resolveTreePath, type TreePathFs } from "./file-tree";
 
-/** Extensions the OS may launch as code / scripts / installers. */
+/** Extensions the OS may launch as code / scripts / installers / launchers. */
 const EXECUTABLE_EXTS = new Set([
   // Windows PE / scripts / shortcuts
   ".exe",
@@ -54,10 +55,15 @@ const EXECUTABLE_EXTS = new Set([
   ".pkg",
   ".deb",
   ".rpm",
+  // Desktop entry launchers (Linux) — shell.openPath can invoke them
+  ".desktop",
   // Cross-platform script runners that shell.openPath may hand to an interpreter
   ".jar",
   ".apk",
 ]);
+
+/** POSIX any-execute bits (owner/group/other). */
+const POSIX_ANY_EXECUTE = 0o111;
 
 export type DesktopAuthResult =
   | { ok: true }
@@ -108,9 +114,9 @@ export function desktopAuthRoots(ctx: DesktopOpenFileContext): string[] {
 }
 
 /**
- * True when the path's extension is one the OS may execute/launch as code.
- * Pure extension check — intentional; we do not inspect the executable bit
- * (chat-open is about deliberate document references, not "is this marked +x").
+ * True when the path's basename extension is one the OS may launch as code
+ * (PE, scripts, shortcuts, `.desktop` launchers, packages). Pure — no FS.
+ * Prefer {@link isExecutableOpenTarget} when a real path and mode are available.
  */
 export function isExecutablePath(filePath: string): boolean {
   if (!filePath || typeof filePath !== "string") return false;
@@ -121,9 +127,53 @@ export function isExecutablePath(filePath: string): boolean {
 }
 
 /**
+ * True when handing this path to `shell.openPath` risks launching code:
+ * dangerous extension on the path **or** its canonical (realpath) target,
+ * a `.desktop` launcher, or (non-Windows) any POSIX execute bit on the
+ * canonical file. Symlinks to binaries / `chmod +x` scripts without an
+ * extension are refused even when the link name looks safe.
+ */
+export function isExecutableOpenTarget(
+  absPath: string,
+  opts?: {
+    platform?: NodeJS.Platform;
+    pathFs?: Pick<TreePathFs, "realpathSync" | "statSync">;
+  },
+): boolean {
+  if (!absPath || typeof absPath !== "string") return false;
+  if (isExecutablePath(absPath)) return true;
+
+  const platform = opts?.platform ?? process.platform;
+  const pathFs = opts?.pathFs;
+  let real = absPath;
+  try {
+    real = pathFs ? pathFs.realpathSync(absPath) : fs.realpathSync(absPath);
+  } catch {
+    // Name check already ran; no FS metadata → not further refuse.
+    return false;
+  }
+  if (real !== absPath && isExecutablePath(real)) return true;
+
+  // Windows PE/scripts are extension-based; mode bits are not a reliable
+  // "is this a program" signal (and Node reports them loosely).
+  if (platform === "win32") return false;
+
+  try {
+    const st = pathFs ? pathFs.statSync(real) : fs.statSync(real);
+    if (typeof st.isFile === "function" && !st.isFile()) return false;
+    if (typeof st.mode === "number" && (st.mode & POSIX_ANY_EXECUTE) !== 0) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+/**
  * Authorize a chat `openFile` / `openDiff` path: must resolve inside one of the
  * authorized session roots with the same canonical containment as the file tree,
- * and must not be an executable.
+ * and must not be an executable (name, symlink target, or POSIX +x).
  *
  * `rawPath` may be absolute or root-relative (and may carry a `#L` / `:line`
  * suffix already stripped by the caller, or still present — we only need the
@@ -148,7 +198,12 @@ export function authorizeOpenFile(
   for (const root of roots) {
     const resolved = resolveTreePath(root, rawPath, platform, ctx.pathFs);
     if (!resolved.ok) continue;
-    if (isExecutablePath(resolved.absPath)) {
+    if (
+      isExecutableOpenTarget(resolved.absPath, {
+        platform,
+        pathFs: ctx.pathFs,
+      })
+    ) {
       return { ok: false, reason: "executable path refused" };
     }
     return { ok: true };

@@ -54,6 +54,7 @@ import {
   authorizeOpenFile,
   authorizeOpenUrl,
   desktopAuthRoots,
+  isExecutableOpenTarget,
   isExecutablePath,
 } from "../src/desktop/desktop-policy";
 import {
@@ -1438,6 +1439,85 @@ describe("desktop openFile / openUrl policy (A1)", () => {
     expect(isExecutablePath("tool.exe")).toBe(true);
     expect(isExecutablePath("script.bat")).toBe(true);
     expect(isExecutablePath("a.ts")).toBe(false);
+    expect(isExecutablePath("app.desktop")).toBe(true);
+  });
+
+  it("refuses extensionless +x files, .desktop launchers, and symlink targets", () => {
+    // Injectable FS so Windows CI (no chmod / no symlink privilege) still
+    // mutation-checks the mode + realpath gates.
+    const bin = path.join(root, "runme");
+    fs.writeFileSync(bin, "#!/bin/sh\necho hi\n");
+    expect(isExecutablePath(bin)).toBe(false);
+
+    // POSIX +x on an extensionless file (platform forced to non-win32).
+    const modeFs = {
+      realpathSync: (p: string) => p,
+      statSync: (_p: string) =>
+        ({ isFile: () => true, mode: 0o755 }) as unknown as fs.Stats,
+    };
+    expect(isExecutableOpenTarget(bin, { platform: "linux", pathFs: modeFs })).toBe(true);
+    const modeClear = {
+      realpathSync: (p: string) => p,
+      statSync: (_p: string) =>
+        ({ isFile: () => true, mode: 0o644 }) as unknown as fs.Stats,
+    };
+    expect(isExecutableOpenTarget(bin, { platform: "linux", pathFs: modeClear })).toBe(false);
+    // Windows must NOT refuse solely on mode bits.
+    expect(isExecutableOpenTarget(bin, { platform: "win32", pathFs: modeFs })).toBe(false);
+
+    // .desktop launchers are extension-refused everywhere.
+    const desktop = path.join(root, "evil.desktop");
+    fs.writeFileSync(desktop, "[Desktop Entry]\nExec=evil\n");
+    expect(isExecutablePath(desktop)).toBe(true);
+    expect(isExecutableOpenTarget(desktop)).toBe(true);
+    expect(authorizeOpenFile("evil.desktop", { workspaceRoot: root }).ok).toBe(false);
+
+    // Symlink / junction: link basename looks safe, realpath is a PE.
+    const pe = path.join(root, "payload.exe");
+    fs.writeFileSync(pe, "MZ");
+    const linkPath = path.join(root, "safe-looking");
+    fs.writeFileSync(linkPath, "not really");
+    const linkFs = {
+      realpathSync: (p: string) => (p === linkPath ? pe : p),
+      statSync: (p: string) => fs.statSync(p),
+    };
+    expect(isExecutablePath(linkPath)).toBe(false);
+    expect(isExecutableOpenTarget(linkPath, { platform: "win32", pathFs: linkFs })).toBe(true);
+    expect(
+      authorizeOpenFile("safe-looking", {
+        workspaceRoot: root,
+        platform: process.platform,
+        pathFs: {
+          realpathSync: (p: string) => (path.resolve(p) === path.resolve(linkPath) ? pe : fs.realpathSync(p)),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("mutation: extension-only isExecutablePath would hand +x scripts to openPath", () => {
+    const bin = path.join(root, "tool-noext");
+    fs.writeFileSync(bin, "#!/bin/sh\n");
+    expect(isExecutablePath(bin)).toBe(false); // pure name check: miss
+    const modeFs = {
+      realpathSync: (p: string) => p,
+      statSync: () => ({ isFile: () => true, mode: 0o755 }) as unknown as fs.Stats,
+    };
+    // Mode gate (linux) must refuse — fails if isExecutableOpenTarget is name-only.
+    expect(isExecutableOpenTarget(bin, { platform: "linux", pathFs: modeFs })).toBe(true);
+    // Realpath-to-.exe gate (win32) must refuse a safe-looking link path.
+    const pe = path.join(root, "hidden.exe");
+    fs.writeFileSync(pe, "MZ");
+    const link = path.join(root, "docs-note");
+    fs.writeFileSync(link, "x");
+    const linkFs = {
+      realpathSync: (p: string) => (p === link ? pe : p),
+      statSync: (p: string) => fs.statSync(p),
+    };
+    expect(isExecutablePath(link)).toBe(false);
+    expect(isExecutableOpenTarget(link, { platform: "win32", pathFs: linkFs })).toBe(true);
   });
 
   it("refuses openUrl schemes other than http(s)", () => {
@@ -1520,17 +1600,45 @@ describe("desktop openFile / openUrl policy (A1)", () => {
       ),
       "utf8",
     );
-    expect(ipcSrc).toContain('import { isExecutablePath } from "./desktop-policy"');
+    expect(ipcSrc).toContain('import { isExecutableOpenTarget } from "./desktop-policy"');
     expect(ipcSrc).toContain("executable path refused");
     // Must run before the OS open, not only document in comments.
     const openHandler = ipcSrc.indexOf("ipcMain.handle(CH_OPEN");
     expect(openHandler).toBeGreaterThan(0);
     const openBody = ipcSrc.slice(openHandler, ipcSrc.indexOf("ipcMain.handle(CH_READ", openHandler));
-    const refuse = openBody.indexOf("isExecutablePath(resolved.absPath)");
+    const refuse = openBody.indexOf("isExecutableOpenTarget(resolved.absPath)");
     const openCall = openBody.indexOf("await shell.openPath(");
     expect(refuse).toBeGreaterThan(0);
     expect(openCall).toBeGreaterThan(0);
     expect(refuse).toBeLessThan(openCall);
+  });
+});
+
+describe("desktop single-instance lock (source)", () => {
+  it("main requests a single-instance lock and focuses the existing window", () => {
+    const mainSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "main.ts",
+      ),
+      "utf8",
+    );
+    expect(mainSrc).toContain("requestSingleInstanceLock");
+    expect(mainSrc).toContain("second-instance");
+    expect(mainSrc).toMatch(/gotSingleInstanceLock/);
+    // Second launch must not createApp — only the lock holder proceeds.
+    expect(mainSrc).toMatch(/if\s*\(\s*gotSingleInstanceLock\s*\)/);
+    expect(mainSrc).toMatch(/win\.focus\(\)/);
+    // Mutation: without the early quit path, a second process would boot fully.
+    const lockIdx = mainSrc.indexOf("requestSingleInstanceLock");
+    const quitIdx = mainSrc.indexOf("app.quit()", lockIdx);
+    const createIdx = mainSrc.indexOf("void createApp()");
+    expect(lockIdx).toBeGreaterThan(0);
+    expect(quitIdx).toBeGreaterThan(lockIdx);
+    expect(createIdx).toBeGreaterThan(quitIdx);
   });
 });
 

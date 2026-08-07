@@ -264,9 +264,19 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(snapBody).toContain("buildPinnedSessions");
     // Must not assume revoke already cleared per-tab cwd.
     expect(snapBody).toMatch(/sessionCwdOk/);
+    // Project-bearing fields scrubbed: never listCwd ?? closedTabCwd.
+    expect(snapBody).toContain("buildRemoteReposMsg");
+    expect(snapBody).toMatch(/cwd:\s*listCwd\s*\?\?\s*""/);
+    expect(snapBody).not.toMatch(/selectedCwd:\s*cwd\b/);
 
     // localRepoCatalogEntries remains the catalog source (open folders desktop).
     expect(src).toContain("localRepoCatalogEntries");
+    // Remote repos builder scrubs closed selectedCwd before the choke point.
+    const reposMsgStart = src.indexOf("private buildRemoteReposMsg(");
+    expect(reposMsgStart).toBeGreaterThan(0);
+    const reposMsgBody = src.slice(reposMsgStart, reposMsgStart + 700);
+    expect(reposMsgBody).toContain("authorizedListCwd");
+    expect(reposMsgBody).toContain('selectedCwd');
   });
 
   it("single deliverRemote choke point gates all remote HostMsg uplink writes", () => {

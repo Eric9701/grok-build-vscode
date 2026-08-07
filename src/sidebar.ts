@@ -2436,27 +2436,39 @@ See design doc for the full state machine diagram.`;
       activeCwd,
     });
     for (const clientId of this.remoteClients.clients()) {
-      const cwd = this.remoteClients.cwd(clientId);
-      const remoteActive = this.remoteClients.active(clientId);
-      this.sendRemoteClient(clientId, {
-        type: "repos",
-        entries: localEntries,
-        selectedCwd: cwd,
-        activeCwd: remoteActive ? this.sessionCwd(remoteActive) : cwd,
-      });
+      this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));
     }
   }
 
-  private sendRemoteRepoCatalog(clientId: string): void {
-    const cwd = this.remoteClients.cwd(clientId);
+  /**
+   * Remote `repos` frame with project-bearing fields scrubbed to the live
+   * authorized set. Per-tab state may still name a closed cwd (inbound refuse);
+   * the wire never does — {@link mayDeliverRemoteHostMsg} rejects otherwise.
+   */
+  private buildRemoteReposMsg(
+    clientId: string,
+    entries: RepoListEntry[] = this.localRepoCatalogEntries(),
+  ): HostMsg {
+    const authorized = this.authorizedSessionCwds();
+    const selectedCwd =
+      authorizedListCwd(this.remoteClients.cwd(clientId), authorized, pathsEqual) ?? "";
     const active = this.remoteClients.active(clientId);
-    this.sendRemoteClient(clientId, {
+    let activeCwd = selectedCwd;
+    if (active) {
+      const sc = this.sessionCwd(active);
+      if (authorizedListCwd(sc, authorized, pathsEqual)) activeCwd = sc;
+    }
+    return {
       type: "repos",
       // Same catalog as local — remote follows the host's open/discovered set.
-      entries: this.localRepoCatalogEntries(),
-      selectedCwd: cwd,
-      activeCwd: active ? this.sessionCwd(active) : cwd,
-    });
+      entries,
+      selectedCwd,
+      activeCwd,
+    };
+  }
+
+  private sendRemoteRepoCatalog(clientId: string): void {
+    this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId));
   }
 
   /**
@@ -2805,8 +2817,10 @@ See design doc for the full state machine diagram.`;
         // Keep the client alive but clear the active session; bound-cwd checks
         // refuse ops until the tab selects an authorized repo.
         this.remoteClients.deleteActive(clientId);
-        // Leave cwd pointing at the closed path so selectRepo is required —
-        // isAuthorizedCwd(closed) is false, so send/cancel are refused.
+        // Leave *client state* pointing at the closed path so selectRepo is
+        // required (isAuthorizedCwd(closed) is false → send/cancel refused).
+        // Outbound `repos`/`initialState` scrub that path to empty — the choke
+        // point rejects a closed selectedCwd on the wire.
       }
       this.sendRemoteRepoCatalog(clientId);
       this.sendRemoteClient(clientId, {
@@ -9892,7 +9906,8 @@ See design doc for the full state machine diagram.`;
     const session = this.remoteSessionFor(clientId);
     // Catalog is already open-folder-filtered on desktop; still the sole source.
     const entries = this.localRepoCatalogEntries();
-    const initial = { ...this.buildInitialStateMsg(), cwd: listCwd ?? cwd };
+    // Never put a closed cwd on the wire (choke point rejects it); empty = unbound.
+    const initial = { ...this.buildInitialStateMsg(), cwd: listCwd ?? "" };
     const sessionCwd = this.sessionCwd(session);
     const sessionCwdOk = !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
     const phrase = this.voiceSetting(
@@ -9927,18 +9942,12 @@ See design doc for the full state machine diagram.`;
     if (activeVoice) {
       snap.push({ type: "voiceState", status: activeVoice.finalizing ? "transcribing" : "listening" });
     }
-    snap.push({
-      type: "repos",
-      entries,
-      // selectedCwd may still name a closed path until the tab selectRepos;
-      // entries never include that path on desktop.
-      selectedCwd: cwd,
-      activeCwd: sessionCwdOk ? this.sessionCwd(session) : (listCwd ?? cwd),
-    });
+    // Scrubbed selected/active; entries are the open-folder catalog only.
+    snap.push(this.buildRemoteReposMsg(clientId, entries));
     // buildSessionsList re-checks authorization (empty list if listCwd missing).
     snap.push(
       this.buildSessionsList(
-        listCwd ?? cwd,
+        listCwd ?? "",
         undefined,
         sessionCwdOk ? this.remoteActiveSessionId(clientId) : null,
       ),

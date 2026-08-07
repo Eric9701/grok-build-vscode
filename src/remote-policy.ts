@@ -499,15 +499,25 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
  * project scope (open folder / worktree). Independent of {@link OUTBOUND_DISPOSITION}
  * (mirror vs host-local): a mirrored transcript is still project data.
  *
- * - `none` — device prefs, errors, open-folder catalog, UI chrome. Always OK.
+ * - `none` — device prefs, errors, UI chrome with no project path fields. Always OK.
  * - `scope` — conversation/session payload; caller must pass the session or
  *   repo cwd, which must be in the live authorized set.
  * - `entries` — list frames; every entry's `cwd` must be authorized (empty list OK).
  * - `message-cwd` — frame carries its own `cwd` field that must be authorized.
+ * - `repos-catalog` — `repos` frame: every entry cwd authorized; selectedCwd /
+ *   activeCwd authorized or empty (empty = unbound after rehome; closed ≠ empty).
+ * - `optional-cwd` — frame carries a `cwd` that is authorized or empty (no
+ *   closed-project leak via reconnect shell).
  *
  * Exhaustive over HostMsg so a new type cannot ship without a classification.
  */
-export type OutboundProjectAuth = "none" | "scope" | "entries" | "message-cwd";
+export type OutboundProjectAuth =
+  | "none"
+  | "scope"
+  | "entries"
+  | "message-cwd"
+  | "repos-catalog"
+  | "optional-cwd";
 
 export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth> = {
   // Device-global / host chrome — not project data.
@@ -528,13 +538,14 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   hostNotice: "none",
   focusInput: "none",
   openModePopover: "none",
-  // Open-folder catalog (desktop) / discovery list (VS Code) — builders already
-  // filter; selectedCwd may still name a closed path after rehome.
-  repos: "none",
-  // Safe wipe / reconnect shell — no transcript body.
+  // Open-folder catalog — project-bearing selectedCwd/activeCwd/entries validated.
+  repos: "repos-catalog",
+  // Safe wipe — no project path fields.
   clearMessages: "none",
-  initialState: "none",
-  initialized: "none",
+  // Reconnect shell carries cwd; empty or authorized only.
+  initialState: "optional-cwd",
+  // Session-start chrome; delivered via emit → sendRemoteSession with scope.
+  initialized: "scope",
   // Voice control signals (idle/listening/error). Content-bearing voiceSubmit /
   // voiceTranscript use scope so a closed-project capture cannot land after rehome.
   voiceState: "none",
@@ -633,6 +644,24 @@ export function mayDeliverRemoteHostMsg(
       return entries.every(
         (e) => !e.cwd || cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd),
       );
+    }
+    case "repos-catalog": {
+      if (msg.type !== "repos") return false;
+      // Empty selected/active is intentional after rehome (unbound tab). A
+      // non-empty closed path is a leak — refuse rather than mirror builders.
+      if (msg.selectedCwd && !cwdIsAuthorized(msg.selectedCwd, authorizedCwds, sameCwd)) {
+        return false;
+      }
+      if (msg.activeCwd && !cwdIsAuthorized(msg.activeCwd, authorizedCwds, sameCwd)) {
+        return false;
+      }
+      return msg.entries.every(
+        (e) => !e.cwd || cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd),
+      );
+    }
+    case "optional-cwd": {
+      if (msg.type !== "initialState") return false;
+      return !msg.cwd || cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd);
     }
     case "message-cwd": {
       if (msg.type === "repoSessions") {

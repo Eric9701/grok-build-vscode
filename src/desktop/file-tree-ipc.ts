@@ -7,7 +7,7 @@
 import { ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isExecutablePath } from "./desktop-policy";
+import { isExecutableOpenTarget } from "./desktop-policy";
 import { interpretOpenPathResult } from "./document-view";
 import { listTreeDir, readTreeFile, resolveTreePath } from "./file-tree";
 import { fileTreePanelBootSource } from "./file-tree-panel";
@@ -110,9 +110,9 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     } catch {
       return { ok: false as const, error: "not found" };
     }
-    // Same executable refusal as chat openFile (desktop-policy): a renderer
-    // must not shell.openPath a workspace .exe/.bat/.ps1/.sh/.lnk/….
-    if (isExecutablePath(resolved.absPath)) {
+    // Same executable refusal as chat openFile (desktop-policy): extension,
+    // symlink target, launcher format, and POSIX +x on the canonical file.
+    if (isExecutableOpenTarget(resolved.absPath)) {
       opts.log(`[desk-ft] open rejected: executable path refused (${relPath})`);
       return { ok: false as const, error: "executable path refused" };
     }
@@ -135,7 +135,7 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
       opts.log(`[desk-ft] open rejected at use-time re-resolve (${relPath})`);
       return { ok: false as const, error: "path escaped workspace" };
     }
-    if (isExecutablePath(finalCheck.absPath)) {
+    if (isExecutableOpenTarget(finalCheck.absPath)) {
       opts.log(`[desk-ft] open rejected at use-time: executable (${relPath})`);
       return { ok: false as const, error: "executable path refused" };
     }

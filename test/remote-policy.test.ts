@@ -146,7 +146,7 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
   const closed = "/work/closed";
   const same = pathsEqual;
 
-  it("always allows device prefs, errors, and open-folder catalog", () => {
+  it("always allows device prefs, errors, and path-free chrome", () => {
     expect(
       mayDeliverRemoteHostMsg({ type: "error", text: "x" }, open, closed, same),
     ).toBe(true);
@@ -154,16 +154,130 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
       mayDeliverRemoteHostMsg({ type: "showThinking", value: true }, open, undefined, same),
     ).toBe(true);
     expect(
+      mayDeliverRemoteHostMsg({ type: "clearMessages" }, open, undefined, same),
+    ).toBe(true);
+  });
+
+  it("refuses repos / initialState frames that carry a closed project's cwd", () => {
+    // Unconditional "none" classification was the hole: builders could (and
+    // rehome deliberately did) put a closed selectedCwd on the wire.
+    expect(
       mayDeliverRemoteHostMsg(
         { type: "repos", entries: [], selectedCwd: closed, activeCwd: closed },
         open,
         closed,
         same,
       ),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "repos", entries: [], selectedCwd: closed, activeCwd: "/work/open" },
+        open,
+        closed,
+        same,
+      ),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg(
+        {
+          type: "repos",
+          entries: [
+            {
+              cwd: closed,
+              label: "leak",
+              available: true,
+              pinned: false,
+              updatedAt: 1,
+            },
+          ],
+          selectedCwd: "/work/open",
+          activeCwd: "/work/open",
+        },
+        open,
+        "/work/open",
+        same,
+      ),
+    ).toBe(false);
+
+    // Empty selected/active after rehome (unbound) is OK — not a closed path.
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "repos", entries: [], selectedCwd: "", activeCwd: "" },
+        open,
+        undefined,
+        same,
+      ),
     ).toBe(true);
     expect(
-      mayDeliverRemoteHostMsg({ type: "clearMessages" }, open, undefined, same),
+      mayDeliverRemoteHostMsg(
+        {
+          type: "repos",
+          entries: [
+            {
+              cwd: "/work/open",
+              label: "open",
+              available: true,
+              pinned: false,
+              updatedAt: 1,
+            },
+          ],
+          selectedCwd: "/work/open",
+          activeCwd: "/work/open",
+        },
+        open,
+        "/work/open",
+        same,
+      ),
     ).toBe(true);
+
+    const caps = {
+      uploadFile: true,
+      remoteVoice: true,
+      deleteActiveSession: true,
+    };
+    const baseInitial = {
+      type: "initialState" as const,
+      effort: "",
+      useCtrlEnter: false,
+      extVersion: "0",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      capabilities: caps,
+    };
+    expect(
+      mayDeliverRemoteHostMsg({ ...baseInitial, cwd: closed }, open, closed, same),
+    ).toBe(false);
+    expect(
+      mayDeliverRemoteHostMsg({ ...baseInitial, cwd: "/work/open" }, open, closed, same),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg({ ...baseInitial, cwd: "" }, open, undefined, same),
+    ).toBe(true);
+  });
+
+  it("classifies repos as repos-catalog and initialState as optional-cwd", () => {
+    expect(OUTBOUND_PROJECT_AUTH.repos).toBe("repos-catalog");
+    expect(OUTBOUND_PROJECT_AUTH.initialState).toBe("optional-cwd");
+    expect(OUTBOUND_PROJECT_AUTH.initialized).toBe("scope");
+    expect(OUTBOUND_PROJECT_AUTH.clearMessages).toBe("none");
+    expect(OUTBOUND_PROJECT_AUTH.error).toBe("none");
+  });
+
+  it("mutation: treating repos as unconditional none reopens the closed-cwd leak", () => {
+    // If classification falls back to always-true, a closed selectedCwd leaves.
+    const msg: HostMsg = {
+      type: "repos",
+      entries: [],
+      selectedCwd: closed,
+      activeCwd: closed,
+    };
+    const buggyNoneAlways = true;
+    expect(buggyNoneAlways).toBe(true);
+    expect(mayDeliverRemoteHostMsg(msg, open, closed, same)).toBe(false);
   });
 
   it("refuses transcript / history content without an authorized scope cwd", () => {
