@@ -345,6 +345,26 @@ export function rehydrateBusyChrome(session: Session): { value: boolean; locked:
   return { value: busy, locked: false };
 }
 
+/**
+ * True while this session has a turn in flight — the agent is working, or it is
+ * waiting on an answer it will resume from.
+ *
+ * Closing a project folder disposes its sessions and force-kills the agent
+ * process (a hard kill on Windows), so this predicate is the difference between
+ * a clean close and a turn discarded without a word. Deliberately the same
+ * three conditions as rehydrateBusyChrome: if the composer would show as busy,
+ * there is something to lose. Broader than turnIsInFlight, which only asks
+ * whether a token exists — that misses a session still spawning, and one parked
+ * on a permission prompt whose answer would have resumed real work.
+ */
+export function sessionHasWorkInFlight(session: Session): boolean {
+  return (
+    session.status === "working" ||
+    session.status === "needs-you" ||
+    session.turnToken !== undefined
+  );
+}
+
 export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
   if (session.queuedSendCommit) return undefined;
   const queued = session.queuedSends[0] ?? "";

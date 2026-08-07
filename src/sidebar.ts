@@ -24,6 +24,7 @@ import {
   pendingPermissionOptions,
   preferredPermissionAllowOption,
   rehydrateBusyChrome,
+  sessionHasWorkInFlight,
   sessionReadyForPrompt,
   sessionUiSnapshot,
   turnIsInFlight,
@@ -2713,6 +2714,25 @@ See design doc for the full state machine diagram.`;
     if (!this.host.canSwitchWorkspaceFolder) return;
     const target = cwd || this.host.workspaceRoot();
     if (!target) return;
+    // Closing is a revocation: every session in the folder is disposed and its
+    // agent process killed (hard-killed on Windows). A File-menu item gives no
+    // hint that anything is running, so a mid-turn close would discard the work
+    // silently. Ask first. The revoke recomputes its own list at use time, so
+    // nothing here goes stale across the await.
+    const working = this.sessionsBoundToFolder(target).filter(sessionHasWorkInFlight);
+    if (working.length) {
+      const many = working.length > 1;
+      const ok = await this.host.showWarningMessage(
+        `Close "${path.basename(target)}"?
+
+${many ? `${working.length} conversations are` : "A conversation is"} still working. ` +
+          `Closing ends ${many ? "them" : "it"} and discards the turn in progress.`,
+        { modal: true },
+        "Close anyway",
+      );
+      if (ok !== "Close anyway") return;
+    }
+
     const activeRoot = this.host.workspaceRoot();
     const wasActive = !!activeRoot && pathsEqual(target, activeRoot);
     if (!this.host.removeWorkspaceFolder(target)) {
@@ -2752,13 +2772,11 @@ See design doc for the full state machine diagram.`;
    * Bumps {@link authEpoch}. Idempotent for a given path once the open set has
    * already dropped it (isAuthorizedCwd is false for that cwd).
    */
-  private revokeClosedProjectFolder(closedCwd: string): void {
-    this.authEpoch++;
-    // Voice first: a completing STT turn must not voiceSubmit / post into a
-    // session that is about to be disposed or rehomed to another project.
-    this.revokeVoiceForClosedFolder(closedCwd);
-
-    const doomed: Session[] = [];
+  /** Every live session the given folder owns — pool plus focused, worktrees
+   *  included. Both the close warning and the revoke read this, so the set the
+   *  user is warned about is by construction the set that gets disposed. */
+  private sessionsBoundToFolder(closedCwd: string): Session[] {
+    const bound: Session[] = [];
     const seen = new Set<Session>();
     const consider = (s: Session | undefined) => {
       if (!s || seen.has(s)) return;
@@ -2772,11 +2790,21 @@ See design doc for the full state machine diagram.`;
           pathsEqual,
         )
       ) {
-        doomed.push(s);
+        bound.push(s);
       }
     };
     for (const s of this.pool) consider(s);
     consider(this.focused);
+    return bound;
+  }
+
+  private revokeClosedProjectFolder(closedCwd: string): void {
+    this.authEpoch++;
+    // Voice first: a completing STT turn must not voiceSubmit / post into a
+    // session that is about to be disposed or rehomed to another project.
+    this.revokeVoiceForClosedFolder(closedCwd);
+
+    const doomed = this.sessionsBoundToFolder(closedCwd);
 
     for (const s of doomed) {
       const remoteHolders = this.remoteClients.clientsForActiveValue(s);
