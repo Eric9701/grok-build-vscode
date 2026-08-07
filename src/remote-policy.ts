@@ -225,13 +225,28 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   clearQueuedSends: "propose",
   steerSend: "propose",
   forkSession: "propose",
-  // Worktree create/apply/remove: allowed from remote (2026-08-07). Authorization
-  // (git-list / path containment) is unchanged — this only widens who may ask.
-  // Create skips the host input box for remote origin (auto label) so a phone
-  // tap never stalls on a desk dialog. Apply/Remove already confirm in-webview.
-  newWorktreeSession: "propose",
-  applyWorktree: "propose",
-  removeWorktree: "propose",
+  // Worktree create/apply/remove: REVERTED to host-local 2026-08-07, hours
+  // after being widened to "propose" the same day. The widening was safe in
+  // itself — the authorization underneath (git-list, path containment) never
+  // changed. What made it wrong is that the handlers do not act on the session
+  // that asked: `applyWorktree`/`removeWorktree` run against `this.focused`,
+  // and `newWorktreeSession` against `workspaceRoot()`, while `session` sits
+  // unused in scope right beside them (contrast `forkSession`, two cases up,
+  // which threads it correctly). So a phone driving repo B could remove the
+  // worktree the desk was focused on in repo A, discarding unapplied edits —
+  // work loss, triggered by a control that looked like it applied to what you
+  // were looking at.
+  //
+  // The real fix is to give these three an explicit target session, the way
+  // fork has one. That is a session-ownership change through worktree DELETION,
+  // and this codebase has been bitten three times by an identifier captured
+  // before an await going stale after it — so it is not a change to make in a
+  // hurry. Until then the capability goes back where it was safe. The rail's
+  // ⋯ menu hides both entries on remote clients, so nothing offers a control
+  // the host will drop.
+  newWorktreeSession: "host-local",
+  applyWorktree: "host-local",
+  removeWorktree: "host-local",
   // Rewind discards work already on disk — stays host-local. Desktop (local
   // host) supports it via confirmInChat; remote must not.
   rewindSession: "host-local",

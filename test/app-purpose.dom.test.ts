@@ -154,6 +154,69 @@ describe("app purpose + session menu (DOM)", () => {
     });
   });
 
+  // The host runs worktree apply/remove against ITS focused session and creates
+  // one against ITS workspace root, ignoring the requesting session. So a remote
+  // tab in repo B could remove the worktree the desk was standing in — and
+  // Remove discards unapplied edits. The policy refuses these from remote; these
+  // two make sure the UI does not offer them anyway, because a control the host
+  // silently drops is worse than no control.
+  it("a remote client is never offered a worktree destination", async () => {
+    const h = bootWebview({ ready: true, remote: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    dispatch(h.window, { type: "worktreeSupported", value: true } as never);
+    openGear(h);
+    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    await Promise.resolve();
+    // With only one destination the picker is skipped entirely and the fork
+    // goes straight through — which is the desired remote behaviour.
+    expect(findGearItem(h, /Use a new worktree/)).toBeFalsy();
+    expect(h.posted.find((m) => m.type === "newWorktreeSession")).toBeFalsy();
+  });
+
+  it("a remote client in a worktree is never offered Apply/Remove", async () => {
+    const h = bootWebview({ ready: true, remote: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "coding",
+      capabilities: {},
+    });
+    // `session` is what actually sets state.isWorktree — a bespoke "worktree"
+    // frame sets nothing, and the test would pass without the guard.
+    dispatch(h.window, {
+      type: "session",
+      currentModelId: "grok-4-5",
+      models: [],
+      worktree: { label: "feature", path: "/w/.worktrees/feature" },
+    } as never);
+    openGear(h);
+    expect(findGearItem(h, /Apply worktree/)).toBeFalsy();
+    expect(findGearItem(h, /Remove worktree/)).toBeFalsy();
+  });
+
   it("setAppPurpose posts the choice and Coding reveals thinking control", async () => {
     const h = bootWebview({ ready: true });
     dispatch(h.window, {

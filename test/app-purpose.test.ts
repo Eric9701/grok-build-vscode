@@ -152,10 +152,15 @@ describe("PersistedState app purpose", () => {
 });
 
 describe("remote-policy app purpose + worktree", () => {
-  it("allows worktree create/apply/remove from remote (propose)", () => {
-    expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("propose");
-    expect(INBOUND_DISPOSITION.applyWorktree).toBe("propose");
-    expect(INBOUND_DISPOSITION.removeWorktree).toBe("propose");
+  it("keeps worktree create/apply/remove host-local — the handlers use the host's focused session", () => {
+    // Widened to "propose" on 2026-08-07 and reverted the same day: sidebar's
+    // applyWorktree/removeWorktree run against `this.focused` and
+    // newWorktreeSession against workspaceRoot(), ignoring the requesting
+    // session that sits unused in scope beside them. A phone in repo B could
+    // therefore delete the worktree the desk was standing in.
+    expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
+    expect(INBOUND_DISPOSITION.applyWorktree).toBe("host-local");
+    expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");
   });
 
   it("keeps rewind host-local for remote", () => {

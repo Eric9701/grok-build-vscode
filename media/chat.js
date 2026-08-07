@@ -2134,8 +2134,9 @@
       () => { beginContinueInNewChat(); },
     );
     // Worktree Apply/Remove only while already in a worktree (Coding or not —
-    // you're already in one, so the controls must stay reachable).
-    if (state.isWorktree) {
+    // you're already in one, so the controls must stay reachable). Never from a
+    // remote: the host acts on its own focused session, not the requester's.
+    if (state.isWorktree && !IS_REMOTE) {
       addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
         closePopovers();
         uiConfirm({
@@ -2239,7 +2240,11 @@
         description: "Continue from here in the current checkout",
       },
     ];
-    if (isCodingPurpose() && state.worktreeSupported && !state.isWorktree) {
+    // Desk-only: the host creates a worktree against its own workspace root
+    // rather than the session that asked, so a remote tab working in another
+    // repo would get a checkout somewhere it never chose. Offering the option
+    // here would promise a placement the host does not honour.
+    if (isCodingPurpose() && state.worktreeSupported && !state.isWorktree && !IS_REMOTE) {
       dests.push({
         id: "worktree",
         label: "Use a new worktree",
@@ -4701,7 +4706,14 @@
       });
       // Worktree upkeep rides along for the same reason, and only while you are
       // in one — you cannot apply a checkout you are not standing in.
-      if (state.isWorktree) {
+      //
+      // Not from a remote, though. The host runs apply/remove against ITS
+      // focused session, not the one that asked, so a phone in repo B would
+      // remove the worktree the desk was standing in — and Remove discards
+      // unapplied edits. Hidden rather than shown-and-dropped: the host now
+      // refuses these from remote, and a control that silently does nothing is
+      // worse than one that isn't there.
+      if (state.isWorktree && !IS_REMOTE) {
         items.push({
           label: "Apply worktree",
           icon: ICON.gitBranch,
