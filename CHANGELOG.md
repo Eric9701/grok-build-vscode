@@ -5,7 +5,9 @@
 ### Added
 
 - **Grok Build Desktop (Community) — a standalone app for Windows and macOS.** The same coding agent, without an editor or a terminal in front of it: open a folder and start. Projects on the left, the conversation in the middle, your files on the right. It is a **pre-release**, and the builds are **not code-signed yet** — Windows SmartScreen and macOS Gatekeeper will warn you the first time. [Download](https://afkpilot.com/desktop).
-- **The desktop file panel edits text files.** Markdown opens as a preview with a **Code** toggle, `Ctrl`/`Cmd+S` saves, and a file with unsaved changes asks before you navigate away or close the window. If the agent changed the file underneath you, the save is refused and you choose: reload its version, or keep yours. Silently winning that race in either direction is how people lose work.
+- **The desktop file panel edits text files, in tabs.** Several files open at once, each with its own unsaved-changes dot. Markdown opens as a preview with a source toggle, `Ctrl`/`Cmd+S` saves, **Cancel changes** reverts, and closing a tab with unsaved edits asks first. If the agent changed the file underneath you, the save is refused and you choose: reload its version, or keep yours. Silently winning that race in either direction is how people lose work.
+- **The app tells you when a new version exists.** It checks on start and every twelve hours, and shows how to update. It does not install anything behind your back — and it cannot on macOS anyway, since an unsigned app can't be replaced automatically.
+- **Add project folders from the rail.** A `+` on the PROJECTS heading, and the empty rail offers it too.
 - **A project that turns off permission prompts now asks you first.** A repository can ship a `.grok/config.toml` setting `permission_mode = "always-approve"`, and it overrides your own setting — so cloning someone's code was enough to remove every prompt between the agent and your machine. Opening such a project now says so and waits for you. Your own global setting is unaffected and stays silent.
 
 ### Changed
@@ -22,6 +24,10 @@
 - **Closing a project folder asks first when something is still running.** It ends every conversation in that folder and stops the agent, which discarded a turn in progress with no warning.
 - **`--config-json` applies to one run.** It was merged into your real configuration and left there, so a throwaway setting passed once kept applying on every later launch, with nothing on screen explaining why.
 - **Files in one project can no longer be opened from a conversation in another.** Having both projects open was treated as permission to reach either from either.
+- **Markdown with Windows line endings renders properly.** Headings kept their `#` and bullets kept their `-`, while tables and links worked — so it looked like the renderer was mostly fine when the document's structure was actually gone. Affected chat messages too, not just the file panel.
+- **A file saved after you switch projects goes to the file you opened**, not to a same-named file in the project you switched to.
+- **Selecting a project no longer opens a conversation in it.** It shows you what is there; you choose what to open.
+- **The `⋯` menus close when you click them again.**
 
 ## 3.1.0 — 2026-08-06
 
