@@ -546,10 +546,13 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   initialState: "optional-cwd",
   // Session-start chrome; delivered via emit → sendRemoteSession with scope.
   initialized: "scope",
-  // Voice control signals (idle/listening/error). Content-bearing voiceSubmit /
-  // voiceTranscript use scope so a closed-project capture cannot land after rehome.
+  // voiceConfigured is project-scoped (sendPhrase / key resolution per cwd) —
+  // a closed or re-homed tab must not keep the prior project's voice prefs.
+  // Content-bearing voiceSubmit / voiceTranscript / voicePartial use scope so a
+  // closed-project capture cannot land after rehome. voiceState / voiceError are
+  // control chrome without project metadata.
   voiceState: "none",
-  voiceConfigured: "none",
+  voiceConfigured: "scope",
   voicePartial: "scope",
   voiceSubmit: "scope",
   voiceTranscript: "scope",

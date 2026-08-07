@@ -279,14 +279,29 @@ describe("RemoteUplink socket-level project authorization", () => {
 
   it("filterAuthorizedOutbound scrubs closed-project conversation and catalog frames", () => {
     const open = ["/work/open"];
+    const voiceCfg: HostMsg = {
+      type: "voiceConfigured",
+      value: true,
+      sendPhrase: "from-closed-project",
+    };
     const kept = filterAuthorizedOutbound(
-      [deviceOk, closedChunk, closedRepos, openRepos, closedInitial, { type: "clearMessages" }],
+      [
+        deviceOk,
+        closedChunk,
+        closedRepos,
+        openRepos,
+        closedInitial,
+        voiceCfg,
+        { type: "clearMessages" },
+      ],
       open,
       "/work/closed", // stale session scope
       pathsEqual,
     );
+    // voiceConfigured is project-scoped: closed scope must drop it too.
     expect(kept.map((m) => m.type)).toEqual(["error", "repos", "clearMessages"]);
     expect(kept.find((m) => m.type === "repos")).toEqual(openRepos);
+    expect(kept.some((m) => m.type === "voiceConfigured")).toBe(false);
   });
 
   it("mutation: without the filter a closed-project snapshot would leave intact", () => {

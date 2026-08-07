@@ -263,8 +263,35 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
     expect(OUTBOUND_PROJECT_AUTH.repos).toBe("repos-catalog");
     expect(OUTBOUND_PROJECT_AUTH.initialState).toBe("optional-cwd");
     expect(OUTBOUND_PROJECT_AUTH.initialized).toBe("scope");
+    // Project voice prefs (sendPhrase / key resolution) must not follow a closed tab.
+    expect(OUTBOUND_PROJECT_AUTH.voiceConfigured).toBe("scope");
+    expect(OUTBOUND_PROJECT_AUTH.voiceState).toBe("none");
     expect(OUTBOUND_PROJECT_AUTH.clearMessages).toBe("none");
     expect(OUTBOUND_PROJECT_AUTH.error).toBe("none");
+  });
+
+  it("refuses voiceConfigured for a closed or missing project scope", () => {
+    const msg: HostMsg = {
+      type: "voiceConfigured",
+      value: true,
+      sendPhrase: "grok send",
+    };
+    // Prior project closed / re-homed — must not keep delivering its prefs.
+    expect(mayDeliverRemoteHostMsg(msg, open, closed, same)).toBe(false);
+    expect(mayDeliverRemoteHostMsg(msg, open, undefined, same)).toBe(false);
+    // Authorized open scope still delivers.
+    expect(mayDeliverRemoteHostMsg(msg, open, "/work/open", same)).toBe(true);
+  });
+
+  it("mutation: voiceConfigured classified as none reopens the cross-project prefs leak", () => {
+    // If OUTBOUND_PROJECT_AUTH.voiceConfigured were "none", mayDeliver would
+    // always return true and a closed-tab client would keep the prior project's
+    // sendPhrase / configured flag. Classification must be "scope".
+    expect(OUTBOUND_PROJECT_AUTH.voiceConfigured).not.toBe("none");
+    expect(OUTBOUND_PROJECT_AUTH.voiceConfigured).toBe("scope");
+    const msg: HostMsg = { type: "voiceConfigured", value: true };
+    // Gate with closed scope must refuse (fails if classification is none).
+    expect(mayDeliverRemoteHostMsg(msg, open, closed, same)).toBe(false);
   });
 
   it("mutation: treating repos as unconditional none reopens the closed-cwd leak", () => {

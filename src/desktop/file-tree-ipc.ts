@@ -17,7 +17,6 @@ const CH_LIST = "desk-ft:list";
 const CH_OPEN = "desk-ft:open";
 const CH_READ = "desk-ft:read";
 const CH_ROOT = "desk-ft:root";
-const CH_LAST_OPEN = "desk-ft:lastOpen";
 
 export interface FileTreeIpcOptions {
   getWorkspaceRoot: () => string | undefined;
@@ -27,16 +26,13 @@ export interface FileTreeIpcOptions {
   /**
    * When set (tests), open writes the absolute path as a line instead of
    * calling the OS handler — so e2e can assert the open path without a GUI app.
+   * Prefer this over any production diagnostic: a process-global last-open
+   * path would leak across project switches.
    */
   openSinkPath?: string;
 }
 
-let lastOpenedPath: string | undefined;
 let handlersRegistered = false;
-
-export function getLastOpenedTreePath(): string | undefined {
-  return lastOpenedPath;
-}
 
 /** True when the IPC event came from the desktop app's main window main frame. */
 export function isIpcFromMainWindow(
@@ -117,7 +113,6 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
       return { ok: false as const, error: "executable path refused" };
     }
 
-    lastOpenedPath = resolved.absPath;
     const sink = opts.openSinkPath || process.env.GROK_DESKTOP_OPEN_SINK;
     if (sink) {
       try {
@@ -159,17 +154,11 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
     }
     return readTreeFile(root, relPath);
   });
-
-  // Test/diagnostic: last path the panel asked to open (after guard).
-  ipcMain.handle(CH_LAST_OPEN, (e) => {
-    if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_LAST_OPEN);
-    return { path: lastOpenedPath ?? null };
-  });
 }
 
 export function unregisterFileTreeIpc(): void {
   if (!handlersRegistered) return;
-  for (const ch of [CH_LIST, CH_OPEN, CH_READ, CH_ROOT, CH_LAST_OPEN]) {
+  for (const ch of [CH_LIST, CH_OPEN, CH_READ, CH_ROOT]) {
     ipcMain.removeHandler(ch);
   }
   handlersRegistered = false;

@@ -851,31 +851,49 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
   });
 
   test("resume never steals another tab's live session or silently blank-starts a missing one", async () => {
+    // Own the preconditions here. Earlier tests leave tab-a/session-a and
+    // tab-b/session-b set up, but an intervening selectRepo can still be
+    // finishing its auto-open and would overwrite a borrowed seed — this test
+    // is about theft/missing-id refusal, not suite ordering.
+    hooks.seedRemoteSession("tab-a", "session-a", repoB, [], true);
+    hooks.seedRemoteSession("tab-b", "session-b", repoB, [], true);
+
     const posts: Array<{ msg: any; clientIds?: string[] }> = [];
     hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
 
     hooks.fromRemote({ type: "resumeSession", id: "session-a", cwd: repoB }, "tab-b");
     hooks.fromRemote({ type: "selectRepo", cwd: repoB }, "tab-missing");
     hooks.fromRemote({ type: "resumeSession", id: "deleted-session", cwd: repoB }, "tab-missing");
-    // selectRepo auto-opens newest then resume runs serialized — 100ms was
-    // tight under load (flaked as a missing "Could not restore" for tab-missing).
-    await new Promise((r) => setTimeout(r, 400));
 
-    assert.ok(posts.some((p) =>
+    // selectRepo auto-opens newest (or starts a blank session) before the
+    // serialized resume of a missing id can run. That open is unbounded under
+    // the missing-CLI path — a fixed sleep (100ms, then 400ms) only delayed the
+    // flake. Wait for the product outcomes, not the clock.
+    const theftRefused = () => posts.some((p) =>
       p.clientIds?.includes("tab-b") &&
       p.msg?.type === "error" &&
       /already open/.test(p.msg.text)
-    ));
+    );
+    // Match the missing-id wording specifically — selectRepo's auto-open can
+    // itself emit "Could not restore … already open" when the newest row is
+    // live in another tab, and that must not satisfy this wait.
+    const missingRefused = () => posts.some((p) =>
+      p.clientIds?.includes("tab-missing") &&
+      p.msg?.type === "error" &&
+      /may have been deleted/.test(p.msg.text)
+    );
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline && !(theftRefused() && missingRefused())) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    assert.ok(theftRefused(), "tab-b must be refused when the session is live in another tab");
     assert.ok(posts.some((p) =>
       p.clientIds?.includes("tab-b") &&
       p.msg?.type === "sessions" &&
       p.msg.activeId === "session-b"
     ), "a refused selection must correct the tab back to its authoritative active session");
-    assert.ok(posts.some((p) =>
-      p.clientIds?.includes("tab-missing") &&
-      p.msg?.type === "error" &&
-      /Could not restore/.test(p.msg.text)
-    ));
+    assert.ok(missingRefused(), "a missing session id must surface Could not restore, not hang behind selectRepo");
     assert.ok(!posts.some((p) =>
       p.clientIds?.includes("tab-missing") &&
       p.msg?.type === "sessions" &&

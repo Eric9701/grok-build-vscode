@@ -469,23 +469,11 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     await fileRow.click();
 
     // Open sink is written by main when GROK_DESKTOP_OPEN_SINK is set.
-    await page.waitForFunction(
-      async () => {
-        // Poll via bridge lastOpen (works even if sink I/O is slightly delayed).
-        const api = (window as unknown as {
-          grokDesktopFileTree?: { lastOpen: () => Promise<{ path: string | null }> };
-        }).grokDesktopFileTree;
-        if (!api) return false;
-        const r = await api.lastOpen();
-        return !!(r && r.path && /payload\.bin$/i.test(r.path.replace(/\\/g, "/")));
-      },
-      { timeout: 10_000 },
-    );
-
-    // Also assert the sink file (mutation: if open skips the sink/openPath path,
-    // lastOpen might still be set by a stub — require the sink line too).
+    // (No production lastOpen diagnostic — a process-global path would leak
+    // across project switches; the test-only sink is the sole open oracle.)
     let sink = "";
-    for (let i = 0; i < 20; i++) {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
       if (fs.existsSync(openSink)) {
         sink = fs.readFileSync(openSink, "utf8");
         if (sink.includes("payload.bin")) break;

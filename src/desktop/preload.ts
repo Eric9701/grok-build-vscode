@@ -63,7 +63,6 @@ contextBridge.exposeInMainWorld("grokDesktopFileTree", {
   open: (relPath: string) => ipcRenderer.invoke("desk-ft:open", relPath),
   read: (relPath: string) => ipcRenderer.invoke("desk-ft:read", relPath),
   root: () => ipcRenderer.invoke("desk-ft:root"),
-  lastOpen: () => ipcRenderer.invoke("desk-ft:lastOpen"),
   /** Subscribe to active-project changes so the panel can rebind its tree. */
   onRootChanged: (cb: () => void) => {
     const handler = () => {

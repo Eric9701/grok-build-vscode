@@ -562,6 +562,21 @@ describe("desktop main wiring (source gates)", () => {
     expect(chatJs).not.toContain("desk-ft-");
     expect(chatJs).not.toContain("grokDesktopFileTree");
   });
+
+  it("does not expose a process-global lastOpen path (cross-project leak)", () => {
+    // A lastOpenedPath diagnostic survived project switches and returned
+    // project-A paths after the root moved to B. Tests use openSink only.
+    const ipc = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "file-tree-ipc.ts"),
+      "utf8",
+    );
+    const preload = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "preload.ts"),
+      "utf8",
+    );
+    expect(ipc).not.toMatch(/lastOpenedPath|lastOpen|CH_LAST_OPEN|desk-ft:lastOpen/);
+    expect(preload).not.toMatch(/lastOpen|desk-ft:lastOpen/);
+  });
 });
 
 describe("file-tree path containment", () => {

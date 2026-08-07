@@ -6089,12 +6089,14 @@ See design doc for the full state machine diagram.`;
       sendPhrase: this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
     });
     for (const clientId of this.remoteClients.clients()) {
+      // Scope = the project whose config we resolved. Classification is "scope"
+      // so a closed/re-homed tab cannot receive the prior project's prefs.
       const remoteCwd = this.sessionCwd(this.remoteSessionFor(clientId));
       this.sendRemoteClient(clientId, {
         type: "voiceConfigured",
         value: !!this.resolveVoiceApiKey(remoteCwd),
         sendPhrase: this.voiceSetting(remoteCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
-      });
+      }, remoteCwd);
     }
   }
 
@@ -6545,7 +6547,7 @@ See design doc for the full state machine diagram.`;
   private async handleRemoteVoiceStart(clientId: string, session: Session): Promise<void> {
     const credentialCwd = this.sessionCwd(session);
     if (!this.resolveVoiceApiKey(credentialCwd)) {
-      this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false });
+      this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false }, credentialCwd);
       this.sendRemoteClient(clientId, { type: "voiceError" });
       this.sendRemoteClient(clientId, { type: "error", text: "Voice control needs an xAI Speech-to-Text key on the host." });
       return;
