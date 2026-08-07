@@ -180,18 +180,29 @@ body.desk-ft-viewing .desk-ft-body {
   outline: 2px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: -1px;
 }
+/* Disclosure chevron column (dirs only). File-type icons use a separate
+   column so chevrons and Seti glyphs line up down the tree. */
 .desk-ft-twist {
   flex: 0 0 16px;
   width: 16px;
-  text-align: center;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--vscode-descriptionForeground, #9d9d9d);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
+  /* Optical center for › / ⌄ glyphs */
+  transform: translateY(-0.5px);
 }
+/* File icons only — dirs render an empty spacer so the name column stays aligned. */
 .desk-ft-icon {
-  flex: 0 0 var(--rail-icon-size, 14px);
-  width: var(--rail-icon-size, 14px);
-  height: var(--rail-icon-size, 14px);
+  /* Larger than rail (14px) for optical parity with former folder glyphs;
+     row min-height stays --rail-row-min-height (30px). */
+  --desk-ft-file-icon-size: 16px;
+  flex: 0 0 var(--desk-ft-file-icon-size);
+  width: var(--desk-ft-file-icon-size);
+  height: var(--desk-ft-file-icon-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -199,10 +210,15 @@ body.desk-ft-viewing .desk-ft-body {
 }
 .desk-ft-icon img,
 .desk-ft-icon-img {
-  width: var(--rail-icon-size, 14px);
-  height: var(--rail-icon-size, 14px);
+  width: var(--desk-ft-file-icon-size);
+  height: var(--desk-ft-file-icon-size);
   display: block;
   object-fit: contain;
+}
+/* Directory rows: no folder glyph — chevron alone is the disclosure control. */
+.desk-ft-row[data-kind="dir"] .desk-ft-icon {
+  /* Keep the column for alignment with file icons; leave empty. */
+  visibility: hidden;
 }
 .desk-ft-name {
   flex: 1 1 auto;
@@ -714,12 +730,14 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     applyFilter(body);
   });
 
+  /** Plain disclosure chevron (VS Code / Codex style) — no folder glyph. */
   function twistGlyph(open) {
-    return open ? "▼" : "▶";
+    return open ? "⌄" : "›";
   }
 
-  /** Seti UI icon id + data-URL for a tree entry (see media/file-icons). */
+  /** Seti UI icon id + data-URL for a *file* entry (dirs use chevron only). */
   function iconFor(kind, name) {
+    if (kind === "dir") return { id: "", src: "" };
     const id = fileIconId(kind, name);
     const src = SETI_ICONS[id] || SETI_ICONS.default || "";
     return { id: id, src: src };
@@ -893,26 +911,32 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "desk-ft-row";
+    row.setAttribute("data-kind", entry.kind);
     // Indent matches rail session indent rhythm (--rail-indent ≈ 16px step).
     const indent = 8 + depth * 12;
     row.style.paddingLeft = indent + "px";
     row.title = entry.relPath;
 
+    // Column 1: disclosure chevron (dirs) or empty (files) — fixed width.
     const twist = document.createElement("span");
     twist.className = "desk-ft-twist";
+    twist.setAttribute("aria-hidden", "true");
     twist.textContent = entry.kind === "dir" ? twistGlyph(false) : "";
 
+    // Column 2: Seti file icon (files) or empty spacer (dirs) — fixed width.
     const icon = document.createElement("span");
     icon.className = "desk-ft-icon";
-    const ic = iconFor(entry.kind, entry.name);
-    icon.setAttribute("data-icon", ic.id);
-    if (ic.src) {
-      const img = document.createElement("img");
-      img.className = "desk-ft-icon-img";
-      img.src = ic.src;
-      img.alt = "";
-      img.draggable = false;
-      icon.appendChild(img);
+    if (entry.kind === "file") {
+      const ic = iconFor(entry.kind, entry.name);
+      icon.setAttribute("data-icon", ic.id);
+      if (ic.src) {
+        const img = document.createElement("img");
+        img.className = "desk-ft-icon-img";
+        img.src = ic.src;
+        img.alt = "";
+        img.draggable = false;
+        icon.appendChild(img);
+      }
     }
 
     const name = document.createElement("span");

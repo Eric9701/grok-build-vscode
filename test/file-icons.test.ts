@@ -65,4 +65,34 @@ describe("Seti icon assets", () => {
     expect(FILE_TREE_PANEL_CSS).toContain("--rail-row-min-height");
     expect(defaultFileIconsDir()).toMatch(/file-icons/);
   });
+
+  it("directory rows use a disclosure chevron and no folder Seti glyph", () => {
+    const boot = fileTreePanelBootSource(iconsDir);
+    // Chevrons (Codex / VS Code), not filled triangle folder-adjacent glyphs.
+    expect(boot).toMatch(/twistGlyph/);
+    expect(boot).toMatch(/["']⌄["']|["']›["']/);
+    // Dirs skip Seti: iconFor returns empty for kind===dir, and makeNode only
+    // attaches data-icon / img for files.
+    expect(boot).toMatch(/if\s*\(\s*kind\s*===\s*["']dir["']\s*\)\s*return\s*\{\s*id:\s*["']["']/);
+    expect(boot).toMatch(/entry\.kind\s*===\s*["']file["']/);
+    expect(boot).toMatch(/data-kind/);
+    // CSS: dir icon column hidden (alignment spacer); file icons larger than rail.
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-row\[data-kind=["']dir["']\]\s*\.desk-ft-icon\s*\{[^}]*visibility:\s*hidden/s,
+    );
+    expect(FILE_TREE_PANEL_CSS).toContain("--desk-ft-file-icon-size");
+    expect(FILE_TREE_PANEL_CSS).toMatch(/--desk-ft-file-icon-size:\s*16px/);
+    // Row height unchanged from the rail density pass.
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height/s,
+    );
+    // makeNode only attaches Seti imgs for files — dirs never get data-icon.
+    expect(boot).toMatch(
+      /if\s*\(\s*entry\.kind\s*===\s*["']file["']\s*\)\s*\{[\s\S]*?data-icon/,
+    );
+    // Chevrons are assigned for dirs only.
+    expect(boot).toMatch(
+      /entry\.kind\s*===\s*["']dir["']\s*\?\s*twistGlyph/,
+    );
+  });
 });

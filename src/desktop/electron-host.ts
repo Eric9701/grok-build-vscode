@@ -53,6 +53,13 @@ import {
 } from "../sessions";
 import type { ConfigStore } from "./config-store";
 import {
+  ensureConfigToml,
+  globalConfigPath,
+  GLOBAL_CONFIG_STUB,
+  projectConfigPath,
+  PROJECT_CONFIG_STUB,
+} from "../grok-config";
+import {
   authorizeOpenUrl,
   revalidateOpenFileForUse,
   type DesktopOpenFileContext,
@@ -499,6 +506,25 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
   };
 
   /**
+   * Open a path the host itself resolved or created — no workspace-root
+   * containment (renderer never supplies this path). Used by typed intents
+   * (global/project config) and host-owned exports.
+   */
+  async function openHostPath(fsPath: string): Promise<void> {
+    const err = await shell.openPath(fsPath);
+    const result = interpretOpenPathResult(err);
+    if (!result.ok) {
+      log(`[desktop] openPath failed: ${result.error}`);
+      await messageBox(
+        getWindow,
+        "error",
+        `Could not open file:\n${fsPath}\n\n${result.error}`,
+        ["OK"],
+      );
+    }
+  }
+
+  /**
    * Open a filesystem path via the OS. Revalidates containment + executable
    * policy immediately before shell.openPath (TOCTOU close vs the message-gate
    * authorize) and opens only the path returned by that check.
@@ -885,6 +911,19 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
         }
       }
       await messageBox(getWindow, "error", `Could not open resource:\n${String(target)}`, ["OK"]);
+    },
+    async openGlobalConfig() {
+      const p = globalConfigPath();
+      ensureConfigToml(p, GLOBAL_CONFIG_STUB);
+      await openHostPath(p);
+    },
+    async openProjectConfig(projectCwd: string) {
+      const p = projectConfigPath(projectCwd);
+      ensureConfigToml(p, PROJECT_CONFIG_STUB);
+      await openHostPath(p);
+    },
+    async openHostResolvedPath(fsPath: string) {
+      await openHostPath(fsPath);
     },
     async openUntitledText(content: string, language?: string) {
       const title = language ? `Untitled (${language})` : "Untitled";

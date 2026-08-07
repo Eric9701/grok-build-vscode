@@ -219,6 +219,9 @@ describe("typed Host command surface (design #5)", () => {
     expect(hostSrc).toMatch(/openSettings\(/);
     expect(hostSrc).toMatch(/linkRemote\(/);
     expect(hostSrc).toMatch(/unlinkRemote\(/);
+    expect(hostSrc).toMatch(/openGlobalConfig\(/);
+    expect(hostSrc).toMatch(/openProjectConfig\(/);
+    expect(hostSrc).toMatch(/openHostResolvedPath\(/);
     // Escape-hatch executeCommand is gone — every sidebar op is typed.
     expect(hostSrc).not.toMatch(/\bexecuteCommand\b/);
   });
@@ -234,6 +237,9 @@ describe("typed Host command surface (design #5)", () => {
     expect(sidebar).not.toMatch(/executeCommand\(\s*["']grok\.(link|unlink)Remote["']/);
     expect(sidebar).toMatch(/\.openDiff\(/);
     expect(sidebar).toMatch(/\.openResource\(/);
+    expect(sidebar).toMatch(/\.openGlobalConfig\(/);
+    expect(sidebar).toMatch(/\.openProjectConfig\(/);
+    expect(sidebar).toMatch(/\.openHostResolvedPath\(/);
     expect(sidebar).toMatch(/\.setContext\(/);
     expect(sidebar).toMatch(/\.relocateView\(/);
     expect(sidebar).toMatch(/\.openSettings\(/);

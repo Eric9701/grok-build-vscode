@@ -339,8 +339,10 @@ body.has-rail .app-main {
 /* Folder is an open/closed indicator — the whole head is the hit target. */
 .rail-twisty { cursor: inherit; pointer-events: none; }
 .rail-action-btn { cursor: pointer; }
+/* Hover controls sit on the row's own hover surface — no darker per-icon chip
+   (Codex-style). Focus outline remains for keyboard; active pin is colour-only. */
 .rail-action-btn:hover,
-.rail-action-btn.active { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
+.rail-action-btn.active { color: var(--vscode-foreground); background: transparent; }
 .rail-action-btn:focus-visible,
 .rail-more:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .rail-twisty svg { width: var(--rail-icon-size); height: var(--rail-icon-size); }
@@ -392,11 +394,13 @@ body.has-rail .app-main {
   opacity: 0;
   pointer-events: none;
   transition: opacity .1s ease;
-  /* Soft scrim so trailing title text does not fight the icons on hover. */
+  /* Scrim matches the row hover fill so icons sit on one surface, not a second
+     dark chip over the sideBar colour. Visible only when the row is hovered
+     (opacity 0 until then). */
   background: linear-gradient(
     to right,
     transparent 0%,
-    var(--vscode-sideBar-background, var(--vscode-editor-background, #252526)) 28%
+    var(--rail-hover-bg, var(--vscode-list-hoverBackground)) 28%
   );
   padding-left: 14px;
   border-radius: 4px;

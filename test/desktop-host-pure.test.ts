@@ -2727,6 +2727,141 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
   });
 });
 
+describe("typed config open intents (host-resolved paths)", () => {
+  it("authorizeOpenFile still refuses ~/.grok/config.toml outside workspace roots", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-cfg-auth-"));
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-cfg-home-"));
+    try {
+      fs.writeFileSync(path.join(root, "readme.md"), "ok");
+      const cfg = path.join(grokHome, "config.toml");
+      fs.writeFileSync(cfg, "# global\n");
+      // Renderer-supplied absolute path that *looks* like a config is refused.
+      const refused = authorizeOpenFile(cfg, { workspaceRoot: root });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) {
+        expect(refused.reason).toMatch(/escape|authorized roots/i);
+      }
+      // Relative path claiming to be config under the project is allowed only if
+      // it lives inside the workspace (not a way to reach ~/.grok).
+      fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".grok", "config.toml"), "# project\n");
+      expect(authorizeOpenFile(".grok/config.toml", { workspaceRoot: root }).ok).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
+  it("sidebar dispatches openGlobalConfig / openProjectConfig as host intents", () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    // Gear intents call typed Host methods — not openResource with a joined path.
+    const globalCase = sidebar.slice(
+      sidebar.indexOf('case "openGlobalConfig"'),
+      sidebar.indexOf('case "openProjectConfig"'),
+    );
+    const projectCase = sidebar.slice(
+      sidebar.indexOf('case "openProjectConfig"'),
+      sidebar.indexOf('case "runMcpList"'),
+    );
+    expect(globalCase).toMatch(/openGlobalConfig\s*\(/);
+    expect(globalCase).not.toMatch(/openResource\s*\(/);
+    // Path must not be joined in the sidebar case — only the typed host call.
+    expect(globalCase).not.toMatch(/path\.join/);
+    expect(globalCase).not.toMatch(/writeFileSync/);
+    expect(projectCase).toMatch(/openProjectConfig\s*\(/);
+    expect(projectCase).not.toMatch(/openResource\s*\(/);
+    expect(projectCase).not.toMatch(/path\.join/);
+    expect(projectCase).not.toMatch(/writeFileSync/);
+    // Always-approve notice uses the same typed intent.
+    expect(sidebar).toMatch(/openGlobalConfig\s*\(\s*\)/);
+  });
+
+  it("electron host opens configs via openHostPath, not openFsPath revalidation", () => {
+    const hostSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    expect(hostSrc).toContain("async function openHostPath");
+    expect(hostSrc).toMatch(/async openGlobalConfig\s*\(/);
+    expect(hostSrc).toMatch(/async openProjectConfig\s*\(/);
+    // openGlobalConfig body must use openHostPath (no revalidate).
+    const globalBody = hostSrc.slice(
+      hostSrc.indexOf("async openGlobalConfig"),
+      hostSrc.indexOf("async openProjectConfig"),
+    );
+    expect(globalBody).toMatch(/openHostPath\s*\(/);
+    expect(globalBody).toMatch(/globalConfigPath\s*\(/);
+    expect(globalBody).not.toMatch(/openFsPath\s*\(/);
+    expect(globalBody).not.toMatch(/revalidateOpenFileForUse/);
+    const projectBody = hostSrc.slice(
+      hostSrc.indexOf("async openProjectConfig"),
+      hostSrc.indexOf("async openHostResolvedPath"),
+    );
+    expect(projectBody).toMatch(/openHostPath\s*\(/);
+    expect(projectBody).toMatch(/projectConfigPath\s*\(/);
+    expect(projectBody).not.toMatch(/openFsPath\s*\(/);
+    // Renderer openFile path still revalidates.
+    expect(hostSrc).toMatch(/openFsPath[\s\S]*revalidateOpenFileForUse/);
+    // Mutation: if configs were routed back through openResource → openFsPath,
+    // the openGlobalConfig body would not call openHostPath.
+    expect(globalBody).not.toMatch(/openResource\s*\(/);
+  });
+
+  it("mutation: openGlobalConfig must not funnel through openFsPath", () => {
+    // Documents the hole: openResource → openFsPath refuses ~/.grok/config.toml.
+    const hostSrc = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    const openHostBody = hostSrc.slice(
+      hostSrc.indexOf("async function openHostPath"),
+      hostSrc.indexOf("async function openFsPath"),
+    );
+    // Trusted open has no auth context / revalidate.
+    expect(openHostBody).toMatch(/shell\.openPath/);
+    expect(openHostBody).not.toMatch(/revalidateOpenFileForUse/);
+    expect(openHostBody).not.toMatch(/getAuthContext/);
+  });
+});
+
+describe("rail hover controls sit on row hover surface", () => {
+  it("rail-action-btn hover uses transparent fill, not toolbar-hoverBackground chip", () => {
+    const css = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    // Per-icon darker chip is the regression (Codex: glyphs on row surface).
+    const hoverRule = css.match(
+      /\.rail-action-btn:hover\s*,\s*\.rail-action-btn\.active\s*\{[^}]+\}/,
+    );
+    expect(hoverRule).toBeTruthy();
+    expect(hoverRule![0]).toMatch(/background:\s*transparent/);
+    expect(hoverRule![0]).not.toMatch(/toolbar-hoverBackground/);
+    // Action-area scrim matches the row hover token, not sideBar background.
+    const actionsRule = css.match(
+      /\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]+\}/s,
+    );
+    expect(actionsRule).toBeTruthy();
+    expect(actionsRule![0]).toMatch(/--rail-hover-bg|--vscode-list-hoverBackground/);
+    expect(actionsRule![0]).not.toMatch(/--vscode-sideBar-background/);
+  });
+});
+
 describe("chat openFile / openDiff use-time revalidation (round 16)", () => {
   it("authorizeOpenFile returns the absPath to use", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-auth-abs-"));

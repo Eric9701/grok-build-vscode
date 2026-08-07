@@ -7,6 +7,13 @@
  * implements Host without this file existing at all).
  */
 import * as vscode from "vscode";
+import {
+  ensureConfigToml,
+  globalConfigPath,
+  GLOBAL_CONFIG_STUB,
+  projectConfigPath,
+  PROJECT_CONFIG_STUB,
+} from "./grok-config";
 import type {
   ConfigInspect,
   ConfigTarget,
@@ -373,6 +380,19 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
         uri,
         options ? toVsCodeShowOptions(options) : undefined,
       );
+    },
+    async openGlobalConfig() {
+      const p = globalConfigPath();
+      ensureConfigToml(p, GLOBAL_CONFIG_STUB);
+      await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(p));
+    },
+    async openProjectConfig(projectCwd: string) {
+      const p = projectConfigPath(projectCwd);
+      ensureConfigToml(p, PROJECT_CONFIG_STUB);
+      await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(p));
+    },
+    async openHostResolvedPath(fsPath: string) {
+      await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(fsPath));
     },
     async openUntitledText(content: string, language?: string) {
       const doc = await vscode.workspace.openTextDocument({ content, language });

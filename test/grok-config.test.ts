@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
+import * as path from "node:path";
 import {
   configForcesAlwaysApprove,
+  ensureConfigToml,
+  globalConfigPath,
+  GLOBAL_CONFIG_STUB,
   isAlwaysApprovePermission,
+  projectConfigPath,
+  PROJECT_CONFIG_STUB,
   readUiPermissionMode,
 } from "../src/grok-config";
 
@@ -114,5 +120,40 @@ describe("configForcesAlwaysApprove", () => {
     expect(
       configForcesAlwaysApprove({ project: projectWithoutKey, global: CONFIG("always-approve") }),
     ).toBe(true);
+  });
+});
+
+describe("config path helpers (host-resolved intents)", () => {
+  it("globalConfigPath is GROK_HOME/config.toml", () => {
+    expect(globalConfigPath({ GROK_HOME: "/tmp/fake-grok-home" } as NodeJS.ProcessEnv, "linux")).toBe(
+      path.join("/tmp/fake-grok-home", "config.toml"),
+    );
+  });
+
+  it("projectConfigPath is <cwd>/.grok/config.toml", () => {
+    expect(projectConfigPath("/work/repo")).toBe(path.join("/work/repo", ".grok", "config.toml"));
+  });
+
+  it("ensureConfigToml creates a stub when missing and leaves an existing file", () => {
+    const created: string[] = [];
+    const written: Array<{ p: string; data: string }> = [];
+    const files = new Set<string>();
+    const fs = {
+      existsSync: (p: string) => files.has(p),
+      mkdirSync: (p: string) => {
+        created.push(p);
+      },
+      writeFileSync: (p: string, data: string) => {
+        files.add(p);
+        written.push({ p, data });
+      },
+    };
+    const target = path.join("/tmp", ".grok", "config.toml");
+    ensureConfigToml(target, GLOBAL_CONFIG_STUB, fs);
+    expect(created).toEqual([path.dirname(target)]);
+    expect(written).toEqual([{ p: target, data: GLOBAL_CONFIG_STUB }]);
+    // Second call is a no-op.
+    ensureConfigToml(target, PROJECT_CONFIG_STUB, fs);
+    expect(written).toHaveLength(1);
   });
 });

@@ -591,8 +591,28 @@ export interface Host {
    * Open a path or portable URI with the host's default handler (binary-safe;
    * maps to `vscode.open` on VS Code). Prefer {@link openTextFile} when a
    * line selection is needed.
+   *
+   * On desktop, filesystem paths are revalidated against workspace roots
+   * (renderer-supplied openFile). For host-known locations use the typed
+   * intent methods below — never funnel those through this path.
    */
   openResource(target: string | Uri, options?: HostTextShowOptions): Thenable<void>;
+  /**
+   * Open the user's global Grok config.toml (`~/.grok/config.toml` / GROK_HOME).
+   * Host resolves and may create a stub; no renderer path is involved.
+   */
+  openGlobalConfig(): Thenable<void>;
+  /**
+   * Open the project-local `.grok/config.toml` under `projectCwd` (session /
+   * workspace cwd from the host). Host resolves and may create a stub.
+   */
+  openProjectConfig(projectCwd: string): Thenable<void>;
+  /**
+   * Open a path the host itself resolved or created (e.g. an export under
+   * globalStorage). Must never receive a path that originated from the
+   * webview. Desktop skips workspace-root containment; VS Code opens normally.
+   */
+  openHostResolvedPath(fsPath: string): Thenable<void>;
   /** Open an untitled document with the given content and language id. */
   openUntitledText(content: string, language?: string): Thenable<void>;
   /**

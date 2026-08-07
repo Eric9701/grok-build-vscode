@@ -9,7 +9,51 @@
  * actions server-side. The extension can't see that over ACP (the CLI still
  * reports the ordinary `default`/agent mode), so it reads the file directly to
  * keep the mode button honest.
+ *
+ * Path helpers resolve the standard global / project config locations host-side
+ * (Gear → Config). The renderer names an intent; the host never opens a
+ * renderer-supplied path for these actions.
  */
+import * as nodeFs from "node:fs";
+import * as path from "node:path";
+import { resolveGrokHome } from "./sessions";
+
+/** Stub written when global config is missing (matches prior sidebar behavior). */
+export const GLOBAL_CONFIG_STUB = "# Grok global configuration\n";
+/** Stub written when project config is missing. */
+export const PROJECT_CONFIG_STUB =
+  "# Grok project configuration\n# MCP servers here apply to this workspace only.\n";
+
+/** Absolute path of the user's global Grok config.toml under GROK_HOME. */
+export function globalConfigPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return path.join(resolveGrokHome(env, platform), "config.toml");
+}
+
+/** Absolute path of the project-local `.grok/config.toml` under `projectCwd`. */
+export function projectConfigPath(projectCwd: string): string {
+  return path.join(projectCwd, ".grok", "config.toml");
+}
+
+export type ConfigFs = {
+  existsSync: (p: string) => boolean;
+  mkdirSync: (p: string, opts?: { recursive?: boolean }) => void;
+  writeFileSync: (p: string, data: string) => void;
+};
+
+/** Create a stub config.toml (and parent dir) when the file is missing. */
+export function ensureConfigToml(
+  absPath: string,
+  stub: string,
+  fs: ConfigFs = nodeFs,
+): void {
+  if (fs.existsSync(absPath)) return;
+  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  fs.writeFileSync(absPath, stub);
+}
+
 
 /** True when a `permission_mode` value means "auto-approve everything". grok
  *  writes the hyphenated spelling; the underscore variant is accepted too. */

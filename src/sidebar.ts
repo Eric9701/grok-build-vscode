@@ -103,7 +103,11 @@ import {
   orderMentionIndex,
   resolveMentionAttachmentPath,
 } from "./mention";
-import { configForcesAlwaysApprove } from "./grok-config";
+import {
+  configForcesAlwaysApprove,
+  globalConfigPath,
+  projectConfigPath,
+} from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import {
   prepareFileUpload,
@@ -844,9 +848,8 @@ See design doc for the full state machine diagram.`;
         return undefined;
       }
     };
-    const home = process.env.HOME || process.env.USERPROFILE || "";
-    const globalPath = home ? path.join(home, ".grok", "config.toml") : undefined;
-    const projectPath = cwd ? path.join(cwd, ".grok", "config.toml") : undefined;
+    const globalPath = globalConfigPath();
+    const projectPath = cwd ? projectConfigPath(cwd) : undefined;
     return configForcesAlwaysApprove({ project: readSafe(projectPath), global: readSafe(globalPath) });
   }
 
@@ -864,9 +867,7 @@ See design doc for the full state machine diagram.`;
       OPEN,
     ).then((pick) => {
       if (pick !== OPEN) return;
-      const home = process.env.HOME || process.env.USERPROFILE || "";
-      if (!home) return;
-      void this.host.openResource(path.join(home, ".grok", "config.toml"));
+      void this.host.openGlobalConfig();
     });
   }
 
@@ -3201,7 +3202,8 @@ See design doc for the full state machine diagram.`;
         const stamp = Date.now();
         const file = path.join(dir, `${base}-${stamp}.${pngBytes ? "png" : "svg"}`);
         fs.writeFileSync(file, pngBytes ?? (msg.svg ?? ""), pngBytes ? undefined : "utf8");
-        await this.host.openResource(file);
+        // Host-created path under globalStorage — not a renderer-supplied path.
+        await this.host.openHostResolvedPath(file);
         return;
       }
 
@@ -4856,23 +4858,13 @@ See design doc for the full state machine diagram.`;
         break;
       }
       case "openGlobalConfig": {
-        const home = process.env.HOME || process.env.USERPROFILE || "";
-        const globalCfg = path.join(home, ".grok", "config.toml");
-        if (!fs.existsSync(globalCfg)) {
-          fs.mkdirSync(path.dirname(globalCfg), { recursive: true });
-          fs.writeFileSync(globalCfg, "# Grok global configuration\n");
-        }
-        await this.host.openResource(globalCfg);
+        // Intent only — host resolves ~/.grok/config.toml (never a renderer path).
+        await this.host.openGlobalConfig();
         break;
       }
       case "openProjectConfig": {
-        const cwd2 = this.sessionCwd(session);
-        const projCfg = path.join(cwd2, ".grok", "config.toml");
-        if (!fs.existsSync(projCfg)) {
-          fs.mkdirSync(path.dirname(projCfg), { recursive: true });
-          fs.writeFileSync(projCfg, "# Grok project configuration\n# MCP servers here apply to this workspace only.\n");
-        }
-        await this.host.openResource(projCfg);
+        // Intent only — host resolves project .grok/config.toml from session cwd.
+        await this.host.openProjectConfig(this.sessionCwd(session));
         break;
       }
       case "runMcpList": {

@@ -1320,6 +1320,20 @@ describe("projects rail", () => {
       );
     });
 
+    it("hover action buttons sit flat on the row hover surface (no darker chip)", () => {
+      const cssPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css");
+      const css = fs.readFileSync(cssPath, "utf8");
+      const hoverRule = css.match(
+        /\.rail-action-btn:hover\s*,\s*\.rail-action-btn\.active\s*\{[^}]+\}/,
+      );
+      expect(hoverRule?.[0]).toMatch(/background:\s*transparent/);
+      expect(hoverRule?.[0]).not.toContain("toolbar-hoverBackground");
+      // Scrim uses the row hover token so controls are not a second layer.
+      expect(css).toMatch(
+        /\.rail-repo-actions,\s*\n\s*\.rail-session-actions\s*\{[^}]*--rail-hover-bg/s,
+      );
+    });
+
     it("a host that never mounts #projects-rail never renders the rail (VS Code property)", () => {
       // Same guard as the top-level test — kept next to the redesign so a
       // regression that lights the rail without a mount fails this suite hard.
