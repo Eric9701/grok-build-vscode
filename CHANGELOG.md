@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.1 — 2026-08-07
+
+### Fixed
+
+- **The projects rail lists other projects' conversations from a phone again.** It said *"Update Grok Build to preview"* against a host that was fully up to date and had already answered — the reply was dropped on the way out because it described a project other than the one that browser tab was working in, which is exactly what the rail asks about.
+- **Grok Build Desktop wears its own icon on Windows.** The Start menu, the taskbar and Task Manager showed Electron's default: the packaging step that stamps the icon and version details onto the app had been switched off. The installer wizard carries the mark now too.
+
 ## 3.2.0 — 2026-08-07
 
 ### Added
