@@ -8,10 +8,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   brandedDesktopProfilePath,
+  brandedDesktopProfileStagingPath,
   DESKTOP_PROFILE_DIRNAME,
   desktopProfileLooksOccupied,
   isExtensionRoot,
   legacyDesktopProfilePaths,
+  profileTreeFullyCopied,
   resolveDesktopProfileDir,
   resolveExtensionRootFrom,
 } from "../src/desktop/paths";
@@ -235,5 +237,114 @@ describe("desktop userData branding + legacy migration", () => {
       ok: 1,
     });
     expect(desktopProfileLooksOccupied(legacy)).toBe(false);
+  });
+
+  it("profileTreeFullyCopied requires nested files, not only top-level names", () => {
+    const src = path.join(appData, "src");
+    const dst = path.join(appData, "dst");
+    fs.mkdirSync(path.join(src, "nested"), { recursive: true });
+    fs.mkdirSync(path.join(dst, "nested"), { recursive: true });
+    fs.writeFileSync(path.join(src, "config.json"), "{}");
+    fs.writeFileSync(path.join(src, "nested", "deep.json"), "x");
+    fs.writeFileSync(path.join(dst, "config.json"), "{}");
+    // Top-level nested/ exists but deep file missing.
+    expect(profileTreeFullyCopied(src, dst)).toBe(false);
+    fs.writeFileSync(path.join(dst, "nested", "deep.json"), "x");
+    expect(profileTreeFullyCopied(src, dst)).toBe(true);
+  });
+
+  it("interrupted mid-copy into branded is never treated as a complete profile", () => {
+    // Simulates the old bug: copy writes config.json into branded, then throws
+    // before secrets land. Next launch must NOT see branded as occupied and
+    // skip migration — credentials would stay split across two trees.
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    const staging = brandedDesktopProfileStagingPath(appData);
+    fs.mkdirSync(branded, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ theme: "dark" }));
+    fs.writeFileSync(path.join(legacy, "secrets.enc.json"), "enc-blob");
+    fs.writeFileSync(path.join(legacy, "globalState.json"), "{}");
+
+    let copies = 0;
+    const flakyFs = {
+      existsSync: (p: string) => fs.existsSync(p),
+      mkdirSync: (p: string, opts?: { recursive?: boolean }) => {
+        fs.mkdirSync(p, opts);
+      },
+      readdirSync: (p: string) => fs.readdirSync(p),
+      renameSync: (from: string, to: string) => fs.renameSync(from, to),
+      rmSync: (p: string, opts?: { recursive?: boolean; force?: boolean }) => {
+        fs.rmSync(p, opts);
+      },
+      cpSync: (from: string, to: string, opts?: { recursive?: boolean; force?: boolean }) => {
+        // Fail after the first top-level marker would have been placed if we
+        // copied straight into branded. Staging must absorb the failure instead.
+        copies += 1;
+        if (copies >= 2 && path.basename(to) === "secrets.enc.json") {
+          throw new Error("simulated crash mid-copy");
+        }
+        fs.cpSync(from, to, opts);
+      },
+    };
+
+    const first = resolveDesktopProfileDir({ appData, fs: flakyFs });
+    // Migration failed — branded must not look complete, legacy intact.
+    expect(first.migratedFrom).toBeUndefined();
+    expect(desktopProfileLooksOccupied(legacy)).toBe(true);
+    // Staging wiped on failure; branded has no markers from a direct partial copy.
+    expect(desktopProfileLooksOccupied(branded)).toBe(false);
+    expect(fs.existsSync(path.join(branded, "config.json"))).toBe(false);
+    expect(fs.existsSync(staging)).toBe(false);
+
+    // Second launch with healthy fs completes the migration from intact legacy.
+    const second = resolveDesktopProfileDir({ appData });
+    expect(second.migratedFrom).toBe(legacy);
+    expect(desktopProfileLooksOccupied(second.userData)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(second.userData, "config.json"), "utf8"))).toEqual({
+      theme: "dark",
+    });
+    expect(fs.readFileSync(path.join(second.userData, "secrets.enc.json"), "utf8")).toBe("enc-blob");
+  });
+
+  it("mutation: copying markers straight into branded strands a half profile", () => {
+    // Documents why promote is atomic: if config.json lands in branded mid-
+    // failure, desktopProfileLooksOccupied becomes true and migration is skipped.
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(branded, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ full: true }));
+    fs.writeFileSync(path.join(legacy, "secrets.enc.json"), "secret");
+    // Half-copy outcome of the old path:
+    fs.writeFileSync(path.join(branded, "config.json"), JSON.stringify({ partial: true }));
+    expect(desktopProfileLooksOccupied(branded)).toBe(true);
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(userData).toBe(branded);
+    expect(migratedFrom).toBeUndefined();
+    // Secrets never arrived; user looks logged out.
+    expect(fs.existsSync(path.join(branded, "secrets.enc.json"))).toBe(false);
+    expect(desktopProfileLooksOccupied(legacy)).toBe(true);
+  });
+
+  it("clears a leftover staging directory before migrating", () => {
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    const staging = brandedDesktopProfileStagingPath(appData);
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.mkdirSync(staging, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ ok: true }));
+    fs.writeFileSync(path.join(legacy, "globalState.json"), "{}");
+    // Crash husk: partial marker under staging only.
+    fs.writeFileSync(path.join(staging, "config.json"), "stale");
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(migratedFrom).toBe(legacy);
+    expect(userData).toBe(branded);
+    expect(JSON.parse(fs.readFileSync(path.join(branded, "config.json"), "utf8"))).toEqual({
+      ok: true,
+    });
+    expect(fs.existsSync(staging)).toBe(false);
   });
 });

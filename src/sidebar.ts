@@ -7851,14 +7851,18 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * **Sole uplink write path for HostMsgs.** Every remote fan-out
-   * (`sendRemoteClient` / `sendRemoteRepo` / `sendRemoteSession` /
-   * `sendRemoteHistorySnapshot` / `broadcastRemoteDevice`) routes here so a new
-   * sender cannot skip project authorization.
+   * Sidebar orchestration for remote HostMsgs: pre-authorize (so postTap and
+   * logs see the drop), transform media, then hand off to {@link RemoteUplink}.
+   *
+   * **The hard authorization boundary is inside RemoteUplink** — every socket
+   * write (`broadcast` / `broadcastTo` / catch-up `snapshot`) re-checks
+   * {@link mayDeliverRemoteHostMsg}. A new sender that forgot this method still
+   * cannot put project data on the wire. Live fan-out still routes here so
+   * transforms and the test postTap stay in one place.
    *
    * `scopeCwd` is the session or repo cwd that owns the payload. Required for
-   * conversation/session types ({@link mayDeliverRemoteHostMsg}); list frames
-   * are checked against their entries; device prefs and errors need no scope.
+   * conversation/session types; list frames are checked against their entries;
+   * device prefs and errors need no scope.
    */
   private deliverRemote(
     clientIds: readonly string[],
@@ -7876,8 +7880,9 @@ See design doc for the full state machine diagram.`;
     this.postTap?.("remote", message, [...clientIds]);
     const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
     if (!out) return;
-    if (clientIds.length === 1) this.uplink?.broadcastTo([clientIds[0]], out);
-    else this.uplink?.broadcastTo([...clientIds], out);
+    // Pass scope through so the uplink gate does not re-derive from a stale
+    // per-tab mapping for multi-client session fan-out.
+    this.uplink?.broadcastTo([...clientIds], out, scopeCwd);
   }
 
   /** Target one opaque relay clientId. */
@@ -9698,6 +9703,17 @@ See design doc for the full state machine diagram.`;
       token,
       deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
       snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
+      // Socket-level project gate — also covers the catch-up snapshot path,
+      // which never enters deliverRemote.
+      auth: {
+        authorizedCwds: () => this.authorizedSessionCwds(),
+        scopeCwdForClient: (clientId) => {
+          const active = this.remoteClients.active(clientId);
+          if (active) return this.sessionCwd(active);
+          return this.remoteClients.cwd(clientId);
+        },
+        sameCwd: pathsEqual,
+      },
       onClientReady: (clientId, tabToken) => this.handleRemoteClientReady(clientId, tabToken),
       onClientLeft: (clientId) => {
         this.releaseRemoteClient(clientId);
