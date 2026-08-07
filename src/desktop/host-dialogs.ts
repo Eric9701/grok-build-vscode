@@ -295,3 +295,7 @@ export const DESKTOP_PUBLIC_REPO_URL = "https://github.com/phuryn/grok-build-vsc
 
 export const DESKTOP_APP_FULL_NAME = "Grok Build Desktop (Community)";
 export const DESKTOP_APP_SHORT_NAME = "Grok Build Desktop";
+
+/** Window title / About. Carries "(Community)" because the window is where a
+ *  user actually reads the name, and this is not an xAI product. */
+export const DESKTOP_APP_DISPLAY_NAME = "Grok Build Desktop (Community)";

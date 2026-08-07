@@ -15,6 +15,20 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { alwaysApproveSource, configForcesAlwaysApprove } from "../src/grok-config";
 import { sessionScopedRoots } from "../src/auth-roots";
+import { resolveTreePath } from "../src/desktop/file-tree";
+
+// Platform-injected fs stubs so both path worlds are testable from either OS —
+// the whole reason the bug below survived is that nothing exercised POSIX.
+const stubFs = (sep: "/" | "\\") => ({
+  realpathSync: (p: string) => p,
+  existsSync: () => true,
+  statSync: () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false }) as never,
+  lstatSync: () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false }) as never,
+  readdirSync: () => [] as never,
+  sep,
+});
+const posixFs = stubFs("/") as never;
+const win32Fs = stubFs("\\") as never;
 
 const sidebarSrc = () =>
   fs.readFileSync(path.join(__dirname, "..", "src", "sidebar.ts"), "utf8");
@@ -184,5 +198,40 @@ describe("host confirmation on the messages that run something", () => {
     // against is code running in the webview.
     expect(body).toContain("showWarningMessage");
     expect(body).toContain("modal: true");
+  });
+});
+
+describe("POSIX absolute paths are recognised as absolute", () => {
+  // Caught by CI, invisible on Windows, and invisible to every existing test
+  // because they all ran on the developer's own platform. The leading slash was
+  // stripped before the absolute-path check, so on macOS and Linux "/etc/passwd"
+  // became "etc/passwd" and resolved against the workspace root instead. Not an
+  // escape — it landed inside the root — but openFile is documented to accept
+  // absolute paths, so on macOS opening a file by absolute path opened nothing.
+  const root = "/home/u/proj";
+
+  it("refuses an absolute path outside the workspace", () => {
+    const r = resolveTreePath(root, "/etc/passwd", "linux", posixFs);
+    expect(r.ok).toBe(false);
+  });
+
+  it("does not quietly reinterpret it as workspace-relative", () => {
+    const r = resolveTreePath(root, "/etc/passwd", "linux", posixFs);
+    // The bug's signature: ok, with the path rewritten under the root.
+    expect(r.ok && r.absPath).not.toBe("/home/u/proj/etc/passwd");
+  });
+
+  it("still accepts an absolute path that IS inside the workspace", () => {
+    const r = resolveTreePath(root, "/home/u/proj/src/main.ts", "linux", posixFs);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.relPath).toBe("src/main.ts");
+  });
+
+  it("leaves Windows alone — a leading slash there is workspace-relative", () => {
+    // Windows absolutes carry a drive letter or a UNC prefix, both checked
+    // separately, and callers do pass "/src/x" meaning relative-to-root.
+    const r = resolveTreePath("C:\proj", "/src/main.ts", "win32", win32Fs);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.relPath).toBe("src/main.ts");
   });
 });

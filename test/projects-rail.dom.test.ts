@@ -211,7 +211,10 @@ describe("projects rail", () => {
     const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
     const dead = menuItem(openMenu(window, beta), "Clear all history") as HTMLButtonElement;
     expect(dead.disabled).toBe(true);
-    expect(dead.title).toContain("Update the Grok extension");
+    // Host-neutral: this page drives the VS Code extension OR the desktop app,
+    // and cannot tell which, so it must not name one of them.
+    expect(dead.title).toContain("Update Grok Build");
+    expect(dead.title).not.toContain("the Grok extension");
     click(window, dead);
     expect(posted.filter((p) => p.type === "clearAllSessions")).toEqual([]);
 
@@ -259,7 +262,7 @@ describe("projects rail", () => {
   // A host too old to answer `listRepoSessions` replies with silence, and the
   // probe only ever names ONE repo — so every other repo would spin forever with
   // nothing coming. After the deadline the rail says what to do about it.
-  it("tells you to update the extension when the probe goes unanswered", async () => {
+  it("tells you to update the host when the probe goes unanswered", async () => {
     const h = bootWebview({
       remote: true,
       beforeScripts: (w: any) => { withRail(w); w.__grokRailProbeTimeoutMs = 5; },
@@ -272,7 +275,7 @@ describe("projects rail", () => {
     const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
     // Every repo we are not in — including the ones never probed, which is the
     // half that used to hang.
-    expect(notes.filter((t) => t === "Update the extension to preview")).toHaveLength(2);
+    expect(notes.filter((t) => t === "Update Grok Build to preview")).toHaveLength(2);
     expect(notes).not.toContain("Loading…");
     // The repo we ARE in still shows its sessions: that list needs no new frame.
     expect(sessionNames(h.doc, repoNames(h.doc).indexOf("alpha"))).toEqual(["alpha one"]);
@@ -291,7 +294,7 @@ describe("projects rail", () => {
     await new Promise((r) => setTimeout(r, 40));
 
     const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
-    expect(notes).not.toContain("Update the extension to preview");
+    expect(notes).not.toContain("Update Grok Build to preview");
   });
 
   it("fans out to the remaining repos only once a preview comes back", () => {

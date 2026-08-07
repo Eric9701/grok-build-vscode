@@ -179,7 +179,20 @@ export function resolveTreePath(
   const hostPath = platform === process.platform ? path : pathMod;
 
   const rootAbs = hostPath.resolve(root);
-  const trimmed = relPath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  const normalized = relPath.replace(/\\/g, "/");
+  // Whether the INPUT was absolute must be decided BEFORE the leading slash is
+  // stripped, or a POSIX absolute path silently becomes a relative one.
+  // `/etc/passwd` used to trim to `etc/passwd`, miss every absolute test below,
+  // and resolve against the workspace root — so on macOS and Linux an absolute
+  // path did not escape the workspace, it landed somewhere else INSIDE it, and
+  // openFile (documented to accept absolute paths) quietly opened nothing.
+  //
+  // POSIX only. A leading slash is genuinely absolute there; on Windows it is a
+  // drive-relative root that callers legitimately pass as workspace-relative,
+  // and Windows absolutes always carry a drive letter or UNC prefix, both
+  // checked separately below.
+  const posixAbsolute = platform !== "win32" && normalized.startsWith("/");
+  const trimmed = normalized.replace(/^\/+/, "").replace(/\/+$/, "");
 
   // Empty → workspace root (allowed for listing).
   if (!trimmed || trimmed === ".") {
@@ -189,7 +202,12 @@ export function resolveTreePath(
   let absPath: string;
 
   // Reject absolute inputs early (Unix /foo, Windows C:\foo, //server/share).
-  if (pathMod.isAbsolute(trimmed) || /^[A-Za-z]:[\\/]/.test(relPath) || relPath.startsWith("\\\\")) {
+  if (
+    posixAbsolute ||
+    pathMod.isAbsolute(trimmed) ||
+    /^[A-Za-z]:[\/]/.test(relPath) ||
+    relPath.startsWith("\\\\")
+  ) {
     // Absolute only accepted if it still lands inside the workspace.
     const absCandidate = hostPath.resolve(relPath);
     if (!isFsPathInWorkspace(absCandidate, [rootAbs], platform)) {

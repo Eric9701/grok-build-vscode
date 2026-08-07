@@ -40,6 +40,7 @@ import {
 } from "./electron-webview";
 import {
   DESKTOP_APP_FULL_NAME,
+  DESKTOP_APP_DISPLAY_NAME,
   DESKTOP_APP_SHORT_NAME,
   DESKTOP_PUBLIC_REPO_URL,
 } from "./host-dialogs";
@@ -457,7 +458,7 @@ async function createApp(): Promise<void> {
     height: 800,
     minWidth: 400,
     minHeight: 480,
-    title: DESKTOP_APP_SHORT_NAME,
+    title: DESKTOP_APP_DISPLAY_NAME,
     // Match AFK Pilot dark page chrome; theme toggle may lighten the document.
     backgroundColor: "#1a1a1a",
     // Windows draws a light system menu strip over a dark app otherwise. Hide

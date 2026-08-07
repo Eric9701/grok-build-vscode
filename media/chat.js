@@ -1711,7 +1711,7 @@
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
     fine.textContent = turn || sess
-      ? "Context is how full the window is. Token counts are billed usage tracked by the extension — each model call re-sends the conversation, so a turn bills far more than the context it holds."
+      ? "Context is how full the window is. Token counts are billed usage tracked here — each model call re-sends the conversation, so a turn bills far more than the context it holds."
       : "Counted by the CLI at the end of each turn.";
     contextPopover.appendChild(fine);
 
@@ -4491,7 +4491,7 @@
         danger: true,
         disabled: !repo.available || knownEmpty || !reachable,
         title: !reachable
-          ? "Update the Grok extension on your computer to clear another project's history from here"
+          ? "Update Grok Build on your computer to clear another project's history from here"
           : knownEmpty
             ? "This project has no history"
             : "Delete all sessions in this repository's history",
@@ -4535,11 +4535,11 @@
       // NEVER answer, and the probe is sent for one repo only — so every other
       // repo would sit on a spinner forever with nothing coming.
       if (state.repoPreviewsUnsupported) {
-        const note = railNote("Update the extension to preview");
+        const note = railNote("Update Grok Build to preview");
         note.title =
-          "The Grok extension on your computer is older than this page, so it can't " +
-          "list another project's sessions without switching to it. Click the project " +
-          "name to open it, or update the extension.";
+          "Grok Build on your computer — the extension or the desktop app — is older " +
+          "than this page, so it can't list another project's sessions without " +
+          "switching to it. Click the project name to open it, or update it.";
         body.appendChild(note);
       } else {
         body.appendChild(railNote("Loading…"));
@@ -4767,7 +4767,7 @@
       danger: true,
       disabled: activeUndeletable,
       title: activeUndeletable
-        ? "Update the Grok extension on your computer to delete the conversation you have open"
+        ? "Update Grok Build on your computer to delete the conversation you have open"
         : "Delete",
       onSelect: () => {
         uiConfirm({
