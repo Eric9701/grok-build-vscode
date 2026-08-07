@@ -404,7 +404,20 @@ describe("session catalog case-aliases", () => {
     ).toBe(path.join(lowerDir, "sess-lower-1"));
   });
 
-  it("discoverRepos merges split casings into one row (max mtime)", () => {
+  // Windows only, and not because of the logic — `platform: "win32"` is injected
+  // below, so the merge itself is decidable anywhere. It is the FIXTURE that
+  // cannot travel: the availability check resolves the decoded cwd through the
+  // real `path` module, so on Linux "c:\GitHub\accredia" resolves to a
+  // nonexistent relative directory and every row is filtered out as unavailable
+  // before the merge is reached.
+  //
+  // Not a coverage hole: the case-INSENSITIVE merge is a Windows behaviour, CI
+  // is Linux, and the case-sensitive counterpart directly below runs everywhere
+  // and asserts the opposite property. Making this portable means injecting a
+  // path module through discoverRepos, which is worth doing when something else
+  // needs it — not for a test whose subject only exists on the platform it
+  // already runs on.
+  it.skipIf(process.platform !== "win32")("discoverRepos merges split casings into one row (max mtime)", () => {
     // Availability check stats the decoded cwd path — plant both as dirs.
     const full = buildFs({
       [sessionsRoot]: { isDir: true },
