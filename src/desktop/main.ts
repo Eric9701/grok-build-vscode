@@ -62,6 +62,7 @@ import {
 import {
   DESKTOP_RELEASES_API_URL,
   DESKTOP_UPDATE_CHECK_INTERVAL_MS,
+  desktopUpdatePageUrl,
   noticeIfUpdateAvailable,
   type GithubReleaseLike,
 } from "./app-update";
@@ -577,7 +578,9 @@ async function createApp(): Promise<void> {
         appVersion,
         body as GithubReleaseLike[],
       );
-      if (notice) postUpdateNotice(notice.version, notice.url);
+      // The notice's own url is the GitHub release page. Send people to the
+      // update page instead — same release, one button, no .blockmap files.
+      if (notice) postUpdateNotice(notice.version, desktopUpdatePageUrl(appVersion));
     } catch {
       /* offline / parse / network — stay silent */
     }

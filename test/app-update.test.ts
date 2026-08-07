@@ -12,6 +12,7 @@ import {
   parseSemver,
   pickLatestDesktopRelease,
   type GithubReleaseLike,
+  desktopUpdatePageUrl,
 } from "../src/desktop/app-update";
 import {
   INBOUND_DISPOSITION,
@@ -164,5 +165,26 @@ describe("pre-releases count", () => {
         { tag_name: "v3.3.0", draft: true, prerelease: true, assets: [asset] },
       ]),
     ).toBeNull();
+  });
+});
+
+describe("where the update button sends people", () => {
+  it("goes to our own update page, never the GitHub release page", () => {
+    // The release page is a developer artifact — .dmg, .zip, .exe, .blockmap and
+    // a .vsix with nothing saying which is yours.
+    const url = desktopUpdatePageUrl("3.2.4");
+    expect(url.startsWith("https://afkpilot.com/desktop-update")).toBe(true);
+    expect(url).not.toContain("github.com");
+  });
+
+  it("carries the running version and nothing else", () => {
+    // This URL is compiled into every installed copy and can never be changed
+    // for builds already out there, so it stays generic: the app says where it
+    // is, the page decides what to show. Anything more specific baked in here
+    // would be a decision we could not take back.
+    expect(desktopUpdatePageUrl("3.2.4")).toBe("https://afkpilot.com/desktop-update?from=3.2.4");
+    expect(desktopUpdatePageUrl("")).toBe("https://afkpilot.com/desktop-update");
+    expect(desktopUpdatePageUrl(null)).toBe("https://afkpilot.com/desktop-update");
+    expect(desktopUpdatePageUrl("3.2.4 &x=1")).toContain("from=3.2.4%20%26x%3D1");
   });
 });

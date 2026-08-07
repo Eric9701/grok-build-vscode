@@ -94,3 +94,54 @@ jobs:
             exit 1
           fi
           gh release upload "${{ inputs.release_tag }}" "${files[@]}" --clobber
+
+  # Installers are ~470 MB a release and every patch adds another set. GitHub
+  # does not bill us for them (public-repo release assets are free and CDN
+  # served, which is exactly why the binaries live here and not on the relay),
+  # but an unbounded pile is still a pile: 4 releases were already 1.8 GB, and
+  # nobody downloads the version-before-last-before-last.
+  #
+  # Keeps installers on the newest KEEP releases and strips them from older
+  # ones. Tags, release notes and the .vsix always stay — the vsix is how a
+  # specific extension version is installed, and deleting it would break a
+  # legitimate reason to visit an old release. This only ever removes files that
+  # can be rebuilt from the tag.
+  prune:
+    needs: build
+    if: inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune old desktop installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          KEEP: "3"
+        run: |
+          set -euo pipefail
+          # Releases that carry installers, newest first. A release with none is
+          # not a "kept" slot — otherwise a run of extension-only patches would
+          # push every real build out of the window and delete the lot.
+          mapfile -t withInstallers < <(
+            gh api "repos/$REPO/releases?per_page=100" \
+              --jq '.[] | select(.draft | not)
+                    | select([.assets[].name] | map(test("-(win-x64[.]exe|mac-(arm64|x64)[.](dmg|zip))$")) | any)
+                    | .tag_name'
+          )
+          echo "releases with installers: ${withInstallers[*]:-none}"
+          if [ "${#withInstallers[@]}" -le "$KEEP" ]; then
+            echo "nothing to prune (${#withInstallers[@]} <= $KEEP)"
+            exit 0
+          fi
+          for tag in "${withInstallers[@]:$KEEP}"; do
+            echo "pruning installers from $tag"
+            mapfile -t assets < <(
+              gh api "repos/$REPO/releases/tags/$tag" \
+                --jq '.assets[].name | select(test("[.](dmg|zip|exe)([.]blockmap)?$"))'
+            )
+            for a in "${assets[@]:-}"; do
+              [ -n "$a" ] || continue
+              echo "  - $a"
+              gh release delete-asset "$tag" "$a" --yes --repo "$REPO"
+            done
+          done

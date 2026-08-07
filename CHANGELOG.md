@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.5 — 2026-08-07
+
+### Changed
+
+- **"Update available" opens a page that just gives you the download.** It used to open the GitHub release, which lists ten files — installers for three platforms, their checksums, and the VS Code extension — with nothing saying which one is yours. Now it detects your platform, offers one button, and shows how to get past the first-launch warning.
+
 ## 3.2.4 — 2026-08-07
 
 ### Added

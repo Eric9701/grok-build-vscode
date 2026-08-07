@@ -125,6 +125,24 @@ export function noticeIfUpdateAvailable(
   return latest;
 }
 
+/**
+ * Where the "Update available" button sends people.
+ *
+ * NOT the GitHub release page, which is a developer artifact: a wall of `.dmg`,
+ * `.zip`, `.exe`, `.blockmap` and a `.vsix`, with no indication which one you
+ * want. This page detects the platform and offers one button.
+ *
+ * The URL is deliberately generic and carries only the running version, because
+ * it is compiled into every installed copy and can never be changed for builds
+ * already in the wild. Everything else the page shows is derived server-side,
+ * so its content can be rewritten forever without another release.
+ */
+export function desktopUpdatePageUrl(currentVersion: string | null | undefined): string {
+  const v = String(currentVersion || "").trim();
+  const base = "https://afkpilot.com/desktop-update";
+  return v ? `${base}?from=${encodeURIComponent(v)}` : base;
+}
+
 /** GitHub API URL used by the main process (per_page=100 covers recent history). */
 export const DESKTOP_RELEASES_API_URL =
   "https://api.github.com/repos/phuryn/grok-build-vscode/releases?per_page=100";
