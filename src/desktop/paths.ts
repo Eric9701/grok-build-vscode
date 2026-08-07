@@ -9,11 +9,124 @@
  *   Packaged (dir):    <…>/resources/app/out/desktop/main.js  (same relative layout)
  *   Extra-resources:   media next to asar under process.resourcesPath (fallback)
  *
- * Pure resolvers (`isExtensionRoot`, `resolveExtensionRootFrom`) do not import
- * Electron so unit tests can load them without a BrowserWindow.
+ * Pure resolvers (`isExtensionRoot`, `resolveExtensionRootFrom`, profile path
+ * helpers) do not import Electron so unit tests can load them without a
+ * BrowserWindow.
  */
 import * as path from "node:path";
 import * as fs from "node:fs";
+
+/**
+ * Branded profile directory under the OS app-data root (e.g.
+ * `%AppData%/GrokBuildDesktop`, `~/Library/Application Support/GrokBuildDesktop`).
+ * Must be set as Electron `userData` *before* anything reads that path.
+ */
+export const DESKTOP_PROFILE_DIRNAME = "GrokBuildDesktop";
+
+/** Files that prove a directory is our desktop profile (not an empty shell). */
+export const DESKTOP_PROFILE_MARKERS = [
+  "config.json",
+  "globalState.json",
+  "secrets.enc.json",
+  "sensitive.enc.json",
+] as const;
+
+export interface ProfileFs {
+  existsSync(p: string): boolean;
+  mkdirSync(p: string, opts?: { recursive?: boolean }): void;
+  readdirSync(p: string): string[];
+  renameSync(from: string, to: string): void;
+  /** Node 16.7+; optional so tests can omit when only rename is exercised. */
+  cpSync?(from: string, to: string, opts?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean }): void;
+  rmSync?(p: string, opts?: { recursive?: boolean; force?: boolean }): void;
+}
+
+/** Branded userData path under the OS app-data directory. */
+export function brandedDesktopProfilePath(appData: string): string {
+  return path.join(appData, DESKTOP_PROFILE_DIRNAME);
+}
+
+/**
+ * Pre-branding profile locations. Early builds called `app.setName` too late,
+ * so Electron defaulted to the generic `Electron` folder and we nested prefs
+ * under `grok-desktop`.
+ */
+export function legacyDesktopProfilePaths(appData: string): string[] {
+  return [path.join(appData, "Electron", "grok-desktop")];
+}
+
+/** True when `dir` holds at least one of our profile marker files. */
+export function desktopProfileLooksOccupied(
+  dir: string,
+  profileFs: Pick<ProfileFs, "existsSync"> = fs,
+): boolean {
+  if (!dir) return false;
+  return DESKTOP_PROFILE_MARKERS.some((m) => profileFs.existsSync(path.join(dir, m)));
+}
+
+/**
+ * Resolve the desktop profile directory and migrate a legacy Electron profile
+ * when the branded path is still empty.
+ *
+ * Strategy:
+ * - Explicit `override` (--user-data-dir / test harness) wins; no migration.
+ * - Prefer the branded path when it already has our files.
+ * - Else rename (same volume) or copy the first occupied legacy path into the
+ *   branded location so config / memento / secrets are not abandoned.
+ * - Never overwrite a branded profile that already has data.
+ */
+export function resolveDesktopProfileDir(opts: {
+  appData: string;
+  override?: string;
+  fs?: ProfileFs;
+}): { userData: string; migratedFrom?: string } {
+  const profileFs = opts.fs ?? fs;
+  if (opts.override) {
+    const ud = path.resolve(opts.override);
+    profileFs.mkdirSync(ud, { recursive: true });
+    return { userData: ud };
+  }
+
+  const branded = brandedDesktopProfilePath(opts.appData);
+  if (desktopProfileLooksOccupied(branded, profileFs)) {
+    return { userData: branded };
+  }
+
+  for (const legacy of legacyDesktopProfilePaths(opts.appData)) {
+    if (!desktopProfileLooksOccupied(legacy, profileFs)) continue;
+    try {
+      profileFs.mkdirSync(path.dirname(branded), { recursive: true });
+      if (!profileFs.existsSync(branded)) {
+        profileFs.renameSync(legacy, branded);
+        return { userData: branded, migratedFrom: legacy };
+      }
+      // Branded path exists but has no markers (empty shell). Merge legacy in.
+      if (profileFs.cpSync) {
+        profileFs.cpSync(legacy, branded, { recursive: true, force: false, errorOnExist: false });
+      } else {
+        // rename into place when target is empty enough
+        for (const name of profileFs.readdirSync(legacy)) {
+          const from = path.join(legacy, name);
+          const to = path.join(branded, name);
+          if (!profileFs.existsSync(to)) profileFs.renameSync(from, to);
+        }
+      }
+      try {
+        profileFs.rmSync?.(legacy, { recursive: true, force: true });
+      } catch {
+        /* leave the husk if busy */
+      }
+      return { userData: branded, migratedFrom: legacy };
+    } catch {
+      // Migration failed — still use branded (fresh) rather than stay on
+      // the unbranded path; user can recover from the legacy folder manually.
+      break;
+    }
+  }
+
+  profileFs.mkdirSync(branded, { recursive: true });
+  return { userData: branded };
+}
 
 /** True when this directory looks like the install/repo root (has chat assets). */
 export function isExtensionRoot(candidate: string): boolean {
@@ -67,9 +180,14 @@ export function resolveExtensionRoot(): string {
   });
 }
 
+/**
+ * Directory for config / memento / secrets. Production main sets Electron
+ * `userData` early to the branded profile (or a test `--user-data-dir`
+ * override); that path *is* the profile root.
+ */
 export function resolveUserDataDir(override?: string): string {
   if (override) return path.resolve(override);
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { app } = require("electron") as typeof import("electron");
-  return path.join(app.getPath("userData"), "grok-desktop");
+  return app.getPath("userData");
 }

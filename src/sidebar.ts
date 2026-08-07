@@ -152,7 +152,7 @@ import {
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
-  sessionsDirFor,
+  sessionDirFor,
 } from "./sessions";
 import {
   base64DecodedByteLength,
@@ -4177,8 +4177,9 @@ See design doc for the full state machine diagram.`;
         } else if (planSource === "disk") {
           // Legacy session (no per-plan persistence): fall back to the on-disk
           // latest plan, which we'll render at the bottom after replay.
-          const planPath = path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), resumeId, "plan.md");
-          if (fs.existsSync(planPath)) {
+          const sessDir = sessionDirFor(resolveGrokHome(process.env), cwd, resumeId, { fs: defaultFs });
+          const planPath = sessDir ? path.join(sessDir, "plan.md") : "";
+          if (planPath && fs.existsSync(planPath)) {
             try {
               const planText = fs.readFileSync(planPath, "utf8");
               let snapshot: { path: string; name: string } | undefined;
@@ -5245,10 +5246,10 @@ See design doc for the full state machine diagram.`;
     if (!session.hasHistory) return "New session";
     try {
       const cwd = this.sessionCwd(session);
-      const raw = JSON.parse(fs.readFileSync(
-        path.join(sessionsDirFor(resolveGrokHome(process.env), cwd), id, "summary.json"),
-        "utf8",
-      ));
+      const grokHome = resolveGrokHome(process.env);
+      const sessDir = sessionDirFor(grokHome, cwd, id, { fs: defaultFs });
+      if (!sessDir) throw new Error("no session dir");
+      const raw = JSON.parse(fs.readFileSync(path.join(sessDir, "summary.json"), "utf8"));
       const title = cliSessionTitle(raw?.session_summary, raw?.generated_title);
       if (title) return fallbackName(title, Date.now());
     } catch {
@@ -8398,7 +8399,6 @@ See design doc for the full state machine diagram.`;
       proven = new Set<string>();
       this.provenNonEmpty.set(repoKey, proven);
     }
-    const sessDir = sessionsDirFor(grokHome, cwd);
     const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
     const removed: string[] = [];
     const now = Date.now();
@@ -8407,9 +8407,12 @@ See design doc for the full state machine diagram.`;
       // The index is already sorted newest-first, so this could break — but a
       // clock skew or a touched file would then silently end the scan early.
       if (now - mtimeMs < GrokSidebar.SWEEP_MIN_AGE_MS) continue;
+      // Alias-aware: session may live under a differently-cased catalog leaf.
+      const sessDir = sessionDirFor(grokHome, cwd, id, { fs: defaultFs });
+      if (!sessDir) continue;
       let raw: any;
       try {
-        raw = JSON.parse(defaultFs.readFileSync(path.join(sessDir, id, "summary.json"), "utf8"));
+        raw = JSON.parse(defaultFs.readFileSync(path.join(sessDir, "summary.json"), "utf8"));
       } catch {
         continue;
       }
@@ -8420,7 +8423,7 @@ See design doc for the full state machine diagram.`;
       // anything, so it is reported as such rather than as "no history".
       let chatHistory: string | undefined;
       let historyUnreadable = false;
-      const historyPath = path.join(sessDir, id, "chat_history.jsonl");
+      const historyPath = path.join(sessDir, "chat_history.jsonl");
       try {
         chatHistory = defaultFs.readFileSync(historyPath, "utf8");
       } catch {

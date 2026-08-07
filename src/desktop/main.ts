@@ -42,7 +42,11 @@ import {
   DESKTOP_PUBLIC_REPO_URL,
 } from "./host-dialogs";
 import { createFileMemento } from "./memento";
-import { resolveExtensionRoot, resolveUserDataDir } from "./paths";
+import {
+  resolveDesktopProfileDir,
+  resolveExtensionRoot,
+  resolveUserDataDir,
+} from "./paths";
 import { createSafeStorageSecrets } from "./safe-secrets";
 import {
   injectFileTreePanelLogged,
@@ -95,16 +99,28 @@ function parseArgs(argv: string[]): {
   return out;
 }
 
-// userData must be set before ready — tests pass --user-data-dir for isolation.
+// Name + userData MUST be set before anything resolves getPath("userData") —
+// Electron otherwise parks the profile under the generic "Electron" folder.
+// Tests pass --user-data-dir for isolation (skips branding/migration).
 const earlyArgs = parseArgs(process.argv.slice(1));
-if (earlyArgs.userDataDir) {
-  try {
-    const ud = path.resolve(earlyArgs.userDataDir);
-    fs.mkdirSync(ud, { recursive: true });
-    app.setPath("userData", ud);
-  } catch {
-    /* best-effort; createApp will still use the path for our JSON stores */
+try {
+  app.setName(DESKTOP_APP_SHORT_NAME);
+} catch {
+  /* app module edge cases in tests */
+}
+try {
+  const { userData: ud, migratedFrom } = resolveDesktopProfileDir({
+    appData: app.getPath("appData"),
+    override: earlyArgs.userDataDir,
+  });
+  app.setPath("userData", ud);
+  if (migratedFrom) {
+    process.stdout.write(
+      `[desktop] migrated profile from ${migratedFrom} → ${ud}\n`,
+    );
   }
+} catch {
+  /* best-effort; createApp still resolves via resolveUserDataDir */
 }
 
 function readPackageMeta(extensionRoot: string): { version: string; id: string } {
@@ -234,11 +250,8 @@ let webview: ElectronWebview | null = null;
 
 async function createApp(): Promise<void> {
   const args = earlyArgs;
-  // Our prefs/memento live under userData/grok-desktop (or the override root
-  // itself when tests pass --user-data-dir, so everything is self-contained).
-  const userData = args.userDataDir
-    ? path.resolve(args.userDataDir)
-    : resolveUserDataDir();
+  // Profile root = Electron userData (branded early above, or test override).
+  const userData = resolveUserDataDir(args.userDataDir);
   fs.mkdirSync(userData, { recursive: true });
 
   const extensionRoot = resolveExtensionRoot();
@@ -385,7 +398,8 @@ async function createApp(): Promise<void> {
     return handles;
   });
 
-  // Full product name for About / OS app identity; window title uses short name.
+  // Full product name for About / OS app identity (short name was set early so
+  // userData resolved under a branded folder). Window title uses short name.
   app.setName(DESKTOP_APP_FULL_NAME);
   Menu.setApplicationMenu(
     buildDesktopAppMenu({

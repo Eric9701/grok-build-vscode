@@ -7,7 +7,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  brandedDesktopProfilePath,
+  DESKTOP_PROFILE_DIRNAME,
+  desktopProfileLooksOccupied,
   isExtensionRoot,
+  legacyDesktopProfilePaths,
+  resolveDesktopProfileDir,
   resolveExtensionRootFrom,
 } from "../src/desktop/paths";
 
@@ -86,5 +91,76 @@ describe("resolveExtensionRootFrom", () => {
     expect(resolveExtensionRootFrom(moduleDir)).toBe(
       path.resolve(moduleDir, "..", ".."),
     );
+  });
+});
+
+describe("desktop userData branding + legacy migration", () => {
+  let appData: string;
+
+  beforeEach(() => {
+    appData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-appdata-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(appData, { recursive: true, force: true });
+  });
+
+  it("resolves userData under a branded directory (not Electron/)", () => {
+    const branded = brandedDesktopProfilePath(appData);
+    expect(path.basename(branded)).toBe(DESKTOP_PROFILE_DIRNAME);
+    expect(branded).not.toMatch(/Electron/i);
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(userData).toBe(branded);
+    expect(migratedFrom).toBeUndefined();
+    expect(fs.existsSync(userData)).toBe(true);
+  });
+
+  it("migrates an existing profile from Electron/grok-desktop rather than ignoring it", () => {
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ theme: "dark" }));
+    fs.writeFileSync(path.join(legacy, "globalState.json"), "{}");
+    expect(desktopProfileLooksOccupied(legacy)).toBe(true);
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(migratedFrom).toBe(legacy);
+    expect(userData).toBe(brandedDesktopProfilePath(appData));
+    expect(fs.existsSync(path.join(userData, "config.json"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(userData, "config.json"), "utf8"))).toEqual({
+      theme: "dark",
+    });
+    // Legacy path should not still hold the only copy.
+    expect(desktopProfileLooksOccupied(legacy)).toBe(false);
+  });
+
+  it("does not overwrite a branded profile that already has data", () => {
+    const branded = brandedDesktopProfilePath(appData);
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(branded, { recursive: true });
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(branded, "config.json"), JSON.stringify({ keep: true }));
+    fs.writeFileSync(path.join(legacy, "config.json"), JSON.stringify({ stale: true }));
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({ appData });
+    expect(userData).toBe(branded);
+    expect(migratedFrom).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(path.join(userData, "config.json"), "utf8"))).toEqual({
+      keep: true,
+    });
+  });
+
+  it("honours an explicit override without migrating into the branded path", () => {
+    const override = path.join(appData, "test-ud");
+    const legacy = legacyDesktopProfilePaths(appData)[0];
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "config.json"), "{}");
+
+    const { userData, migratedFrom } = resolveDesktopProfileDir({
+      appData,
+      override,
+    });
+    expect(userData).toBe(path.resolve(override));
+    expect(migratedFrom).toBeUndefined();
+    expect(fs.existsSync(path.join(userData, "config.json"))).toBe(false);
   });
 });

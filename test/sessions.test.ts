@@ -18,11 +18,15 @@ import {
   isPathInside,
   listSessions,
   mostRecentSession,
+  normalizeRepoPath,
   orderedResumeCwdCandidates,
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
+  sessionCatalogDirs,
+  sessionDirFor,
   sessionsDirFor,
+  discoverRepos,
   type SessionListEntry,
 } from "../src/sessions";
 
@@ -296,6 +300,167 @@ describe("sessionsDirFor", () => {
     ["..", "%2E%2E"],
   ])("keeps a non-canonical cwd catalog inside the sessions root: %j", (badCwd, leaf) => {
     expect(sessionsDirFor(grokHome, badCwd)).toBe(path.join(grokHome, "sessions", leaf));
+  });
+
+  it("preserves drive-letter case in the catalog leaf (CLI write path)", () => {
+    const lower = sessionsDirFor(grokHome, "c:\\GitHub\\accredia");
+    const upper = sessionsDirFor(grokHome, "C:\\GitHub\\accredia");
+    expect(lower).not.toBe(upper);
+    expect(path.basename(lower)).toBe("c%3A%5CGitHub%5Caccredia");
+    expect(path.basename(upper)).toBe("C%3A%5CGitHub%5Caccredia");
+  });
+});
+
+/**
+ * Real-world Windows bug: the CLI indexes by the cwd *string*, so
+ * `c:\GitHub\accredia` and `C:\GitHub\accredia` become two catalog leaves.
+ * History must merge them on Windows and stay distinct on case-sensitive hosts.
+ */
+describe("session catalog case-aliases", () => {
+  const home = "/tmp/grok-case-home";
+  const sessionsRoot = path.join(home, "sessions");
+  const lowerCwd = "c:\\GitHub\\accredia";
+  const upperCwd = "C:\\GitHub\\accredia";
+  const lowerDir = sessionsDirFor(home, lowerCwd);
+  const upperDir = sessionsDirFor(home, upperCwd);
+
+  function splitIndexFs(): FsLike {
+    const lowerId = "sess-lower-1";
+    const upperId = "sess-upper-1";
+    return buildFs({
+      [sessionsRoot]: { isDir: true },
+      [lowerDir]: { isDir: true, mtimeMs: 10 },
+      [upperDir]: { isDir: true, mtimeMs: 50 },
+      [path.join(lowerDir, lowerId)]: { isDir: true },
+      [path.join(upperDir, upperId)]: { isDir: true },
+      [path.join(lowerDir, lowerId, "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: lowerId, cwd: lowerCwd },
+          session_summary: "from lower c:",
+          updated_at: "2026-01-01T00:00:00Z",
+          num_messages: 4,
+        }),
+        mtimeMs: 10,
+      },
+      [path.join(upperDir, upperId, "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: upperId, cwd: upperCwd },
+          session_summary: "from upper C:",
+          updated_at: "2026-02-01T00:00:00Z",
+          num_messages: 6,
+        }),
+        mtimeMs: 50,
+      },
+    });
+  }
+
+  it("normalizeRepoPath folds Windows drive-letter case", () => {
+    expect(normalizeRepoPath(lowerCwd, "win32")).toBe(normalizeRepoPath(upperCwd, "win32"));
+    expect(normalizeRepoPath(lowerCwd, "linux")).not.toBe(normalizeRepoPath(upperCwd, "linux"));
+  });
+
+  it("sessionCatalogDirs lists both casings as one project on win32", () => {
+    const fs = splitIndexFs();
+    const dirs = sessionCatalogDirs({ fs, grokHome: home, cwd: upperCwd, platform: "win32" });
+    expect(dirs.map((d) => path.normalize(d)).sort()).toEqual(
+      [lowerDir, upperDir].map((d) => path.normalize(d)).sort(),
+    );
+    // Exact encode of the query cwd is first.
+    expect(path.normalize(dirs[0])).toBe(path.normalize(upperDir));
+  });
+
+  it("on Windows, two drive-letter casings resolve to one project with the union of sessions", () => {
+    const fs = splitIndexFs();
+    const index = indexSessions({ fs, grokHome: home, cwd: upperCwd, platform: "win32" });
+    expect(index.map((e) => e.id).sort()).toEqual(["sess-lower-1", "sess-upper-1"]);
+    // Open via the *other* casing — must still see both sides.
+    const entries = listSessions({
+      fs,
+      grokHome: home,
+      cwd: lowerCwd,
+      overrides: {},
+      platform: "win32",
+    });
+    expect(entries.map((e) => e.id).sort()).toEqual(["sess-lower-1", "sess-upper-1"]);
+    expect(entries.map((e) => e.displayName).sort()).toEqual(["from lower c:", "from upper C:"]);
+  });
+
+  it("finds a session stored under the other casing when resuming", () => {
+    const fs = splitIndexFs();
+    // Workspace is uppercase; session only exists under lowercase catalog.
+    expect(
+      findSessionCatalogCwd({
+        fs,
+        grokHome: home,
+        id: "sess-lower-1",
+        candidates: [upperCwd],
+        platform: "win32",
+      }),
+    ).toBe(upperCwd);
+    expect(
+      sessionDirFor(home, upperCwd, "sess-lower-1", { fs, platform: "win32" }),
+    ).toBe(path.join(lowerDir, "sess-lower-1"));
+  });
+
+  it("discoverRepos merges split casings into one row (max mtime)", () => {
+    // Availability check stats the decoded cwd path — plant both as dirs.
+    const full = buildFs({
+      [sessionsRoot]: { isDir: true },
+      [lowerDir]: { isDir: true, mtimeMs: 10 },
+      [upperDir]: { isDir: true, mtimeMs: 50 },
+      [lowerCwd]: { isDir: true },
+      [upperCwd]: { isDir: true },
+    });
+    const repos = discoverRepos({
+      fs: full,
+      grokHome: home,
+      pins: {},
+      tmpDir: "/tmp",
+      platform: "win32",
+    });
+    const hit = repos.filter((r) => normalizeRepoPath(r.cwd, "win32") === normalizeRepoPath(upperCwd, "win32"));
+    expect(hit).toHaveLength(1);
+    expect(hit[0].updatedAt).toBe(50);
+  });
+
+  it("on a case-sensitive platform, different casings remain distinct projects", () => {
+    const posixHome = "/home/u/.grok";
+    const a = "/Work/Project";
+    const b = "/work/project";
+    const aDir = sessionsDirFor(posixHome, a);
+    const bDir = sessionsDirFor(posixHome, b);
+    const root = path.join(posixHome, "sessions");
+    const fs = buildFs({
+      [root]: { isDir: true },
+      [aDir]: { isDir: true },
+      [bDir]: { isDir: true },
+      [path.join(aDir, "sess-a")]: { isDir: true },
+      [path.join(bDir, "sess-b")]: { isDir: true },
+      [path.join(aDir, "sess-a", "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({ info: { id: "sess-a" }, session_summary: "A", updated_at: "2026-01-01T00:00:00Z", num_messages: 1 }),
+        mtimeMs: 1,
+      },
+      [path.join(bDir, "sess-b", "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({ info: { id: "sess-b" }, session_summary: "B", updated_at: "2026-01-02T00:00:00Z", num_messages: 1 }),
+        mtimeMs: 2,
+      },
+    });
+    expect(indexSessions({ fs, grokHome: posixHome, cwd: a, platform: "linux" }).map((e) => e.id)).toEqual(["sess-a"]);
+    expect(indexSessions({ fs, grokHome: posixHome, cwd: b, platform: "linux" }).map((e) => e.id)).toEqual(["sess-b"]);
+    expect(sessionCatalogDirs({ fs, grokHome: posixHome, cwd: a, platform: "linux" })).toEqual([
+      path.normalize(aDir),
+    ]);
+  });
+
+  it("clearSessions removes sessions from every case-alias leaf", () => {
+    const fs = splitIndexFs();
+    const removed = clearSessions({ fs, grokHome: home, cwd: upperCwd, platform: "win32" });
+    expect(removed.sort()).toEqual(["sess-lower-1", "sess-upper-1"]);
+    expect(indexSessions({ fs, grokHome: home, cwd: upperCwd, platform: "win32" })).toEqual([]);
   });
 });
 
