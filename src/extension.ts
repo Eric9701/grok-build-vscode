@@ -10,8 +10,6 @@ import {
   viewPlacementCorrection,
   VIEW_PLACEMENT_KEY,
   withAttempt,
-  withUserChoice,
-  PICK_LOCATION,
   type PanelPosition,
   type PlacementRecord,
 } from "./view-move";
@@ -53,9 +51,9 @@ import {
 async function ensureViewPlacement(
   context: vscode.ExtensionContext,
   output: vscode.OutputChannel,
+  isFirstEverRun: boolean,
 ): Promise<void> {
   const log = (line: string) => output.appendLine(`[placement] ${line}`);
-  const placement = context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY);
   const version = context.extension.packageJSON?.version ?? "";
   let correctionIssued = false;
   try {
@@ -70,20 +68,12 @@ async function ensureViewPlacement(
         `viewFocus=${availableCommands.includes(`${GROK_VIEW_ID}.focus`)} ` +
         `app=${vscode.env.appName}`,
     );
-    const target = viewPlacementCorrection({
-      availableCommands,
-      placement,
-      extensionVersion: version,
-    });
+    const target = viewPlacementCorrection({ availableCommands, isFirstEverRun });
     if (!target) {
       // Logged rather than silent. When someone reports the chat stuck in
       // Explorer, "why didn't it move" is the first question, and before this
       // there was nothing anywhere that could answer it.
-      log(
-        `no move — version=${version}, last attempt ${placement?.correctedByVersion ?? "never"}` +
-          `, chosen ${placement?.chosenLocation ?? "(none)"}` +
-          `, pickedOwnLocation=${placement?.pickedOwnLocation === true}`,
-      );
+      log(`no move — version=${version}, firstEverRun=${isFirstEverRun}`);
       return;
     }
     log(`moving -> ${target.containerId}, panel ${target.panelPosition ?? "as-is"}`);
@@ -100,20 +90,16 @@ async function ensureViewPlacement(
     log(`failed: ${e instanceof Error ? e.message : String(e)}`);
     correctionIssued = false;
   } finally {
-    // Spend the one correction ONLY if a move actually went through.
+    // Written only when a move actually went through — a startup where the
+    // container had not registered yet, or where the move threw, must not count
+    // as done. It is diagnostics, but it also does real work: writing ANY key
+    // makes `globalState` non-empty, which is what stops the next launch from
+    // reading as a first-ever run. Without it, a genuinely fresh install where
+    // nothing else has persisted yet would correct again on the second launch.
     //
-    // This used to record unconditionally, which meant a startup where the
-    // container had not registered yet — or where the move threw — burned the
-    // single correction and left the view stranded for good. That is exactly the
-    // fault 3.2.8 shipped with, reintroduced from the other side. A host that
-    // rejects the move every time simply retries every window: one failed
-    // command, logged, invisible.
-    //
-    // And RE-READ the record rather than writing back the snapshot taken before
-    // the awaits above. The gear can persist a destination while this is still
-    // resolving, and writing a stale copy would silently discard it — the same
-    // captured-before-an-await staleness this codebase has been bitten by
-    // before.
+    // Re-read rather than reusing a snapshot from before the awaits: anything
+    // else in the extension may have persisted state meanwhile, and writing a
+    // stale copy back would discard it.
     if (correctionIssued) {
       const latest = context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY);
       await context.globalState.update(VIEW_PLACEMENT_KEY, withAttempt(latest, version));
@@ -168,6 +154,11 @@ export interface GrokExtensionApi {
 }
 
 export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
+  // Read FIRST, before anything below can persist anything. An install with no
+  // stored state has never been interacted with, so wherever the editor put the
+  // view, nobody chose it — that is the entire licence the placement correction
+  // has to move it, and it evaporates the moment any other subsystem writes.
+  const isFirstEverRun = context.globalState.keys().length === 0;
   const output = vscode.window.createOutputChannel("Grok");
   const host = createVsCodeHost(output, context);
   const hostContext = createVsCodeHostContext(context);
@@ -208,10 +199,11 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       const cmds = await vscode.commands.getCommands(true);
       await vscode.commands.executeCommand(revealCommandFor(cmds));
     }),
-    // Escape hatch, and the only placement that is not rationed. Reachable from
-    // the palette when the view itself is not — which is the state this whole
-    // mechanism exists for. Asking for it counts as choosing it, so a later
-    // correction restores this rather than the default.
+    // Reachable from the palette when the view itself is not — which is the
+    // state this whole mechanism exists for. Records nothing: the automatic
+    // correction fires only on a first-ever run, so there is no later one for a
+    // choice to need protecting from, and nothing to get wrong if the user opens
+    // this picker and cancels.
     vscode.commands.registerCommand("grok.moveView", async () => {
       output.appendLine("[placement] palette -> host picker");
       // The host's own picker, preselected on our view. It targets a LOCATION
@@ -221,15 +213,6 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // without it the command reads the `focusedView` context key, which Cursor
       // never sets for webview views.
       await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
-      // Recorded even though the picker may have been cancelled — it cannot tell
-      // us either way. Erring toward "they are managing this themselves" is the
-      // safe side: the cost is that automatic correction stops for someone who
-      // only looked, and they still have this command and `grok.open`. The other
-      // way round, we would override a deliberate placement on every update.
-      await context.globalState.update(
-        VIEW_PLACEMENT_KEY,
-        withUserChoice(context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY), PICK_LOCATION),
-      );
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),
@@ -274,7 +257,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
 
   // Not awaited: activation must not block on a workbench command, and nothing
   // below depends on where the view ended up.
-  void ensureViewPlacement(context, output);
+  void ensureViewPlacement(context, output, isFirstEverRun);
 
   // VS Code sets ExtensionMode.Test ONLY when the extension host was launched by
   // a test runner, so an installed build can never reach this branch and the

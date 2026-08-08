@@ -1,15 +1,16 @@
 /**
  * Gear → Config & debug → Move view, against the REAL shipped chat.js.
  *
- * The menu has to adapt to the host, because one of them refuses a destination
- * the others have. Cursor 3.15 reserves the secondary side bar for its own agent
- * UI and will not create an extension container there, so "To Secondary Side
- * Bar" is a control that silently does nothing — and the panel, docked right, is
- * the same screen position under a different name.
+ * The section exists for exactly one situation: an editor that refuses to create
+ * our container in the secondary side bar (Cursor reserves it for its own agent
+ * UI). Everywhere else it is absent, because an editor that gives us that dock
+ * also offers its own "Move To" on the view's context menu — our version could
+ * only name CONTAINERS, and a container cannot reach a dock the editor draws for
+ * itself.
  *
- * What these assert is the SHAPE of the menu per host, plus the message each
- * item sends. The mapping from message to workbench command is covered by
- * view-move.test.ts; this is the half that decides what a user is offered.
+ * These assert the SHAPE of the menu per host and the message the item sends.
+ * The mapping from message to workbench command is covered by view-move.test.ts;
+ * this is the half that decides what a user is offered.
  */
 import { describe, expect, it } from "vitest";
 import { bootWebview, click, dispatch, type Harness } from "./webview-harness";
@@ -51,17 +52,10 @@ function text(el: Element): string {
   return (el.textContent || "").replace(/\s+/g, " ").trim();
 }
 
-/** The Move view destinations, in menu order. */
-function destinations(h: Harness): string[] {
-  return items(h)
-    .map(text)
-    .filter((t) => /^To /.test(t));
-}
-
-function clickDestination(h: Harness, label: string): void {
-  const el = items(h).find((e) => text(e) === label);
-  if (!el) throw new Error(`no "${label}" in: ${destinations(h).join(" | ")}`);
-  click(h.window, el);
+/** Whether the Move view section rendered at all — the section heading, not just
+ *  its items, so removing the heading and leaving a stray item still fails. */
+function hasMoveViewSection(h: Harness): boolean {
+  return (h.doc.getElementById("gear-popover")!.textContent || "").includes("Move view");
 }
 
 /** Which ICON each destination carries, by the distinguishing path in the SVG.
@@ -77,23 +71,24 @@ function iconEdge(h: Harness, label: string): "right" | "left" | "bottom" | "non
 }
 
 describe("Move view menu (DOM)", () => {
-  it("offers the secondary side bar where the host actually has one", () => {
+  it("shows NOTHING where the editor has a secondary side bar", () => {
+    // The section is gone in VS Code. It existed to work around Cursor hiding
+    // the built-in "Move To" from a view's context menu — but an editor that
+    // gives us the secondary side bar also has that menu, so we were
+    // duplicating a control it already provides, in a worse form: our items
+    // named CONTAINERS, and a container cannot reach a dock the editor draws
+    // for itself.
     const h = boot({ relocateView: true, secondarySideBar: true });
     openMoveView(h);
-    expect(destinations(h)).toEqual([
-      "To Secondary Side Bar",
-      "To Primary Side Bar",
-      "To Panel",
-    ]);
+    expect(hasMoveViewSection(h)).toBe(false);
   });
 
-  it("treats a host that never sent the flag as having one", () => {
-    // Opt-out polarity, same as relocateView: every extension built before
-    // Cursor refused the container omits this and must keep its menu.
+  it("shows nothing for a host that never sent the flag either", () => {
+    // Absent means the editor has one — every build before Cursor refused the
+    // container omits this, and none of them needed the section.
     const h = boot({ relocateView: true });
     openMoveView(h);
-    expect(destinations(h)).toContain("To Secondary Side Bar");
-    expect(destinations(h)).not.toContain("To Right Panel");
+    expect(hasMoveViewSection(h)).toBe(false);
   });
 
   it("offers ONE item, the host's own picker, where the secondary side bar was refused", () => {
@@ -121,43 +116,26 @@ describe("Move view menu (DOM)", () => {
     ]);
   });
 
-  it("keeps sending plain 'panel' where the layout must not be rearranged", () => {
-    const h = boot({ relocateView: true, secondarySideBar: true });
+  it("carries the right-edge glyph, the same one the destination used to have", () => {
+    const h = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(h);
-    clickDestination(h, "To Panel");
-    expect(h.posted.filter((m) => m.type === "moveView")).toEqual([
-      { type: "moveView", location: "panel" },
-    ]);
-  });
-
-  it("puts the right-edge glyph on the right-hand destination in both hosts", () => {
-    // The icons are how the menu reads at a glance — a user picks the one whose
-    // shading matches where they want the view, not the words.
-    const vscode = boot({ relocateView: true, secondarySideBar: true });
-    openMoveView(vscode);
-    expect(iconEdge(vscode, "To Secondary Side Bar")).toBe("right");
-    expect(iconEdge(vscode, "To Primary Side Bar")).toBe("left");
-    expect(iconEdge(vscode, "To Panel")).toBe("bottom");
-
-    // Where the menu collapses to the host's own picker there is one item, and
-    // it keeps the same glyph rather than inventing a fourth.
-    const cursor = boot({ relocateView: true, secondarySideBar: false });
-    openMoveView(cursor);
-    expect(iconEdge(cursor, "Move view…")).toBe("right");
+    expect(iconEdge(h, "Move view…")).toBe("right");
   });
 
   it("hides the section on a host with no view containers", () => {
-    const h = boot({ relocateView: false, showOutput: false });
+    // Desktop: relocateView false. Even with the secondary side bar reported
+    // missing, there is nothing to move a view between.
+    const h = boot({ relocateView: false, secondarySideBar: false, showOutput: false });
     openMoveView(h);
-    expect(destinations(h)).toEqual([]);
+    expect(hasMoveViewSection(h)).toBe(false);
   });
 
   it("hides the section in the browser client — moveView is host-local", () => {
-    // The relay drops the message, so offering the control would offer three
-    // items that do nothing. Same treatment the rail gives its host-local
-    // worktree entries.
-    const h = boot({ relocateView: true, secondarySideBar: true }, { remote: true });
+    // The relay drops the message, so the control could never do anything from a
+    // phone. Capabilities set to the one host that WOULD show it, so this fails
+    // if the remote guard is removed rather than passing for the wrong reason.
+    const h = boot({ relocateView: true, secondarySideBar: false }, { remote: true });
     openMoveView(h);
-    expect(destinations(h)).toEqual([]);
+    expect(hasMoveViewSection(h)).toBe(false);
   });
 });

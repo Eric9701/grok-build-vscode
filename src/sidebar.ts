@@ -38,14 +38,7 @@ import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
 import { MediaRef, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
-import {
-  GROK_VIEW_ID,
-  moveViewContainerFor,
-  panelPositionFor,
-  VIEW_PLACEMENT_KEY,
-  withUserChoice,
-  type PlacementRecord,
-} from "./view-move";
+import { GROK_VIEW_ID, moveViewContainerFor, panelPositionFor } from "./view-move";
 import {
   APTABASE_APP_KEY_PROD,
   buildSessionStartEvent,
@@ -5077,13 +5070,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           GROK_VIEW_ID,
           moveViewContainerFor(msg.location),
           panelPositionFor(msg.location),
-        );
-        // Remember WHERE, not merely that they chose. In an editor that refuses
-        // our container the placement gets undone on update, and the correction
-        // that puts it back should put it back HERE.
-        await this.state.update(
-          VIEW_PLACEMENT_KEY,
-          withUserChoice(this.state.get<PlacementRecord>(VIEW_PLACEMENT_KEY), msg.location),
         );
         break;
       }

@@ -2689,48 +2689,28 @@
         });
       }
     }
-    // Move view: same polarity as before — missing flags still show; only
-    // explicit false hides (desktop has no view containers). `moveView` is
-    // host-local, so the browser client never gets to act on it either.
-    if (!IS_REMOTE && !(state.hostCaps && state.hostCaps.relocateView === false)) {
+    // Move view: shown ONLY where the editor refused our secondary-side-bar
+    // container, and then as a single item.
+    //
+    // Everywhere else the section is gone. It existed to work around Cursor
+    // hiding the built-in "Move To" from a view's context menu — but an editor
+    // that gives us the secondary side bar also has that menu, so we were
+    // duplicating a control the editor already provides, in a worse form: our
+    // items name CONTAINERS, and a container cannot reach a dock the editor
+    // draws for itself.
+    //
+    // Where it does show, it opens the editor's OWN picker, which moves by
+    // location and can therefore reach the secondary side bar that editor would
+    // not give us directly. Hidden in the browser client regardless — `moveView`
+    // is host-local, so the relay drops it.
+    const noSecondarySideBar = !!(state.hostCaps && state.hostCaps.secondarySideBar === false);
+    const canRelocate = !(state.hostCaps && state.hostCaps.relocateView === false);
+    if (!IS_REMOTE && noSecondarySideBar && canRelocate) {
       addSection("Move view");
-      // Cursor reserves the secondary side bar for its own agent UI and refuses
-      // our container there, so offering it would offer a no-op. The panel is
-      // what that host will accept, and docked right it is a secondary side bar
-      // in all but name — hence naming the two panel destinations by EDGE, and
-      // moving the panel to match, only where the real thing is unavailable.
-      const hasSecondary = !(state.hostCaps && state.hostCaps.secondarySideBar === false);
-      if (!hasSecondary) {
-        // One item, because in an editor that refused our secondary-side-bar
-        // container every destination we can name lands in the same place: it
-        // keeps the OTHER containers but ignores where they said to live, so
-        // "To Right Panel" and "To Bottom Panel" both put the chat in the
-        // primary side bar. Three labels for one outcome, two of them untrue.
-        //
-        // The editor's own picker targets a LOCATION and builds its own
-        // container, so it reaches docks we cannot address at all — including
-        // the secondary side bar it would not give us directly.
-        addGearItem(`<span class="popover-icon-label">${ICON.panelRight} Move view…</span>`, () => {
-          vscode.postMessage({ type: "moveView", location: "pick" });
-          closePopovers();
-        });
-      } else {
-        addGearItem(
-          `<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`,
-          () => {
-            vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
-            closePopovers();
-          },
-        );
-        addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
-          vscode.postMessage({ type: "moveView", location: "sidebar" });
-          closePopovers();
-        });
-        addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} To Panel</span>`, () => {
-          vscode.postMessage({ type: "moveView", location: "panel" });
-          closePopovers();
-        });
-      }
+      addGearItem(`<span class="popover-icon-label">${ICON.panelRight} Move view…</span>`, () => {
+        vscode.postMessage({ type: "moveView", location: "pick" });
+        closePopovers();
+      });
     }
   }
 

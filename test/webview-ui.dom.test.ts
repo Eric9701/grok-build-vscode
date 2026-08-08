@@ -2252,31 +2252,41 @@ describe("gear entry: Move view (Config & debug)", () => {
       el.textContent!.includes(label),
     ) as HTMLElement | undefined;
 
-  it("offers the three destinations when the host advertises relocateView", () => {
+  it("offers one item, the host's own picker, where the secondary side bar was refused", () => {
+    // Was three destinations naming our own containers. They went because an
+    // editor that refuses our secondary-side-bar container also ignores where
+    // the other two declared they live, so all three landed in the same place —
+    // and an editor that accepts it already has its own Move To on the view's
+    // context menu, which does more than ours could.
     const { window, posted, doc } = bootWebview();
     dispatch(window, {
       type: "initialState",
       useCtrlEnter: false,
-      capabilities: { uploadFile: true, remoteVoice: true, relocateView: true, showOutput: true },
+      capabilities: {
+        uploadFile: true,
+        remoteVoice: true,
+        relocateView: true,
+        secondarySideBar: false,
+        showOutput: true,
+      },
     });
-    const destinations: Array<[string, string]> = [
-      ["To Secondary Side Bar", "auxiliarybar"],
-      ["To Primary Side Bar", "sidebar"],
-      ["To Panel", "panel"],
-    ];
-    for (const [label, location] of destinations) {
-      openConfigDebug(window, doc); // clicking an item closes the popover — reopen each time
-      const item = itemByLabel(doc, label);
-      expect(item, label).toBeTruthy();
-      click(window, item!);
-      expect(posted).toContainEqual({ type: "moveView", location });
-    }
+    openConfigDebug(window, doc);
+    const item = itemByLabel(doc, "Move view…");
+    expect(item).toBeTruthy();
+    click(window, item!);
+    // `pick` maps to no container by design, so the host falls through to its
+    // own picker — the only mover that targets a LOCATION.
+    expect(posted).toContainEqual({ type: "moveView", location: "pick" });
   });
 
-  it("still shows Move view + Show logs when the host sends no capability flags (v3.1.0)", () => {
+  it("still shows Show logs when the host sends no capability flags (v3.1.0)", () => {
     // Compatibility contract: the web client is always new; the extension may
-    // be an older install that never emitted relocateView/showOutput. Those
-    // gear items existed ungated before the flags — absent must mean supported.
+    // be an older install that never emitted relocateView/showOutput. That item
+    // existed ungated before the flags — absent must still mean supported.
+    //
+    // Move view is the deliberate exception, and its polarity is the opposite:
+    // an absent `secondarySideBar` means the editor HAS one, and an editor with
+    // a secondary side bar has its own Move To. So absent means no section.
     const { window, posted, doc } = bootWebview();
     dispatch(window, {
       type: "initialState",
@@ -2286,14 +2296,12 @@ describe("gear entry: Move view (Config & debug)", () => {
     });
     openConfigDebug(window, doc);
     expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
-    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeTruthy();
-    expect(itemByLabel(doc, "To Primary Side Bar")).toBeTruthy();
-    expect(itemByLabel(doc, "To Panel")).toBeTruthy();
+    expect(itemByLabel(doc, "Move view")).toBeUndefined();
     click(window, itemByLabel(doc, "Show extension logs")!);
     expect(posted).toContainEqual({ type: "showLogs" });
   });
 
-  it("still shows Move view + Show logs when capabilities is omitted entirely", () => {
+  it("still shows Show logs when capabilities is omitted entirely", () => {
     const { window, doc } = bootWebview();
     dispatch(window, {
       type: "initialState",
@@ -2302,7 +2310,7 @@ describe("gear entry: Move view (Config & debug)", () => {
     });
     openConfigDebug(window, doc);
     expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
-    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeTruthy();
+    expect(itemByLabel(doc, "Move view")).toBeUndefined();
   });
 
   it("hides Move view and Show logs only when the host opts out with false (desktop)", () => {
@@ -2313,9 +2321,7 @@ describe("gear entry: Move view (Config & debug)", () => {
       capabilities: { uploadFile: true, remoteVoice: true, relocateView: false, showOutput: false },
     });
     openConfigDebug(window, doc);
-    expect(itemByLabel(doc, "To Secondary Side Bar")).toBeUndefined();
-    expect(itemByLabel(doc, "To Primary Side Bar")).toBeUndefined();
-    expect(itemByLabel(doc, "To Panel")).toBeUndefined();
+    expect(itemByLabel(doc, "Move view")).toBeUndefined();
     expect(itemByLabel(doc, "Show extension logs")).toBeUndefined();
     // Config paths still work on desktop.
     expect(itemByLabel(doc, "Open global config")).toBeTruthy();
