@@ -204,6 +204,11 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // picker for the same reason — see GrokSidebar.retireMoveViewHint.
       await sidebar.retireMoveViewHint();
       await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
+      // Reveal where it landed. The picker can drop the view into a collapsed
+      // container — Cursor's agents side bar — and a move does not open one, so
+      // without this the chat appears to have vanished. Same reason and same
+      // instrument as the gear route; see vscode-host.ts relocateView.
+      await vscode.commands.executeCommand(`${GROK_VIEW_ID}.focus`);
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),
