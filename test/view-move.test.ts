@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import {
   GROK_VIEW_ID,
   hostAcceptedSecondarySideBar,
@@ -93,6 +95,39 @@ describe("the empty-state move hint", () => {
 
   it("stays hidden where there is nothing to move a view between", () => {
     expect(hint({ canRelocateView: false })).toBe(false);
+  });
+});
+
+describe("both routes to the host picker retire the hint BEFORE moving", () => {
+  // Ordering, not behaviour, so it is asserted against the source — the same
+  // technique webview-reload-policy.test.ts uses for capability declarations.
+  // No DOM or extension-host test can reach it: the picker is modal, and what
+  // goes wrong is a race with the webview teardown that a move causes.
+  //
+  // Writing afterwards means the rebuilt webview asks for capabilities before
+  // the flag lands, reads the old value, and shows the hint the user just acted
+  // on. It was fixed in the gear path and left in the palette one; this is here
+  // so the pair cannot drift apart again.
+  const root = path.resolve(__dirname, "..");
+
+  const before = (src: string, a: string, b: string) => {
+    const ia = src.indexOf(a);
+    const ib = src.indexOf(b);
+    expect(ia, `missing: ${a}`).toBeGreaterThan(-1);
+    expect(ib, `missing: ${b}`).toBeGreaterThan(-1);
+    return ia < ib;
+  };
+
+  it("the palette command records, then opens the picker", () => {
+    const src = readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+    expect(
+      before(src, "MOVE_VIEW_HINT_USED_KEY, true", "workbench.action.moveFocusedView"),
+    ).toBe(true);
+  });
+
+  it("the gear handler records, then relocates", () => {
+    const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    expect(before(src, "MOVE_VIEW_HINT_USED_KEY, true", "this.host.relocateView(")).toBe(true);
   });
 });
 

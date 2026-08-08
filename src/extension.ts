@@ -213,10 +213,13 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // us directly. The view-id argument is what makes it work there at all:
       // without it the command reads the `focusedView` context key, which Cursor
       // never sets for webview views.
-      await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
-      // Same picker the gear opens, so it retires the same hint. Only the hint —
-      // where the view goes is decided without reference to this.
+      // Retires the same hint the gear does, and BEFORE the picker for the same
+      // reason: moving a view makes the host rebuild the webview, and the
+      // rebuilt one asks for capabilities immediately, so a write afterwards
+      // loses the race and the hint comes back. Only the hint — where the view
+      // goes is decided without reference to this.
       await context.globalState.update(MOVE_VIEW_HINT_USED_KEY, true);
+      await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),
