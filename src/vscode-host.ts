@@ -302,10 +302,19 @@ export function createVsCodeHost(
       panelPosition?: PanelPosition | null,
     ) {
       if (destinationId) {
+        // Timed per step. Moving a webview view makes VS Code dispose and
+        // rebuild it, so this is one of the few user actions that can visibly
+        // stall — and which of the three steps costs it is not guessable from
+        // the outside. `Grok: Show Logs` after a move answers it.
+        const started = Date.now();
+        const lap = (step: string) => {
+          output.appendLine(`[move] ${step} ${Date.now() - started}ms`);
+        };
         await vscode.commands.executeCommand("vscode.moveViews", {
           viewIds: [viewId],
           destinationId,
         });
+        lap("moveViews");
         if (panelPosition) {
           // Dock the edge the menu label promised, before revealing, so the
           // view appears where the user was told it would. Best effort on
@@ -320,10 +329,12 @@ export function createVsCodeHost(
           } catch {
             /* layout nudge unavailable — the move itself already landed */
           }
+          lap("positionPanel");
         }
         // Focus last: it opens whichever dock now holds the view, so "any option
         // shows the panel" falls out of the move rather than needing its own call.
         await vscode.commands.executeCommand(`${viewId}.focus`);
+        lap("focus");
       } else {
         await vscode.commands.executeCommand("workbench.action.moveFocusedView", viewId);
       }
