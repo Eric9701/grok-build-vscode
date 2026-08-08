@@ -410,7 +410,7 @@
     "test:integration": "npm run compile && npm run compile:integration && vscode-test",
     "test:live": "tsc -p . && node scripts/live-tests.cjs",
     "desktop": "npm run compile && node scripts/run-desktop.cjs",
-    "desktop-dev": "npm run compile && node scripts/run-desktop.cjs --relay-dev",
+    "desktop-dev": "npm run compile && node scripts/run-desktop.cjs --relay-dev --open-devtools",
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",
     "check:vsix": "npm run compile && node scripts/check-vsix-requires.mjs",

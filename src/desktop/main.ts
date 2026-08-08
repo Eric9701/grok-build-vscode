@@ -20,7 +20,6 @@ import {
   safeStorage,
   shell,
   type Menu as ElectronMenu,
-  type MenuItemConstructorOptions,
   type ProtocolRequest,
 } from "electron";
 import * as fs from "node:fs";
@@ -66,6 +65,12 @@ import {
   noticeIfUpdateAvailable,
   type GithubReleaseLike,
 } from "./app-update";
+import {
+  desktopAppMenuTemplate,
+  desktopDevToolsAllowed,
+  shouldOpenDevToolsAtStartup,
+  type DesktopAppMenuActions,
+} from "./app-menu";
 
 // Electron dies with launch-failed if sandbox is left at the platform default
 // in some setups; we set it explicitly on the BrowserWindow. Also strip the
@@ -162,103 +167,23 @@ function log(line: string): void {
 /**
  * Application menu: no stock Electron Help links; public repo only.
  * File → Add/Close Project Folder drive multi-folder (rail + config store).
+ * Developer Tools only when `!isPackaged` (default: `app.isPackaged`).
  */
-export function buildDesktopAppMenu(actions?: {
-  addProjectFolder?: () => void;
-  removeProjectFolder?: () => void;
-}): ElectronMenu {
-  const isMac = process.platform === "darwin";
-  const template: MenuItemConstructorOptions[] = [
-    ...(isMac
-      ? [
-          {
-            label: DESKTOP_APP_FULL_NAME,
-            submenu: [
-              { role: "about" as const, label: `About ${DESKTOP_APP_FULL_NAME}` },
-              { type: "separator" as const },
-              { role: "services" as const },
-              { type: "separator" as const },
-              { role: "hide" as const },
-              { role: "hideOthers" as const },
-              { role: "unhide" as const },
-              { type: "separator" as const },
-              { role: "quit" as const },
-            ],
-          },
-        ]
-      : []),
-    {
-      label: "File",
-      submenu: [
-        {
-          label: "Add Project Folder…",
-          click: () => {
-            try {
-              actions?.addProjectFolder?.();
-            } catch {
-              /* best-effort */
-            }
-          },
-        },
-        {
-          label: "Close Project Folder",
-          click: () => {
-            try {
-              actions?.removeProjectFolder?.();
-            } catch {
-              /* best-effort */
-            }
-          },
-        },
-        { type: "separator" },
-        isMac ? { role: "close" } : { role: "quit", label: "Quit" },
-      ],
-    },
-    {
-      label: "Edit",
-      submenu: [
-        { role: "undo" },
-        { role: "redo" },
-        { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "selectAll" },
-      ],
-    },
-    {
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { role: "toggleDevTools" },
-        { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "togglefullscreen" },
-      ],
-    },
-    {
-      label: "Help",
-      submenu: [
-        {
-          label: "GitHub Repository",
-          click: () => {
-            void shell.openExternal(DESKTOP_PUBLIC_REPO_URL);
-          },
-        },
-        {
-          label: `About ${DESKTOP_APP_FULL_NAME}`,
-          click: () => {
-            void shell.openExternal(DESKTOP_PUBLIC_REPO_URL);
-          },
-        },
-      ],
-    },
-  ];
-  return Menu.buildFromTemplate(template);
+export function buildDesktopAppMenu(
+  actions?: DesktopAppMenuActions,
+  opts?: { isPackaged?: boolean },
+): ElectronMenu {
+  const isPackaged = opts?.isPackaged ?? app.isPackaged;
+  return Menu.buildFromTemplate(
+    desktopAppMenuTemplate({
+      isPackaged,
+      platform: process.platform,
+      actions,
+      openPublicRepo: () => {
+        void shell.openExternal(DESKTOP_PUBLIC_REPO_URL);
+      },
+    }),
+  );
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -476,15 +401,19 @@ async function createApp(): Promise<void> {
   // Full product name for About / OS app identity (short name was set early so
   // userData resolved under a branded folder). Window title uses short name.
   app.setName(DESKTOP_APP_FULL_NAME);
+  const isPackaged = app.isPackaged;
   Menu.setApplicationMenu(
-    buildDesktopAppMenu({
-      addProjectFolder: () => {
-        void sidebar?.addProjectFolder();
+    buildDesktopAppMenu(
+      {
+        addProjectFolder: () => {
+          void sidebar?.addProjectFolder();
+        },
+        removeProjectFolder: () => {
+          void sidebar?.removeProjectFolder();
+        },
       },
-      removeProjectFolder: () => {
-        void sidebar?.removeProjectFolder();
-      },
-    }),
+      { isPackaged },
+    ),
   );
 
   // Round icon first — same one the installers use, so a dev run and an
@@ -495,6 +424,10 @@ async function createApp(): Promise<void> {
     ? roundIcon
     : path.join(extensionRoot, "resources", "grok-icon.png");
   const iconOpt = fs.existsSync(iconPath) ? iconPath : undefined;
+
+  // Packaged builds hard-disable DevTools at the webPreferences layer too —
+  // menu-only gating would leave openDevTools() / F12-style hooks reachable.
+  const allowDevTools = desktopDevToolsAllowed(isPackaged);
 
   mainWindow = new BrowserWindow({
     // Wider default so chat + file tree both have room; collapse shrinks the panel.
@@ -517,6 +450,7 @@ async function createApp(): Promise<void> {
       // launch-failed before any page code runs (spike-confirmed).
       sandbox: false,
       spellcheck: false,
+      devTools: allowDevTools,
     },
   });
 
@@ -524,6 +458,19 @@ async function createApp(): Promise<void> {
     log,
     openExternal: (url) => shell.openExternal(url),
   });
+
+  // desktop-dev passes an explicit open signal (not GROK_RELAY_URL). Detached
+  // so the default 720-wide chat stays usable while reading logs.
+  if (
+    shouldOpenDevToolsAtStartup({
+      isPackaged,
+      env: process.env,
+      argv: process.argv,
+    })
+  ) {
+    mainWindow.webContents.openDevTools({ mode: "detach" });
+    log("DevTools opened (non-production build)");
+  }
 
   mainWindow.on("closed", () => {
     mainWindow = null;

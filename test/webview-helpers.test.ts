@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -760,6 +760,79 @@ describe("subagentLabel", () => {
     expect(subagentLabel({ tool: "task" })).toBe("Subagent");
     expect(subagentLabel({ rawInput: { is_background: true } })).toBe("background task");
     expect(subagentLabel(null)).toBe("Subagent");
+  });
+});
+
+describe("panelReclampOnResizeAllowed / wireFullscreenSafeReclamp", () => {
+  it("blocks re-clamp while any element is full-screen", () => {
+    expect(panelReclampOnResizeAllowed(null)).toBe(true);
+    expect(panelReclampOnResizeAllowed(undefined)).toBe(true);
+    expect(panelReclampOnResizeAllowed({ tagName: "VIDEO" })).toBe(false);
+  });
+
+  it("skips resize during full-screen and re-clamps once on exit", () => {
+    let fs: unknown = null;
+    const listeners: Record<string, Array<(...a: unknown[]) => void>> = {
+      resize: [],
+      fullscreenchange: [],
+    };
+    const win = {
+      addEventListener: (type: string, fn: (...a: unknown[]) => void) => {
+        listeners[type] = listeners[type] || [];
+        listeners[type].push(fn);
+      },
+      removeEventListener: (type: string, fn: (...a: unknown[]) => void) => {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+      },
+    };
+    const doc = {
+      get fullscreenElement() {
+        return fs;
+      },
+      addEventListener: (type: string, fn: (...a: unknown[]) => void) => {
+        listeners[type] = listeners[type] || [];
+        listeners[type].push(fn);
+      },
+      removeEventListener: (type: string, fn: (...a: unknown[]) => void) => {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+      },
+    };
+    let n = 0;
+    const dispose = wireFullscreenSafeReclamp(() => {
+      n += 1;
+    }, { window: win as any, document: doc as any });
+
+    for (const fn of listeners.resize) fn();
+    expect(n).toBe(1);
+
+    fs = { tagName: "VIDEO" };
+    for (const fn of listeners.resize) fn();
+    expect(n).toBe(1); // mutation: without the guard this would be 2
+
+    fs = null;
+    for (const fn of listeners.fullscreenchange) fn();
+    expect(n).toBe(2);
+
+    dispose();
+    for (const fn of listeners.resize) fn();
+    expect(n).toBe(2);
+  });
+});
+
+describe("chatZoomFactor / unzoomClientPx", () => {
+  it("reads --chat-zoom and converts visual px to layout px", () => {
+    const doc = {
+      body: {
+        style: {
+          getPropertyValue: (k: string) => (k === "--chat-zoom" ? "1.5" : ""),
+        },
+      },
+    };
+    expect(chatZoomFactor(doc as any)).toBe(1.5);
+    expect(unzoomClientPx(150, 1.5)).toBe(100);
+    expect(unzoomClientPx(150, 1)).toBe(150);
+    expect(unzoomClientPx(150, 0)).toBe(150);
+    expect(chatZoomFactor({ body: { style: { getPropertyValue: () => "" } } } as any)).toBe(1);
   });
 });
 

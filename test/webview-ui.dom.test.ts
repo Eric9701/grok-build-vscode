@@ -211,6 +211,28 @@ describe("history popover (regression: popover that never closed)", () => {
     expect(pop.style.maxWidth).toBe("228px"); // 240 - 6*2, re-measured without reopening
   });
 
+  it("places the history popover in layout px when chat zoom is not 1", () => {
+    // getBoundingClientRect is visual; style.top under body zoom is layout.
+    // At 1.5×, a 30px visual bottom edge is 20 layout px — without unzoom the
+    // popover opens too far below the button (and above when zoomed out).
+    const { window, doc } = bootWebview();
+    doc.body.style.setProperty("--chat-zoom", "1.5");
+    const pop = $(doc, "history-popover");
+    const btn = $(doc, "history-btn");
+    const parent = pop.parentElement as HTMLElement;
+    (parent as any).getBoundingClientRect = () =>
+      ({ left: 0, right: 600, top: 0, bottom: 900, width: 600, height: 900 });
+    (btn as any).getBoundingClientRect = () =>
+      ({ left: 540, right: 588, top: 12, bottom: 45, width: 48, height: 33 });
+
+    click(window, btn);
+
+    // (45 - 0) / 1.5 + 4 = 34
+    expect(pop.style.top).toBe("34px");
+    // available layout width = 600/1.5 - 12 = 388 → max 360
+    expect(pop.style.maxWidth).toBe("360px");
+  });
+
   it("closes the popover when the view is hidden (switching to another extension/tab)", () => {
     const { window, doc } = bootWebview();
     const pop = $(doc, "history-popover");

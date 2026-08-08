@@ -782,6 +782,71 @@
       .test(String(text || ""));
   }
 
+  /**
+   * Side-panel re-clamp on window resize: skip while any element is full-screen.
+   * Entering full-screen fires resize mid-transition; measuring then captures a
+   * bogus width that sticks after exit. Callers still re-clamp once on
+   * fullscreenchange exit (see wireFullscreenSafeReclamp).
+   */
+  function panelReclampOnResizeAllowed(fullscreenElement) {
+    return !fullscreenElement;
+  }
+
+  /**
+   * Wire resize re-clamp that ignores full-screen transitions and re-runs once
+   * after full-screen exits (window size may have changed meanwhile).
+   * @param {() => void} reclamp measure + apply (caller owns the math)
+   * @param {{ window?: Window, document?: Document }} [roots] inject for tests
+   * @returns {() => void} dispose
+   */
+  function wireFullscreenSafeReclamp(reclamp, roots) {
+    const win = (roots && roots.window) || (typeof window !== "undefined" ? window : null);
+    const doc = (roots && roots.document) || (typeof document !== "undefined" ? document : null);
+    if (!win || !doc || typeof reclamp !== "function") return function () {};
+    function onResize() {
+      if (!panelReclampOnResizeAllowed(doc.fullscreenElement)) return;
+      reclamp();
+    }
+    function onFullscreenChange() {
+      if (!doc.fullscreenElement) reclamp();
+    }
+    win.addEventListener("resize", onResize);
+    doc.addEventListener("fullscreenchange", onFullscreenChange);
+    return function dispose() {
+      win.removeEventListener("resize", onResize);
+      doc.removeEventListener("fullscreenchange", onFullscreenChange);
+    };
+  }
+
+  /**
+   * Body `--chat-zoom` (CSS zoom). getBoundingClientRect is in visual/client px;
+   * style.top/left/width under a zoomed body are layout px — divide by this.
+   */
+  function chatZoomFactor(doc) {
+    const d = doc || (typeof document !== "undefined" ? document : null);
+    if (!d || !d.body) return 1;
+    let raw = "";
+    try {
+      raw = d.body.style.getPropertyValue("--chat-zoom") || "";
+    } catch (_) { /* */ }
+    if (!raw && typeof getComputedStyle === "function") {
+      try {
+        raw = getComputedStyle(d.body).getPropertyValue("--chat-zoom") || "";
+      } catch (_) { /* */ }
+    }
+    const z = Number(String(raw).trim());
+    return Number.isFinite(z) && z > 0 ? z : 1;
+  }
+
+  /** Visual/client px → layout CSS px under body chat zoom. */
+  function unzoomClientPx(clientPx, zoom) {
+    const z = zoom == null ? 1 : Number(zoom);
+    const n = Number(clientPx);
+    if (!Number.isFinite(n)) return 0;
+    if (!Number.isFinite(z) || z === 0 || z === 1) return n;
+    return n / z;
+  }
+
   function computeLineDiff(oldText, newText, opts) {
     const maxProduct = (opts && opts.maxProduct) || 4000000; // ~2000×2000 line cap
     const norm = (t) => (t == null ? "" : String(t).replace(/\r\n?/g, "\n"));
@@ -832,7 +897,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, chatZoomFactor, unzoomClientPx };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

@@ -125,4 +125,48 @@ describe("rail resize handle (DOM)", () => {
     expect(w).toBeGreaterThanOrEqual(180);
     expect(w).toBeLessThanOrEqual(Math.floor(h.window.innerWidth * 0.5));
   });
+
+  it("re-clamps when the window shrinks outside full-screen", () => {
+    const h = liveRail();
+    h.window.innerWidth = 1400;
+    stubRailWidth(h, 400);
+    drag(h, 400, 500);
+    expect(railWidthVar(h)).toBe("500px");
+
+    // Window shrinks; rail still paints at 500 until re-clamp.
+    h.window.innerWidth = 600;
+    stubRailWidth(h, 500);
+    h.window.dispatchEvent(new h.window.Event("resize"));
+    // max = min(floor(600*0.5), 600-360) = min(300, 240) = 240
+    expect(parseInt(railWidthVar(h), 10)).toBe(240);
+  });
+
+  it("ignores resize while full-screen, then re-clamps once on exit", () => {
+    const h = liveRail();
+    h.window.innerWidth = 1400;
+    stubRailWidth(h, 300);
+    drag(h, 300, 320);
+    expect(railWidthVar(h)).toBe("320px");
+
+    // Mutation check: without the fullscreenElement guard a mid-transition
+    // resize would apply this bogus width and leave the rail crushed after exit.
+    const fakeFs = h.doc.createElement("video");
+    Object.defineProperty(h.doc, "fullscreenElement", {
+      configurable: true,
+      get: () => fakeFs,
+    });
+    stubRailWidth(h, 48);
+    h.window.dispatchEvent(new h.window.Event("resize"));
+    expect(railWidthVar(h)).toBe("320px");
+
+    // Exit full-screen; window may have changed size while we were away.
+    Object.defineProperty(h.doc, "fullscreenElement", {
+      configurable: true,
+      get: () => null,
+    });
+    h.window.innerWidth = 600;
+    stubRailWidth(h, 320);
+    h.doc.dispatchEvent(new h.window.Event("fullscreenchange"));
+    expect(parseInt(railWidthVar(h), 10)).toBe(240);
+  });
 });

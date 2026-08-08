@@ -118,6 +118,13 @@ import {
   shouldOpenExternally,
   windowOpenDecision,
 } from "../src/desktop/window-security";
+import {
+  DESKTOP_OPEN_DEVTOOLS_ENV,
+  DESKTOP_OPEN_DEVTOOLS_FLAG,
+  desktopAppMenuTemplate,
+  desktopDevToolsAllowed,
+  shouldOpenDevToolsAtStartup,
+} from "../src/desktop/app-menu";
 
 describe("desktop ConfigStore", () => {
   let dir: string;
@@ -1255,6 +1262,115 @@ describe("desktop quick pick (continued)", () => {
   });
 });
 
+describe("desktop DevTools gate (non-production only)", () => {
+  function viewRoles(isPackaged: boolean): Array<string | undefined> {
+    const template = desktopAppMenuTemplate({ isPackaged, platform: "win32" });
+    const view = template.find((item) => item.label === "View");
+    expect(view).toBeTruthy();
+    const submenu = view!.submenu as Array<{ role?: string }>;
+    return submenu.map((item) => item.role);
+  }
+
+  it("allows DevTools only when not packaged", () => {
+    expect(desktopDevToolsAllowed(false)).toBe(true);
+    expect(desktopDevToolsAllowed(true)).toBe(false);
+  });
+
+  it("includes toggleDevTools in View when not packaged", () => {
+    expect(viewRoles(false)).toContain("toggleDevTools");
+  });
+
+  it("omits toggleDevTools from View when packaged", () => {
+    expect(viewRoles(true)).not.toContain("toggleDevTools");
+  });
+
+  it("mutation: flipping isPackaged is the only menu difference for DevTools", () => {
+    const open = viewRoles(false);
+    const packed = viewRoles(true);
+    expect(open.filter((r) => r !== "toggleDevTools")).toEqual(packed);
+    expect(open.includes("toggleDevTools")).toBe(true);
+    expect(packed.includes("toggleDevTools")).toBe(false);
+  });
+
+  it("opens at startup only with explicit signal and only when unpackaged", () => {
+    expect(
+      shouldOpenDevToolsAtStartup({
+        isPackaged: false,
+        env: { [DESKTOP_OPEN_DEVTOOLS_ENV]: "1" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldOpenDevToolsAtStartup({
+        isPackaged: false,
+        argv: [DESKTOP_OPEN_DEVTOOLS_FLAG],
+      }),
+    ).toBe(true);
+    // Packaged must never open — even if someone forges the env.
+    expect(
+      shouldOpenDevToolsAtStartup({
+        isPackaged: true,
+        env: { [DESKTOP_OPEN_DEVTOOLS_ENV]: "1" },
+        argv: [DESKTOP_OPEN_DEVTOOLS_FLAG],
+      }),
+    ).toBe(false);
+    // No signal → closed (plain `npm run desktop` stays quiet).
+    expect(shouldOpenDevToolsAtStartup({ isPackaged: false, env: {}, argv: [] })).toBe(
+      false,
+    );
+    // Relay URL alone must NOT open DevTools (separate concerns).
+    expect(
+      shouldOpenDevToolsAtStartup({
+        isPackaged: false,
+        env: { GROK_RELAY_URL: "wss://staging.example" },
+      }),
+    ).toBe(false);
+  });
+
+  it("wires main + launcher to the packaging gate and explicit open signal", () => {
+    const main = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
+      "utf8",
+    );
+    expect(main).toContain("desktopAppMenuTemplate");
+    expect(main).toContain("shouldOpenDevToolsAtStartup");
+    expect(main).toContain("desktopDevToolsAllowed");
+    expect(main).toMatch(/devTools:\s*allowDevTools/);
+    expect(main).toMatch(/openDevTools\(\s*\{\s*mode:\s*["']detach["']/);
+    // Child viewers share the packaging lock but never auto-open.
+    const host = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "src",
+        "desktop",
+        "electron-host.ts",
+      ),
+      "utf8",
+    );
+    expect(host).toMatch(/devTools:\s*!app\.isPackaged/);
+    expect(host).not.toContain("openDevTools");
+    // Launcher: explicit flag → env; not keyed off GROK_RELAY_URL.
+    const launcher = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run-desktop.cjs"),
+      "utf8",
+    );
+    expect(launcher).toContain(DESKTOP_OPEN_DEVTOOLS_FLAG);
+    expect(launcher).toContain(DESKTOP_OPEN_DEVTOOLS_ENV);
+    expect(launcher).toContain("includes(OPEN_DEVTOOLS_FLAG)");
+    expect(launcher).toMatch(/env\[OPEN_DEVTOOLS_ENV\]\s*=\s*["']1["']/);
+    const pkg = JSON.parse(
+      fs.readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"),
+        "utf8",
+      ),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts["desktop-dev"]).toContain(DESKTOP_OPEN_DEVTOOLS_FLAG);
+    expect(pkg.scripts["desktop-dev"]).toContain("--relay-dev");
+    // Plain desktop must not open DevTools by default.
+    expect(pkg.scripts.desktop).not.toContain(DESKTOP_OPEN_DEVTOOLS_FLAG);
+  });
+});
+
 describe("desktop branding and menu", () => {
   it("names the product Grok Build Desktop (Community) and links this repo only", () => {
     expect(DESKTOP_APP_FULL_NAME).toBe("Grok Build Desktop (Community)");
@@ -1517,6 +1633,9 @@ describe("file-tree panel assets", () => {
     // Resize persistence + host chat-open hook.
     expect(boot).toContain("desk-ft-width");
     expect(boot).toContain("WIDTH_MIN");
+    // Full-screen video resize must not re-measure the panel (same trap as the rail).
+    expect(boot).toContain("fullscreenElement");
+    expect(boot).toMatch(/wireFullscreenSafeReclamp|fullscreenchange/);
     expect(boot).toContain("__grokDeskFtOpen");
     expect(boot).toContain("Open in default app");
     // Cancel is mounted only while dirty (not always-present + hidden).

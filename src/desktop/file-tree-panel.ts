@@ -1119,11 +1119,26 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     resizer.addEventListener("pointermove", onMove);
     resizer.addEventListener("pointerup", onUp);
     resizer.addEventListener("pointercancel", onUp);
-    window.addEventListener("resize", () => {
-      // Re-clamp so a narrow window cannot leave the panel overgrown.
+    // Re-clamp so a narrow window cannot leave the panel overgrown.
+    // Same full-screen trap as the projects rail (media/chat.js): resize during
+    // a video full-screen transition measures a meaningless width and sticks it.
+    // Share the helper when chat's webview-helpers is already on the page.
+    const reclampPanel = () => {
       const cur = panel.getBoundingClientRect().width;
       if (cur > 0) applyPanelWidth(cur);
-    });
+    };
+    const wireFs = window.GrokWebviewHelpers && window.GrokWebviewHelpers.wireFullscreenSafeReclamp;
+    if (typeof wireFs === "function") {
+      wireFs(reclampPanel);
+    } else {
+      window.addEventListener("resize", () => {
+        if (document.fullscreenElement) return;
+        reclampPanel();
+      });
+      document.addEventListener("fullscreenchange", () => {
+        if (!document.fullscreenElement) reclampPanel();
+      });
+    }
   })();
 
   function applyOpen(open) {

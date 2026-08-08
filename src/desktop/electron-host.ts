@@ -206,6 +206,9 @@ function openHtmlDocumentWindow(
   html: string,
 ): BrowserWindow {
   const parent = parentWindow(getWindow);
+  // Same packaging gate as the main window: no DevTools door in signed builds.
+  // Deliberately do NOT auto-open DevTools here — these are ephemeral
+  // diff/text viewers, not the chat surface under test.
   const win = new BrowserWindow({
     width: 960,
     height: 720,
@@ -218,6 +221,7 @@ function openHtmlDocumentWindow(
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      devTools: !app.isPackaged,
     },
   });
   installWindowSecurityLocks(win, {
@@ -245,6 +249,8 @@ function showHtmlDialog(
   return new Promise((resolve) => {
     const parent = parentWindow(getWindow);
     const dialogPreload = path.join(__dirname, "dialog-preload.js");
+    // Same packaging gate as main/diff viewers. No auto-open — modal dialogs
+    // are short-lived and not the rendering surface owners debug.
     const win = new BrowserWindow({
       width: size.width,
       height: size.height,
@@ -261,6 +267,7 @@ function showHtmlDialog(
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: false,
+        devTools: !app.isPackaged,
       },
     });
     installWindowSecurityLocks(win, {

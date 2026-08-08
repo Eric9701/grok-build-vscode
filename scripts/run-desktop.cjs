@@ -41,7 +41,19 @@ function relayUrlFromEnvFile() {
 //
 // resolveRelayUrl honours it only in a NON-production build, so nothing here can
 // redirect a packaged app.
-const args = process.argv.slice(2).filter((a) => a !== "--relay-dev");
+//
+// `--open-devtools` is a SEPARATE concern from `--relay-dev`. desktop-dev
+// passes both; either can be used alone. Do not key DevTools off GROK_RELAY_URL.
+const OPEN_DEVTOOLS_FLAG = "--open-devtools";
+const OPEN_DEVTOOLS_ENV = "GROK_DESKTOP_OPEN_DEVTOOLS";
+const openDevTools = process.argv.includes(OPEN_DEVTOOLS_FLAG);
+const args = process.argv
+  .slice(2)
+  .filter((a) => a !== "--relay-dev" && a !== OPEN_DEVTOOLS_FLAG);
+
+if (openDevTools) {
+  env[OPEN_DEVTOOLS_ENV] = "1";
+}
 
 if (process.argv.includes("--relay-dev")) {
   const candidate = env.GROK_RELAY_URL || relayUrlFromEnvFile();

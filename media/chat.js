@@ -894,7 +894,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, chatZoomFactor, unzoomClientPx } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1740,27 +1740,32 @@
   }
 
   function positionPopover(popover, btn) {
+    // getBoundingClientRect is visual px; style offsets under body `zoom` are
+    // layout px — unzoomClientPx converts (zoom 1 is a no-op).
+    const z = chatZoomFactor();
     const composerRect = popover.parentElement.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
     popover.style.top = "auto";
-    popover.style.bottom = (composerRect.bottom - btnRect.top + 4) + "px";
-    popover.style.left = (btnRect.left - composerRect.left) + "px";
+    popover.style.bottom = (unzoomClientPx(composerRect.bottom - btnRect.top, z) + 4) + "px";
+    popover.style.left = unzoomClientPx(btnRect.left - composerRect.left, z) + "px";
     popover.style.right = "auto";
     requestAnimationFrame(() => {
-      const pw = popover.getBoundingClientRect().width;
-      const leftOffset = btnRect.left - composerRect.left;
-      if (leftOffset + pw > composerRect.width) {
-        popover.style.left = Math.max(0, composerRect.width - pw) + "px";
+      const pw = unzoomClientPx(popover.getBoundingClientRect().width, z);
+      const leftOffset = unzoomClientPx(btnRect.left - composerRect.left, z);
+      const parentW = unzoomClientPx(composerRect.width, z);
+      if (leftOffset + pw > parentW) {
+        popover.style.left = Math.max(0, parentW - pw) + "px";
       }
     });
   }
 
   function positionDropdownPopover(popover, btn) {
+    const z = chatZoomFactor();
     const parentRect = popover.parentElement.getBoundingClientRect();
     const btnRect = btn.getBoundingClientRect();
     const EDGE = 6; // gap kept from the panel's right edge (and minimum gap on the left)
     popover.style.bottom = "auto";
-    popover.style.top = (btnRect.bottom - parentRect.top + 4) + "px";
+    popover.style.top = (unzoomClientPx(btnRect.bottom - parentRect.top, z) + 4) + "px";
     // Right-align to the panel edge (respecting padding) and grow leftward. The width
     // isn't settled when it opens — session rows stream in asynchronously (requestSessions
     // → "sessions" message → render) and widen it from min-width toward max-width — so a
@@ -1771,24 +1776,26 @@
     // overflowing the LEFT edge in a narrow panel — common-case sizing, not extreme.
     popover.style.left = "auto";
     popover.style.right = EDGE + "px";
-    const available = Math.max(0, parentRect.width - EDGE * 2);
+    const available = Math.max(0, unzoomClientPx(parentRect.width, z) - EDGE * 2);
     popover.style.maxWidth = Math.min(360, available) + "px";
     popover.style.minWidth = Math.min(280, available) + "px";
   }
 
   function positionRepoPopover() {
+    const z = chatZoomFactor();
     const parentRect = repoPopover.parentElement.getBoundingClientRect();
     const btnRect = repoBtn.getBoundingClientRect();
     const EDGE = 6;
-    const available = Math.max(0, parentRect.width - EDGE * 2);
+    const parentW = unzoomClientPx(parentRect.width, z);
+    const available = Math.max(0, parentW - EDGE * 2);
     const maxWidth = Math.min(360, available);
-    const chipLeft = btnRect.left - parentRect.left;
+    const chipLeft = unzoomClientPx(btnRect.left - parentRect.left, z);
     const left = Math.min(
       Math.max(EDGE, chipLeft),
-      Math.max(EDGE, parentRect.width - EDGE - maxWidth),
+      Math.max(EDGE, parentW - EDGE - maxWidth),
     );
     repoPopover.style.bottom = "auto";
-    repoPopover.style.top = (btnRect.bottom - parentRect.top + 4) + "px";
+    repoPopover.style.top = (unzoomClientPx(btnRect.bottom - parentRect.top, z) + 4) + "px";
     repoPopover.style.left = left + "px";
     repoPopover.style.right = "auto";
     repoPopover.style.maxWidth = maxWidth + "px";
@@ -2758,19 +2765,23 @@
   function positionGearPopover(btn) {
     const anchor = btn || activeGearButton();
     if (anchor && anchor.id === "rail-gear-btn") {
+      const z = chatZoomFactor();
       const rect = anchor.getBoundingClientRect();
+      // Fixed under body zoom: client rects are visual; style left/bottom are layout.
+      const vw = unzoomClientPx(window.innerWidth, z);
+      const vh = unzoomClientPx(window.innerHeight, z);
       gearPopover.style.position = "fixed";
-      gearPopover.style.left = Math.min(window.innerWidth - GEAR_POPOVER_WIDTH, Math.max(8, rect.right + 6)) + "px";
-      gearPopover.style.bottom = Math.max(8, window.innerHeight - rect.bottom) + "px";
+      gearPopover.style.left = Math.min(vw - GEAR_POPOVER_WIDTH, Math.max(8, unzoomClientPx(rect.right, z) + 6)) + "px";
+      gearPopover.style.bottom = Math.max(8, vh - unzoomClientPx(rect.bottom, z)) + "px";
       gearPopover.style.top = "auto";
       gearPopover.style.right = "auto";
-      gearPopover.style.maxHeight = Math.min(420, window.innerHeight - 24) + "px";
+      gearPopover.style.maxHeight = Math.min(420, vh - 24) + "px";
       // Fixed positioning with `right: auto` leaves the width shrink-to-fit and
       // uncapped, so the Version & about panel's long strings stretched it most
       // of the way across the window. The composer path is bounded by the
       // composer; this one has to say so. Same number the left-clamp above
       // reserves, so the popover can never be pushed off-screen.
-      gearPopover.style.maxWidth = Math.min(GEAR_POPOVER_WIDTH, window.innerWidth - 16) + "px";
+      gearPopover.style.maxWidth = Math.min(GEAR_POPOVER_WIDTH, vw - 16) + "px";
       return;
     }
     gearPopover.style.position = "";
@@ -3025,7 +3036,9 @@
       handle.addEventListener("pointerup", end);
       handle.addEventListener("pointercancel", end);
       // Re-clamp so shrinking the window cannot leave the rail overgrown.
-      window.addEventListener("resize", () => {
+      // Full-screen video fires resize mid-transition with a meaningless width;
+      // wireFullscreenSafeReclamp skips those and re-clamps once on exit.
+      wireFullscreenSafeReclamp(() => {
         const cur = rail.getBoundingClientRect().width;
         if (cur > 0) applyRailWidth(cur, false);
       });
@@ -3716,13 +3729,19 @@
 
     // Flip up / pull left rather than run off the viewport — the rail sits at the
     // left edge on desktop and the drawer covers the screen on a phone.
+    // Body `zoom` scales visual rects; fixed style top/left are layout px.
+    const z = chatZoomFactor();
     const box = anchor.getBoundingClientRect();
     const size = menu.getBoundingClientRect();
     const gap = 4;
-    let top = box.bottom + gap;
-    if (top + size.height > window.innerHeight - 8) top = Math.max(8, box.top - size.height - gap);
-    let left = box.right - size.width;
-    left = Math.max(8, Math.min(left, window.innerWidth - size.width - 8));
+    const menuH = unzoomClientPx(size.height, z);
+    const menuW = unzoomClientPx(size.width, z);
+    const vh = unzoomClientPx(window.innerHeight, z);
+    const vw = unzoomClientPx(window.innerWidth, z);
+    let top = unzoomClientPx(box.bottom, z) + gap;
+    if (top + menuH > vh - 8) top = Math.max(8, unzoomClientPx(box.top, z) - menuH - gap);
+    let left = unzoomClientPx(box.right, z) - menuW;
+    left = Math.max(8, Math.min(left, vw - menuW - 8));
     menu.style.top = `${Math.round(top)}px`;
     menu.style.left = `${Math.round(left)}px`;
     const first = menu.querySelector(".rail-menu-item:not(:disabled)");
