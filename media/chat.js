@@ -5278,7 +5278,11 @@
     const welcome = $("welcome");
     if (!welcome) return;
     const existing = $("welcome-tip");
-    if (!(state.hostCaps && state.hostCaps.moveViewHint === true)) {
+    // Never in the browser client. The capability is mirrored to remotes with
+    // the rest of initialState, but where the chat sits is a property of the
+    // machine running the extension — `moveView` is host-local and the relay
+    // drops it, so a phone would get advice it cannot take.
+    if (IS_REMOTE || !(state.hostCaps && state.hostCaps.moveViewHint === true)) {
       if (existing) existing.remove();
       return;
     }
@@ -5298,8 +5302,11 @@
       link.onclick = (e) => {
         e.preventDefault();
         vscode.postMessage({ type: "moveView", location: "pick" });
-        // Gone the moment it is acted on. The host records it too, so it does
-        // not come back in the next session or the next window.
+        // Clear the LOCAL capability too, not just the node. `initialState` is
+        // not re-sent on a session swap, so `resetForNewSession` would rebuild
+        // the empty state, re-read a still-true flag and put the hint straight
+        // back. The host records it as well, for the next window.
+        if (state.hostCaps) state.hostCaps.moveViewHint = false;
         tip.remove();
       };
     }

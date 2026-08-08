@@ -153,6 +153,28 @@ describe("Move view menu (DOM)", () => {
     expect(h.doc.getElementById("welcome-tip")).toBeNull();
   });
 
+  it("does not bring the hint back on the next session", () => {
+    // `initialState` is not re-sent on a session swap, so the empty state is
+    // rebuilt from capabilities the webview already holds. Removing only the
+    // node left a still-true flag behind, and the hint returned on the next
+    // new session — advice the user had already acted on.
+    const h = boot({ relocateView: true, secondarySideBar: false, moveViewHint: true });
+    click(h.window, h.doc.getElementById("welcome-tip-link")!);
+    dispatch(h.window, { type: "clearMessages" });
+    expect(h.doc.getElementById("welcome-tip")).toBeNull();
+  });
+
+  it("never shows the hint in the browser client", () => {
+    // The capability is mirrored to remotes with the rest of initialState, but
+    // `moveView` is host-local and the relay drops it — so a phone would be
+    // given advice it cannot take. Same guard the Move view section gets.
+    const h = boot(
+      { relocateView: true, secondarySideBar: false, moveViewHint: true },
+      { remote: true },
+    );
+    expect(h.doc.getElementById("welcome-tip")).toBeNull();
+  });
+
   it("hides the section in the browser client — moveView is host-local", () => {
     // The relay drops the message, so the control could never do anything from a
     // phone. Capabilities set to the one host that WOULD show it, so this fails

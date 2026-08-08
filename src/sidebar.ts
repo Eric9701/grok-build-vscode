@@ -5072,16 +5072,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // unknown location falls back to the built-in destination picker
         // preselected on our view (the view-id argument also sidesteps the
         // focusedView context, which Cursor never sets for webview views).
+        // Retires the empty-state hint, and written BEFORE the move, not after:
+        // relocating a view makes the host tear the webview down and rebuild it,
+        // and the rebuilt one asks for capabilities immediately. Recording
+        // afterwards loses that race and the hint returns.
+        //
+        // Recorded for ANY destination, including one the user then cancels out
+        // of: they have found the control, which is all the hint was for. It
+        // never affects where the view goes — that decision takes no account
+        // of it.
+        await this.state.update(MOVE_VIEW_HINT_USED_KEY, true);
         await this.host.relocateView(
           GROK_VIEW_ID,
           moveViewContainerFor(msg.location),
           panelPositionFor(msg.location),
         );
-        // Retires the empty-state hint. Recorded for ANY destination, including
-        // one the user then cancels out of: they have found the control, which
-        // is all the hint was for. This never affects where the view goes — that
-        // decision takes no account of it.
-        await this.state.update(MOVE_VIEW_HINT_USED_KEY, true);
         break;
       }
       case "setShowThinking":
