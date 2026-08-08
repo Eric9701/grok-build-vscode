@@ -31,3 +31,10 @@ terminals/
 
 # Ad-hoc screenshot/probe scripts an agent may leave behind
 .tmp-*
+
+# tsc emitting NEXT TO the source instead of into out/. Happens when a config
+# with its own rootDir pulls in a file from src/ — an integration tsconfig that
+# imports a shared module is enough. The stray .js then shadows nothing and
+# builds fine, so nothing notices until it is committed (it was, in a4ef390).
+src/**/*.js
+src/**/*.js.map

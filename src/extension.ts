@@ -65,6 +65,12 @@ async function ensureViewPlacement(
       return;
     }
     log(`moving -> ${target.containerId}, panel ${target.panelPosition ?? "as-is"}`);
+    // Held for the re-apply below. `onStartupFinished` means the extension host
+    // is ready, NOT that the workbench will honour a layout change yet — and
+    // there is no API to ask where a view ended up, so a move issued too early
+    // fails in silence. Re-applying when the view resolves is the one moment the
+    // view is provably live.
+    pendingCorrection = target;
     await applyPlacement(target, { reveal: true });
     log("moved");
   } catch (e) {
@@ -77,6 +83,21 @@ async function ensureViewPlacement(
     await context.globalState.update(VIEW_PLACEMENT_KEY, withAttempt(placement, version));
   }
 }
+
+/**
+ * The correction the startup pass decided on, kept until the view first resolves
+ * so it can be applied a second time.
+ *
+ * Not a retry loop and not a timer: exactly one repeat, at the first moment the
+ * view is demonstrably registered and rendering. Both halves are needed — the
+ * startup pass is the only one that reaches a user whose view is buried
+ * somewhere they cannot click, and the resolve pass is the only one that happens
+ * late enough to be sure the workbench will act on it.
+ *
+ * `moveViews` on a view already in the destination is a no-op, so applying twice
+ * costs nothing when the first attempt worked.
+ */
+let pendingCorrection: { containerId: string; panelPosition: PanelPosition | null } | null = null;
 
 /** Issue the move. Shared by the automatic correction and the palette command so
  *  there is exactly one place that knows the command sequence. */
@@ -120,6 +141,19 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       {
         resolveWebviewView(view) {
           sidebar.resolveWebviewView(wrapWebviewView(view));
+          // The view exists and is rendering — the earliest point a layout move
+          // is certain to be honoured. Deferred off this callback so the move
+          // never lands mid-resolve, and cleared so it happens exactly once.
+          const correction = pendingCorrection;
+          pendingCorrection = null;
+          if (correction) {
+            setTimeout(() => {
+              void applyPlacement(correction, { reveal: false }).then(
+                () => output.appendLine("[placement] re-applied on first resolve"),
+                (e: unknown) => output.appendLine(`[placement] re-apply failed: ${String(e)}`),
+              );
+            }, 0);
+          }
         },
       },
       {
