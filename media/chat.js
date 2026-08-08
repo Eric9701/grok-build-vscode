@@ -391,6 +391,9 @@
     pendingDiffByToolCallId: new Map(),
     toolItemsByToolCallId: new Map(),
     toolFailuresById: new Map(), // toolCallId → error text, so a single-call group carries it onto the flat
+    // Media-gen toolCallIds (isMediaGenToolCall on the initial tool_call). The
+    // completed/failed update often has title:null, so ZDR hints need this set.
+    mediaGenCallIds: new Set(),
 
     agentRenderScheduled: false,
     thoughtBuffer: "",
@@ -891,7 +894,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -5368,6 +5371,7 @@
     state.pendingDiffByToolCallId.clear();
     state.toolItemsByToolCallId.clear();
     state.toolFailuresById.clear();
+    state.mediaGenCallIds.clear();
     state.subagentCards.clear();
     state.runProgressCards.clear();
     // Question/restored-card maps too, or a new session's tool updates could
@@ -6888,7 +6892,17 @@
         const video = document.createElement("video");
         video.src = msg.src;
         video.controls = true;
-        video.preload = "metadata";
+        // preload=none: every <video> with metadata holds a Chromium media
+        // decoder from first paint. Ten generated clips in one chat exhaust
+        // the per-renderer pool, so some refuse to play until a fresh session
+        // (not the same file each time — verified on real session files served
+        // via asWebviewUri). Decoder cost only when the user presses play.
+        // Trade-off accepted: no first-frame poster. Without metadata the box
+        // has no intrinsic ratio — height:auto uses Chromium's default ~2:1
+        // until play, then jumps. Deliberately NOT pinning aspect-ratio: a
+        // fixed 16:9 would mis-shape portrait / square video; a small jump is
+        // better than a wrong shape for the few people who generate video.
+        video.preload = "none";
         video.playsInline = true;
         el.appendChild(video);
       } else {
@@ -10384,11 +10398,24 @@
         // a flattened text blob) — fold its result into the matching subagent
         // card and drop the redundant "[subagent:…]" poller row.
         if (maybeFinishSubagentFromTaskOutput(msg.call) || maybeFinishSubagentFromTaskText(msg.call)) break;
+        if (isMediaGenToolCall(msg.call) && msg.call.toolCallId) {
+          state.mediaGenCallIds.add(msg.call.toolCallId);
+        }
         addToToolGroup(msg.call);
         // On session/load a completed edit replays as a single `tool_call` that
         // already carries its diff (no follow-up update) — attach the preview here
         // or the restored edit has no "open diff →" (#30).
         applyToolDiffs(msg.call);
+        // One-shot failed media-gen on resume (title + status together, no update).
+        {
+          const failure = toolFailureText(msg.call);
+          if (failure) {
+            const hint = isMediaGenToolCall(msg.call)
+              ? mediaGenZeroRetentionHint(failure)
+              : null;
+            markToolFailed(msg.call.toolCallId, hint ? failure + "\n" + hint : failure);
+          }
+        }
         // Resume: if this tool was permission-gated, drop the restored (collapsed)
         // card right here — exactly where it was answered — instead of at the turn
         // boundary.
@@ -10446,9 +10473,16 @@
         }
         // A failed tool (e.g. `image_to_video failed: image reference not readable`)
         // — surface the reason on its row instead of silently dropping it.
+        // ZDR video-gen 400s name a useless API field; append a CLI settings path
+        // when this is a known media-gen call (tracked at toolCall — updates often
+        // have title:null) and the error signature matches.
         const failure = toolFailureText(msg.call);
         if (failure) {
-          markToolFailed(msg.call?.toolCallId, failure);
+          const id = msg.call?.toolCallId;
+          const isMedia =
+            (id && state.mediaGenCallIds.has(id)) || isMediaGenToolCall(msg.call);
+          const hint = isMedia ? mediaGenZeroRetentionHint(failure) : null;
+          markToolFailed(id, hint ? failure + "\n" + hint : failure);
           break;
         }
         applyToolDiffs(msg.call);

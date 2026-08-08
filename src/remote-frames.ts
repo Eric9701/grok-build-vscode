@@ -273,9 +273,84 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
 
 /** The relay the extension talks to. Fixed in code on purpose — the pairing
  *  flow, the web portal, and the gear "AFK Pilot" section all assume this one
- *  service, so there is no user setting; change it here (and rebuild) to point
- *  a local build elsewhere (e.g. the staging relay for testing). */
+ *  service, so there is no user SETTING. A development build can override it
+ *  (see {@link resolveRelayUrl}); a published one never can. */
 export const REMOTE_RELAY_URL = "wss://afkpilot.com";
+
+/** Environment variable a DEVELOPMENT build reads instead of the constant. */
+export const RELAY_URL_ENV = "GROK_RELAY_URL";
+
+/**
+ * The relay this build should actually use.
+ *
+ * Production ignores the environment entirely: a packaged desktop app
+ * (`app.isPackaged`) and a published extension (`ExtensionMode.Production`) are
+ * both production, so nobody running a real build can be talked into pointing
+ * their client — and their linked device token — at someone else's relay. That
+ * is the whole reason there is no user setting, and the gate here is what keeps
+ * it true while still letting a build run from source reach staging.
+ *
+ * The alternative was editing the constant and remembering to change it back,
+ * which is how a staging URL reached the public repo once already.
+ *
+ * Anything malformed falls back to the constant rather than throwing: a typo in
+ * a shell variable should cost you a staging session, not a working client.
+ */
+export function resolveRelayUrl(opts: {
+  isProduction: boolean;
+  env?: Record<string, string | undefined>;
+}): string {
+  if (opts.isProduction) return REMOTE_RELAY_URL;
+  const raw = (opts.env ?? {})[RELAY_URL_ENV];
+  if (typeof raw !== "string") return REMOTE_RELAY_URL;
+  const trimmed = raw.trim();
+  // Empty authority, before parsing. ws is a special scheme, so the URL parser
+  // resolves `wss:///relay` to host `relay` — it silently promotes the first
+  // path segment to a hostname. Falling back is the honest reading of a value
+  // that named no host, and it keeps this function's rule ("an authority is
+  // required") true rather than nearly true.
+  if (/^wss?:\/\/\//i.test(trimmed)) return REMOTE_RELAY_URL;
+  // Parsed, not pattern-matched. A prefix test waves through authorities the
+  // URL parser rejects (`wss://relay.test:bad`), and that value reaches
+  // `new WebSocket()` in remote-uplink and throws synchronously — the opposite
+  // of the fallback promised above.
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return REMOTE_RELAY_URL;
+  }
+  // ws/wss only: any other scheme would send a device token somewhere it
+  // cannot go. An authority is required — `wss://` alone names nothing.
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return REMOTE_RELAY_URL;
+  if (!parsed.host) return REMOTE_RELAY_URL;
+  // Credentials in the URL would be logged wherever the relay URL is logged.
+  if (parsed.username || parsed.password) return REMOTE_RELAY_URL;
+  // No query or fragment. Callers append `/uplink` and `/api/…` to this value,
+  // so `wss://relay.test?x=1` would build `wss://relay.test?x=1/uplink` — a dead
+  // endpoint that reads like the relay is down rather than like a bad variable.
+  if (parsed.search || parsed.hash) return REMOTE_RELAY_URL;
+  return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, "");
+}
+
+/**
+ * A relay URL reduced to what is safe to write into a log: scheme and host.
+ *
+ * Everything that logs a relay URL goes through this. A base path is accepted
+ * by {@link resolveRelayUrl} (a relay can live behind a prefix), so the path may
+ * carry something the owner would not want in an output channel or in a pasted
+ * terminal dump — and scheme plus host already answers the only question a log
+ * line is asked here, which is *which relay is this*.
+ */
+export function redactRelayUrl(relayUrl: string): string {
+  try {
+    const u = new URL(String(relayUrl).trim());
+    if (u.host) return `${u.protocol}//${u.host}`;
+  } catch {
+    /* fall through */
+  }
+  return "(unparseable relay url)";
+}
 
 /** ws(s)://relay[/base] + device token -> the uplink endpoint URL. */
 export function buildUplinkUrl(relayUrl: string, token: string): string {

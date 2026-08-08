@@ -171,6 +171,9 @@ export function collectToolImages(payload: any): MediaRef[] {
  * See research/image-generation.md. The host tracks these ids so the *completed*
  * update (whose title is null) can still be recognized.
  */
+/** MIRRORED in media/webview-helpers.js so the webview can gate a failure hint
+ *  without a host rewrite. KEEP THE TWO IN STEP: test/media-gen-mirror.test.ts
+ *  drives one fixture set through both and fails if either changes alone. */
 export function isMediaGenToolCall(payload: any): boolean {
   if (!payload || typeof payload !== "object") return false;
   const title = String(payload.title ?? "");

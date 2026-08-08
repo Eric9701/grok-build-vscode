@@ -137,7 +137,7 @@ import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-c
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
 import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
-import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, REMOTE_RELAY_URL } from "./remote-frames";
+import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
 import { historyImagePreviews } from "./image-history";
@@ -4828,7 +4828,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.unlinkRemoteDevice();
         break;
       case "openRemotePortal":
-        void this.host.openExternal(httpBaseFromRelayUrl(REMOTE_RELAY_URL) + (msg.withHint ? "/?remoteHint=1" : ""));
+        void this.host.openExternal(httpBaseFromRelayUrl(this.relayUrl()) + (msg.withHint ? "/?remoteHint=1" : ""));
         break;
       case "rewindSession":
         await this.rewindFocusedSession(
@@ -10045,6 +10045,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private static readonly DEVICE_TOKEN_SECRET = "grok.remoteControl.deviceToken";
 
+  /**
+   * The relay this build talks to — the production constant, unless a
+   * DEVELOPMENT build names another in `GROK_RELAY_URL` (see resolveRelayUrl).
+   *
+   * Every consumer goes through here, including the two HTTP ones (the web
+   * portal link and device unlink). Half the app on staging and half on
+   * production would fail in a way that looks like a relay bug.
+   */
+  private relayUrl(): string {
+    return resolveRelayUrl({
+      isProduction: this.context.isProduction,
+      env: process.env,
+    });
+  }
+
   /** Start the relay uplink when a device token is stored (from the link flow).
    *  Idempotent. */
   private async maybeStartUplink(): Promise<void> {
@@ -10052,7 +10067,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const token = await this.readDeviceToken();
     if (!token) return; // not linked yet — the link command starts the uplink itself
     const uplink = new RemoteUplink({
-      relayUrl: REMOTE_RELAY_URL,
+      relayUrl: this.relayUrl(),
       token,
       deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
       snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
@@ -10180,7 +10195,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  until the relay hands back a long-lived device token, store it in secrets,
    *  connect. Mirrors how a CLI links to a web account. */
   async linkRemoteDevice(): Promise<void> {
-    const base = httpBaseFromRelayUrl(REMOTE_RELAY_URL);
+    const base = httpBaseFromRelayUrl(this.relayUrl());
     try {
       const name = deviceDisplayName(os.hostname(), process.platform, os.release());
       // Already persisted by the time this returns — getOrCreate writes the file
@@ -10246,7 +10261,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const token = await this.readDeviceToken();
     if (token) {
       try {
-        await fetch(`${httpBaseFromRelayUrl(REMOTE_RELAY_URL)}/api/device/unlink`, {
+        await fetch(`${httpBaseFromRelayUrl(this.relayUrl())}/api/device/unlink`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           signal: AbortSignal.timeout(5000),

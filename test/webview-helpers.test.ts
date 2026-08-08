@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -940,6 +940,42 @@ describe("toolFailureText", () => {
   it("returns the generic fallback when nothing stringy is present", () => {
     expect(toolFailureText({ status: "failed", rawOutput: { type: "X" } })).toBe("Tool call failed.");
     expect(toolFailureText({ status: "error" })).toBe("Tool call failed.");
+  });
+});
+
+describe("isMediaGenToolCall (webview mirror)", () => {
+  it("flags /imagine and /imagine-video titles and variants", () => {
+    expect(isMediaGenToolCall({ title: "imagine-video: a cube" })).toBe(true);
+    expect(isMediaGenToolCall({ title: "video_gen" })).toBe(true);
+    expect(isMediaGenToolCall({ title: "image_to_video", rawInput: { variant: "ImageToVideo" } })).toBe(true);
+    expect(isMediaGenToolCall({ title: "imagine: red cube" })).toBe(true);
+    expect(isMediaGenToolCall({ rawInput: { variant: "VideoGen" } })).toBe(true);
+  });
+
+  it("does not flag ordinary tools", () => {
+    expect(isMediaGenToolCall({ title: "Read `/a.ts`", kind: "read" })).toBe(false);
+    expect(isMediaGenToolCall({ title: "run_terminal_command" })).toBe(false);
+    expect(isMediaGenToolCall(null)).toBe(false);
+  });
+});
+
+describe("mediaGenZeroRetentionHint", () => {
+  const ZDR =
+    'Video generation failed with HTTP 400 Bad Request: {"code":"invalid-argument","error":"Zero Data Retention teams must provide output.upload_url for video generation."}';
+
+  it("returns the CLI Opt-in path only for the ZDR + upload_url signature", () => {
+    expect(mediaGenZeroRetentionHint(ZDR)).toBe(
+      "Grok CLI /settings → Privacy → Coding data, retention, and training → Opt in.",
+    );
+  });
+
+  it("returns null for other failures and non-strings", () => {
+    expect(mediaGenZeroRetentionHint("image reference not readable")).toBe(null);
+    expect(mediaGenZeroRetentionHint('HTTP 400: {"code":"invalid-argument","error":"prompt too long"}')).toBe(null);
+    expect(mediaGenZeroRetentionHint("Zero Data Retention but no upload field")).toBe(null);
+    expect(mediaGenZeroRetentionHint("must provide output.upload_url without ZDR wording")).toBe(null);
+    expect(mediaGenZeroRetentionHint(null as any)).toBe(null);
+    expect(mediaGenZeroRetentionHint("")).toBe(null);
   });
 });
 

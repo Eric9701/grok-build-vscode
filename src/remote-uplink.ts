@@ -20,6 +20,7 @@ import {
   parseRelayFrame,
   nextBackoffMs,
   INITIAL_BACKOFF_MS,
+  redactRelayUrl,
 } from "./remote-frames";
 import { isSelfScopedOutbound, mayDeliverRemoteHostMsg } from "./remote-policy";
 
@@ -290,7 +291,9 @@ export class RemoteUplink {
       this.backoff = INITIAL_BACKOFF_MS;
       this.awaitingRosterCount = true;
       this.reconnectRoster = undefined;
-      this.opts.log(`[remote] uplink connected to ${this.opts.relayUrl}`);
+      // Redacted: a relay may live behind a base path, and that path is not
+      // ours to print into an output channel the user may paste anywhere.
+      this.opts.log(`[remote] uplink connected to ${redactRelayUrl(this.opts.relayUrl)}`);
       ws.send(JSON.stringify(helloFrame(this.opts.deviceName)));
     });
     ws.on("message", (raw) => {

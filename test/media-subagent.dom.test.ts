@@ -226,6 +226,26 @@ describe("addGeneratedMedia (/imagine-video video)", () => {
     // a video must NOT also render an <img>
     expect(wrap!.querySelector("img")).toBeNull();
   });
+
+  // preload=none: each metadata preload holds a Chromium decoder from first
+  // paint; ten clips in one chat exhaust the pool so play is a no-op on some
+  // (not the same file each time — fresh session works). Mutation: set
+  // preload back to "metadata" → this fails.
+  it("uses preload=none so decoders are not reserved until play", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "media",
+      media: "video",
+      src: VIDEO_DATA,
+      path: "/sessions/abc/videos/clip.mp4",
+    });
+    const video = messages(doc).querySelector(
+      ".generated-image.generated-video video",
+    ) as HTMLVideoElement;
+    expect(video).not.toBeNull();
+    expect(video.preload).toBe("none");
+    expect(video.getAttribute("preload")).toBe("none");
+  });
 });
 
 describe("addGeneratedMedia hover actions (copy path / open)", () => {

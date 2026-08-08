@@ -411,6 +411,36 @@
     return "Tool call failed.";
   }
 
+  // MIRROR of `isMediaGenToolCall` in src/acp-dispatch.ts — media-gen titles /
+  // variants for /imagine, /imagine-video, image_edit, reference_to_video. Kept
+  // in the webview so tool-result rendering (incl. remote) can gate failure
+  // hints without a host rewrite or a new message type.
+  // KEEP THE TWO IN STEP: test/media-gen-mirror.test.ts drives one fixture set
+  // through both and fails if either is changed alone.
+  function isMediaGenToolCall(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const title = String(payload.title ?? "");
+    if (/^imagine(-video|-edit)?:/i.test(title)) return true;
+    if (/^(image_gen|image_edit|video_gen|image_to_video|reference_to_video)\b/i.test(title)) return true;
+    if (/^(image-to-video:|reference-to-video:)/i.test(title)) return true;
+    const ri = payload.rawInput;
+    return !!(ri && typeof ri === "object" && typeof ri.variant === "string" &&
+      /imagegen|imageedit|videogen|imagetovideo|referencetovideo/i.test(ri.variant));
+  }
+
+  // Hint for Zero Data Retention blocking video generation. The API 400 names
+  // output.upload_url (not user-settable); the fix is a Grok CLI privacy setting.
+  // Narrow: only when the failure text carries that specific ZDR + upload_url
+  // signature — not every 400, not every invalid-argument. Caller must already
+  // know the tool is media-gen (isMediaGenToolCall / tracked mediaGenCallIds).
+  // Text only — no host action.
+  function mediaGenZeroRetentionHint(failureText) {
+    if (typeof failureText !== "string" || !failureText) return null;
+    if (!/Zero Data Retention/i.test(failureText)) return null;
+    if (!/upload_url/i.test(failureText)) return null;
+    return "Grok CLI /settings → Privacy → Coding data, retention, and training → Opt in.";
+  }
+
   // Scannable program label for a command tool row: the executable (first token,
   // path-stripped, de-quoted) plus one following BARE word when it isn't a flag —
   // so `git status` / `npm test` stay distinguishable while a long `node -e "…"`
@@ -802,7 +832,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

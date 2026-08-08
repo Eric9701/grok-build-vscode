@@ -11,6 +11,14 @@ import { bootWebview, dispatch } from "./webview-harness";
 
 const tc = (call: any) => ({ type: "toolCall", call });
 const close = (window: Window) => dispatch(window, { type: "messageChunk", text: "done" } as any);
+const FAIL = (id: string, msg: string) => ({
+  type: "toolCallUpdate",
+  call: {
+    toolCallId: id, status: "failed",
+    content: [{ type: "content", content: { type: "text", text: msg } }],
+    rawOutput: { error: "tool_execution_failed", message: msg },
+  },
+});
 
 function groupLabel(doc: Document): string | null {
   return doc.querySelector(".tool-group .tool-group-label")?.textContent ?? null;
@@ -299,15 +307,6 @@ describe("tool-row category icons", () => {
 // used to be dropped silently — grok just looked like it gave up. Now the row goes
 // error-colored and shows the reason.
 describe("failed tool calls surface the reason", () => {
-  const FAIL = (id: string, msg: string) => ({
-    type: "toolCallUpdate",
-    call: {
-      toolCallId: id, status: "failed",
-      content: [{ type: "content", content: { type: "text", text: msg } }],
-      rawOutput: { error: "tool_execution_failed", message: msg },
-    },
-  });
-
   it("a single failed tool shows error styling + the reason on its flat row", () => {
     const { window, doc } = bootWebview();
     dispatch(window, tc({ toolCallId: "v1", title: "image_to_video", kind: "fetch" }));
@@ -336,6 +335,137 @@ describe("failed tool calls surface the reason", () => {
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "x", status: "completed" } } as any);
     close(window);
     expect(doc.querySelector(".tool-failed")).toBeNull();
+  });
+});
+
+// Zero Data Retention blocks /imagine-video with a 400 that names
+// output.upload_url (not user-settable). Media-gen rows get a CLI settings
+// path; ordinary tools with the same prose do not. Mutation checks:
+//   - drop the media-gen gate → ordinary tool would wrongly gain the hint
+//     (or the positive media case would still pass if only signature gates)
+//   - drop the upload_url / Zero Data Retention signature match → media-gen
+//     ZDR failure shows the raw error with no Opt-in path
+//   - remove mediaGenZeroRetentionHint wiring in chat.js → same
+describe("media-gen Zero Data Retention failure hint", () => {
+  const ZDR =
+    'Video generation failed with HTTP 400 Bad Request: {"code":"invalid-argument","error":"Zero Data Retention teams must provide output.upload_url for video generation."}';
+  const HINT =
+    "Grok CLI /settings → Privacy → Coding data, retention, and training → Opt in.";
+
+  it("appends the CLI Opt-in path on a media-gen ZDR failure (update title:null)", () => {
+    // Live shape: tool_call carries the title; the failed update has title:null
+    // (same as completed media-gen updates). Tracking must bridge that gap.
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({
+      toolCallId: "v1",
+      title: "imagine-video: a cube rotates",
+      rawInput: { variant: "VideoGen", prompt: "a cube rotates" },
+    }));
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "v1",
+        title: null,
+        status: "failed",
+        content: [{ type: "content", content: { type: "text", text: ZDR } }],
+        rawOutput: { error: "tool_execution_failed", message: ZDR },
+      },
+    } as any);
+    close(window);
+    const err = doc.querySelector(".tool-error")!;
+    expect(err).not.toBeNull();
+    expect(err.textContent).toContain("Zero Data Retention");
+    expect(err.textContent).toContain(HINT);
+    expect(err.textContent).toContain("upload_url"); // raw error still shown
+  });
+
+  it("does not hint an ordinary tool even when the error text matches the signature", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({
+      toolCallId: "r1",
+      kind: "read",
+      title: "Read `/a.ts`",
+      rawInput: { path: "/a.ts" },
+    }));
+    dispatch(window, FAIL("r1", ZDR) as any);
+    close(window);
+    const err = doc.querySelector(".tool-error")!;
+    expect(err).not.toBeNull();
+    expect(err.textContent).toContain("Zero Data Retention");
+    expect(err.textContent).not.toContain("Opt in");
+    expect(err.textContent).not.toContain("/settings");
+  });
+
+  it("does not hint a media-gen failure that is not the ZDR upload_url gate", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({
+      toolCallId: "v2",
+      title: "image_to_video",
+      rawInput: { variant: "ImageToVideo" },
+    }));
+    dispatch(window, FAIL("v2", 'image reference not readable: ["/x/1.jpg"]') as any);
+    close(window);
+    const err = doc.querySelector(".tool-error")!;
+    expect(err.textContent).toContain("image reference not readable");
+    expect(err.textContent).not.toContain("Opt in");
+    expect(err.textContent).not.toContain("/settings");
+  });
+
+  it("does not hint a media-gen 400 that is not Zero Data Retention", () => {
+    const other400 =
+      'Video generation failed with HTTP 400 Bad Request: {"code":"invalid-argument","error":"prompt too long"}';
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({
+      toolCallId: "v3",
+      title: "video_gen",
+      rawInput: { variant: "VideoGen" },
+    }));
+    dispatch(window, FAIL("v3", other400) as any);
+    close(window);
+    const err = doc.querySelector(".tool-error")!;
+    expect(err.textContent).toContain("prompt too long");
+    expect(err.textContent).not.toContain("Opt in");
+  });
+
+  it("survives a replay that carries the failure on the tool_call itself", () => {
+    // Resume shape: no follow-up update — title and failed status arrive
+    // together on the `tool_call`. A review round claimed the row does not exist
+    // yet at that point, so the hint would be lost. It does exist:
+    // `addToToolGroup` registers it in toolItemsByToolCallId before the failure
+    // is applied. Pinned here rather than left to be re-argued.
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({
+      toolCallId: "v4",
+      title: "imagine-video: a cube rotates",
+      rawInput: { variant: "VideoGen" },
+      status: "failed",
+      content: [{ type: "content", content: { type: "text", text: ZDR } }],
+      rawOutput: { error: "tool_execution_failed", message: ZDR },
+    } as any));
+    close(window);
+    const err = doc.querySelector(".tool-error")!;
+    expect(err).not.toBeNull();
+    expect(err.textContent).toContain(HINT);
+  });
+
+  it("keeps the hint when the failed call shares a group with other tools", () => {
+    // The multi-call path is the one the same round suspected: `toolFailuresById`
+    // is only drained when a SINGLE-call group is flattened, so if the row were
+    // not already present the error would vanish in a batch. Two neighbours
+    // here, so the group cannot flatten and the immediate apply is what carries
+    // it.
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "a", kind: "read", title: "Read `/a.ts`", rawInput: { path: "/a.ts" } }));
+    dispatch(window, tc({
+      toolCallId: "v5",
+      title: "imagine-video: a cube rotates",
+      rawInput: { variant: "VideoGen" },
+    }));
+    dispatch(window, tc({ toolCallId: "b", kind: "read", title: "Read `/b.ts`", rawInput: { path: "/b.ts" } }));
+    dispatch(window, FAIL("v5", ZDR) as any);
+    close(window);
+    const errs = [...doc.querySelectorAll(".tool-error")].map((e) => e.textContent || "");
+    expect(errs.some((t) => t.includes(HINT))).toBe(true);
   });
 });
 
