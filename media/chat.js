@@ -5292,10 +5292,17 @@
     tip.className = "welcome-tip muted";
     // Built here rather than in the host's HTML skeleton, so the relay's mirror
     // of that skeleton cannot drift out of sync over an element it never shows.
+    // Two steps, because the second one cannot be done for the user. The host's
+    // picker command does NOT wait for the pick — it opens the quickpick and
+    // resolves immediately — so a reveal issued after it simply steals focus and
+    // dismisses the picker before anything is chosen. And the move itself does
+    // not open the container it landed in, which in Cursor is a collapsed agents
+    // side bar. Hence: say what to do, rather than half-doing it.
     tip.innerHTML =
-      "\u{1F4A1} To move Grok to the right, " +
-      '<a href="#" id="welcome-tip-link" class="muted-link">click here</a>' +
-      " and select <b>New Secondary Side Bar Entry</b>.";
+      "\u{1F4A1} To move Grok to the right:" +
+      '<br>1. <a href="#" id="welcome-tip-link" class="muted-link">Click here</a>' +
+      " and select <b>New Secondary Side Bar Entry</b>" +
+      "<br>2. Click <b>Toggle Agents Side Bar</b> to show it";
     welcome.appendChild(tip);
     const link = $("welcome-tip-link");
     if (link) {

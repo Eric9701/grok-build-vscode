@@ -134,7 +134,12 @@ describe("Move view menu (DOM)", () => {
     const shown = boot({ relocateView: true, secondarySideBar: false, moveViewHint: true });
     const tip = shown.doc.getElementById("welcome-tip");
     expect(tip).toBeTruthy();
-    expect((tip!.textContent || "").replace(/\s+/g, " ")).toContain("To move Grok to the right");
+    const text_ = (tip!.textContent || "").replace(/\s+/g, " ");
+    expect(text_).toContain("To move Grok to the right");
+    // Two steps: the second cannot be automated — the host's picker command does
+    // not wait for the pick, so revealing afterwards dismisses it instead.
+    expect(text_).toContain("New Secondary Side Bar Entry");
+    expect(text_).toContain("Toggle Agents Side Bar");
     // Opt-in: the host decides, and absent means no hint.
     const hidden = boot({ relocateView: true, secondarySideBar: false });
     expect(hidden.doc.getElementById("welcome-tip")).toBeNull();

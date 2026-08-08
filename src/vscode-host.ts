@@ -337,18 +337,6 @@ export function createVsCodeHost(
         lap("focus");
       } else {
         await vscode.commands.executeCommand("workbench.action.moveFocusedView", viewId);
-        // Reveal it, exactly as the direct-container path above does.
-        //
-        // Without this the chat looks like it vanished: the host's picker can
-        // put the view into a container that is currently collapsed — in Cursor,
-        // its agents side bar — and moving a view does not open where it landed.
-        // The user then has to know to toggle that dock themselves, which is not
-        // something a move should ask of anyone.
-        //
-        // `<viewId>.focus` is the right instrument because it opens whatever
-        // container now holds the view. We deliberately do not know which
-        // destination was chosen, and must not guess at one.
-        await vscode.commands.executeCommand(`${viewId}.focus`);
       }
     },
 

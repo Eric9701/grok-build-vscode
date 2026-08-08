@@ -165,25 +165,6 @@ describe("both routes to the host picker retire the hint BEFORE moving", () => {
     expect(before(src, "MOVE_VIEW_HINT_USED_KEY) === true", "await applyPlacement(")).toBe(true);
   });
 
-  it("both picker routes reveal the view once the picker closes", () => {
-    // The picker can land the view in a container that is currently collapsed —
-    // Cursor's agents side bar — and moving a view does not open where it went,
-    // so the chat looked like it had vanished until the user knew to toggle that
-    // dock themselves. Revealing is the move's job, not theirs.
-    // Looks only at what FOLLOWS the picker call: both files focus the view
-    // elsewhere too (the direct-container path), so a first-occurrence
-    // comparison would pass on the wrong pair.
-    const after = (src: string, anchor: string, needle: string) => {
-      const i = src.indexOf(anchor);
-      expect(i, `missing: ${anchor}`).toBeGreaterThan(-1);
-      return src.slice(i, i + 1500).includes(needle);
-    };
-    const ext = readFileSync(path.join(root, "src", "extension.ts"), "utf8");
-    expect(after(ext, "workbench.action.moveFocusedView", "${GROK_VIEW_ID}.focus`)")).toBe(true);
-    const host = readFileSync(path.join(root, "src", "vscode-host.ts"), "utf8");
-    expect(after(host, "workbench.action.moveFocusedView", "${viewId}.focus`)")).toBe(true);
-  });
-
   it("retiring persists AND tells the live webview, in that order", () => {
     // Two things, because one is not enough: persist for future windows, post
     // for this one. A webview holding a stale flag rebuilds the hint on the next
