@@ -164,6 +164,19 @@ describe("Move view menu (DOM)", () => {
     expect(h.doc.getElementById("welcome-tip")).toBeNull();
   });
 
+  it("drops the hint when the host retires it live", () => {
+    // The gear and palette routes open the same picker without the link's local
+    // cleanup, and cancelling one rebuilds nothing — so the host says so
+    // explicitly rather than relying on a webview restart to refresh the flag.
+    const h = boot({ relocateView: true, secondarySideBar: false, moveViewHint: true });
+    expect(h.doc.getElementById("welcome-tip")).toBeTruthy();
+    dispatch(h.window, { type: "moveViewHint", value: false });
+    expect(h.doc.getElementById("welcome-tip")).toBeNull();
+    // And it stays gone across a session swap, which rebuilds the empty state.
+    dispatch(h.window, { type: "clearMessages" });
+    expect(h.doc.getElementById("welcome-tip")).toBeNull();
+  });
+
   it("never shows the hint in the browser client", () => {
     // The capability is mirrored to remotes with the rest of initialState, but
     // `moveView` is host-local and the relay drops it — so a phone would be

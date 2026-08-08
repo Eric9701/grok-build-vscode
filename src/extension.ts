@@ -10,7 +10,6 @@ import {
   viewPlacementCorrection,
   VIEW_PLACEMENT_KEY,
   withAttempt,
-  MOVE_VIEW_HINT_USED_KEY,
   type PanelPosition,
   type PlacementRecord,
 } from "./view-move";
@@ -39,6 +38,13 @@ import {
  * Focus follows the move on purpose. Arriving from a chat you could not open, a
  * silent re-home to a dock you were not looking at is indistinguishable from
  * still being broken.
+ *
+ * It applies the move ONCE, here. An earlier revision also re-applied it when
+ * the view first resolved, on the theory that a move issued at startup might be
+ * lost — instrumenting a real Cursor disproved that (it never failed), and the
+ * re-apply then became a hazard of its own: moving the view through the host's
+ * picker rebuilds the webview, which fired the pending re-apply and dragged the
+ * chat back out of the location the user had just chosen.
  *
  * It aims at a CONTAINER, which bounds what it can achieve: a host may keep our
  * container and ignore where it declared it lives — Cursor renders the panel one
@@ -84,7 +90,6 @@ async function ensureViewPlacement(
     // there is no API to ask where a view ended up, so a move issued too early
     // fails in silence. Re-applying when the view resolves is the one moment the
     // view is provably live.
-    pendingCorrection = target;
     await applyPlacement(target, { reveal: true });
     log("moved");
   } catch (e) {
@@ -107,21 +112,6 @@ async function ensureViewPlacement(
     }
   }
 }
-
-/**
- * The correction the startup pass decided on, kept until the view first resolves
- * so it can be applied a second time.
- *
- * Not a retry loop and not a timer: exactly one repeat, at the first moment the
- * view is demonstrably registered and rendering. Both halves are needed — the
- * startup pass is the only one that reaches a user whose view is buried
- * somewhere they cannot click, and the resolve pass is the only one that happens
- * late enough to be sure the workbench will act on it.
- *
- * `moveViews` on a view already in the destination is a no-op, so applying twice
- * costs nothing when the first attempt worked.
- */
-let pendingCorrection: { containerId: string; panelPosition: PanelPosition | null } | null = null;
 
 /** Issue the move. Shared by the automatic correction and the palette command so
  *  there is exactly one place that knows the command sequence. */
@@ -171,19 +161,6 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       {
         resolveWebviewView(view) {
           sidebar.resolveWebviewView(wrapWebviewView(view));
-          // The view exists and is rendering — the earliest point a layout move
-          // is certain to be honoured. Deferred off this callback so the move
-          // never lands mid-resolve, and cleared so it happens exactly once.
-          const correction = pendingCorrection;
-          pendingCorrection = null;
-          if (correction) {
-            setTimeout(() => {
-              void applyPlacement(correction, { reveal: false }).then(
-                () => output.appendLine("[placement] re-applied on first resolve"),
-                (e: unknown) => output.appendLine(`[placement] re-apply failed: ${String(e)}`),
-              );
-            }, 0);
-          }
         },
       },
       {
@@ -213,12 +190,9 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // us directly. The view-id argument is what makes it work there at all:
       // without it the command reads the `focusedView` context key, which Cursor
       // never sets for webview views.
-      // Retires the same hint the gear does, and BEFORE the picker for the same
-      // reason: moving a view makes the host rebuild the webview, and the
-      // rebuilt one asks for capabilities immediately, so a write afterwards
-      // loses the race and the hint comes back. Only the hint — where the view
-      // goes is decided without reference to this.
-      await context.globalState.update(MOVE_VIEW_HINT_USED_KEY, true);
+      // Same recording the gear does, through the same method, and before the
+      // picker for the same reason — see GrokSidebar.retireMoveViewHint.
+      await sidebar.retireMoveViewHint();
       await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),

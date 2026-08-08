@@ -440,6 +440,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   voiceTranscript: "mirror",
   voiceError: "mirror",
   initialState: "mirror",
+  // Placement is a property of the machine running the extension, and `moveView`
+  // is host-local anyway — a remote could neither act on the hint nor need it.
+  moveViewHint: "host-local",
   showThinking: "mirror",
   appPurpose: "mirror",
   fontScale: "mirror",
@@ -552,6 +555,7 @@ export type OutboundProjectAuth =
 
 export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth> = {
   // Device-global / host chrome — not project data.
+  moveViewHint: "none",
   showThinking: "none",
   appPurpose: "none",
   fontScale: "none",

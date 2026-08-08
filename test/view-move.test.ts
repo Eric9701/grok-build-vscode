@@ -118,16 +118,27 @@ describe("both routes to the host picker retire the hint BEFORE moving", () => {
     return ia < ib;
   };
 
-  it("the palette command records, then opens the picker", () => {
+  it("the palette command retires the hint, then opens the picker", () => {
     const src = readFileSync(path.join(root, "src", "extension.ts"), "utf8");
     expect(
-      before(src, "MOVE_VIEW_HINT_USED_KEY, true", "workbench.action.moveFocusedView"),
+      before(src, "sidebar.retireMoveViewHint()", "workbench.action.moveFocusedView"),
     ).toBe(true);
   });
 
-  it("the gear handler records, then relocates", () => {
+  it("the gear handler retires the hint, then relocates", () => {
     const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
-    expect(before(src, "MOVE_VIEW_HINT_USED_KEY, true", "this.host.relocateView(")).toBe(true);
+    expect(before(src, "this.retireMoveViewHint()", "this.host.relocateView(")).toBe(true);
+  });
+
+  it("retiring persists AND tells the live webview, in that order", () => {
+    // Two things, because one is not enough: persist for future windows, post
+    // for this one. A webview holding a stale flag rebuilds the hint on the next
+    // session swap, and cancelling the picker causes no rebuild that would
+    // refresh it.
+    const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    expect(before(src, "MOVE_VIEW_HINT_USED_KEY, true", '{ type: "moveViewHint", value: false }')).toBe(
+      true,
+    );
   });
 });
 

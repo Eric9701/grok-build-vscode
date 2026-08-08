@@ -5072,16 +5072,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // unknown location falls back to the built-in destination picker
         // preselected on our view (the view-id argument also sidesteps the
         // focusedView context, which Cursor never sets for webview views).
-        // Retires the empty-state hint, and written BEFORE the move, not after:
-        // relocating a view makes the host tear the webview down and rebuild it,
-        // and the rebuilt one asks for capabilities immediately. Recording
-        // afterwards loses that race and the hint returns.
-        //
-        // Recorded for ANY destination, including one the user then cancels out
-        // of: they have found the control, which is all the hint was for. It
-        // never affects where the view goes — that decision takes no account
-        // of it.
-        await this.state.update(MOVE_VIEW_HINT_USED_KEY, true);
+        await this.retireMoveViewHint();
         await this.host.relocateView(
           GROK_VIEW_ID,
           moveViewContainerFor(msg.location),
@@ -7948,6 +7939,29 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // mtime-keyed cache would keep serving the un-named entry (same reason rename
     // and pin invalidate here).
     this.sessionCache.delete(sid);
+  }
+
+  /**
+   * The user has opened the host's move-view picker — from the gear, the palette
+   * command, or the empty-state hint's own link. Retires that hint for good.
+   *
+   * The single place both routes record it, and it does two things because one
+   * is not enough: persist, for future windows, and tell the LIVE webview, for
+   * this one. `initialState` is not re-sent on a session swap, so a webview
+   * holding a stale true would rebuild the hint the user had already acted on —
+   * and if they open the picker and cancel, no rebuild happens to refresh it.
+   *
+   * Called BEFORE the move, never after: relocating a view makes the host tear
+   * the webview down and rebuild it, and the rebuilt one asks for capabilities
+   * immediately, so a write afterwards loses that race.
+   *
+   * Recorded for ANY destination, including one the user then cancels out of:
+   * they have found the control, which is all the hint was for. It never affects
+   * where the view goes — that decision takes no account of it.
+   */
+  async retireMoveViewHint(): Promise<void> {
+    await this.state.update(MOVE_VIEW_HINT_USED_KEY, true);
+    this.post({ type: "moveViewHint", value: false });
   }
 
   /** Global "Use this app for" from ~/.grok/client-state (absent → Knowledge work). */

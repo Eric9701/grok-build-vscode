@@ -101,6 +101,11 @@ export type HostUiCapabilities = {
 
 export type HostMsg =
   | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; /** Global "Use this app for" — absent on older hosts means Knowledge work. */ appPurpose?: "knowledge" | "coding"; capabilities: HostUiCapabilities }
+  /** Live retraction of `capabilities.moveViewHint`, sent the moment the user
+   *  opens the host's move-view picker. `initialState` is not re-sent on a
+   *  session swap, so without this the webview keeps a stale true and rebuilds
+   *  the hint the user has already acted on. */
+  | { type: "moveViewHint"; value: boolean }
   | { type: "planModeAvailability"; available: boolean; reason?: string }
   | { type: "showThinking"; value: boolean }
   /** Live update of the global app-purpose preference (Knowledge work / Coding). */
@@ -439,7 +444,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true,
+  initialState: true, moveViewHint: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,

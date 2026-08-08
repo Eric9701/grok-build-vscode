@@ -9782,6 +9782,14 @@
         syncGearPlacement();
         renderWelcomeTip();
         break;
+      case "moveViewHint":
+        // Live retraction. `initialState` is not re-sent on a session swap, so a
+        // webview holding a stale true would rebuild the hint the user has
+        // already acted on — and opening the picker and cancelling causes no
+        // rebuild that would refresh it.
+        if (state.hostCaps) state.hostCaps.moveViewHint = msg.value === true;
+        renderWelcomeTip();
+        break;
       case "planModeAvailability":
         state.planModeAvailable = msg.available !== false;
         state.planModeUnavailableReason = state.planModeAvailable
