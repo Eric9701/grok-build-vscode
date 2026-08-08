@@ -57,7 +57,15 @@ jobs:
             script: dist:win
             name: windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    # 40 was chosen when this job only compiled and packaged. Notarisation
+    # changed the shape of it: `notarytool --wait` blocks on Apple's queue, which
+    # is not a build cost we control and is not bounded. The first attempt signed
+    # the arm64 app in three seconds and was still waiting on Apple 39 minutes
+    # later when the timeout killed it mid-submission — nothing was wrong, the
+    # ceiling was simply set for a different job. dist:mac notarises once per
+    # architecture, so budget for two serial waits, and expect the first
+    # submission from a new team to be the slowest one ever seen.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
