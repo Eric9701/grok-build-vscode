@@ -2690,21 +2690,40 @@
       }
     }
     // Move view: same polarity as before — missing flags still show; only
-    // explicit false hides (desktop has no view containers).
-    if (!(state.hostCaps && state.hostCaps.relocateView === false)) {
+    // explicit false hides (desktop has no view containers). `moveView` is
+    // host-local, so the browser client never gets to act on it either.
+    if (!IS_REMOTE && !(state.hostCaps && state.hostCaps.relocateView === false)) {
       addSection("Move view");
-      addGearItem(`<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`, () => {
-        vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
-        closePopovers();
-      });
+      // Cursor reserves the secondary side bar for its own agent UI and refuses
+      // our container there, so offering it would offer a no-op. The panel is
+      // what that host will accept, and docked right it is a secondary side bar
+      // in all but name — hence naming the two panel destinations by EDGE, and
+      // moving the panel to match, only where the real thing is unavailable.
+      const hasSecondary = !(state.hostCaps && state.hostCaps.secondarySideBar === false);
+      addGearItem(
+        `<span class="popover-icon-label">${ICON.panelRight} ${hasSecondary ? "To Secondary Side Bar" : "To Right Panel"}</span>`,
+        () => {
+          vscode.postMessage({
+            type: "moveView",
+            location: hasSecondary ? "auxiliarybar" : "panel-right",
+          });
+          closePopovers();
+        },
+      );
       addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
         vscode.postMessage({ type: "moveView", location: "sidebar" });
         closePopovers();
       });
-      addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} To Panel</span>`, () => {
-        vscode.postMessage({ type: "moveView", location: "panel" });
-        closePopovers();
-      });
+      addGearItem(
+        `<span class="popover-icon-label">${ICON.panelBottom} ${hasSecondary ? "To Panel" : "To Bottom Panel"}</span>`,
+        () => {
+          vscode.postMessage({
+            type: "moveView",
+            location: hasSecondary ? "panel" : "panel-bottom",
+          });
+          closePopovers();
+        },
+      );
     }
   }
 

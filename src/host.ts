@@ -15,6 +15,7 @@
  */
 
 import type { MementoLike } from "./persisted-state";
+import type { PanelPosition } from "./view-move";
 import * as path from "node:path";
 
 // ── Portable value types ─────────────────────────────────────────────────────
@@ -643,8 +644,17 @@ export interface Host {
    * Move `viewId` into a contribution container and focus it. When
    * `destinationId` is null/undefined, open the host's move-view picker
    * preselected on that view.
+   *
+   * `panelPosition` docks the panel on that edge before revealing — for the
+   * destinations whose label promises an edge ("To Right Panel"). Null leaves
+   * the workbench layout untouched, which is what every pre-existing
+   * destination passes.
    */
-  relocateView(viewId: string, destinationId?: string | null): Thenable<void>;
+  relocateView(
+    viewId: string,
+    destinationId?: string | null,
+    panelPosition?: PanelPosition | null,
+  ): Thenable<void>;
 
   // ── Watchers / providers ───────────────────────────────────────────────
   onDidChangeConfiguration(
@@ -693,6 +703,15 @@ export interface Host {
    * hides the item — desktop has no view containers.
    */
   readonly canRelocateView: boolean;
+  /**
+   * Whether gear → Move view may offer the SECONDARY SIDE BAR. Cursor 3.15
+   * refuses extension containers there — it is reserved for its own agent UI —
+   * so the destination silently does nothing; the menu offers the panel by
+   * edge instead. Read at initialState time, so implementations that resolve
+   * this asynchronously must default to true (the pre-Cursor truth) rather
+   * than to false.
+   */
+  readonly canUseSecondarySideBar: boolean;
   /**
    * Gear → Show extension logs. Same opt-out polarity as canRelocateView;
    * desktop is false (stdout only).

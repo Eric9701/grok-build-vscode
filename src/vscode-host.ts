@@ -39,6 +39,7 @@ import type {
   HostWebviewView,
 } from "./host";
 import { Uri, isFsPathInWorkspace } from "./host";
+import { hostAcceptedSecondarySideBar, type PanelPosition } from "./view-move";
 
 function toVsCodeTarget(target: ConfigTarget | undefined): vscode.ConfigurationTarget {
   switch (target) {
@@ -193,7 +194,35 @@ const hostFs: HostFileSystem = {
  * command can still call `output.show()` without going through the sidebar);
  * we only borrow it for append/show.
  */
-export function createVsCodeHost(output: vscode.OutputChannel): Host {
+/** Cached answer to "did this host create our secondary-side-bar container?",
+ *  so the very first webview of a session already knows (see below). */
+const SECONDARY_SIDE_BAR_KEY = "grok.hostAcceptedSecondarySideBar";
+
+export function createVsCodeHost(
+  output: vscode.OutputChannel,
+  context?: vscode.ExtensionContext,
+): Host {
+  // `capabilities` is assembled synchronously when the webview announces itself,
+  // but the only way to ask whether the host honoured our container contribution
+  // is `getCommands`, which is async. So: seed from what the last run learned,
+  // then correct and persist.
+  //
+  // Defaulting to TRUE on a first run matters — it is the pre-Cursor truth, and
+  // being briefly wrong there costs one menu item that does nothing, where being
+  // wrong the other way would hide the correct destination in every VS Code.
+  // In practice the probe wins the race anyway: in the host this exists for, the
+  // webview is not resolved until activation's relocation focuses it.
+  let secondarySideBar = context?.globalState.get<boolean>(SECONDARY_SIDE_BAR_KEY) ?? true;
+  void Promise.resolve(vscode.commands.getCommands(true)).then(
+    (cmds) => {
+      secondarySideBar = hostAcceptedSecondarySideBar(cmds);
+      void context?.globalState.update(SECONDARY_SIDE_BAR_KEY, secondarySideBar);
+    },
+    () => {
+      /* keep the seeded value — a failed probe is not evidence of a refusal */
+    },
+  );
+
   return {
     showInformationMessage(message, ...items) {
       return vscode.window.showInformationMessage(message, ...items);
@@ -267,12 +296,33 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     setContext(key: string, value: unknown) {
       return vscode.commands.executeCommand("setContext", key, value);
     },
-    async relocateView(viewId: string, destinationId?: string | null) {
+    async relocateView(
+      viewId: string,
+      destinationId?: string | null,
+      panelPosition?: PanelPosition | null,
+    ) {
       if (destinationId) {
         await vscode.commands.executeCommand("vscode.moveViews", {
           viewIds: [viewId],
           destinationId,
         });
+        if (panelPosition) {
+          // Dock the edge the menu label promised, before revealing, so the
+          // view appears where the user was told it would. Best effort on
+          // purpose: a fork missing these built-ins must still get the move and
+          // the reveal, which are the parts that matter.
+          try {
+            await vscode.commands.executeCommand(
+              panelPosition === "right"
+                ? "workbench.action.positionPanelRight"
+                : "workbench.action.positionPanelBottom",
+            );
+          } catch {
+            /* layout nudge unavailable — the move itself already landed */
+          }
+        }
+        // Focus last: it opens whichever dock now holds the view, so "any option
+        // shows the panel" falls out of the move rather than needing its own call.
         await vscode.commands.executeCommand(`${viewId}.focus`);
       } else {
         await vscode.commands.executeCommand("workbench.action.moveFocusedView", viewId);
@@ -507,6 +557,9 @@ export function createVsCodeHost(output: vscode.OutputChannel): Host {
     webviewReloadsUnderLiveSession: false,
     remoteInstallIdSuffix: "",
     canRelocateView: true,
+    get canUseSecondarySideBar() {
+      return secondarySideBar;
+    },
     canShowOutput: true,
     canSwitchWorkspaceFolder: false,
     canArchiveRepos: true,

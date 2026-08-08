@@ -45,6 +45,7 @@ import type {
   Uri,
 } from "../host";
 import { isFsPathInWorkspace } from "../host";
+import type { PanelPosition } from "../view-move";
 import {
   canonicalizeSeedProjectPath,
   selectProjectsToSeed,
@@ -1047,7 +1048,11 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     async setContext(_key: string, _value: unknown) {
       // VS Code when-clause context — no-op on desktop.
     },
-    async relocateView(_viewId: string, _destinationId?: string | null) {
+    async relocateView(
+      _viewId: string,
+      _destinationId?: string | null,
+      _panelPosition?: PanelPosition | null,
+    ) {
       // Capability `canRelocateView` is false — gear must not offer this. Stub
       // remains for typed Host completeness; never user-reachable from the UI.
       await notYet("Move view");
@@ -1099,6 +1104,10 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     webviewReloadsUnderLiveSession: true,
     remoteInstallIdSuffix: ":desktop",
     canRelocateView: false,
+    // Moot while canRelocateView is false (the gear hides the whole section),
+    // but false is the truthful answer: a single-window desktop app has no
+    // side bars to move a view between.
+    canUseSecondarySideBar: false,
     canShowOutput: false,
     canSwitchWorkspaceFolder: true,
     canArchiveRepos: false,

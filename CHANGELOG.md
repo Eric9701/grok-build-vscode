@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.8 — 2026-08-08
+
+### Fixed
+
+- **The chat opens in Cursor.** Cursor reserves the secondary side bar for its own agent UI and refuses to place an extension there, so the panel Grok Build asks for was never created — the view was dropped into Explorer and every way of opening it answered "command not found". It now opens the view wherever the editor actually put it, and on first launch moves the chat into a right-docked panel: the same place on screen under a different name. Move it wherever you like afterwards; it stays where you put it.
+
+### Changed
+
+- **Move view offers the docks your editor has.** In an editor without a secondary side bar the gear menu now reads **To Right Panel** and **To Bottom Panel** — each moves the chat and docks the panel on that edge — instead of listing a destination that quietly did nothing.
+- **Move view is hidden in the browser client.** Where the chat sits is a property of the machine running the extension, so those entries could never do anything from a phone.
+
 ## 3.2.7 — 2026-08-08
 
 ### Changed

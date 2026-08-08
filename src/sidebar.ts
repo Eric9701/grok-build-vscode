@@ -38,7 +38,7 @@ import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
 import { MediaRef, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
-import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
+import { GROK_VIEW_ID, moveViewContainerFor, panelPositionFor } from "./view-move";
 import {
   APTABASE_APP_KEY_PROD,
   buildSessionStartEvent,
@@ -5066,7 +5066,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // unknown location falls back to the built-in destination picker
         // preselected on our view (the view-id argument also sidesteps the
         // focusedView context, which Cursor never sets for webview views).
-        await this.host.relocateView(GROK_VIEW_ID, moveViewContainerFor(msg.location));
+        await this.host.relocateView(
+          GROK_VIEW_ID,
+          moveViewContainerFor(msg.location),
+          panelPositionFor(msg.location),
+        );
         break;
       }
       case "setShowThinking":
@@ -7955,6 +7959,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       capabilities: {
         ...HOST_CAPABILITIES,
         relocateView: this.host.canRelocateView,
+        // Cursor refuses extension containers in the secondary side bar, so the
+        // menu offers the panel by edge there rather than a destination that
+        // would silently do nothing.
+        secondarySideBar: this.host.canUseSecondarySideBar,
         showOutput: this.host.canShowOutput,
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises

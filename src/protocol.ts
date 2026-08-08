@@ -73,6 +73,13 @@ export type HostUiCapabilities = {
    */
   relocateView?: boolean;
   /**
+   * Whether gear → Move view may offer "To Secondary Side Bar". Same opt-out
+   * polarity as relocateView, and for the same reason: every extension built
+   * before Cursor refused that container sends nothing here and had one.
+   * False swaps the two panel destinations for edge-explicit ones.
+   */
+  secondarySideBar?: boolean;
+  /**
    * Gear → Show extension logs. Same opt-out polarity as relocateView —
    * absent/true = show; false = hide (desktop logs to stdout only).
    */
@@ -291,7 +298,9 @@ export type WebviewMsg =
   | { type: "showLogs" }
   /** Open the host settings UI (VS Code: workbench settings focused on grok). */
   | { type: "openSettings"; section?: string }
-  | { type: "moveView"; location: "panel" | "sidebar" | "auxiliarybar" }
+  // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;
+  // plain `panel` leaves the layout alone (view-move.ts § panelPositionFor).
+  | { type: "moveView"; location: "panel" | "panel-right" | "panel-bottom" | "sidebar" | "auxiliarybar" }
   | { type: "setShowThinking"; value: boolean }
   /** Persist the global "Use this app for" preference (Knowledge work / Coding). */
   | { type: "setAppPurpose"; value: "knowledge" | "coding" }
