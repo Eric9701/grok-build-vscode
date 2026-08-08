@@ -406,7 +406,7 @@
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",
     "check:vsix": "npm run compile && node scripts/check-vsix-requires.mjs",
-    "prepackage": "node -e \"for (const f of require('fs').readdirSync('.')) if (f.endsWith('.vsix')) require('fs').unlinkSync(f)\" && npm run check:vsix",
+    "prepackage": "node -e \"const fs=require('fs'); for (const f of fs.readdirSync('.')) if (f.endsWith('.vsix')) fs.unlinkSync(f); fs.rmSync('out',{recursive:true,force:true})\" && npm run check:vsix",
     "package": "vsce package --readme-path README.marketplace.md",
     "publish": "vsce publish --readme-path README.marketplace.md",
     "dist": "npm run compile && electron-builder --publish never",

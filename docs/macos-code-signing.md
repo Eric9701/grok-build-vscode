@@ -291,6 +291,15 @@ the first thing the next person reads.
 A green workflow means the build succeeded. It does not mean the result opens on
 someone else's Mac.
 
+**Run the script; it does all of this and prints PASS or FAIL with the reason:**
+
+```bash
+./scripts/verify-mac-signing.sh ~/Downloads/Grok-Build-Desktop-<ver>-mac-arm64.dmg
+```
+
+The rest of this section is what it checks and why, not a second procedure to
+follow by hand.
+
 ```bash
 # Signed with the real identity, hardened runtime on
 codesign -dv --verbose=4 "/Applications/Grok Build Desktop.app"
