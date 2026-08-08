@@ -169,6 +169,12 @@ import {
 } from "./media-serve";
 import { revalidateOpenFileForUse } from "./desktop/desktop-policy";
 import {
+  describeFfmpegProblem,
+  ffmpegInstallHint,
+  resolveConfiguredFfmpeg,
+  type FfmpegResolution,
+} from "./ffmpeg-locate";
+import {
   filterWorktreesForSourceRepo,
   gitRootForPath,
   isGitRepo,
@@ -342,6 +348,20 @@ class GrokDiffContentProvider implements HostTextDocumentContentProvider {
   }
   delete(...uris: Uri[]): void {
     for (const uri of uris) this.contents.delete(uri.toString());
+  }
+}
+
+/**
+ * What a path is, without throwing. Distinguishing "file" from "dir" is the
+ * point: pointing grok.ffmpegPath at a directory fails with EACCES rather than
+ * ENOENT, which reads as a permissions problem and is not one.
+ */
+function statKindSafe(p: string): "file" | "dir" | "none" {
+  try {
+    const st = fs.statSync(p);
+    return st.isFile() ? "file" : st.isDirectory() ? "dir" : "none";
+  } catch {
+    return "none";
   }
 }
 
@@ -6341,6 +6361,42 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!cwd || cwd === this.localVoiceCwd) this.localVoiceCwd = undefined;
   }
 
+  /**
+   * Say what is actually wrong, and offer the action that fixes it.
+   *
+   * The old dialog offered only "Open Settings", which is a dead end when
+   * ffmpeg is not installed — it sends you to a text field to name a file that
+   * does not exist. Every new macOS user who clicked the mic before installing
+   * ffmpeg met that.
+   *
+   * The install is offered but never run: pre-fill a terminal and let the user
+   * press Enter. Installing software on someone's machine is their decision,
+   * and when it fails the output is in front of them instead of swallowed.
+   */
+  private async reportFfmpegProblem(problem: Extract<FfmpegResolution, { ok: false }>): Promise<void> {
+    const hasBrew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].some(
+      (p) => statKindSafe(p) === "file",
+    );
+    const hint =
+      problem.reason === "not-installed" ? ffmpegInstallHint(process.platform, hasBrew) : undefined;
+    const message = describeFfmpegProblem(problem, hint);
+    this.host.appendLine(`[voice] ${message}`);
+
+    // Only offered where the package manager installs into a directory already
+    // on PATH, so the running editor sees it without a restart. See
+    // ffmpegInstallHint.
+    const actions = hint?.offerToRun ? ["Install ffmpeg", "Open Settings"] : ["Open Settings"];
+    const pick = await this.host.showErrorMessage(message, ...actions);
+
+    if (pick === "Install ffmpeg" && hint) {
+      const term = this.host.createTerminal("Install ffmpeg");
+      term.sendText(hint.command, false); // false = do NOT press Enter for them
+      term.show();
+      return;
+    }
+    if (pick === "Open Settings") await this.host.openSettings("grok.ffmpegPath");
+  }
+
   private async handleVoiceStart(session: Session = this.focused): Promise<void> {
     const generation = ++this.voiceGeneration;
     const cwd = this.sessionCwd(session);
@@ -6357,7 +6413,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     this.localVoiceCredentialCwd = credentialCwd;
     const cfg = this.host.getConfiguration("grok");
-    const ffmpegPath = cfg.get<string>("ffmpegPath", "") || "ffmpeg";
+    // Resolve before spawning. A stripped GUI PATH, a Cellar directory pasted
+    // out of `brew info`, and "not installed at all" are three problems with
+    // three different fixes, and the ENOENT/EACCES from spawn cannot tell them
+    // apart — so the old code reported all of them as "ffmpeg was not found"
+    // and offered Open Settings, which helps with none of them.
+    const resolvedFfmpeg = resolveConfiguredFfmpeg(cfg.get<string>("ffmpegPath", ""), {
+      platform: process.platform,
+      pathEnv: process.env.PATH,
+      isFile: (p) => statKindSafe(p) === "file",
+      isDirectory: (p) => statKindSafe(p) === "dir",
+    });
+    if (!resolvedFfmpeg.ok) {
+      void this.reportFfmpegProblem(resolvedFfmpeg);
+      this.releaseVoice(cwd);
+      this.localVoiceCredentialCwd = undefined;
+      this.postLocal({ type: "voiceError" });
+      return;
+    }
+    const ffmpegPath = resolvedFfmpeg.path;
     const device = cfg.get<string>("voiceInputDevice", "") || undefined;
 
     // Streaming (default): live transcription over the STT WebSocket, so "grok
