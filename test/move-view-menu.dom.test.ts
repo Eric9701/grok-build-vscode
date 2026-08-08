@@ -140,6 +140,16 @@ describe("Move view menu (DOM)", () => {
     // not wait for the pick, so revealing afterwards dismisses it instead.
     expect(text_).toContain("New Secondary Side Bar Entry");
     expect(text_).toContain("Toggle Agents Side Bar");
+    // The follow-up step must come BEFORE the action, because acting on the link
+    // dismisses the tip — anything below it is read only by someone who has
+    // already lost the chance to act on it.
+    expect(text_.indexOf("Toggle Agents Side Bar")).toBeLessThan(text_.indexOf("Click here"));
+    // Not an anchor: an <a href="#"> makes the webview attempt a navigation, and
+    // the editor answers by trying to open a file that does not exist.
+    const link = tip!.querySelector("#welcome-tip-link")!;
+    expect(link.tagName.toLowerCase()).not.toBe("a");
+    expect(link.getAttribute("role")).toBe("button");
+    expect(link.getAttribute("tabindex")).toBe("0");
     // Opt-in: the host decides, and absent means no hint.
     const hidden = boot({ relocateView: true, secondarySideBar: false });
     expect(hidden.doc.getElementById("welcome-tip")).toBeNull();

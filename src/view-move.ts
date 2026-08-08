@@ -1,10 +1,22 @@
 // View placement. The view is default-homed in the SECONDARY side bar
 // (`viewsContainers.secondarySidebar`, VS Code >= 1.106 — hence the engines
-// floor), with one extension-owned container contributed per dock location so
-// the gear-menu "Move view" items can move the view DIRECTLY via the internal
-// `vscode.moveViews` command (the one GitLens uses for its layout switch) — no
-// quickpick. This exists because Cursor's primary-side-bar context menu hides
-// the built-in "Move To" entry, and a one-click mover is useful everywhere.
+// floor), with one extension-owned container contributed per dock location.
+//
+// Two mechanisms, and the difference between them is the whole of this file:
+//
+//   - `vscode.moveViews` names a CONTAINER. It is what the automatic first-run
+//     correction uses. Its limit is that a host may accept our container and
+//     ignore where it declared it lives — Cursor renders the panel one in the
+//     primary side bar — so it can relocate the view but cannot choose the dock.
+//   - `workbench.action.moveFocusedView` names a LOCATION, via the host's own
+//     picker, and so reaches docks no container id of ours can address. It is
+//     the only thing the gear offers where our secondary-side-bar container was
+//     refused. The view-id argument is what makes it work there at all: Cursor
+//     never sets the `focusedView` context key for webview views.
+//
+// That command does NOT wait for the pick — it resolves as the quickpick opens
+// — so nothing may be issued after it. A reveal tried there stole focus and
+// dismissed the picker.
 
 export const GROK_VIEW_ID = "grok.chat";
 

@@ -1023,15 +1023,22 @@ a:hover {
 .welcome h2 { margin: 0; font-weight: 600; }
 .welcome-byline { margin: 0; font-size: 11px; }
 /* The move-view hint. Quiet by design: advice in an empty state, not a call to
-   action, and it retires itself once taken. */
+   action, and it retires itself once taken.
+   Left-aligned inside a centered block — it is a short instruction list, and
+   centered ragged lines are markedly harder to follow than flush-left ones. */
 .welcome-tip {
-  margin: 14px 0 0;
+  margin: 18px auto 0;
+  padding: 10px 12px;
   font-size: 11px;
-  line-height: 1.5;
-  max-width: 34ch;
-  text-align: center;
-  opacity: 0.85;
+  line-height: 1.6;
+  max-width: 30ch;
+  text-align: left;
+  opacity: 0.9;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
 }
+.welcome-tip b { font-weight: 600; }
+.welcome-tip [role="button"] { cursor: pointer; }
 .muted-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .muted-link:hover { opacity: 0.8; }
 

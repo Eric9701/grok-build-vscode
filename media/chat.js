@@ -5292,21 +5292,30 @@
     tip.className = "welcome-tip muted";
     // Built here rather than in the host's HTML skeleton, so the relay's mirror
     // of that skeleton cannot drift out of sync over an element it never shows.
-    // Two steps, because the second one cannot be done for the user. The host's
+    // Two steps, because the second cannot be done for the user. The host's
     // picker command does NOT wait for the pick — it opens the quickpick and
-    // resolves immediately — so a reveal issued after it simply steals focus and
+    // resolves immediately — so a reveal issued after it steals focus and
     // dismisses the picker before anything is chosen. And the move itself does
     // not open the container it landed in, which in Cursor is a collapsed agents
-    // side bar. Hence: say what to do, rather than half-doing it.
+    // side bar. Say what to do, rather than half-doing it.
+    //
+    // The follow-up step is stated FIRST, above the action: acting on the link
+    // dismisses this tip, so anything written below it would be read only by
+    // someone who had already lost the chance to act on it.
+    //
+    // A <span>, not an <a href="#">: an anchor makes the webview attempt a
+    // navigation, and the editor answers by trying to open a file that does not
+    // exist. `role`/`tabindex`/keydown put back the semantics the anchor was
+    // providing.
     tip.innerHTML =
-      "\u{1F4A1} To move Grok to the right:" +
-      '<br>1. <a href="#" id="welcome-tip-link" class="muted-link">Click here</a>' +
-      " and select <b>New Secondary Side Bar Entry</b>" +
-      "<br>2. Click <b>Toggle Agents Side Bar</b> to show it";
+      "\u{1F4A1} <b>To move Grok to the right</b>" +
+      "<br>After moving, click <b>Toggle Agents Side Bar</b> to show it." +
+      '<br><span id="welcome-tip-link" class="muted-link" role="button" tabindex="0">Click here</span>' +
+      " and select <b>New Secondary Side Bar Entry</b>.";
     welcome.appendChild(tip);
     const link = $("welcome-tip-link");
     if (link) {
-      link.onclick = (e) => {
+      const open = (e) => {
         e.preventDefault();
         vscode.postMessage({ type: "moveView", location: "pick" });
         // Clear the LOCAL capability too, not just the node. `initialState` is
@@ -5315,6 +5324,11 @@
         // back. The host records it as well, for the next window.
         if (state.hostCaps) state.hostCaps.moveViewHint = false;
         tip.remove();
+      };
+      link.onclick = open;
+      // Keyboard parity, which the anchor used to give for free.
+      link.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") open(e);
       };
     }
   }
