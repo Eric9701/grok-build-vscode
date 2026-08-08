@@ -69,15 +69,24 @@ export function hostAcceptedSecondarySideBar(availableCommands: readonly string[
  *  {@link VIEW_PLACEMENT_KEY}. */
 export interface PlacementRecord {
   /**
-   * Extension version whose activation last ISSUED a move. Version-keyed rather
-   * than a plain "done" boolean, and that is the whole lesson of 3.2.8: the flag
-   * was written whether or not the move took effect, so a single silent failure
-   * spent the one correction a user would ever get. There is no API to ask where
-   * a view actually ended up, so instead of pretending to verify, each release
-   * gets one fresh attempt — which is also what "fix it on update" means to
-   * someone sitting in front of a chat they cannot see.
+   * Version whose activation issued the one automatic correction there is.
+   *
+   * Its PRESENCE is the gate, not its value: the correction happens once per
+   * install and never again. It was once-per-version, which looked right — an
+   * update is when a refused container gets re-registered and the layout can
+   * reset — but it cannot survive contact with how people actually move views.
+   * The editor's own Move To leaves no trace we can read, and no API reports a
+   * view's location back, so a user who moved the chat with the host's menu is
+   * indistinguishable from one who never touched it. Correcting again would
+   * haul their deliberate placement back, on every release, forever.
+   *
+   * Once is enough because the move does not silently fail: instrumenting a real
+   * Cursor showed `moveViews` succeeding every time. The premise behind retrying
+   * — that an attempt might have been lost — was simply false.
+   *
+   * The version is kept for diagnostics: it says which release did it.
    */
-  attemptedForVersion?: string;
+  correctedByVersion?: string;
   /**
    * The `moveView` location the user last picked from our own Move view menu.
    *
@@ -89,26 +98,55 @@ export interface PlacementRecord {
    * does not switch the correction off; it changes where the correction aims.
    */
   chosenLocation?: string;
+  /**
+   * The user moved the view through the HOST'S OWN picker, so where it ended up
+   * is unknowable to us — that picker can create containers we never named, and
+   * no API reports a view's location back.
+   *
+   * Suppresses the automatic correction permanently, and that is the point: the
+   * correction's default is a guess, and a guess must not overrule a choice just
+   * because the choice is illegible to us. Without this, the first update after
+   * someone moved the chat to the secondary side bar would haul it back to the
+   * primary one, every release, for as long as they kept putting it back.
+   */
+  pickedOwnLocation?: boolean;
 }
 
 export const VIEW_PLACEMENT_KEY = "grok.viewPlacement";
 
-/** Record the destination the user picked, so a later correction restores it. */
+/** Location value that means "hand off to the host's own destination picker"
+ *  — deliberately mapped to no container. */
+export const PICK_LOCATION = "pick";
+
+/** Record what the user chose, so a later correction restores it rather than
+ *  overriding it. Two shapes, because the two kinds of choice differ in whether
+ *  we can see the outcome. */
 export function withUserChoice(
   prev: PlacementRecord | undefined,
   location: unknown,
 ): PlacementRecord {
-  return typeof location === "string" && moveViewContainerFor(location)
-    ? { ...(prev ?? {}), chosenLocation: location }
-    : { ...(prev ?? {}) };
+  const base = { ...(prev ?? {}) };
+  if (location === PICK_LOCATION) {
+    // Their destination supersedes any earlier one of ours, and we cannot name
+    // it — so drop the old target rather than leave a stale one to restore.
+    delete base.chosenLocation;
+    return { ...base, pickedOwnLocation: true };
+  }
+  if (typeof location === "string" && moveViewContainerFor(location)) {
+    // A destination we CAN name: remember it and resume correcting, since this
+    // one we are able to restore faithfully after an update resets it.
+    delete base.pickedOwnLocation;
+    return { ...base, chosenLocation: location };
+  }
+  return base;
 }
 
-/** Record that this version has had its automatic attempt. */
+/** Record that the one automatic correction has now happened. */
 export function withAttempt(
   prev: PlacementRecord | undefined,
   extensionVersion: string,
 ): PlacementRecord {
-  return { ...(prev ?? {}), attemptedForVersion: extensionVersion };
+  return { ...(prev ?? {}), correctedByVersion: extensionVersion };
 }
 
 /**
@@ -153,7 +191,11 @@ export function viewPlacementCorrection(opts: {
   force?: boolean;
 }): { containerId: string; panelPosition: PanelPosition | null } | null {
   const placement = opts.placement ?? {};
-  if (!opts.force && placement.attemptedForVersion === opts.extensionVersion) return null;
+  // Placed by hand through the host's picker: we do not know where, so we must
+  // not move it. Permanent, not once-per-version — an update resetting their
+  // layout is the very moment this would do the most damage.
+  if (!opts.force && placement.pickedOwnLocation) return null;
+  if (!opts.force && placement.correctedByVersion !== undefined) return null;
   if (hostAcceptedSecondarySideBar(opts.availableCommands)) return null;
 
   const chosen = placement.chosenLocation;

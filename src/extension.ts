@@ -11,6 +11,7 @@ import {
   VIEW_PLACEMENT_KEY,
   withAttempt,
   withUserChoice,
+  PICK_LOCATION,
   type PanelPosition,
   type PlacementRecord,
 } from "./view-move";
@@ -30,10 +31,11 @@ import {
  * open it never runs — which is why the manifest asks for `onStartupFinished`
  * despite that entry having been dropped as redundant back in 1.x.
  *
- * Once per version. An update is when the placement gets undone (reinstalling
- * re-registers the view against the refused container), so an update is when the
- * correction is due. 3.2.8 recorded a plain "done" boolean instead, so its one
- * silent failure was permanent — see {@link PlacementRecord}.
+ * ONCE, ever — not once per release. Where a view sits is the user's, and the
+ * editor's own Move To leaves no trace we can read, so after the first
+ * correction there is no way to tell someone who deliberately moved the chat
+ * from someone who never touched it. Correcting again would overrule the first
+ * of those on every update. See {@link PlacementRecord}.
  *
  * Focus follows the move on purpose. Arriving from a chat you could not open, a
  * silent re-home to a dock you were not looking at is indistinguishable from
@@ -55,6 +57,7 @@ async function ensureViewPlacement(
   const log = (line: string) => output.appendLine(`[placement] ${line}`);
   const placement = context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY);
   const version = context.extension.packageJSON?.version ?? "";
+  let correctionIssued = false;
   try {
     const availableCommands = await vscode.commands.getCommands(true);
     // The missing diagnostic in every round of this so far: WHICH of our three
@@ -77,12 +80,14 @@ async function ensureViewPlacement(
       // Explorer, "why didn't it move" is the first question, and before this
       // there was nothing anywhere that could answer it.
       log(
-        `no move — version=${version}, last attempt ${placement?.attemptedForVersion ?? "never"}` +
-          `, chosen ${placement?.chosenLocation ?? "(none)"}`,
+        `no move — version=${version}, last attempt ${placement?.correctedByVersion ?? "never"}` +
+          `, chosen ${placement?.chosenLocation ?? "(none)"}` +
+          `, pickedOwnLocation=${placement?.pickedOwnLocation === true}`,
       );
       return;
     }
     log(`moving -> ${target.containerId}, panel ${target.panelPosition ?? "as-is"}`);
+    correctionIssued = true;
     // Held for the re-apply below. `onStartupFinished` means the extension host
     // is ready, NOT that the workbench will honour a layout change yet — and
     // there is no API to ask where a view ended up, so a move issued too early
@@ -93,12 +98,26 @@ async function ensureViewPlacement(
     log("moved");
   } catch (e) {
     log(`failed: ${e instanceof Error ? e.message : String(e)}`);
+    correctionIssued = false;
   } finally {
-    // Recorded even on failure: an editor that rejects the move will reject it
-    // identically on every window, and retrying forever would fight a user who
-    // is living with it. The next version tries again, and
-    // `Grok: Move Chat View` opens the host picker on demand.
-    await context.globalState.update(VIEW_PLACEMENT_KEY, withAttempt(placement, version));
+    // Spend the one correction ONLY if a move actually went through.
+    //
+    // This used to record unconditionally, which meant a startup where the
+    // container had not registered yet — or where the move threw — burned the
+    // single correction and left the view stranded for good. That is exactly the
+    // fault 3.2.8 shipped with, reintroduced from the other side. A host that
+    // rejects the move every time simply retries every window: one failed
+    // command, logged, invisible.
+    //
+    // And RE-READ the record rather than writing back the snapshot taken before
+    // the awaits above. The gear can persist a destination while this is still
+    // resolving, and writing a stale copy would silently discard it — the same
+    // captured-before-an-await staleness this codebase has been bitten by
+    // before.
+    if (correctionIssued) {
+      const latest = context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY);
+      await context.globalState.update(VIEW_PLACEMENT_KEY, withAttempt(latest, version));
+    }
   }
 }
 
@@ -202,6 +221,15 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // without it the command reads the `focusedView` context key, which Cursor
       // never sets for webview views.
       await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
+      // Recorded even though the picker may have been cancelled — it cannot tell
+      // us either way. Erring toward "they are managing this themselves" is the
+      // safe side: the cost is that automatic correction stops for someone who
+      // only looked, and they still have this command and `grok.open`. The other
+      // way round, we would override a deliberate placement on every update.
+      await context.globalState.update(
+        VIEW_PLACEMENT_KEY,
+        withUserChoice(context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY), PICK_LOCATION),
+      );
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),

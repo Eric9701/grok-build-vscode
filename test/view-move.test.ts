@@ -53,13 +53,16 @@ describe("placing the view where the host will actually accept it", () => {
     expect(correct(CURSOR, { chosenLocation: "panel-right" })?.panelPosition).toBe("right");
   });
 
-  it("corrects once per version, not once ever", () => {
-    expect(correct(CURSOR, { attemptedForVersion: V })).toBeNull();
-    // An update is when the placement gets undone — reinstalling re-registers
-    // the view against the container this host refuses — so an update is
-    // exactly when the correction is due again. 3.2.8 stored a plain boolean
-    // and its one silent failure was therefore permanent.
-    expect(correct(CURSOR, { attemptedForVersion: "3.2.7" })).not.toBeNull();
+  it("corrects ONCE, and no release ever corrects again", () => {
+    // Was once-per-version, which reads well until you ask what happens to
+    // someone who moved the chat with the EDITOR'S own Move To: that leaves no
+    // trace we can read, so they are indistinguishable from a user who never
+    // touched it, and every release would haul their placement back.
+    expect(correct(CURSOR, { correctedByVersion: V })).toBeNull();
+    expect(correct(CURSOR, { correctedByVersion: "3.2.7" })).toBeNull();
+    expect(correct(CURSOR, { correctedByVersion: "99.0.0" })).toBeNull();
+    // Never corrected: this is the install the fix exists for.
+    expect(correct(CURSOR, {})).not.toBeNull();
   });
 
   it("restores where the USER put it, not our default", () => {
@@ -96,11 +99,55 @@ describe("placing the view where the host will actually accept it", () => {
   });
 });
 
+describe("a placement the user made through the host's own picker", () => {
+  const picked = withUserChoice(undefined, "pick");
+
+  it("stops the automatic correction for good, not just for this version", () => {
+    // The bug this closes: the picker's destinations are unmappable BY DESIGN
+    // (that is how they reach docks our container ids cannot name), so nothing
+    // was recorded — and the next release's correction hauled the chat back out
+    // of wherever the user had deliberately put it. Every release. Forever.
+    expect(correct(CURSOR, picked)).toBeNull();
+    expect(correct(CURSOR, { ...picked, correctedByVersion: "3.2.7" })).toBeNull();
+    expect(correct(CURSOR, { ...picked, correctedByVersion: "99.0.0" })).toBeNull();
+  });
+
+  it("still yields to an explicit request", () => {
+    // Suppression protects a choice from our guesses, not from the user's own
+    // next instruction.
+    expect(
+      viewPlacementCorrection({
+        availableCommands: CURSOR,
+        placement: picked,
+        extensionVersion: V,
+        force: true,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("is superseded by a destination we CAN name", () => {
+    // Naming one again makes the outcome legible, so correcting resumes — that
+    // is the case where an update resetting the layout can be put right.
+    const then = withUserChoice(picked, "sidebar");
+    expect(then.pickedOwnLocation).toBeUndefined();
+    expect(correct(CURSOR, then)).toEqual({
+      containerId: PRIMARY_CONTAINER_ID,
+      panelPosition: null,
+    });
+  });
+
+  it("drops a stale target rather than restoring one they moved away from", () => {
+    const then = withUserChoice({ chosenLocation: "panel-bottom" }, "pick");
+    expect(then.chosenLocation).toBeUndefined();
+    expect(then.pickedOwnLocation).toBe(true);
+  });
+});
+
 describe("the placement record", () => {
   it("remembers a real destination and ignores anything else", () => {
     expect(withUserChoice(undefined, "panel-bottom")).toEqual({ chosenLocation: "panel-bottom" });
-    expect(withUserChoice({ attemptedForVersion: V }, "sidebar")).toEqual({
-      attemptedForVersion: V,
+    expect(withUserChoice({ correctedByVersion: V }, "sidebar")).toEqual({
+      correctedByVersion: V,
       chosenLocation: "sidebar",
     });
     // A destination we cannot map must not be stored — the correction would
@@ -112,7 +159,7 @@ describe("the placement record", () => {
   it("records the attempt without disturbing a remembered choice", () => {
     expect(withAttempt({ chosenLocation: "panel-bottom" }, V)).toEqual({
       chosenLocation: "panel-bottom",
-      attemptedForVersion: V,
+      correctedByVersion: V,
     });
   });
 });
