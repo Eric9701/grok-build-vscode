@@ -92,6 +92,14 @@ export type HostUiCapabilities = {
    */
   showOutput?: boolean;
   /**
+   * Whether a generated-image click opens a host editor tab (`openFile`).
+   * Opt-out: absent/true = yes (older VS Code hosts never sent this flag but
+   * always opened editors); false = no editor — the webview uses the in-app
+   * lightbox instead (desktop). Remote clients force the lightbox regardless
+   * of this flag: the capabilities a phone receives are the desk machine's.
+   */
+  openInEditor?: boolean;
+  /**
    * The rail's "add project folder" control. OPT-IN, unlike the two above:
    * absent/false = hide. A host that never sent it cannot open a folder picker,
    * and VS Code deliberately does not — its workspace is VS Code's to manage.

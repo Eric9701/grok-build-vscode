@@ -244,6 +244,44 @@ export function isSessionDirChild(
     : parent === b;
 }
 
+/** Injectable realpath for layout-identity checks (tests simulate junctions). */
+export type PathRealpathFn = (p: string) => string;
+
+/**
+ * True when `child`'s **canonical** form is a direct child of the **canonical**
+ * `parent` **and** keeps the same leaf basename as the given `child` path.
+ *
+ * Fences the class of unsafe shapes where a layout directory is a junction or
+ * symlink onto another directory of the same kind: leaf-only is not enough
+ * (same name relocated under a different parent), and parent containment alone
+ * is not enough (sibling under the same parent with a different leaf). A
+ * symlinked ancestor that remaps parent and child together still passes.
+ * Case-insensitive leaf compare on win32 for case-aliases of the same segment.
+ */
+export function keepsCanonicalDirectChildIdentity(
+  child: string,
+  parent: string,
+  realpath: PathRealpathFn,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  try {
+    const givenLeaf = path.basename(path.resolve(child));
+    if (!givenLeaf) return false;
+    const realChild = path.normalize(realpath(child));
+    const realLeaf = path.basename(realChild);
+    if (!realLeaf) return false;
+    const leafOk =
+      platform === "win32"
+        ? givenLeaf.toLowerCase() === realLeaf.toLowerCase()
+        : givenLeaf === realLeaf;
+    if (!leafOk) return false;
+    const realParent = path.normalize(realpath(parent));
+    return isSessionDirChild(realParent, realChild, platform);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Every on-disk `sessions/<urlencoded-cwd>` directory that is the **same project**
  * as `cwd` under {@link normalizeRepoPath} (case-insensitive on Windows, exact

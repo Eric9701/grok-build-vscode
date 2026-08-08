@@ -418,11 +418,35 @@ async function createApp(): Promise<void> {
 
   sidebar = new GrokSidebar(hostContext, host);
   // Session-aware roots for openFile/openDiff (worktree cwd, not only the
-  // selected project folder). Wired after sidebar exists.
-  authContext.get = () => ({
-    workspaceRoot: config.getWorkspaceRoot(),
-    allowedRoots: sidebar!.desktopAuthRoots(),
-  });
+  // selected project folder). Wired after sidebar exists. grokHome + sessionDir
+  // + sessionCatalogDirs authorize trusted session-generated media
+  // (images|videos) outside the tree — absolute paths against project catalogs
+  // only, relative links against the active session dir.
+  // Media fields are lazy: sessionDirFor / sessionCatalogDirs readdirSync, and
+  // most webview messages are not path-bearing — only openFile/openDiff
+  // consumers read these fields after a workspace candidate has already missed.
+  authContext.get = () => {
+    let mediaCache:
+      | { grokHome?: string; sessionDir?: string; sessionCatalogDirs?: string[] }
+      | undefined;
+    const media = () => {
+      if (!mediaCache) mediaCache = sidebar!.desktopOpenMediaContext();
+      return mediaCache;
+    };
+    return {
+      workspaceRoot: config.getWorkspaceRoot(),
+      allowedRoots: sidebar!.desktopAuthRoots(),
+      get grokHome() {
+        return media().grokHome;
+      },
+      get sessionDir() {
+        return media().sessionDir;
+      },
+      get sessionCatalogDirs() {
+        return media().sessionCatalogDirs;
+      },
+    } satisfies DesktopOpenFileContext;
+  };
   webview.getAuthContext = () => authContext.get!();
   remoteActions.current = {
     link: () => sidebar!.linkRemoteDevice(),

@@ -15,7 +15,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseFileRef } from "../file-ref";
+import {
+  isTrustedGeneratedMediaPath,
+  resolveSessionGeneratedMediaPath,
+  type RealpathFn,
+} from "../media-serve";
 import type { WebviewMsg } from "../protocol";
+import { keepsCanonicalDirectChildIdentity } from "../sessions";
 import {
   findRelPathByBasename,
   isBareFileName,
@@ -102,6 +108,32 @@ export interface DesktopOpenFileContext {
   requireDropFileHandle?: boolean;
   /** Resolve a one-shot selection handle to an absolute filesystem path. */
   resolveDropFileHandle?: (handle: string) => string | null;
+  /**
+   * Grok home (`~/.grok`). Used with {@link sessionDir} to resolve safe relative
+   * `images|videos/<file>` links when the workspace candidate is missing.
+   * Absolute generated-media opens must be trusted under this root **and** under
+   * a {@link sessionCatalogDirs} entry (never-escape-home + project scope).
+   */
+  grokHome?: string | undefined;
+  /**
+   * Active session on-disk directory (`…/sessions/<cwd>/<id>`). Used with
+   * {@link grokHome} to resolve safe relative `images|videos/<file>` links when
+   * the workspace candidate is missing. Relative links stay session-local
+   * (canonical containment under this dir — not only lexical — so a symlink
+   * into a sibling session is refused).
+   */
+  sessionDir?: string | undefined;
+  /**
+   * Project session catalogs (`…/sessions/<urlencoded-cwd>` including case
+   * aliases from {@link sessionCatalogDirs}). Absolute generated-media paths
+   * must be trusted under **any** of these **and** under {@link grokHome} —
+   * same-project sibling sessions (fork replay) pass; other repositories'
+   * catalogs do not. Each catalog's realpath must keep the same urlencoded-cwd
+   * leaf **and** remain a direct child of the canonical `<grokHome>/sessions`
+   * root (a junction that renames the leaf, or relocates the same leaf under
+   * e.g. `~/.grok/other/<leaf>`, fails that identity check).
+   */
+  sessionCatalogDirs?: readonly string[] | undefined;
 }
 
 /** Deduped non-empty absolute roots from the auth context. */
@@ -181,10 +213,27 @@ export function isExecutableOpenTarget(
   return false;
 }
 
+/** Realpath from the auth context's injectable pathFs, or the host default. */
+function authRealpath(ctx: DesktopOpenFileContext): RealpathFn {
+  const pathFs = ctx.pathFs;
+  if (pathFs) {
+    return (p: string) => pathFs.realpathSync(p);
+  }
+  return (p: string) => fs.realpathSync(p);
+}
+
 /**
  * Authorize a chat `openFile` / `openDiff` path: must resolve inside one of the
  * authorized session roots with the same canonical containment as the file tree,
  * and must not be an executable (name, symlink target, or POSIX +x).
+ *
+ * Additionally allows absolute paths that pass {@link isTrustedGeneratedMediaPath}
+ * under **both** {@link DesktopOpenFileContext.grokHome} and any
+ * {@link DesktopOpenFileContext.sessionCatalogDirs} entry (session
+ * `images|videos` only — never escape home, and not other projects' catalogs),
+ * and relative `images|videos/<file>` links resolved against
+ * {@link DesktopOpenFileContext.sessionDir}. Does not add a general allowed
+ * root for grok home.
  *
  * On success returns the absolute path to use (the resolveTreePath absPath —
  * link path when the link itself is still under the root). Callers that open
@@ -206,11 +255,20 @@ export function authorizeOpenFile(
     return { ok: false, reason: "null byte in path" };
   }
   const roots = desktopAuthRoots(ctx);
+  // Same precondition as openFsPath: no project folder → refuse, including
+  // trusted media. Media is an extra provenance class under an open workspace,
+  // not a standalone open mode when nothing is authorized.
   if (!roots.length) {
     return { ok: false, reason: "no workspace root" };
   }
-
   const platform = ctx.platform ?? process.platform;
+  const realpath = authRealpath(ctx);
+
+  // Workspace-first: prefer an authorized root when the path lands inside one.
+  // When the workspace candidate exists as a file, it wins over session media.
+  // When it is only a lexical in-tree path (file missing), we still return it
+  // here so openDiff / relative opens keep working; session-media fallback for
+  // missing generated links is applied in {@link resolveAuthorizedFileForOpen}.
   for (const root of roots) {
     const resolved = resolveTreePath(root, rawPath, platform, ctx.pathFs);
     if (!resolved.ok) continue;
@@ -224,7 +282,111 @@ export function authorizeOpenFile(
     }
     return { ok: true, absPath: resolved.absPath };
   }
+
+  // Trusted generated session media (absolute path, or safe relative + sessionDir).
+  const mediaAbs = resolveTrustedMediaOpenPath(rawPath, ctx, realpath);
+  if (mediaAbs) {
+    if (
+      isExecutableOpenTarget(mediaAbs, {
+        platform,
+        pathFs: ctx.pathFs,
+      })
+    ) {
+      return { ok: false, reason: "executable path refused" };
+    }
+    return { ok: true, absPath: mediaAbs };
+  }
+
   return { ok: false, reason: "path escapes authorized roots" };
+}
+
+/**
+ * True when realpath of `catalog` still names the **same** layout catalog:
+ * same urlencoded-cwd leaf **and** a direct child of the canonical
+ * `<grokHome>/sessions` root. Thin wrapper over
+ * {@link keepsCanonicalDirectChildIdentity} (catalog under sessions root).
+ */
+function catalogKeepsEncodedLeaf(
+  catalog: string,
+  grokHome: string,
+  realpath: RealpathFn,
+  platform: NodeJS.Platform,
+): boolean {
+  const sessionsRoot = path.join(path.resolve(grokHome), "sessions");
+  return keepsCanonicalDirectChildIdentity(catalog, sessionsRoot, realpath, platform);
+}
+
+/**
+ * Absolute path that is trusted generated media under **both** Grok home and a
+ * **project** session catalog, or null. Relative `images|videos/<file>` links
+ * require {@link DesktopOpenFileContext.sessionDir} (+
+ * {@link DesktopOpenFileContext.grokHome}) and stay scoped to that session only
+ * (canonical session containment in {@link resolveSessionGeneratedMediaPath}).
+ *
+ * Both roots are required because {@link isTrustedGeneratedMediaPath} contains
+ * against whichever root it is given. Catalog-only would accept a junction at
+ * `~/.grok/sessions/<cwd>` whose realpath lies outside home (shape check still
+ * sees `/sessions/` on the link path). Home-only would re-open any other
+ * project's session media under `~/.grok`.
+ *
+ * Layout identity ({@link keepsCanonicalDirectChildIdentity}): used twice —
+ * catalog under the canonical sessions root, and sessionDir under its catalog.
+ * A cross-project catalog junction renames the leaf; a same-leaf relocating
+ * junction (`sessions/<leaf>` → `other/<leaf>`) keeps the leaf but leaves the
+ * sessions root; a sessionDir junction onto another session (sibling or other
+ * repo) renames the leaf and/or leaves the catalog — all refused. The relative
+ * branch applies both fences (session dirs are always `catalog/<id>`, including
+ * when {@link sessionDirFor} derived them from a junctioned catalog).
+ */
+function resolveTrustedMediaOpenPath(
+  rawPath: string,
+  ctx: DesktopOpenFileContext,
+  realpath: RealpathFn,
+): string | null {
+  const platform = ctx.platform ?? process.platform;
+  if (path.isAbsolute(rawPath) || /^[A-Za-z]:[\\/]/.test(rawPath) || rawPath.startsWith("\\\\")) {
+    const abs = path.resolve(rawPath);
+    const home = ctx.grokHome;
+    const catalogs = ctx.sessionCatalogDirs;
+    if (!home || !catalogs?.length) return null;
+    // Never-escape-home half of the AND (restores pre-catalog-scoping property).
+    if (!isTrustedGeneratedMediaPath(abs, home, realpath)) return null;
+    // Project-catalog half — same-project sibling sessions still pass so a
+    // fork can open media paths that still point at the parent session dir.
+    // Refuse catalogs that fail the layout identity fence (leaf + sessions parent).
+    for (const catalog of catalogs) {
+      if (
+        catalog &&
+        catalogKeepsEncodedLeaf(catalog, home, realpath, platform) &&
+        isTrustedGeneratedMediaPath(abs, catalog, realpath)
+      ) {
+        return abs;
+      }
+    }
+    return null;
+  }
+
+  const home = ctx.grokHome;
+  if (!home || !ctx.sessionDir) return null;
+  // Relative route: catalog under sessions root, then sessionDir under catalog.
+  // sessionDir is always catalog/<id> (sessionDirFor joins a catalog from
+  // sessionCatalogDirs with the session id). A relocating catalog junction or
+  // a sessionDir junction onto another session fails here before containment.
+  const sessionCatalog = path.dirname(path.resolve(ctx.sessionDir));
+  if (!catalogKeepsEncodedLeaf(sessionCatalog, home, realpath, platform)) {
+    return null;
+  }
+  if (
+    !keepsCanonicalDirectChildIdentity(
+      ctx.sessionDir,
+      sessionCatalog,
+      realpath,
+      platform,
+    )
+  ) {
+    return null;
+  }
+  return resolveSessionGeneratedMediaPath(rawPath, ctx.sessionDir, home, realpath);
 }
 
 /**
@@ -312,6 +474,13 @@ export function resolveAuthorizedFileForOpen(
     return check;
   }
 
+  // Workspace miss: try session-generated media for genuinely relative
+  // images|videos/<file> links only. Absolute paths the user named are never
+  // re-mapped onto a different session-dir file. Workspace existence already
+  // won above; this path only runs when that file is absent.
+  const mediaTry = trySessionMediaOpen(rawPath, ctx, exists);
+  if (mediaTry) return mediaTry;
+
   // Workspace basename search only for bare links. Multi-segment misses
   // (e.g. `src/missing.md`) stay "not found" — do not invent alternate paths.
   // Sidebar joins a relative bare name with the session cwd, so openFsPath often
@@ -353,6 +522,48 @@ export function resolveAuthorizedFileForOpen(
     }
   }
   return { ok: false, reason: "file not found" };
+}
+
+/**
+ * When the workspace-authorized path is missing, resolve a safe **relative**
+ * `images|videos/<file>` link against the session dir and re-authorize via the
+ * trusted-media gate. Absolute raw paths are left alone — never substitute a
+ * different session file for a path the user (or agent) named absolutely.
+ *
+ * Load-bearing relative-only path: the message gate sees `images/1.jpg`, the
+ * sidebar resolves it to the absolute session path via
+ * {@link resolveChatOpenFilePath}, and {@link authorizeOpenFile}'s absolute
+ * trusted-media branch already authorizes that result. This fallback covers
+ * the use-time path that still receives the relative link (workspace miss).
+ */
+function trySessionMediaOpen(
+  rawPath: string,
+  ctx: DesktopOpenFileContext,
+  exists: (p: string) => boolean,
+): DesktopOpenPathResult | null {
+  if (!ctx.grokHome || !ctx.sessionDir) return null;
+
+  const bare = parseFileRef(rawPath).path;
+  if (
+    path.isAbsolute(bare) ||
+    /^[A-Za-z]:[\\/]/.test(bare) ||
+    bare.startsWith("\\\\")
+  ) {
+    return null;
+  }
+
+  const realpath = authRealpath(ctx);
+  // Same relative branch as authorizeOpenFile (catalog + sessionDir identity
+  // fences + session/home containment) — not a bare join that would skip the
+  // junction fences.
+  const media = resolveTrustedMediaOpenPath(bare, ctx, realpath);
+  if (!media || !exists(media)) return null;
+
+  // Re-authorize the absolute media path (TOCTOU + executable + trust).
+  const again = revalidateOpenFileForUse(media, ctx);
+  if (!again.ok) return null;
+  if (!exists(again.absPath)) return null;
+  return again;
 }
 
 /**

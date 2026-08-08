@@ -1724,6 +1724,754 @@ describe("desktop openFile / openUrl policy (A1)", () => {
     }
   });
 
+  it("message gate PASSES trusted generated-media and refuses arbitrary out-of-workspace", () => {
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-home-"));
+    try {
+      const catalog = path.join(grokHome, "sessions", "cwd-enc");
+      const sessionDir = path.join(catalog, "sess-abc");
+      const img = path.join(sessionDir, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(img), { recursive: true });
+      fs.writeFileSync(img, "fake-jpeg");
+      const catalogs = [catalog];
+
+      const trusted = authorizeOpenFile(img, {
+        workspaceRoot: root,
+        grokHome,
+        sessionCatalogDirs: catalogs,
+      });
+      expect(trusted.ok).toBe(true);
+      if (trusted.ok) expect(path.resolve(trusted.absPath)).toBe(path.resolve(img));
+
+      const gate = authorizeDesktopWebviewMsg(
+        { type: "openFile", path: img },
+        { workspaceRoot: root, grokHome, sessionCatalogDirs: catalogs },
+      );
+      expect("msg" in gate).toBe(true);
+
+      // Relative media link with sessionDir (workspace file absent).
+      const rel = authorizeOpenFile("images/1.jpg", {
+        workspaceRoot: root,
+        grokHome,
+        sessionDir,
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      });
+      // Lexical under workspace is authorized first (may not exist); message gate still passes.
+      expect(rel.ok).toBe(true);
+
+      // Use-time must open the session file when workspace miss.
+      // Re-auth of the resolved absolute path needs project catalogs (same as hover).
+      const opened = resolveAuthorizedFileForOpen("images/1.jpg", {
+        workspaceRoot: root,
+        grokHome,
+        sessionDir,
+        sessionCatalogDirs: catalogs,
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      });
+      expect(opened.ok).toBe(true);
+      if (opened.ok) expect(path.resolve(opened.absPath)).toBe(path.resolve(img));
+
+      // Arbitrary out-of-workspace path still refused (no general ~/.grok open).
+      const secret = path.join(grokHome, "auth.json");
+      fs.writeFileSync(secret, '{"token":"x"}');
+      expect(
+        authorizeOpenFile(secret, {
+          workspaceRoot: root,
+          grokHome,
+          sessionCatalogDirs: catalogs,
+        }).ok,
+      ).toBe(false);
+      const loose = path.join(grokHome, "loose.png");
+      fs.writeFileSync(loose, "x");
+      expect(
+        authorizeOpenFile(loose, {
+          workspaceRoot: root,
+          grokHome,
+          sessionCatalogDirs: catalogs,
+        }).ok,
+      ).toBe(false);
+    } finally {
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveAuthorizedFileForOpen prefers workspace images/ when present", () => {
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-ws-"));
+    try {
+      const sessionDir = path.join(grokHome, "sessions", "cwd-enc", "sess-ws");
+      const sessionImg = path.join(sessionDir, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(sessionImg), { recursive: true });
+      fs.writeFileSync(sessionImg, "session");
+      const wsImg = path.join(root, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(wsImg), { recursive: true });
+      fs.writeFileSync(wsImg, "workspace");
+
+      const opened = resolveAuthorizedFileForOpen("images/1.jpg", {
+        workspaceRoot: root,
+        grokHome,
+        sessionDir,
+      });
+      expect(opened.ok).toBe(true);
+      if (opened.ok) {
+        expect(path.resolve(opened.absPath)).toBe(path.resolve(wsImg));
+        expect(fs.readFileSync(opened.absPath, "utf8")).toBe("workspace");
+      }
+    } finally {
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
+  it("absolute missing workspace path is NOT remapped onto session media", () => {
+    // A named absolute under the workspace that no longer exists must stay
+    // "not found" — never open ~/.grok/.../images/logo.png as a substitute.
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-nopeel-"));
+    try {
+      const sessionDir = path.join(grokHome, "sessions", "cwd-enc", "sess-nopeel");
+      const sessionImg = path.join(sessionDir, "images", "logo.png");
+      fs.mkdirSync(path.dirname(sessionImg), { recursive: true });
+      fs.writeFileSync(sessionImg, "session-only");
+
+      const missingWs = path.join(root, "images", "logo.png");
+      // Ensure workspace candidate is absent.
+      try {
+        fs.unlinkSync(missingWs);
+      } catch {
+        /* ok */
+      }
+
+      const opened = resolveAuthorizedFileForOpen(missingWs, {
+        workspaceRoot: root,
+        grokHome,
+        sessionDir,
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      });
+      expect(opened.ok).toBe(false);
+      if (!opened.ok) expect(opened.reason).toMatch(/not found/i);
+    } finally {
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
+  it("authorizeOpenFile refuses trusted media when no workspace root (matches openFsPath)", () => {
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-noroot-"));
+    try {
+      const catalog = path.join(grokHome, "sessions", "cwd-enc");
+      const sessionDir = path.join(catalog, "sess-noroot");
+      const img = path.join(sessionDir, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(img), { recursive: true });
+      fs.writeFileSync(img, "fake-jpeg");
+
+      const abs = authorizeOpenFile(img, {
+        grokHome,
+        sessionDir,
+        sessionCatalogDirs: [catalog],
+      });
+      expect(abs.ok).toBe(false);
+      if (!abs.ok) expect(abs.reason).toBe("no workspace root");
+
+      const rel = authorizeOpenFile("images/1.jpg", { grokHome, sessionDir });
+      expect(rel.ok).toBe(false);
+      if (!rel.ok) expect(rel.reason).toBe("no workspace root");
+    } finally {
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
+  // Use-time path openFsPath actually calls. Message-gate authorizeOpenFile alone
+  // does not prove these: the desktop hover open posts an absolute session-media
+  // path, and sidebar hands the same after resolveChatOpenFilePath; relative
+  // links that still reach openFsPath fall through trySessionMediaOpen.
+  it("resolveAuthorizedFileForOpen opens ABSOLUTE session-media path (desktop hover / post-resolve)", () => {
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-abs-use-"));
+    try {
+      const catalog = path.join(grokHome, "sessions", "cwd-enc");
+      const sessionDir = path.join(catalog, "sess-abs-use");
+      const img = path.join(sessionDir, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(img), { recursive: true });
+      fs.writeFileSync(img, "fake-jpeg");
+
+      const ctx = {
+        workspaceRoot: root,
+        grokHome,
+        sessionDir,
+        sessionCatalogDirs: [catalog],
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      };
+
+      // Load-bearing steps openFsPath's resolveAuthorizedFileForOpen runs for this input.
+      const revalidated = revalidateOpenFileForUse(img, ctx);
+      expect(revalidated.ok).toBe(true);
+      if (revalidated.ok) expect(path.resolve(revalidated.absPath)).toBe(path.resolve(img));
+      expect(isExecutableOpenTarget(img, { pathFs: ctx.pathFs })).toBe(false);
+      expect(fs.statSync(img).isFile()).toBe(true);
+
+      const opened = resolveAuthorizedFileForOpen(img, ctx);
+      expect(opened.ok).toBe(true);
+      if (opened.ok) expect(path.resolve(opened.absPath)).toBe(path.resolve(img));
+    } finally {
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
+  it("absolute sibling-REPO media path is refused by message gate and use-time open", () => {
+    // Project-catalog fence: media under another repo's sessions/<cwd>/… is
+    // still under ~/.grok and still has generated-session shape, but must not
+    // open from this project's auth context.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-xrepo-"));
+    const grokHome = path.join(base, "home");
+    const repoA = path.join(base, "repo-a");
+    const repoB = path.join(base, "repo-b");
+    try {
+      fs.mkdirSync(repoA, { recursive: true });
+      fs.mkdirSync(repoB, { recursive: true });
+      const catalogA = sessionsDirFor(grokHome, repoA);
+      const catalogB = sessionsDirFor(grokHome, repoB);
+      const imgB = path.join(catalogB, "sess-b", "images", "x.jpg");
+      fs.mkdirSync(path.dirname(imgB), { recursive: true });
+      fs.writeFileSync(imgB, "other-repo");
+      // Active project is A; only A's catalog is authorized.
+      fs.mkdirSync(path.join(catalogA, "sess-a"), { recursive: true });
+
+      const ctx = {
+        workspaceRoot: repoA,
+        grokHome,
+        sessionDir: path.join(catalogA, "sess-a"),
+        sessionCatalogDirs: [catalogA],
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      };
+
+      const gate = authorizeDesktopWebviewMsg({ type: "openFile", path: imgB }, ctx);
+      expect("refused" in gate).toBe(true);
+      expect(authorizeOpenFile(imgB, ctx).ok).toBe(false);
+
+      const opened = resolveAuthorizedFileForOpen(imgB, ctx);
+      expect(opened.ok).toBe(false);
+
+      // Mutation: authorizing absolute media under whole grokHome (pre-fix)
+      // would pass both gates for any session under ~/.grok — including repo B.
+      const underHome = isTrustedGeneratedMediaPath(imgB, grokHome, (p) =>
+        fs.realpathSync(p),
+      );
+      expect(underHome).toBe(true);
+      // That is exactly the hole this test pins closed at the desktop gate.
+      expect(isTrustedGeneratedMediaPath(imgB, catalogA, (p) => fs.realpathSync(p))).toBe(
+        false,
+      );
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("absolute media under a catalog junction escaping ~/.grok is refused", () => {
+    // sessionCatalogDirs lists entries with existsSync/readdirSync and never
+    // proves they canonically stay under home. isTrustedGeneratedMediaPath
+    // contains against the realpath of whichever root it is given: catalog-only
+    // accepts a junction at ~/.grok/sessions/<cwd> → /anywhere (shape check
+    // still sees /sessions/ on the link path; containment runs on the target).
+    // Gate requires BOTH home and catalog — this pins the home half.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-junc-esc-"));
+    const grokHome = path.join(base, "home");
+    const outside = path.join(base, "outside");
+    const repo = path.join(base, "repo");
+    try {
+      fs.mkdirSync(repo, { recursive: true });
+      fs.mkdirSync(grokHome, { recursive: true });
+      // Real bytes live only outside home (junction destination).
+      const outsideImg = path.join(outside, "sess-j", "images", "secret.jpg");
+      fs.mkdirSync(path.dirname(outsideImg), { recursive: true });
+      fs.writeFileSync(outsideImg, "escaped-secret");
+
+      // Link path still looks like a normal project catalog under home.
+      const catalog = sessionsDirFor(grokHome, repo);
+      const linkImg = path.join(catalog, "sess-j", "images", "secret.jpg");
+
+      // Fake realpath: catalog (and everything under it) maps onto outside —
+      // same as an OS junction without needing symlink privileges.
+      const realpathMap = (p: string): string => {
+        const resolved = path.resolve(p);
+        const cat = path.resolve(catalog);
+        const home = path.resolve(grokHome);
+        if (resolved === cat || resolved.startsWith(cat + path.sep)) {
+          return path.resolve(outside, path.relative(cat, resolved));
+        }
+        if (resolved === home || resolved.startsWith(home + path.sep)) {
+          return resolved;
+        }
+        try {
+          return fs.realpathSync(p);
+        } catch {
+          return resolved;
+        }
+      };
+
+      const pathFs: TreePathFs = {
+        realpathSync: realpathMap,
+        existsSync: (p: string) => {
+          try {
+            return fs.existsSync(realpathMap(p));
+          } catch {
+            return fs.existsSync(p);
+          }
+        },
+        statSync: (p: string) => fs.statSync(realpathMap(p)),
+        readdirSync: (p: string, o: { withFileTypes: true }) =>
+          fs.readdirSync(realpathMap(p), o),
+      };
+
+      const ctx = {
+        workspaceRoot: repo,
+        grokHome,
+        sessionDir: path.join(catalog, "sess-j"),
+        sessionCatalogDirs: [catalog],
+        pathFs,
+      };
+
+      // Catalog-only trust would accept — that is the hole without the home half.
+      expect(isTrustedGeneratedMediaPath(linkImg, catalog, realpathMap)).toBe(true);
+      // Home trust refuses: canonical target is outside ~/.grok.
+      expect(isTrustedGeneratedMediaPath(linkImg, grokHome, realpathMap)).toBe(false);
+
+      const gate = authorizeDesktopWebviewMsg({ type: "openFile", path: linkImg }, ctx);
+      expect("refused" in gate).toBe(true);
+      expect(authorizeOpenFile(linkImg, ctx).ok).toBe(false);
+      expect(resolveAuthorizedFileForOpen(linkImg, ctx).ok).toBe(false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("absolute media under a catalog junction to another project catalog is refused", () => {
+    // Catalog A → junction → catalog B, both inside ~/.grok. Home trust and
+    // catalog trust (against realpath(A) ≡ B) both pass; the leaf discriminator
+    // does not (basename of realpath(A) is B's urlencoded cwd).
+    // Mutation: drop catalogKeepsEncodedLeaf and this test fails (authorizes
+    // imgB through catalogA's junction).
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-junc-xcat-"));
+    const grokHome = path.join(base, "home");
+    const repoA = path.join(base, "repo-a");
+    const repoB = path.join(base, "repo-b");
+    try {
+      fs.mkdirSync(repoA, { recursive: true });
+      fs.mkdirSync(repoB, { recursive: true });
+      const catalogA = sessionsDirFor(grokHome, repoA);
+      const catalogB = sessionsDirFor(grokHome, repoB);
+      // Distinct leaves are the property under test (urlencoded cwd differs).
+      expect(path.basename(catalogA)).not.toBe(path.basename(catalogB));
+
+      const imgB = path.join(catalogB, "sess-b", "images", "x.jpg");
+      fs.mkdirSync(path.dirname(imgB), { recursive: true });
+      fs.writeFileSync(imgB, "other-catalog");
+      // Link path under A that realpaths onto B's file.
+      const linkImg = path.join(catalogA, "sess-b", "images", "x.jpg");
+
+      const realpathMap = (p: string): string => {
+        const resolved = path.resolve(p);
+        const catA = path.resolve(catalogA);
+        const catB = path.resolve(catalogB);
+        if (resolved === catA || resolved.startsWith(catA + path.sep)) {
+          return path.join(catB, path.relative(catA, resolved));
+        }
+        return resolved;
+      };
+
+      const pathFs: TreePathFs = {
+        realpathSync: realpathMap,
+        existsSync: (p: string) => {
+          try {
+            return fs.existsSync(realpathMap(p));
+          } catch {
+            return fs.existsSync(p);
+          }
+        },
+        statSync: (p: string) => fs.statSync(realpathMap(p)),
+        readdirSync: (p: string, o: { withFileTypes: true }) =>
+          fs.readdirSync(realpathMap(p), o),
+      };
+
+      const ctx = {
+        workspaceRoot: repoA,
+        grokHome,
+        sessionDir: path.join(catalogA, "sess-a"),
+        // Auth context only lists A — the junction rewrites it onto B.
+        sessionCatalogDirs: [catalogA],
+        pathFs,
+      };
+
+      // Both containment halves pass through the junction — leaf check is the
+      // only refusal. (Media path can be the link path or the real target.)
+      expect(isTrustedGeneratedMediaPath(linkImg, grokHome, realpathMap)).toBe(true);
+      expect(isTrustedGeneratedMediaPath(linkImg, catalogA, realpathMap)).toBe(true);
+      expect(path.basename(realpathMap(catalogA))).toBe(path.basename(path.resolve(catalogB)));
+      expect(path.basename(realpathMap(catalogA))).not.toBe(
+        path.basename(path.resolve(catalogA)),
+      );
+
+      const gate = authorizeDesktopWebviewMsg({ type: "openFile", path: linkImg }, ctx);
+      expect("refused" in gate).toBe(true);
+      expect(authorizeOpenFile(linkImg, ctx).ok).toBe(false);
+      expect(resolveAuthorizedFileForOpen(linkImg, ctx).ok).toBe(false);
+
+      // Real target under B with only A authorized is also refused (no leaf
+      // match on A, and B is not listed).
+      expect(authorizeOpenFile(imgB, ctx).ok).toBe(false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("absolute media under a catalog junction relocating within ~/.grok is refused", () => {
+    // sessions/<leaf> → other/<leaf>: same basename, still under home. Home
+    // trust + catalog trust + leaf match all pass; only the direct-child-of-
+    // <grokHome>/sessions half of catalogKeepsEncodedLeaf refuses.
+    // Mutation: drop the isSessionDirChild(realParent, realChild) half of
+    // keepsCanonicalDirectChildIdentity (keep leaf-only) and this test fails —
+    // authorizes the relocated catalog.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-junc-reloc-"));
+    const grokHome = path.join(base, "home");
+    const repo = path.join(base, "repo");
+    try {
+      fs.mkdirSync(repo, { recursive: true });
+      fs.mkdirSync(path.join(grokHome, "sessions"), { recursive: true });
+      const catalog = sessionsDirFor(grokHome, repo);
+      const leaf = path.basename(catalog);
+      // Real bytes live under ~/.grok/other/<same-leaf>/… (not under sessions/).
+      const relocated = path.join(grokHome, "other", leaf);
+      const realImg = path.join(relocated, "sess-j", "images", "secret.jpg");
+      fs.mkdirSync(path.dirname(realImg), { recursive: true });
+      fs.writeFileSync(realImg, "relocated-secret");
+      const linkImg = path.join(catalog, "sess-j", "images", "secret.jpg");
+
+      const realpathMap = (p: string): string => {
+        const resolved = path.resolve(p);
+        const cat = path.resolve(catalog);
+        if (resolved === cat || resolved.startsWith(cat + path.sep)) {
+          return path.join(path.resolve(relocated), path.relative(cat, resolved));
+        }
+        return resolved;
+      };
+
+      const pathFs: TreePathFs = {
+        realpathSync: realpathMap,
+        existsSync: (p: string) => {
+          try {
+            return fs.existsSync(realpathMap(p));
+          } catch {
+            return fs.existsSync(p);
+          }
+        },
+        statSync: (p: string) => fs.statSync(realpathMap(p)),
+        readdirSync: (p: string, o: { withFileTypes: true }) =>
+          fs.readdirSync(realpathMap(p), o),
+      };
+
+      const ctx = {
+        workspaceRoot: repo,
+        grokHome,
+        sessionDir: path.join(catalog, "sess-j"),
+        sessionCatalogDirs: [catalog],
+        pathFs,
+      };
+
+      // Prove the hole halves that are NOT enough alone:
+      expect(path.basename(realpathMap(catalog))).toBe(leaf);
+      expect(isTrustedGeneratedMediaPath(linkImg, grokHome, realpathMap)).toBe(true);
+      expect(isTrustedGeneratedMediaPath(linkImg, catalog, realpathMap)).toBe(true);
+      // Relocated parent is under home but not the sessions root.
+      expect(path.dirname(realpathMap(catalog))).toBe(path.resolve(grokHome, "other"));
+      expect(path.dirname(realpathMap(catalog))).not.toBe(
+        path.resolve(path.join(grokHome, "sessions")),
+      );
+
+      const gate = authorizeDesktopWebviewMsg({ type: "openFile", path: linkImg }, ctx);
+      expect("refused" in gate).toBe(true);
+      expect(authorizeOpenFile(linkImg, ctx).ok).toBe(false);
+      expect(resolveAuthorizedFileForOpen(linkImg, ctx).ok).toBe(false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("relative media under a catalog junction relocating within ~/.grok is refused", () => {
+    // sessionDirFor derives sessionDir as catalog/<id> under the junctioned
+    // catalog. resolveTrustedMediaOpenPath's relative branch applies
+    // catalogKeepsEncodedLeaf to dirname(sessionDir) — same helper as the
+    // absolute catalog loop — so the relocating junction is refused before
+    // resolveSessionGeneratedMediaPath. Use-time trySessionMediaOpen then
+    // re-auths the absolute path through that same fence via sessionCatalogDirs.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-junc-reloc-rel-"));
+    const grokHome = path.join(base, "home");
+    const repo = path.join(base, "repo");
+    try {
+      fs.mkdirSync(repo, { recursive: true });
+      fs.mkdirSync(path.join(grokHome, "sessions"), { recursive: true });
+      const catalog = sessionsDirFor(grokHome, repo);
+      const leaf = path.basename(catalog);
+      const relocated = path.join(grokHome, "other", leaf);
+      const realImg = path.join(relocated, "sess-j", "images", "secret.jpg");
+      fs.mkdirSync(path.dirname(realImg), { recursive: true });
+      fs.writeFileSync(realImg, "relocated-secret");
+
+      const realpathMap = (p: string): string => {
+        const resolved = path.resolve(p);
+        const cat = path.resolve(catalog);
+        if (resolved === cat || resolved.startsWith(cat + path.sep)) {
+          return path.join(path.resolve(relocated), path.relative(cat, resolved));
+        }
+        return resolved;
+      };
+
+      const pathFs: TreePathFs = {
+        realpathSync: realpathMap,
+        existsSync: (p: string) => {
+          try {
+            return fs.existsSync(realpathMap(p));
+          } catch {
+            return fs.existsSync(p);
+          }
+        },
+        statSync: (p: string) => fs.statSync(realpathMap(p)),
+        readdirSync: (p: string, o: { withFileTypes: true }) =>
+          fs.readdirSync(realpathMap(p), o),
+      };
+
+      // sessionDir layout matches sessionDirFor: catalog/<id> on the link path.
+      const sessionDir = path.join(catalog, "sess-j");
+      const ctx = {
+        workspaceRoot: repo,
+        grokHome,
+        sessionDir,
+        sessionCatalogDirs: [catalog],
+        pathFs,
+      };
+
+      // Without the relative-branch dirname(sessionDir) fence, home+session
+      // containment alone would still trust the resolved file under other/<leaf>.
+      const joined = path.join(sessionDir, "images", "secret.jpg");
+      expect(isTrustedGeneratedMediaPath(joined, sessionDir, realpathMap)).toBe(true);
+      expect(isTrustedGeneratedMediaPath(joined, grokHome, realpathMap)).toBe(true);
+
+      // Message-gate relative path is workspace-first (lexical), so pin the
+      // media gate via absolute authorize + use-time relative open.
+      expect(authorizeOpenFile(joined, ctx).ok).toBe(false);
+      const opened = resolveAuthorizedFileForOpen("images/secret.jpg", ctx);
+      expect(opened.ok).toBe(false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("relative media under a sessionDir junction to a sibling session is refused", () => {
+    // sessions/<cwd>/<active-id> → sibling session under the *same* catalog.
+    // sessionDirFor's child check is lexical, so it can hand back the junction
+    // path. realpath(sessionDir) is the sibling; isTrustedGeneratedMediaPath
+    // against that root accepts images/1.jpg, home trust passes, AND absolute
+    // re-auth under the honest catalog also passes (sibling is still in-catalog
+    // — that is the fork-replay case for absolute paths). Only
+    // keepsCanonicalDirectChildIdentity(sessionDir, catalog) refuses the
+    // relative open: the leaf is no longer the active session id.
+    // Mutation: drop the sessionDir keepsCanonicalDirectChildIdentity check in
+    // resolveTrustedMediaOpenPath (and the same fence in
+    // resolveSessionGeneratedMediaPath) and this test fails — authorizes the
+    // sibling session's media via the relative open path.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-sess-junc-"));
+    const grokHome = path.join(base, "home");
+    const repo = path.join(base, "repo");
+    try {
+      fs.mkdirSync(repo, { recursive: true });
+      fs.mkdirSync(path.join(grokHome, "sessions"), { recursive: true });
+      const catalog = sessionsDirFor(grokHome, repo);
+
+      // Real bytes live only under the sibling session.
+      const siblingSession = path.join(catalog, "sess-sibling");
+      const siblingImg = path.join(siblingSession, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(siblingImg), { recursive: true });
+      fs.writeFileSync(siblingImg, "sibling-session-media");
+
+      // Active session path is a junction onto the sibling.
+      const sessionDir = path.join(catalog, "sess-active");
+      const linkImg = path.join(sessionDir, "images", "1.jpg");
+
+      const realpathMap = (p: string): string => {
+        const resolved = path.resolve(p);
+        const sess = path.resolve(sessionDir);
+        if (resolved === sess || resolved.startsWith(sess + path.sep)) {
+          return path.join(path.resolve(siblingSession), path.relative(sess, resolved));
+        }
+        return resolved;
+      };
+
+      const pathFs: TreePathFs = {
+        realpathSync: realpathMap,
+        existsSync: (p: string) => {
+          try {
+            return fs.existsSync(realpathMap(p));
+          } catch {
+            return fs.existsSync(p);
+          }
+        },
+        statSync: (p: string) => fs.statSync(realpathMap(p)),
+        readdirSync: (p: string, o: { withFileTypes: true }) =>
+          fs.readdirSync(realpathMap(p), o),
+      };
+
+      const ctx = {
+        workspaceRoot: repo,
+        grokHome,
+        sessionDir,
+        sessionCatalogDirs: [catalog],
+        pathFs,
+      };
+
+      // Prove the hole without the identity fence: home + sessionDir containment
+      // pass, and absolute re-auth under the (honest) catalog would also pass.
+      expect(isTrustedGeneratedMediaPath(linkImg, sessionDir, realpathMap)).toBe(true);
+      expect(isTrustedGeneratedMediaPath(linkImg, grokHome, realpathMap)).toBe(true);
+      expect(isTrustedGeneratedMediaPath(linkImg, catalog, realpathMap)).toBe(true);
+      // Catalog itself is honest — only the session leaf is junctioned.
+      expect(path.basename(realpathMap(catalog))).toBe(path.basename(path.resolve(catalog)));
+      // Leaf diverges (sess-active → sess-sibling); parent stays the catalog.
+      expect(path.dirname(realpathMap(sessionDir))).toBe(path.resolve(catalog));
+      expect(path.basename(realpathMap(sessionDir))).toBe("sess-sibling");
+      expect(path.basename(realpathMap(sessionDir))).not.toBe(
+        path.basename(path.resolve(sessionDir)),
+      );
+
+      // Relative open is the load-bearing hole without the sessionDir fence.
+      // (Message-gate authorize is workspace-first and may accept a lexical
+      // in-tree path; use-time resolveAuthorizedFileForOpen is the media gate.)
+      const opened = resolveAuthorizedFileForOpen("images/1.jpg", ctx);
+      expect(opened.ok).toBe(false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("absolute sibling-SESSION media path in same project is allowed (fork-replay case)", () => {
+    // Forks replay transcripts whose absolute media paths still point at the
+    // *parent* session directory. Scoping absolute opens to sessionDir alone
+    // would refuse those clicks; project-catalog scope keeps them open.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-xsess-"));
+    const grokHome = path.join(base, "home");
+    const repo = path.join(base, "repo");
+    try {
+      fs.mkdirSync(repo, { recursive: true });
+      const catalog = sessionsDirFor(grokHome, repo);
+      const parentDir = path.join(catalog, "parent-sess");
+      const forkDir = path.join(catalog, "fork-sess");
+      const parentImg = path.join(parentDir, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(parentImg), { recursive: true });
+      fs.mkdirSync(forkDir, { recursive: true });
+      fs.writeFileSync(parentImg, "parent-media");
+
+      const ctx = {
+        workspaceRoot: repo,
+        grokHome,
+        // Active conversation is the fork; media path names the parent.
+        sessionDir: forkDir,
+        sessionCatalogDirs: [catalog],
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      };
+
+      const gate = authorizeDesktopWebviewMsg({ type: "openFile", path: parentImg }, ctx);
+      expect("msg" in gate).toBe(true);
+      const authorized = authorizeOpenFile(parentImg, ctx);
+      expect(authorized.ok).toBe(true);
+      if (authorized.ok) {
+        expect(path.resolve(authorized.absPath)).toBe(path.resolve(parentImg));
+      }
+
+      const opened = resolveAuthorizedFileForOpen(parentImg, ctx);
+      expect(opened.ok).toBe(true);
+      if (opened.ok) {
+        expect(path.resolve(opened.absPath)).toBe(path.resolve(parentImg));
+      }
+
+      // Relative links stay session-local: fork has no images/1.jpg of its own.
+      const relOpened = resolveAuthorizedFileForOpen("images/1.jpg", ctx);
+      // Workspace miss → trySessionMediaOpen against fork sessionDir only.
+      expect(relOpened.ok).toBe(false);
+
+      // Mutation: if absolute used sessionDir as the only root (rejected design),
+      // parent media would fail isTrustedGeneratedMediaPath under forkDir.
+      expect(
+        isTrustedGeneratedMediaPath(parentImg, forkDir, (p) => fs.realpathSync(p)),
+      ).toBe(false);
+      expect(
+        isTrustedGeneratedMediaPath(parentImg, catalog, (p) => fs.realpathSync(p)),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveAuthorizedFileForOpen opens RELATIVE images/ via trySessionMediaOpen (workspace miss)", () => {
+    const grokHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-media-rel-use-"));
+    try {
+      const catalog = path.join(grokHome, "sessions", "cwd-enc");
+      const sessionDir = path.join(catalog, "sess-rel-use");
+      const img = path.join(sessionDir, "images", "1.jpg");
+      fs.mkdirSync(path.dirname(img), { recursive: true });
+      fs.writeFileSync(img, "session-jpeg");
+      // Workspace candidate must be absent so the use-time path reaches trySessionMediaOpen.
+      const wsCandidate = path.join(root, "images", "1.jpg");
+      try {
+        fs.unlinkSync(wsCandidate);
+      } catch {
+        /* ok */
+      }
+
+      const opened = resolveAuthorizedFileForOpen("images/1.jpg", {
+        workspaceRoot: root,
+        grokHome,
+        sessionDir,
+        // Absolute re-auth after resolveSessionGeneratedMediaPath uses catalog fence.
+        sessionCatalogDirs: [catalog],
+        pathFs: {
+          realpathSync: (p: string) => fs.realpathSync(p),
+          existsSync: (p: string) => fs.existsSync(p),
+          statSync: (p: string) => fs.statSync(p),
+          readdirSync: (p: string, o: { withFileTypes: true }) => fs.readdirSync(p, o),
+        },
+      });
+      expect(opened.ok).toBe(true);
+      if (opened.ok) {
+        expect(path.resolve(opened.absPath)).toBe(path.resolve(img));
+        expect(fs.readFileSync(opened.absPath, "utf8")).toBe("session-jpeg");
+      }
+    } finally {
+      fs.rmSync(grokHome, { recursive: true, force: true });
+    }
+  });
+
   it("source gate: ElectronWebview.dispatchMessage applies desktop policy", () => {
     const src = fs.readFileSync(
       path.join(

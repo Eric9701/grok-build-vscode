@@ -165,6 +165,7 @@ import {
   readContextUsage,
   readSessionEntries,
   resolveGrokHome,
+  sessionCatalogDirs,
   sessionDirFor,
 } from "./sessions";
 import {
@@ -172,6 +173,7 @@ import {
   isRefusedMediaPath,
   isTrustedGeneratedMediaPath,
   MAX_INLINE_MEDIA_BYTES,
+  resolveChatOpenFilePath,
 } from "./media-serve";
 import { revalidateOpenFileForUse } from "./desktop/desktop-policy";
 import {
@@ -2786,6 +2788,37 @@ Only continue if you trust this code.`,
   }
 
   /**
+   * Grok home + on-disk session directory + project session catalogs for desktop
+   * openFile authorization of trusted session-generated media
+   * (`images|videos` under `~/.grok/sessions/<cwd>/…`). Absolute opens are scoped
+   * to the project catalogs (sibling sessions OK for fork replay; cross-repo not).
+   * Public so Electron main can wire both message-gate and use-time contexts.
+   */
+  desktopOpenMediaContext(session: Session = this.focused): {
+    grokHome?: string;
+    sessionDir?: string;
+    sessionCatalogDirs?: string[];
+  } {
+    let grokHome: string | undefined;
+    try {
+      grokHome = resolveGrokHome(process.env);
+    } catch {
+      grokHome = undefined;
+    }
+    const cwd = this.sessionCwd(session);
+    const sid = session.activeSessionId;
+    const sessionDir =
+      grokHome && sid
+        ? sessionDirFor(grokHome, cwd, sid, { fs: defaultFs })
+        : undefined;
+    const catalogs =
+      grokHome
+        ? sessionCatalogDirs({ fs: defaultFs, grokHome, cwd })
+        : undefined;
+    return { grokHome, sessionDir, sessionCatalogDirs: catalogs };
+  }
+
+  /**
    * Public: desktop File menu / host asks the sidebar to open another folder.
    * Picks a directory when `cwd` is omitted.
    */
@@ -4871,8 +4904,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       case "openFile": {
         const ref = parseFileRef(msg.path);
-        let p = ref.path;
-        if (!path.isAbsolute(p)) p = path.join(this.sessionCwd(session), p);
+        // Workspace-first, then session-generated media for relative
+        // images|videos/<file> links the agent writes in prose (e.g. [1.jpg](images/1.jpg)).
+        // See resolveChatOpenFilePath / isTrustedGeneratedMediaPath.
+        const { grokHome, sessionDir } = this.desktopOpenMediaContext(session);
+        const p = resolveChatOpenFilePath({
+          rawPath: ref.path,
+          workspaceRoots: [this.sessionCwd(session)],
+          sessionDir,
+          grokHome,
+          exists: (abs) => {
+            try {
+              return fs.statSync(abs).isFile();
+            } catch {
+              return false;
+            }
+          },
+          realpath: (candidate) => fs.realpathSync(candidate),
+        });
         if (ref.startLine != null) {
           const startLine = Math.max(0, ref.startLine - 1);
           const endLine = ref.endLine != null ? Math.max(startLine, ref.endLine - 1) : startLine;
@@ -7999,6 +8048,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           pickerAlreadyUsed: this.state.get<boolean>(MOVE_VIEW_HINT_USED_KEY) === true,
         }),
         showOutput: this.host.canShowOutput,
+        // Absent/true = host opens files in an editor tab; false = no editor
+        // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
+        openInEditor: this.host.canOpenInEditor,
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.

@@ -5422,6 +5422,11 @@
     state.pendingSubmissionChipIds = [];
     state.rejectedSubmissionText = "";
     updateSendButton();
+    // Body-attached lightbox outlives #messages — close it on every session
+    // swap so the previous conversation's image cannot cover the next one.
+    // (confirm-overlay / uiPrompt are action-scoped and remove themselves;
+    // only the image preview persists across a reset.)
+    closeImagePreview();
   }
 
   function showOnboarding(mode, info) {
@@ -6796,10 +6801,19 @@
     scrollToBottom();
   }
 
+  // Does this surface open files in a host editor tab? Opt-out polarity on
+  // capabilities.openInEditor (absent/true = yes). Remote always answers no:
+  // the caps a phone receives are the DESK machine's, and a tap must never
+  // open an editor 200 km away.
+  function hostOpensInEditor() {
+    return !IS_REMOTE && !(state.hostCaps && state.hostCaps.openInEditor === false);
+  }
+
   // Hover actions for an inlined image/video, anchored top-right like the
-  // code-block copy button: copy the on-disk path, or open it in VS Code. Both
-  // are the only way to reach a *video's* file (its click drives playback
-  // controls, so the click-to-open we give images can't apply there).
+  // code-block copy button: copy the on-disk path, or open the file (editor
+  // tab on VS Code; OS default app on desktop). Both are the only way to
+  // reach a *video's* file (its click drives playback controls, so the
+  // click-to-enlarge we give images can't apply there).
   function buildMediaActions(path, src) {
     const actions = document.createElement("div");
     actions.className = "generated-media-actions";
@@ -6807,7 +6821,7 @@
     // Remote clients: there is no host to copy a path to or open a file in — the
     // one action that means anything on a phone is saving the image, which
     // arrives inlined as a self-contained data: URI. Show only Download; the
-    // copy-path / open-in-VS-Code buttons would post host-local messages the
+    // copy-path / open-file buttons would post host-local messages the
     // relay drops.
     if (IS_REMOTE) {
       const dlBtn = document.createElement("button");
@@ -6841,7 +6855,9 @@
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "generated-media-btn";
-    openBtn.title = "Open in VS Code";
+    // Label follows openInEditor: VS Code opens an editor tab; desktop hands
+    // the path to the OS default app. Action is openFile either way.
+    openBtn.title = hostOpensInEditor() ? "Open in VS Code" : "Open file";
     openBtn.innerHTML = ICON.file;
     openBtn.onclick = (e) => {
       e.stopPropagation();
@@ -6856,9 +6872,9 @@
   // Render generated media (grok `/imagine` image or `/imagine-video` video).
   // `src` is a renderable source the host resolved for a generated file — a
   // webview URI streamed from disk (big videos) or a base64 data: URI; `url` is
-  // a remote link we open externally. Clicking an image opens its source file in
-  // VS Code; video gets native <video> controls. Both expose hover icons (copy
-  // path / open in VS Code) over the top-right corner.
+  // a remote link we open externally. Clicking an image opens a host editor tab
+  // when the host can (VS Code); otherwise the in-app lightbox. Video gets
+  // native <video> controls. Hover icons: copy path / open file.
   function addGeneratedMedia(msg) {
     if (state.suppressReplayTurn) return;
     const isVideo = msg.media === "video";
@@ -6880,13 +6896,18 @@
         img.src = msg.src;
         img.alt = "Generated image";
         img.loading = "lazy";
-        // Click-to-open is a host action (opens the file in VS Code); on a remote
-        // client it's dead, so leave the image inert there and let the Download
-        // button below be the one affordance.
-        if (msg.path && !IS_REMOTE) {
+        const mediaLabel = (msg.path && String(msg.path).split(/[\\/]/).pop()) || "Generated image";
+        // Editor host → openFile (tab). No editor / remote → lightbox. No
+        // fullId: generated media is already full-size on the wire (remote
+        // inlines the whole file as a data: URI; it never downscales).
+        if (hostOpensInEditor() && msg.path) {
           img.title = "Open " + msg.path;
           img.style.cursor = "pointer";
           img.onclick = () => vscode.postMessage({ type: "openFile", path: msg.path });
+        } else {
+          img.title = "View " + mediaLabel;
+          img.style.cursor = "pointer";
+          img.onclick = () => openImagePreview(msg.src, mediaLabel);
         }
         el.appendChild(img);
       }
@@ -8724,6 +8745,24 @@
     }, 20000);
   }
 
+  /** Hide the body-attached lightbox and drop any in-flight full-size request.
+   *  Called from the close control, Escape, and session reset — the overlay
+   *  outlives the transcript, so a focus swap must not leave the previous
+   *  session's image sitting over the next one. */
+  function closeImagePreview() {
+    const overlay = document.querySelector(".image-preview-overlay");
+    if (overlay) {
+      overlay.hidden = true;
+      const img = overlay.querySelector("img");
+      if (img) {
+        img.removeAttribute("src");
+        img.alt = "";
+      }
+    }
+    setImagePreviewLoading(false);
+    state.pendingImageFullId = null;
+  }
+
   function openImagePreview(src, label, fullId) {
     if (!src) return;
     let overlay = document.querySelector(".image-preview-overlay");
@@ -8733,14 +8772,8 @@
       overlay.hidden = true;
       overlay.innerHTML = `<button type="button" class="image-preview-close" aria-label="Close image preview">&times;</button><img>`
         + `<div class="image-preview-spinner" role="status" aria-label="Loading full-size image" hidden>${ICON.spinner}</div>`;
-      const close = () => {
-        overlay.hidden = true;
-        // Whatever was in flight is for a picture nobody is looking at now.
-        setImagePreviewLoading(false);
-        state.pendingImageFullId = null;
-      };
-      overlay.onclick = (e) => { if (e.target === overlay) close(); };
-      overlay.querySelector(".image-preview-close").onclick = close;
+      overlay.onclick = (e) => { if (e.target === overlay) closeImagePreview(); };
+      overlay.querySelector(".image-preview-close").onclick = closeImagePreview;
       document.body.appendChild(overlay);
     }
     const img = overlay.querySelector("img");
@@ -8765,7 +8798,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     const overlay = document.querySelector(".image-preview-overlay");
-    if (overlay && !overlay.hidden) overlay.hidden = true;
+    if (overlay && !overlay.hidden) closeImagePreview();
   });
 
   function previewCacheForCurrentSession() {

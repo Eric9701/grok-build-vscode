@@ -572,6 +572,7 @@ export function createVsCodeHost(
       return secondarySideBar;
     },
     canShowOutput: true,
+    canOpenInEditor: true,
     canSwitchWorkspaceFolder: false,
     canArchiveRepos: true,
   };

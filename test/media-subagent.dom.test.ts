@@ -9,13 +9,55 @@
 //   3. remote link (no src, just url) renders an "open ↗" button, not an <img>
 //   4. a spawn_subagent tool call renders a "Subagent: <type>" card and is
 //      diverted away from the generic tool group
+//   5. openInEditor capability routes image click: editor host → openFile,
+//      desktop/remote → in-app lightbox (no openFile)
 import { describe, it, expect } from "vitest";
-import { bootWebview, dispatch, click } from "./webview-harness";
+import { bootWebview, dispatch, click, type Harness } from "./webview-harness";
 
 const messages = (doc: Document) => doc.getElementById("messages") as HTMLElement;
 
 const IMG_DATA = "data:image/jpeg;base64,/9j/AAAQSkZJRg==";
 const VIDEO_DATA = "data:video/mp4;base64,AAAAIGZ0eXBpc29t";
+const IMG_PATH = "/sessions/abc/images/cat.jpg";
+
+type Caps = Record<string, boolean>;
+
+function bootWithCaps(capabilities: Caps, opts: { remote?: boolean } = {}): Harness {
+  const h = bootWebview({ ready: true, remote: opts.remote });
+  dispatch(h.window, {
+    type: "initialState",
+    effort: "",
+    cwd: "/w",
+    useCtrlEnter: false,
+    extVersion: "9.9.9",
+    showThinking: false,
+    expandCommandOutputs: false,
+    steerByDefault: false,
+    soundNotifications: false,
+    processingSound: false,
+    readRepliesAloud: false,
+    capabilities: { uploadFile: true, remoteVoice: true, ...capabilities },
+  });
+  return h;
+}
+
+function postGeneratedImage(h: Harness, extra: Record<string, unknown> = {}): void {
+  dispatch(h.window, {
+    type: "media",
+    media: "image",
+    src: IMG_DATA,
+    path: IMG_PATH,
+    ...extra,
+  });
+}
+
+function imagePreviewOverlay(doc: Document): HTMLElement | null {
+  return doc.querySelector(".image-preview-overlay") as HTMLElement | null;
+}
+
+function openFilePosts(posted: Harness["posted"]) {
+  return posted.filter((m) => m.type === "openFile");
+}
 
 describe("addGeneratedMedia (/imagine image)", () => {
   it("inlines a generated image as a clickable <img> with the data: src", () => {
@@ -24,7 +66,7 @@ describe("addGeneratedMedia (/imagine image)", () => {
       type: "media",
       media: "image",
       src: IMG_DATA,
-      path: "/sessions/abc/images/cat.jpg",
+      path: IMG_PATH,
     });
 
     const wrap = messages(doc).querySelector(".generated-image");
@@ -36,8 +78,131 @@ describe("addGeneratedMedia (/imagine image)", () => {
     expect(img.getAttribute("src")).toBe(IMG_DATA);
 
     // clicking the inlined image opens its source file in VS Code
+    // (absent openInEditor = opt-out true → editor host)
     click(window, img);
-    expect(posted).toContainEqual({ type: "openFile", path: "/sessions/abc/images/cat.jpg" });
+    expect(posted).toContainEqual({ type: "openFile", path: IMG_PATH });
+  });
+});
+
+describe("addGeneratedMedia image click by surface (openInEditor)", () => {
+  it("VS Code caps → click posts openFile and opens no lightbox overlay", () => {
+    // openInEditor absent OR true: editor tab via openFile. No overlay.
+    const h = bootWithCaps({ openInEditor: true });
+    postGeneratedImage(h);
+    const img = messages(h.doc).querySelector(".generated-image img") as HTMLImageElement;
+    expect(img).not.toBeNull();
+
+    click(h.window, img);
+
+    expect(openFilePosts(h.posted)).toEqual([{ type: "openFile", path: IMG_PATH }]);
+    const overlay = imagePreviewOverlay(h.doc);
+    expect(overlay === null || overlay.hidden).toBe(true);
+  });
+
+  it("desktop caps (openInEditor: false) → click opens lightbox with src, posts no openFile", () => {
+    const h = bootWithCaps({ openInEditor: false });
+    postGeneratedImage(h);
+    const img = messages(h.doc).querySelector(".generated-image img") as HTMLImageElement;
+
+    click(h.window, img);
+
+    expect(openFilePosts(h.posted)).toEqual([]);
+    const overlay = imagePreviewOverlay(h.doc);
+    expect(overlay).not.toBeNull();
+    expect(overlay!.hidden).toBe(false);
+    const previewImg = overlay!.querySelector("img") as HTMLImageElement;
+    expect(previewImg.getAttribute("src")).toBe(IMG_DATA);
+    expect(previewImg.getAttribute("alt")).toBe("cat.jpg");
+    // Generated media is full-size on the wire — no requestImageFull / fullId.
+    expect(h.posted.filter((m) => m.type === "requestImageFull")).toEqual([]);
+  });
+
+  it("remote → click opens lightbox even when desk caps say the host has an editor", () => {
+    // Phone receives the desk machine's capabilities. A tap must never open
+    // an editor on that desk, so remote forces the lightbox.
+    const h = bootWithCaps({ openInEditor: true }, { remote: true });
+    postGeneratedImage(h);
+    const img = messages(h.doc).querySelector(".generated-image img") as HTMLImageElement;
+    expect(img).not.toBeNull();
+
+    click(h.window, img);
+
+    expect(openFilePosts(h.posted)).toEqual([]);
+    const overlay = imagePreviewOverlay(h.doc);
+    expect(overlay).not.toBeNull();
+    expect(overlay!.hidden).toBe(false);
+    expect((overlay!.querySelector("img") as HTMLImageElement).getAttribute("src")).toBe(IMG_DATA);
+    expect(h.posted.filter((m) => m.type === "requestImageFull")).toEqual([]);
+  });
+
+  it("video stays a non-clickable <video> under every surface", () => {
+    for (const opts of [
+      { caps: { openInEditor: true } as Caps, remote: false },
+      { caps: { openInEditor: false } as Caps, remote: false },
+      { caps: { openInEditor: true } as Caps, remote: true },
+    ]) {
+      const h = bootWithCaps(opts.caps, { remote: opts.remote });
+      dispatch(h.window, {
+        type: "media",
+        media: "video",
+        src: VIDEO_DATA,
+        path: "/sessions/abc/videos/clip.mp4",
+      });
+      const wrap = messages(h.doc).querySelector(".generated-image.generated-video")!;
+      const video = wrap.querySelector("video") as HTMLVideoElement;
+      expect(video).not.toBeNull();
+      expect(video.controls).toBe(true);
+      expect(wrap.querySelector("img")).toBeNull();
+      // No click handler that would open a lightbox or post openFile.
+      expect(typeof (video as any).onclick === "function" ? (video as any).onclick : null).toBeNull();
+      click(h.window, video);
+      expect(openFilePosts(h.posted)).toEqual([]);
+      const overlay = imagePreviewOverlay(h.doc);
+      expect(overlay === null || overlay.hidden).toBe(true);
+    }
+  });
+
+  it("clearMessages closes an open lightbox and clears its pending full-size state", () => {
+    // openImagePreview attaches to document.body; resetForNewSession only
+    // cleared the transcript — a session swap with the lightbox open left the
+    // previous session's image over the next one. Routing generated-media
+    // clicks to the lightbox (desktop + remote) makes that reachable for
+    // transcript content.
+    // Mutation: drop closeImagePreview() from resetForNewSession and this
+    // test fails (overlay stays visible with the prior src after clearMessages).
+    const h = bootWithCaps({ openInEditor: false });
+    postGeneratedImage(h);
+    const img = messages(h.doc).querySelector(".generated-image img") as HTMLImageElement;
+    click(h.window, img);
+
+    const overlay = imagePreviewOverlay(h.doc);
+    expect(overlay).not.toBeNull();
+    expect(overlay!.hidden).toBe(false);
+    expect((overlay!.querySelector("img") as HTMLImageElement).getAttribute("src")).toBe(IMG_DATA);
+
+    dispatch(h.window, { type: "clearMessages" });
+
+    expect(overlay!.hidden).toBe(true);
+    const previewImg = overlay!.querySelector("img") as HTMLImageElement;
+    expect(previewImg.getAttribute("src")).toBeNull();
+    // Transcript wiped; no leftover media row either.
+    expect(messages(h.doc).querySelector(".generated-image")).toBeNull();
+  });
+
+  it("clearMessages closes a remote lightbox opened from generated media", () => {
+    // Same body-attached overlay path as desktop; remote forces the lightbox
+    // even when desk caps claim an editor.
+    const h = bootWithCaps({ openInEditor: true }, { remote: true });
+    postGeneratedImage(h);
+    click(h.window, messages(h.doc).querySelector(".generated-image img") as HTMLImageElement);
+
+    const overlay = imagePreviewOverlay(h.doc)!;
+    expect(overlay.hidden).toBe(false);
+
+    dispatch(h.window, { type: "clearMessages" });
+
+    expect(overlay.hidden).toBe(true);
+    expect((overlay.querySelector("img") as HTMLImageElement).getAttribute("src")).toBeNull();
   });
 });
 
@@ -63,7 +228,7 @@ describe("addGeneratedMedia (/imagine-video video)", () => {
   });
 });
 
-describe("addGeneratedMedia hover actions (copy path / open in VS Code)", () => {
+describe("addGeneratedMedia hover actions (copy path / open)", () => {
   const btnByTitle = (wrap: Element, title: string) =>
     [...wrap.querySelectorAll(".generated-media-btn")].find(
       (b) => b.getAttribute("title") === title,
@@ -71,7 +236,7 @@ describe("addGeneratedMedia hover actions (copy path / open in VS Code)", () => 
 
   it("an image exposes copy-path + open icons; the open icon posts openFile", () => {
     const { window, posted, doc } = bootWebview();
-    dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: "/sessions/abc/images/cat.jpg" });
+    dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: IMG_PATH });
     const wrap = messages(doc).querySelector(".generated-image")!;
 
     expect(btnByTitle(wrap, "Copy path")).toBeTruthy();
@@ -79,7 +244,27 @@ describe("addGeneratedMedia hover actions (copy path / open in VS Code)", () => 
     expect(openBtn).toBeTruthy();
 
     click(window, openBtn);
-    expect(posted).toContainEqual({ type: "openFile", path: "/sessions/abc/images/cat.jpg" });
+    expect(posted).toContainEqual({ type: "openFile", path: IMG_PATH });
+  });
+
+  it("hover open label is 'Open in VS Code' when openInEditor is true", () => {
+    const h = bootWithCaps({ openInEditor: true });
+    postGeneratedImage(h);
+    const wrap = messages(h.doc).querySelector(".generated-image")!;
+    expect(btnByTitle(wrap, "Open in VS Code")).toBeTruthy();
+    expect(btnByTitle(wrap, "Open file")).toBeUndefined();
+  });
+
+  it("hover open label is 'Open file' when openInEditor is false (desktop)", () => {
+    const h = bootWithCaps({ openInEditor: false });
+    postGeneratedImage(h);
+    const wrap = messages(h.doc).querySelector(".generated-image")!;
+    const openBtn = btnByTitle(wrap, "Open file")!;
+    expect(openBtn).toBeTruthy();
+    expect(btnByTitle(wrap, "Open in VS Code")).toBeUndefined();
+    // Action is still openFile — the escape hatch to the real file on disk.
+    click(h.window, openBtn);
+    expect(h.posted).toContainEqual({ type: "openFile", path: IMG_PATH });
   });
 
   it("a video — which has no click-to-open — still exposes the open icon", () => {
@@ -100,11 +285,11 @@ describe("addGeneratedMedia hover actions (copy path / open in VS Code)", () => 
       value: { writeText: (t: string) => { copied = t; return Promise.resolve(); } },
       configurable: true,
     });
-    dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: "/sessions/abc/images/cat.jpg" });
+    dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: IMG_PATH });
     const wrap = messages(doc).querySelector(".generated-image")!;
 
     click(window, btnByTitle(wrap, "Copy path")!);
-    expect(copied).toBe("/sessions/abc/images/cat.jpg");
+    expect(copied).toBe(IMG_PATH);
   });
 
   it("the remote-link fallback (no on-disk path) has no hover actions", () => {

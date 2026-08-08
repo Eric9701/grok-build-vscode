@@ -14,6 +14,7 @@
  * `app-resource://` paths remain registry-contained.
  */
 import * as path from "node:path";
+import { keepsCanonicalDirectChildIdentity } from "./sessions";
 
 const GENERATED_MEDIA_EXT = new Set([
   ".jpg",
@@ -131,4 +132,172 @@ export function isTrustedGeneratedMediaPath(
   } catch {
     return false;
   }
+}
+
+/**
+ * True when `relPath` is a safe relative chat link to session-generated media:
+ * exactly `images/<file>` or `videos/<file>` with a media extension.
+ *
+ * Refuses absolute paths, drive letters, UNC, URI schemes, null bytes, any
+ * `..` segment, nested paths, and non-media extensions. Pure — no I/O.
+ */
+export function isSafeRelativeGeneratedMediaLink(relPath: string): boolean {
+  if (!relPath || typeof relPath !== "string") return false;
+  if (relPath.includes("\0")) return false;
+  // Schemes (file:, http:) and Windows drive letters (C:).
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(relPath)) return false;
+  if (relPath.startsWith("\\\\") || relPath.startsWith("//")) return false;
+
+  const n = relPath.replace(/\\/g, "/");
+  if (n.startsWith("/")) return false;
+
+  const segments = n.split("/").filter((s) => s.length > 0 && s !== ".");
+  if (segments.length !== 2) return false;
+  if (segments.some((s) => s === ".." || s.includes("\0"))) return false;
+
+  const folder = segments[0]!.toLowerCase();
+  if (folder !== "images" && folder !== "videos") return false;
+
+  const base = segments[1]!;
+  if (!base || base === "." || base === ".." || /[/\\]/.test(base)) return false;
+  return GENERATED_MEDIA_EXT.has(path.extname(base).toLowerCase());
+}
+
+/**
+ * Join a safe relative media link onto a session directory and prove the
+ * result is trusted generated media under **both** `sessionDir` and `grokHome`
+ * (canonical containment). Session trust keeps a symlink under this session
+ * from resolving into a sibling session still inside the home; home trust
+ * keeps the target from escaping `~/.grok`. When the whole home sits under a
+ * symlink, root and file canonicalize consistently and both checks still pass.
+ *
+ * Layout identity ({@link keepsCanonicalDirectChildIdentity}) is applied at
+ * **both** levels here — self-sufficient, no caller fence required:
+ * 1. Catalog (`dirname(sessionDir)`) must stay a direct child of
+ *    `<grokHome>/sessions` with the same urlencoded-cwd leaf. A junction at
+ *    `sessions/<cwd>` that relocates or renames the catalog would otherwise
+ *    make sessionDir identity check against its own (remapped) dirname and
+ *    pass — that is exactly the hole a dirname-only fence leaves open.
+ * 2. `sessionDir` must stay a direct child of that catalog with the same id.
+ *    A junction at `sessions/<cwd>/<id>` onto another session makes
+ *    `realpath(sessionDir)` that other directory, so containment against it
+ *    would accept that other session's media.
+ *
+ * Session dirs always live under `<grokHome>/sessions/<catalog>/<id>` —
+ * including worktree sessions (their cwd is the worktree path; the catalog
+ * leaf is still that cwd's encode under `sessions/`). The worktrees root is
+ * the isolated checkout, not session storage.
+ *
+ * Returns the absolute path, or null when the link is unsafe / untrusted.
+ */
+export function resolveSessionGeneratedMediaPath(
+  relativePath: string,
+  sessionDir: string,
+  grokHome: string,
+  realpath: RealpathFn = (p) => path.resolve(p),
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (!sessionDir || !grokHome) return null;
+  if (!isSafeRelativeGeneratedMediaLink(relativePath)) return null;
+
+  // Layout identity: catalog under <grokHome>/sessions, then session under catalog.
+  // Both halves live here so a caller that skips a pre-fence cannot open the
+  // catalog-junction hole (desktop also fences via catalogKeepsEncodedLeaf;
+  // VS Code's openResource path uses this resolver alone).
+  const sessionCatalog = path.dirname(path.resolve(sessionDir));
+  const sessionsRoot = path.join(path.resolve(grokHome), "sessions");
+  if (
+    !keepsCanonicalDirectChildIdentity(
+      sessionCatalog,
+      sessionsRoot,
+      realpath,
+      platform,
+    )
+  ) {
+    return null;
+  }
+  if (
+    !keepsCanonicalDirectChildIdentity(
+      sessionDir,
+      sessionCatalog,
+      realpath,
+      platform,
+    )
+  ) {
+    return null;
+  }
+
+  const segments = relativePath
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((s) => s.length > 0 && s !== ".");
+  if (segments.length !== 2) return null;
+
+  const joined = path.resolve(sessionDir, segments[0]!, segments[1]!);
+  // Stay strictly inside the session dir (no root itself, no escape).
+  if (!isLexicallyInside(sessionDir, joined)) return null;
+  // Canonical half: real target must stay under this session (not a sibling).
+  if (!isTrustedGeneratedMediaPath(joined, sessionDir, realpath)) return null;
+  if (!isTrustedGeneratedMediaPath(joined, grokHome, realpath)) return null;
+  return joined;
+}
+
+export type ResolveChatOpenFilePathOpts = {
+  /** Bare filesystem path (suffixes like `#L12` already stripped). */
+  rawPath: string;
+  /** Session cwd / workspace roots tried first (existence wins). */
+  workspaceRoots: readonly string[];
+  /** On-disk session directory (`…/sessions/<cwd>/<id>`), when known. */
+  sessionDir?: string | undefined;
+  /** Grok home used by {@link isTrustedGeneratedMediaPath}. */
+  grokHome?: string | undefined;
+  /** True when the absolute path is an existing regular file. */
+  exists: (absPath: string) => boolean;
+  realpath?: RealpathFn;
+};
+
+/**
+ * Resolve a chat `openFile` path: workspace file first, then session-generated
+ * media for safe relative `images|videos/<file>` links.
+ *
+ * Absolute paths (drive-letter, UNC, POSIX) pass through **verbatim** — same as
+ * the pre-media join path — so host/platform open semantics are unchanged
+ * (e.g. win32 does not rewrite `/tmp/x.png` via `path.resolve`). Relative
+ * non-media paths fall back to joining the first workspace root.
+ */
+export function resolveChatOpenFilePath(opts: ResolveChatOpenFilePathOpts): string {
+  const raw = opts.rawPath;
+  if (!raw || typeof raw !== "string" || raw.includes("\0")) {
+    return raw || "";
+  }
+
+  const realpath = opts.realpath ?? ((p: string) => path.resolve(p));
+  const roots = opts.workspaceRoots.filter((r) => typeof r === "string" && r.length > 0);
+
+  // Absolute / drive / UNC: pass through unchanged (no rewrite, no auth here —
+  // desktop authorizeOpenFile / openFsPath own containment).
+  if (path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) {
+    return raw;
+  }
+
+  // Workspace wins when the file actually exists there.
+  for (const root of roots) {
+    const candidate = path.resolve(root, raw);
+    if (opts.exists(candidate)) return candidate;
+  }
+
+  // Session-media fallback for agent-named relative links only.
+  if (opts.sessionDir && opts.grokHome) {
+    const media = resolveSessionGeneratedMediaPath(
+      raw,
+      opts.sessionDir,
+      opts.grokHome,
+      realpath,
+    );
+    if (media) return media;
+  }
+
+  // Default: join first workspace root (or leave relative if none).
+  if (roots.length > 0) return path.resolve(roots[0]!, raw);
+  return raw;
 }

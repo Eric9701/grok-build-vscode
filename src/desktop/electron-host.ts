@@ -1109,6 +1109,9 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     // side bars to move a view between.
     canUseSecondarySideBar: false,
     canShowOutput: false,
+    // No editor tabs — a generated-image click must use the in-app lightbox,
+    // not openFile (which would hand the file to the OS image viewer).
+    canOpenInEditor: false,
     canSwitchWorkspaceFolder: true,
     canArchiveRepos: false,
   };

@@ -718,6 +718,16 @@ export interface Host {
    */
   readonly canShowOutput: boolean;
   /**
+   * Whether clicking a generated image (or the media hover "open" action's
+   * sibling click-to-enlarge path) should open a host editor tab via
+   * `openFile`. Wired into `initialState.capabilities.openInEditor`. Opt-out
+   * polarity on the wire: absent/true = editor host (VS Code); false =
+   * no editor (desktop — open the in-app lightbox instead). Remote clients
+   * force the lightbox regardless: the caps they receive are the desk
+   * machine's, and a phone must never open a desk editor.
+   */
+  readonly canOpenInEditor: boolean;
+  /**
    * When true, the local webview may switch the active workspace folder via
    * the projects rail (`selectRepo` re-homes the local session). Desktop
    * multi-folder only; **false for VS Code** (window already is the repo).
