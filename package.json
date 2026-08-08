@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build for VS Code (Community)",
   "description": "GUI for Grok Build CLI (incl. Grok 4.5). Voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT). Not affiliated with or endorsed by xAI.",
-  "version": "3.2.5",
+  "version": "3.2.6",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -405,7 +405,8 @@
     "desktop": "npm run compile && node scripts/run-desktop.cjs",
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",
-    "prepackage": "node -e \"for (const f of require('fs').readdirSync('.')) if (f.endsWith('.vsix')) require('fs').unlinkSync(f)\"",
+    "check:vsix": "npm run compile && node scripts/check-vsix-requires.mjs",
+    "prepackage": "node -e \"for (const f of require('fs').readdirSync('.')) if (f.endsWith('.vsix')) require('fs').unlinkSync(f)\" && npm run check:vsix",
     "package": "vsce package --readme-path README.marketplace.md",
     "publish": "vsce publish --readme-path README.marketplace.md",
     "dist": "npm run compile && electron-builder --publish never",

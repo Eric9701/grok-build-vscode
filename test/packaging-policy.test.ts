@@ -109,10 +109,32 @@ describe("VSIX excludes desktop app", () => {
     // Both readmes excluded as files; vsce embeds marketplace content only.
     expect(vscodeignore).toMatch(/^\s*README\.marketplace\.md\s*$/m);
     expect(vscodeignore).toMatch(/^\s*README\.md\s*$/m);
-    // Trap: `!out/**/*.js` re-includes out/desktop/** and later exclude rules
-    // do not win under vsce — only top-level out/*.js may be un-ignored.
+    // Trap: `!out/**/*.js` re-includes out/desktop/** and a LATER exclude rule
+    // does not win it back under vsce's matcher. A negation placed after the
+    // exclusion does work — that is how the two modules below are re-included —
+    // but the broad form must stay out.
     expect(vscodeignore).toMatch(/^\s*!out\/\*\.js\s*$/m);
     expect(vscodeignore).not.toMatch(/^\s*!out\/\*\*\/\*\.js\s*$/m);
+  });
+
+  it("re-includes the desktop modules the EXTENSION requires at runtime", () => {
+    // #101: out/sidebar.js requires ./desktop/desktop-policy, which requires
+    // ./file-tree. Excluding them shipped six releases (3.2.0-3.2.5) that threw
+    // during activation before registering a command, so every Grok command
+    // reported "not found" and the sidebar never appeared.
+    //
+    // A tripwire, not the enforcement — `npm run check:vsix` resolves every
+    // require in the packed output against the packed file list and fails
+    // packaging. This just stops the two lines being deleted as dead weight.
+    expect(vscodeignore).toMatch(/^\s*!out\/desktop\/desktop-policy\.js\s*$/m);
+    expect(vscodeignore).toMatch(/^\s*!out\/desktop\/file-tree\.js\s*$/m);
+  });
+
+  it("packaging cannot run without the require check", () => {
+    // The check has to be reachable from `npm run package`, which CI already
+    // runs on every push and PR — otherwise it is a script nobody invokes.
+    expect(pkg.scripts["check:vsix"]).toMatch(/check-vsix-requires/);
+    expect(pkg.scripts.prepackage).toMatch(/check:vsix/);
   });
 
   it("desktop dist scripts exist and do not replace npm run package", () => {

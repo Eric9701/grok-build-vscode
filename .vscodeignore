@@ -24,10 +24,22 @@ node_modules/**
 # Re-include only top-level compiled extension JS (out/*.js).
 # Do NOT use `!out/**/*.js` — that also un-ignores out/desktop/** and a later
 # `out/desktop/**` rule does not re-exclude those files under vsce's matcher.
-# Today the only nested out/ tree is desktop/; keep it excluded entirely.
 !out/*.js
 # Desktop Electron app — never ship in the VS Code extension vsix.
 out/desktop/**
+# …except the two modules the EXTENSION itself requires at runtime. Not a
+# convenience: out/sidebar.js requires ./desktop/desktop-policy, which requires
+# ./file-tree, and 3.2.0-3.2.5 all shipped without them. Activation threw
+# "Cannot find module './desktop/desktop-policy'" before a single command was
+# registered, so every Grok command reported "not found" and the sidebar never
+# appeared (#101).
+#
+# This list is enforced, not maintained by hand: `npm run check:vsix` resolves
+# every runtime require in the packed JS against the packed file list, so
+# another cross-boundary import without a line here fails packaging instead of
+# shipping a dead release.
+!out/desktop/desktop-policy.js
+!out/desktop/file-tree.js
 src/desktop/**
 vitest.desktop.config.ts
 scripts/run-desktop.cjs
