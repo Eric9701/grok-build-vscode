@@ -73,10 +73,38 @@ export interface PlacementRecord {
 
 export const VIEW_PLACEMENT_KEY = "grok.viewPlacement";
 
-/** Set once the user has opened the host's move-view picker from anywhere. Its
- *  ONLY job is retiring the empty-state hint — it must never influence where the
- *  view goes, or it becomes another guess about a placement we cannot see. */
+/**
+ * Set once the user has opened the host's move-view picker from anywhere.
+ *
+ * Retires the empty-state hint, and is the only in-process evidence that the
+ * user has taken placement into their own hands — so the startup correction
+ * checks it before acting. It may ABORT our move; it may never redirect one.
+ * Anything more would make it a guess about a placement we cannot see.
+ */
 export const MOVE_VIEW_HINT_USED_KEY = "grok.moveViewPickerUsed";
+
+/** Where `createVsCodeHost` caches its capability probe. Named here because the
+ *  first-run test below has to know about it. */
+export const SECONDARY_SIDE_BAR_PROBE_KEY = "grok.hostAcceptedSecondarySideBar";
+
+/**
+ * Whether this install has never been used — the gate for the one automatic
+ * placement correction.
+ *
+ * Keys the extension writes ON ITS OWN INITIATIVE do not count. That is the
+ * whole subtlety: the capability probe persists on every activation, so a first
+ * run whose correction returned no target, or threw, would find `globalState`
+ * non-empty on the second run and skip forever — a gate closed by our own
+ * bookkeeping rather than by anything the user did, stranding exactly the fresh
+ * install this exists for.
+ *
+ * Everything else counts, including the picker flag: a user who has opened the
+ * move picker has plainly used the extension.
+ */
+export function isFirstEverRun(storedKeys: readonly string[]): boolean {
+  const selfWritten: readonly string[] = [SECONDARY_SIDE_BAR_PROBE_KEY, VIEW_PLACEMENT_KEY];
+  return storedKeys.every((k) => selfWritten.includes(k));
+}
 
 /**
  * Whether to show the empty-state hint pointing at the host's own picker.

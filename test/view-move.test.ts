@@ -10,7 +10,11 @@ import {
   PRIMARY_CONTAINER_ID,
   revealCommandFor,
   SECONDARY_CONTAINER_ID,
+  isFirstEverRun,
+  MOVE_VIEW_HINT_USED_KEY,
+  SECONDARY_SIDE_BAR_PROBE_KEY,
   shouldShowMoveViewHint,
+  VIEW_PLACEMENT_KEY,
   viewPlacementCorrection,
 } from "../src/view-move";
 
@@ -43,7 +47,7 @@ describe("the one automatic placement correction", () => {
     // workbench whether moved or not, and the context key that separates them
     // cannot be read from an extension — so "correct it only when it is in
     // Explorer" is unimplementable. What CAN be established is that nobody has
-    // chosen anything yet, which is exactly what an empty globalState means.
+    // chosen anything yet — see isFirstEverRun for what counts as evidence.
     expect(correct(CURSOR, false)).toBeNull();
   });
 
@@ -68,6 +72,29 @@ describe("the one automatic placement correction", () => {
       containerId: PRIMARY_CONTAINER_ID,
       panelPosition: null,
     });
+  });
+});
+
+describe("whether this install has ever been used", () => {
+  it("an untouched install is a first-ever run", () => {
+    expect(isFirstEverRun([])).toBe(true);
+  });
+
+  it("our OWN bookkeeping does not count as use", () => {
+    // The one that mattered: the capability probe persists on every activation,
+    // so a first run whose correction returned no target — or threw — found
+    // globalState non-empty on the second run and skipped forever. The gate was
+    // being closed by our own write rather than by anything the user did,
+    // stranding exactly the fresh install this exists for.
+    expect(isFirstEverRun([SECONDARY_SIDE_BAR_PROBE_KEY])).toBe(true);
+    expect(isFirstEverRun([VIEW_PLACEMENT_KEY, SECONDARY_SIDE_BAR_PROBE_KEY])).toBe(true);
+  });
+
+  it("anything the user's use produced does count", () => {
+    expect(isFirstEverRun(["grok.installId"])).toBe(false);
+    expect(isFirstEverRun(["grok.repoPins", SECONDARY_SIDE_BAR_PROBE_KEY])).toBe(false);
+    // Including the picker flag: opening the move picker is plainly use.
+    expect(isFirstEverRun([MOVE_VIEW_HINT_USED_KEY])).toBe(false);
   });
 });
 
@@ -128,6 +155,14 @@ describe("both routes to the host picker retire the hint BEFORE moving", () => {
   it("the gear handler retires the hint, then relocates", () => {
     const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     expect(before(src, "this.retireMoveViewHint()", "this.host.relocateView(")).toBe(true);
+  });
+
+  it("the startup correction checks for a user move before applying one", () => {
+    // `activate` starts the correction without awaiting it, so the palette
+    // command can run during its probe. Re-reading the flag right before the
+    // move is what stops a correction landing on top of a choice just made.
+    const src = readFileSync(path.join(root, "src", "extension.ts"), "utf8");
+    expect(before(src, "MOVE_VIEW_HINT_USED_KEY) === true", "await applyPlacement(")).toBe(true);
   });
 
   it("retiring persists AND tells the live webview, in that order", () => {

@@ -39,7 +39,11 @@ import type {
   HostWebviewView,
 } from "./host";
 import { Uri, isFsPathInWorkspace } from "./host";
-import { hostAcceptedSecondarySideBar, type PanelPosition } from "./view-move";
+import {
+  hostAcceptedSecondarySideBar,
+  SECONDARY_SIDE_BAR_PROBE_KEY,
+  type PanelPosition,
+} from "./view-move";
 
 function toVsCodeTarget(target: ConfigTarget | undefined): vscode.ConfigurationTarget {
   switch (target) {
@@ -194,10 +198,6 @@ const hostFs: HostFileSystem = {
  * command can still call `output.show()` without going through the sidebar);
  * we only borrow it for append/show.
  */
-/** Cached answer to "did this host create our secondary-side-bar container?",
- *  so the very first webview of a session already knows (see below). */
-const SECONDARY_SIDE_BAR_KEY = "grok.hostAcceptedSecondarySideBar";
-
 export function createVsCodeHost(
   output: vscode.OutputChannel,
   context?: vscode.ExtensionContext,
@@ -212,11 +212,11 @@ export function createVsCodeHost(
   // wrong the other way would hide the correct destination in every VS Code.
   // In practice the probe wins the race anyway: in the host this exists for, the
   // webview is not resolved until activation's relocation focuses it.
-  let secondarySideBar = context?.globalState.get<boolean>(SECONDARY_SIDE_BAR_KEY) ?? true;
+  let secondarySideBar = context?.globalState.get<boolean>(SECONDARY_SIDE_BAR_PROBE_KEY) ?? true;
   void Promise.resolve(vscode.commands.getCommands(true)).then(
     (cmds) => {
       secondarySideBar = hostAcceptedSecondarySideBar(cmds);
-      void context?.globalState.update(SECONDARY_SIDE_BAR_KEY, secondarySideBar);
+      void context?.globalState.update(SECONDARY_SIDE_BAR_PROBE_KEY, secondarySideBar);
     },
     () => {
       /* keep the seeded value — a failed probe is not evidence of a refusal */

@@ -8,6 +8,8 @@ import {
   SECONDARY_CONTAINER_ID,
   revealCommandFor,
   viewPlacementCorrection,
+  isFirstEverRun,
+  MOVE_VIEW_HINT_USED_KEY,
   VIEW_PLACEMENT_KEY,
   withAttempt,
   type PanelPosition,
@@ -83,6 +85,14 @@ async function ensureViewPlacement(
       log(`no move — version=${version}, firstEverRun=${isFirstEverRun}`);
       return;
     }
+    // Re-read immediately before acting. `activate` starts this without
+    // awaiting, so the user can reach the palette command or the gear during the
+    // probe above — and a correction landing after their choice would undo it.
+    // This flag may ABORT our move; it may never redirect one.
+    if (context.globalState.get<boolean>(MOVE_VIEW_HINT_USED_KEY) === true) {
+      log("no move — the user reached the move picker first");
+      return;
+    }
     log(`moving -> ${target.containerId}, panel ${target.panelPosition ?? "as-is"}`);
     correctionIssued = true;
     // Held for the re-apply below. `onStartupFinished` means the extension host
@@ -149,7 +159,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
   // stored state has never been interacted with, so wherever the editor put the
   // view, nobody chose it — that is the entire licence the placement correction
   // has to move it, and it evaporates the moment any other subsystem writes.
-  const isFirstEverRun = context.globalState.keys().length === 0;
+  const firstEverRun = isFirstEverRun(context.globalState.keys());
   const output = vscode.window.createOutputChannel("Grok");
   const host = createVsCodeHost(output, context);
   const hostContext = createVsCodeHostContext(context);
@@ -238,7 +248,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
 
   // Not awaited: activation must not block on a workbench command, and nothing
   // below depends on where the view ended up.
-  void ensureViewPlacement(context, output, isFirstEverRun);
+  void ensureViewPlacement(context, output, firstEverRun);
 
   // VS Code sets ExtensionMode.Test ONLY when the extension host was launched by
   // a test runner, so an installed build can never reach this branch and the
