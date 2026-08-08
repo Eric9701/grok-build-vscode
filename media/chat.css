@@ -588,19 +588,15 @@ body.rail-resizing * {
     var(--vscode-list-activeSelectionBackground) 28%
   );
 }
-/* The conversation's own overflow menu, beside its name in the top bar. Only
-   rail hosts render the slot: VS Code has no session header, so its gear still
-   carries the Session group and a second copy here would offer Continue in a
-   new chat twice. The trailing border separates it from the panel toggles that
-   follow -- acting on this conversation and showing/hiding a panel are
-   different jobs, and they were reading as one undifferentiated run of icons. */
+/* Conversation overflow (⋯) in the top-right cluster: Remote, History, ⋯,
+   then (desktop only) a separator + Panel. Only rail hosts render the slot —
+   VS Code has no session header, so its gear still carries the Session group.
+   The separator lives on the Panel toggle (desktop inject), not here: a remote
+   client has no panel, so a trailing rule after ⋯ would be a dangling divider. */
 #session-head-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  margin-right: 6px;
-  padding-right: 6px;
-  border-right: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.35));
 }
 .rail-action-btn { width: 25px; height: 27px; }
 /* The empty rail's one actionable thing. Sits under the note rather than beside

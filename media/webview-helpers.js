@@ -30,7 +30,7 @@
     "ready", "remotePreferences", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
     "toggleChip", "openFile", "openUrl", "openText", "openDiff", "exportExpr", "setEffort",
     "addProjectFolder", "removeProjectFolder",
-    "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "openSettings", "moveView",
+    "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "toggleDevTools", "openSettings", "moveView",
     "setShowThinking", "setAppPurpose", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
@@ -793,6 +793,75 @@
   }
 
   /**
+   * When preferred side-panel widths + chat floor exceed the available window,
+   * shrink open panels proportionally (never below each panel's floor). When
+   * there is room, return preferred widths so a drag the user made is honoured
+   * again after the window grows. Closed panels contribute 0.
+   *
+   * @param {{
+   *   available: number,
+   *   chatMin: number,
+   *   panels: Array<{ id: string, preferred: number, min: number, open: boolean }>
+   * }} opts
+   * @returns {Record<string, number>}
+   */
+  function distributeSidePanelWidths(opts) {
+    const available = Math.max(0, Math.round(Number(opts && opts.available) || 0));
+    const chatMin = Math.max(0, Math.round(Number(opts && opts.chatMin) || 0));
+    const panels = opts && Array.isArray(opts.panels) ? opts.panels : [];
+    /** @type {Record<string, number>} */
+    const out = {};
+    /** @type {Array<{ id: string, min: number, preferred: number }>} */
+    const open = [];
+    for (const p of panels) {
+      const id = String((p && p.id) || "");
+      if (!id) continue;
+      const min = Math.max(0, Math.round(Number(p.min) || 0));
+      const preferred = Math.max(min, Math.round(Number(p.preferred) || min));
+      if (!p || !p.open) {
+        out[id] = 0;
+        continue;
+      }
+      open.push({ id, min, preferred });
+    }
+    if (open.length === 0) return out;
+
+    const preferredSum = open.reduce((s, p) => s + p.preferred, 0);
+    const minSum = open.reduce((s, p) => s + p.min, 0);
+    const budget = Math.max(0, available - chatMin);
+
+    if (budget >= preferredSum) {
+      for (const p of open) out[p.id] = p.preferred;
+      return out;
+    }
+    if (budget <= minSum) {
+      for (const p of open) out[p.id] = p.min;
+      return out;
+    }
+
+    // Shrink only the above-floor slack, in proportion to how much each panel
+    // sits above its floor — so a wide rail and a narrow panel both give ground.
+    const slackTotal = preferredSum - minSum;
+    const slackBudget = budget - minSum;
+    let assigned = 0;
+    for (let i = 0; i < open.length; i++) {
+      const p = open[i];
+      const above = p.preferred - p.min;
+      let w;
+      if (i === open.length - 1) {
+        w = budget - assigned; // last absorbs rounding residue
+      } else {
+        const share = slackTotal > 0 ? above / slackTotal : 1 / open.length;
+        w = Math.round(p.min + share * slackBudget);
+      }
+      w = Math.max(p.min, w);
+      out[p.id] = w;
+      assigned += w;
+    }
+    return out;
+  }
+
+  /**
    * Wire resize re-clamp that ignores full-screen transitions and re-runs once
    * after full-screen exits (window size may have changed meanwhile).
    * @param {() => void} reclamp measure + apply (caller owns the math)
@@ -897,7 +966,7 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, chatZoomFactor, unzoomClientPx };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

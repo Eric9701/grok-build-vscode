@@ -296,6 +296,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   openProjectConfig: "host-local",
   runMcpList: "host-local",
   showLogs: "host-local",
+  toggleDevTools: "host-local",
   openSettings: "host-local",
   moveView: "host-local",
   dropFile: "host-local",

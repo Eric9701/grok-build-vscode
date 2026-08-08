@@ -121,8 +121,11 @@ import {
 import {
   DESKTOP_OPEN_DEVTOOLS_ENV,
   DESKTOP_OPEN_DEVTOOLS_FLAG,
+  DESKTOP_DEVTOOLS_ACCELERATOR,
   desktopAppMenuTemplate,
   desktopDevToolsAllowed,
+  isDesktopDevToolsShortcut,
+  secondInstanceShouldOpenDevTools,
   shouldOpenDevToolsAtStartup,
 } from "../src/desktop/app-menu";
 
@@ -1292,6 +1295,69 @@ describe("desktop DevTools gate (non-production only)", () => {
     expect(packed.includes("toggleDevTools")).toBe(false);
   });
 
+  it("sets an explicit accelerator so DevTools works with autoHideMenuBar", () => {
+    const template = desktopAppMenuTemplate({ isPackaged: false, platform: "win32" });
+    const view = template.find((item) => item.label === "View");
+    const submenu = view!.submenu as Array<{ role?: string; accelerator?: string }>;
+    const item = submenu.find((i) => i.role === "toggleDevTools");
+    expect(item?.accelerator).toBe(DESKTOP_DEVTOOLS_ACCELERATOR);
+    expect(DESKTOP_DEVTOOLS_ACCELERATOR).toMatch(/Shift\+I/i);
+  });
+
+  it("keyboard shortcut helper accepts F12 and Ctrl/Cmd+Shift+I without Alt", () => {
+    expect(isDesktopDevToolsShortcut({ type: "keyDown", key: "F12" })).toBe(true);
+    expect(
+      isDesktopDevToolsShortcut({
+        type: "keyDown",
+        key: "I",
+        control: true,
+        shift: true,
+      }),
+    ).toBe(true);
+    expect(
+      isDesktopDevToolsShortcut({
+        type: "keyDown",
+        key: "i",
+        meta: true,
+        shift: true,
+      }),
+    ).toBe(true);
+    // Mutation: plain I / keyUp / Alt chord must not open DevTools.
+    expect(isDesktopDevToolsShortcut({ type: "keyDown", key: "I", control: true })).toBe(false);
+    expect(isDesktopDevToolsShortcut({ type: "keyUp", key: "F12" })).toBe(false);
+    expect(
+      isDesktopDevToolsShortcut({
+        type: "keyDown",
+        key: "I",
+        control: true,
+        shift: true,
+        alt: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("second-instance opens DevTools when the new argv asked for it", () => {
+    expect(
+      secondInstanceShouldOpenDevTools({
+        isPackaged: false,
+        commandLine: ["electron", DESKTOP_OPEN_DEVTOOLS_FLAG],
+      }),
+    ).toBe(true);
+    expect(
+      secondInstanceShouldOpenDevTools({
+        isPackaged: false,
+        commandLine: ["electron"],
+      }),
+    ).toBe(false);
+    // Packaged must never open even if argv is forged.
+    expect(
+      secondInstanceShouldOpenDevTools({
+        isPackaged: true,
+        commandLine: ["electron", DESKTOP_OPEN_DEVTOOLS_FLAG],
+      }),
+    ).toBe(false);
+  });
+
   it("opens at startup only with explicit signal and only when unpackaged", () => {
     expect(
       shouldOpenDevToolsAtStartup({
@@ -1334,9 +1400,13 @@ describe("desktop DevTools gate (non-production only)", () => {
     expect(main).toContain("desktopAppMenuTemplate");
     expect(main).toContain("shouldOpenDevToolsAtStartup");
     expect(main).toContain("desktopDevToolsAllowed");
+    expect(main).toContain("isDesktopDevToolsShortcut");
+    expect(main).toContain("secondInstanceShouldOpenDevTools");
+    expect(main).toContain("before-input-event");
     expect(main).toMatch(/devTools:\s*allowDevTools/);
     expect(main).toMatch(/openDevTools\(\s*\{\s*mode:\s*["']detach["']/);
     // Child viewers share the packaging lock but never auto-open.
+    // Gear door (capability + host method) so discoverability is not Alt→View only.
     const host = fs.readFileSync(
       path.join(
         path.dirname(fileURLToPath(import.meta.url)),
@@ -1349,6 +1419,14 @@ describe("desktop DevTools gate (non-production only)", () => {
     );
     expect(host).toMatch(/devTools:\s*!app\.isPackaged/);
     expect(host).not.toContain("openDevTools");
+    expect(host).toMatch(/canToggleDevTools/);
+    expect(host).toContain("toggleDevTools()");
+    const chatJs = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.js"),
+      "utf8",
+    );
+    expect(chatJs).toContain("Toggle Developer Tools");
+    expect(chatJs).toMatch(/type:\s*["']toggleDevTools["']/);
     // Launcher: explicit flag → env; not keyed off GROK_RELAY_URL.
     const launcher = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run-desktop.cjs"),
@@ -1571,6 +1649,38 @@ describe("IPC sender validation helper", () => {
 });
 
 describe("file-tree panel assets", () => {
+  it("top-bar order is Remote, History, overflow, then Panel with separator on Panel only", () => {
+    // Owner preference: Remote, Session history, ⋯, |, Panel — not ⋯ first.
+    // Separator lives on the Panel toggle so remote (no panel) has no dangling |.
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const topBar = sidebar.match(/<header class="top-bar">[\s\S]*?<\/header>/)?.[0] ?? "";
+    expect(topBar).toBeTruthy();
+    const remote = topBar.indexOf('id="remote-btn"');
+    const history = topBar.indexOf('id="history-btn"');
+    const overflow = topBar.indexOf('id="session-head-actions"');
+    expect(remote).toBeGreaterThan(-1);
+    expect(history).toBeGreaterThan(remote);
+    expect(overflow).toBeGreaterThan(history);
+    // Mutation: overflow before remote would fail.
+    expect(overflow).toBeGreaterThan(remote);
+
+    const chatCss = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    // No trailing separator on the overflow slot itself.
+    const headActionsRule = chatCss.match(/#session-head-actions\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(headActionsRule).toBeTruthy();
+    expect(headActionsRule).not.toMatch(/border-right/);
+    // Panel toggle carries the left-edge separator (desktop-only mount).
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-top-toggle\s*\{[\s\S]*?border-left:\s*1px solid/,
+    );
+  });
+
   it("scopes CSS under desk-ft- and boots without chat.js symbols", () => {
     expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-panel");
     expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-closed");

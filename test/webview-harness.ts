@@ -27,13 +27,13 @@ export const BODY = `
     <button id="repo-btn" type="button"></button>
     <button id="remote-btn" hidden></button>
     <button id="history-btn"></button>
+    <div id="session-head-actions"></div>
     <button id="new-btn"></button>
     <div id="repo-popover" hidden></div>
     <div id="history-popover" hidden></div>
   </header>
   <div id="session-head">
     <div id="session-head-main"><span id="session-head-title"></span><span id="session-head-sub"></span></div>
-    <div id="session-head-actions"></div>
   </div>
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">

@@ -496,14 +496,18 @@ body.desk-ft-viewing .desk-ft-body {
 .desk-ft-node.desk-ft-open > .desk-ft-children {
   display: block;
 }
-/* Top-bar panel toggle (Lucide panel-right) */
+/* Top-bar panel toggle (Lucide panel-right). Trailing separator: only this
+   desktop control exists after the ⋯ overflow — remote clients never mount it,
+   so the divider is absent there by construction. */
 .desk-ft-top-toggle {
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  margin-left: 2px;
+  margin-left: 6px;
   padding: 0;
+  padding-left: 6px;
   border: none;
+  border-left: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.35));
   border-radius: 4px;
   background: transparent;
   color: var(--vscode-foreground, #ccc);
@@ -1073,10 +1077,14 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     return Math.min(max, Math.max(WIDTH_MIN, n));
   }
 
-  function applyPanelWidth(px) {
+  function applyPanelWidth(px, persist) {
     const w = clampPanelWidth(px);
     panel.style.setProperty("--desk-ft-width", w + "px");
-    try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (_) { /* */ }
+    // Drag path persists; window-narrow reclamp paints only so a later grow
+    // can restore the user's drag width from localStorage.
+    if (persist !== false) {
+      try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (_) { /* */ }
+    }
     return w;
   }
 
@@ -1119,13 +1127,38 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
     resizer.addEventListener("pointermove", onMove);
     resizer.addEventListener("pointerup", onUp);
     resizer.addEventListener("pointercancel", onUp);
-    // Re-clamp so a narrow window cannot leave the panel overgrown.
-    // Same full-screen trap as the projects rail (media/chat.js): resize during
-    // a video full-screen transition measures a meaningless width and sticks it.
-    // Share the helper when chat's webview-helpers is already on the page.
+    // Register with chat.js so a window-narrow reclamp can share the deficit
+    // with the projects rail (proportional shrink from stored drag widths).
+    // Full-screen video fires resize mid-transition with a meaningless width —
+    // chat's wireFullscreenSafeReclamp skips those; we share that path.
+    function preferredPanelWidth() {
+      try {
+        const s = localStorage.getItem(WIDTH_KEY);
+        if (s != null && s !== "") {
+          const n = Math.round(Number(s));
+          if (Number.isFinite(n) && n > 0) return n;
+        }
+      } catch (_) { /* */ }
+      return panel.getBoundingClientRect().width || WIDTH_DEFAULT;
+    }
+    if (typeof window.__grokRegisterSidePanel === "function") {
+      window.__grokRegisterSidePanel({
+        id: "panel",
+        min: WIDTH_MIN,
+        maxFrac: 0.7,
+        isOpen: () => !document.body.classList.contains("desk-ft-closed"),
+        preferredWidth: preferredPanelWidth,
+        applyWidth: (px) => { applyPanelWidth(px, false); },
+      });
+    }
     const reclampPanel = () => {
+      if (typeof window.__grokReclampSidePanels === "function") {
+        window.__grokReclampSidePanels();
+        return;
+      }
+      // Fallback when chat.js is not present (should not happen on desk).
       const cur = panel.getBoundingClientRect().width;
-      if (cur > 0) applyPanelWidth(cur);
+      if (cur > 0) applyPanelWidth(cur, false);
     };
     const wireFs = window.GrokWebviewHelpers && window.GrokWebviewHelpers.wireFullscreenSafeReclamp;
     if (typeof wireFs === "function") {

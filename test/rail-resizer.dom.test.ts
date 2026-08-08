@@ -134,11 +134,63 @@ describe("rail resize handle (DOM)", () => {
     expect(railWidthVar(h)).toBe("500px");
 
     // Window shrinks; rail still paints at 500 until re-clamp.
+    // Preferred comes from localStorage (drag persist), not the painted width.
     h.window.innerWidth = 600;
     stubRailWidth(h, 500);
     h.window.dispatchEvent(new h.window.Event("resize"));
-    // max = min(floor(600*0.5), 600-360) = min(300, 240) = 240
+    // With panel closed: distribute budget = 600-360 = 240, preferred 500 → 240
+    // (also matches solo clamp max = min(300, 240) = 240).
     expect(parseInt(railWidthVar(h), 10)).toBe(240);
+  });
+
+  it("restores preferred width when the window grows again", () => {
+    const h = liveRail();
+    h.window.innerWidth = 1400;
+    stubRailWidth(h, 400);
+    drag(h, 400, 480);
+    expect(railWidthVar(h)).toBe("480px");
+    expect(h.window.localStorage.getItem("rail-width")).toBe("480");
+
+    h.window.innerWidth = 600;
+    stubRailWidth(h, 480);
+    h.window.dispatchEvent(new h.window.Event("resize"));
+    expect(parseInt(railWidthVar(h), 10)).toBe(240);
+
+    // Grow: preferred 480 still in storage; reclamp must not leave the shrunk value.
+    h.window.innerWidth = 1400;
+    stubRailWidth(h, 240);
+    h.window.dispatchEvent(new h.window.Event("resize"));
+    expect(parseInt(railWidthVar(h), 10)).toBe(480);
+  });
+
+  it("shares a narrow-window deficit with a registered side panel", () => {
+    const h = liveRail();
+    h.window.innerWidth = 1400;
+    stubRailWidth(h, 400);
+    drag(h, 400, 500);
+    // Desktop file panel registers via __grokRegisterSidePanel (no desk-ft- in chat.js).
+    let appliedPanel = 0;
+    const storedPanel = 500;
+    (h.window as any).__grokRegisterSidePanel({
+      id: "panel",
+      min: 200,
+      maxFrac: 0.7,
+      isOpen: () => true,
+      preferredWidth: () => storedPanel,
+      applyWidth: (px: number) => { appliedPanel = px; },
+    });
+
+    h.window.innerWidth = 1000;
+    stubRailWidth(h, 500);
+    h.window.dispatchEvent(new h.window.Event("resize"));
+    // budget 640, preferred 500+500, mins 180+200 → proportional mid values.
+    const rail = parseInt(railWidthVar(h), 10);
+    expect(rail + appliedPanel).toBe(640);
+    expect(rail).toBeGreaterThan(180);
+    expect(appliedPanel).toBeGreaterThan(200);
+    // Stored drag widths must not be overwritten by the temporary shrink.
+    expect(h.window.localStorage.getItem("rail-width")).toBe("500");
+    expect(storedPanel).toBe(500);
   });
 
   it("ignores resize while full-screen, then re-clamps once on exit", () => {

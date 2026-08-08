@@ -374,6 +374,9 @@ export function createVsCodeHost(
     appendLine(line: string) {
       output.appendLine(line);
     },
+    toggleDevTools() {
+      // VS Code has its own Developer: Toggle Developer Tools command.
+    },
     showOutput(preserveFocus?: boolean) {
       output.show(preserveFocus);
     },
@@ -572,6 +575,7 @@ export function createVsCodeHost(
       return secondarySideBar;
     },
     canShowOutput: true,
+    canToggleDevTools: false,
     canOpenInEditor: true,
     canSwitchWorkspaceFolder: false,
     canArchiveRepos: true,

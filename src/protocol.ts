@@ -92,6 +92,11 @@ export type HostUiCapabilities = {
    */
   showOutput?: boolean;
   /**
+   * Gear → Toggle Developer Tools. OPT-IN: absent/false = hide. Unpackaged
+   * desktop only — never offered on VS Code or packaged builds.
+   */
+  toggleDevTools?: boolean;
+  /**
    * Whether a generated-image click opens a host editor tab (`openFile`).
    * Opt-out: absent/true = yes (older VS Code hosts never sent this flag but
    * always opened editors); false = no editor — the webview uses the in-app
@@ -316,6 +321,8 @@ export type WebviewMsg =
   | { type: "openProjectConfig" }
   | { type: "runMcpList" }
   | { type: "showLogs" }
+  /** Unpackaged desktop only — toggle Chromium DevTools (gear / F12). */
+  | { type: "toggleDevTools" }
   /** Open the host settings UI (VS Code: workbench settings focused on grok). */
   | { type: "openSettings"; section?: string }
   // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;
@@ -476,7 +483,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   addProjectFolder: true, removeProjectFolder: true,
-  openProjectConfig: true, runMcpList: true, showLogs: true, openSettings: true, moveView: true,
+  openProjectConfig: true, runMcpList: true, showLogs: true, toggleDevTools: true, openSettings: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,

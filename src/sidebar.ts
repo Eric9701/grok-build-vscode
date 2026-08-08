@@ -5112,6 +5112,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "showLogs":
         this.host.showOutput();
         break;
+      case "toggleDevTools":
+        if (this.host.canToggleDevTools) this.host.toggleDevTools();
+        break;
       case "openSettings":
         await this.host.openSettings(typeof msg.section === "string" ? msg.section : "grok");
         break;
@@ -8048,6 +8051,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           pickerAlreadyUsed: this.state.get<boolean>(MOVE_VIEW_HINT_USED_KEY) === true,
         }),
         showOutput: this.host.canShowOutput,
+        // OPT-IN: unpackaged desktop only. Gear → Advanced offers the control so
+        // DevTools is discoverable without the auto-hidden application menu.
+        toggleDevTools: this.host.canToggleDevTools,
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
         openInEditor: this.host.canOpenInEditor,
@@ -10442,10 +10448,10 @@ ${openMain}
       <button id="session-name-label" class="session-name-label" type="button"></button>
       <button id="session-name-edit" class="session-name-edit icon-btn" type="button" hidden></button>
     </div>
-    ${this.host.canSwitchWorkspaceFolder ? `<div id="session-head-actions"></div>` : ""}
     <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>
     <button id="remote-btn" class="icon-btn remote-btn" title="Continue remotely" hidden></button>
     <button id="history-btn" class="icon-btn" title="Session history"></button>
+    ${this.host.canSwitchWorkspaceFolder ? `<div id="session-head-actions"></div>` : ""}
     <button id="new-btn" class="icon-btn" title="New session"></button>
     <div id="repo-popover" class="toolbar-popover repo-popover" hidden></div>
     <div id="history-popover" class="toolbar-popover history-popover" hidden></div>

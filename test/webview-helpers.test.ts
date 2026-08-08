@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -760,6 +760,82 @@ describe("subagentLabel", () => {
     expect(subagentLabel({ tool: "task" })).toBe("Subagent");
     expect(subagentLabel({ rawInput: { is_background: true } })).toBe("background task");
     expect(subagentLabel(null)).toBe("Subagent");
+  });
+});
+
+describe("distributeSidePanelWidths", () => {
+  it("honours preferred widths when the window is large enough", () => {
+    const dist = distributeSidePanelWidths({
+      available: 1400,
+      chatMin: 360,
+      panels: [
+        { id: "rail", preferred: 300, min: 180, open: true },
+        { id: "panel", preferred: 400, min: 200, open: true },
+      ],
+    });
+    expect(dist).toEqual({ rail: 300, panel: 400 });
+  });
+
+  it("shrinks open panels proportionally when preferred + chat exceed available", () => {
+    // preferred 500+500 + chat 360 = 1360 > 1000 → budget for panels = 640
+    const dist = distributeSidePanelWidths({
+      available: 1000,
+      chatMin: 360,
+      panels: [
+        { id: "rail", preferred: 500, min: 180, open: true },
+        { id: "panel", preferred: 500, min: 200, open: true },
+      ],
+    });
+    expect(dist.rail + dist.panel).toBe(640);
+    // Both above floor; neither collapses to min alone while the other stays fat.
+    expect(dist.rail).toBeGreaterThan(180);
+    expect(dist.panel).toBeGreaterThan(200);
+    expect(dist.rail).toBeLessThan(500);
+    expect(dist.panel).toBeLessThan(500);
+    // Proportional: rail and panel had equal above-floor slack (320 vs 300), so
+    // rail ends slightly smaller only by min difference — both mid-range.
+    expect(Math.abs(dist.rail - dist.panel)).toBeLessThan(40);
+  });
+
+  it("never shrinks a panel below its floor", () => {
+    const dist = distributeSidePanelWidths({
+      available: 500,
+      chatMin: 360,
+      panels: [
+        { id: "rail", preferred: 400, min: 180, open: true },
+        { id: "panel", preferred: 400, min: 200, open: true },
+      ],
+    });
+    // budget 140 < minSum 380 → floors
+    expect(dist.rail).toBe(180);
+    expect(dist.panel).toBe(200);
+  });
+
+  it("ignores a closed panel so the open one can keep more width", () => {
+    const dist = distributeSidePanelWidths({
+      available: 800,
+      chatMin: 360,
+      panels: [
+        { id: "rail", preferred: 300, min: 180, open: true },
+        { id: "panel", preferred: 500, min: 200, open: false },
+      ],
+    });
+    expect(dist.panel).toBe(0);
+    expect(dist.rail).toBe(300); // 300 + 360 <= 800
+  });
+
+  it("mutation: equal preferred widths share a deficit instead of leaving chat starved", () => {
+    // Without proportional distribute, each panel would keep 350 and chat gets 300.
+    const dist = distributeSidePanelWidths({
+      available: 1000,
+      chatMin: 360,
+      panels: [
+        { id: "rail", preferred: 350, min: 180, open: true },
+        { id: "panel", preferred: 350, min: 200, open: true },
+      ],
+    });
+    expect(dist.rail + dist.panel).toBe(640);
+    expect(1000 - dist.rail - dist.panel).toBe(360);
   });
 });
 

@@ -530,6 +530,12 @@ export interface Host {
   append(text: string): void;
   appendLine(line: string): void;
   showOutput(preserveFocus?: boolean): void;
+  /**
+   * Toggle Chromium DevTools on the chat surface. Unpackaged desktop only;
+   * no-op for VS Code and packaged builds. Wired to gear → Advanced so
+   * discoverability does not depend on an auto-hidden application menu.
+   */
+  toggleDevTools(): void;
 
   // ── Filesystem ─────────────────────────────────────────────────────────
   readonly fs: HostFileSystem;
@@ -717,6 +723,11 @@ export interface Host {
    * desktop is false (stdout only).
    */
   readonly canShowOutput: boolean;
+  /**
+   * Gear → Toggle Developer Tools. OPT-IN: absent/false = hide. True only for
+   * unpackaged desktop builds (`!app.isPackaged`); packaged and VS Code are false.
+   */
+  readonly canToggleDevTools: boolean;
   /**
    * Whether clicking a generated image (or the media hover "open" action's
    * sibling click-to-enlarge path) should open a host editor tab via

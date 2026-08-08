@@ -894,7 +894,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, chatZoomFactor, unzoomClientPx } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -2410,6 +2410,14 @@
         vscode.postMessage({ type: "showLogs" });
         closePopovers();
       });
+      // Unpackaged desktop: gear is the discoverable DevTools door when the
+      // Windows menu bar is auto-hidden (F12 / Ctrl+Shift+I also work).
+      if (state.hostCaps && state.hostCaps.toggleDevTools === true) {
+        addGearItem("<span>Toggle Developer Tools</span>", () => {
+          vscode.postMessage({ type: "toggleDevTools" });
+          closePopovers();
+        });
+      }
     } else {
       addGearInfo("<span>Host config is managed on the desk</span>");
     }
@@ -2686,6 +2694,12 @@
         vscode.postMessage({ type: "showLogs" });
         closePopovers();
       });
+      if (state.hostCaps && state.hostCaps.toggleDevTools === true) {
+        addGearItem("<span>Toggle Developer Tools</span>", () => {
+          vscode.postMessage({ type: "toggleDevTools" });
+          closePopovers();
+        });
+      }
       // Link into VS Code settings (owner of extension settings). Desktop's
       // openSettings is a stub — hide when relocateView is already false AND
       // showOutput is false (desktop host signature via capabilities).
@@ -2960,6 +2974,9 @@
   const RAIL_WIDTH_KEY = "rail-width";
   const RAIL_WIDTH_MIN = 180;
   const RAIL_CHAT_MIN = 360;
+  // Shared conversation floor when both side panels compete for space. Matches
+  // the rail's own floor so distribute and solo clamp agree on chat room.
+  const SIDE_PANELS_CHAT_MIN = RAIL_CHAT_MIN;
 
   function clampRailWidth(px) {
     const total = window.innerWidth || 1200;
@@ -2977,6 +2994,100 @@
     if (persist) { try { localStorage.setItem(RAIL_WIDTH_KEY, String(w)); } catch (_) { /* */ } }
     return w;
   }
+
+  /** Preferred (drag-saved) width; never the painted width after a shrink. */
+  function preferredWidthFromStorage(key, fallback) {
+    try {
+      const s = localStorage.getItem(key);
+      if (s != null && s !== "") {
+        const n = Math.round(Number(s));
+        if (Number.isFinite(n) && n > 0) return n;
+      }
+    } catch (_) { /* */ }
+    return fallback;
+  }
+
+  /**
+   * Extra side panels (desktop file panel) register here so a window-narrow
+   * reclamp can share the deficit without chat.js naming desktop-only ids.
+   * Provider: { id, min, maxFrac?, isOpen(), preferredWidth(), applyWidth(px) }.
+   */
+  const sidePanelProviders = [];
+  window.__grokRegisterSidePanel = function registerSidePanel(provider) {
+    if (!provider || !provider.id) return;
+    // Replace same id on re-inject (panel boot tears down and remounts).
+    const i = sidePanelProviders.findIndex((p) => p.id === provider.id);
+    if (i >= 0) sidePanelProviders[i] = provider;
+    else sidePanelProviders.push(provider);
+  };
+
+  /**
+   * Window-narrow reclamp: shrink open side panels proportionally so the chat
+   * keeps a floor. Uses stored drag widths (not painted) so growing the window
+   * restores what the user set. Does not persist the temporary shrink.
+   * Exposed as window.__grokReclampSidePanels so a desktop panel boot script
+   * can share one path instead of racing a second independent clamp.
+   */
+  function reclampSidePanels() {
+    const rail = railMount();
+    const railOpen = !!(
+      rail &&
+      !rail.hidden &&
+      !document.body.classList.contains("desk-rail-collapsed")
+    );
+    const total = window.innerWidth || 1200;
+    const railMax = Math.max(RAIL_WIDTH_MIN, Math.floor(total * 0.5));
+    let preferredRail = preferredWidthFromStorage(
+      RAIL_WIDTH_KEY,
+      rail ? (rail.getBoundingClientRect().width || 260) : 260,
+    );
+    preferredRail = Math.min(railMax, Math.max(RAIL_WIDTH_MIN, preferredRail));
+
+    const panels = [
+      { id: "rail", preferred: preferredRail, min: RAIL_WIDTH_MIN, open: railOpen },
+    ];
+    for (const p of sidePanelProviders) {
+      try {
+        const min = Math.max(0, Math.round(Number(p.min) || 0));
+        const maxFrac = Number(p.maxFrac);
+        const max = Number.isFinite(maxFrac) && maxFrac > 0
+          ? Math.max(min, Math.floor(total * maxFrac))
+          : total;
+        let preferred = Math.max(min, Math.round(Number(p.preferredWidth && p.preferredWidth()) || min));
+        preferred = Math.min(max, preferred);
+        panels.push({
+          id: p.id,
+          preferred,
+          min,
+          open: !!(p.isOpen && p.isOpen()),
+        });
+      } catch (_) { /* provider best-effort */ }
+    }
+    if (!panels.some((p) => p.open)) return;
+
+    const dist = typeof distributeSidePanelWidths === "function"
+      ? distributeSidePanelWidths({
+          available: total,
+          chatMin: SIDE_PANELS_CHAT_MIN,
+          panels,
+        })
+      : null;
+    if (!dist) {
+      if (railOpen) applyRailWidth(preferredRail, false);
+      return;
+    }
+    if (railOpen && dist.rail > 0) {
+      // Set the var directly: applyRailWidth's solo clamp does not know about
+      // sibling panels and can re-expand the rail past the coordinated share.
+      document.documentElement.style.setProperty("--rail-width", Math.round(dist.rail) + "px");
+    }
+    for (const p of sidePanelProviders) {
+      try {
+        if (dist[p.id] > 0 && p.applyWidth) p.applyWidth(dist[p.id]);
+      } catch (_) { /* */ }
+    }
+  }
+  window.__grokReclampSidePanels = reclampSidePanels;
 
   let railResizerWired = false;
   function ensureRailResizer() {
@@ -3035,13 +3146,11 @@
       };
       handle.addEventListener("pointerup", end);
       handle.addEventListener("pointercancel", end);
-      // Re-clamp so shrinking the window cannot leave the rail overgrown.
+      // Re-clamp so shrinking the window cannot leave the rail overgrown —
+      // and so the deficit is shared with the file panel when both are open.
       // Full-screen video fires resize mid-transition with a meaningless width;
       // wireFullscreenSafeReclamp skips those and re-clamps once on exit.
-      wireFullscreenSafeReclamp(() => {
-        const cur = rail.getBoundingClientRect().width;
-        if (cur > 0) applyRailWidth(cur, false);
-      });
+      wireFullscreenSafeReclamp(() => { reclampSidePanels(); });
     }
     return handle;
   }
@@ -4502,10 +4611,10 @@
   }
 
   /**
-   * Conversation overflow (⋯) beside the name. Present only when the host
-   * shipped `#session-head-actions` (desktop getHtml / AFK Pilot page) — VS Code
-   * has no session header, so its top-bar New and gear Session group stay.
-   * Capability = the slot exists, not a host flag.
+   * Conversation overflow (⋯) in the top-right cluster (after Remote + History).
+   * Present only when the host shipped `#session-head-actions` (desktop getHtml /
+   * AFK Pilot page) — VS Code has no session header, so its top-bar New and gear
+   * Session group stay. Capability = the slot exists, not a host flag.
    */
   function fillSessionHeadActions() {
     const menuSlot = document.getElementById("session-head-actions");
@@ -4570,7 +4679,7 @@
     if (!chip || !label || !editBtn) return;
     const data = activeSessionName();
     chip.hidden = !data;
-    // Desktop rail hosts: the overflow slot lives next to this chip.
+    // Desktop rail hosts: overflow lives in the top-right cluster (after History).
     fillSessionHeadActions();
     if (!data || state.sessionNameEditing?.surface === "local") return;
     const name = displayedSessionName(activeSessionRecord());
@@ -6911,6 +7020,16 @@
         const video = document.createElement("video");
         video.src = msg.src;
         video.controls = true;
+        // Chromium's native overflow (⋯) menu is drawn outside the zoomed
+        // layout and misplaces itself under body CSS zoom — we cannot position
+        // it. Its entries are Download + Picture-in-Picture; our hover actions
+        // already cover download (remote) and open-file (desk). Drop those so
+        // the overflow is unreachable rather than reachable-and-wrong.
+        // controlsList tokens (Chromium): nodownload, nofullscreen,
+        // noremoteplayback, noplaybackrate. Keep fullscreen + play/scrub.
+        // disablePictureInPicture is a separate attribute (not controlsList).
+        video.controlsList = "nodownload noremoteplayback noplaybackrate";
+        video.disablePictureInPicture = true;
         // preload=none: every <video> with metadata holds a Chromium media
         // decoder from first paint. Ten generated clips in one chat exhaust
         // the per-renderer pool, so some refuse to play until a fresh session

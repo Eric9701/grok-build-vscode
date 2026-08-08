@@ -901,6 +901,12 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     showOutput(_preserveFocus?: boolean) {
       // Desktop logs to stdout; nothing to show.
     },
+    toggleDevTools() {
+      if (app.isPackaged) return;
+      const win = getWindow();
+      if (!win || win.isDestroyed()) return;
+      win.webContents.toggleDevTools();
+    },
 
     fs: hostFs,
 
@@ -1116,6 +1122,10 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     // side bars to move a view between.
     canUseSecondarySideBar: false,
     canShowOutput: false,
+    // Unpackaged only — packaged builds hard-disable DevTools at webPreferences.
+    get canToggleDevTools() {
+      return !app.isPackaged;
+    },
     // No editor tabs — a generated-image click must use the in-app lightbox,
     // not openFile (which would hand the file to the OS image viewer).
     canOpenInEditor: false,

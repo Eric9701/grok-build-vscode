@@ -68,6 +68,8 @@ import {
 import {
   desktopAppMenuTemplate,
   desktopDevToolsAllowed,
+  isDesktopDevToolsShortcut,
+  secondInstanceShouldOpenDevTools,
   shouldOpenDevToolsAtStartup,
   type DesktopAppMenuActions,
 } from "./app-menu";
@@ -192,17 +194,32 @@ let webview: ElectronWebview | null = null;
 
 // One process per profile: a second launch must focus the existing window, not
 // spawn another sidebar / ACP pool / remote uplink on the same device token.
+// A leftover process makes a new launch quit here — looks exactly like
+// "nothing happened" (including --open-devtools). The first instance handles
+// second-instance: focus + open DevTools when the new argv asked for it.
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
-  log("another instance already holds this profile; quitting");
+  log(
+    "another instance already holds this profile; quitting " +
+      "(focus the existing window — re-launch with --open-devtools opens DevTools there)",
+  );
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, commandLine) => {
     const win = mainWindow;
     if (!win || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.show();
     win.focus();
+    if (
+      secondInstanceShouldOpenDevTools({
+        isPackaged: app.isPackaged,
+        commandLine,
+      })
+    ) {
+      win.webContents.openDevTools({ mode: "detach" });
+      log("DevTools opened (second-instance --open-devtools)");
+    }
   });
 }
 
@@ -470,6 +487,17 @@ async function createApp(): Promise<void> {
   ) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
     log("DevTools opened (non-production build)");
+  }
+
+  // Keyboard DevTools without needing the auto-hidden menu bar (Windows).
+  // Menu accelerator still works; F12 is the discoverable Chromium habit.
+  // Packaged builds keep webPreferences.devTools false so this is a no-op path.
+  if (allowDevTools) {
+    mainWindow.webContents.on("before-input-event", (event, input) => {
+      if (!isDesktopDevToolsShortcut(input)) return;
+      event.preventDefault();
+      mainWindow?.webContents.toggleDevTools();
+    });
   }
 
   mainWindow.on("closed", () => {
