@@ -24,7 +24,15 @@ suite("grok-build extension smoke", () => {
   test("registers its contributed commands", async () => {
     const all = await vscode.commands.getCommands(true);
     // A stable subset that must always exist (the full list lives in package.json).
-    for (const id of ["grok.open", "grok.newSession", "grok.showLogs", "grok.logout"]) {
+    for (const id of [
+      "grok.open",
+      "grok.newSession",
+      "grok.showLogs",
+      "grok.logout",
+      // The escape hatch for an editor that hid the view somewhere unreachable —
+      // useless if it is not in the palette.
+      "grok.moveToRightPanel",
+    ]) {
       assert.ok(all.includes(id), `command not registered: ${id}`);
     }
     // The gear-menu "Move view" items depend on these workbench commands
@@ -34,14 +42,26 @@ suite("grok-build extension smoke", () => {
     }
   });
 
+  test("grok.open actually opens the chat", async () => {
+    // The regression this exists for: `grok.open` used to execute a hardcoded
+    // container command, and in an editor that refuses our secondary-side-bar
+    // container that command does not exist — so opening the chat failed with
+    // "command not found" and the extension could not be used at all (#101
+    // follow-up). This assertion is the whole test: it must REJECT nothing.
+    //
+    // It replaces a version that ran `grok.chat.focus`, swallowed any failure,
+    // and then asserted `true` — which would have passed throughout the outage.
+    await vscode.commands.executeCommand("grok.open");
+  });
+
   test("resolving the webview view does not crash (missing-CLI onboarding path)", async () => {
     // Focusing the view triggers resolveWebviewView -> getHtml -> the first posts.
     // With no grok binary on the CI box the extension takes the missing-CLI onboarding
     // branch; reaching the assertion below without an unhandled rejection is the check.
-    await vscode.commands.executeCommand("grok.chat.focus").then(undefined, () => {});
+    await vscode.commands.executeCommand("grok.chat.focus");
     await new Promise((r) => setTimeout(r, 2000)); // let the webview resolve + post
     // A second, lightweight command that touches the sidebar without needing grok.
-    await vscode.commands.executeCommand("grok.showLogs").then(undefined, () => {});
+    await vscode.commands.executeCommand("grok.showLogs");
     assert.ok(true, "webview resolved without throwing");
   });
 

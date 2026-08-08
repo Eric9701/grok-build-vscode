@@ -58,15 +58,61 @@ export function panelPositionFor(location: unknown): PanelPosition | null {
 /**
  * Whether the host actually created our secondary-side-bar container.
  *
- * The same probe {@link viewRelocationTarget} runs, published to the webview so
+ * The same probe {@link viewPlacementCorrection} runs, published to the webview so
  * the gear can offer destinations that exist. Capability, never `env.appName`.
  */
 export function hostAcceptedSecondarySideBar(availableCommands: readonly string[]): boolean {
   return availableCommands.includes(SECONDARY_CONTAINER_ID);
 }
 
+/** What we remember about where the chat lives. Stored under
+ *  {@link VIEW_PLACEMENT_KEY}. */
+export interface PlacementRecord {
+  /**
+   * Extension version whose activation last ISSUED a move. Version-keyed rather
+   * than a plain "done" boolean, and that is the whole lesson of 3.2.8: the flag
+   * was written whether or not the move took effect, so a single silent failure
+   * spent the one correction a user would ever get. There is no API to ask where
+   * a view actually ended up, so instead of pretending to verify, each release
+   * gets one fresh attempt — which is also what "fix it on update" means to
+   * someone sitting in front of a chat they cannot see.
+   */
+  attemptedForVersion?: string;
+  /**
+   * The `moveView` location the user last picked from our own Move view menu.
+   *
+   * Remembered rather than merely used as a "stop correcting" flag, because
+   * those two readings conflict the moment placement drifts back — which it
+   * does: reinstalling re-registers the view against a container this host
+   * refuses, and the chat reappears in Explorer. Suppressing correction would
+   * strand a user who had already told us where they wanted it. So a choice
+   * does not switch the correction off; it changes where the correction aims.
+   */
+  chosenLocation?: string;
+}
+
+export const VIEW_PLACEMENT_KEY = "grok.viewPlacement";
+
+/** Record the destination the user picked, so a later correction restores it. */
+export function withUserChoice(
+  prev: PlacementRecord | undefined,
+  location: unknown,
+): PlacementRecord {
+  return typeof location === "string" && moveViewContainerFor(location)
+    ? { ...(prev ?? {}), chosenLocation: location }
+    : { ...(prev ?? {}) };
+}
+
+/** Record that this version has had its automatic attempt. */
+export function withAttempt(
+  prev: PlacementRecord | undefined,
+  extensionVersion: string,
+): PlacementRecord {
+  return { ...(prev ?? {}), attemptedForVersion: extensionVersion };
+}
+
 /**
- * Where to move the view at activation, or null to leave it where it is.
+ * Where to move the view, or null to leave it where it is.
  *
  * The manifest homes the view in the secondary side bar. Cursor 3.15 refuses to
  * create that container — *"View containers cannot be contributed to the
@@ -91,16 +137,39 @@ export function hostAcceptedSecondarySideBar(availableCommands: readonly string[
  * `workbench.action.positionPanelRight` so the result is a secondary side bar in
  * everything but name.
  *
- * Moves ONCE, tracked by the caller. Re-homing on every activation would drag
- * the view back out of wherever the user deliberately put it, every launch.
+ * Fires ONCE PER VERSION automatically — which is also once per update, and an
+ * update is exactly when the placement gets undone: reinstalling re-registers
+ * the view against the container this host refuses, so the chat reappears in
+ * Explorer. `force` (the palette command) ignores the gate entirely.
+ *
+ * Where it aims: the destination the user last picked from our menu if there is
+ * one, else the panel.
  */
-export function viewRelocationTarget(opts: {
+export function viewPlacementCorrection(opts: {
   availableCommands: readonly string[];
-  alreadyRelocated: boolean;
-}): string | null {
-  if (opts.alreadyRelocated) return null;
+  placement: PlacementRecord | undefined;
+  extensionVersion: string;
+  /** The user asked for this by name (palette command) — no gate applies. */
+  force?: boolean;
+}): { containerId: string; panelPosition: PanelPosition | null } | null {
+  const placement = opts.placement ?? {};
+  if (!opts.force && placement.attemptedForVersion === opts.extensionVersion) return null;
   if (hostAcceptedSecondarySideBar(opts.availableCommands)) return null;
-  return PANEL_CONTAINER_ID;
+
+  const chosen = placement.chosenLocation;
+  const containerId = (chosen && moveViewContainerFor(chosen)) || PANEL_CONTAINER_ID;
+  // Docked right, the panel IS a secondary side bar — same screen position, same
+  // tall narrow shape the chat is designed for. Only defaulted; a user who asked
+  // for the bottom panel gets the bottom panel back.
+  const panelPosition = chosen ? panelPositionFor(chosen) : "right";
+
+  // Nothing to move it INTO. Cursor refuses only the secondary-side-bar
+  // container, so this should not happen — but issuing a move at a container
+  // that was never registered is how 3.2.8's attempt failed silently while
+  // recording itself as a success, and a move that cannot land must not spend
+  // the correction.
+  if (!opts.availableCommands.includes(containerId)) return null;
+  return { containerId, panelPosition };
 }
 
 /**

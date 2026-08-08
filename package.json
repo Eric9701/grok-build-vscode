@@ -41,6 +41,9 @@
   ],
   "icon": "resources/grok-icon.png",
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "viewsContainers": {
       "secondarySidebar": [
@@ -78,6 +81,10 @@
       {
         "command": "grok.open",
         "title": "Grok: Open"
+      },
+      {
+        "command": "grok.moveToRightPanel",
+        "title": "Grok: Move Chat to Right Panel"
       },
       {
         "command": "grok.newSession",

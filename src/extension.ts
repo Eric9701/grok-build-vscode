@@ -1,57 +1,104 @@
 import * as vscode from "vscode";
 import { GrokSidebar } from "./sidebar";
 import { createVsCodeHost, createVsCodeHostContext, fromVsCodeUri, wrapWebviewView } from "./vscode-host";
-import { GROK_VIEW_ID, revealCommandFor, viewRelocationTarget } from "./view-move";
-
-/** Set once the view has been re-homed away from a refused container, so the
- *  correction never fights a placement the user chose afterwards. */
-const RELOCATED_KEY = "grok.viewRelocatedFromSecondary";
+import {
+  GROK_VIEW_ID,
+  PANEL_CONTAINER_ID,
+  revealCommandFor,
+  viewPlacementCorrection,
+  VIEW_PLACEMENT_KEY,
+  withAttempt,
+  withUserChoice,
+  type PanelPosition,
+  type PlacementRecord,
+} from "./view-move";
 
 /**
- * Cursor 3.15 refuses `viewsContainers.secondarySidebar` — it is reserved for
- * Cursor's own agent UI — so the view is dropped into Explorer and the container
- * command never registers. `grok.open` then throws "command not found" and the
- * extension cannot be opened at all.
+ * Put the chat somewhere this editor will actually show it.
  *
- * The manifest is static and cannot branch per editor, so the correction runs
- * here, with the same `vscode.moveViews` payload the gear menu already ships
- * (`vscode-host.ts` → `relocateView`), and like that helper it finishes by
- * revealing the view. Normally stealing focus at activation would be rude; here
- * it is the point. The user is arriving from an extension that could not be
- * opened at all, and silently re-homing it to a dock they were not looking at
- * is indistinguishable from still being broken.
+ * Cursor 3.15 refuses `viewsContainers.secondarySidebar` — reserved for its own
+ * agent UI — so our container is never created, the view is dropped into
+ * Explorer, and `workbench.view.extension.grokSidebar` never registers. The
+ * manifest is static and cannot branch per editor, so the correction runs here,
+ * with the same `vscode.moveViews` payload the gear menu already ships
+ * (`vscode-host.ts` → `relocateView`).
  *
- * Failure is swallowed deliberately: a host that rejects the move must not take
- * activation down with it, and `grok.open` resolves its command independently.
+ * Runs on **startup**, not on first use. Someone whose chat is buried in an
+ * Explorer section has no way to open it, so a correction that waits for them to
+ * open it never runs — which is why the manifest asks for `onStartupFinished`
+ * despite that entry having been dropped as redundant back in 1.x.
+ *
+ * Once per version. An update is when the placement gets undone (reinstalling
+ * re-registers the view against the refused container), so an update is when the
+ * correction is due. 3.2.8 recorded a plain "done" boolean instead, so its one
+ * silent failure was permanent — see {@link PlacementRecord}.
+ *
+ * Focus follows the move on purpose. Arriving from a chat you could not open, a
+ * silent re-home to a dock you were not looking at is indistinguishable from
+ * still being broken. The forced palette command skips the reveal for the same
+ * reason it exists: you are already looking at it.
+ *
+ * Failure is swallowed: a host that rejects the move must not take activation
+ * down with it, and `grok.open` resolves its command independently.
  */
-async function relocateViewIfHostRefusedSecondary(context: vscode.ExtensionContext): Promise<void> {
+async function ensureViewPlacement(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel,
+): Promise<void> {
+  const log = (line: string) => output.appendLine(`[placement] ${line}`);
+  const placement = context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY);
+  const version = context.extension.packageJSON?.version ?? "";
   try {
-    const target = viewRelocationTarget({
+    const target = viewPlacementCorrection({
       availableCommands: await vscode.commands.getCommands(true),
-      alreadyRelocated: context.globalState.get<boolean>(RELOCATED_KEY) === true,
+      placement,
+      extensionVersion: version,
     });
-    if (!target) return;
-    await vscode.commands.executeCommand("vscode.moveViews", {
-      viewIds: [GROK_VIEW_ID],
-      destinationId: target,
-    });
-    // Docked right, the panel IS a secondary side bar — same screen position,
-    // same tall narrow shape the chat is designed for. Without this the view
-    // lands in a short strip along the bottom, which is worse than where it
-    // started.
-    //
-    // Caveat worth knowing: panel position is workbench-wide, so this also moves
-    // Terminal, Problems and Output. Done once, only in a host that refused the
-    // secondary side bar, and never repeated — a user who puts the panel back at
-    // the bottom keeps it there.
-    await vscode.commands.executeCommand("workbench.action.positionPanelRight");
-    // Show it. Moving a view the user cannot see is not a fix they can observe,
-    // and this only ever runs on the one activation that performs the move.
-    await vscode.commands.executeCommand(`${GROK_VIEW_ID}.focus`);
-    await context.globalState.update(RELOCATED_KEY, true);
-  } catch {
-    /* best effort — grok.open still resolves a command that exists */
+    if (!target) {
+      // Logged rather than silent. When someone reports the chat stuck in
+      // Explorer, "why didn't it move" is the first question, and before this
+      // there was nothing anywhere that could answer it.
+      log(
+        `no move — version=${version}, last attempt ${placement?.attemptedForVersion ?? "never"}` +
+          `, chosen ${placement?.chosenLocation ?? "(none)"}`,
+      );
+      return;
+    }
+    log(`moving -> ${target.containerId}, panel ${target.panelPosition ?? "as-is"}`);
+    await applyPlacement(target, { reveal: true });
+    log("moved");
+  } catch (e) {
+    log(`failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    // Recorded even on failure: an editor that rejects the move will reject it
+    // identically on every window, and retrying forever would fight a user who
+    // is living with it. The next version tries again, and
+    // `Grok: Move Chat to Right Panel` retries on demand.
+    await context.globalState.update(VIEW_PLACEMENT_KEY, withAttempt(placement, version));
   }
+}
+
+/** Issue the move. Shared by the automatic correction and the palette command so
+ *  there is exactly one place that knows the command sequence. */
+async function applyPlacement(
+  target: { containerId: string; panelPosition: PanelPosition | null },
+  opts: { reveal: boolean },
+): Promise<void> {
+  await vscode.commands.executeCommand("vscode.moveViews", {
+    viewIds: [GROK_VIEW_ID],
+    destinationId: target.containerId,
+  });
+  if (target.panelPosition) {
+    // Caveat worth knowing: panel position is workbench-wide, so this also moves
+    // Terminal, Problems and Output. Once per update, and only in an editor that
+    // refused the secondary side bar.
+    await vscode.commands.executeCommand(
+      target.panelPosition === "right"
+        ? "workbench.action.positionPanelRight"
+        : "workbench.action.positionPanelBottom",
+    );
+  }
+  if (opts.reveal) await vscode.commands.executeCommand(`${GROK_VIEW_ID}.focus`);
 }
 
 /** What `activate` hands back through `extension.exports`. Empty in every
@@ -88,6 +135,20 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // all — which is how `grok.open` came to fail with "command not found".
       const cmds = await vscode.commands.getCommands(true);
       await vscode.commands.executeCommand(revealCommandFor(cmds));
+    }),
+    // Escape hatch, and the only placement that is not rationed. Reachable from
+    // the palette when the view itself is not — which is the state this whole
+    // mechanism exists for. Asking for it counts as choosing it, so a later
+    // correction restores this rather than the default.
+    vscode.commands.registerCommand("grok.moveToRightPanel", async () => {
+      await applyPlacement(
+        { containerId: PANEL_CONTAINER_ID, panelPosition: "right" },
+        { reveal: true },
+      );
+      await context.globalState.update(
+        VIEW_PLACEMENT_KEY,
+        withUserChoice(context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY), "panel-right"),
+      );
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),
@@ -132,7 +193,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
 
   // Not awaited: activation must not block on a workbench command, and nothing
   // below depends on where the view ended up.
-  void relocateViewIfHostRefusedSecondary(context);
+  void ensureViewPlacement(context, output);
 
   // VS Code sets ExtensionMode.Test ONLY when the extension host was launched by
   // a test runner, so an installed build can never reach this branch and the

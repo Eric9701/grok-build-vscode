@@ -4,7 +4,8 @@
 
 ### Fixed
 
-- **The chat opens in Cursor.** Cursor reserves the secondary side bar for its own agent UI and refuses to place an extension there, so the panel Grok Build asks for was never created — the view was dropped into Explorer and every way of opening it answered "command not found". It now opens the view wherever the editor actually put it, and on first launch moves the chat into a right-docked panel: the same place on screen under a different name. Move it wherever you like afterwards; it stays where you put it.
+- **The chat opens in Cursor.** Cursor reserves the secondary side bar for its own agent UI and refuses to place an extension there, so the panel Grok Build asks for was never created — the view was dropped into Explorer and every way of opening it answered "command not found". It now opens the view wherever the editor actually put it, and moves the chat into a right-docked panel: the same place on screen under a different name.
+- **That move happens on its own, without opening the chat first.** It has to: someone whose chat is buried in an Explorer section has no way to open it, so a correction that waits for them to open it never runs. It repeats after each update — installing a new version is what puts the chat back where the editor cannot show it — and it goes to wherever you last chose from **Move view**, not to our default. **Grok: Move Chat to Right Panel** in the command palette does it on demand, for the times an editor ignores the automatic one.
 
 ### Changed
 
