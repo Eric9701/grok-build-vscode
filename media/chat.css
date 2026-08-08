@@ -1022,6 +1022,16 @@ a:hover {
 }
 .welcome h2 { margin: 0; font-weight: 600; }
 .welcome-byline { margin: 0; font-size: 11px; }
+/* The move-view hint. Quiet by design: advice in an empty state, not a call to
+   action, and it retires itself once taken. */
+.welcome-tip {
+  margin: 14px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  max-width: 34ch;
+  text-align: center;
+  opacity: 0.85;
+}
 .muted-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .muted-link:hover { opacity: 0.8; }
 

@@ -8,6 +8,7 @@ import {
   PRIMARY_CONTAINER_ID,
   revealCommandFor,
   SECONDARY_CONTAINER_ID,
+  shouldShowMoveViewHint,
   viewPlacementCorrection,
 } from "../src/view-move";
 
@@ -65,6 +66,33 @@ describe("the one automatic placement correction", () => {
       containerId: PRIMARY_CONTAINER_ID,
       panelPosition: null,
     });
+  });
+});
+
+describe("the empty-state move hint", () => {
+  const hint = (o: Partial<Parameters<typeof shouldShowMoveViewHint>[0]>) =>
+    shouldShowMoveViewHint({
+      hostAcceptedSecondarySideBar: false,
+      canRelocateView: true,
+      pickerAlreadyUsed: false,
+      ...o,
+    });
+
+  it("shows only where the editor refused our secondary-side-bar container", () => {
+    // The one case where the dock a user probably wants is reachable by the
+    // editor and not by us, so saying so is the only thing left to do.
+    expect(hint({})).toBe(true);
+    expect(hint({ hostAcceptedSecondarySideBar: true })).toBe(false);
+  });
+
+  it("retires itself once the picker has been opened", () => {
+    // Advice acted on is advice spent — and "opened", not "completed", because
+    // finding the control is the whole point and a cancel still found it.
+    expect(hint({ pickerAlreadyUsed: true })).toBe(false);
+  });
+
+  it("stays hidden where there is nothing to move a view between", () => {
+    expect(hint({ canRelocateView: false })).toBe(false);
   });
 });
 

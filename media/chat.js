@@ -5260,6 +5260,51 @@
     }
   }
 
+  /**
+   * The one hint we show, in the empty state, in editors that refuse our
+   * secondary-side-bar container.
+   *
+   * It exists because of a limit we cannot engineer around: nothing in the API
+   * reports where a view lives, so the extension may place the chat somewhere
+   * usable on a first-ever run and must never touch it again. That leaves the
+   * better spot — the editor's own secondary side bar, beside its agent —
+   * reachable only through the editor's own picker. So we say so, once, instead
+   * of moving anything.
+   *
+   * `moveViewHint` is decided by the host and goes false the moment that picker
+   * is opened from anywhere, so taking the advice retires the advice.
+   */
+  function renderWelcomeTip() {
+    const welcome = $("welcome");
+    if (!welcome) return;
+    const existing = $("welcome-tip");
+    if (!(state.hostCaps && state.hostCaps.moveViewHint === true)) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+    const tip = document.createElement("p");
+    tip.id = "welcome-tip";
+    tip.className = "welcome-tip muted";
+    // Built here rather than in the host's HTML skeleton, so the relay's mirror
+    // of that skeleton cannot drift out of sync over an element it never shows.
+    tip.innerHTML =
+      "\u{1F4A1} To move Grok to the right, " +
+      '<a href="#" id="welcome-tip-link" class="muted-link">click here</a>' +
+      " and select <b>New Secondary Side Bar Entry</b>.";
+    welcome.appendChild(tip);
+    const link = $("welcome-tip-link");
+    if (link) {
+      link.onclick = (e) => {
+        e.preventDefault();
+        vscode.postMessage({ type: "moveView", location: "pick" });
+        // Gone the moment it is acted on. The host records it too, so it does
+        // not come back in the next session or the next window.
+        tip.remove();
+      };
+    }
+  }
+
   function resetForNewSession() {
     stopProcessingCue();
     cancelPendingSpeech();
@@ -5287,6 +5332,9 @@
       const onb = $("welcome-onboarding");
       if (onb) onb.innerHTML = "";
       setWelcomeStatus("Starting", true);
+      // The empty state is rebuilt on every new session, so the tip is too —
+      // until the host stops advertising it.
+      renderWelcomeTip();
     }
     state.welcomeVisible = true;
     state.pendingDiffByToolCallId.clear();
@@ -9725,6 +9773,7 @@
         applyThinkingVisibility();
         applyExpandCommandOutputs();
         syncGearPlacement();
+        renderWelcomeTip();
         break;
       case "planModeAvailability":
         state.planModeAvailable = msg.available !== false;

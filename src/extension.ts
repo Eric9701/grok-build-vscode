@@ -10,6 +10,7 @@ import {
   viewPlacementCorrection,
   VIEW_PLACEMENT_KEY,
   withAttempt,
+  MOVE_VIEW_HINT_USED_KEY,
   type PanelPosition,
   type PlacementRecord,
 } from "./view-move";
@@ -213,6 +214,9 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       // without it the command reads the `focusedView` context key, which Cursor
       // never sets for webview views.
       await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
+      // Same picker the gear opens, so it retires the same hint. Only the hint —
+      // where the view goes is decided without reference to this.
+      await context.globalState.update(MOVE_VIEW_HINT_USED_KEY, true);
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),

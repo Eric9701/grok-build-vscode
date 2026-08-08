@@ -80,6 +80,13 @@ export type HostUiCapabilities = {
    */
   secondarySideBar?: boolean;
   /**
+   * Show the empty-state hint pointing at the editor's own move-view picker.
+   * OPT-IN — absent/false = no hint. Decided entirely by the host: it is true
+   * only where the secondary side bar was refused AND the user has not yet
+   * opened that picker from anywhere.
+   */
+  moveViewHint?: boolean;
+  /**
    * Gear → Show extension logs. Same opt-out polarity as relocateView —
    * absent/true = show; false = hide (desktop logs to stdout only).
    */

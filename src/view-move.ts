@@ -73,6 +73,29 @@ export interface PlacementRecord {
 
 export const VIEW_PLACEMENT_KEY = "grok.viewPlacement";
 
+/** Set once the user has opened the host's move-view picker from anywhere. Its
+ *  ONLY job is retiring the empty-state hint — it must never influence where the
+ *  view goes, or it becomes another guess about a placement we cannot see. */
+export const MOVE_VIEW_HINT_USED_KEY = "grok.moveViewPickerUsed";
+
+/**
+ * Whether to show the empty-state hint pointing at the host's own picker.
+ *
+ * Only where our secondary-side-bar container was refused: that is the one case
+ * where the dock the user probably wants is reachable by the host and not by us,
+ * so telling them is the only thing left to do. Retired as soon as they open
+ * that picker — advice acted on is advice spent.
+ */
+export function shouldShowMoveViewHint(opts: {
+  hostAcceptedSecondarySideBar: boolean;
+  canRelocateView: boolean;
+  pickerAlreadyUsed: boolean;
+}): boolean {
+  if (!opts.canRelocateView) return false;
+  if (opts.hostAcceptedSecondarySideBar) return false;
+  return !opts.pickerAlreadyUsed;
+}
+
 /** Location value that means "hand off to the host's own destination picker"
  *  — deliberately mapped to no container. */
 export const PICK_LOCATION = "pick";

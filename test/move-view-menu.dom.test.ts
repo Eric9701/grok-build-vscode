@@ -130,6 +130,29 @@ describe("Move view menu (DOM)", () => {
     expect(hasMoveViewSection(h)).toBe(false);
   });
 
+  it("shows the empty-state hint when the host advertises it, and not otherwise", () => {
+    const shown = boot({ relocateView: true, secondarySideBar: false, moveViewHint: true });
+    const tip = shown.doc.getElementById("welcome-tip");
+    expect(tip).toBeTruthy();
+    expect((tip!.textContent || "").replace(/\s+/g, " ")).toContain("To move Grok to the right");
+    // Opt-in: the host decides, and absent means no hint.
+    const hidden = boot({ relocateView: true, secondarySideBar: false });
+    expect(hidden.doc.getElementById("welcome-tip")).toBeNull();
+  });
+
+  it("the hint's link sends the same message the gear does", () => {
+    // This is what makes clicking the hint retire the hint: it lands in the same
+    // host handler, which records that the picker has been opened. A link that
+    // posted anything else would leave the tip coming back forever.
+    const h = boot({ relocateView: true, secondarySideBar: false, moveViewHint: true });
+    click(h.window, h.doc.getElementById("welcome-tip-link")!);
+    expect(h.posted.filter((m) => m.type === "moveView")).toEqual([
+      { type: "moveView", location: "pick" },
+    ]);
+    // And it goes immediately, rather than waiting for the next session.
+    expect(h.doc.getElementById("welcome-tip")).toBeNull();
+  });
+
   it("hides the section in the browser client — moveView is host-local", () => {
     // The relay drops the message, so the control could never do anything from a
     // phone. Capabilities set to the one host that WOULD show it, so this fails
