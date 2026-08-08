@@ -44,8 +44,12 @@ function Get-DevRelayUrl {
     $line = Get-Content $envFile | Where-Object { $_ -match '^\s*GROK_RELAY_URL\s*=' } | Select-Object -First 1
     if (-not $line) { return $null }
     $value = ($line -replace '^\s*GROK_RELAY_URL\s*=\s*', '').Trim().Trim('"').Trim("'")
-    if ($value -notmatch '^wss?://[^/\s?#]+$') { return $null }
-    return $value
+    # Same rule as resolveRelayUrl in src\remote-frames.ts: ws(s), an authority,
+    # an optional base path (a relay may live behind a prefix), and no query,
+    # fragment or credentials. These two must agree, or desktop-dev would accept
+    # a URL that a staging .vsix build silently refuses.
+    if ($value -notmatch '^wss?://[^/@\s?#]+(/[^\s?#]*)?$') { return $null }
+    return ($value -replace '/+$', '')
 }
 
 function Read-TextFile([string]$path) { return [System.IO.File]::ReadAllText($path) }
@@ -54,7 +58,8 @@ function Write-TextFile([string]$path, [string]$text) {
     [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
 }
 
-$originalFrames = $null
+$swappedRelayLine = $null
+$devUrl = $null
 $relayLabel = "production"
 
 if (-not $VsixPath) {
@@ -68,14 +73,18 @@ Add a line to the gitignored .env at the repo root:
 Or build against production explicitly: pwsh scripts\install.ps1 -Prod
 "@
         }
-        $originalFrames = Read-TextFile $framesPath
-        if ($originalFrames -notmatch [regex]::Escape($prodRelayLine)) {
+        $current = Read-TextFile $framesPath
+        if (-not $current.Contains($prodRelayLine)) {
             throw "src\remote-frames.ts does not contain the expected production relay line - refusing to swap. Restore it first."
         }
-        $swapped = $originalFrames.Replace(
-            $prodRelayLine,
-            "export const REMOTE_RELAY_URL = `"$devUrl`";")
-        Write-TextFile $framesPath $swapped
+        # ONE LINE swapped, and one line swapped back - never a whole-file
+        # snapshot restored over the top. A snapshot would silently discard
+        # anything else edited during the build (an agent, an open editor), and
+        # the restore would look like it succeeded because it only ever proves
+        # it rewrote its own copy.
+        $devRelayLine = "export const REMOTE_RELAY_URL = `"$devUrl`";"
+        Write-TextFile $framesPath $current.Replace($prodRelayLine, $devRelayLine)
+        $swappedRelayLine = $devRelayLine
         $relayLabel = $devUrl
     }
 
@@ -90,14 +99,20 @@ Or build against production explicitly: pwsh scripts\install.ps1 -Prod
         $vsix = Get-ChildItem -Path $repoRoot -Filter "*.vsix" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     } finally {
         Pop-Location
-        if ($originalFrames) {
-            # Restore even when the build threw. Then PROVE it, rather than
-            # trusting that the write happened - a staging URL left behind here
-            # is the exact leak this automation exists to prevent.
-            Write-TextFile $framesPath $originalFrames
-            if ((Read-TextFile $framesPath) -ne $originalFrames) {
+        if ($swappedRelayLine) {
+            # Restore even when the build threw, by swapping OUR line back in the
+            # file as it stands now - so any other edit made meanwhile survives.
+            $now = Read-TextFile $framesPath
+            if ($now.Contains($swappedRelayLine)) {
+                Write-TextFile $framesPath $now.Replace($swappedRelayLine, $prodRelayLine)
+            }
+            # Then prove the staging URL is actually gone. A leak here is the
+            # exact thing this automation exists to prevent, so it is checked
+            # against the file rather than against our own copy of it.
+            if ((Read-TextFile $framesPath).Contains($devUrl)) {
                 Write-Host ""
-                Write-Host "  !! src\remote-frames.ts was NOT restored. Fix it before committing." -ForegroundColor Red
+                Write-Host "  !! src\remote-frames.ts still names the staging relay." -ForegroundColor Red
+                Write-Host "     Restore it before committing: $prodRelayLine" -ForegroundColor Red
                 Write-Host ""
             }
         }

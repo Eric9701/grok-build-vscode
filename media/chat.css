@@ -110,11 +110,6 @@ body.has-rail .app-main {
 }
 #projects-rail,
 .projects-rail {
-  /* Same reasoning as the desktop file panel: the stored width is what the rail
-     WANTS. flex-shrink:0 meant that on a narrowing window rail + chat + panel
-     could exceed the viewport and the row reflowed all at once, which reads as
-     the panels jumping. Shrinking to a floor keeps the change gradual, and the
-     basis is untouched so the rail returns to its width when there is room. */
   /* Fixed default, not viewport-relative. `min(260px, 38vw)` meant that until
      you dragged the rail its width tracked the window: widening the window
      widened the rail, and the extra space went there instead of to the
@@ -122,7 +117,12 @@ body.has-rail .app-main {
      drawer rules in the relay page already handle on their own. */
   width: var(--rail-width, 260px);
   /* Rigid — see the desktop file panel for why a shrinkable panel makes drags
-     fight each other. */
+     fight each other. A narrowing window is handled in JS instead
+     (distributeSidePanelWidths): the shortfall is shared between the side
+     panels against a chat floor, computed from the width the user DRAGGED, so a
+     temporary squeeze is never mistaken for a new preference and widening the
+     window gives back exactly what they set. CSS shrinking cannot express that
+     — it has no memory of the intended width. */
   flex-shrink: 0;
   height: 100%;
   display: flex;

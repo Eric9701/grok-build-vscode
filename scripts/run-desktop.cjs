@@ -47,9 +47,14 @@ function relayUrlFromEnvFile() {
 const OPEN_DEVTOOLS_FLAG = "--open-devtools";
 const OPEN_DEVTOOLS_ENV = "GROK_DESKTOP_OPEN_DEVTOOLS";
 const openDevTools = process.argv.includes(OPEN_DEVTOOLS_FLAG);
-const args = process.argv
-  .slice(2)
-  .filter((a) => a !== "--relay-dev" && a !== OPEN_DEVTOOLS_FLAG);
+// `--open-devtools` is PASSED THROUGH to Electron, not consumed here. When an
+// app is already running, the single-instance lock hands the SECOND launch's
+// command line to the first process — that is the only channel available, since
+// the running process cannot see this child's environment. Filtering the flag
+// out is why a second `desktop-dev` focused the window and opened nothing.
+// The env var still serves the FIRST launch, where there is no second-instance
+// event to carry it.
+const args = process.argv.slice(2).filter((a) => a !== "--relay-dev");
 
 if (openDevTools) {
   env[OPEN_DEVTOOLS_ENV] = "1";
