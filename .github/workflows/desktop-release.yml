@@ -50,7 +50,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          # PINNED, not macos-latest. `latest` had rolled to macos-26-arm64, and
+          # two consecutive signing runs died the same way on it: notarytool
+          # uploaded fine — Apple issued a submission id — then could not reach
+          # appstoreconnect.apple.com to poll for the result, reporting "No
+          # network route" with DNS resolving zero endpoints. Submit and poll are
+          # different hosts, so upload-succeeds/poll-fails is coherent, and it is
+          # not something this repo can fix in config.
+          #
+          # Beyond that specific fault: a release pipeline should not have its
+          # build host change underneath it without a commit. Bump this
+          # deliberately, after a green run, never by inheriting `latest`.
+          - os: macos-15
             script: dist:mac
             name: macos
           - os: windows-latest
