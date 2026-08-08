@@ -96,27 +96,28 @@ describe("Move view menu (DOM)", () => {
     expect(destinations(h)).not.toContain("To Right Panel");
   });
 
-  it("offers the panel by edge where the secondary side bar was refused", () => {
+  it("offers ONE item, the host's own picker, where the secondary side bar was refused", () => {
+    // Instrumented Cursor: it keeps our other containers but ignores where they
+    // declared they live, so every destination we can name lands in the primary
+    // side bar. Three labels for one outcome, two of them untrue.
     const h = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(h);
-    expect(destinations(h)).toEqual([
-      "To Right Panel",
-      "To Primary Side Bar",
-      "To Bottom Panel",
-    ]);
-    // The dead destination is gone, not merely reordered.
-    expect(destinations(h)).not.toContain("To Secondary Side Bar");
+    const items_ = items(h)
+      .map(text)
+      .filter((t) => /^(To |Move view)/.test(t));
+    expect(items_).toEqual(["Move view…"]);
   });
 
-  it("sends an edge-explicit destination for each panel item", () => {
+  it("sends the un-mappable destination, which is what reaches the host picker", () => {
+    // `pick` maps to no container by design — the host falls through to its own
+    // picker, which targets a LOCATION and can therefore reach docks no
+    // container id of ours can address.
     const h = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(h);
-    clickDestination(h, "To Right Panel");
-    openMoveView(h);
-    clickDestination(h, "To Bottom Panel");
+    const el = items(h).find((e) => text(e) === "Move view…");
+    click(h.window, el!);
     expect(h.posted.filter((m) => m.type === "moveView")).toEqual([
-      { type: "moveView", location: "panel-right" },
-      { type: "moveView", location: "panel-bottom" },
+      { type: "moveView", location: "pick" },
     ]);
   });
 
@@ -138,11 +139,11 @@ describe("Move view menu (DOM)", () => {
     expect(iconEdge(vscode, "To Primary Side Bar")).toBe("left");
     expect(iconEdge(vscode, "To Panel")).toBe("bottom");
 
+    // Where the menu collapses to the host's own picker there is one item, and
+    // it keeps the same glyph rather than inventing a fourth.
     const cursor = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(cursor);
-    expect(iconEdge(cursor, "To Right Panel")).toBe("right");
-    expect(iconEdge(cursor, "To Primary Side Bar")).toBe("left");
-    expect(iconEdge(cursor, "To Bottom Panel")).toBe("bottom");
+    expect(iconEdge(cursor, "Move view…")).toBe("right");
   });
 
   it("hides the section on a host with no view containers", () => {

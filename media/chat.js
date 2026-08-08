@@ -2700,30 +2700,37 @@
       // in all but name — hence naming the two panel destinations by EDGE, and
       // moving the panel to match, only where the real thing is unavailable.
       const hasSecondary = !(state.hostCaps && state.hostCaps.secondarySideBar === false);
-      addGearItem(
-        `<span class="popover-icon-label">${ICON.panelRight} ${hasSecondary ? "To Secondary Side Bar" : "To Right Panel"}</span>`,
-        () => {
-          vscode.postMessage({
-            type: "moveView",
-            location: hasSecondary ? "auxiliarybar" : "panel-right",
-          });
+      if (!hasSecondary) {
+        // One item, because in an editor that refused our secondary-side-bar
+        // container every destination we can name lands in the same place: it
+        // keeps the OTHER containers but ignores where they said to live, so
+        // "To Right Panel" and "To Bottom Panel" both put the chat in the
+        // primary side bar. Three labels for one outcome, two of them untrue.
+        //
+        // The editor's own picker targets a LOCATION and builds its own
+        // container, so it reaches docks we cannot address at all — including
+        // the secondary side bar it would not give us directly.
+        addGearItem(`<span class="popover-icon-label">${ICON.panelRight} Move view…</span>`, () => {
+          vscode.postMessage({ type: "moveView", location: "pick" });
           closePopovers();
-        },
-      );
-      addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
-        vscode.postMessage({ type: "moveView", location: "sidebar" });
-        closePopovers();
-      });
-      addGearItem(
-        `<span class="popover-icon-label">${ICON.panelBottom} ${hasSecondary ? "To Panel" : "To Bottom Panel"}</span>`,
-        () => {
-          vscode.postMessage({
-            type: "moveView",
-            location: hasSecondary ? "panel" : "panel-bottom",
-          });
+        });
+      } else {
+        addGearItem(
+          `<span class="popover-icon-label">${ICON.panelRight} To Secondary Side Bar</span>`,
+          () => {
+            vscode.postMessage({ type: "moveView", location: "auxiliarybar" });
+            closePopovers();
+          },
+        );
+        addGearItem(`<span class="popover-icon-label">${ICON.panelLeft} To Primary Side Bar</span>`, () => {
+          vscode.postMessage({ type: "moveView", location: "sidebar" });
           closePopovers();
-        },
-      );
+        });
+        addGearItem(`<span class="popover-icon-label">${ICON.panelBottom} To Panel</span>`, () => {
+          vscode.postMessage({ type: "moveView", location: "panel" });
+          closePopovers();
+        });
+      }
     }
   }
 

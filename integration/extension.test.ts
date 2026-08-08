@@ -31,7 +31,7 @@ suite("grok-build extension smoke", () => {
       "grok.logout",
       // The escape hatch for an editor that hid the view somewhere unreachable —
       // useless if it is not in the palette.
-      "grok.moveToRightPanel",
+      "grok.moveView",
     ]) {
       assert.ok(all.includes(id), `command not registered: ${id}`);
     }

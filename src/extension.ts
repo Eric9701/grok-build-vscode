@@ -4,6 +4,8 @@ import { createVsCodeHost, createVsCodeHostContext, fromVsCodeUri, wrapWebviewVi
 import {
   GROK_VIEW_ID,
   PANEL_CONTAINER_ID,
+  PRIMARY_CONTAINER_ID,
+  SECONDARY_CONTAINER_ID,
   revealCommandFor,
   viewPlacementCorrection,
   VIEW_PLACEMENT_KEY,
@@ -35,8 +37,13 @@ import {
  *
  * Focus follows the move on purpose. Arriving from a chat you could not open, a
  * silent re-home to a dock you were not looking at is indistinguishable from
- * still being broken. The forced palette command skips the reveal for the same
- * reason it exists: you are already looking at it.
+ * still being broken.
+ *
+ * It aims at a CONTAINER, which bounds what it can achieve: a host may keep our
+ * container and ignore where it declared it lives — Cursor renders the panel one
+ * in the primary side bar. Reaching a dock the host draws for itself needs a
+ * LOCATION, and only the host's own picker takes one, which is what
+ * `Grok: Move Chat View` and the gear's `Move view…` open.
  *
  * Failure is swallowed: a host that rejects the move must not take activation
  * down with it, and `grok.open` resolves its command independently.
@@ -49,8 +56,19 @@ async function ensureViewPlacement(
   const placement = context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY);
   const version = context.extension.packageJSON?.version ?? "";
   try {
+    const availableCommands = await vscode.commands.getCommands(true);
+    // The missing diagnostic in every round of this so far: WHICH of our three
+    // containers this editor actually created. Whether Cursor registers the
+    // panel container at all decides between two completely different fixes.
+    log(
+      `containers: secondary=${availableCommands.includes(SECONDARY_CONTAINER_ID)} ` +
+        `primary=${availableCommands.includes(PRIMARY_CONTAINER_ID)} ` +
+        `panel=${availableCommands.includes(PANEL_CONTAINER_ID)} ` +
+        `viewFocus=${availableCommands.includes(`${GROK_VIEW_ID}.focus`)} ` +
+        `app=${vscode.env.appName}`,
+    );
     const target = viewPlacementCorrection({
-      availableCommands: await vscode.commands.getCommands(true),
+      availableCommands,
       placement,
       extensionVersion: version,
     });
@@ -79,7 +97,7 @@ async function ensureViewPlacement(
     // Recorded even on failure: an editor that rejects the move will reject it
     // identically on every window, and retrying forever would fight a user who
     // is living with it. The next version tries again, and
-    // `Grok: Move Chat to Right Panel` retries on demand.
+    // `Grok: Move Chat View` opens the host picker on demand.
     await context.globalState.update(VIEW_PLACEMENT_KEY, withAttempt(placement, version));
   }
 }
@@ -103,12 +121,13 @@ let pendingCorrection: { containerId: string; panelPosition: PanelPosition | nul
  *  there is exactly one place that knows the command sequence. */
 async function applyPlacement(
   target: { containerId: string; panelPosition: PanelPosition | null },
-  opts: { reveal: boolean },
+  opts: { reveal: boolean; log?: (s: string) => void },
 ): Promise<void> {
   await vscode.commands.executeCommand("vscode.moveViews", {
     viewIds: [GROK_VIEW_ID],
     destinationId: target.containerId,
   });
+  opts.log?.("moveViews returned without throwing");
   if (target.panelPosition) {
     // Caveat worth knowing: panel position is workbench-wide, so this also moves
     // Terminal, Problems and Output. Once per update, and only in an editor that
@@ -174,15 +193,15 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
     // the palette when the view itself is not — which is the state this whole
     // mechanism exists for. Asking for it counts as choosing it, so a later
     // correction restores this rather than the default.
-    vscode.commands.registerCommand("grok.moveToRightPanel", async () => {
-      await applyPlacement(
-        { containerId: PANEL_CONTAINER_ID, panelPosition: "right" },
-        { reveal: true },
-      );
-      await context.globalState.update(
-        VIEW_PLACEMENT_KEY,
-        withUserChoice(context.globalState.get<PlacementRecord>(VIEW_PLACEMENT_KEY), "panel-right"),
-      );
+    vscode.commands.registerCommand("grok.moveView", async () => {
+      output.appendLine("[placement] palette -> host picker");
+      // The host's own picker, preselected on our view. It targets a LOCATION
+      // and builds its own container, so it reaches docks no container id of
+      // ours can address — in Cursor, the secondary side bar it refuses to give
+      // us directly. The view-id argument is what makes it work there at all:
+      // without it the command reads the `focusedView` context key, which Cursor
+      // never sets for webview views.
+      await vscode.commands.executeCommand("workbench.action.moveFocusedView", GROK_VIEW_ID);
     }),
     vscode.commands.registerCommand("grok.newSession", () => sidebar.newSession()),
     vscode.commands.registerCommand("grok.newWorktreeSession", () => sidebar.newWorktreeSession()),

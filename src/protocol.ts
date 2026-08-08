@@ -300,7 +300,12 @@ export type WebviewMsg =
   | { type: "openSettings"; section?: string }
   // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;
   // plain `panel` leaves the layout alone (view-move.ts § panelPositionFor).
-  | { type: "moveView"; location: "panel" | "panel-right" | "panel-bottom" | "sidebar" | "auxiliarybar" }
+  //
+  // `pick` maps to no container on purpose, so the host falls through to its own
+  // destination picker. That picker targets a LOCATION rather than a container,
+  // which is the only way into a dock a host renders for itself — in Cursor it
+  // is the difference between reaching the secondary side bar and not.
+  | { type: "moveView"; location: "panel" | "panel-right" | "panel-bottom" | "sidebar" | "auxiliarybar" | "pick" }
   | { type: "setShowThinking"; value: boolean }
   /** Persist the global "Use this app for" preference (Knowledge work / Coding). */
   | { type: "setAppPurpose"; value: "knowledge" | "coding" }

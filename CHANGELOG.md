@@ -5,11 +5,11 @@
 ### Fixed
 
 - **The chat opens in Cursor.** Cursor reserves the secondary side bar for its own agent UI and refuses to place an extension there, so the panel Grok Build asks for was never created — the view was dropped into Explorer and every way of opening it answered "command not found". It now opens the view wherever the editor actually put it, and moves the chat into a right-docked panel: the same place on screen under a different name.
-- **That move happens on its own, without opening the chat first.** It has to: someone whose chat is buried in an Explorer section has no way to open it, so a correction that waits for them to open it never runs. It repeats after each update — installing a new version is what puts the chat back where the editor cannot show it — and it goes to wherever you last chose from **Move view**, not to our default. **Grok: Move Chat to Right Panel** in the command palette does it on demand, for the times an editor ignores the automatic one.
+- **That move happens on its own, without opening the chat first.** It has to: someone whose chat is buried in an Explorer section has no way to open it, so a correction that waits for them to open it never runs. It repeats after each update — installing a new version is what puts the chat back where the editor cannot show it — and it goes to wherever you last chose from **Move view**, not to our default.
 
 ### Changed
 
-- **Move view offers the docks your editor has.** In an editor without a secondary side bar the gear menu now reads **To Right Panel** and **To Bottom Panel** — each moves the chat and docks the panel on that edge — instead of listing a destination that quietly did nothing.
+- **Move view offers what your editor can actually do.** Where the secondary side bar is unavailable, the three destinations collapse into one **Move view…** that opens the editor's own picker, and **Grok: Move Chat View** does the same from the command palette. Cursor keeps our other view containers but ignores where they asked to live, so every destination we could name led to the same place — three labels for one outcome, two of them untrue. Its own picker moves the chat by *location*, which is how it reaches the panel and the secondary side bar. In VS Code the three direct destinations are unchanged.
 - **Move view is hidden in the browser client.** Where the chat sits is a property of the machine running the extension, so those entries could never do anything from a phone.
 
 ## 3.2.7 — 2026-08-08

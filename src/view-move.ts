@@ -157,11 +157,30 @@ export function viewPlacementCorrection(opts: {
   if (hostAcceptedSecondarySideBar(opts.availableCommands)) return null;
 
   const chosen = placement.chosenLocation;
-  const containerId = (chosen && moveViewContainerFor(chosen)) || PANEL_CONTAINER_ID;
-  // Docked right, the panel IS a secondary side bar — same screen position, same
-  // tall narrow shape the chat is designed for. Only defaulted; a user who asked
-  // for the bottom panel gets the bottom panel back.
-  const panelPosition = chosen ? panelPositionFor(chosen) : "right";
+  // Default is the ACTIVITY-BAR container, and the panel is NOT repositioned.
+  //
+  // Settled by instrumenting a real Cursor rather than by inference, after two
+  // wrong theories:
+  //
+  //   containers: secondary=false primary=true panel=true  app=Cursor
+  //   moving -> workbench.view.extension.grokPanel, panel right
+  //   moved
+  //
+  // The move always succeeded. Cursor registers our panel container and then
+  // renders it in the PRIMARY SIDE BAR — it honours the contribution but not its
+  // declared location. So `grokPanel` and `grokPrimary` land in the same place
+  // there, and aiming at the panel bought nothing while
+  // `workbench.action.positionPanelRight` moved the user's Terminal, Problems
+  // and Output across the window to achieve it. Same result, no collateral.
+  //
+  // Reaching that host's real panel or secondary side bar needs a LOCATION,
+  // which no container id can name; its own Move To is the only route, and it
+  // is a picker. The correction therefore aims at "somewhere ordinary and
+  // reachable", not at a side of the screen.
+  const containerId = (chosen && moveViewContainerFor(chosen)) || PRIMARY_CONTAINER_ID;
+  // A destination the user picked by name may still move the panel — they asked
+  // for that edge. Our own guess may not.
+  const panelPosition = chosen ? panelPositionFor(chosen) : null;
 
   // Nothing to move it INTO. Cursor refuses only the secondary-side-bar
   // container, so this should not happen — but issuing a move at a container

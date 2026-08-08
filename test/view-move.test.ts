@@ -29,18 +29,28 @@ describe("placing the view where the host will actually accept it", () => {
     expect(correct(VSCODE, undefined)).toBeNull();
   });
 
-  it("moves to the PANEL, docked right, when the secondary container was refused", () => {
+  it("moves to the ACTIVITY-BAR container when the secondary one was refused", () => {
     // Cursor drops the view into Explorer and never registers the container, so
     // grok.open threw "command not found" and the extension could not be opened.
     //
-    // Panel rather than the primary side bar on purpose: docked right it is a
-    // secondary side bar in everything but name — same position, same tall
-    // narrow shape — where the primary side bar would sit opposite the editor
-    // and fight the file tree for space.
+    // Not the panel container, though that is where this started. A host that
+    // refuses one contributed location can honour another's contribution while
+    // ignoring its location: instrumented Cursor accepts `grokPanel` and renders
+    // it in the primary side bar anyway. Same landing place, so aim at the
+    // container that says so.
     expect(correct(CURSOR, undefined)).toEqual({
-      containerId: PANEL_CONTAINER_ID,
-      panelPosition: "right",
+      containerId: PRIMARY_CONTAINER_ID,
+      panelPosition: null,
     });
+  });
+
+  it("never rearranges the whole workbench on its own initiative", () => {
+    // `positionPanelRight` is workbench-wide — it carries Terminal, Problems and
+    // Output across the window. It did exactly that in Cursor to reach a panel
+    // the view was never going to appear in. A destination the user picked by
+    // name may move the panel; our own guess may not.
+    expect(correct(CURSOR, undefined)?.panelPosition).toBeNull();
+    expect(correct(CURSOR, { chosenLocation: "panel-right" })?.panelPosition).toBe("right");
   });
 
   it("corrects once per version, not once ever", () => {
@@ -80,8 +90,8 @@ describe("placing the view where the host will actually accept it", () => {
     // this with no code change.
     const restricted = VSCODE.filter((c) => c !== SECONDARY_CONTAINER_ID);
     expect(correct(restricted, undefined)).toEqual({
-      containerId: PANEL_CONTAINER_ID,
-      panelPosition: "right",
+      containerId: PRIMARY_CONTAINER_ID,
+      panelPosition: null,
     });
   });
 });
