@@ -1,4 +1,4 @@
-# Grok Build Desktop — electron-builder config (unsigned release builds).
+# Grok Build Desktop — electron-builder config (signed + notarised on macOS).
 # Entry: out/desktop/main.js (see package.json scripts dist / dist:mac / dist:win).
 # Does not affect the VS Code VSIX path (npm run package).
 
@@ -65,19 +65,38 @@ publish: null
 # the conventional buildResources name, so it is found even if a block is ever
 # dropped. electron-builder requires >=256 for NSIS / macOS targets.
 
+# Signed + notarised with a Developer ID Application certificate (Team
+# L6TFKRX6QQ). CI supplies the identity as CSC_LINK / CSC_KEY_PASSWORD and the
+# notarisation credentials as APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER
+# (see .github/workflows/desktop-release.yml and docs/macos-code-signing.md).
+#
+# Locally, electron-builder still signs if the certificate is in the keychain —
+# that is its own auto-discovery, no env var needed — and skips notarisation with
+# a log line when the API key is absent. On a Mac with no certificate it signs
+# nothing and the afterPack hook ad-hoc signs instead, which is the only thing
+# keeping such a build loadable at all on Apple silicon. See the hook.
 mac:
   icon: resources/grok-icon-round-512.png
   category: public.app-category.developer-tools
-  # No Developer ID certificate yet, so electron-builder signs nothing…
-  identity: null
-  hardenedRuntime: false
-  gatekeeperAssess: false
-  # …and afterPack ad-hoc signs instead. NOT optional decoration: repackaging
-  # invalidates the signature Electron ships with, and on Apple silicon a bundle
-  # with no valid signature is refused outright — "Grok Build Desktop is damaged
-  # and can't be opened", with no right-click → Open escape. 3.2.2 shipped that.
-  # An ad-hoc signature does not make the app trusted; it makes it loadable, so
-  # the block becomes the ordinary prompt Open Anyway clears. See the hook.
+  # Mandatory for notarisation, and the reason entitlements exist: hardened
+  # runtime disables the JIT and the dyld env vars Electron needs.
+  hardenedRuntime: true
+  entitlements: resources/entitlements.mac.plist
+  # Not redundant. Electron's helper processes inherit their entitlements
+  # separately; omitting this is the classic "main process starts, window is
+  # blank" failure.
+  entitlementsInherit: resources/entitlements.mac.plist
+  # Team ID rides in APPLE_TEAM_ID (see the workflow), not here: electron-builder
+  # 25 deprecated `notarize.teamId` and warns when it is set. `true` only means
+  # "do not skip" — with no credentials in the env (a local build) it logs that
+  # it skipped notarisation and carries on.
+  notarize: true
+  extendInfo:
+    # Not optional. Asking for the microphone with no usage string does not
+    # prompt the user — macOS terminates the process, and it presents as a
+    # crash rather than as a permissions problem.
+    NSMicrophoneUsageDescription: >-
+      Grok Build Desktop uses the microphone for voice input in chat.
   target:
     - target: dmg
       arch:

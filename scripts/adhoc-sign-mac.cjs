@@ -20,20 +20,45 @@
  * becomes the ordinary "Apple could not verify…" one that Open Anyway clears.
  * That is the difference between an app users can run and one they cannot.
  *
- * This stays until there is a Developer ID certificate. At that point signing
- * moves to `mac.identity` + notarisation and this hook goes away — an ad-hoc
- * signature is a floor, not a destination.
+ * Release builds no longer come through here: CI has a Developer ID certificate
+ * and electron-builder signs and notarises. What is left is the local case this
+ * was written for — a dev build on a Mac with no certificate — so the hook is
+ * gated rather than deleted. An ad-hoc signature is a floor, not a destination.
  *
- * Deliberately a hook rather than dropping `identity: null`: electron-builder's
- * own fallback to ad-hoc depends on how identity resolution fails, which varies
- * with version and with CSC_IDENTITY_AUTO_DISCOVERY. Signing here is explicit,
- * and it fails the build loudly if codesign does.
+ * Deliberately a hook rather than leaning on electron-builder: its own fallback
+ * to ad-hoc depends on how identity resolution fails, which varies with version
+ * and with CSC_IDENTITY_AUTO_DISCOVERY. Signing here is explicit, and it fails
+ * the build loudly if codesign does.
  */
 const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 
+/**
+ * Will electron-builder sign this build for real, after this hook runs? Two ways
+ * it can: CSC_LINK (how CI supplies the .p12), or a Developer ID identity in the
+ * keychain — which is literally what its auto-discovery looks for, so the owner's
+ * own Mac now hits this path too. Either way, ad-hoc signing first would be
+ * overwritten at best, and `--deep` over nested helpers before a real inside-out
+ * pass corrupts their signatures at worst.
+ */
+function realSigningConfigured() {
+  if (process.env.CSC_LINK) return true;
+  if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === "false") return false;
+  try {
+    const identities = execFileSync(
+      "security",
+      ["find-identity", "-v", "-p", "codesigning"],
+      { encoding: "utf8" },
+    );
+    return identities.includes("Developer ID Application");
+  } catch {
+    return false;
+  }
+}
+
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "darwin") return;
+  if (realSigningConfigured()) return;
 
   const appName = `${context.packager.appInfo.productFilename}.app`;
   const appPath = path.join(context.appOutDir, appName);

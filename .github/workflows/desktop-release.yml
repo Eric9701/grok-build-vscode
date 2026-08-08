@@ -6,11 +6,15 @@
 # installers come out of the same commit and the same npm ci, rather than one
 # from CI and one from whatever happened to be on a laptop.
 #
-# Nothing is signed. `identity: null` (mac) in electron-builder.yml is
-# deliberate: there is no Apple Developer certificate and no Authenticode
-# certificate yet, so first-run Gatekeeper and SmartScreen warnings are expected
-# and are called out on the download page. When certificates exist, add them as
-# secrets and drop that line — the rest of this file does not change.
+# macOS is signed and notarised. The Developer ID identity arrives as CSC_LINK /
+# CSC_KEY_PASSWORD and notarisation authenticates with an App Store Connect API
+# key (APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER) — five repository
+# secrets; four go to electron-builder as-is and the key itself is staged to a
+# file first, for the reason given at that step. Windows stays unsigned:
+# SmartScreen reputation is earned through download volume and, since Microsoft
+# dropped EV's automatic reputation in 2024, no certificate removes that warning
+# outright. So a first-run SmartScreen prompt is still expected on Windows and is
+# called out on the download page; Gatekeeper no longer prompts on macOS.
 #
 # There is deliberately NO `signAndEditExecutable: false` on the Windows side.
 # It reads as "we are unsigned, so skip signing", but it also skips the EDIT
@@ -61,10 +65,39 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+
+      # electron-builder hands APPLE_API_KEY to `notarytool --key`, which wants a
+      # PATH to the .p8 — not the key itself. A repository secret can only hold
+      # text, so write it out here and point the env var at the file. RUNNER_TEMP
+      # is outside the workspace (nothing can package it by accident) and dies
+      # with the runner.
+      - name: Stage the notarisation key
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_API_KEY_PEM: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLE_API_KEY_PEM" ]; then
+            echo "APPLE_API_KEY secret is empty — notarisation would fail" >&2
+            exit 1
+          fi
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$APPLE_API_KEY_PEM" > "$key"
+          chmod 600 "$key"
+          echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
+
       - run: npm run ${{ matrix.script }}
         env:
-          # electron-builder reads this to decide whether to try notarising.
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          # Harmless on the Windows leg — empty and ignored — so one env block on
+          # the matrix step is enough; no need to branch per OS. APPLE_API_KEY is
+          # deliberately absent: it comes from GITHUB_ENV above, and a step-level
+          # env entry would override it back to the raw key contents.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: L6TFKRX6QQ
 
       # The installers only. dist-desktop/ also holds unpacked app trees and
       # electron-builder's own metadata, which nobody downloads.
