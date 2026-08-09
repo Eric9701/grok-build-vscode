@@ -1529,9 +1529,11 @@ body.thinking-hidden .msg.thinking { display: none; }
      because a shrink-to-fit container collapses a replaced <img> to zero width in
      Chromium — the 1.4.0 invisible-image bug. The file itself is untouched
      (click / Open in VS Code shows full res).
-     Videos use preload=none (decoder budget); until play there is no intrinsic
-     ratio, so height:auto is Chromium's default ~2:1 box then jumps. No pinned
-     aspect-ratio — portrait/square would look wrong. */
+     Video preload is host-dependent (see addGeneratedMedia): "metadata" where
+     the host serves honest byte ranges, "none" everywhere else. Under "none"
+     there is no intrinsic ratio until play, so height:auto is Chromium's
+     default ~2:1 box and then jumps. No pinned aspect-ratio either way —
+     portrait/square would look wrong. */
   position: relative;
   width: min(100%, 320px);
   margin: 6px 0;
