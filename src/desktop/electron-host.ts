@@ -1007,6 +1007,19 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
       }
       await messageBox(getWindow, "error", `Could not open resource:\n${String(target)}`, ["OK"]);
     },
+    async showInFolder(fsPath: string) {
+      const ctx = getAuthContext?.();
+      if (!ctx || (!ctx.workspaceRoot && !(ctx.allowedRoots && ctx.allowedRoots.length))) {
+        log(`[desktop] reveal refused: no auth context for ${fsPath}`);
+        return;
+      }
+      const check = resolveAuthorizedFileForOpen(fsPath, ctx);
+      if (!check.ok) {
+        log(`[desktop] reveal refused at use-time: ${check.reason} (${fsPath})`);
+        return;
+      }
+      shell.showItemInFolder(check.absPath);
+    },
     async openGlobalConfig() {
       const p = globalConfigPath();
       ensureConfigToml(p, GLOBAL_CONFIG_STUB);
@@ -1134,6 +1147,7 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     // This host owns its own app-resource:// handler, and that handler answers
     // byte ranges — see app-resource-handler.ts. No other host may claim this.
     canServeMediaRanges: true,
+    canShowInFolder: true,
   };
 }
 

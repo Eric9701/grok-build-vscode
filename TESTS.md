@@ -300,7 +300,7 @@ posted.
 
 ### `test/media-subagent.dom.test.ts` — generated media + subagent card in a real DOM (10 tests)
 
-- `addGeneratedMedia` renders an image as `<img>` and a video as `<video controls>` from the host's `media` message, wires the Copy-path / Open-in-VS-Code hover actions (pinned to the media), and falls back to an open-link button for a remote URL
+- `addGeneratedMedia` renders an image as `<img>` and a video as `<video controls>` from the host's `media` message, wires the Copy-path / Open-in-VS-Code hover actions plus capability-gated Show-in-folder for videos (images unchanged), and falls back to an open-link button for a remote URL
 - the (deferred) subagent classifier renders a *Subagent: \<type\>* card when fed a delegation shape
 
 ### `test/question-card.dom.test.ts` — `x.ai/ask_user_question` card (12 tests)

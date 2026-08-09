@@ -273,8 +273,9 @@ describe("addGeneratedMedia hover actions (copy path / open)", () => {
       (b) => b.getAttribute("title") === title,
     ) as HTMLButtonElement | undefined;
 
-  it("an image exposes copy-path + open icons; the open icon posts openFile", () => {
-    const { window, posted, doc } = bootWebview();
+  it("an image keeps the open icon even when showInFolder is advertised", () => {
+    const h = bootWithCaps({ showInFolder: true });
+    const { window, posted, doc } = h;
     dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: IMG_PATH });
     const wrap = messages(doc).querySelector(".generated-image")!;
 
@@ -306,7 +307,20 @@ describe("addGeneratedMedia hover actions (copy path / open)", () => {
     expect(h.posted).toContainEqual({ type: "openFile", path: IMG_PATH });
   });
 
-  it("a video — which has no click-to-open — still exposes the open icon", () => {
+  it("a video uses Show in folder when the host advertises it", () => {
+    const h = bootWithCaps({ showInFolder: true });
+    const { window, posted, doc } = h;
+    dispatch(window, { type: "media", media: "video", src: VIDEO_DATA, path: "/sessions/abc/videos/clip.mp4" });
+    const wrap = messages(doc).querySelector(".generated-image.generated-video")!;
+
+    const openBtn = btnByTitle(wrap, "Show in folder")!;
+    expect(openBtn).toBeTruthy();
+    click(window, openBtn);
+    expect(posted).toContainEqual({ type: "showInFolder", path: "/sessions/abc/videos/clip.mp4" });
+    expect(btnByTitle(wrap, "Open in VS Code")).toBeUndefined();
+  });
+
+  it("a video keeps Open file when the host does not advertise Show in folder", () => {
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "media", media: "video", src: VIDEO_DATA, path: "/sessions/abc/videos/clip.mp4" });
     const wrap = messages(doc).querySelector(".generated-image.generated-video")!;

@@ -6953,11 +6953,10 @@
   }
 
   // Hover actions for an inlined image/video, anchored top-right like the
-  // code-block copy button: copy the on-disk path, or open the file (editor
-  // tab on VS Code; OS default app on desktop). Both are the only way to
-  // reach a *video's* file (its click drives playback controls, so the
-  // click-to-enlarge we give images can't apply there).
-  function buildMediaActions(path, src) {
+  // code-block copy button: copy the on-disk path, or open/reveal the file.
+  // Video gets the reveal action only on hosts that explicitly advertise it;
+  // images keep their existing open behavior.
+  function buildMediaActions(path, src, isVideo) {
     const actions = document.createElement("div");
     actions.className = "generated-media-actions";
 
@@ -6998,13 +6997,16 @@
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "generated-media-btn";
-    // Label follows openInEditor: VS Code opens an editor tab; desktop hands
-    // the path to the OS default app. Action is openFile either way.
-    openBtn.title = hostOpensInEditor() ? "Open in VS Code" : "Open file";
-    openBtn.innerHTML = ICON.file;
+    const showInFolder = isVideo && state.hostCaps && state.hostCaps.showInFolder === true;
+    // Label follows the media kind and host capability: images always open;
+    // videos reveal in the file manager only when the host opts in.
+    openBtn.title = showInFolder
+      ? "Show in folder"
+      : (hostOpensInEditor() ? "Open in VS Code" : "Open file");
+    openBtn.innerHTML = showInFolder ? ICON.folder : ICON.file;
     openBtn.onclick = (e) => {
       e.stopPropagation();
-      vscode.postMessage({ type: "openFile", path });
+      vscode.postMessage({ type: showInFolder ? "showInFolder" : "openFile", path });
     };
 
     actions.appendChild(copyBtn);
@@ -7017,7 +7019,8 @@
   // webview URI streamed from disk (big videos) or a base64 data: URI; `url` is
   // a remote link we open externally. Clicking an image opens a host editor tab
   // when the host can (VS Code); otherwise the in-app lightbox. Video gets
-  // native <video> controls. Hover icons: copy path / open file.
+  // native <video> controls. Hover icons: copy path / open file, or show video
+  // in its folder.
   function addGeneratedMedia(msg) {
     if (state.suppressReplayTurn) return;
     const isVideo = msg.media === "video";
@@ -7074,7 +7077,7 @@
         }
         el.appendChild(img);
       }
-      if (msg.path) el.appendChild(buildMediaActions(msg.path, msg.src));
+      if (msg.path) el.appendChild(buildMediaActions(msg.path, msg.src, isVideo));
     } else if (msg.url) {
       const link = document.createElement("button");
       link.className = "preview-link";

@@ -466,7 +466,9 @@ the steady-state fix.
   `/imagine-video` write a file into the session dir and report its *path* as
   JSON-in-text on the completed tool result. The host parses the path, classifies
   image-vs-video by extension, and serves it to the webview via `asWebviewUri`
-  (streamed from disk) so even a multi-MB video renders. See
+  (streamed from disk) so even a multi-MB video renders. A host-local
+  `showInFolder` action is capability-gated for generated videos and reuses the
+  same path authorization as `openFile`; generated images keep `openFile`. See
   [research/image-generation.md](../research/image-generation.md).
 - **Math renders via vendored MathJax (SVG), extracted before HTML-escaping.** Grok
   answers with TeX (inline `\(…\)`, display `\[…\]`, `\begin{pmatrix}` matrices).

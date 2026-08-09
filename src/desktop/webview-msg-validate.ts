@@ -113,6 +113,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       if (!isString(raw.id)) return null;
       break;
     case "openFile":
+    case "showInFolder":
       if (!isString(raw.path)) return null;
       break;
     case "dropFile":

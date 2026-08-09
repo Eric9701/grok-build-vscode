@@ -1928,6 +1928,30 @@ Only continue if you trust this code.`,
     return session.cwd || this.workspaceRoot();
   }
 
+  /** Resolve the same workspace/media path used by the chat openFile action. */
+  private resolveChatOpenPath(session: Session, rawPath: string): {
+    ref: ReturnType<typeof parseFileRef>;
+    path: string;
+  } {
+    const ref = parseFileRef(rawPath);
+    const { grokHome, sessionDir } = this.desktopOpenMediaContext(session);
+    const resolved = resolveChatOpenFilePath({
+      rawPath: ref.path,
+      workspaceRoots: [this.sessionCwd(session)],
+      sessionDir,
+      grokHome,
+      exists: (abs) => {
+        try {
+          return fs.statSync(abs).isFile();
+        } catch {
+          return false;
+        }
+      },
+      realpath: (candidate) => fs.realpathSync(candidate),
+    });
+    return { ref, path: resolved };
+  }
+
   private setSessionCwd(session: Session, cwd: string, fallbackSourceGitRoot: string): void {
     session.cwd = cwd;
     session.worktree = undefined;
@@ -4903,25 +4927,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "openFile": {
-        const ref = parseFileRef(msg.path);
-        // Workspace-first, then session-generated media for relative
-        // images|videos/<file> links the agent writes in prose (e.g. [1.jpg](images/1.jpg)).
-        // See resolveChatOpenFilePath / isTrustedGeneratedMediaPath.
-        const { grokHome, sessionDir } = this.desktopOpenMediaContext(session);
-        const p = resolveChatOpenFilePath({
-          rawPath: ref.path,
-          workspaceRoots: [this.sessionCwd(session)],
-          sessionDir,
-          grokHome,
-          exists: (abs) => {
-            try {
-              return fs.statSync(abs).isFile();
-            } catch {
-              return false;
-            }
-          },
-          realpath: (candidate) => fs.realpathSync(candidate),
-        });
+        const { ref, path: p } = this.resolveChatOpenPath(session, msg.path);
         if (ref.startLine != null) {
           const startLine = Math.max(0, ref.startLine - 1);
           const endLine = ref.endLine != null ? Math.max(startLine, ref.endLine - 1) : startLine;
@@ -4938,6 +4944,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         } else {
           void this.host.openResource(p);
         }
+        break;
+      }
+      case "showInFolder": {
+        if (!this.host.canShowInFolder) break;
+        const { path: p } = this.resolveChatOpenPath(session, msg.path);
+        await this.host.showInFolder(p);
         break;
       }
       case "openUrl":
@@ -8060,6 +8072,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // Only a host that owns the media handler may opt generated videos into
         // metadata preload; every other host keeps the lazy default.
         servesMediaRanges: this.host.canServeMediaRanges,
+        showInFolder: this.host.canShowInFolder,
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.
@@ -8243,7 +8256,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * they must never inherit the desk host's local range-serving capability. */
   private messageForRemote(message: HostMsg): HostMsg {
     if (message.type !== "initialState") return message;
-    const { servesMediaRanges: _servesMediaRanges, ...capabilities } = message.capabilities;
+    const {
+      servesMediaRanges: _servesMediaRanges,
+      showInFolder: _showInFolder,
+      ...capabilities
+    } = message.capabilities;
     return { ...message, capabilities };
   }
 

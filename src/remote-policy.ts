@@ -280,6 +280,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // host-local: native pickers/editors/config/mic on the dev box
   pickModel: "host-local",
   openFile: "host-local",
+  showInFolder: "host-local",
   openUrl: "host-local",
   openText: "host-local",
   openDiff: "host-local",

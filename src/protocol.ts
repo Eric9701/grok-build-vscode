@@ -110,6 +110,11 @@ export type HostUiCapabilities = {
    */
   openInEditor?: boolean;
   /**
+   * Whether generated-video hover actions may reveal the file in the host's
+   * file manager. OPT-IN: absent/false keeps the existing open-file action.
+   */
+  showInFolder?: boolean;
+  /**
    * The rail's "add project folder" control. OPT-IN, unlike the two above:
    * absent/false = hide. A host that never sent it cannot open a folder picker,
    * and VS Code deliberately does not — its workspace is VS Code's to manage.
@@ -303,6 +308,7 @@ export type WebviewMsg =
   | { type: "removeChip"; id: string }
   | { type: "toggleChip"; id: string }
   | { type: "openFile"; path: string }
+  | { type: "showInFolder"; path: string }
   | { type: "openUrl"; url: string }
   // `language` is optional on purpose: omitting it hands the untitled document
   // to VS Code's own language detection, which is what a command should get —
@@ -485,7 +491,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
-  setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
+  setMode: true, removeChip: true, toggleChip: true, openFile: true, showInFolder: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   addProjectFolder: true, removeProjectFolder: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, toggleDevTools: true, openSettings: true, moveView: true,

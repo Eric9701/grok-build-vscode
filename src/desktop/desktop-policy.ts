@@ -631,7 +631,7 @@ export function authorizeDropFile(
  * Policy gate for a parsed WebviewMsg. Returns the message (possibly rewritten)
  * when allowed, or a refusal when the operation must not reach Host/sidebar.
  *
- * Filtered: openFile, openUrl, openDiff, dropFile. Everything else passes
+ * Filtered: openFile, showInFolder, openUrl, openDiff, dropFile. Everything else passes
  * (schema validation already ran).
  */
 export function authorizeDesktopWebviewMsg(
@@ -643,7 +643,7 @@ export function authorizeDesktopWebviewMsg(
     if (!r.ok) return { refused: true, reason: r.reason, type: msg.type };
     return { msg };
   }
-  if (msg.type === "openFile") {
+  if (msg.type === "openFile" || msg.type === "showInFolder") {
     // Strip #L / :line suffixes so containment uses the real file path.
     const bare = parseFileRef(msg.path).path;
     const r = authorizeOpenFile(bare, ctx);

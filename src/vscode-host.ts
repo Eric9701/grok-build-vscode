@@ -445,6 +445,9 @@ export function createVsCodeHost(
         options ? toVsCodeShowOptions(options) : undefined,
       );
     },
+    async showInFolder(fsPath: string) {
+      await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(fsPath));
+    },
     async openGlobalConfig() {
       const p = globalConfigPath();
       ensureConfigToml(p, GLOBAL_CONFIG_STUB);
@@ -582,6 +585,9 @@ export function createVsCodeHost(
     // Media goes through asWebviewUri, i.e. the editor's own resource pipeline.
     // We do not own it and cannot vouch for its range handling.
     canServeMediaRanges: false,
+    // Deliberately off for now; enable this one capability when VS Code's
+    // generated-video action should use revealFileInOS too.
+    canShowInFolder: false,
   };
 }
 

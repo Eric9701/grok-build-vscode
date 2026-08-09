@@ -604,6 +604,8 @@ export interface Host {
    * intent methods below — never funnel those through this path.
    */
   openResource(target: string | Uri, options?: HostTextShowOptions): Thenable<void>;
+  /** Reveal a host-resolved filesystem path in the host's file manager. */
+  showInFolder(fsPath: string): Thenable<void>;
   /**
    * Open the user's global Grok config.toml (`~/.grok/config.toml` / GROK_HOME).
    * Host resolves and may create a stub; no renderer path is involved.
@@ -758,6 +760,8 @@ export interface Host {
    * own the media handler may advertise this to the webview.
    */
   readonly canServeMediaRanges: boolean;
+  /** Whether the host can reveal a filesystem path in its file manager. */
+  readonly canShowInFolder: boolean;
 }
 
 /**

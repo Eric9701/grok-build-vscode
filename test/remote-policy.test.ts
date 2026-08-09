@@ -54,6 +54,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.toggleRepoPin).toBe("full");
     // native pickers/editors/mic act on the LOCAL VS Code — never remote-drivable
     expect(INBOUND_DISPOSITION.openFile).toBe("host-local");
+    expect(INBOUND_DISPOSITION.showInFolder).toBe("host-local");
     expect(INBOUND_DISPOSITION.openText).toBe("host-local");
     expect(INBOUND_DISPOSITION.pickFile).toBe("host-local");
     expect(INBOUND_DISPOSITION.voiceStart).toBe("host-local");
@@ -437,7 +438,7 @@ describe("allowFromRemote tier gating", () => {
   });
 
   it("host-local and control are never routed, even at full", () => {
-    for (const t of ["openFile", "pickFile", "voiceStart", "moveView", "dropFile", "exportExpr", "ready"] as const) {
+    for (const t of ["openFile", "showInFolder", "pickFile", "voiceStart", "moveView", "dropFile", "exportExpr", "ready"] as const) {
       expect(allowFromRemote(t, "full")).toBe(false);
     }
   });
