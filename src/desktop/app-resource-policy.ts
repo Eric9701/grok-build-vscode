@@ -32,6 +32,88 @@ const FULL_SERVE_ROOT_BASENAMES = new Set([
 
 export type AppResourceRootPolicy = "full" | "media-only";
 
+const RANGED_MEDIA_CONTENT_TYPES = new Map([
+  [".mp4", "video/mp4"],
+  [".m4v", "video/mp4"],
+  [".mov", "video/quicktime"],
+  [".webm", "video/webm"],
+]);
+
+/** Content types for the media files Chromium may request with byte ranges. */
+export function mediaContentTypeForPath(fsPath: string): string | null {
+  const extension = path.extname(fsPath).toLowerCase();
+  return RANGED_MEDIA_CONTENT_TYPES.get(extension) ?? null;
+}
+
+export type ByteRangeResult =
+  | { kind: "none" }
+  | { kind: "single"; start: number; end: number }
+  | { kind: "unsatisfiable"; size: number }
+  | { kind: "ignore"; reason: "unit" | "multiple" | "malformed" };
+
+/**
+ * Parse one HTTP byte range against a known file size.
+ *
+ * Multiple ranges and anything outside the single-byte-range grammar are
+ * deliberately reported as `ignore`: the handler falls back to a normal 200
+ * response instead of claiming a satisfiable representation is unsatisfiable.
+ * Chromium media requests use one byte range, which keeps this seam small.
+ */
+export function parseByteRange(
+  header: string | null | undefined,
+  size: number,
+): ByteRangeResult {
+  if (header == null || header.trim() === "") return { kind: "none" };
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error("byte range size must be a non-negative safe integer");
+  }
+
+  const unit = /^([^=]+)=(.*)$/.exec(header.trim());
+  if (!unit || unit[1].toLowerCase() !== "bytes") {
+    return { kind: "ignore", reason: "unit" };
+  }
+  const specs = unit[2].split(",");
+  if (specs.length !== 1) return { kind: "ignore", reason: "multiple" };
+
+  const match = /^\s*(\d*)\s*-\s*(\d*)\s*$/.exec(specs[0]);
+  if (!match || (!match[1] && !match[2])) {
+    return { kind: "ignore", reason: "malformed" };
+  }
+
+  const parseInteger = (value: string): number | null => {
+    if (!value) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  };
+  const requestedStart = parseInteger(match[1]);
+  const requestedEnd = parseInteger(match[2]);
+
+  if (match[1]) {
+    if (requestedStart == null || requestedStart >= size) {
+      return { kind: "unsatisfiable", size };
+    }
+    if (requestedEnd != null && requestedEnd < requestedStart) {
+      return { kind: "unsatisfiable", size };
+    }
+    return {
+      kind: "single",
+      start: requestedStart,
+      end: Math.min(requestedEnd ?? size - 1, size - 1),
+    };
+  }
+
+  // A suffix of zero bytes is unsatisfiable. A larger suffix simply means the
+  // whole file, as required by the byte-range rules.
+  if (requestedEnd == null || requestedEnd === 0 || size === 0) {
+    return { kind: "unsatisfiable", size };
+  }
+  return {
+    kind: "single",
+    start: Math.max(0, size - requestedEnd),
+    end: size - 1,
+  };
+}
+
 export function rootServePolicy(rootFsPath: string): AppResourceRootPolicy {
   const base = path.basename(rootFsPath.replace(/[\\/]+$/, "")).toLowerCase();
   return FULL_SERVE_ROOT_BASENAMES.has(base) ? "full" : "media-only";

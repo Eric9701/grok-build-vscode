@@ -24,11 +24,11 @@ import {
 } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 import { GrokSidebar } from "../sidebar";
 import { Uri } from "../host";
 import type { HostContext, HostDisposable } from "../host";
 import { ConfigStore, SensitiveConfigStore } from "./config-store";
+import { createAppResourceHandler } from "./app-resource-handler";
 import type { DesktopOpenFileContext } from "./desktop-policy";
 import { createElectronHost, ensureWorkspaceRoot, type ElectronRemoteActions } from "./electron-host";
 import {
@@ -307,6 +307,11 @@ async function createApp(): Promise<void> {
   // Registry + canonical static roots — never free-form ~/.grok path serve.
   // Narrow extra lane: exact APP_DOCUMENT_URL → in-memory HTML (real origin for
   // localStorage). Not a path serve; does not widen static/registry policy.
+  const serveAppResource = createAppResourceHandler({
+    resolveResourceUrl: (resourceUrl) => webview?.resolveResourceUrl(resourceUrl) ?? null,
+    fetchFile: (fileUrl) => net.fetch(fileUrl),
+    log,
+  });
   protocol.handle(APP_RESOURCE_SCHEME, async (request: Request | ProtocolRequest) => {
     const url = typeof request === "object" && "url" in request ? request.url : String(request);
     if (!webview) {
@@ -325,17 +330,7 @@ async function createApp(): Promise<void> {
         },
       });
     }
-    const fsPath = webview.resolveResourceUrl(url);
-    if (!fsPath) {
-      log(`blocked resource: ${url}`);
-      return new Response("Forbidden", { status: 403 });
-    }
-    try {
-      return await net.fetch(pathToFileURL(fsPath).href);
-    } catch (e) {
-      log(`resource fetch failed ${fsPath}: ${(e as Error).message}`);
-      return new Response("Not found", { status: 404 });
-    }
+    return await serveAppResource(request, url);
   });
 
   // Bound after GrokSidebar exists so link/unlink reuse the extension flow.
