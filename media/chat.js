@@ -7041,17 +7041,17 @@
         // disablePictureInPicture is a separate attribute (not controlsList).
         video.controlsList = "nodownload noremoteplayback noplaybackrate";
         video.disablePictureInPicture = true;
-        // preload=none: every <video> with metadata holds a Chromium media
-        // decoder from first paint. Ten generated clips in one chat exhaust
-        // the per-renderer pool, so some refuse to play until a fresh session
-        // (not the same file each time — verified on real session files served
-        // via asWebviewUri). Decoder cost only when the user presses play.
-        // Trade-off accepted: no first-frame poster. Without metadata the box
-        // has no intrinsic ratio — height:auto uses Chromium's default ~2:1
-        // until play, then jumps. Deliberately NOT pinning aspect-ratio: a
-        // fixed 16:9 would mis-shape portrait / square video; a small jump is
-        // better than a wrong shape for the few people who generate video.
-        video.preload = "none";
+        // Metadata preload is safe only when the host advertises honest byte
+        // ranges for its media handler. It restores the first frame and the
+        // video's intrinsic aspect ratio there; every other host keeps the
+        // lazy behavior because its resource pipeline may not serve ranges.
+        //
+        // What "none" costs, so nobody reads it as free: with no metadata the
+        // box has no intrinsic ratio, so height:auto renders Chromium's default
+        // ~2:1 until play and then jumps. Deliberately NOT pinned to 16:9 — a
+        // fixed ratio would mis-shape portrait and square clips, and a jump
+        // beats a wrong shape.
+        video.preload = state.hostCaps?.servesMediaRanges === true ? "metadata" : "none";
         video.playsInline = true;
         el.appendChild(video);
       } else {

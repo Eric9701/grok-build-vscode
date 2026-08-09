@@ -579,6 +579,9 @@ export function createVsCodeHost(
     canOpenInEditor: true,
     canSwitchWorkspaceFolder: false,
     canArchiveRepos: true,
+    // Media goes through asWebviewUri, i.e. the editor's own resource pipeline.
+    // We do not own it and cannot vouch for its range handling.
+    canServeMediaRanges: false,
   };
 }
 

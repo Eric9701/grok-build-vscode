@@ -235,11 +235,22 @@ describe("addGeneratedMedia (/imagine-video video)", () => {
     expect(wrap!.querySelector("img")).toBeNull();
   });
 
-  // preload=none: each metadata preload holds a Chromium decoder from first
-  // paint; ten clips in one chat exhaust the pool so play is a no-op on some
-  // (not the same file each time — fresh session works). Mutation: set
-  // preload back to "metadata" → this fails.
-  it("uses preload=none so decoders are not reserved until play", () => {
+  it("uses preload=metadata when the host advertises honest media ranges", () => {
+    const h = bootWithCaps({ servesMediaRanges: true });
+    dispatch(h.window, {
+      type: "media",
+      media: "video",
+      src: VIDEO_DATA,
+      path: "/sessions/abc/videos/clip.mp4",
+    });
+    const video = messages(h.doc).querySelector(
+      ".generated-image.generated-video video",
+    ) as HTMLVideoElement;
+    expect(video.preload).toBe("metadata");
+    expect(video.getAttribute("preload")).toBe("metadata");
+  });
+
+  it("uses preload=none when the host does not advertise honest media ranges", () => {
     const { window, doc } = bootWebview();
     dispatch(window, {
       type: "media",

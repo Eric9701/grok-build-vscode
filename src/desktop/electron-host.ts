@@ -1131,6 +1131,9 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     canOpenInEditor: false,
     canSwitchWorkspaceFolder: true,
     canArchiveRepos: false,
+    // This host owns its own app-resource:// handler, and that handler answers
+    // byte ranges — see app-resource-handler.ts. No other host may claim this.
+    canServeMediaRanges: true,
   };
 }
 

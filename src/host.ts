@@ -753,6 +753,11 @@ export interface Host {
    * is attached to (field presence on `repos` rows is the wire signal).
    */
   readonly canArchiveRepos: boolean;
+  /**
+   * Whether generated media is served with honest byte ranges. Only hosts that
+   * own the media handler may advertise this to the webview.
+   */
+  readonly canServeMediaRanges: boolean;
 }
 
 /**

@@ -8021,7 +8021,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return parseAppPurpose(this.state.get<string>(APP_PURPOSE_KEY));
   }
 
-  private buildInitialStateMsg(): HostMsg {
+  private buildInitialStateMsg(): Extract<HostMsg, { type: "initialState" }> {
     const cfg = this.host.getConfiguration("grok");
     const cwd = this.workspaceRoot();
     return {
@@ -8057,6 +8057,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
         openInEditor: this.host.canOpenInEditor,
+        // Only a host that owns the media handler may opt generated videos into
+        // metadata preload; every other host keeps the lazy default.
+        servesMediaRanges: this.host.canServeMediaRanges,
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.
@@ -8229,11 +8232,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       return;
     }
     this.postTap?.("remote", message, [...clientIds]);
-    const out = transformHostMsgForRemote(message, this.remoteMediaDeps);
+    const out = transformHostMsgForRemote(this.messageForRemote(message), this.remoteMediaDeps);
     if (!out) return;
     // Pass scope through so the uplink gate does not re-derive from a stale
     // per-tab mapping for multi-client session fan-out.
     this.uplink?.broadcastTo([...clientIds], out, scopeCwd);
+  }
+
+  /** Remote clients receive media bytes only through the remote media policy;
+   * they must never inherit the desk host's local range-serving capability. */
+  private messageForRemote(message: HostMsg): HostMsg {
+    if (message.type !== "initialState") return message;
+    const { servesMediaRanges: _servesMediaRanges, ...capabilities } = message.capabilities;
+    return { ...message, capabilities };
   }
 
   /** Target one opaque relay clientId. */
@@ -10307,7 +10318,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Catalog is already open-folder-filtered on desktop; still the sole source.
     const entries = this.localRepoCatalogEntries();
     // Never put a closed cwd on the wire (choke point rejects it); empty = unbound.
-    const initial = { ...this.buildInitialStateMsg(), cwd: listCwd ?? "" };
+    const initial = this.messageForRemote({ ...this.buildInitialStateMsg(), cwd: listCwd ?? "" });
     const sessionCwd = this.sessionCwd(session);
     const sessionCwdOk = !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
     const phrase = this.voiceSetting(

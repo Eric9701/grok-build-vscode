@@ -68,6 +68,11 @@ export type HostUiCapabilities = {
   remoteVoice: boolean;
   deleteActiveSession?: boolean;
   /**
+   * Whether generated media is served with honest byte-range responses. This
+   * is opt-in: hosts without this capability must keep generated videos lazy.
+   */
+  servesMediaRanges?: boolean;
+  /**
    * Gear → Move view. Opt-out: absent/true = show (older VS Code hosts never
    * sent this flag but always supported the control); false = hide (desktop).
    */
