@@ -2641,8 +2641,17 @@ Only continue if you trust this code.`,
     let hit = entries.find((r) => pathsEqual(r.cwd, cwd));
     if (!hit) {
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-      const owner = this.repoOwningSessionCwd(cwd, overrides, entries);
-      hit = entries.find((r) => !!owner && pathsEqual(r.cwd, owner));
+      // Ownership resolves by GIT ROOT, so every open folder sharing one
+      // checkout claims the same worktree — two sibling monorepo packages both
+      // answer yes. Taking the first would silently pick whichever the catalog
+      // listed first, which is normally just the active folder, so an ambiguous
+      // claim is treated as no claim.
+      const owners = entries.filter(
+        (r) =>
+          r.available
+          && this.sessionCwdsForRepo(r.cwd, overrides).some((c) => pathsEqual(c, cwd)),
+      );
+      hit = owners.length === 1 ? owners[0] : undefined;
     }
     if (!hit || !hit.available) return undefined;
     return hit;
@@ -9674,9 +9683,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       );
       return;
     }
+    // Exact first: when the session's own project root IS an open folder, that
+    // is the answer and no ownership guessing is needed. Ownership is only the
+    // fallback for a worktree cwd, and it declines rather than guess when more
+    // than one open folder claims it.
     const target =
-      (session.cwd ? this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined) ??
-      intendedTarget;
+      this.resolveLocalRepoTarget(intendedTarget)?.cwd
+      ?? (session.cwd ? this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined);
+    if (!target) {
+      this.host.appendLine(
+        `[sessions] skipped active-folder follow (no single open folder owns ${intendedTarget})`,
+      );
+      return;
+    }
     await this.switchLocalWorkspaceFolderExclusive(target, { warnOnRefusal: false });
   }
 

@@ -3613,12 +3613,21 @@ describe("local workspace switch serialization (P1-2)", () => {
     expect(followBody).toContain("session.worktree?.sourceGitRoot ?? session.cwd");
     expect(followBody).toContain("this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined");
     expect(followBody).toContain("warnOnRefusal: false");
+    // Both candidates go through the catalog. The raw source root must never
+    // reach the host as a bare fallback — it is only sometimes an open folder,
+    // and the refusal for the rest is silent.
+    expect(followBody).toContain("this.resolveLocalRepoTarget(intendedTarget)?.cwd");
+    expect(followBody).not.toMatch(/\?\?\s*intendedTarget;/);
 
     const resolveStart = sidebar.indexOf("private resolveLocalRepoTarget(");
     const resolveEnd = sidebar.indexOf("private buildRepoSessionsPreview(", resolveStart);
     const resolveBody = sidebar.slice(resolveStart, resolveEnd);
-    expect(resolveBody).toContain("this.repoOwningSessionCwd(cwd, overrides, entries)");
     expect(resolveBody).toContain("entries.find((r) => pathsEqual(r.cwd, cwd))");
+    // Ownership resolves by GIT ROOT, so every open folder sharing a checkout
+    // claims the same worktree. Exactly one owner or no switch — never a
+    // `.find` taking whichever the catalog happened to list first.
+    expect(resolveBody).toMatch(/const owners = entries\.filter\(/);
+    expect(resolveBody).toContain("owners.length === 1 ? owners[0] : undefined");
   });
 });
 
