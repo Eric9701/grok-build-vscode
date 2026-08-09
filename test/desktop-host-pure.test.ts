@@ -3577,6 +3577,42 @@ describe("local workspace switch serialization (P1-2)", () => {
       /switchLocalWorkspaceFolder[\s\S]*localWorkspaceSwitchQueue\.run/,
     );
   });
+
+  it("local resume follows the host-owned session project", () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const openStart = sidebar.indexOf("private async openSession(id: string");
+    const openEnd = sidebar.indexOf("private localTrustedSessionCwds(", openStart);
+    const openBody = sidebar.slice(openStart, openEnd);
+    const reserveAt = openBody.indexOf("this.reserveSessionLoad(id)");
+    const queueAt = openBody.indexOf("this.localWorkspaceSwitchQueue.run(open)");
+    expect(reserveAt).toBeGreaterThanOrEqual(0);
+    expect(queueAt).toBeGreaterThan(reserveAt);
+    expect(openBody).toContain("const open = () => this.openSessionReserved(id, sessionCwd)");
+
+    const reservedStart = sidebar.indexOf("private async openSessionReserved(");
+    const reservedEnd = sidebar.indexOf("private revealAndFocusComposer", reservedStart);
+    const reservedBody = sidebar.slice(reservedStart, reservedEnd);
+    expect(reservedBody).toContain("await this.followSessionWorkspace(s)");
+    expect(reservedBody).toContain("await this.followSessionWorkspace(this.focused)");
+    expect(reservedBody).not.toMatch(/await this\.switchLocalWorkspaceFolder\(/);
+    expect(sidebar).toContain("await this.switchLocalWorkspaceFolderExclusive(target, { warnOnRefusal: false })");
+  });
+
+  it("worktree resume follows its owning project, not the worktree cwd", () => {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const followStart = sidebar.indexOf("private async followSessionWorkspace(");
+    const followEnd = sidebar.indexOf("private async openSessionReserved(", followStart);
+    const followBody = sidebar.slice(followStart, followEnd);
+    expect(followBody).toContain("if (!this.host.canSwitchWorkspaceFolder) return");
+    expect(followBody).toContain("session.worktree?.sourceGitRoot ?? session.cwd");
+    expect(followBody).toContain("warnOnRefusal: false");
+  });
 });
 
 describe("file tree rebind on project change (P2-3)", () => {

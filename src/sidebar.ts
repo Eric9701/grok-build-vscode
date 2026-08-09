@@ -2714,22 +2714,28 @@ Only continue if you trust this code.`,
   }
 
   /**
-   * Desktop multi-folder: switch the host's active folder and open that
-   * project's newest conversation (or start a blank one). Reuses the session
-   * pool + openSession path — no parallel multi-cwd machinery.
+   * Desktop multi-folder: switch the host's active folder for project browsing.
+   * Reuses the host's active-folder path; session selection remains a separate
+   * action.
    *
    * Serialized on {@link localWorkspaceSwitchQueue} so concurrent `selectRepo`
    * cannot interleave. The target cwd is captured once for the whole action —
    * never re-read from a shared active-root field after an await.
    */
-  private async switchLocalWorkspaceFolder(cwd: string): Promise<void> {
+  private async switchLocalWorkspaceFolder(
+    cwd: string,
+    options: { warnOnRefusal?: boolean } = {},
+  ): Promise<void> {
     const target = cwd;
     return this.localWorkspaceSwitchQueue.run(() =>
-      this.switchLocalWorkspaceFolderExclusive(target),
+      this.switchLocalWorkspaceFolderExclusive(target, options),
     );
   }
 
-  private async switchLocalWorkspaceFolderExclusive(target: string): Promise<void> {
+  private async switchLocalWorkspaceFolderExclusive(
+    target: string,
+    options: { warnOnRefusal?: boolean } = {},
+  ): Promise<void> {
     const prevRoot = this.workspaceRoot();
     if (!pathsEqual(target, prevRoot)) {
       // A rejected host call must abort — never treat setActive as advisory
@@ -2738,9 +2744,14 @@ Only continue if you trust this code.`,
         this.host.appendLine(
           `[workspace] refused setActiveWorkspaceFolder (not an open folder): ${target}`,
         );
-        void this.host.showWarningMessage(
-          `That folder is not open in this app:\n${target}`,
-        );
+        // Explicit project selection is actionable, so keep its warning. A
+        // resume only tries to keep the file-tree view in sync; its session
+        // must still open when the view switch is refused.
+        if (options.warnOnRefusal !== false) {
+          void this.host.showWarningMessage(
+            `That folder is not open in this app:\n${target}`,
+          );
+        }
         return;
       }
     }
@@ -9553,7 +9564,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     let failure: unknown;
     try {
-      await this.openSessionReserved(id, sessionCwd);
+      // Claim before entering the workspace queue so a duplicate resume cannot
+      // slip through while this transition waits for a repo switch already in
+      // progress. The queued operation calls the exclusive switch primitive
+      // directly; calling switchLocalWorkspaceFolder here would wait on the
+      // same queue and deadlock the resume transition.
+      const open = () => this.openSessionReserved(id, sessionCwd);
+      if (this.host.canSwitchWorkspaceFolder) {
+        await this.localWorkspaceSwitchQueue.run(open);
+      } else {
+        await open();
+      }
     } catch (error) {
       failure = error;
       throw error;
@@ -9605,6 +9626,28 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return out;
   }
 
+  /**
+   * Move only the desktop view to the project represented by a resumed
+   * session. A worktree cwd is authorized for the session but is not itself an
+   * open workspace folder, so the file tree deliberately follows the
+   * worktree's owning project root instead.
+   *
+   * `openSession` already owns localWorkspaceSwitchQueue while this runs. Keep
+   * this on the exclusive path: taking the public queue wrapper here would
+   * deadlock the resume transition.
+   */
+  private async followSessionWorkspace(session: Session): Promise<void> {
+    if (!this.host.canSwitchWorkspaceFolder) return;
+    const target = session.worktree?.sourceGitRoot ?? session.cwd;
+    if (!target) {
+      this.host.appendLine(
+        "[sessions] skipped active-folder follow (resumed session has no project root)",
+      );
+      return;
+    }
+    await this.switchLocalWorkspaceFolderExclusive(target, { warnOnRefusal: false });
+  }
+
   private async openSessionReserved(id: string, sessionCwd?: string): Promise<void> {
     // A session held by a remote tab is not off-limits here: the desk JOINS it
     // — focusSession replays the shared buffer into the webview and already
@@ -9612,6 +9655,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // views from then on.
     for (const s of this.pool) {
       if (s.activeSessionId === id && s.client) {
+        await this.followSessionWorkspace(s);
         this.focusSession(s);
         return;
       }
@@ -9648,6 +9692,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       this.focused = held;
       this.pool.add(this.focused);
+      await this.followSessionWorkspace(this.focused);
       await this.startSession(id);
       this.markRead(this.focused);
       this.postRepoCatalog();
@@ -9702,6 +9747,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         };
       }
     }
+    await this.followSessionWorkspace(this.focused);
     await this.startSession(id);
     this.markRead(this.focused); // opening a cold session clears its unread badge
     this.postRepoCatalog();
