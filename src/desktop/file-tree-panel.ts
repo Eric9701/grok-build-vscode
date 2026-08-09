@@ -227,6 +227,7 @@ body.desk-ft-resizing * {
      hides information for no one's benefit. */
   max-width: none;
   min-width: 0;
+  min-height: var(--rail-row-min-height, 30px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -238,13 +239,13 @@ body.desk-ft-resizing * {
   padding: 4px 8px;
   margin: 0;
   border: none;
-  border-right: 1px solid var(--vscode-editorWidget-border, #454545);
   background: transparent;
   font-family: inherit;
   line-height: var(--rail-row-line-height, 1.5);
   cursor: default;
   text-align: left;
   box-sizing: border-box;
+  position: relative;
 }
 /* Tabs present: the name yields to them. Scoped through the shared parent
    because the title is the FIRST child and a sibling combinator only looks
@@ -277,12 +278,12 @@ button.desk-ft-title:focus-visible {
   flex: 0 1 auto;
   max-width: 160px;
   min-width: 56px;
+  min-height: var(--rail-row-min-height, 30px);
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 4px 4px 4px 10px;
   border: none;
-  border-right: 1px solid var(--vscode-editorWidget-border, #454545);
   background: transparent;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   cursor: pointer;
@@ -307,6 +308,17 @@ button.desk-ft-title:focus-visible {
   outline: 1px solid var(--vscode-focusBorder, #007fd4);
   outline-offset: -1px;
   z-index: 1;
+}
+.desk-ft-title::after,
+.desk-ft-tab::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 0;
+  bottom: 4px;
+  width: 1px;
+  background: var(--vscode-editorWidget-border, #454545);
+  pointer-events: none;
 }
 .desk-ft-tab-name {
   flex: 1 1 auto;

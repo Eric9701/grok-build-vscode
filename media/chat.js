@@ -3703,7 +3703,8 @@
 
   const RAIL_PREVIEW = 3;      // rows per list before "Show more"
   const RAIL_EXPANDED = 20;    // rows after it — the rail is a jump list, not history
-  // Synthetic expand key for the RECENT group (shares railExpanded with repos).
+  const RAIL_RECENT_EXPANDED = 10; // RECENT is a shorter cross-project shortcut list
+  // Synthetic expand key for the RECENT group.
   const RAIL_RECENT_KEY = "__recent__";
 
   // A project nobody has touched in a month is not one you are choosing between
@@ -4284,6 +4285,7 @@
         list.className = "rail-list rail-recent";
         appendRailSessionSlice(list, recentAll, RAIL_RECENT_KEY, (s) =>
           renderRailSessionRow(s, { cwd: s.cwd, available: true }, { showRepo: true }),
+          RAIL_RECENT_EXPANDED,
         );
         root.appendChild(list);
       }
@@ -4459,12 +4461,12 @@
    * Labels carry no digits — three disagreeing totals stranded rows behind a
    * lying count (see the scar comment on renderRailSessions).
    */
-  function appendRailSessionSlice(body, entries, expandKey, rowFactory) {
+  function appendRailSessionSlice(body, entries, expandKey, rowFactory, expandedLimit = RAIL_EXPANDED) {
     const expanded = !!state.railExpanded[expandKey];
-    const visible = expanded ? RAIL_EXPANDED : RAIL_PREVIEW;
+    const visible = expanded ? expandedLimit : RAIL_PREVIEW;
     const shown = entries.slice(0, visible);
     for (const s of shown) body.appendChild(rowFactory(s));
-    const reachable = Math.min(entries.length, RAIL_EXPANDED);
+    const reachable = Math.min(entries.length, expandedLimit);
     const hidden = Math.max(0, reachable - shown.length);
     if (hidden > 0 && !expanded) {
       const more = document.createElement("button");

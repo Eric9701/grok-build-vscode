@@ -1250,9 +1250,9 @@ describe("projects rail", () => {
       expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toContain("alpha recent");
     });
 
-    it("RECENT Show more / Show less has no digits", () => {
+    it("RECENT stops at ten expanded rows and keeps its unnumbered affordance", () => {
       const { doc, window } = boot();
-      const many = Array.from({ length: 5 }, (_, i) =>
+      const many = Array.from({ length: 12 }, (_, i) =>
         row(`a${i}`, "/work/alpha", `s${i}`, 100 - i),
       );
       dispatch(window, sessionsFrame(many));
@@ -1261,7 +1261,7 @@ describe("projects rail", () => {
       expect(more.textContent).not.toMatch(/\d/);
       expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(3);
       click(window, more);
-      expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(5);
+      expect(doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")).toHaveLength(10);
       const less = doc.querySelector(".rail-list.rail-recent .rail-more") as HTMLElement;
       expect(less.textContent).toBe("Show less");
       expect(less.textContent).not.toMatch(/\d/);
