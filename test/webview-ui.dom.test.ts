@@ -567,6 +567,16 @@ describe("session status dots (Agent Dashboard)", () => {
 });
 
 describe("mode picker (the plan-gate entry path)", () => {
+  it("names the active mode in the button tooltip", () => {
+    const { window, doc } = bootWebview();
+    const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
+    expect(modeBtn.title).toContain("Agent mode");
+
+    dispatch(window, { type: "modeChanged", modeId: "plan" });
+    expect(modeBtn.title).toContain("Plan mode");
+    expect(modeBtn.title).not.toContain("Agent mode");
+  });
+
   it("offers Agent / Plan / Auto accept and posts setMode with the chosen mode id", () => {
     const { window, posted, doc } = bootWebview();
     const pop = $(doc, "mode-popover");
@@ -691,6 +701,9 @@ describe("context donut (token usage)", () => {
     const { window, doc } = boot();
     dispatch(window, { type: "contextUsage", used: 29088, window: 200000 });
     expect($(doc, "donut-label").textContent).toBe("29K/200K");
+    expect($(doc, "donut").title).toBe(
+      `Context usage — ${(29088).toLocaleString()} / ${(200000).toLocaleString()} tokens`,
+    );
   });
 
   it("contextUsage without a window keeps the model-derived window", () => {

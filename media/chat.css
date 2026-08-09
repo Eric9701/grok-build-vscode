@@ -2239,6 +2239,9 @@ body.vscode-light {
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
   border-radius: var(--radius);
+  /* The toolbar responds to the card, not the viewport. The card contains no
+     position:fixed descendants; the toolbar popovers are siblings in .composer. */
+  container: composer-card / inline-size;
 }
 .composer-card:focus-within {
   border-color: var(--vscode-focusBorder);
@@ -2537,6 +2540,16 @@ textarea#input {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Once the card is too narrow to give the prose a useful home, keep the
+   distinct mode glyph and context arc while reclaiming the label widths before
+   the existing flex ellipsis can abbreviate them. */
+@container composer-card (max-width: 360px) {
+  #mode-btn .btn-label,
+  .context-donut #donut-label {
+    display: none;
+  }
 }
 
 /* ---- gear popover: model + effort row ---- */

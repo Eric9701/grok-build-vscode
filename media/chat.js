@@ -869,11 +869,22 @@
     return `${h}:${m.toString().padStart(2, "0")} ${ampm}`;
   }
 
+  // The title carries the mode name because the label beside the glyph is the
+  // first thing dropped in a narrow composer — take the id from the caller so
+  // the tooltip can never name a different mode than the icon is showing.
+  function modeButtonTitle(modeId) {
+    const meta = MODE_META[modeId] || MODE_META.agent;
+    if (state.busyLocked) return `${meta.label} — available once the session is ready`;
+    if (!state.planModeAvailable) return `${meta.label} — Pick mode — ${state.planModeUnavailableReason}`;
+    return `${meta.label} — Pick mode`;
+  }
+
   function updateModeBtn(modeId) {
     const meta = MODE_META[modeId] || MODE_META.agent;
     modeBtn.innerHTML = `${meta.icon}<span class="btn-label">${escapeHtml(meta.label)}</span>`;
     modeBtn.classList.toggle("plan-active", modeId === "plan");
     modeBtn.classList.toggle("yolo-active", modeId === "yolo");
+    modeBtn.title = modeButtonTitle(modeId);
   }
 
   newBtn.innerHTML = ICON.squarePen;
@@ -9076,6 +9087,7 @@
     donutArc.setAttribute("stroke", color);
     donutLabel.textContent = `${toK(used)}/${toK(max)}`;
     donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
+    donutEl.title = `Context usage — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
   }
 
   // ---------- slash autocomplete ----------
@@ -9207,11 +9219,7 @@
     // locked, where a setMode would throw "no session"; that flag always clears.
     modeBtn.disabled = state.busyLocked;
     modeBtn.classList.toggle("disabled", state.busyLocked);
-    modeBtn.title = state.busyLocked
-      ? "Mode — available once the session is ready"
-      : state.planModeAvailable
-        ? "Pick mode"
-        : `Pick mode — ${state.planModeUnavailableReason}`;
+    modeBtn.title = modeButtonTitle(state.currentModeId);
     if (!state.busy) {
       sendBtn.innerHTML = ICON.arrowUp;
       sendBtn.title = "Send";
