@@ -20,6 +20,7 @@ import {
   resolveSessionGeneratedMediaPath,
   type RealpathFn,
 } from "../media-serve";
+import { isTrustedPlanReviewPath } from "../plan-review";
 import type { WebviewMsg } from "../protocol";
 import { keepsCanonicalDirectChildIdentity } from "../sessions";
 import {
@@ -134,6 +135,8 @@ export interface DesktopOpenFileContext {
    * e.g. `~/.grok/other/<leaf>`, fails that identity check).
    */
   sessionCatalogDirs?: readonly string[] | undefined;
+  /** Host-owned `<globalStorage>/plan-reviews`; not a general auth root. */
+  planReviewsRoot?: string | undefined;
 }
 
 /** Deduped non-empty absolute roots from the auth context. */
@@ -281,6 +284,22 @@ export function authorizeOpenFile(
       return { ok: false, reason: "executable path refused" };
     }
     return { ok: true, absPath: resolved.absPath };
+  }
+
+  // Plan snapshots are a separate provenance class. They are permitted only
+  // through the exact host-owned two-level Markdown fence; globalStorage is
+  // deliberately not added to desktopAuthRoots.
+  if (ctx.planReviewsRoot) {
+    const exists = (p: string) =>
+      ctx.pathFs ? isExistingFile(p, ctx.pathFs) : isExistingFile(p);
+    if (
+      isTrustedPlanReviewPath(rawPath, ctx.planReviewsRoot, {
+        exists,
+        realpath,
+      }, platform)
+    ) {
+      return { ok: true, absPath: path.resolve(rawPath) };
+    }
   }
 
   // Trusted generated session media (absolute path, or safe relative + sessionDir).

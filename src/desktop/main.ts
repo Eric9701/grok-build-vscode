@@ -382,6 +382,7 @@ async function createApp(): Promise<void> {
       get sessionCatalogDirs() {
         return media().sessionCatalogDirs;
       },
+      planReviewsRoot: path.join(globalStorageDir, "plan-reviews"),
     } satisfies DesktopOpenFileContext;
   };
   webview.getAuthContext = () => authContext.get!();

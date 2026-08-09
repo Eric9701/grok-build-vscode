@@ -1,4 +1,90 @@
 import { createHash } from "node:crypto";
+import * as path from "node:path";
+import { keepsCanonicalDirectChildIdentity } from "./sessions";
+
+export type PlanReviewPathExistsFn = (p: string) => boolean;
+export type PlanReviewPathRealpathFn = (p: string) => string;
+
+/**
+ * The only relative shape that may be resolved below `plan-reviews`:
+ * `<session>/<file>.md`.
+ */
+export function isSafeRelativePlanReviewLink(relPath: string): boolean {
+  if (!relPath || typeof relPath !== "string" || relPath.includes("\0")) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(relPath)) return false;
+  if (relPath.startsWith("\\\\") || relPath.startsWith("//")) return false;
+
+  const normalized = relPath.replace(/\\/g, "/");
+  if (normalized.startsWith("/")) return false;
+  const segments = normalized.split("/");
+  if (segments.length !== 2 || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    return false;
+  }
+  const file = segments[1]!;
+  return path.extname(file).toLowerCase() === ".md";
+}
+
+/**
+ * Pure plan-review provenance check. The caller supplies the filesystem seams
+ * so the same decision can be unit-tested without creating symlinks.
+ *
+ * Both the link path and its canonical target must retain the exact
+ * `<plan-reviews>/<one segment>/<one .md file>` layout. Direct-child identity
+ * additionally refuses a session directory or file symlink that changes the
+ * named leaf, including a target elsewhere inside the storage tree.
+ */
+export function isTrustedPlanReviewPath(
+  fsPath: string,
+  planReviewsRoot: string,
+  deps: {
+    exists: PlanReviewPathExistsFn;
+    realpath: PlanReviewPathRealpathFn;
+  },
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!fsPath || !planReviewsRoot || fsPath.includes("\0")) return false;
+
+  try {
+    if (
+      !(platform === "win32" ? path.win32.isAbsolute(fsPath) : path.isAbsolute(fsPath))
+    ) {
+      return false;
+    }
+    const root = path.resolve(planReviewsRoot);
+    const candidate = path.resolve(fsPath);
+    if (fsPath.replace(/\\/g, "/").split("/").includes("..")) return false;
+    const relative = path.relative(root, candidate);
+    if (!isSafeRelativePlanReviewLink(relative)) return false;
+    if (!deps.exists(candidate)) return false;
+
+    const realRoot = path.normalize(deps.realpath(root));
+    const realCandidate = path.normalize(deps.realpath(candidate));
+    if (!deps.exists(realCandidate)) return false;
+    const realRelative = path.relative(realRoot, realCandidate);
+    if (!isSafeRelativePlanReviewLink(realRelative)) return false;
+
+    // Keep the named plan-reviews directory as the direct child of the named
+    // global-storage directory, while allowing the whole storage ancestor to
+    // be symlinked as one unit.
+    if (
+      !keepsCanonicalDirectChildIdentity(
+        root,
+        path.dirname(root),
+        deps.realpath,
+        platform,
+      )
+    ) {
+      return false;
+    }
+    const sessionDir = path.dirname(candidate);
+    if (!keepsCanonicalDirectChildIdentity(sessionDir, root, deps.realpath, platform)) {
+      return false;
+    }
+    return keepsCanonicalDirectChildIdentity(candidate, sessionDir, deps.realpath, platform);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Content-addressed snapshot filename: `<title>-<hash8>.md`.
