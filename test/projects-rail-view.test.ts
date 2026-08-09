@@ -6,7 +6,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GROK_PROJECTS_VIEW_ID, PRIMARY_CONTAINER_ID } from "../src/view-move";
-import { partitionRailRepos, sameRepoCwd } from "../src/projects-rail";
+import {
+  partitionRailRepos,
+  sameRepoCwd,
+  collectRecentSessions,
+  RAIL_RECENT_CAP,
+} from "../src/projects-rail";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -73,5 +78,59 @@ describe("partitionRailRepos", () => {
     const { current, other } = partitionRailRepos(repos, "/work/missing");
     expect(current).toBeUndefined();
     expect(other).toHaveLength(3);
+  });
+});
+
+describe("collectRecentSessions", () => {
+  const s = (id: string, updatedAt: number, cwd = "/work/a") =>
+    ({ id, cwd, displayName: id, updatedAt });
+
+  it("merges across lists, newest first, ids unique", () => {
+    const out = collectRecentSessions(
+      [
+        [s("a1", 10), s("a2", 30)],
+        [s("b1", 20), s("a1", 50)], // a1 again, fresher stamp wins the map write order then sort
+      ],
+      [s("p1", 5)],
+    );
+    expect(out.map((r) => r.id)).toEqual(["a1", "a2", "b1", "p1"]);
+  });
+
+  it("includes pinned rows even when they are not in any project list", () => {
+    const out = collectRecentSessions([[s("a1", 10)]], [{ id: "pin", cwd: "/w", updatedAt: 99, pinnedAt: 1 }]);
+    expect(out.map((r) => r.id)).toEqual(["pin", "a1"]);
+  });
+
+  it("caps at RAIL_RECENT_CAP (10), not the per-project preview depth", () => {
+    expect(RAIL_RECENT_CAP).toBe(10);
+    const many = Array.from({ length: 25 }, (_, i) => s(`s${i}`, 100 - i));
+    const out = collectRecentSessions([many]);
+    expect(out).toHaveLength(10);
+    expect(out[0].id).toBe("s0");
+    expect(out[9].id).toBe("s9");
+  });
+
+  it("the renderer's own copy of the cap agrees with this one", () => {
+    // The webview renderer is plain JS loaded into a view — it cannot import
+    // this constant, so the number is duplicated there. A comment saying "keep
+    // in lockstep" is not a guard; changing one side and not the other would
+    // otherwise ship a rail that caps differently from what this file asserts.
+    const railJs = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "projects-rail.js"),
+      "utf8",
+    );
+    const declared = railJs.match(/const\s+RECENT_CAP\s*=\s*(\d+)/);
+    expect(declared, "media/projects-rail.js must declare RECENT_CAP").toBeTruthy();
+    expect(Number(declared![1])).toBe(RAIL_RECENT_CAP);
+  });
+
+  it("prefers the pinned record when the same id appears in both", () => {
+    const out = collectRecentSessions(
+      [[{ id: "x", cwd: "/a", displayName: "plain", updatedAt: 10 }]],
+      [{ id: "x", cwd: "/a", displayName: "pinned", updatedAt: 10, pinnedAt: 5 }],
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].pinnedAt).toBe(5);
+    expect(out[0].displayName).toBe("pinned");
   });
 });

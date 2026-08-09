@@ -23,6 +23,20 @@
 
   // Preview depth matches the browser rail's expanded cap so one refresh is enough.
   const PREVIEW_LIMIT = 20;
+  // Cross-project RECENT is a shorter shortcut list — deliberately not PREVIEW_LIMIT.
+  // Keep in lockstep with RAIL_RECENT_CAP in src/projects-rail.ts.
+  const RECENT_CAP = 10;
+
+  /** Palette the host accepts — ids match REPO_COLOR_IDS in sessions.ts. */
+  const REPO_COLOR_SWATCHES = [
+    { id: "", label: "None" },
+    { id: "blue", label: "Blue" },
+    { id: "teal", label: "Teal" },
+    { id: "green", label: "Green" },
+    { id: "amber", label: "Amber" },
+    { id: "coral", label: "Coral" },
+    { id: "purple", label: "Purple" },
+  ];
 
   const state = {
     repos: [],
@@ -44,6 +58,7 @@
   };
 
   let menuEl = null;
+  let colorPickerEl = null;
 
   function sameCwd(a, b) {
     if (!a || !b) return false;
@@ -67,6 +82,9 @@
   }
 
   function partitionRepos() {
+    // No fallback needed when the open folder has no Grok history yet: the host
+    // passes it to discoverRepos as a trusted cwd, which adds a catalog row for
+    // it (updatedAt 0). The current project is therefore always present here.
     const current = state.repos.find((r) => sameCwd(r.cwd, state.currentCwd));
     const other = state.repos
       .filter((r) => !sameCwd(r.cwd, state.currentCwd))
@@ -85,11 +103,38 @@
     el.dataset.dot = d === "none" || !d ? "" : d;
   }
 
-  function closeMenu() {
+  function closeColorPicker() {
+    if (colorPickerEl) {
+      colorPickerEl.remove();
+      colorPickerEl = null;
+    }
+  }
+
+  /** Drop the action menu only. Colour picker is separate so "Set color" can
+   *  close the menu and open the swatch grid in one click without the second
+   *  step immediately dismissing itself. */
+  function closeMenuOnly() {
     if (menuEl) {
       menuEl.remove();
       menuEl = null;
     }
+  }
+
+  function closeMenu() {
+    closeMenuOnly();
+    closeColorPicker();
+  }
+
+  function placePopover(el, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    const mw = el.offsetWidth;
+    const mh = el.offsetHeight;
+    let left = rect.right - mw;
+    let top = rect.bottom + 2;
+    if (left < 4) left = 4;
+    if (top + mh > window.innerHeight - 4) top = Math.max(4, rect.top - mh - 2);
+    el.style.left = left + "px";
+    el.style.top = top + "px";
   }
 
   function openMenu(anchor, items) {
@@ -113,26 +158,58 @@
       btn.textContent = item.label;
       btn.onclick = (e) => {
         e.stopPropagation();
-        closeMenu();
+        // Menu only — onSelect may open the colour picker next.
+        closeMenuOnly();
         if (!item.disabled && item.onSelect) item.onSelect();
       };
       menu.appendChild(btn);
     }
     document.body.appendChild(menu);
     menuEl = menu;
-    const rect = anchor.getBoundingClientRect();
-    const mw = menu.offsetWidth;
-    const mh = menu.offsetHeight;
-    let left = rect.right - mw;
-    let top = rect.bottom + 2;
-    if (left < 4) left = 4;
-    if (top + mh > window.innerHeight - 4) top = Math.max(4, rect.top - mh - 2);
-    menu.style.left = left + "px";
-    menu.style.top = top + "px";
+    placePopover(menu, anchor);
+  }
+
+  /**
+   * Six hues + empty "none". Host-persisted via setRepoColor; capability-gated
+   * by colorSupported (field presence on catalog rows, never a version check).
+   */
+  function openColorPicker(anchor, repo) {
+    closeColorPicker();
+    if (!anchor || !repo) return;
+    const current = typeof repo.color === "string" ? repo.color : "";
+    const picker = document.createElement("div");
+    picker.className = "rail-color-picker";
+    picker.setAttribute("role", "listbox");
+    picker.setAttribute("aria-label", "Project color");
+    for (const sw of REPO_COLOR_SWATCHES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className =
+        "rail-color-swatch" +
+        (sw.id ? "" : " is-none") +
+        (sw.id === current ? " is-selected" : "");
+      if (sw.id) btn.dataset.repoColor = sw.id;
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-label", sw.label);
+      btn.setAttribute("aria-selected", sw.id === current ? "true" : "false");
+      btn.title = sw.label;
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        closeColorPicker();
+        // Skip a no-op write: re-picking the current colour should not churn the catalog.
+        if (sw.id === current) return;
+        vscode.postMessage({ type: "setRepoColor", cwd: repo.cwd, color: sw.id });
+      };
+      picker.appendChild(btn);
+    }
+    document.body.appendChild(picker);
+    colorPickerEl = picker;
+    placePopover(picker, anchor);
   }
 
   document.addEventListener("click", (e) => {
     if (menuEl && !menuEl.contains(e.target)) closeMenu();
+    else if (colorPickerEl && !colorPickerEl.contains(e.target)) closeColorPicker();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeMenu();
@@ -161,6 +238,49 @@
     return { entries: hit.entries || [], known: true };
   }
 
+  /**
+   * Whether the host can store a project folder colour. Same capability rule as
+   * archive / pinnedSessions: `color` is present (even as `""`) on every row from
+   * a host that knows about it, and omitted entirely by one that does not.
+   */
+  function colorSupported() {
+    return state.repos.some((r) => typeof r.color === "string");
+  }
+
+  /**
+   * Most-recent conversations across every loaded project + pinned rows.
+   * Mirrors collectRecentSessions in src/projects-rail.ts (RECENT_CAP).
+   * Duplication with PINNED / project lists is intentional — a shortcut.
+   */
+  function recentRows() {
+    const byId = new Map();
+    if (state.currentSessionsKnown) {
+      for (const s of state.currentSessions) {
+        if (s && s.id) byId.set(s.id, s);
+      }
+    }
+    for (const key of Object.keys(state.previews)) {
+      const entries = state.previews[key].entries || [];
+      for (const s of entries) {
+        if (s && s.id) byId.set(s.id, s);
+      }
+    }
+    if (state.pinnedKnown) {
+      for (const s of state.pinnedSessions || []) {
+        if (!s || !s.id) continue;
+        const prev = byId.get(s.id);
+        byId.set(s.id, prev ? Object.assign({}, prev, s) : s);
+      }
+    }
+    return [...byId.values()]
+      .sort(
+        (a, b) =>
+          (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0) ||
+          String(b.id || "").localeCompare(String(a.id || "")),
+      )
+      .slice(0, RECENT_CAP);
+  }
+
   function render() {
     const root = document.getElementById("rail-scroll");
     if (!root) return;
@@ -171,7 +291,10 @@
     const q = state.filter.trim();
     let shown = false;
 
-    // Pinned first when the host has sent any — same lift as desktop/AFK Pilot.
+    // Section order matches desktop: PINNED → RECENT → projects → archived.
+    // Pinned first when the host has proven it speaks the frame — capability,
+    // never a version. An older host that never sends pinnedSessions shows no
+    // group rather than an empty one.
     if (state.pinnedKnown) {
       const pinned = state.pinnedSessions.filter(
         (s) => matchesFilter(s.displayName) || matchesFilter(repoLabelFor(s.cwd)),
@@ -188,10 +311,27 @@
       }
     }
 
+    // RECENT sits above the project list: VS Code has no other cross-project
+    // surface, so this is the jump list — not collapsible, hard-capped at 10.
+    const recentAll = recentRows().filter(
+      (s) => matchesFilter(s.displayName) || matchesFilter(repoLabelFor(s.cwd)),
+    );
+    if (recentAll.length) {
+      root.appendChild(sectionHead("Recent"));
+      const list = document.createElement("div");
+      list.className = "rail-list rail-recent";
+      for (const s of recentAll) {
+        list.appendChild(renderSession(s, { cwd: s.cwd, available: true }, { showRepo: true }));
+      }
+      root.appendChild(list);
+      shown = true;
+    }
+
     const { current, other } = partitionRepos();
     const active = other.filter((r) => !r.archived);
     const archived = other.filter((r) => r.archived);
 
+    // Open folder stays at the top of the *projects* (not above Pinned/Recent).
     if (current && (!q || repoHasMatch(current))) {
       root.appendChild(sectionHead("Current project"));
       const list = document.createElement("div");
@@ -340,6 +480,17 @@
               cwd: repo.cwd,
               archived: !repo.archived,
             }),
+        });
+        items.push(null);
+      }
+      // Folder colour — host-persisted, capability-gated the same way as archive
+      // (`color` present on catalog rows). Swatch grid, not nested menu, so six
+      // hues + none stay one glance away.
+      if (colorSupported()) {
+        items.push({
+          label: "Set color",
+          title: "Tint this project's folder icon so it is easy to find",
+          onSelect: () => openColorPicker(menuBtn, repo),
         });
         items.push(null);
       }
@@ -593,6 +744,9 @@
     onMessage,
     partitionRepos,
     sameCwd,
+    recentRows,
+    colorSupported,
+    RECENT_CAP,
   };
 
   vscode.postMessage({ type: "ready" });

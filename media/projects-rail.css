@@ -15,12 +15,14 @@
   --rail-repo-line-height: 1.3;
   --rail-row-gap: 6px;
   --rail-hover-bg: var(--vscode-list-hoverBackground);
-  --repo-color-blue: #3b82f6;
-  --repo-color-teal: #14b8a6;
-  --repo-color-green: #22c55e;
-  --repo-color-amber: #f59e0b;
-  --repo-color-coral: #f43f5e;
-  --repo-color-purple: #a855f7;
+  /* Same palette ids as media/chat.css — theme tokens only, never raw hex, so
+     light/dark both work. Swatch picker and folder stroke share these. */
+  --repo-color-blue: var(--vscode-textLink-foreground);
+  --repo-color-teal: color-mix(in oklab, oklch(0.68 0.12 200) 72%, var(--vscode-foreground) 28%);
+  --repo-color-green: color-mix(in oklab, oklch(0.68 0.15 145) 72%, var(--vscode-foreground) 28%);
+  --repo-color-amber: color-mix(in oklab, oklch(0.76 0.14 85) 72%, var(--vscode-foreground) 28%);
+  --repo-color-coral: color-mix(in oklab, oklch(0.68 0.15 30) 72%, var(--vscode-foreground) 28%);
+  --repo-color-purple: color-mix(in oklab, oklch(0.64 0.15 305) 72%, var(--vscode-foreground) 28%);
 }
 
 html, body {
@@ -327,6 +329,58 @@ html, body {
   height: 1px;
   margin: 4px 6px;
   background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+}
+
+/* Project colour swatch picker — fixed under <body> like .rail-menu so the
+   rail scroller cannot clip it. Seven equal cells: six hues + empty "none". */
+.rail-color-picker {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px color-mix(in oklab, var(--vscode-widget-shadow, #000) 40%, transparent);
+}
+.rail-color-swatch {
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid color-mix(in oklab, var(--vscode-foreground) 22%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.rail-color-swatch:not(.is-none) {
+  background: var(--swatch, transparent);
+  border-color: color-mix(in oklab, var(--swatch) 55%, var(--vscode-foreground) 20%);
+}
+.rail-color-swatch[data-repo-color="blue"] { --swatch: var(--repo-color-blue); }
+.rail-color-swatch[data-repo-color="teal"] { --swatch: var(--repo-color-teal); }
+.rail-color-swatch[data-repo-color="green"] { --swatch: var(--repo-color-green); }
+.rail-color-swatch[data-repo-color="amber"] { --swatch: var(--repo-color-amber); }
+.rail-color-swatch[data-repo-color="coral"] { --swatch: var(--repo-color-coral); }
+.rail-color-swatch[data-repo-color="purple"] { --swatch: var(--repo-color-purple); }
+/* "None" is an empty box — deliberately not a filled grey (that would look
+   like a seventh colour). */
+.rail-color-swatch.is-none {
+  background:
+    linear-gradient(
+      to top left,
+      transparent calc(50% - 0.5px),
+      color-mix(in oklab, var(--vscode-foreground) 35%, transparent) 50%,
+      transparent calc(50% + 0.5px)
+    ),
+    var(--vscode-menu-background, var(--vscode-editorWidget-background));
+}
+.rail-color-swatch:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.rail-color-swatch:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.rail-color-swatch.is-selected {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 @media (hover: none) {
