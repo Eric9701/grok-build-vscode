@@ -119,6 +119,30 @@ describe("repo switcher discovery", () => {
     expect(repos[1]).toMatchObject({ archived: false, archivedAt: 0 });
   });
 
+  // colour rides every row (including "") so the client can capability-probe
+  // without a version, and never reorders the catalog.
+  it("reports folder colours on every row without reordering", () => {
+    const blue = path.join(path.sep, "work", "blue");
+    const plain = path.join(path.sep, "work", "plain");
+    const fs = fakeFs({
+      [root]: { dir: true },
+      [path.join(root, encodeURIComponent(blue))]: { dir: true, mtime: 200 },
+      [path.join(root, encodeURIComponent(plain))]: { dir: true, mtime: 100 },
+      [blue]: { dir: true },
+      [plain]: { dir: true },
+    });
+    const colors = {
+      [normalizeRepoPath(blue)]: { cwd: blue, color: "blue" as const },
+    };
+    const repos = discoverRepos({ fs, grokHome, pins: {}, colors, tmpDir: tmp });
+    expect(repos.map((r) => r.cwd)).toEqual([blue, plain]);
+    expect(repos[0]).toMatchObject({ color: "blue" });
+    expect(repos[1]).toMatchObject({ color: "" });
+    // Field is always present — that is the capability signal.
+    expect(typeof repos[0].color).toBe("string");
+    expect(typeof repos[1].color).toBe("string");
+  });
+
   it("keeps a pinned missing checkout visible and sorts pins above recency", () => {
     const live = path.join(path.sep, "work", "live");
     const missing = path.join(path.sep, "mnt", "offline");

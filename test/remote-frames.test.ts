@@ -77,6 +77,7 @@ describe("parseRelayFrame", () => {
   const traversalMessages = [
     ["selectRepo cwd", { type: "selectRepo", cwd: "../.." }],
     ["toggleRepoPin cwd", { type: "toggleRepoPin", cwd: "..\\..", pinned: true }],
+    ["setRepoColor cwd", { type: "setRepoColor", cwd: "..\\..", color: "blue" }],
     ["resumeSession id", { type: "resumeSession", id: "../.." }],
     ["resumeSession cwd", { type: "resumeSession", id: "safe-session", cwd: "/work/../escape" }],
     ["renameSession id", { type: "renameSession", id: "..\\..", name: "renamed" }],
@@ -258,6 +259,8 @@ describe("parseRelayFrame", () => {
     for (const msg of [
       { type: "selectRepo", cwd: "/work/repo" },
       { type: "toggleRepoPin", cwd: "C:\\work\\repo", pinned: true },
+      { type: "setRepoColor", cwd: "/work/repo", color: "coral" },
+      { type: "setRepoColor", cwd: "/work/repo", color: "" },
       { type: "resumeSession", id: "019f-session_1", cwd: "\\\\server\\share\\repo" },
       { type: "renameSession", id: "019f-session_1", name: "renamed" },
       { type: "deleteSession", id: "019f-session_1" },
@@ -273,6 +276,8 @@ describe("parseRelayFrame", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     expect(parseRelayFrame(wrap({ type: "selectRepo", cwd: {} }))).toBeNull();
     expect(parseRelayFrame(wrap({ type: "toggleRepoPin", cwd: "/a", pinned: "yes" }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "setRepoColor", cwd: "/a", color: 7 }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "setRepoColor", cwd: "..\\..", color: "blue" }))).toBeNull();
     expect(parseRelayFrame(wrap({ type: "resumeSession", id: "s", cwd: [] }))).toBeNull();
     expect(parseRelayFrame(wrap({ type: "clearAllSessions", cwd: 42 }))).toBeNull();
     expect(parseRelayFrame(wrap({ type: "ready", tabToken: "short" }))).toBeNull();

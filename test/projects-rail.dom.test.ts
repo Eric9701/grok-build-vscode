@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +66,14 @@ const openMenu = (window: any, host: Element) => {
 const menuItem = (menu: Element, label: string) =>
   [...menu.querySelectorAll(".rail-menu-item")]
     .find((b) => (b.textContent || "").includes(label)) as HTMLElement | undefined;
+/** Present in the menu but not clickable — the "still opening" state. */
+const disabledItem = (menu: Element, label: string) =>
+  !!(menuItem(menu, label) as HTMLButtonElement | undefined)?.disabled;
+/** Present AND clickable. False covers both "absent" and "greyed out". */
+const usableItem = (menu: Element, label: string) => {
+  const el = menuItem(menu, label) as HTMLButtonElement | undefined;
+  return !!el && !el.disabled;
+};
 
 describe("projects rail", () => {
   it("does not mount without a #projects-rail element, even when repos arrives", () => {
@@ -1008,6 +1016,70 @@ describe("projects rail", () => {
     });
   });
 
+  // Folder colours: host-persisted, capability-gated the same way as archive
+  // (`color` present — even as "" — on every row from a supporting host).
+  describe("project folder colours", () => {
+    const withColors = (entries = repos) =>
+      entries.map((r) => ({ ...r, color: r.cwd === "/work/beta" ? "teal" : "" }));
+
+    it("hides Set color against a host that never sends color", () => {
+      // The default `repos` fixture omits `color` entirely — that is an older
+      // host, and the control must not appear (capability, never a version).
+      const { doc, window } = boot();
+      const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+      const menu = openMenu(window, beta.querySelector(".rail-repo-head") as HTMLElement);
+      expect(menuItem(menu, "Set color")).toBe(undefined);
+      expect(menuItem(menu, "Clear all history")).not.toBe(undefined);
+      // No tint either — data-repo-color is only set for a non-empty colour.
+      expect(beta.querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe(null);
+    });
+
+    it("offers Set color, opens a swatch picker, and posts setRepoColor", () => {
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, {
+        type: "repos",
+        entries: withColors(),
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      const alpha = h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")];
+      const menu = openMenu(h.window, alpha.querySelector(".rail-repo-head") as HTMLElement);
+      expect(menuItem(menu, "Set color")).not.toBe(undefined);
+      click(h.window, menuItem(menu, "Set color") as HTMLElement);
+      // Menu closes; swatch picker replaces it.
+      expect(h.doc.querySelector(".rail-menu")).toBe(null);
+      const picker = h.doc.querySelector(".rail-color-picker") as HTMLElement;
+      expect(picker).not.toBe(null);
+      // Seven options: six hues + none, each with an accessible name.
+      const swatches = [...picker.querySelectorAll(".rail-color-swatch")] as HTMLButtonElement[];
+      expect(swatches).toHaveLength(7);
+      expect(swatches.map((s) => s.getAttribute("aria-label"))).toEqual([
+        "None", "Blue", "Teal", "Green", "Amber", "Coral", "Purple",
+      ]);
+      const blue = swatches.find((s) => s.getAttribute("aria-label") === "Blue")!;
+      click(h.window, blue);
+      expect(h.posted.filter((p) => p.type === "setRepoColor")).toEqual([
+        { type: "setRepoColor", cwd: "/work/alpha", color: "blue" },
+      ]);
+      expect(h.doc.querySelector(".rail-color-picker")).toBe(null);
+    });
+
+    it("tints the folder stroke when the catalog carries a colour", () => {
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, {
+        type: "repos",
+        entries: withColors(),
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      const beta = h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("beta")];
+      expect(beta.querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe("teal");
+      // Empty colour does not set the attribute (CSS falls back to default).
+      const alpha = h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")];
+      expect(alpha.querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe(null);
+    });
+  });
+
   // A fold is a preference set at some earlier moment, and the one thing it must
   // never do is hide where you are NOW — corrected when the conversation ARRIVES,
   // rather than by refusing the fold outright.
@@ -1405,6 +1477,407 @@ describe("continue-in-a-new-chat lives in the session ⋯ menu", () => {
     expect(menuItem(menu, "Continue in a new chat")).toBeUndefined();
     expect(menuItem(menu, "Delete")).toBeTruthy();
   });
+
+  // Regression, found in two directions. Fork and apply/remove worktree carry
+  // NO session id — the host runs them against its own `focused` session, and
+  // `openSessionReserved` reassigns `focused` BEFORE it starts the session or
+  // emits sessionName/sessions.activeId.
+  //
+  // So while a rail click is in flight neither row is safe: the clicked row is
+  // not confirmed yet (its menu would act on the one being left), and the
+  // previously active row may already have been left (its menu would act on the
+  // one being opened). Removing a worktree discards unapplied edits, so a wrong
+  // guess here is work loss. Withhold from BOTH until identity is confirmed.
+  it("withholds it from every row while a rail click is in flight", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    // The rail re-renders on every state change, so every lookup has to go back
+    // to the document — a NodeList captured before the click is detached.
+    const railRows = () => {
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return section.querySelectorAll(".rail-session");
+    };
+    const activeLabel = () =>
+      doc.querySelector(".rail-session.active .rail-session-name")?.textContent;
+
+    // Click a2 — it paints as active immediately, but the host is still on a1.
+    click(window, railRows()[1] as HTMLElement);
+    expect(activeLabel()).toBe("alpha two");
+
+    const pendingMenu = openMenu(window, railRows()[1] as HTMLElement);
+    // Present but not usable — the row owns it, the host just has not confirmed.
+    expect(disabledItem(pendingMenu, "Continue in a new chat")).toBe(true);
+    // Still a real conversation — the id-carrying actions stay available.
+    expect(menuItem(pendingMenu, "Delete")).toBeTruthy();
+
+    // ...and a1 does not offer it at all: it is no longer the painted target.
+    const leavingMenu = openMenu(window, railRows()[0] as HTMLElement);
+    expect(menuItem(leavingMenu, "Continue in a new chat")).toBeUndefined();
+
+    // Identity confirmed — the group comes back, on the confirmed row only.
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a2",
+    });
+    expect(menuItem(openMenu(window, railRows()[1] as HTMLElement), "Continue in a new chat"))
+      .toBeTruthy();
+    expect(menuItem(openMenu(window, railRows()[0] as HTMLElement), "Continue in a new chat"))
+      .toBeUndefined();
+  });
+
+  // The watchdog and a stray error tear down the optimistic transition without
+  // learning anything about the host — and a cold resume can outlive the
+  // watchdog, with `focused` already reassigned. So "the transition is gone" is
+  // NOT proof that identities agree; only an identity frame is. Fail closed.
+  it("keeps them withheld after the watchdog gives up, until an identity frame lands", async () => {
+    const { doc, window } = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => {
+        withRail(w);
+        w.__grokRailTransitionTimeoutMs = 5;
+      },
+    });
+    dispatch(window, {
+      type: "repos",
+      entries: repos,
+      selectedCwd: "/work/alpha",
+      activeCwd: "/work/alpha",
+    });
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    const railRows = () => {
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return section.querySelectorAll(".rail-session");
+    };
+
+    click(window, railRows()[1] as HTMLElement);
+    // Watchdog fires: the optimistic highlight backs out to the host-confirmed
+    // row, which is the intended visual behaviour...
+    await vi.waitFor(() =>
+      expect(doc.querySelector(".rail-session.active .rail-session-name")?.textContent)
+        .toBe("alpha one"),
+    );
+
+    // ...but the host was never heard from, so the id-less actions stay shut.
+    expect(usableItem(openMenu(window, railRows()[0] as HTMLElement), "Continue in a new chat"))
+      .toBe(false);
+
+    // A frame naming some OTHER conversation does not settle it either. The
+    // resume we asked for is serialised host-side and may still land, so "the
+    // host is on a1 right now" is not "the host has finished moving".
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    expect(usableItem(openMenu(window, railRows()[0] as HTMLElement), "Continue in a new chat"))
+      .toBe(false);
+
+    // Only an answer to what we actually asked for re-opens them.
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a2",
+    });
+    expect(menuItem(openMenu(window, railRows()[1] as HTMLElement), "Continue in a new chat"))
+      .toBeTruthy();
+  });
+
+  // The sharper version of the same trap: a NON-matching identity frame arriving
+  // mid-transition. On rapid A→B→C, B's delayed activeId says where the host
+  // WAS, not where it is — disarming the latch on it and then letting C outlive
+  // the watchdog would reopen the actions with the renderer still showing B.
+  it("a non-matching identity frame mid-flight does not disarm the latch", async () => {
+    const { doc, window } = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => {
+        withRail(w);
+        w.__grokRailTransitionTimeoutMs = 5;
+      },
+    });
+    dispatch(window, {
+      type: "repos",
+      entries: repos,
+      selectedCwd: "/work/alpha",
+      activeCwd: "/work/alpha",
+    });
+    dispatch(window, pinnedFrame([]));
+    const three = () =>
+      sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+        row("a3", "/work/alpha", "alpha three", 7),
+      ]);
+    dispatch(window, { ...three(), activeId: "a1" });
+    const railRows = () => {
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return section.querySelectorAll(".rail-session");
+    };
+
+    // Click a2, then immediately a3 — a3's transition supersedes a2's.
+    click(window, railRows()[1] as HTMLElement);
+    click(window, railRows()[2] as HTMLElement);
+
+    // a2's echo finally lands. It names a real conversation, but not the one we
+    // are waiting on, so it must not be taken as "we know where the host is".
+    dispatch(window, { ...three(), activeId: "a2" });
+
+    // a3 never confirms; the watchdog gives up on the highlight.
+    await vi.waitFor(() =>
+      expect(doc.querySelector(".rail-session.active .rail-session-name")?.textContent)
+        .toBe("alpha two"),
+    );
+
+    // Latch must still be closed — the host may already be on a3.
+    for (const i of [0, 1, 2]) {
+      expect(usableItem(openMenu(window, railRows()[i] as HTMLElement), "Continue in a new chat"))
+        .toBe(false);
+    }
+
+    // Only an answer to the LAST thing we asked for settles it.
+    dispatch(window, { ...three(), activeId: "a3" });
+    expect(menuItem(openMenu(window, railRows()[2] as HTMLElement), "Continue in a new chat"))
+      .toBeTruthy();
+  });
+
+  // The nastiest ordering: the superseded resume confirms AFTER the newest one
+  // has already been abandoned by the watchdog. Resumes are serialised
+  // host-side, so B genuinely can land late while C is still queued and about
+  // to become focused. Forgetting what we asked for the moment the paint is
+  // abandoned is what made that stale B frame look authoritative.
+  it("a superseded confirmation arriving after the watchdog does not settle identity", async () => {
+    const { doc, window } = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => {
+        withRail(w);
+        w.__grokRailTransitionTimeoutMs = 5;
+      },
+    });
+    dispatch(window, {
+      type: "repos",
+      entries: repos,
+      selectedCwd: "/work/alpha",
+      activeCwd: "/work/alpha",
+    });
+    dispatch(window, pinnedFrame([]));
+    const three = () =>
+      sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+        row("a3", "/work/alpha", "alpha three", 7),
+      ]);
+    dispatch(window, { ...three(), activeId: "a1" });
+    const railRows = () => {
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return section.querySelectorAll(".rail-session");
+    };
+
+    click(window, railRows()[1] as HTMLElement); // ask for a2
+    click(window, railRows()[2] as HTMLElement); // supersede: ask for a3
+
+    // a3 never confirms; the watchdog abandons the optimistic paint.
+    await vi.waitFor(() =>
+      expect(doc.querySelector(".rail-session.active .rail-session-name")?.textContent)
+        .toBe("alpha one"),
+    );
+
+    // NOW a2's slow load finally confirms — after the paint was abandoned.
+    dispatch(window, { ...three(), activeId: "a2" });
+
+    // a3 is still queued host-side and may already be focused. The gate must
+    // stay shut: acting here could fork or remove against a3.
+    for (const i of [0, 1, 2]) {
+      expect(usableItem(openMenu(window, railRows()[i] as HTMLElement), "Continue in a new chat"))
+        .toBe(false);
+    }
+
+    // a3 landing is what actually settles it.
+    dispatch(window, { ...three(), activeId: "a3" });
+    expect(menuItem(openMenu(window, railRows()[2] as HTMLElement), "Continue in a new chat"))
+      .toBeTruthy();
+  });
+});
+
+// Optimistic rail transition: a click must paint the highlight (and the loading
+// veil) before any host reply. state.activeSessionId stays host-confirmed — the
+// display target is renderer-local. See railTransition / railDisplayTarget in
+// media/chat.js.
+describe("rail transition (optimistic highlight)", () => {
+  const activeName = (doc: Document, repoLabel: string) => {
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf(repoLabel)];
+    const active = section?.querySelector(".rail-session.active .rail-session-name");
+    return active?.textContent || null;
+  };
+  const welcomeStatus = (doc: Document) => {
+    const ver = doc.getElementById("welcome-version");
+    return (ver as HTMLElement | null)?.dataset?.status || ver?.textContent || "";
+  };
+
+  it("highlights a clicked row before any host reply", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    expect(activeName(doc, "alpha")).toBe("alpha one");
+
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const rows = section.querySelectorAll(".rail-session");
+    click(window, rows[1] as HTMLElement);
+
+    // Before sessionName / sessions — highlight moved, host only got resume.
+    expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
+      { type: "resumeSession", id: "a2", cwd: "/work/alpha" },
+    ]);
+    expect(activeName(doc, "alpha")).toBe("alpha two");
+    expect(welcomeStatus(doc)).toBe("Loading conversation");
+  });
+
+  it("does not confirm a resume on a non-matching activeId (multi-tab echo)", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    click(window, section.querySelectorAll(".rail-session")[1] as HTMLElement);
+    expect(activeName(doc, "alpha")).toBe("alpha two");
+
+    // Another tab's catalog refresh: same rows, but this tab's activeId is still
+    // a1. Must not clear or re-home the pending a2 highlight.
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    expect(activeName(doc, "alpha")).toBe("alpha two");
+    expect(welcomeStatus(doc)).toBe("Loading conversation");
+
+    // Matching activeId confirms; highlight remains (now host-owned).
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a2",
+    });
+    expect(activeName(doc, "alpha")).toBe("alpha two");
+  });
+
+  it("backs the highlight out on error", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    click(window, section.querySelectorAll(".rail-session")[1] as HTMLElement);
+    expect(activeName(doc, "alpha")).toBe("alpha two");
+
+    dispatch(window, { type: "error", text: "Session is owned by another client." });
+    // Falls back to the last host-confirmed id (a1) — never stranded on a2.
+    expect(activeName(doc, "alpha")).toBe("alpha one");
+  });
+
+  it("shows a new-conversation placeholder and replaces it without duplicating", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+
+    const alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    // Project "+" on the selected repo → beginNewSession path.
+    const add = alpha.querySelector(".rail-repo-actions .rail-action-btn") as HTMLElement;
+    click(window, add);
+    expect(posted.some((p) => p.type === "newSession")).toBe(true);
+
+    const namesBefore = sessionNames(doc, repoNames(doc).indexOf("alpha"));
+    expect(namesBefore[0]).toBe("New session");
+    expect(namesBefore).toContain("alpha one");
+    expect(activeName(doc, "alpha")).toBe("New session");
+    // Synthetic only — never inserted into the host-owned sessions list payload.
+    expect(namesBefore.filter((n) => n === "New session")).toHaveLength(1);
+
+    // Identity binds the real id; placeholder keeps the synthetic row until the
+    // catalog actually lists that id (no double paint).
+    dispatch(window, {
+      type: "sessionName",
+      sessionId: "a-new",
+      name: "New session",
+      cwd: "/work/alpha",
+    });
+    // Still one row for the pending conversation (id resolved, not yet in catalog).
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha")).filter((n) => n === "New session"))
+      .toHaveLength(1);
+
+    // Catalog carries the real row — placeholder drops, no duplicate.
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a-new", "/work/alpha", "Fresh chat", 10),
+        row("a1", "/work/alpha", "alpha one", 9),
+      ]),
+      activeId: "a-new",
+    });
+    const namesAfter = sessionNames(doc, repoNames(doc).indexOf("alpha"));
+    expect(namesAfter).toEqual(["Fresh chat", "alpha one"]);
+    expect(activeName(doc, "alpha")).toBe("Fresh chat");
+    expect(namesAfter.filter((n) => n === "New session")).toHaveLength(0);
+  });
+
+  it("highlights a cross-repo row before activeRepoCwd has moved", () => {
+    // The wrong shortcut (pendingId || activeId with ownership over confirmed
+    // globals) fails here: railRepoOwnsActive returned false for beta while
+    // activeRepoCwd was still alpha, so no highlight.
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+    dispatch(window, {
+      type: "repoSessions",
+      cwd: "/work/beta",
+      entries: [row("b1", "/work/beta", "beta one", 4)],
+      dots: {},
+      total: 1,
+    });
+    const beta = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("beta")];
+    click(window, beta.querySelector(".rail-session") as HTMLElement);
+    expect(activeName(doc, "beta")).toBe("beta one");
+    // Alpha must not keep the active paint for the conversation we just left.
+    expect(activeName(doc, "alpha")).toBe(null);
+  });
 });
 
 describe("rail overflow menus toggle", () => {
@@ -1556,5 +2029,44 @@ describe("rail overflow menus toggle", () => {
     dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/beta", activeCwd: "/work/beta" });
 
     expect(posted.filter((p) => p.type === "newSession")).toEqual([]);
+  });
+});
+
+// The project header used to ALSO switch into an unselected project, forcing
+// the section open and returning early. Two problems: it selected a repo
+// without opening anything in it (chat still on the old conversation while the
+// rail claimed another project — the state the chip explains as "Browsing X;
+// live session is in Y"), and clicking an already-expanded unselected project
+// did nothing visible, which is why closing one "sometimes" needed two clicks.
+describe("project header is a fold control, not a repo switch", () => {
+  const headFor = (doc: Document, name: string) =>
+    doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf(name)]
+      .querySelector(".rail-repo-head") as HTMLElement;
+  const sessionCount = (doc: Document, name: string) =>
+    doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf(name)]
+      .querySelectorAll(".rail-session").length;
+
+  it("collapses an expanded unselected project on the FIRST click", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    // Give beta (not the selected project) some rows, so it renders expanded.
+    dispatch(window, {
+      type: "repoSessions",
+      cwd: "/work/beta",
+      entries: [row("b1", "/work/beta", "beta one", 5)],
+      dots: {},
+      total: 1,
+    });
+    expect(sessionCount(doc, "beta")).toBe(1);
+
+    click(window, headFor(doc, "beta"));
+
+    // One click, actually folded — and no repo switch rode along with it.
+    expect(sessionCount(doc, "beta")).toBe(0);
+    expect(posted.filter((p) => p.type === "selectRepo")).toEqual([]);
+
+    // ...and it reopens, still without switching.
+    click(window, headFor(doc, "beta"));
+    expect(sessionCount(doc, "beta")).toBe(1);
+    expect(posted.filter((p) => p.type === "selectRepo")).toEqual([]);
   });
 });

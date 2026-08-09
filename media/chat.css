@@ -25,6 +25,18 @@
      nested corners visually concentric and matches the 8px icon buttons. */
   --chat-radius-message: 12px;
   --chat-radius-code: 8px;
+  /* Project folder colours (rail). No raw hex — blue IS the theme link token;
+     the other five are fixed oklch hues mixed with --vscode-foreground so
+     contrast polarity follows the theme without a light/dark branch (same
+     reason as --chat-surface-user above: a pure token can vanish when themes
+     map surfaces onto each other). Swatch picker and folder stroke both read
+     these, so a seventh colour is one custom property + one palette id. */
+  --repo-color-blue: var(--vscode-textLink-foreground);
+  --repo-color-teal: color-mix(in oklab, oklch(0.68 0.12 200) 72%, var(--vscode-foreground) 28%);
+  --repo-color-green: color-mix(in oklab, oklch(0.68 0.15 145) 72%, var(--vscode-foreground) 28%);
+  --repo-color-amber: color-mix(in oklab, oklch(0.76 0.14 85) 72%, var(--vscode-foreground) 28%);
+  --repo-color-coral: color-mix(in oklab, oklch(0.68 0.15 30) 72%, var(--vscode-foreground) 28%);
+  --repo-color-purple: color-mix(in oklab, oklch(0.64 0.15 305) 72%, var(--vscode-foreground) 28%);
 }
 
 /* The VS Code panel is a narrow column, and the same gutter that reads as
@@ -500,6 +512,14 @@ body.rail-resizing * {
 }
 /* Folder is an open/closed indicator — the whole head is the hit target. */
 .rail-twisty { cursor: inherit; pointer-events: none; }
+/* Stroke tint only (SVGs use currentColor). None / missing attr keeps the
+   descriptionForeground from .rail-twisty. */
+.rail-twisty[data-repo-color="blue"] { color: var(--repo-color-blue); }
+.rail-twisty[data-repo-color="teal"] { color: var(--repo-color-teal); }
+.rail-twisty[data-repo-color="green"] { color: var(--repo-color-green); }
+.rail-twisty[data-repo-color="amber"] { color: var(--repo-color-amber); }
+.rail-twisty[data-repo-color="coral"] { color: var(--repo-color-coral); }
+.rail-twisty[data-repo-color="purple"] { color: var(--repo-color-purple); }
 .rail-action-btn { cursor: pointer; }
 /* Hover controls sit on the row's own hover surface — no darker per-icon chip
    (Codex-style). Focus outline remains for keyboard; active pin is colour-only. */
@@ -575,6 +595,14 @@ body.rail-resizing * {
 .rail-repo-head:focus-within .rail-repo-actions,
 .rail-session:hover .rail-session-actions,
 .rail-session:focus-within .rail-session-actions { opacity: 1; pointer-events: auto; }
+
+/* The rail rebuilds itself wholesale, and one session load fires several of
+   those. Each rebuild recreates these buttons at opacity 0 under a cursor that
+   never moved, so the .1s fade replayed every time and the row appeared to
+   blink. The class is set for the rebuild paint only and dropped on the next
+   frame, so a real hover still fades. */
+.rail-rebuilding .rail-repo-actions,
+.rail-rebuilding .rail-session-actions { transition: none; }
 
 /* The scrim exists to make the icons sit on the row's own surface rather than a
    second chip floating over it — so it has to follow whichever surface the row
@@ -721,6 +749,58 @@ body.rail-resizing * {
 .rail-menu-icon svg { width: 13px; height: 13px; }
 .rail-menu-item.danger .rail-menu-icon { color: inherit; }
 .rail-menu-sep { height: 1px; margin: 3px 2px; background: var(--vscode-panel-border); }
+
+/* Project colour swatch picker — fixed under <body> like .rail-menu so the
+   rail scroller cannot clip it. Seven equal cells: six hues + empty "none". */
+.rail-color-picker {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  box-shadow: 0 4px 16px color-mix(in oklab, var(--vscode-widget-shadow, #000) 40%, transparent);
+}
+.rail-color-swatch {
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid color-mix(in oklab, var(--vscode-foreground) 22%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+.rail-color-swatch:not(.is-none) {
+  background: var(--swatch, transparent);
+  border-color: color-mix(in oklab, var(--swatch) 55%, var(--vscode-foreground) 20%);
+}
+.rail-color-swatch[data-repo-color="blue"] { --swatch: var(--repo-color-blue); }
+.rail-color-swatch[data-repo-color="teal"] { --swatch: var(--repo-color-teal); }
+.rail-color-swatch[data-repo-color="green"] { --swatch: var(--repo-color-green); }
+.rail-color-swatch[data-repo-color="amber"] { --swatch: var(--repo-color-amber); }
+.rail-color-swatch[data-repo-color="coral"] { --swatch: var(--repo-color-coral); }
+.rail-color-swatch[data-repo-color="purple"] { --swatch: var(--repo-color-purple); }
+/* "None" is an empty box — deliberately not a filled grey (that would look
+   like a seventh colour). */
+.rail-color-swatch.is-none {
+  background:
+    linear-gradient(
+      to top left,
+      transparent calc(50% - 0.5px),
+      color-mix(in oklab, var(--vscode-foreground) 35%, transparent) 50%,
+      transparent calc(50% + 0.5px)
+    ),
+    var(--vscode-menu-background, var(--vscode-editorWidget-background));
+}
+.rail-color-swatch:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.rail-color-swatch:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.rail-color-swatch.is-selected {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
 
 /* No hover means no hover-reveal: force session/repo actions visible on touch.
    On these devices actions stay in-flow (reserve space) — overlay would
@@ -1037,24 +1117,6 @@ a:hover {
 .welcome-tip [role="button"] { cursor: pointer; }
 .muted-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .muted-link:hover { opacity: 0.8; }
-
-/* Animated trailing ellipsis for transient status text ("Starting", "Thinking",
-   "Updating Grok Build CLI", "Summarizing"). The dots are a pseudo-element so the
-   element's textContent stays clean (the literal "..." is stripped at the call
-   sites); a reserved width keeps the label from shifting as the dots cycle. */
-@keyframes loading-ellipsis {
-  0% { content: ""; }
-  25% { content: "."; }
-  50% { content: ".."; }
-  75%, 100% { content: "..."; }
-}
-.loading-dots::after {
-  content: "...";
-  display: inline-block;
-  width: 1.2em;
-  text-align: left;
-  animation: loading-ellipsis 1.4s steps(1, end) infinite;
-}
 
 /* The welcome panel's busy status line. Shares the send button's loader-circle
    and its rotation, so every "working" affordance in the UI reads the same. */
@@ -1761,6 +1823,18 @@ body.thinking-hidden .msg.thinking { display: none; }
 @keyframes tool-dot-blink {
   0%, 80%, 100% { opacity: 0.2; }
   40% { opacity: 1; }
+}
+/* Every other animation here is already guarded; this one was the exception,
+   and it now drives the widest surface (tool groups, Thinking, subagents, the
+   gear update check, the Summarizing banner) since the loading-ellipsis
+   mechanism was retired. Settle the dots fully lit — reduced motion should
+   still read as "working", not as three greyed-out dots. */
+@media (prefers-reduced-motion: reduce) {
+  .blink-dots span,
+  .tool-group.in-progress .tool-dots span {
+    animation: none;
+    opacity: 1;
+  }
 }
 .tool-group-body {
   margin-top: 2px;

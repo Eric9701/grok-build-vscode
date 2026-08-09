@@ -7,7 +7,7 @@
 //   2. Session rows "only clickable on the label" -> whole row resumes; action
 //      buttons stopPropagation so they don't also resume
 //   3. Reasoning traces "no longer expandable" -> header click toggles the body
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { bootWebview, dispatch, click, Posted } from "./webview-harness";
 import { countsAsUserBubble } from "../src/plan-restore";
 import { bracketRemoteSnapshot } from "../src/remote-policy";
@@ -2785,7 +2785,7 @@ describe("remote tab session reconnect", () => {
         w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => (original.window as any).__grokTabTokenReady);
     const originalToken = original.window.sessionStorage.getItem("grok.remote.tabToken:default");
     const originalOwner = original.window.sessionStorage.getItem("grok.remote.tabOwner:default");
 
@@ -2922,7 +2922,7 @@ describe("remote tab session reconnect", () => {
         w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => (priorPage.window as any).__grokTabTokenReady);
     const token = priorPage.window.sessionStorage.getItem("grok.remote.tabToken:default");
     priorPage.window.dispatchEvent(new priorPage.window.Event("pagehide"));
 
@@ -2934,7 +2934,7 @@ describe("remote tab session reconnect", () => {
         w.sessionStorage.setItem("grok.remote.tabSession:default", JSON.stringify(remembered));
       },
     });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => (reloaded.window as any).__grokTabTokenReady);
 
     expect(reloaded.window.sessionStorage.getItem("grok.remote.tabToken:default")).toBe(token);
     dispatch(reloaded.window, { type: "initialState", cwd: "/work/repo-a" });

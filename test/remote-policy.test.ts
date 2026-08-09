@@ -52,6 +52,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.listSessions).toBe("view");
     expect(INBOUND_DISPOSITION.selectRepo).toBe("view");
     expect(INBOUND_DISPOSITION.toggleRepoPin).toBe("full");
+    expect(INBOUND_DISPOSITION.setRepoColor).toBe("full");
     // native pickers/editors/mic act on the LOCAL VS Code — never remote-drivable
     expect(INBOUND_DISPOSITION.openFile).toBe("host-local");
     expect(INBOUND_DISPOSITION.showInFolder).toBe("host-local");
@@ -115,6 +116,7 @@ describe("remote repo target gate", () => {
   it("accepts only discovered cwd values for switching, pinning, and explicit resume", () => {
     expect(allowRemoteRepoTarget({ type: "selectRepo", cwd: "/work/a" }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/work/b", pinned: true }, discovered)).toBe(true);
+    expect(allowRemoteRepoTarget({ type: "setRepoColor", cwd: "/work/a", color: "blue" }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s", cwd: "/work/a" }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "clearAllSessions", cwd: "/work/a" }, discovered)).toBe(true);
     // The rail previews a repo without selecting it — same catalog gate, so it
@@ -123,6 +125,8 @@ describe("remote repo target gate", () => {
     expect(allowRemoteRepoTarget({ type: "listRepoSessions", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "selectRepo", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/etc", pinned: true }, discovered)).toBe(false);
+    // A colour write that names an arbitrary cwd is the same hole as archive/pin.
+    expect(allowRemoteRepoTarget({ type: "setRepoColor", cwd: "/etc", color: "teal" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "resumeSession", id: "s", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "clearAllSessions", cwd: "/etc" }, discovered)).toBe(false);
   });

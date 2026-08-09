@@ -82,7 +82,7 @@ import {
   type TreePathFs,
   writeTreeFile,
 } from "../src/desktop/file-tree";
-import { isIpcFromMainWindow } from "../src/desktop/file-tree-ipc";
+import { isIpcFromMainWindow, resolveTreeOpenTarget } from "../src/desktop/file-tree-ipc";
 import { FILE_TREE_PANEL_CSS, fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
 import { mayRegisterResourcePath } from "../src/desktop/media-provenance";
 import {
@@ -831,6 +831,84 @@ describe("file-tree path containment", () => {
     } finally {
       fs.unlinkSync(link);
     }
+  });
+});
+
+describe("resolveTreeOpenTarget (open/reveal containment fence)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-ft-open-"));
+    fs.writeFileSync(path.join(root, "readme.txt"), "hi");
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "hello.ts"), "export {}");
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("resolves a workspace file for open (default)", () => {
+    const r = resolveTreeOpenTarget(root, "readme.txt");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(path.resolve(r.absPath)).toBe(path.resolve(root, "readme.txt"));
+    }
+    const nested = resolveTreeOpenTarget(root, "src/hello.ts", undefined, "open");
+    expect(nested.ok).toBe(true);
+    if (nested.ok) {
+      expect(path.resolve(nested.absPath)).toBe(path.resolve(root, "src", "hello.ts"));
+    }
+  });
+
+  it("refuses a directory by default (open path)", () => {
+    const r = resolveTreeOpenTarget(root, "src");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("not a file");
+
+    // Explicit open verb still refuses dirs.
+    const open = resolveTreeOpenTarget(root, "src", undefined, "open");
+    expect(open.ok).toBe(false);
+    if (!open.ok) expect(open.error).toBe("not a file");
+  });
+
+  it("allows a directory only when allowDirectory is set (reveal path)", () => {
+    const refused = resolveTreeOpenTarget(root, "src", undefined, "reveal");
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toBe("not a file");
+
+    const allowed = resolveTreeOpenTarget(root, "src", undefined, "reveal", {
+      allowDirectory: true,
+    });
+    expect(allowed.ok).toBe(true);
+    if (allowed.ok) {
+      expect(path.resolve(allowed.absPath)).toBe(path.resolve(root, "src"));
+    }
+
+    // File still resolves under the opt-in.
+    const file = resolveTreeOpenTarget(root, "readme.txt", undefined, "reveal", {
+      allowDirectory: true,
+    });
+    expect(file.ok).toBe(true);
+  });
+
+  it("refuses a path that escapes the workspace root either way", () => {
+    const outside = path.resolve(root, "..", "not-ws-" + Date.now());
+    for (const opts of [undefined, { allowDirectory: true } as const]) {
+      expect(resolveTreeOpenTarget(root, "..", undefined, "open", opts).ok).toBe(false);
+      expect(resolveTreeOpenTarget(root, "../outside", undefined, "reveal", opts).ok).toBe(
+        false,
+      );
+      expect(resolveTreeOpenTarget(root, outside, undefined, "open", opts).ok).toBe(false);
+      expect(
+        resolveTreeOpenTarget(root, "src/../../outside", undefined, "reveal", opts).ok,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses non-string / missing paths", () => {
+    expect(resolveTreeOpenTarget(root, null).ok).toBe(false);
+    expect(resolveTreeOpenTarget(root, 12 as unknown as string).ok).toBe(false);
+    expect(resolveTreeOpenTarget(root, "no-such-file.txt").ok).toBe(false);
   });
 });
 
@@ -1749,6 +1827,25 @@ describe("file-tree panel assets", () => {
     expect(boot).toMatch(/wireFullscreenSafeReclamp|fullscreenchange/);
     expect(boot).toContain("__grokDeskFtOpen");
     expect(boot).toContain("Open in default app");
+    // Tree-row overflow: hover ⋯ (rail pattern) + right-click; files get Open +
+    // Reveal, folders Reveal only. Menu position uses chat zoom helpers.
+    expect(boot).toContain("openRowMenu");
+    expect(boot).toContain("showRowContextMenu");
+    expect(boot).toContain("desk-ft-row-actions");
+    expect(boot).toContain("desk-ft-menu-btn");
+    expect(boot).toContain('addEventListener("contextmenu"');
+    expect(boot).toContain("desk-ft-ctx-menu");
+    expect(boot).toContain("chatZoomFactor");
+    expect(boot).toContain("unzoomClientPx");
+    expect(boot).toMatch(/kind\s*!==\s*["']dir["']/);
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-ctx-menu");
+    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-row-actions");
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-row-actions\s*\{[^}]*position:\s*absolute/s,
+    );
+    expect(FILE_TREE_PANEL_CSS).toMatch(
+      /\.desk-ft-row-actions\s*\{[^}]*linear-gradient/s,
+    );
     // Cancel is mounted only while dirty (not always-present + hidden).
     expect(boot).toMatch(/if\s*\(\s*file\.dirty\s*\)[\s\S]*desk-ft-cancel/);
     // Markdown preview defers typography to chat.css (shared tokens), not a

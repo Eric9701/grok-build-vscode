@@ -148,6 +148,7 @@ import {
   SessionListEntry,
   SessionMetaOverrides,
   RepoArchives,
+  RepoColors,
   RepoListEntry,
   RepoPins,
   carrySessionName,
@@ -162,6 +163,8 @@ import {
   indexSessions,
   isEmptySession,
   isPathInside,
+  isRepoColor,
+  REPO_COLOR_IDS,
   mostRecentSession,
   normalizeRepoPath,
   orderedResumeCwdCandidates,
@@ -250,6 +253,12 @@ const REPO_PINS_KEY = "grok.repoPins";
  *  is curation of your projects, not a preference about one sidebar. Read by the
  *  browser client only; the VS Code repo picker ignores it entirely. */
 const REPO_ARCHIVES_KEY = "grok.repoArchives";
+/** Shared client-state key for per-project folder colours in the conversation
+ *  rail. Stored under ~/.grok/client-state so the choice follows you to a phone
+ *  and survives a cleared browser — same home as pins/archives. Both desktop
+ *  and VS Code host this (unlike archives, which desktop strips because open/
+ *  close already owns the curated list). */
+const REPO_COLORS_KEY = "grok.repoColors";
 /** Shared client-state key for the anonymous per-install telemetry GUID (survives
  *  updates and identifies this machine across clients).
  *
@@ -2423,6 +2432,10 @@ Only continue if you trust this code.`,
       archives: this.host.canArchiveRepos
         ? this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {})
         : undefined,
+      // Colours are host-persisted on every surface that has a rail (desktop +
+      // AFK Pilot). Always passed so every row carries `color` (possibly "") —
+      // field presence is the client capability probe.
+      colors: this.state.get<RepoColors>(REPO_COLORS_KEY, {}),
       tmpDir: os.tmpdir(),
       // Open folders remain selectable before Grok creates a catalog row (and
       // bypass managed-worktree exclusion when the user opened a worktree).
@@ -2461,12 +2474,20 @@ Only continue if you trust this code.`,
             continue;
           }
           // Trusted open folder with no catalog row yet — still show it.
+          // Colour still comes from the shared store so a painted project
+          // keeps its tint when Grok has not created a sessions catalog yet.
+          const colors = this.state.get<RepoColors>(REPO_COLORS_KEY, {});
+          const colorChoice = colors[key]?.color;
           entries.push({
             cwd,
             label: path.basename(cwd) || cwd,
             available: true,
             pinned: false,
             updatedAt: 0,
+            // Stored choices are non-empty ids; missing/invalid → "" for none.
+            color: colorChoice && (REPO_COLOR_IDS as readonly string[]).includes(colorChoice)
+              ? colorChoice
+              : "",
           });
         }
       }
@@ -3192,6 +3213,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       ...archives,
       [key]: { cwd: hit.cwd, at: Date.now(), archived },
     });
+    this.postRepoCatalog();
+  }
+
+  /** Record a project's folder-icon colour (or clear it). Empty `color` removes
+   *  the stored entry so the wire reports `""` again. Invalid ids are ignored —
+   *  a remote must not invent a palette entry the host never offered. */
+  private async setRepoColor(cwd: string, color: string): Promise<void> {
+    if (!isRepoColor(color)) return;
+    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit) return;
+    const colors = this.state.get<RepoColors>(REPO_COLORS_KEY, {});
+    const key = normalizeRepoPath(hit.cwd);
+    const next: RepoColors = { ...colors };
+    if (color === "") delete next[key];
+    else next[key] = { cwd: hit.cwd, color };
+    await this.state.update(REPO_COLORS_KEY, next);
     this.postRepoCatalog();
   }
 
@@ -5302,6 +5339,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "setRepoArchived":
         await this.setRepoArchived(msg.cwd, msg.archived);
+        break;
+      case "setRepoColor":
+        await this.setRepoColor(msg.cwd, msg.color);
         break;
       case "toggleRepoPin":
         await this.toggleRepoPin(msg.cwd, msg.pinned);

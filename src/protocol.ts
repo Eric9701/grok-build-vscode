@@ -394,6 +394,12 @@ export type WebviewMsg =
   // from never having said anything (see RepoArchiveChoice). Purely a remote
   // affordance — the VS Code repo picker neither offers it nor reads it.
   | { type: "setRepoArchived"; cwd: string; archived: boolean }
+  // Folder-icon colour for a project in the conversation rail. `color` is one of
+  // the host's palette ids, or "" for none (the default). Host-persisted and
+  // pushed on every `repos` row — same capability pattern as setRepoArchived —
+  // so the choice follows the user to a phone rather than living in browser
+  // localStorage. Purely a rail affordance; the VS Code repo picker ignores it.
+  | { type: "setRepoColor"; cwd: string; color: string }
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
   // by cwd on disk). Omitted → host resolves from meta / workspace root.
   | { type: "resumeSession"; id: string; cwd?: string }
@@ -501,7 +507,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
-  setRepoArchived: true,
+  setRepoArchived: true, setRepoColor: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
   pasteImage: true, uploadFile: true, voiceStart: true,

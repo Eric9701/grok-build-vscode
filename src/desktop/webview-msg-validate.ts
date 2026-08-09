@@ -213,6 +213,9 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "setRepoArchived":
       if (!isString(raw.cwd) || !isBoolean(raw.archived)) return null;
       break;
+    case "setRepoColor":
+      if (!isString(raw.cwd) || !isString(raw.color)) return null;
+      break;
     case "resumeSession":
       if (!isString(raw.id)) return null;
       if (!opt(raw.cwd, isString)) return null;

@@ -202,6 +202,10 @@ describe("PersistedState", () => {
     expect(state.get<Record<string, { archived: boolean }>>("grok.repoArchives", {})["/r"].archived).toBe(true);
   });
 
+  it("maps grok.repoColors onto a client-state file like pins/archives", () => {
+    expect(DISK_KEYS["grok.repoColors"]).toBe("repo-colors.json");
+  });
+
   it("falls back to globalState when the file is corrupt, without throwing", () => {
     const { state, logs } = make((f, m) => {
       f.files.set(metaFile, "{not json");

@@ -34,7 +34,7 @@
     "setShowThinking", "setAppPurpose", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
-    "recheckConnection", "listSessions", "listRepoSessions", "selectRepo", "toggleRepoPin", "setRepoArchived", "toggleSessionPin", "resumeSession", "renameSession", "deleteSession",
+    "recheckConnection", "listSessions", "listRepoSessions", "selectRepo", "toggleRepoPin", "setRepoArchived", "setRepoColor", "toggleSessionPin", "resumeSession", "renameSession", "deleteSession",
       "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
       "remoteVoiceStart", "remoteVoiceChunk", "remoteVoiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",

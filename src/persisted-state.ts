@@ -58,6 +58,7 @@ export const DISK_KEYS: Readonly<Record<string, string>> = {
   "grok.sessionMeta": "session-meta.json",
   "grok.repoPins": "repo-pins.json",
   "grok.repoArchives": "repo-archives.json",
+  "grok.repoColors": "repo-colors.json",
   "grok.installId": "install-id.json",
   // Global progressive-disclosure preference ("knowledge" | "coding"). String
   // scalar like installId — not a record map. See src/app-purpose.ts.

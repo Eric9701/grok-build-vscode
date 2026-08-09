@@ -202,35 +202,13 @@ Gear → the effort dots next to the model, `none` → `xhigh`. On recent CLIs i
 
 Gear → *Remote Control* → **Sign in (link this device)** pairs this machine with **[AFK Pilot](https://afkpilot.com)**, a companion web client that mirrors this chat in the browser: follow a running turn, approve permissions, answer questions, and send or steer messages from your phone while away from your desk. The extension dials **out** to the service — no inbound port, no port forwarding — and **Sign out** unlinks the device again. The mobile view renders the retained chat window in full fidelity (diffs, images, equations, diagrams) with touch-sized controls; on reconnect, the remote snapshot is capped at the last 10 user messages while the VS Code view keeps the complete buffer. Its own **+** picker attaches a photo or a document (`.md`/`.txt`/`.pdf`/`.csv`/`.xlsx`/`.docx`) straight from your phone. You can **dictate** there too — say *"grok send"* to submit hands-free — give each browser tab its **own conversation and repository**, and pick up the very conversation VS Code has open, live in both.
 
-A **projects rail** lists every repository with Grok history and its newest conversations, with pinned conversations lifted above them across all projects and a search over both. You can start a session in any project without switching to it first, and rename, delete or clear history from the row. Projects you put away — and any left untouched for 30 days — fold into **Archived**, and come back on their own the moment you work in one again. On a phone the rail is a drawer behind the handle in the header.
+A **projects rail** lists every repository with Grok history and its newest conversations, with pinned conversations lifted above them across all projects and a search over both. You can start a session in any project without switching to it first, and rename, delete or clear history from the row — from the ⋯ button or by right-clicking it. Give a project a **colour** and its folder is tinted everywhere the rail appears, including your phone. Projects you put away — and any left untouched for 30 days — fold into **Archived**, and come back on their own the moment you work in one again. On a phone the rail is a drawer behind the handle in the header.
 
 While a device is linked, the extension also **keeps the machine awake** (`caffeinate` on macOS, `SetThreadExecutionState` on Windows, `systemd-inhibit` on Linux) so a turn you kicked off from your phone isn't cut short by idle sleep. The display still sleeps — only system sleep is blocked — and the lock is released the moment you sign out. Turn it off with `grok.remote.keepAwake`. A **closed laptop lid still suspends** on every OS; no application can override that.
 
 ![AFK Pilot — your Grok agent from any browser](https://raw.githubusercontent.com/phuryn/grok-build-vscode/main/docs/screenshots/remote.webp)
 
 </details>
-
----
-
-## Install
-
-**1. Install the extension.** In VS Code or Cursor, open **Extensions** (`Ctrl/Cmd+Shift+X`) and search **"Grok Build for VS Code (Community)"**.
-
-**2. Open Grok and sign in.** Press `Ctrl/Cmd+;`. The sidebar **walks you through installing the `grok` CLI and signing in** — one click per step, with your SuperGrok / X Premium+ subscription or an xAI API key. That's the whole setup.
-
-Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). Prefer it elsewhere? Gear → **Config & debug** → **Move view** relocates it to the Panel or Primary Side Bar in one click.
-
-> Prefer the terminal, building from source, or installing into several IDEs at once? See the project [INSTALL docs](https://github.com/phuryn/grok-build-vscode/blob/main/docs/INSTALL.md).
-
----
-
-## Quick start
-
-1. **Open** the Grok view (`Ctrl/Cmd+;`, or **Grok: Open** from the command palette) — it lives in the Secondary Side Bar by default.
-2. **Type a prompt** and press **Enter**. Grok streams its answer, showing a *Thinking…* line while it reasons. Want the full reasoning inline? Turn on **Show thinking traces** in the gear menu → *Config & debug*.
-3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit in the native **diff editor**, with full-file context focused on the first changed line, then *Allow once / always / Reject*.
-4. **Pick your mode** (Agent / Plan / Auto accept), **model**, and **reasoning effort** from the bottom toolbar and gear menu.
-5. **Resume anytime** — the clock icon lists past sessions for this project.
 
 ---
 
@@ -245,16 +223,15 @@ Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). P
 
 ## Install
 
-### VS Code / Cursor extension
-
-**1. Install the extension.** In VS Code or Cursor, open **Extensions** (`Ctrl/Cmd+Shift+X`) and search **"Grok Build for VS Code (Community)"** — or install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PawelHuryn.grok-vscode-phuryn) / [Open VSX Registry](https://open-vsx.org/extension/PawelHuryn/grok-vscode-phuryn).
+**1. Install the extension.** In VS Code or Cursor, open **Extensions** (`Ctrl/Cmd+Shift+X`) and search **"Grok Build for VS Code (Community)"**.
 
 **2. Open Grok and sign in.** Press `Ctrl/Cmd+;`. The sidebar **walks you through installing the `grok` CLI and signing in** — one click per step, with your SuperGrok / X Premium+ subscription or an xAI API key. That's the whole setup.
 
 Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). Prefer it elsewhere? Gear → **Config & debug** → **Move view** relocates it to the Panel or Primary Side Bar in one click.
 
-> Prefer the terminal, building from source, or installing into several IDEs at once? See **[docs/INSTALL.md](https://github.com/phuryn/grok-build-vscode/blob/main/docs/INSTALL.md)**.
+> Prefer the terminal, building from source, or installing into several IDEs at once? See the project [INSTALL docs](https://github.com/phuryn/grok-build-vscode/blob/main/docs/INSTALL.md).
 
+---
 
 ## Quick start
 

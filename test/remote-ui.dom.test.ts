@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { bootWebview, click, dispatch, press } from "./webview-harness";
 
@@ -239,7 +239,7 @@ describe("AFK Pilot shared webview controls", () => {
     expect(posted).toContainEqual({ type: "remoteVoiceChunk", data: "AQACAA==" });
 
     click(window, doc.getElementById("mic-btn")!);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(() => expect(posted.some((m) => m.type === "remoteVoiceStop")).toBe(true));
     expect(posted).toContainEqual({ type: "remoteVoiceChunk", data: "AwA=" });
     expect(posted).toContainEqual({ type: "remoteVoiceStop" });
     expect(posted.findIndex((message) => message.type === "remoteVoiceChunk" && message.data === "AwA="))

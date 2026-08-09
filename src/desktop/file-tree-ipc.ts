@@ -68,18 +68,29 @@ export function isIpcFromMainWindow(
   return isTrustedMainFrameIpc(event, getMainWindow);
 }
 
+/** Options for {@link resolveTreeOpenTarget}. */
+export interface ResolveTreeOpenTargetOptions {
+  /**
+   * When true, accept directories as well as files (reveal in file manager).
+   * Default false — open must keep refusing directories.
+   */
+  allowDirectory?: boolean;
+}
+
 /**
  * Shared containment + policy gate for open and reveal.
  *
  * Order is load-bearing and identical for both channels:
- * invalid path → resolve → re-resolve → isFile → executable refuse.
- * Callers that invoke the OS must still re-resolve immediately before use.
+ * invalid path → resolve → re-resolve → isFile (or dir when opted in) →
+ * executable refuse. Callers that invoke the OS must still re-resolve
+ * immediately before use.
  */
 export function resolveTreeOpenTarget(
   root: string,
   relPath: unknown,
   log?: (line: string) => void,
   logVerb: "open" | "reveal" = "open",
+  options?: ResolveTreeOpenTargetOptions,
 ): { ok: true; absPath: string } | { ok: false; error: string } {
   if (typeof relPath !== "string") {
     return { ok: false, error: "invalid path" };
@@ -96,19 +107,24 @@ export function resolveTreeOpenTarget(
     log?.(`[desk-ft] ${logVerb} rejected on re-check: ${resolved.reason} (${relPath})`);
     return { ok: false, error: resolved.reason };
   }
-  // Open/reveal files only — directories stay expand-only in the panel.
-  // resolveTreePath already refused outbound symlinks/junctions; use the
-  // path the user sees (link path when it is an in-tree link).
+  // Open: files only. Reveal may pass allowDirectory so folders can be shown
+  // in the OS file manager. resolveTreePath already refused outbound
+  // symlinks/junctions; use the path the user sees (link path when it is an
+  // in-tree link).
   try {
     const st = fs.statSync(resolved.absPath);
-    if (!st.isFile()) {
-      return { ok: false, error: "not a file" };
+    const allowDir = options?.allowDirectory === true;
+    // Sockets, FIFOs and device nodes fall through both arms — neither channel
+    // has anything sensible to do with one.
+    if (!st.isFile() && !(allowDir && st.isDirectory())) {
+      return { ok: false, error: allowDir ? "not a file or folder" : "not a file" };
     }
   } catch {
     return { ok: false, error: "not found" };
   }
   // Same executable refusal as chat openFile (desktop-policy): extension,
   // symlink target, launcher format, and POSIX +x on the canonical file.
+  // Kept on the reveal path too (narrower is safer; e.g. macOS .app bundles).
   if (isExecutableOpenTarget(resolved.absPath)) {
     log?.(`[desk-ft] ${logVerb} rejected: executable path refused (${relPath})`);
     return { ok: false, error: "executable path refused" };
@@ -187,14 +203,17 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
   });
 
   /**
-   * Reveal a workspace file in the OS file manager (Finder / Explorer / …).
-   * Same trust gates as open — revealing confirms existence + location.
+   * Reveal a workspace file or folder in the OS file manager
+   * (Finder / Explorer / …). Same trust gates as open, plus allowDirectory
+   * so tree folders can be revealed without opening them.
    */
   ipcMain.handle(CH_REVEAL, (e, relPath: unknown) => {
     if (!isIpcFromMainWindow(e, opts.getMainWindow)) return deny(CH_REVEAL);
     const root = opts.getWorkspaceRoot();
     if (!root) return { ok: false as const, error: "no workspace root" };
-    const target = resolveTreeOpenTarget(root, relPath, opts.log, "reveal");
+    const target = resolveTreeOpenTarget(root, relPath, opts.log, "reveal", {
+      allowDirectory: true,
+    });
     if (!target.ok) return { ok: false as const, error: target.error };
 
     const sink = opts.revealSinkPath || process.env.GROK_DESKTOP_REVEAL_SINK;

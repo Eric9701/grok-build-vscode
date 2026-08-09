@@ -461,6 +461,22 @@
     // indistinguishable from a project that genuinely has no conversations, and
     // the two answer "when was this last worked in" very differently.
     railSelectedRowsKnown: false,
+    // Renderer-local only. Drives the optimistic rail highlight + loading veil
+    // while a resume/new click is in flight. NEVER written into activeSessionId
+    // (that stays host-confirmed), never remembered, never used by rename /
+    // delete / send / the session header. See railDisplayTarget.
+    railTransition: null,
+    // "We have asked the host to move and it has not told us where it landed."
+    // Outlives railTransition deliberately — the watchdog and a stray error
+    // tear that down without learning anything about the host. Gates the
+    // session actions that carry no id. See railIdlessActionsAllowed.
+    railIdentityUnknown: false,
+    // WHAT we are waiting to hear about, kept alive past the watchdog. Giving up
+    // on the optimistic paint says nothing about where the host went, and a
+    // superseded resume stays queued host-side and can land later — so without
+    // this, a stale confirmation for an abandoned click reads as authoritative.
+    // `{ kind: "resume", sessionId }` or `{ kind: "new", previousSessionId }`.
+    railExpectedIdentity: null,
     activeSessionId: null,
     // The host sends this independently of history pagination. The latch is
     // also the compatibility gate for the new inline rename affordance.
@@ -683,6 +699,8 @@
     // Lucide folder-closed / folder-open — project expand/collapse (replaces chevron).
     folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M2 10h20"/></svg>`,
     folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+    // Palette glyph for "Set color" — stroke-only so it inherits menu icon tint.
+    palette: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="0.5" fill="currentColor"/><circle cx="17.5" cy="10.5" r="0.5" fill="currentColor"/><circle cx="8.5" cy="7.5" r="0.5" fill="currentColor"/><circle cx="6.5" cy="12.5" r="0.5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>`,
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z"/></svg>`,
     // Same Lucide pin path with a filled head (outline stroke kept for the needle).
     pinFilled: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z" fill="currentColor"/></svg>`,
@@ -2467,7 +2485,7 @@
 
     let statusHtml, canUpdate = false;
     if (u.checking) {
-      statusHtml = '<span class="loading-dots">Checking for updates</span>';
+      statusHtml = `<span>Checking for updates</span>${BLINK_DOTS}`;
     } else if (blocked) {
       statusHtml = '<span class="popover-ver">On the supported version</span>';
     } else if (u.error) {
@@ -3717,10 +3735,19 @@
   // Generous: the host answers by scanning the session store on disk, and a slow
   // first read must not be mistaken for an extension that cannot answer at all.
   const RAIL_PROBE_TIMEOUT_MS = 8000;
+  // A silent host must not strand a highlight forever. 10s is long enough for a
+  // cold session/load over a slow link and short enough that a dropped request
+  // is still visibly "nothing happened" rather than a stuck selection.
+  const RAIL_TRANSITION_TIMEOUT_MS = 10000;
 
   let railEl = null;
   let railResolved = false;
   let railProbeTimer = null;
+  // Monotonic renderer-local counter for railTransition.token. Not a grok
+  // session id — never sent to the host; only used so superseded timers and
+  // late frames cannot complete a transition that a later click replaced.
+  let railTransitionSeq = 0;
+  let railTransitionTimer = null;
 
   /** Host shipped a rail surface (desktop multi-folder / AFK Pilot page). */
   function railMount() {
@@ -3798,14 +3825,151 @@
   // only has to survive a single click, and identity is exactly the question.
   let railMenuAnchorEl = null;
 
+  // Project colour swatch popover (sibling of the overflow menu, same anchor
+  // discipline). Closed together with the menu so Esc / outside-click never
+  // leave a stranded picker after a rail rebuild.
+  let railColorPickerEl = null;
+  let railColorPickerAnchorEl = null;
+
+  /** Palette the host accepts — keep ids in lockstep with REPO_COLOR_IDS in
+   *  sessions.ts. Labels are accessible names for each swatch. */
+  const REPO_COLOR_SWATCHES = [
+    { id: "", label: "None" },
+    { id: "blue", label: "Blue" },
+    { id: "teal", label: "Teal" },
+    { id: "green", label: "Green" },
+    { id: "amber", label: "Amber" },
+    { id: "coral", label: "Coral" },
+    { id: "purple", label: "Purple" },
+  ];
+
+  function closeRailColorPicker() {
+    railColorPickerAnchorEl = null;
+    if (railColorPickerEl) { railColorPickerEl.remove(); railColorPickerEl = null; }
+  }
+
   function closeRailMenu() {
     railMenuAnchorEl = null;
     if (railMenuEl) { railMenuEl.remove(); railMenuEl = null; }
+    closeRailColorPicker();
+  }
+
+  /** Position a fixed popover under/above an anchor (shared by menu + colour
+   *  picker so they never disagree about zoom/viewport edges). */
+  function placeRailPopover(el, anchor, at) {
+    const z = chatZoomFactor();
+    const size = el.getBoundingClientRect();
+    const gap = 4;
+    const menuH = unzoomClientPx(size.height, z);
+    const menuW = unzoomClientPx(size.width, z);
+    const vh = unzoomClientPx(window.innerHeight, z);
+    const vw = unzoomClientPx(window.innerWidth, z);
+    // `at` is a pointer position (right-click); otherwise hang off the control.
+    // Both arrive as VISUAL px — body `zoom` scales client rects and pointer
+    // coordinates alike, while fixed top/left are layout px.
+    const anchorTop = at ? unzoomClientPx(at.y, z) : unzoomClientPx(anchor.getBoundingClientRect().top, z);
+    const anchorBottom = at ? anchorTop : unzoomClientPx(anchor.getBoundingClientRect().bottom, z);
+    const anchorRight = at ? unzoomClientPx(at.x, z) + menuW : unzoomClientPx(anchor.getBoundingClientRect().right, z);
+    let top = anchorBottom + gap;
+    if (top + menuH > vh - 8) top = Math.max(8, anchorTop - menuH - gap);
+    let left = anchorRight - menuW;
+    left = Math.max(8, Math.min(left, vw - menuW - 8));
+    el.style.top = `${Math.round(top)}px`;
+    el.style.left = `${Math.round(left)}px`;
+  }
+
+  /** Right-click opens the same ⋯ menu, at the pointer.
+   *
+   *  Hover-capable pointers only. On touch a long-press synthesises
+   *  `contextmenu`, so wiring it there would hijack the gesture the browser
+   *  already uses for selection — and on a phone the rail is a drawer where the
+   *  ⋯ buttons are permanently visible anyway (see the `hover: none` rules in
+   *  chat.css), so there is nothing to reveal. */
+  function wireRailRowContextMenu(row, getAnchor, items, menuKey) {
+    if (!row || !window.matchMedia || !window.matchMedia("(hover: hover)").matches) return;
+    row.addEventListener("contextmenu", (e) => {
+      const anchor = getAnchor();
+      if (!anchor) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Close first so openRailMenu's same-key toggle cannot swallow this as a
+      // "clicked the open menu again" and dismiss instead of repositioning.
+      closeRailMenu();
+      openRailMenu(anchor, typeof items === "function" ? items() : items, menuKey, {
+        x: e.clientX,
+        y: e.clientY,
+      });
+    });
+  }
+
+  /** Small swatch grid for a project's folder colour. Host-persisted via
+   *  setRepoColor; capability-gated by railColorSupported. */
+  function openRepoColorPicker(anchor, repo) {
+    closeRailColorPicker();
+    if (!anchor || !repo) return;
+    railColorPickerAnchorEl = anchor;
+    const current = typeof repo.color === "string" ? repo.color : "";
+    const picker = document.createElement("div");
+    picker.className = "rail-color-picker";
+    picker.setAttribute("role", "listbox");
+    picker.setAttribute("aria-label", "Project color");
+    const swatches = [];
+    for (const sw of REPO_COLOR_SWATCHES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "rail-color-swatch" +
+        (sw.id ? "" : " is-none") +
+        (sw.id === current ? " is-selected" : "");
+      if (sw.id) btn.dataset.repoColor = sw.id;
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-label", sw.label);
+      btn.setAttribute("aria-selected", sw.id === current ? "true" : "false");
+      btn.title = sw.label;
+      btn.tabIndex = sw.id === current ? 0 : -1;
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        closeRailColorPicker();
+        // Skip a no-op write: re-picking the current colour should not churn
+        // the catalog (and a remote round-trip for nothing).
+        if (sw.id === current) return;
+        vscode.postMessage({ type: "setRepoColor", cwd: repo.cwd, color: sw.id });
+      };
+      picker.appendChild(btn);
+      swatches.push(btn);
+    }
+    // Arrow-key roving tabindex across the seven swatches (left/right/up/down
+    // all advance in row order — a 7-wide grid is one row on desktop).
+    picker.addEventListener("keydown", (e) => {
+      const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+      if (!keys.includes(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const i = swatches.indexOf(document.activeElement);
+      if (i < 0) return;
+      let next = i;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (i + 1) % swatches.length;
+      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (i - 1 + swatches.length) % swatches.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = swatches.length - 1;
+      for (const b of swatches) b.tabIndex = -1;
+      swatches[next].tabIndex = 0;
+      swatches[next].focus();
+    });
+    document.body.appendChild(picker);
+    railColorPickerEl = picker;
+    placeRailPopover(picker, anchor);
+    const focusBtn = swatches.find((b) => b.classList.contains("is-selected")) || swatches[0];
+    if (focusBtn) focusBtn.focus();
   }
 
   /** items: [{ label, icon, danger, disabled, onSelect }] — a `null` entry is a
-   *  separator, which is how the destructive tail is kept away from the thumb. */
-  function openRailMenu(anchor, items, menuKey) {
+   *  separator, which is how the destructive tail is kept away from the thumb.
+   *
+   *  `at` ({x, y} in VISUAL client px, i.e. straight off a pointer event) opens
+   *  the menu at the pointer instead of under the ⋯ button — the right-click
+   *  path. The anchor is still passed so dismissal and the toggle keep working
+   *  off the control the menu belongs to. */
+  function openRailMenu(anchor, items, menuKey, at) {
     // Identify the menu by what it BELONGS to, not by the element it hangs off.
     // The rail re-renders freely and recreates these buttons, so an id stamped
     // on the node was gone by the second click: the toggle compared a fresh
@@ -3851,20 +4015,7 @@
     // Flip up / pull left rather than run off the viewport — the rail sits at the
     // left edge on desktop and the drawer covers the screen on a phone.
     // Body `zoom` scales visual rects; fixed style top/left are layout px.
-    const z = chatZoomFactor();
-    const box = anchor.getBoundingClientRect();
-    const size = menu.getBoundingClientRect();
-    const gap = 4;
-    const menuH = unzoomClientPx(size.height, z);
-    const menuW = unzoomClientPx(size.width, z);
-    const vh = unzoomClientPx(window.innerHeight, z);
-    const vw = unzoomClientPx(window.innerWidth, z);
-    let top = unzoomClientPx(box.bottom, z) + gap;
-    if (top + menuH > vh - 8) top = Math.max(8, unzoomClientPx(box.top, z) - menuH - gap);
-    let left = unzoomClientPx(box.right, z) - menuW;
-    left = Math.max(8, Math.min(left, vw - menuW - 8));
-    menu.style.top = `${Math.round(top)}px`;
-    menu.style.left = `${Math.round(left)}px`;
+    placeRailPopover(menu, anchor, at);
     const first = menu.querySelector(".rail-menu-item:not(:disabled)");
     if (first) first.focus();
   }
@@ -3873,6 +4024,14 @@
   // Rail menus are fixed-position under <body>; close on outside click / Esc /
   // resize regardless of remote vs desktop once a rail mount exists (or may).
   document.addEventListener("click", (e) => {
+    if (railColorPickerEl) {
+      if (railColorPickerEl.contains(e.target)) return;
+      if (railColorPickerAnchorEl && railColorPickerAnchorEl.contains(e.target)) return;
+      closeRailColorPicker();
+      // A colour picker and a menu are never open together (opening either
+      // closes the other), so fall through only when no menu is up.
+      if (!railMenuEl) return;
+    }
     if (!railMenuEl || railMenuEl.contains(e.target)) return;
     // Not the button that owns this menu. That click is a TOGGLE, and this
     // listener is on the capture phase — it runs before the button's own
@@ -3883,7 +4042,10 @@
     closeRailMenu();
   }, true);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeRailMenu();
+    if (e.key === "Escape") {
+      if (railColorPickerEl) { closeRailColorPicker(); return; }
+      closeRailMenu();
+    }
   });
   window.addEventListener("resize", closeRailMenu);
 
@@ -3897,6 +4059,10 @@
     btn.title = label;
     btn.setAttribute("aria-label", label);
     btn.setAttribute("aria-haspopup", "menu");
+    // Stamped at build time (not only once a menu has been opened from it) so a
+    // rebuild can find the replacement button for an already-open menu and
+    // re-anchor to it instead of closing. See renderRail.
+    if (menuKey) btn.dataset.railMenuKey = menuKey;
     btn.onclick = (e) => {
       e.stopPropagation();
       openRailMenu(btn, typeof items === "function" ? items() : items, menuKey);
@@ -4084,21 +4250,398 @@
     return at > 0 ? now - at > RAIL_ARCHIVE_AFTER_MS : true;
   }
 
-  /** Whether the live conversation is one of THIS project's.
+  /**
+   * What the rail should paint as the current conversation.
    *
-   *  `activeRepoCwd` is the live session's own cwd, and for a worktree session
+   * While a click is in flight this is the optimistic target from
+   * `railTransition`; once the host confirms, it is the host-owned identity.
+   * Callers must NOT write this back into `state.activeSessionId` — that field
+   * stays strictly host-confirmed so rename/delete/send/remember cannot act on
+   * a pending id.
+   *
+   * Why this is not `pendingSessionId || activeSessionId`:
+   * `railRepoOwnsTarget` needs the full `{id, sessionCwd, repoCwd}` triple. A
+   * cross-repo resume has a pending id whose project is not yet
+   * `activeRepoCwd`, so an ownership check that only closed over the confirmed
+   * globals returned false and the highlight never appeared. The display
+   * target carries the project the user clicked so ownership can pass.
+   */
+  function railDisplayTarget() {
+    const t = state.railTransition;
+    if (t) {
+      if (t.kind === "resume") {
+        return {
+          id: t.sessionId,
+          sessionCwd: t.sessionCwd || t.repoCwd,
+          repoCwd: t.repoCwd,
+        };
+      }
+      // kind === "new": synthetic id until an identity frame binds the real one.
+      return {
+        id: t.resolvedSessionId || ("pending-new:" + t.token),
+        sessionCwd: t.repoCwd,
+        repoCwd: t.repoCwd,
+      };
+    }
+    return railConfirmedTarget();
+  }
+
+  /**
+   * The conversation the HOST is actually on — never optimistic.
+   *
+   * Separate from `railDisplayTarget` because the two answer different
+   * questions, and conflating them is a work-loss bug rather than a cosmetic
+   * one. Several row actions carry **no session id** at all — "Continue in a
+   * new chat" (`newWorktreeSession` / the workspace fork) and Apply / Remove
+   * worktree — so the host executes them against ITS focused session. Offer
+   * them on an optimistic row and clicking a cold session B while A is open
+   * gives B a menu that forks A, or removes A's worktree and discards A's
+   * unapplied edits.
+   *
+   * So: paint with the display target, gate id-less actions on this one.
+   */
+  function railConfirmedTarget() {
+    if (!state.activeSessionId) return null;
+    // Confirmed path. Prefer the catalog project that actually lists this
+    // session so a worktree's parent (not the worktree path) owns the highlight.
+    let repoCwd = state.activeRepoCwd || state.selectedRepoCwd || "";
+    for (const repo of state.repos || []) {
+      if (sameCwd(repo.cwd, state.activeRepoCwd)) {
+        repoCwd = repo.cwd;
+        break;
+      }
+      const rows = railRowsFor(repo);
+      if (rows && rows.entries.some(
+        (s) => s.id === state.activeSessionId && sameCwd(s.cwd, state.activeRepoCwd),
+      )) {
+        repoCwd = repo.cwd;
+        break;
+      }
+    }
+    return {
+      id: state.activeSessionId,
+      sessionCwd: state.activeRepoCwd || repoCwd,
+      repoCwd,
+    };
+  }
+
+  /**
+   * Whether the ⋯ menu may offer the actions that carry NO session id —
+   * "Continue in a new chat", Apply worktree, Remove worktree.
+   *
+   * The host runs all three against ITS OWN focused session
+   * (`forkFocusedSession`, `applyFocusedWorktree`, `removeFocusedWorktree`),
+   * and `openSessionReserved` reassigns `this.focused` BEFORE it switches the
+   * workspace, starts the session, or emits `sessionName` / `sessions.activeId`.
+   *
+   * So for the whole length of a rail transition the client genuinely cannot
+   * say which conversation these would hit: the clicked row is not confirmed
+   * yet, and the previously confirmed row may already have been left. Neither
+   * row may offer them. Remove worktree discards unapplied edits, so guessing
+   * wrong here is work loss, not a cosmetic slip.
+   *
+   * Both directions of this were found the hard way: offering them on the
+   * PENDING row let B's menu fork A, and the fix for that then let A's menu
+   * fork B. The only safe answer is neither, until identity is confirmed.
+   */
+  function railIdlessActionsAllowed() {
+    return !state.railTransition && !state.railIdentityUnknown;
+  }
+
+  /**
+   * An identity frame arrived. Do we now know what the host is focused on?
+   *
+   * **Call this AFTER the noteRailTransition* handlers have had their say** —
+   * the answer is read off whether a transition survived them. If one did, this
+   * frame named some OTHER conversation, so it tells us where the host WAS, not
+   * where it is: on rapid A→B→C, B's delayed `activeId` must not disarm the
+   * latch while C is still unresolved, or C outliving the watchdog would reopen
+   * the id-less actions with the renderer still showing B.
+   *
+   * With nothing in flight, any identity frame counts. That is what makes this
+   * self-healing rather than a latch that sticks forever after a dropped
+   * resume: the next ordinary catalog push clears it.
+   */
+  function noteHostIdentityKnown(sessionId) {
+    if (state.railTransition || !state.railIdentityUnknown) return;
+    // The paint may have been abandoned by the watchdog, but the REQUEST is
+    // still out there — resumes are serialised host-side, so a superseded one
+    // can confirm long afterwards. On rapid A→B→C where C outlives the
+    // watchdog, B's late frame must not read as "we know where the host is":
+    // C is still queued and may already be focused. Only a frame that answers
+    // what we last asked for settles it.
+    if (!railIdentitySatisfies(sessionId)) return;
+    state.railIdentityUnknown = false;
+    state.railExpectedIdentity = null;
+    // Repaint. Each row's ⋯ menu is a closure that captured the gate value when
+    // the row was BUILT, and the transition's own completion already
+    // re-rendered before this ran — so without this the actions stay hidden
+    // until something unrelated happens to re-render the rail.
+    renderRail();
+  }
+
+  /** Every conversation id the client can currently see, across all groups. */
+  function railKnownSessionIds() {
+    const ids = new Set();
+    for (const repo of state.repos || []) {
+      const known = railKnownRows(repo);
+      if (!known) continue;
+      for (const s of known.entries) if (s && s.id) ids.add(s.id);
+    }
+    for (const s of state.sessions || []) if (s && s.id) ids.add(s.id);
+    for (const s of state.pinnedSessions || []) if (s && s.id) ids.add(s.id);
+    return ids;
+  }
+
+  /** Does this identity frame answer the question we last asked the host? */
+  function railIdentitySatisfies(sessionId) {
+    const e = state.railExpectedIdentity;
+    if (!e) return true;
+    if (!sessionId) return false;
+    if (e.kind === "resume") return sessionId === e.sessionId;
+    // New: must be an id we had never seen when the request went out. A
+    // superseded resume names a conversation that already existed, so it can no
+    // longer masquerade as the one being created.
+    return sessionId !== e.previousSessionId
+      && !(e.knownIds && e.knownIds.has(sessionId));
+  }
+
+  /** Whether THIS project owns the display target (confirmed or optimistic). */
+  function railRepoOwnsTarget(repo, row, target) {
+    if (!target || !target.id) return false;
+    // Explicit catalog project wins — the pending cross-repo case sets this to
+    // the row the user clicked before activeRepoCwd has moved.
+    if (target.repoCwd && sameCwd(repo.cwd, target.repoCwd)) return true;
+    if (sameCwd(repo.cwd, target.sessionCwd)) return true;
+    if (row) return sameCwd(row.cwd, target.sessionCwd);
+    const rows = railRowsFor(repo);
+    return !!rows && rows.entries.some(
+      (s) => s.id === target.id && sameCwd(s.cwd, target.sessionCwd),
+    );
+  }
+
+  /** Whether the live (or pending) conversation is one of THIS project's.
+   *
+   *  `sessionCwd` is the live session's own cwd, and for a worktree session
    *  that is the worktree — a directory that is deliberately not a catalog row.
    *  So the parent project has to recognise its own conversation by the rows it
    *  actually draws, or the project holding the conversation you are reading
-   *  claims to hold nothing. */
+   *  claims to hold nothing. Takes an explicit target so a pending cross-repo
+   *  selection still owns its project (see railDisplayTarget). */
   function railRepoOwnsActive(repo, row) {
-    if (!state.activeSessionId) return false;
-    if (sameCwd(repo.cwd, state.activeRepoCwd)) return true;
-    if (row) return sameCwd(row.cwd, state.activeRepoCwd);
-    const rows = railRowsFor(repo);
-    return !!rows && rows.entries.some(
-      (s) => s.id === state.activeSessionId && sameCwd(s.cwd, state.activeRepoCwd),
-    );
+    return railRepoOwnsTarget(repo, row, railDisplayTarget());
+  }
+
+  function isRailPendingSessionId(id) {
+    return typeof id === "string" && id.startsWith("pending-new:");
+  }
+
+  function isRailPendingRow(s) {
+    return !!(s && (s._railPending || isRailPendingSessionId(s.id)));
+  }
+
+  function clearRailTransitionTimer() {
+    if (railTransitionTimer) {
+      clearTimeout(railTransitionTimer);
+      railTransitionTimer = null;
+    }
+  }
+
+  /**
+   * Replace any in-flight transition. One at a time; a new click bumps the
+   * token so a late frame for the old one cannot complete or clear the new.
+   * Navigation is deliberately NOT locked — supersession is the concurrency
+   * model.
+   */
+  function startRailTransition(fields) {
+    clearRailTransitionTimer();
+    const token = ++railTransitionSeq;
+    state.railTransition = { token, ...fields };
+    // Separate from the transition on purpose. The transition is a UI state and
+    // gets torn down by the watchdog and by any uncorrelated error — neither of
+    // which tells us anything about the HOST. It reassigns `focused` up front
+    // and can take longer than the watchdog on a cold resume, so treating
+    // "transition gone" as "identities agree" would re-open the id-less actions
+    // while we still do not know what the host is on. Only an identity frame
+    // clears this. Fail closed.
+    state.railIdentityUnknown = true;
+    // Newest request wins: a superseded one may still land, but it no longer
+    // answers the question we are asking.
+    state.railExpectedIdentity = fields.kind === "resume"
+      ? { kind: "resume", sessionId: fields.sessionId }
+      : {
+        kind: "new",
+        previousSessionId: fields.previousSessionId || null,
+        // A new conversation has no id until the host mints one, so the only
+        // honest correlation is "an id that did not exist when we asked".
+        // "Anything but the one we were on" is too weak: resume B, then New,
+        // and B's delayed echo — a real id, and not the previous one — passed
+        // as confirmation of a conversation the host had not created yet.
+        knownIds: railKnownSessionIds(),
+      };
+    // Highlight without a veil would claim conversation X while Y is still on
+    // screen and fully actionable. Pair them so the click is visibly owned.
+    setConversationLoading(true);
+    const ms = Number(window.__grokRailTransitionTimeoutMs) > 0
+      ? Number(window.__grokRailTransitionTimeoutMs)
+      : RAIL_TRANSITION_TIMEOUT_MS;
+    railTransitionTimer = setTimeout(() => {
+      railTransitionTimer = null;
+      if (state.railTransition && state.railTransition.token === token) {
+        abortRailTransition();
+      }
+    }, ms);
+    renderRail();
+  }
+
+  function startRailResumeTransition(sessionId, sessionCwd, repoCwd) {
+    startRailTransition({
+      kind: "resume",
+      sessionId,
+      sessionCwd: sessionCwd || repoCwd,
+      repoCwd,
+    });
+  }
+
+  function startRailNewTransition(repoCwd, phase, previousSessionId) {
+    startRailTransition({
+      kind: "new",
+      repoCwd,
+      previousSessionId: previousSessionId || null,
+      resolvedSessionId: null,
+      phase: phase || "creating",
+    });
+  }
+
+  /**
+   * Drop the optimistic highlight. Does not touch activeSessionId — that is
+   * host-owned and may still be the previous conversation, which is exactly
+   * the state we want to fall back to when a click never confirms.
+   */
+  function abortRailTransition() {
+    if (!state.railTransition) return;
+    clearRailTransitionTimer();
+    state.railTransition = null;
+    // historyReplay owns the veil while a transcript is materialising; leave
+    // it up if we are mid-replay so aborting a superseded click cannot blank a
+    // real load still in progress.
+    if (!state.replaying) setConversationLoading(false);
+    renderRail();
+  }
+
+  function completeRailTransition(token) {
+    if (!state.railTransition || state.railTransition.token !== token) return;
+    clearRailTransitionTimer();
+    state.railTransition = null;
+    // Identity is confirmed. The veil continues only while the host is still
+    // replaying history — otherwise a silent empty new-session would leave
+    // "Loading conversation" up forever.
+    if (!state.replaying) setConversationLoading(false);
+    renderRail();
+  }
+
+  /** True when the selected-repo catalog (or a known preview) already lists id. */
+  function railCatalogHasSession(sessionId, repoCwd) {
+    if (!sessionId || isRailPendingSessionId(sessionId)) return false;
+    const has = (list) => Array.isArray(list) && list.some((e) => e && e.id === sessionId);
+    if (has(state.railSelectedRows) && sameCwd(repoCwd, state.selectedRepoCwd)) return true;
+    if (has(state.sessions) && sameCwd(repoCwd, state.selectedRepoCwd)) return true;
+    const preview = state.repoPreviews[cwdKey(repoCwd)];
+    if (preview && has(preview.entries)) return true;
+    return false;
+  }
+
+  /**
+   * Identity frames only — see the table on railTransition. A frame that
+   * "usually arrives" during the op is not enough; it must name the result.
+   */
+  function noteRailTransitionSessionName(msg) {
+    const t = state.railTransition;
+    if (!t || !msg || !msg.sessionId) return;
+    if (t.kind === "resume") {
+      if (msg.sessionId === t.sessionId) completeRailTransition(t.token);
+      return;
+    }
+    // kind === "new": bind the real id only when it is not the conversation we
+    // left, and it lives in the project we asked to create in. Multi-tab:
+    // another tab's sessionName for a different id must not bind ours.
+    if (msg.sessionId === t.previousSessionId) return;
+    const msgCwd = msg.cwd || "";
+    if (msgCwd && t.repoCwd && !sameCwd(msgCwd, t.repoCwd)) return;
+    t.resolvedSessionId = msg.sessionId;
+    // Keep the synthetic row until the catalog actually contains this id so a
+    // "placeholder next to the real row" is impossible: either we show the
+    // synthetic, or the catalog row, never both.
+    if (railCatalogHasSession(t.resolvedSessionId, t.repoCwd)) {
+      completeRailTransition(t.token);
+    } else {
+      renderRail();
+    }
+  }
+
+  function noteRailTransitionSessions(msg, entries) {
+    const t = state.railTransition;
+    if (!t || !msg || msg.activeId === undefined) return;
+    const activeId = msg.activeId || null;
+    if (t.kind === "resume") {
+      // Confirm only when THIS tab's activeId is the one we asked to open.
+      // Catalog refreshes fan out to every tab, but each tab gets its own
+      // activeId — matching on presence of the row alone would let tab A's
+      // echo clear tab B's pending highlight.
+      if (activeId && activeId === t.sessionId) completeRailTransition(t.token);
+      return;
+    }
+    // kind === "new"
+    if (!activeId || activeId === t.previousSessionId) return;
+    if (!t.resolvedSessionId) t.resolvedSessionId = activeId;
+    const list = Array.isArray(entries) ? entries : [];
+    const present = list.some((e) => e && e.id === t.resolvedSessionId)
+      || railCatalogHasSession(t.resolvedSessionId, t.repoCwd);
+    if (present && t.resolvedSessionId === activeId) {
+      completeRailTransition(t.token);
+    } else {
+      renderRail();
+    }
+  }
+
+  function noteRailTransitionRepos(msg) {
+    const t = state.railTransition;
+    if (!t || t.kind !== "new") return;
+    // repos may advance a necessary project move; it never confirms a resume
+    // and never finishes a new-session on its own.
+    if (t.phase === "switching-repo" && sameCwd(msg.selectedCwd, t.repoCwd)) {
+      t.phase = "creating";
+    }
+  }
+
+  /**
+   * Inject the new-conversation placeholder for the target project only.
+   * Never mutates state.sessions / railSelectedRows — the synthetic row lives
+   * only in the render path.
+   */
+  function railEntriesWithNewPlaceholder(repo, entries) {
+    const t = state.railTransition;
+    const list = Array.isArray(entries) ? entries.slice() : [];
+    if (!t || t.kind !== "new" || !sameCwd(repo.cwd, t.repoCwd)) return list;
+    if (t.resolvedSessionId && list.some((e) => e && e.id === t.resolvedSessionId)) {
+      // Real row is here — no synthetic. Transition completion is handled by
+      // the identity-frame notes; this only prevents a double paint.
+      return list;
+    }
+    const id = t.resolvedSessionId || ("pending-new:" + t.token);
+    // Already showing this id as a real row (above) or we are about to inject.
+    if (list.some((e) => e && e.id === id)) return list;
+    list.unshift({
+      id,
+      cwd: t.repoCwd,
+      displayName: "New session",
+      updatedAt: Date.now(),
+      createdAt: Date.now(),
+      numMessages: 0,
+      rawSummary: "",
+      _railPending: true,
+    });
+    return list;
   }
 
   /** Whether the host can record an archive choice. `archived` rides on every
@@ -4107,6 +4650,13 @@
    *  absent field cannot be told from "nothing archived yet". */
   function railArchiveSupported() {
     return state.repos.some((r) => typeof r.archived === "boolean");
+  }
+
+  /** Whether the host can store a project folder colour. Same capability rule
+   *  as archive: `color` is present (even as `""`) on every row from a host that
+   *  knows about it, and omitted entirely by one that does not. */
+  function railColorSupported() {
+    return state.repos.some((r) => typeof r.color === "string");
   }
 
   /** Rows we can draw conclusions FROM, as opposed to rows we merely have none
@@ -4205,12 +4755,15 @@
    *  refuse the fold forever. Keyed on the repo changing, so re-collapsing the
    *  project you are working in sticks until you go somewhere else. */
   function railFollowLiveRepo() {
-    // Via railRepoOwnsActive, not the active cwd: a worktree conversation
-    // reports the WORKTREE as its cwd and a worktree is deliberately not a
-    // catalog row, so keying on the path alone would never match the project
-    // that actually holds it — and that project would stay folded.
-    const owner = state.activeSessionId
-      ? (state.repos || []).find((repo) => railRepoOwnsActive(repo))
+    // Via the display target (confirmed or pending), not the host-confirmed
+    // active cwd alone: a worktree conversation reports the WORKTREE as its
+    // cwd and a worktree is deliberately not a catalog row, so keying on the
+    // path alone would never match the project that actually holds it — and
+    // that project would stay folded. A pending cross-repo click must also
+    // open the project it is about to land in.
+    const target = railDisplayTarget();
+    const owner = target
+      ? (state.repos || []).find((repo) => railRepoOwnsTarget(repo, null, target))
       : undefined;
     const live = owner ? cwdKey(owner.cwd) : "";
     if (live === state.railLiveRepoKey) return;
@@ -4237,7 +4790,18 @@
     document.body.classList.toggle("has-rail", on);
     if (!on) { renderSessionHead(); return; }
     wireRailSearch();
-    closeRailMenu();
+    // The rail rebuilds itself wholesale, and a session load produces a burst of
+    // frames that each trigger one. Closing the menu here meant an open ⋯ was
+    // slammed shut repeatedly mid-load — the menu could not be kept open at all
+    // while the thing you were opening was still opening. The menu is parented
+    // to <body>, so the wipe below does not destroy it; only its anchor button
+    // dies. Remember which one it belonged to and re-anchor after the rebuild.
+    const openMenuKey = railMenuEl ? railMenuEl.dataset.anchorId || "" : "";
+    // Same burst, same cause, second symptom: the hover action buttons start at
+    // opacity 0 and fade in over .1s, so recreating them under a stationary
+    // cursor replayed that fade on every rebuild — a blinking row. Suppress the
+    // transition for this repaint only; hovering normally still fades.
+    root.classList.add("rail-rebuilding");
 
     root.innerHTML = "";
     syncGearPlacement();
@@ -4359,6 +4923,33 @@
       } else {
         root.appendChild(railNote(q ? "No matches." : "No projects yet"));
       }
+    }
+
+    // Re-anchor an open ⋯ to its rebuilt button, or close it if the row it
+    // belonged to is gone (deleted, filtered out, its project collapsed).
+    if (openMenuKey) {
+      const esc = window.CSS && CSS.escape ? CSS.escape(openMenuKey) : openMenuKey;
+      const anchor = root.querySelector('[data-rail-menu-key="' + esc + '"]');
+      if (anchor) {
+        railMenuAnchorEl = anchor;
+        // Re-place it. Keeping the menu open but leaving it at the old fixed
+        // coordinates is worse than closing it: rows insert and reorder as
+        // frames arrive, so the menu would end up beside whichever row moved
+        // into that spot while still acting on the one it was opened from.
+        if (railMenuEl) placeRailPopover(railMenuEl, anchor);
+      } else closeRailMenu();
+    }
+    // Colour picker is one-shot and short-lived — the rebuild destroys its
+    // anchor button, and re-opening it mid-catalog-refresh is not worth the
+    // bookkeeping. Closing avoids a fixed popover stranded over a gone row.
+    if (railColorPickerEl) closeRailColorPicker();
+    // Let the browser paint this rebuild with transitions off, then restore them
+    // so an ordinary hover still fades. rAF (not a timer) so it lands after the
+    // paint rather than at an arbitrary later moment.
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => root.classList.remove("rail-rebuilding"));
+    } else {
+      root.classList.remove("rail-rebuilding");
     }
     renderSessionHead();
   }
@@ -4618,8 +5209,17 @@
   }
 
   function beginNewSession() {
+    // Capture before reset — activeSessionId is host-confirmed and is the only
+    // honest "what we are leaving" for the identity frames that will confirm
+    // the new conversation (they must differ from previousSessionId).
+    const previousSessionId = state.activeSessionId;
+    const repoCwd = state.selectedRepoCwd || state.activeRepoCwd || "";
     saveRememberedRemoteSession(null);
     resetForNewSession();
+    // After reset so setConversationLoading wins over the "Starting" welcome
+    // status resetForNewSession paints. The placeholder is renderer-local and
+    // never enters state.sessions.
+    startRailNewTransition(repoCwd, "creating", previousSessionId);
     vscode.postMessage({ type: "newSession" });
   }
 
@@ -4664,6 +5264,11 @@
     // vanished from the one menu where it always applies. The row menus below
     // still compute it, because there the record really can be some other
     // conversation.
+    //
+    // "By construction" stops holding mid-transition, though: the name still
+    // reads the conversation being LEFT while the host has already moved to the
+    // one being opened. railSessionMenuItems disables the id-less actions for
+    // that window rather than this call site withholding them.
     menuSlot.appendChild(railMenuButton(
       "Session actions",
       () => {
@@ -4826,10 +5431,15 @@
     );
 
     // Folder open/closed indicator — same `expanded` flag as the session list.
+    // Colour tints the stroke via currentColor (`data-repo-color` → CSS vars);
+    // none/absent leaves the default descriptionForeground.
     const twisty = document.createElement("span");
     twisty.className = "rail-twisty";
     twisty.innerHTML = expanded ? ICON.folderOpen : ICON.folderClosed;
     twisty.setAttribute("aria-hidden", "true");
+    if (typeof repo.color === "string" && repo.color) {
+      twisty.dataset.repoColor = repo.color;
+    }
     head.appendChild(twisty);
 
     const name = document.createElement("span");
@@ -4850,14 +5460,20 @@
     head.onclick = (e) => {
       // Actions (and anything inside them) must not fold the section.
       if (e.target.closest(".rail-repo-actions")) return;
-      // Unselected project: switch into it and ensure the section is open
-      // (desktop multi-folder / AFK Pilot). Selected project: toggle fold.
-      if (!selected && repo.available && !repoSwitcherLocked()) {
-        delete state.railCollapsed[key];
-        saveRailShape();
-        selectRailRepo(repo);
-        return;
-      }
+      // Purely a disclosure control. It used to ALSO switch into an unselected
+      // project — which had two problems. It selected a repo without opening
+      // anything in it, leaving the chat on the old conversation while the rail
+      // claimed a different project (the state the repo chip has to explain as
+      // "Browsing X; live session is in Y"). And because that branch forced the
+      // section open and returned, clicking an already-expanded unselected
+      // project did nothing visible: the owner's "closing a project sometimes
+      // needs two clicks".
+      //
+      // Switching now follows from opening something — a session row, or the
+      // "+" (which switches and then creates). The chip's project popover
+      // remains the explicit switch. Unselected projects still list their
+      // conversations here: requestRailPreviews fetches those regardless of
+      // selection or fold state.
       toggleRepoExpand();
     };
     head.onkeydown = (e) => {
@@ -4896,7 +5512,16 @@
     add.onclick = (e) => {
       e.stopPropagation();
       if (!repo.available) return;
-      if (selected) { vscode.postMessage({ type: "newSession" }); return; }
+      if (selected) {
+        // Same path as the header New — optimistic placeholder + host create.
+        beginNewSession();
+        return;
+      }
+      // Switch first, create once the catalog names this project. The transition
+      // starts in switching-repo so the placeholder paints on the destination
+      // immediately; repos advances it to creating (and __grokRailNewIntent
+      // still posts newSession when the switch lands).
+      startRailNewTransition(repo.cwd, "switching-repo", state.activeSessionId);
       window.__grokRailNewIntent = repo.cwd;
       selectRailRepo(repo);
     };
@@ -4921,7 +5546,11 @@
     // that has not cannot draw another project's rows either. The SELECTED
     // project is never gated — clearing where you already are has always worked.
     const reachable = selected || state.repoPreviewsSupported;
-    actions.appendChild(railMenuButton("Project actions", () => [
+    // Capture the menu button so "Set color" can re-anchor the swatch picker
+    // after the menu closes (onSelect runs after closeRailMenu).
+    // Named so right-click can build the same menu. Evaluated lazily, so the
+    // `projectMenuBtn` reference below is bound by the time it runs.
+    const projectMenuItems = () => [
       // First, because it is the everyday one: putting a project away is
       // housekeeping, and it has to be reachable without passing the delete.
       // The verb follows the section this row is drawn in rather than the stored
@@ -4940,6 +5569,15 @@
           cwd: repo.cwd,
           archived: !inArchive,
         }),
+      }, null] : []),
+      // Folder colour — host-persisted, capability-gated the same way as archive
+      // (`color` present on catalog rows). Opens a swatch picker rather than a
+      // nested menu so six hues + none stay one glance away.
+      ...(railColorSupported() ? [{
+        label: "Set color",
+        icon: ICON.palette,
+        title: "Tint this project's folder icon so it is easy to find",
+        onSelect: () => openRepoColorPicker(projectMenuBtn, repo),
       }, null] : []),
       // The desktop's equivalent, and a different act despite the same intent.
       // Its rail IS the set of open folders, so putting a project away means
@@ -4979,9 +5617,14 @@
           });
         },
       },
-    ], "repo:" + cwdKey(repo.cwd)));
+    ];
+    const projectMenuKey = "repo:" + cwdKey(repo.cwd);
+    const projectMenuBtn = railMenuButton("Project actions", projectMenuItems, projectMenuKey);
+    actions.appendChild(projectMenuBtn);
 
     head.appendChild(actions);
+    // Right-click anywhere on the project row opens the same menu.
+    wireRailRowContextMenu(head, () => projectMenuBtn, projectMenuItems, projectMenuKey);
     sec.appendChild(head);
 
     // Same `expanded` as the folder icon — never a second, independent flag.
@@ -4999,7 +5642,19 @@
     }
 
     const rows = railRowsFor(repo);
+    // Optimistic new-session placeholder still has to paint when we have no
+    // catalog yet (cross-project "+" while the switch is in flight, or cold
+    // selected project). Without this the click highlights nothing until the
+    // host answers — the whole bug this transition exists to fix.
+    const pendingNewHere = state.railTransition
+      && state.railTransition.kind === "new"
+      && sameCwd(repo.cwd, state.railTransition.repoCwd);
     if (!rows) {
+      if (pendingNewHere) {
+        const entries = railEntriesWithNewPlaceholder(repo, []);
+        appendRailSessionSlice(body, entries, key, (s) => renderRailSessionRow(s, repo));
+        return body;
+      }
       // No rows yet. Two very different reasons, and saying "Loading…" for both
       // is the wrong answer: a host too old to answer `listRepoSessions` will
       // NEVER answer, and the probe is sent for one repo only — so every other
@@ -5026,7 +5681,8 @@
       sameCwd(repo.cwd, state.selectedRepoCwd) &&
       !rows.entries.length &&
       !state.railSelectedRowsKnown &&
-      !state.railSessionsStale
+      !state.railSessionsStale &&
+      !pendingNewHere
     ) {
       body.appendChild(railNote("Loading…"));
       return body;
@@ -5035,15 +5691,17 @@
     // A search answers itself: showing three of five matches behind a "Show
     // more" would hide the very rows the query asked for. Matching by project
     // name instead means the whole project matched, so its list stays as it was.
+    // Placeholder injection is render-only (never into state.sessions).
+    const entries = railEntriesWithNewPlaceholder(repo, rows.entries);
     const q = railFilterText();
     const nameMatched = !q || railMatches(repo.label || cwdLeaf(repo.cwd));
     if (q && !nameMatched) {
-      const hits = rows.entries.filter((s) => railMatches(s.displayName)).slice(0, RAIL_EXPANDED);
+      const hits = entries.filter((s) => railMatches(s.displayName)).slice(0, RAIL_EXPANDED);
       for (const s of hits) body.appendChild(renderRailSessionRow(s, repo));
       return body;
     }
 
-    if (!rows.entries.length) {
+    if (!entries.length) {
       body.appendChild(railNote("No sessions yet"));
       return body;
     }
@@ -5051,13 +5709,25 @@
     // One-step reveal, no counters. Three numbers disagree (host total, loaded
     // length, RAIL_EXPANDED cap); a count-labelled control stranded rows. Depth
     // belongs in the history popover. See appendRailSessionSlice.
-    appendRailSessionSlice(body, rows.entries, key, (s) => renderRailSessionRow(s, repo));
+    appendRailSessionSlice(body, entries, key, (s) => renderRailSessionRow(s, repo));
     return body;
   }
 
   function renderRailSessionRow(s, repo, opts) {
     const row = document.createElement("div");
-    const active = s.id === state.activeSessionId && railRepoOwnsActive(repo, s);
+    // Two different questions, and they must not share one boolean.
+    //
+    // `active` = what to PAINT: the display target, so an optimistic click
+    // highlights immediately. A pending cross-repo id is deliberately not in
+    // activeSessionId, so this cannot read that field alone.
+    //
+    // `hostActive` = may this row offer the id-less session actions. While a
+    // transition is in flight the answer is no for EVERY row — see
+    // railIdlessActionsAllowed. With no transition the display target IS the
+    // confirmed one, so `active` is already the right answer.
+    const target = railDisplayTarget();
+    const active = !!(target && s.id === target.id && railRepoOwnsTarget(repo, s, target));
+    const hostActive = railIdlessActionsAllowed() && active;
     row.className = "rail-session" + (active ? " active" : "");
     row.title = s.displayName || "";
     // The row is the primary control, so it has to behave like one: reachable by
@@ -5118,34 +5788,47 @@
     const isPinned = typeof s.pinnedAt === "number";
     if (isPinned) row.classList.add("pinned");
 
-    const actions = document.createElement("div");
-    actions.className = "rail-session-actions";
-    // Hover pin control (one click). Hidden until :hover / :focus-within; forced
-    // visible on touch via @media (hover: none). Capability-gated like the menu.
-    if (state.pinnedSessionsKnown) {
-      const pinBtn = document.createElement("button");
-      pinBtn.type = "button";
-      pinBtn.className = "rail-action-btn rail-pin-btn" + (isPinned ? " active" : "");
-      pinBtn.innerHTML = isPinned ? ICON.pinFilled : ICON.pin;
-      pinBtn.title = isPinned ? "Unpin conversation" : "Pin conversation";
-      pinBtn.setAttribute("aria-label", pinBtn.title);
-      pinBtn.onclick = (e) => {
-        e.stopPropagation();
-        vscode.postMessage({
-          type: "toggleSessionPin",
-          id: s.id,
-          cwd: s.cwd || repo.cwd,
-          pinned: !isPinned,
-        });
-      };
-      actions.appendChild(pinBtn);
+    // Optimistic new-session placeholder: presentation only. No pin/rename/
+    // delete — those would ship a pending-new: token (or an unbound real id
+    // that is not yet host-open on this client) to the host.
+    if (!isRailPendingRow(s)) {
+      const actions = document.createElement("div");
+      actions.className = "rail-session-actions";
+      // Hover pin control (one click). Hidden until :hover / :focus-within; forced
+      // visible on touch via @media (hover: none). Capability-gated like the menu.
+      if (state.pinnedSessionsKnown) {
+        const pinBtn = document.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.className = "rail-action-btn rail-pin-btn" + (isPinned ? " active" : "");
+        pinBtn.innerHTML = isPinned ? ICON.pinFilled : ICON.pin;
+        pinBtn.title = isPinned ? "Unpin conversation" : "Pin conversation";
+        pinBtn.setAttribute("aria-label", pinBtn.title);
+        pinBtn.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({
+            type: "toggleSessionPin",
+            id: s.id,
+            cwd: s.cwd || repo.cwd,
+            pinned: !isPinned,
+          });
+        };
+        actions.appendChild(pinBtn);
+      }
+      const menuKey = "session:" + (s.id || cwdKey(s.cwd || repo.cwd));
+      const menuBtn = railMenuButton(
+        "Session actions",
+        // `active` (the painted target) decides WHICH row owns the id-less
+        // actions; railSessionMenuItems disables them while the host has not
+        // confirmed it is on that conversation yet.
+        () => railSessionMenuItems(s, repo, active),
+        menuKey,
+      );
+      actions.appendChild(menuBtn);
+      row.appendChild(actions);
+      // Right-click is the second way in, same menu — matching the desktop file
+      // tree, where both triggers already share one menu.
+      wireRailRowContextMenu(row, () => menuBtn, () => railSessionMenuItems(s, repo, active), menuKey);
     }
-    actions.appendChild(railMenuButton(
-      "Session actions",
-      () => railSessionMenuItems(s, repo, active),
-      "session:" + (s.id || cwdKey(s.cwd || repo.cwd)),
-    ));
-    row.appendChild(actions);
     row.onclick = railSessionOpener(s, repo, active);
     return row;
   }
@@ -5183,9 +5866,19 @@
     // fork continues from the live transcript, so offering it on some other row
     // in the history list would promise something it cannot do.
     if (active) {
+      // None of the three below name a conversation on the wire — the host runs
+      // them against whichever one it currently has open. While a conversation
+      // is still opening the two can disagree, so they are DISABLED rather than
+      // removed: they belong to this row, they are coming back in a moment, and
+      // a menu whose contents reshuffle mid-open is its own kind of wrong.
+      const pending = !railIdlessActionsAllowed();
+      const waiting = pending
+        ? { disabled: true, title: "Available once the conversation has finished opening" }
+        : null;
       items.push({
         label: "Continue in a new chat",
         icon: ICON.gitFork,
+        ...waiting,
         onSelect: () => beginContinueInNewChat(),
       });
       // Worktree upkeep rides along for the same reason, and only while you are
@@ -5201,6 +5894,7 @@
         items.push({
           label: "Apply worktree",
           icon: ICON.gitBranch,
+          ...waiting,
           onSelect: () => uiConfirm({
             title: "Apply worktree?",
             body: "Merges this worktree's edits back into the main checkout.",
@@ -5211,6 +5905,7 @@
           label: "Remove worktree",
           icon: ICON.gitBranch,
           danger: true,
+          ...waiting,
           onSelect: () => uiConfirm({
             title: "Remove worktree?",
             body: "This deletes the isolated checkout. Unapplied edits are lost.",
@@ -5309,7 +6004,15 @@
    *  full row and the capability-stripped one share it. */
   function railSessionOpener(s, repo, active) {
     return () => {
-      if (active || repoSwitcherLocked()) return;
+      // Already the display target (confirmed or this pending click) — no-op.
+      // Deliberately NOT gated on repoSwitcherLocked: a new click supersedes any
+      // in-flight rail transition, and stacking resumeSession is the host's job
+      // to serialise. Locking here is what made a second click during load feel
+      // dropped.
+      if (active || isRailPendingRow(s)) return;
+      // Optimistic highlight + veil before the host answers. activeSessionId is
+      // left alone until sessionName / sessions.activeId confirm this id.
+      startRailResumeTransition(s.id, s.cwd || repo.cwd, repo.cwd);
       // `cwd` rides along so a session in another repo reopens in ITS checkout —
       // the host resolves sessions by cwd, and omitting it would look the id up
       // under the repo we happen to be in.
@@ -5375,7 +6078,6 @@
   function setWelcomeStatus(text, busy) {
     const ver = $("welcome-version");
     if (!ver) return;
-    ver.classList.remove("loading-dots");
     ver.classList.toggle("welcome-status-busy", !!busy);
     ver.dataset.status = busy ? text : "";
     if (!busy) {
@@ -5503,7 +6205,12 @@
       welcome.hidden = false;
       const onb = $("welcome-onboarding");
       if (onb) onb.innerHTML = "";
-      setWelcomeStatus("Starting", true);
+      // A host clearMessages during an optimistic new-session transition must
+      // not replace the paired "Loading conversation" veil with Starting — the
+      // click already owns that wait. Otherwise the rail highlights the
+      // placeholder while the welcome says something unrelated.
+      if (state.railTransition) setConversationLoading(true);
+      else setWelcomeStatus("Starting", true);
       // The empty state is rebuilt on every new session, so the tip is too —
       // until the host stops advertising it.
       renderWelcomeTip();
@@ -7961,8 +8668,8 @@
   // "Grokking…" — the generic waiting indicator shown on every user-initiated
   // turn from agentStart until grok produces its first content (thought /
   // message / tool / card), which removes it and renders in its place. Mirrors
-  // the Thinking header's look (loading-dots ellipsis, same muted font) without
-  // the chevron, and is not expandable.
+  // the Thinking header's look (blink-dots, same muted font) without the
+  // chevron, and is not expandable.
   function showGrokking() {
     hideGrokking(); // dedupe
     hideThinkingIndicator();
@@ -7990,8 +8697,8 @@
   // default). grok's thought stream is suppressed from view, so this lightweight
   // row signals it's reasoning — but only when nothing else already conveys work
   // (no running tool group, no Grokking). Styled like a tool row: brain icon +
-  // muted label + animated loading-dots. Stable while thoughts stream; removed
-  // the moment a tool, agent message, or turn-end takes over.
+  // muted label + blink-dots. Stable while thoughts stream; removed the moment
+  // a tool, agent message, or turn-end takes over.
   function showThinkingIndicator() {
     if (state.thinkingIndicatorEl) return; // already up — keep it stable
     if (state.activeToolGroupEl) return; // a running tool already indicates work
@@ -10255,7 +10962,13 @@
           name: String(msg.name || "New session"),
           cwd: String(msg.cwd || ""),
         };
+        // Host-confirmed identity only. Optimistic rail clicks never write here.
         state.activeSessionId = msg.sessionId;
+        // May complete a resume (id match) or bind a new-session resolved id.
+        noteRailTransitionSessionName(msg);
+        // AFTER the note: a surviving transition means this frame was about a
+        // different conversation. See noteHostIdentityKnown.
+        noteHostIdentityKnown(msg.sessionId);
         renderSessionName();
         renderSessionHead();
         break;
@@ -10481,7 +11194,11 @@
           if (state.replayDepth > 0) break;
           state.replaying = false;
           state.repoSwitchPending = false;
-          setConversationLoading(false);
+          // historyReplay is never identity confirmation. If a rail click is
+          // still waiting for sessionName/sessions.activeId, keep the veil so
+          // the highlight and the load indicator stay paired.
+          if (!state.railTransition) setConversationLoading(false);
+          else setConversationLoading(true);
           renderRepoChip();
           // A remote snapshot can end while its latest turn is still running.
           // Seed the already-rendered prefix only in that case, so the eventual
@@ -11028,8 +11745,9 @@
         clearWelcome();
         const si = document.createElement("div");
         si.id = "summarizing-indicator";
-        si.className = "session-context-banner loading-dots";
+        si.className = "session-context-banner";
         si.textContent = "Summarizing";
+        si.insertAdjacentHTML("beforeend", BLINK_DOTS);
         messagesEl.appendChild(si);
         scrollToBottom();
         break;
@@ -11049,6 +11767,13 @@
           setConversationLoading(false);
           renderRepoChip();
         }
+        // A generic error cannot be attributed to a specific rail transition
+        // (the frame carries no request id). An error from a superseded resume
+        // therefore aborts whatever is currently in flight — worst case the
+        // highlight backs out early and the real confirmation re-establishes
+        // it (a flicker, not work loss). Leaving a stranded highlight forever
+        // would be worse.
+        if (state.railTransition) abortRailTransition();
         if (state.queuedSubmissionPending && isRelaySendRejection(msg.text)) {
           state.queuedSubmissionPending = false;
           state.queuedSubmissionRejected = true;
@@ -11094,6 +11819,13 @@
           // the rail pinned on "Loading…" after switching projects with a search
           // still active, until the search was cleared or the page refreshed.
           if (!(msg.query || "")) adoptRailRows(entries);
+          // Still an identity frame for the rail transition — activeId is this
+          // tab's, even when the popover is about to re-request a filtered page.
+          if (msg.activeId !== undefined) {
+            state.activeSessionId = msg.activeId || null;
+            noteRailTransitionSessions(msg, entries);
+            noteHostIdentityKnown(msg.activeId || null);
+          }
           requestSessions(0);
           break;
         }
@@ -11113,6 +11845,10 @@
           state.sessionQuery = msg.query || "";
         }
         if (msg.activeId !== undefined) {
+          // Host-confirmed only — never an optimistic rail-transition id.
+          // noteHostIdentityKnown is deliberately NOT here — this handler's
+          // noteRailTransitionSessions runs at the end (it needs the adopted
+          // rows), and the latch has to be read after it. See below.
           state.activeSessionId = msg.activeId || null;
           if (state.activeSessionId) {
             const activeEntry = entries.find((entry) => entry.id === state.activeSessionId)
@@ -11136,6 +11872,8 @@
             // completed and the outbox stayed queued until the tab was closed,
             // taking anything typed meanwhile with it. Fall back to the repo
             // that owns it.
+            // Also deliberately uses host-confirmed activeSessionId only — a
+            // pending rail click must not be remembered as this tab's session.
             const activeRepoRow = state.repos.find((r) => sameCwd(r.cwd, state.activeRepoCwd));
             saveRememberedRemoteSession({
               id: state.activeSessionId,
@@ -11166,6 +11904,15 @@
         // the frame that renames the open conversation — the header reads the
         // active record, so refresh it either way.
         else renderSessionHead();
+        // After adopt so railCatalogHasSession sees the new rows. Confirms a
+        // resume only when activeId equals the requested id; for new, binds /
+        // drops the placeholder only when activeId left the previous session
+        // and the real row is present (never on a foreign tab's activeId).
+        if (offset === 0) noteRailTransitionSessions(msg, entries);
+        // AFTER the note, and only for a frame that actually carried identity.
+        // A paged/filtered answer says nothing about what the host is focused
+        // on, so it must not disarm the latch.
+        if (msg.activeId !== undefined && offset === 0) noteHostIdentityKnown(msg.activeId || null);
         break;
       }
       case "pinnedSessions": {
@@ -11240,8 +11987,18 @@
           // still set, and this is the only place that acts on it.
           if (window.__grokRailNewIntent && sameCwd(window.__grokRailNewIntent, state.selectedRepoCwd)) {
             window.__grokRailNewIntent = null;
+            // Advance the optimistic new-transition (if any) before posting so
+            // the placeholder stays in creating rather than looking stuck on
+            // a switch that already completed.
+            noteRailTransitionRepos(msg);
             vscode.postMessage({ type: "newSession" });
+          } else {
+            noteRailTransitionRepos(msg);
           }
+        } else {
+          // Unrelated catalog push, or a switch that has not named our target
+          // yet — still allow phase advance when selectedCwd matches.
+          noteRailTransitionRepos(msg);
         }
         renderRepoChip();
         if (!repoPopover.hidden) renderRepoPopover();

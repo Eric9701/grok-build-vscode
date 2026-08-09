@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.2.11 — 2026-08-09
+
+### Added
+
+- **Projects can have a colour.** Give each project a coloured folder in the conversation rail — *Set color* in its ⋯ menu, six colours or none. The choice is stored with your projects rather than in one browser, so it follows you to your phone. Desktop and browser.
+- **Right-click works wherever ⋯ does.** Projects and conversations in the rail, files and folders in Grok Build Desktop's file panel — right-clicking opens the same menu the ⋯ button does. Not on touch, where a long press already means something.
+- **Folders can be revealed in Finder or Explorer**, not only files, and the file panel's row actions now live in a ⋯ menu like the conversation list's do.
+
+### Fixed
+
+- **Conversations stop jumping to the top of the list for being opened.** Opening one rewrites its record on disk, and the list read that as activity — so merely looking at an old conversation promoted it above ones you had actually been working in. The list now follows the conversation itself. Measured against a real store of 1,592 conversations: 46 were sitting higher than they had earned.
+- **Closing a project takes one click.** Clicking an unselected project used to switch into it and force it open, so the first click on an already-open one appeared to do nothing. It also left the chat on one project while the rail claimed another; switching now follows from opening a conversation, which is what made that state coherent in the first place.
+- **The conversation list stops flickering while a conversation opens.** The row buttons blinked under a stationary cursor, and an open ⋯ menu was closed again on every refresh — so it could not be used at the moment you most wanted it.
+- **The store listing printed "Install" and "Quick start" twice.** It is generated from the project README, and the generator was adding its own copy on top of the one already there.
+
+### Changed
+
+- **Clicking a conversation highlights it immediately** instead of waiting for it to load, so a click never looks dropped. The few actions that act on "whichever conversation is open" — continue in a new chat, and worktree apply/remove — grey out for that moment, because until the load finishes there is genuinely no safe answer to which conversation they would act on.
+- **One waiting animation everywhere.** The status line's growing ellipsis is gone; everything that is working now shows the same three blinking dots, and they hold still if your system asks for reduced motion.
+
 ## 3.2.10 — 2026-08-09
 
 ### Fixed

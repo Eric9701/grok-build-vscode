@@ -1279,3 +1279,74 @@ describe("isPathInside", () => {
     expect(isPathInside(root, other)).toBe(false);
   });
 });
+
+// Opening a conversation rewrites summary.json — the CLI rebuilds
+// system_prompt.txt / prompt_context.json and restamps `updated_at` — without
+// adding a message. Ordering on that made a conversation you merely glanced at
+// jump to the top of Recent and of its project. Measured against a real
+// 1592-session store: 46 sessions were sitting above their true activity for
+// exactly this reason, which is why the owner saw it only "sometimes".
+// events.jsonl moves only when the conversation does.
+describe("session ordering follows the transcript, not a visit", () => {
+  const home = "/home/u/.grok";
+  const cwd = "/work/repo";
+  const dir = sessionsDirFor(home, cwd);
+  const summary = (id: string, updatedAt: string) => JSON.stringify({
+    info: { id, cwd },
+    session_summary: id,
+    updated_at: updatedAt,
+    num_messages: 7,
+  });
+
+  /** `visited` was opened long after its last message; `spoken` was not. */
+  const fsWithBoth = () => buildFs({
+    [path.join(home, "sessions")]: { isDir: true },
+    [dir]: { isDir: true },
+    [path.join(dir, "visited")]: { isDir: true },
+    [path.join(dir, "spoken")]: { isDir: true },
+    // Opened just now, but the transcript is ancient.
+    [path.join(dir, "visited", "summary.json")]: {
+      isDir: false, content: summary("visited", "2026-05-01T00:00:00Z"), mtimeMs: 9000,
+    },
+    [path.join(dir, "visited", "events.jsonl")]: { isDir: false, content: "", mtimeMs: 100 },
+    // Never re-opened; its transcript is the newer one.
+    [path.join(dir, "spoken", "summary.json")]: {
+      isDir: false, content: summary("spoken", "2026-01-01T00:00:00Z"), mtimeMs: 500,
+    },
+    [path.join(dir, "spoken", "events.jsonl")]: { isDir: false, content: "", mtimeMs: 500 },
+  });
+
+  it("indexSessions ranks by transcript mtime, so a visit does not promote", () => {
+    const ids = indexSessions({ fs: fsWithBoth(), grokHome: home, cwd, platform: "linux" })
+      .map((e) => e.id);
+    // summary.json mtime would have put `visited` (9000) first.
+    expect(ids).toEqual(["spoken", "visited"]);
+  });
+
+  it("readSessionEntries reports the transcript time as updatedAt", () => {
+    const entries = readSessionEntries({
+      fs: fsWithBoth(), grokHome: home, cwd, ids: ["visited", "spoken"],
+      overrides: {}, platform: "linux",
+    });
+    const byId = Object.fromEntries(entries.map((e) => [e.id, e.updatedAt]));
+    expect(byId.visited).toBe(100);
+    expect(byId.spoken).toBe(500);
+  });
+
+  it("falls back to summary.json for a conversation with no transcript yet", () => {
+    const fs = buildFs({
+      [path.join(home, "sessions")]: { isDir: true },
+      [dir]: { isDir: true },
+      [path.join(dir, "fresh")]: { isDir: true },
+      [path.join(dir, "fresh", "summary.json")]: {
+        isDir: false, content: summary("fresh", "2026-03-04T05:06:07Z"), mtimeMs: 42,
+      },
+    });
+    expect(indexSessions({ fs, grokHome: home, cwd, platform: "linux" }).map((e) => e.id))
+      .toEqual(["fresh"]);
+    const [entry] = readSessionEntries({
+      fs, grokHome: home, cwd, ids: ["fresh"], overrides: {}, platform: "linux",
+    });
+    expect(entry.updatedAt).toBe(Date.parse("2026-03-04T05:06:07Z"));
+  });
+});
