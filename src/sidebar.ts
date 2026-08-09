@@ -127,7 +127,10 @@ import {
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
 import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
-import { planReviewFileName, sanitizePlanReviewFilePart } from "./plan-review";
+import {
+  planReviewFileName,
+  planReviewSessionDirectoryName,
+} from "./plan-review";
 import { isPrimerText } from "./grok-primer";
 import { AsyncSerialQueue } from "./async-serial";
 import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
@@ -2629,10 +2632,18 @@ Only continue if you trust this code.`,
    * Resolve a renderer/local `cwd` against the host-owned local catalog only.
    * Desktop: open folders (via {@link localRepoCatalogEntries}). VS Code: the
    * full historical catalog (same helper returns the full list when the host
-   * cannot switch folders). Never the remote full-catalog-or-fallback probe.
+   * cannot switch folders). A registered worktree cwd resolves to its owning
+   * catalog row through {@link sessionCwdsForRepo}. Never the remote
+   * full-catalog-or-fallback probe.
    */
   private resolveLocalRepoTarget(cwd: string): RepoListEntry | undefined {
-    const hit = this.localRepoCatalogEntries().find((r) => pathsEqual(r.cwd, cwd));
+    const entries = this.localRepoCatalogEntries();
+    let hit = entries.find((r) => pathsEqual(r.cwd, cwd));
+    if (!hit) {
+      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      const owner = this.repoOwningSessionCwd(cwd, overrides, entries);
+      hit = entries.find((r) => !!owner && pathsEqual(r.cwd, owner));
+    }
     if (!hit || !hit.available) return undefined;
     return hit;
   }
@@ -2851,6 +2862,17 @@ Only continue if you trust this code.`,
         ? sessionCatalogDirs({ fs: defaultFs, grokHome, cwd })
         : undefined;
     return { grokHome, sessionDir, sessionCatalogDirs: catalogs };
+  }
+
+  /** Review directory authorized for the focused desktop conversation. No I/O. */
+  desktopPlanReviewSessionRoot(session: Session = this.focused): string {
+    const sessionId =
+      session.activeSessionId ?? session.client?.sessionId ?? "session";
+    return Uri.joinPath(
+      this.context.globalStorageUri,
+      "plan-reviews",
+      planReviewSessionDirectoryName(sessionId),
+    ).fsPath;
   }
 
   /**
@@ -5749,8 +5771,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  catalog alone refused every action on one. The catalog is still the whole
    *  boundary: the parent has to be a repo this host exposes (open on desktop,
    *  discovered on VS Code). */
-  private repoOwningSessionCwd(cwd: string, overrides: SessionMetaOverrides): string | undefined {
-    return this.localRepoCatalogEntries().find(
+  private repoOwningSessionCwd(
+    cwd: string,
+    overrides: SessionMetaOverrides,
+    entries: RepoListEntry[] = this.localRepoCatalogEntries(),
+  ): string | undefined {
+    return entries.find(
       (r) => r.available && this.sessionCwdsForRepo(r.cwd, overrides).some((c) => pathsEqual(c, cwd)),
     )?.cwd;
   }
@@ -7114,7 +7140,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const plan = req.plan || session.lastPlanText;
     let snapshot: { path: string; name: string } | undefined;
     try {
-      snapshot = await this.createPlanReviewSnapshot(plan);
+      snapshot = await this.createPlanReviewSnapshot(
+        plan,
+        session.activeSessionId ?? session.client?.sessionId,
+      );
     } catch (e) {
       this.host.appendLine(`[plan-review] ${(e as Error).message}`);
     }
@@ -7156,7 +7185,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const dir = Uri.joinPath(
       this.context.globalStorageUri,
       "plan-reviews",
-      sanitizePlanReviewFilePart(sessionId).slice(0, 80),
+      planReviewSessionDirectoryName(sessionId),
     );
     void this.host.fs.delete(dir, { recursive: true, useTrash: false }).then(
       undefined,
@@ -7209,9 +7238,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private async createPlanReviewSnapshot(plan: string, sessionId?: string): Promise<{ path: string; name: string }> {
     const content = plan && plan.trim() ? plan : "(empty plan)\n";
-    const sessionPart = sanitizePlanReviewFilePart(
+    const sessionPart = planReviewSessionDirectoryName(
       sessionId ?? this.focused.activeSessionId ?? this.focused.client?.sessionId ?? "session",
-    ).slice(0, 80);
+    );
     // Join under globalStorageUri so workspace.fs targets the same scheme VS Code
     // gave us (vscode-remote on remote hosts — never rebuild with Uri.file).
     const dir = Uri.joinPath(this.context.globalStorageUri, "plan-reviews", sessionPart);
@@ -9638,13 +9667,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    */
   private async followSessionWorkspace(session: Session): Promise<void> {
     if (!this.host.canSwitchWorkspaceFolder) return;
-    const target = session.worktree?.sourceGitRoot ?? session.cwd;
-    if (!target) {
+    const intendedTarget = session.worktree?.sourceGitRoot ?? session.cwd;
+    if (!intendedTarget) {
       this.host.appendLine(
         "[sessions] skipped active-folder follow (resumed session has no project root)",
       );
       return;
     }
+    const target =
+      (session.cwd ? this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined) ??
+      intendedTarget;
     await this.switchLocalWorkspaceFolderExclusive(target, { warnOnRefusal: false });
   }
 

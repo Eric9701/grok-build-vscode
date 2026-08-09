@@ -5,6 +5,11 @@ import { keepsCanonicalDirectChildIdentity } from "./sessions";
 export type PlanReviewPathExistsFn = (p: string) => boolean;
 export type PlanReviewPathRealpathFn = (p: string) => string;
 
+/** Directory segment shared by snapshot creation and desktop authorization. */
+export function planReviewSessionDirectoryName(sessionId: string): string {
+  return sanitizePlanReviewFilePart(sessionId).slice(0, 80);
+}
+
 /**
  * The only relative shape that may be resolved below `plan-reviews`:
  * `<session>/<file>.md`.
@@ -24,25 +29,37 @@ export function isSafeRelativePlanReviewLink(relPath: string): boolean {
   return path.extname(file).toLowerCase() === ".md";
 }
 
+/** The only relative shape below one conversation's review directory. */
+export function isSafePlanReviewFileName(fileName: string): boolean {
+  if (!fileName || typeof fileName !== "string" || fileName.includes("\0")) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(fileName)) return false;
+  if (fileName.startsWith("\\\\") || fileName.startsWith("//")) return false;
+  const normalized = fileName.replace(/\\/g, "/");
+  if (normalized.includes("/") || normalized === "." || normalized === "..") return false;
+  return path.extname(normalized).toLowerCase() === ".md";
+}
+
 /**
  * Pure plan-review provenance check. The caller supplies the filesystem seams
  * so the same decision can be unit-tested without creating symlinks.
  *
  * Both the link path and its canonical target must retain the exact
- * `<plan-reviews>/<one segment>/<one .md file>` layout. Direct-child identity
- * additionally refuses a session directory or file symlink that changes the
- * named leaf, including a target elsewhere inside the storage tree.
+ * `<plan-reviews>/<this session>/<one .md file>` layout. The supplied root is
+ * one conversation's directory, not the shared `plan-reviews` directory.
+ * Direct-child identity additionally refuses a review-root, session-directory,
+ * or file symlink that changes the named leaf, including a target elsewhere
+ * inside the storage tree.
  */
 export function isTrustedPlanReviewPath(
   fsPath: string,
-  planReviewsRoot: string,
+  planReviewSessionRoot: string,
   deps: {
     exists: PlanReviewPathExistsFn;
     realpath: PlanReviewPathRealpathFn;
   },
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  if (!fsPath || !planReviewsRoot || fsPath.includes("\0")) return false;
+  if (!fsPath || !planReviewSessionRoot || fsPath.includes("\0")) return false;
 
   try {
     if (
@@ -50,37 +67,37 @@ export function isTrustedPlanReviewPath(
     ) {
       return false;
     }
-    const root = path.resolve(planReviewsRoot);
+    const root = path.resolve(planReviewSessionRoot);
     const candidate = path.resolve(fsPath);
     if (fsPath.replace(/\\/g, "/").split("/").includes("..")) return false;
     const relative = path.relative(root, candidate);
-    if (!isSafeRelativePlanReviewLink(relative)) return false;
+    if (!isSafePlanReviewFileName(relative)) return false;
     if (!deps.exists(candidate)) return false;
 
     const realRoot = path.normalize(deps.realpath(root));
     const realCandidate = path.normalize(deps.realpath(candidate));
     if (!deps.exists(realCandidate)) return false;
     const realRelative = path.relative(realRoot, realCandidate);
-    if (!isSafeRelativePlanReviewLink(realRelative)) return false;
+    if (!isSafePlanReviewFileName(realRelative)) return false;
 
-    // Keep the named plan-reviews directory as the direct child of the named
-    // global-storage directory, while allowing the whole storage ancestor to
-    // be symlinked as one unit.
+    const planReviewsRoot = path.dirname(root);
+    // Keep the named plan-reviews directory under global storage and the named
+    // session directory under plan-reviews, while allowing the whole storage
+    // ancestor to be symlinked as one unit.
     if (
       !keepsCanonicalDirectChildIdentity(
-        root,
-        path.dirname(root),
+        planReviewsRoot,
+        path.dirname(planReviewsRoot),
         deps.realpath,
         platform,
       )
     ) {
       return false;
     }
-    const sessionDir = path.dirname(candidate);
-    if (!keepsCanonicalDirectChildIdentity(sessionDir, root, deps.realpath, platform)) {
+    if (!keepsCanonicalDirectChildIdentity(root, planReviewsRoot, deps.realpath, platform)) {
       return false;
     }
-    return keepsCanonicalDirectChildIdentity(candidate, sessionDir, deps.realpath, platform);
+    return keepsCanonicalDirectChildIdentity(candidate, root, deps.realpath, platform);
   } catch {
     return false;
   }

@@ -3611,7 +3611,14 @@ describe("local workspace switch serialization (P1-2)", () => {
     const followBody = sidebar.slice(followStart, followEnd);
     expect(followBody).toContain("if (!this.host.canSwitchWorkspaceFolder) return");
     expect(followBody).toContain("session.worktree?.sourceGitRoot ?? session.cwd");
+    expect(followBody).toContain("this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined");
     expect(followBody).toContain("warnOnRefusal: false");
+
+    const resolveStart = sidebar.indexOf("private resolveLocalRepoTarget(");
+    const resolveEnd = sidebar.indexOf("private buildRepoSessionsPreview(", resolveStart);
+    const resolveBody = sidebar.slice(resolveStart, resolveEnd);
+    expect(resolveBody).toContain("this.repoOwningSessionCwd(cwd, overrides, entries)");
+    expect(resolveBody).toContain("entries.find((r) => pathsEqual(r.cwd, cwd))");
   });
 });
 

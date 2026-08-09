@@ -382,7 +382,10 @@ async function createApp(): Promise<void> {
       get sessionCatalogDirs() {
         return media().sessionCatalogDirs;
       },
-      planReviewsRoot: path.join(globalStorageDir, "plan-reviews"),
+      // Path derivation is cheap, but keep it on the same path-bearing lazy seam.
+      get planReviewSessionRoot() {
+        return sidebar!.desktopPlanReviewSessionRoot();
+      },
     } satisfies DesktopOpenFileContext;
   };
   webview.getAuthContext = () => authContext.get!();

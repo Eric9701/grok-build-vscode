@@ -135,8 +135,8 @@ export interface DesktopOpenFileContext {
    * e.g. `~/.grok/other/<leaf>`, fails that identity check).
    */
   sessionCatalogDirs?: readonly string[] | undefined;
-  /** Host-owned `<globalStorage>/plan-reviews`; not a general auth root. */
-  planReviewsRoot?: string | undefined;
+  /** Host-owned review directory for the focused conversation; not a general auth root. */
+  planReviewSessionRoot?: string | undefined;
 }
 
 /** Deduped non-empty absolute roots from the auth context. */
@@ -287,13 +287,13 @@ export function authorizeOpenFile(
   }
 
   // Plan snapshots are a separate provenance class. They are permitted only
-  // through the exact host-owned two-level Markdown fence; globalStorage is
-  // deliberately not added to desktopAuthRoots.
-  if (ctx.planReviewsRoot) {
+  // as a direct Markdown child of the focused conversation's host-owned review
+  // directory; globalStorage is deliberately not added to desktopAuthRoots.
+  if (ctx.planReviewSessionRoot) {
     const exists = (p: string) =>
       ctx.pathFs ? isExistingFile(p, ctx.pathFs) : isExistingFile(p);
     if (
-      isTrustedPlanReviewPath(rawPath, ctx.planReviewsRoot, {
+      isTrustedPlanReviewPath(rawPath, ctx.planReviewSessionRoot, {
         exists,
         realpath,
       }, platform)
