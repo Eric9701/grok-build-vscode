@@ -273,16 +273,31 @@ describe("addGeneratedMedia hover actions (copy path / open)", () => {
       (b) => b.getAttribute("title") === title,
     ) as HTMLButtonElement | undefined;
 
-  it("an image keeps the open icon even when showInFolder is advertised", () => {
+  it("an image reveals in its folder when the host advertises it", () => {
     const h = bootWithCaps({ showInFolder: true });
     const { window, posted, doc } = h;
     dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: IMG_PATH });
     const wrap = messages(doc).querySelector(".generated-image")!;
 
     expect(btnByTitle(wrap, "Copy path")).toBeTruthy();
-    const openBtn = btnByTitle(wrap, "Open in VS Code")!;
+    const openBtn = btnByTitle(wrap, "Show in folder")!;
     expect(openBtn).toBeTruthy();
 
+    click(window, openBtn);
+    expect(posted).toContainEqual({ type: "showInFolder", path: IMG_PATH });
+    // Reveal REPLACES open — a host that can do both must not offer both.
+    expect(btnByTitle(wrap, "Open in VS Code")).toBeUndefined();
+    expect(btnByTitle(wrap, "Open file")).toBeUndefined();
+  });
+
+  it("an image keeps Open where the host cannot reveal", () => {
+    const h = bootWithCaps({ openInEditor: false });
+    const { window, posted, doc } = h;
+    dispatch(window, { type: "media", media: "image", src: IMG_DATA, path: IMG_PATH });
+    const wrap = messages(doc).querySelector(".generated-image")!;
+
+    const openBtn = btnByTitle(wrap, "Open file")!;
+    expect(openBtn).toBeTruthy();
     click(window, openBtn);
     expect(posted).toContainEqual({ type: "openFile", path: IMG_PATH });
   });

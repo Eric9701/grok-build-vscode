@@ -467,8 +467,11 @@ the steady-state fix.
   JSON-in-text on the completed tool result. The host parses the path, classifies
   image-vs-video by extension, and serves it to the webview via `asWebviewUri`
   (streamed from disk) so even a multi-MB video renders. A host-local
-  `showInFolder` action is capability-gated for generated videos and reuses the
-  same path authorization as `openFile`; generated images keep `openFile`. See
+  `showInFolder` action replaces the open action for BOTH generated images and
+  videos on a host that advertises the capability (the desktop app, whose media
+  handler it owns), and reuses the same path authorization as `openFile`. An
+  editor host keeps `openFile` — a tab is somewhere new to put the file, whereas
+  the desktop already plays clips inline and enlarges images in place. See
   [research/image-generation.md](../research/image-generation.md).
 - **Math renders via vendored MathJax (SVG), extracted before HTML-escaping.** Grok
   answers with TeX (inline `\(…\)`, display `\[…\]`, `\begin{pmatrix}` matrices).

@@ -6956,9 +6956,8 @@
 
   // Hover actions for an inlined image/video, anchored top-right like the
   // code-block copy button: copy the on-disk path, or open/reveal the file.
-  // Video gets the reveal action only on hosts that explicitly advertise it;
-  // images keep their existing open behavior.
-  function buildMediaActions(path, src, isVideo) {
+  // Which of open-vs-reveal is a host capability, not a media kind.
+  function buildMediaActions(path, src) {
     const actions = document.createElement("div");
     actions.className = "generated-media-actions";
 
@@ -6999,9 +6998,12 @@
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "generated-media-btn";
-    const showInFolder = isVideo && state.hostCaps && state.hostCaps.showInFolder === true;
-    // Label follows the media kind and host capability: images always open;
-    // videos reveal in the file manager only when the host opts in.
+    // Both kinds, on a host that advertises it. A generated clip already plays
+    // inline and a generated image already enlarges in place, so handing either
+    // to the OS default app shows you nothing you cannot already see — finding
+    // the file is the thing you actually want. An editor host keeps Open,
+    // because there a tab genuinely is somewhere else to put it.
+    const showInFolder = !!(state.hostCaps && state.hostCaps.showInFolder === true);
     openBtn.title = showInFolder
       ? "Show in folder"
       : (hostOpensInEditor() ? "Open in VS Code" : "Open file");
@@ -7079,7 +7081,7 @@
         }
         el.appendChild(img);
       }
-      if (msg.path) el.appendChild(buildMediaActions(msg.path, msg.src, isVideo));
+      if (msg.path) el.appendChild(buildMediaActions(msg.path, msg.src));
     } else if (msg.url) {
       const link = document.createElement("button");
       link.className = "preview-link";
