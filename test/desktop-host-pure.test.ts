@@ -29,6 +29,7 @@ import {
   APP_DOCUMENT_URL,
   APP_ORIGIN,
   APP_RESOURCE_CSP_SOURCE,
+  DESKTOP_THEME_CSS,
   desktopChromeBootSource,
   isAppDocumentUrl,
 } from "../src/desktop/electron-webview";
@@ -1475,7 +1476,7 @@ describe("desktop branding and menu", () => {
       ),
       "utf8",
     );
-    expect(theme).toContain("max-width: 1120px");
+    expect(theme).toContain("calc((100% - 1120px) / 2)");
     const chatCss = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
       "utf8",
@@ -1781,6 +1782,21 @@ describe("desktop chrome boot (scroll fade + spacing shell)", () => {
     // Does not touch shared chat.js / Host messaging.
     expect(src).not.toContain("acquireVsCodeApi");
     expect(src).not.toContain("postMessage");
+  });
+});
+
+describe("desktop reading measure CSS", () => {
+  it("keeps the scrollport full-bleed and expresses both measures as padding", () => {
+    expect(DESKTOP_THEME_CSS).toContain("body.desk #messages-wrap");
+    expect(DESKTOP_THEME_CSS).toContain("body.desk #messages-wrap {\n  max-width: none;");
+    expect(DESKTOP_THEME_CSS).toContain(
+      "padding-inline: max(calc(var(--pad) + 5px), calc((100% - 800px) / 2));",
+    );
+    expect(DESKTOP_THEME_CSS).toContain(
+      "padding-inline: max(calc(var(--pad) + 5px), calc((100% - 1120px) / 2));",
+    );
+    expect(DESKTOP_THEME_CSS).not.toContain("max-width: 800px;");
+    expect(DESKTOP_THEME_CSS).not.toContain("max-width: 1120px;");
   });
 });
 

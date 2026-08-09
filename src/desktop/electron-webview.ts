@@ -105,7 +105,7 @@ const DESKTOP_THEME_BOOT = `(function(){
   if(document.readyState!=="loading"){syncBodyTheme();wireThemeToggle();}
 })();`;
 
-const DESKTOP_THEME_CSS = `
+export const DESKTOP_THEME_CSS = `
 :root {
   color-scheme: dark;
   /* AFK Pilot dark palette (web/chat.html :root) */
@@ -229,25 +229,29 @@ body { background: #1a1a1a; color: var(--vscode-foreground); }
 
 /* Reading measure — desktop shell only (mirrors AFK Pilot web/chat.html).
    Shared chat.css is left alone so VS Code's narrow panel is unchanged.
-   Top bar fills the chat column (rail edge → panel edge); only messages +
-   composer are width-capped. */
-body.desk > #messages,
-body.desk > .composer,
-body.desk > #messages-wrap,
-body.desk .desk-ft-chat > #messages,
-body.desk .desk-ft-chat > .composer,
-body.desk .desk-ft-chat > #messages-wrap {
-  max-width: 800px;
+   The top bar and scrollport fill the chat column; messages + composer use
+   padding to keep their reading measure centered without moving the scrollbar. */
+body.desk #messages,
+body.desk .composer {
+  max-width: none;
   width: 100%;
-  margin-left: auto;
-  margin-right: auto;
+  margin-left: 0;
+  margin-right: 0;
   box-sizing: border-box;
+  padding-inline: max(calc(var(--pad) + 5px), calc((100% - 800px) / 2));
 }
 /* Without the file-tree shell, a slightly wider reading column is fine. */
-body.desk:not(.desk-with-ft) > #messages,
-body.desk:not(.desk-with-ft) > .composer,
-body.desk:not(.desk-with-ft) > #messages-wrap {
-  max-width: 1120px;
+body.desk:not(.desk-with-ft) #messages,
+body.desk:not(.desk-with-ft) .composer {
+  padding-inline: max(calc(var(--pad) + 5px), calc((100% - 1120px) / 2));
+}
+/* Keep the wrapper full-bleed so its child remains the pane's scrollport. */
+body.desk #messages-wrap {
+  max-width: none;
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+  box-sizing: border-box;
 }
 /* Top bar: full width of the chat column (not the reading measure). */
 body.desk > .top-bar,
@@ -265,13 +269,6 @@ body.desk .app-main > .top-bar {
    4px VS Code-panel pad. Desktop shell only; chat.css is untouched. */
 body.desk {
   --pad: 8px;
-}
-body.desk > #messages,
-body.desk > .composer,
-body.desk .desk-ft-chat > #messages,
-body.desk .desk-ft-chat > .composer {
-  padding-left: calc(var(--pad) + 5px);
-  padding-right: calc(var(--pad) + 5px);
 }
 /* Room under typed text before the toolbar (AFK Pilot: 11px). */
 body.desk textarea#input,
