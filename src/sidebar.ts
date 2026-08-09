@@ -9683,13 +9683,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       );
       return;
     }
-    // Exact first: when the session's own project root IS an open folder, that
-    // is the answer and no ownership guessing is needed. Ownership is only the
-    // fallback for a worktree cwd, and it declines rather than guess when more
-    // than one open folder claims it.
-    const target =
-      this.resolveLocalRepoTarget(intendedTarget)?.cwd
-      ?? (session.cwd ? this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined);
+    // ONE resolution, always from the session's own cwd. A plain session's cwd
+    // is itself an open folder and matches exactly; a worktree's resolves
+    // through ownership, which declines when more than one open folder claims
+    // it. Trying sourceGitRoot first would walk straight past that guard: with
+    // both /repo and /repo/packages/app open, a worktree made from app records
+    // /repo, so the exact match would move the panel — and every subsequent new
+    // session's root — up to /repo without ever noticing the ambiguity.
+    const target = session.cwd ? this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined;
     if (!target) {
       this.host.appendLine(
         `[sessions] skipped active-folder follow (no single open folder owns ${intendedTarget})`,

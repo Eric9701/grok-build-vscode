@@ -3613,11 +3613,12 @@ describe("local workspace switch serialization (P1-2)", () => {
     expect(followBody).toContain("session.worktree?.sourceGitRoot ?? session.cwd");
     expect(followBody).toContain("this.resolveLocalRepoTarget(session.cwd)?.cwd : undefined");
     expect(followBody).toContain("warnOnRefusal: false");
-    // Both candidates go through the catalog. The raw source root must never
-    // reach the host as a bare fallback — it is only sometimes an open folder,
-    // and the refusal for the rest is silent.
-    expect(followBody).toContain("this.resolveLocalRepoTarget(intendedTarget)?.cwd");
+    // ONE resolution, from session.cwd. Neither a bare sourceGitRoot fallback
+    // nor an exact-match shortcut on it: both walk past the ambiguity guard
+    // below, because a worktree's source root can itself be an open folder
+    // while two folders claim the worktree.
     expect(followBody).not.toMatch(/\?\?\s*intendedTarget;/);
+    expect(followBody).not.toContain("this.resolveLocalRepoTarget(intendedTarget)");
 
     const resolveStart = sidebar.indexOf("private resolveLocalRepoTarget(");
     const resolveEnd = sidebar.indexOf("private buildRepoSessionsPreview(", resolveStart);
