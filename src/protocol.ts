@@ -65,6 +65,9 @@ export const HOST_CAPABILITIES = {
   // receive the flag but must not draw a second explorer; only IS_REMOTE clients
   // mount the in-page browser. Older hosts omit the field → nothing advertised.
   browseProjectFiles: true,
+  // Edit+save existing project files from a remote. Separate from browse so a
+  // host can offer list/read without a write path. OPT-IN field presence.
+  editProjectFiles: true,
 } as const;
 
 /** Host-kind affordances merged into `initialState.capabilities` at post time. */
@@ -78,6 +81,13 @@ export type HostUiCapabilities = {
    * HOST_CAPABILITIES; the webview still only mounts UI when remote.
    */
   browseProjectFiles?: boolean;
+  /**
+   * Save edits to existing project text files from a remote client.
+   * OPT-IN and independent of {@link browseProjectFiles}: a host may advertise
+   * browse without edit. Absent/false = no write UI and no write path.
+   * No create/delete/rename in this pass.
+   */
+  editProjectFiles?: boolean;
   /**
    * Whether generated media is served with honest byte-range responses. This
    * is opt-in: hosts without this capability must keep generated videos lazy.
@@ -186,9 +196,9 @@ export type HostMsg =
   // echoed `query` lets the webview drop stale replies after further typing.
   | { type: "mentionResults"; query: string; files: string[] }
   /**
-   * Answer to `listProjectDir` (remote read-only file browse). `cwd` echoes the
-   * scoped root; `relPath` is the listed directory ("" = repo root). No absolute
-   * host paths — only workspace-relative entry paths. READ-ONLY by design.
+   * Answer to `listProjectDir` (remote file browse). `cwd` echoes the scoped
+   * root; `relPath` is the listed directory ("" = repo root). No absolute host
+   * paths — only workspace-relative entry paths.
    */
   | {
       type: "projectDirListing";
@@ -203,7 +213,11 @@ export type HostMsg =
    * Answer to `readProjectFile`. Preview kinds match desktop `classifyFilePreview`
    * (markdown/json/image/text); binary / external / oversize fail with `ok:false`.
    * Caps: {@link FILE_PREVIEW_MAX_BYTES} / {@link FILE_PREVIEW_MAX_IMAGE_BYTES}
-   * in `src/file-tree.ts`. Never carries an absolute host path.
+   * in `src/file-tree.ts`.
+   *
+   * When the host advertises `editProjectFiles`, text kinds also carry `stamp`
+   * + `absPath` so a later save can prove identity (same file) and version
+   * (mtime+size). Image previews never include those fields.
    */
   | {
       type: "projectFileContent";
@@ -214,8 +228,35 @@ export type HostMsg =
       text?: string;
       dataUrl?: string;
       pretty?: boolean;
+      /** Present for editable text when host advertises edit — mtime+size. */
+      stamp?: { mtimeMs: number; size: number };
+      /**
+       * Absolute path this content was read at. Sent only with edit capability
+       * so the save can refuse a cross-project relPath collision (see
+       * `writeTreeFile` expectedAbsPath). Round-trip only — never displayed.
+       */
+      absPath?: string;
     }
   | { type: "projectFileContent"; cwd: string; relPath: string; ok: false; reason: string }
+  /**
+   * Answer to `writeProjectFile`. Success returns the new stamp so the client
+   * can keep editing without re-reading. Failure reasons mirror `writeTreeFile`
+   * (`changed`, `workspace changed`, containment, etc.).
+   */
+  | {
+      type: "projectFileWriteResult";
+      cwd: string;
+      relPath: string;
+      ok: true;
+      stamp: { mtimeMs: number; size: number };
+    }
+  | {
+      type: "projectFileWriteResult";
+      cwd: string;
+      relPath: string;
+      ok: false;
+      reason: string;
+    }
   /** `steer` marks a mid-turn interjection (#52). It paints a user bubble but is
    *  NOT a prompt and gets no rewind point, so the bubble must not consume a
    *  rewind index — see refreshUserRewindButtons. */
@@ -463,17 +504,36 @@ export type WebviewMsg =
   // composer, so the prompt carries both the prose reference and the chip.
   | { type: "addMentionFile"; relPath: string }
   /**
-   * Remote read-only file browse: list one directory under the tab's selected
-   * repo (`cwd` must be that scope — see `resolveRemoteFileRoot`). `relPath`
+   * Remote file browse: list one directory under the tab's selected repo
+   * (`cwd` must be that scope — see `resolveRemoteFileRoot`). `relPath`
    * optional ("" / omit = repo root). Answered by `projectDirListing`.
-   * READ-ONLY: no write/save/delete path exists for remotes.
    */
   | { type: "listProjectDir"; cwd: string; relPath?: string }
   /**
-   * Remote read-only file open: read one previewable file under the tab's
-   * selected repo. Answered by `projectFileContent`. Same fence as list.
+   * Remote file open: read one previewable file under the tab's selected repo.
+   * Answered by `projectFileContent`. Same fence as list.
    */
   | { type: "readProjectFile"; cwd: string; relPath: string }
+  /**
+   * Remote save of an EXISTING text file under the tab's selected repo.
+   * No create / delete / rename in this pass — only rewrite content of a file
+   * that already exists and was read with stamp + absPath.
+   *
+   * Both guards are mandatory (same as desktop `writeTreeFile`):
+   * - `stamp` — "did this file change under me?" (mtime + size from the read)
+   * - `expectedAbsPath` — "is this still the SAME file?" (absolute path at read;
+   *   catches a tab that went stale after the desk switched projects)
+   *
+   * Answered by `projectFileWriteResult`. Capability: `editProjectFiles`.
+   */
+  | {
+      type: "writeProjectFile";
+      cwd: string;
+      relPath: string;
+      text: string;
+      stamp: { mtimeMs: number; size: number };
+      expectedAbsPath: string;
+    }
   | { type: "pasteImage"; mimeType: string; data: string; previewId?: string }
   // Remote browser upload: an untrusted basename plus base64 bytes. The host
   // allowlists/sanitizes/stages it, then routes it through addDroppedFile.
@@ -536,7 +596,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
-  chips: true, commandsUpdate: true, mentionResults: true, projectDirListing: true, projectFileContent: true, userMessage: true, agentStart: true,
+  chips: true, commandsUpdate: true, mentionResults: true, projectDirListing: true, projectFileContent: true, projectFileWriteResult: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, historyBatch: true, permissionHistoryQueue: true, planHistoryQueue: true,
   toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
@@ -566,7 +626,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setRepoArchived: true, setRepoColor: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
-  listProjectDir: true, readProjectFile: true,
+  listProjectDir: true, readProjectFile: true, writeProjectFile: true,
   pasteImage: true, uploadFile: true, voiceStart: true,
   voiceStop: true, remoteVoiceStart: true, remoteVoiceChunk: true,
   remoteVoiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,

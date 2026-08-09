@@ -1,9 +1,10 @@
 /**
- * Fence tests for remote read-only project file access.
+ * Fence tests for remote project file access (browse + edit existing files).
  *
  * Composes repoScopeFor (which root) + resolveTreePath / listTreeDir /
- * readTreeFile (paths inside). A phone must not reach outside the tab's
- * selected repo, and must not follow outbound symlinks.
+ * readTreeFile / writeTreeFile (paths inside). A phone must not reach outside
+ * the tab's selected repo, must not follow outbound symlinks, and must not
+ * silently overwrite a stale stamp or a cross-project path.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -25,6 +26,7 @@ import {
   projectFileContentForWire,
   readRemoteProjectFile,
   resolveRemoteFileRoot,
+  writeRemoteProjectFile,
 } from "../src/remote-files";
 import { resolveTreePath } from "../src/file-tree";
 
@@ -71,7 +73,8 @@ describe("resolveRemoteFileRoot (fence)", () => {
   });
 
   it("refuses an unknown cwd from a remote (allowRemoteRepoTarget trap)", () => {
-    // Protocol gate
+    // Protocol gate — list, read, AND write (write is a mutation; without the
+    // case the default branch returns true).
     expect(
       allowRemoteRepoTarget(
         { type: "listProjectDir", cwd: "/etc", relPath: "" },
@@ -81,6 +84,19 @@ describe("resolveRemoteFileRoot (fence)", () => {
     expect(
       allowRemoteRepoTarget(
         { type: "readProjectFile", cwd: "/etc", relPath: "passwd" },
+        isKnown,
+      ),
+    ).toBe(false);
+    expect(
+      allowRemoteRepoTarget(
+        {
+          type: "writeProjectFile",
+          cwd: "/etc",
+          relPath: "passwd",
+          text: "x",
+          stamp: { mtimeMs: 1, size: 1 },
+          expectedAbsPath: "/etc/passwd",
+        },
         isKnown,
       ),
     ).toBe(false);
@@ -167,7 +183,7 @@ describe("path containment (escape + symlink)", () => {
     expect(read.ok).toBe(false);
   });
 
-  it("reads a contained text file and strips absPath for the wire", () => {
+  it("reads a contained text file and strips absPath for the wire without edit meta", () => {
     const root = mkTmp();
     fs.writeFileSync(path.join(root, "readme.md"), "# Hello\n");
     const read = readRemoteProjectFile(root, "readme.md");
@@ -182,6 +198,20 @@ describe("path containment (escape + symlink)", () => {
     expect(wire.relPath).toBe("readme.md");
     expect(wire.kind).toBe("markdown");
     expect((wire as { absPath?: string }).absPath).toBeUndefined();
+    expect((wire as { stamp?: unknown }).stamp).toBeUndefined();
+  });
+
+  it("includes stamp + absPath on the wire only when edit meta is requested", () => {
+    const root = mkTmp();
+    fs.writeFileSync(path.join(root, "notes.txt"), "hi\n");
+    const read = readRemoteProjectFile(root, "notes.txt");
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    const wire = projectFileContentForWire(read, { includeEditMeta: true });
+    expect(wire.ok).toBe(true);
+    if (!wire.ok) return;
+    expect(wire.stamp).toEqual(read.stamp);
+    expect(wire.absPath).toBe(read.absPath);
   });
 
   it("refuses binary-looking files for remote preview", () => {
@@ -194,9 +224,90 @@ describe("path containment (escape + symlink)", () => {
   });
 });
 
+describe("writeRemoteProjectFile (existing files only)", () => {
+  const noExec = () => false;
+
+  it("refuses a stale stamp", () => {
+    const root = mkTmp();
+    const abs = path.join(root, "notes.txt");
+    fs.writeFileSync(abs, "original\n");
+    const read = readRemoteProjectFile(root, "notes.txt");
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    // Mutate under the client so its stamp is stale.
+    fs.writeFileSync(abs, "changed on disk\n");
+    const result = writeRemoteProjectFile(root, "notes.txt", "my edits\n", read.stamp!, {
+      expectedAbsPath: read.absPath,
+      isExecutableOpenTarget: noExec,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("changed");
+    // Original disk content after the under-me write must not be clobbered.
+    expect(fs.readFileSync(abs, "utf8")).toBe("changed on disk\n");
+  });
+
+  it("refuses a correct stamp with the WRONG expectedAbsPath (cross-project case)", () => {
+    // Tab was read in repo A; save resolves under repo B with the same relPath.
+    // Stamp may even match by coincidence — the absPath binding is the fence.
+    const repoA = mkTmp();
+    const repoB = mkTmp();
+    fs.writeFileSync(path.join(repoA, "README.md"), "A content\n");
+    fs.writeFileSync(path.join(repoB, "README.md"), "B content\n");
+    const readA = readRemoteProjectFile(repoA, "README.md");
+    expect(readA.ok).toBe(true);
+    if (!readA.ok) return;
+    const result = writeRemoteProjectFile(
+      repoB,
+      "README.md",
+      "A's text into B\n",
+      readA.stamp!,
+      {
+        expectedAbsPath: readA.absPath, // still points at A
+        isExecutableOpenTarget: noExec,
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("workspace changed");
+    expect(fs.readFileSync(path.join(repoB, "README.md"), "utf8")).toBe("B content\n");
+  });
+
+  it("refuses a path escaping the root", () => {
+    const root = mkTmp();
+    fs.writeFileSync(path.join(root, "ok.txt"), "inside\n");
+    const read = readRemoteProjectFile(root, "ok.txt");
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    const result = writeRemoteProjectFile(root, "../escape.txt", "nope\n", read.stamp!, {
+      expectedAbsPath: read.absPath,
+      isExecutableOpenTarget: noExec,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("writes when stamp and expectedAbsPath both match", () => {
+    const root = mkTmp();
+    const abs = path.join(root, "notes.txt");
+    fs.writeFileSync(abs, "original\n");
+    const read = readRemoteProjectFile(root, "notes.txt");
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    const result = writeRemoteProjectFile(root, "notes.txt", "saved\n", read.stamp!, {
+      expectedAbsPath: read.absPath,
+      isExecutableOpenTarget: noExec,
+    });
+    expect(result.ok).toBe(true);
+    expect(fs.readFileSync(abs, "utf8")).toBe("saved\n");
+    if (result.ok) {
+      expect(result.stamp.mtimeMs).toBeTypeOf("number");
+      expect(result.stamp.size).toBeTypeOf("number");
+    }
+  });
+});
+
 describe("capability advertisement", () => {
-  it("current hosts advertise browseProjectFiles", () => {
+  it("current hosts advertise browseProjectFiles and editProjectFiles", () => {
     expect(HOST_CAPABILITIES.browseProjectFiles).toBe(true);
+    expect(HOST_CAPABILITIES.editProjectFiles).toBe(true);
   });
 
   it("unsupported host advertises nothing (field absent is the gate)", () => {
@@ -207,14 +318,131 @@ describe("capability advertisement", () => {
     };
     expect(oldCaps.browseProjectFiles).toBeUndefined();
     expect(!!oldCaps.browseProjectFiles).toBe(false);
+    expect(oldCaps.editProjectFiles).toBeUndefined();
+    expect(!!oldCaps.editProjectFiles).toBe(false);
   });
 
-  it("classifies new messages in remote policy exhaustively", () => {
+  it("browse without edit is a valid host: client must not offer a write path", () => {
+    // Field-presence convention: a host can advertise browse alone.
+    const browseOnly: HostUiCapabilities = {
+      uploadFile: true,
+      remoteVoice: true,
+      browseProjectFiles: true,
+      // editProjectFiles deliberately absent
+    };
+    expect(!!browseOnly.browseProjectFiles).toBe(true);
+    expect(!!browseOnly.editProjectFiles).toBe(false);
+    // Client gate in chat.js is remoteFilesEditAvailable() — both flags.
+    // Structural: chat only posts writeProjectFile when edit is advertised.
+    const chatSrc = fs.readFileSync(
+      path.join(__dirname, "..", "media", "chat.js"),
+      "utf8",
+    );
+    expect(chatSrc).toContain("editProjectFiles");
+    expect(chatSrc).toContain("remoteFilesEditAvailable");
+    // write posts are gated on remoteFilesEditAvailable (not only browse).
+    const writeIdx = chatSrc.indexOf('type: "writeProjectFile"');
+    expect(writeIdx).toBeGreaterThan(0);
+    const postFn = chatSrc.slice(
+      chatSrc.lastIndexOf("function postRemoteFileWrite", writeIdx),
+      writeIdx,
+    );
+    expect(postFn).toContain("remoteFilesEditAvailable");
+  });
+
+  it("classifies list/read as view and write as propose (mutation tier)", () => {
     expect(INBOUND_DISPOSITION.listProjectDir).toBe("view");
     expect(INBOUND_DISPOSITION.readProjectFile).toBe("view");
+    // Mutation must not sit at the read (view) tier.
+    expect(INBOUND_DISPOSITION.writeProjectFile).toBe("propose");
     expect(OUTBOUND_DISPOSITION.projectDirListing).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.projectFileContent).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.projectFileWriteResult).toBe("mirror");
     expect(OUTBOUND_PROJECT_AUTH.projectDirListing).toBe("message-cwd");
     expect(OUTBOUND_PROJECT_AUTH.projectFileContent).toBe("message-cwd");
+    expect(OUTBOUND_PROJECT_AUTH.projectFileWriteResult).toBe("message-cwd");
+  });
+});
+
+// The read path withholds the stamp and absolute path for an image, so the
+// client paints no Edit control — but that is a UI affordance and the client is
+// untrusted. The host must refuse a crafted write on its own.
+describe("remote writes are text-only, enforced host-side", () => {
+  it("refuses a non-text file even with a valid stamp and path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    const rel = "logo.png";
+    const abs = path.join(root, rel);
+    fs.writeFileSync(abs, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const st = fs.statSync(abs);
+
+    const result = writeRemoteProjectFile(root, rel, "not a png any more", {
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+    }, {
+      expectedAbsPath: abs,
+      isExecutableOpenTarget: () => false,
+    });
+
+    expect(result.ok).toBe(false);
+    // ...and the bytes on disk are untouched.
+    expect(fs.readFileSync(abs)[0]).toBe(0x89);
+  });
+
+  it("still allows the text kinds", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    for (const rel of ["notes.md", "data.json", "plain.txt"]) {
+      const abs = path.join(root, rel);
+      fs.writeFileSync(abs, "before");
+      const st = fs.statSync(abs);
+      const result = writeRemoteProjectFile(root, rel, "after", {
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+      }, { expectedAbsPath: abs, isExecutableOpenTarget: () => false });
+      expect(result.ok, `${rel} should be writable`).toBe(true);
+      expect(fs.readFileSync(abs, "utf8")).toBe("after");
+    }
+  });
+});
+
+// The read path withholds the stamp and absolute path for an image, so the
+// client paints no Edit control. That is a UI affordance, and the client is
+// untrusted — the host has to refuse a crafted write on its own.
+describe("remote writes are text-only, enforced host-side", () => {
+  it("refuses a non-text file even with a valid stamp and path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    const rel = "logo.png";
+    const abs = path.join(root, rel);
+    fs.writeFileSync(abs, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const st = fs.statSync(abs);
+
+    const result = writeRemoteProjectFile(
+      root,
+      rel,
+      "not a png any more",
+      { mtimeMs: st.mtimeMs, size: st.size },
+      { expectedAbsPath: abs, isExecutableOpenTarget: () => false },
+    );
+
+    expect(result.ok).toBe(false);
+    // ...and the bytes on disk are untouched.
+    expect(fs.readFileSync(abs)[0]).toBe(0x89);
+  });
+
+  it("still allows the text kinds", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    for (const rel of ["notes.md", "data.json", "plain.txt"]) {
+      const abs = path.join(root, rel);
+      fs.writeFileSync(abs, "before");
+      const st = fs.statSync(abs);
+      const result = writeRemoteProjectFile(
+        root,
+        rel,
+        "after",
+        { mtimeMs: st.mtimeMs, size: st.size },
+        { expectedAbsPath: abs, isExecutableOpenTarget: () => false },
+      );
+      expect(result.ok, `${rel} should be writable`).toBe(true);
+      expect(fs.readFileSync(abs, "utf8")).toBe("after");
+    }
   });
 });

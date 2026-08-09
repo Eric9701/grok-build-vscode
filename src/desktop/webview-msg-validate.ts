@@ -244,6 +244,25 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "readProjectFile":
       if (!isString(raw.cwd) || !isString(raw.relPath)) return null;
       break;
+    case "writeProjectFile": {
+      if (
+        !isString(raw.cwd) ||
+        !isString(raw.relPath) ||
+        !isString(raw.text) ||
+        !isString(raw.expectedAbsPath)
+      ) {
+        return null;
+      }
+      const stamp = raw.stamp;
+      if (
+        !isObject(stamp) ||
+        !isNumber(stamp.mtimeMs) ||
+        !isNumber(stamp.size)
+      ) {
+        return null;
+      }
+      break;
+    }
     case "pasteImage":
       if (!isString(raw.mimeType) || !isString(raw.data)) return null;
       if (!opt(raw.previewId, isString)) return null;

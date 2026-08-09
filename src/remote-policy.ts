@@ -215,9 +215,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
   mentionQuery: "view",
-  // Read-only project file browse (list dir + open one file). The fence is
-  // repoScopeFor + resolveTreePath — not a second root concept. WRITE paths are
-  // intentionally absent; do not widen these to propose without a save design.
+  // Project file browse (list dir + open one file). The fence is repoScopeFor
+  // + resolveTreePath — not a second root concept. Writes are a separate type
+  // (writeProjectFile) at the mutation tier below.
   listProjectDir: "view",
   readProjectFile: "view",
   // input/turn control (propose+)
@@ -268,6 +268,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   pasteImage: "propose",
   // Host validates the extension/name/bytes before staging under globalStorage.
   uploadFile: "propose",
+  // Workspace file mutation — same propose tier as upload/send, NOT view. A
+  // read-only remote must not rewrite the desk tree. Existing files only
+  // (create/delete/rename are deliberately out of scope).
+  writeProjectFile: "propose",
   removeChip: "propose",
   toggleChip: "propose",
   // attaches a chip only after an exact host mention-catalog lookup plus
@@ -381,6 +385,9 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     // the catalog — the exact trap the comment on this function exists for.
     case "listProjectDir":
     case "readProjectFile":
+    // Write names a cwd too. Without this case the default branch returns true
+    // and a remote could claim an arbitrary path — same trap as list/read.
+    case "writeProjectFile":
       return isKnownCwd(msg.cwd);
     case "resumeSession":
     // Same shape as resume: the cwd is optional (the host falls back to its own
@@ -509,9 +516,11 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   chips: "mirror",
   commandsUpdate: "mirror",
   mentionResults: "mirror",
-  // Targeted answers to a phone's list/read; no absPath, safe to ferry.
+  // Targeted answers to a phone's list/read/write. absPath on content is
+  // edit-meta only (capability-gated host-side) and round-trips on save.
   projectDirListing: "mirror",
   projectFileContent: "mirror",
+  projectFileWriteResult: "mirror",
   userMessage: "mirror",
   agentStart: "mirror",
   thoughtChunk: "mirror",
@@ -662,6 +671,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   // closed project cannot keep answering file reads after rehome.
   projectDirListing: "message-cwd",
   projectFileContent: "message-cwd",
+  projectFileWriteResult: "message-cwd",
   userMessage: "scope",
   agentStart: "scope",
   thoughtChunk: "scope",

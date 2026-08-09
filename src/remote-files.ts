@@ -1,13 +1,12 @@
 /**
- * Read-only project file access for remote (phone / browser) clients.
+ * Project file access for remote (phone / browser) clients.
  *
- * ## This pass is READ-ONLY — deliberate, not forgotten
+ * ## Scope of this module
  *
- * Browse directories, open one file, read its contents. No write, save, delete,
- * rename, mkdir, or bulk/large-file download. Editing from a relay would need
- * version stamps, conflict UI, and executable-write policy that the desktop
- * panel already owns; do not grow this module into that without a separate
- * design.
+ * Browse directories, open one file, read its contents, and — when the host
+ * advertises `editProjectFiles` — save edits to an **existing** text file.
+ * No create, delete, rename, mkdir, or bulk/large-file download. Those need
+ * separate designs; do not grow them here by accident.
  *
  * ## Fence composition (do not invent a second root)
  *
@@ -17,20 +16,36 @@
  *    differently-wrong boundary. A phone deliberately reaches *less* than the
  *    desktop panel (which roots at the whole workspace).
  * 2. **Which paths inside it** — {@link resolveTreePath} / {@link listTreeDir} /
- *    {@link readTreeFile}: refuses traversal, refuses outbound symlinks/
- *    junctions, re-resolves before use (TOCTOU). Same containment the desktop
- *    panel uses; pure and unit-tested there.
+ *    {@link readTreeFile} / {@link writeTreeFile}: refuses traversal, refuses
+ *    outbound symlinks/junctions, re-resolves before use (TOCTOU). Same
+ *    containment the desktop panel uses; pure and unit-tested there.
+ *
+ * ## Why save reuses writeTreeFile (do not fork a second write path)
+ *
+ * Desktop already owns the careful bits that matter more remotely than locally:
+ * - **TreeFileStamp (mtime + size)** — "did this file change under me?"
+ * - **expectedAbsPath** — "is this still the SAME file?" A tab left open on one
+ *   project, saved after the active folder moved, resolved its relative path
+ *   against the new root and wrote into another project's same-named file. The
+ *   stamp alone caught the common case and then offered Overwrite, which
+ *   completed the loss. Both guards are mandatory on the remote path.
+ * - preserves line ending, BOM, trailing newline
+ * - applies the same executable policy as opens
  *
  * Preview classification reuses {@link classifyFilePreview} (and its byte caps)
  * so remote and desktop never disagree on which extensions are text vs binary.
  */
 
 import {
+  classifyFilePreview,
   listTreeDir,
   readTreeFile,
+  writeTreeFile,
   type ListTreeResult,
   type ReadTreeFileResult,
+  type TreeFileStamp,
   type TreePathFs,
+  type WriteTreeFileResult,
 } from "./file-tree";
 import { repoScopeFor, type MsgOrigin } from "./remote-policy";
 
@@ -102,8 +117,9 @@ export function listRemoteProjectDir(
 
 /**
  * Read one file for the in-page remote viewer. Uses {@link readTreeFile}:
- * text/markdown/json/image only, byte-capped, binary refused. Never returns
- * absolute host paths to the wire — callers must strip `absPath`.
+ * text/markdown/json/image only, byte-capped, binary refused. Absolute paths
+ * leave the host only when the caller includes edit metadata for a save
+ * round-trip ({@link projectFileContentForWire}).
  *
  * Unsupported kinds (`external`) and oversize files fail closed for remote:
  * a phone has no OS open hand-off.
@@ -118,7 +134,61 @@ export function readRemoteProjectFile(
   return readTreeFile(root, relPath, platform, pathFs, readFileSync);
 }
 
-/** Wire-safe success payload: no absPath, no stamp/editor fields. */
+/**
+ * Save an existing text file under the remote file root.
+ *
+ * Thin wrapper over {@link writeTreeFile} — same stamp + expectedAbsPath guards,
+ * same EOL/BOM/executable policy. Existing files only: writeTreeFile refuses
+ * missing paths (`not found`); this pass does not create, delete, or rename.
+ */
+export function writeRemoteProjectFile(
+  root: string,
+  relPath: string,
+  text: string,
+  expectedStamp: TreeFileStamp,
+  options: {
+    expectedAbsPath: string;
+    isExecutableOpenTarget: (absPath: string) => boolean;
+    platform?: NodeJS.Platform;
+    pathFs?: TreePathFs;
+    readFileSync?: (p: string) => Buffer;
+    writeFileSync?: (
+      p: string,
+      data: Buffer,
+      opts?: { flag?: string; mode?: number },
+    ) => void;
+    renameSync?: (from: string, to: string) => void;
+    unlinkSync?: (p: string) => void;
+  },
+): WriteTreeFileResult {
+  // expectedAbsPath is mandatory on the remote path: a phone tab going stale
+  // after the desk switches projects is precisely the cross-project scenario
+  // the desktop save learned the hard way. Do not make it optional here.
+  if (typeof options.expectedAbsPath !== "string" || !options.expectedAbsPath) {
+    return { ok: false, reason: "missing expectedAbsPath" };
+  }
+  // Text only, decided HERE rather than by the client. The read path already
+  // withholds the stamp and absolute path for an image, so no Edit control is
+  // painted — but that is a UI affordance and the client is untrusted. Without
+  // this, a crafted `writeProjectFile` reaches any non-text file inside the
+  // selected repo. Reading an image on a phone is useful; writing one is not.
+  const kind = classifyFilePreview(relPath);
+  if (kind !== "markdown" && kind !== "json" && kind !== "text") {
+    return { ok: false, reason: "only text files can be edited remotely" };
+  }
+  return writeTreeFile(root, relPath, text, expectedStamp, {
+    expectedAbsPath: options.expectedAbsPath,
+    isExecutableOpenTarget: options.isExecutableOpenTarget,
+    platform: options.platform,
+    pathFs: options.pathFs,
+    readFileSync: options.readFileSync,
+    writeFileSync: options.writeFileSync,
+    renameSync: options.renameSync,
+    unlinkSync: options.unlinkSync,
+  });
+}
+
+/** Wire-safe success payload for a read. */
 export type RemoteProjectFileWire =
   | {
       ok: true;
@@ -127,14 +197,22 @@ export type RemoteProjectFileWire =
       text?: string;
       dataUrl?: string;
       pretty?: boolean;
+      stamp?: TreeFileStamp;
+      absPath?: string;
     }
   | { ok: false; reason: string };
 
 /**
  * Strip host-only fields from a read result before it crosses the relay.
- * Absolute paths must never leave the machine; stamps are for desktop save.
+ *
+ * Absolute paths and stamps leave the machine only when `includeEditMeta` is
+ * true (host advertises `editProjectFiles`) and the kind is editable text —
+ * the save path needs both. Image previews never get them.
  */
-export function projectFileContentForWire(result: ReadTreeFileResult): RemoteProjectFileWire {
+export function projectFileContentForWire(
+  result: ReadTreeFileResult,
+  opts?: { includeEditMeta?: boolean },
+): RemoteProjectFileWire {
   if (!result.ok) {
     // Map "open externally" to a clear remote reason — no OS hand-off on a phone.
     if (result.openExternal) {
@@ -147,7 +225,7 @@ export function projectFileContentForWire(result: ReadTreeFileResult): RemotePro
     }
     return { ok: false, reason: result.reason };
   }
-  return {
+  const base: RemoteProjectFileWire = {
     ok: true,
     kind: result.kind,
     relPath: result.relPath,
@@ -155,4 +233,19 @@ export function projectFileContentForWire(result: ReadTreeFileResult): RemotePro
     ...(result.dataUrl !== undefined ? { dataUrl: result.dataUrl } : {}),
     ...(result.pretty !== undefined ? { pretty: result.pretty } : {}),
   };
+  // Edit meta: only text kinds, only when the host offers a write path. Without
+  // both, the client must not paint an Edit control that cannot save safely.
+  if (
+    opts?.includeEditMeta &&
+    result.kind !== "image" &&
+    result.stamp &&
+    result.absPath
+  ) {
+    return {
+      ...base,
+      stamp: result.stamp,
+      absPath: result.absPath,
+    };
+  }
+  return base;
 }

@@ -85,6 +85,22 @@ describe("parseRelayFrame", () => {
     ["clearAllSessions cwd", { type: "clearAllSessions", cwd: "../.." }],
     ["addMentionFile relPath", { type: "addMentionFile", relPath: "../../secret.txt" }],
     ["uploadFile name", { type: "uploadFile", name: "../../secret.md", data: "YQ==" }],
+    ["writeProjectFile relPath", {
+      type: "writeProjectFile",
+      cwd: "/work/a",
+      relPath: "../../secret.txt",
+      text: "x",
+      stamp: { mtimeMs: 1, size: 1 },
+      expectedAbsPath: "/work/a/secret.txt",
+    }],
+    ["writeProjectFile expectedAbsPath", {
+      type: "writeProjectFile",
+      cwd: "/work/a",
+      relPath: "a.ts",
+      text: "x",
+      stamp: { mtimeMs: 1, size: 1 },
+      expectedAbsPath: "/work/../escape",
+    }],
   ] as const;
 
   it.each(traversalMessages)(
@@ -267,9 +283,33 @@ describe("parseRelayFrame", () => {
       { type: "clearAllSessions", cwd: "/work/repo" },
       { type: "addMentionFile", relPath: "src/file.ts" },
       { type: "uploadFile", name: "Quarterly Notes.pdf", data: "YQ==" },
+      {
+        type: "writeProjectFile",
+        cwd: "/work/repo",
+        relPath: "src/file.ts",
+        text: "hello\n",
+        stamp: { mtimeMs: 1_700_000_000_000, size: 6 },
+        expectedAbsPath: "/work/repo/src/file.ts",
+      },
     ]) {
       expect(parseRelayFrame(wrap(msg)), JSON.stringify(msg)).not.toBeNull();
     }
+    // Missing stamp / non-finite numbers must not pass the wire gate.
+    expect(parseRelayFrame(wrap({
+      type: "writeProjectFile",
+      cwd: "/work/repo",
+      relPath: "a.ts",
+      text: "x",
+      expectedAbsPath: "/work/repo/a.ts",
+    }))).toBeNull();
+    expect(parseRelayFrame(wrap({
+      type: "writeProjectFile",
+      cwd: "/work/repo",
+      relPath: "a.ts",
+      text: "x",
+      stamp: { mtimeMs: NaN, size: 1 },
+      expectedAbsPath: "/work/repo/a.ts",
+    }))).toBeNull();
   });
 
   it("drops malformed filesystem selectors and accepts a valid ready token", () => {

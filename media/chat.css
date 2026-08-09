@@ -2455,6 +2455,74 @@ body.vscode-light {
 .files-browse-md {
   font-size: 13px;
 }
+.files-browse-action {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--vscode-button-border, var(--vscode-editorWidget-border, #555));
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, inherit);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.files-browse-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.files-browse-action-primary {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+  border-color: transparent;
+}
+.files-browse-action-danger {
+  color: var(--vscode-errorForeground, #f44);
+  border-color: var(--vscode-errorForeground, #f44);
+}
+.files-browse-notice {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+.files-browse-notice-warn {
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-editorWarning-foreground, #cca700));
+  background: var(--vscode-inputValidation-warningBackground, transparent);
+}
+.files-browse-conflict-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 12px 8px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+.files-browse-editor {
+  display: block;
+  width: 100%;
+  min-height: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  resize: none;
+  background: var(--vscode-editor-background, transparent);
+  color: var(--vscode-editor-foreground, inherit);
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  outline: none;
+}
+.files-browse-viewer-body:has(.files-browse-editor) {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 /* ---- composer ---- */
 

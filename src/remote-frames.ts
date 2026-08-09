@@ -244,8 +244,8 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
         : null;
     case "addMentionFile":
       return isRemoteMentionPath(value.relPath) ? msg as WebviewMsg : null;
-    // Read-only project browse. cwd must look like a catalog path; relPath must
-    // be relative (or empty for the repo root on list). Host still runs
+    // Project browse/save. cwd must look like a catalog path; relPath must be
+    // relative (or empty for the repo root on list). Host still runs
     // resolveRemoteFileRoot + resolveTreePath — this only keeps garbage off the wire.
     case "listProjectDir":
       return isRemoteCwd(value.cwd) &&
@@ -258,6 +258,25 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return isRemoteCwd(value.cwd) && isRemoteMentionPath(value.relPath)
         ? msg as WebviewMsg
         : null;
+    case "writeProjectFile": {
+      // Existing-file save only: stamp + expectedAbsPath are mandatory so the
+      // host can refuse a stale tab or a cross-project relPath collision.
+      if (!isRemoteCwd(value.cwd) || !isRemoteMentionPath(value.relPath)) return null;
+      if (typeof value.text !== "string") return null;
+      if (!isRemoteCwd(value.expectedAbsPath)) return null;
+      const stamp = value.stamp;
+      if (
+        !stamp ||
+        typeof stamp !== "object" ||
+        typeof (stamp as { mtimeMs?: unknown }).mtimeMs !== "number" ||
+        !Number.isFinite((stamp as { mtimeMs: number }).mtimeMs) ||
+        typeof (stamp as { size?: unknown }).size !== "number" ||
+        !Number.isFinite((stamp as { size: number }).size)
+      ) {
+        return null;
+      }
+      return msg as WebviewMsg;
+    }
     case "uploadFile":
       return isRemoteUploadName(value.name) ? msg as WebviewMsg : null;
     case "pasteImage":

@@ -438,10 +438,10 @@
     // until it says, so a control that needs one is withheld rather than offered
     // and then refused.
     hostCaps: {},
-    // Remote read-only file browse (list + open). Capability-gated; never mounted
-    // in the local VS Code / desktop webview even if the host flag is true —
-    // those hosts already have a real explorer. Phone UI stays collapsed by
-    // default (screen space is scarce; the rail is already a drawer).
+    // Remote file browse (list + open + optional edit). Capability-gated; never
+    // mounted in the local VS Code / desktop webview even if the host flag is
+    // true — those hosts already have a real explorer. Phone UI stays collapsed
+    // by default (screen space is scarce; the rail is already a drawer).
     filesBrowse: {
       open: false,
       relPath: "",
@@ -450,9 +450,12 @@
       error: "",
       loading: false,
       // In-page viewer (phone has no host editor to hand off to).
-      viewer: null, // { relPath, kind, text?, dataUrl?, pretty?, error? }
+      // edit fields when host advertises editProjectFiles + text kind:
+      // stamp, absPath, editing, draft, dirty, saveGen, conflict, notice
+      viewer: null,
       listGen: 0,
       readGen: 0,
+      writeGen: 0,
     },
     railCollapsed: {},
     /** The project the live conversation was in at the last render. Only used to
@@ -12054,6 +12057,9 @@
       case "projectFileContent":
         handleProjectFileContent(msg);
         break;
+      case "projectFileWriteResult":
+        handleProjectFileWriteResult(msg);
+        break;
       default:
         // No case ran. Either the host posted a type outside the contract (drift
         // between src/protocol.ts and the webview-helpers.js copy — the sync test
@@ -12095,19 +12101,29 @@
   modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busyLocked) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
 
-  // ---------- remote read-only project files ----------
+  // ---------- remote project files ----------
   //
-  // Browse + open under the tab's selected repo. Host fence is repoScopeFor +
-  // resolveTreePath (see src/remote-files.ts). This surface is READ-ONLY on
-  // purpose — no edit/save/delete. Capability-gated (field presence); local
-  // VS Code / desktop never mount it even when the host advertises the flag.
+  // Browse + open under the tab's selected repo; edit+save when the host also
+  // advertises editProjectFiles. Host fence is repoScopeFor + resolveTreePath
+  // (see src/remote-files.ts). No create/delete/rename. Capability-gated (field
+  // presence); local VS Code / desktop never mount it even when the host
+  // advertises the flag.
 
   function remoteFilesBrowseAvailable() {
     return IS_REMOTE && !!(state.hostCaps && state.hostCaps.browseProjectFiles);
   }
 
+  /** Edit is a separate capability so a host can offer browse without a write path. */
+  function remoteFilesEditAvailable() {
+    return remoteFilesBrowseAvailable() && !!(state.hostCaps && state.hostCaps.editProjectFiles);
+  }
+
   function remoteFilesRepoCwd() {
     return state.selectedRepoCwd || state.activeRepoCwd || state.cwd || "";
+  }
+
+  function remoteFileIsEditableKind(kind) {
+    return kind === "markdown" || kind === "json" || kind === "text";
   }
 
   function ensureRemoteFilesBrowser() {
@@ -12267,12 +12283,33 @@
   function handleProjectFileContent(msg) {
     const pending = state.filesBrowse._pendingRead;
     if (pending && (msg.cwd !== pending.cwd || msg.relPath !== pending.relPath)) return;
+    // A re-read for overwrite must not clobber the user's draft if it races a
+    // normal open of a different path (pending already gates cwd/relPath).
+    const keepDraft = pending && pending.forOverwrite && state.filesBrowse.viewer;
     state.filesBrowse.loading = false;
     if (!msg.ok) {
-      state.filesBrowse.viewer = {
-        relPath: msg.relPath || (pending && pending.relPath) || "",
-        error: msg.reason || "Could not open file.",
-      };
+      if (keepDraft) {
+        state.filesBrowse.viewer.notice = msg.reason || "Could not reload the current file version.";
+        state.filesBrowse.viewer.conflict = false;
+      } else {
+        state.filesBrowse.viewer = {
+          relPath: msg.relPath || (pending && pending.relPath) || "",
+          error: msg.reason || "Could not open file.",
+        };
+      }
+    } else if (keepDraft) {
+      // Fresh stamp for a deliberate overwrite — do not replace the draft text.
+      const v = state.filesBrowse.viewer;
+      v.stamp = msg.stamp;
+      v.absPath = msg.absPath;
+      v.conflict = false;
+      v.notice = "";
+      // Proceed with the overwrite save using the new stamp.
+      if (v.stamp && v.absPath && typeof v.draft === "string") {
+        postRemoteFileWrite(v, v.draft);
+      } else {
+        v.notice = "Could not reload the current file version.";
+      }
     } else {
       state.filesBrowse.viewer = {
         relPath: msg.relPath,
@@ -12280,9 +12317,94 @@
         text: msg.text,
         dataUrl: msg.dataUrl,
         pretty: msg.pretty,
+        stamp: msg.stamp,
+        absPath: msg.absPath,
+        editing: false,
+        draft: typeof msg.text === "string" ? msg.text : "",
+        dirty: false,
+        conflict: false,
+        notice: "",
       };
     }
     renderRemoteFilesChrome();
+  }
+
+  function handleProjectFileWriteResult(msg) {
+    const pending = state.filesBrowse._pendingWrite;
+    if (pending && (msg.cwd !== pending.cwd || msg.relPath !== pending.relPath)) return;
+    const v = state.filesBrowse.viewer;
+    if (!v || v.relPath !== msg.relPath) return;
+    v.saving = false;
+    if (msg.ok) {
+      v.text = typeof v.draft === "string" ? v.draft : v.text;
+      v.stamp = msg.stamp;
+      v.dirty = false;
+      v.editing = false;
+      v.conflict = false;
+      v.notice = "Saved.";
+      state.filesBrowse._pendingWrite = null;
+      renderRemoteFilesChrome();
+      return;
+    }
+    // Stamp mismatch: do NOT silently overwrite — same as the desktop panel.
+    // "workspace changed" means a different file (cross-project); no overwrite.
+    if (msg.reason === "changed") {
+      v.conflict = true;
+      v.notice = "File changed on disk. Reload the host's version, or keep your edits and overwrite.";
+    } else if (msg.reason === "workspace changed") {
+      v.conflict = false;
+      v.notice = "This file is no longer the one you opened (project may have switched). Re-open it from the list.";
+    } else {
+      v.conflict = false;
+      v.notice = msg.reason || "Save refused.";
+    }
+    state.filesBrowse._pendingWrite = null;
+    renderRemoteFilesChrome();
+  }
+
+  function postRemoteFileWrite(viewer, text) {
+    const cwd = remoteFilesRepoCwd();
+    if (!cwd || !viewer || !viewer.relPath || !viewer.stamp || !viewer.absPath) return;
+    if (!remoteFilesEditAvailable()) return;
+    state.filesBrowse.writeGen += 1;
+    viewer.saving = true;
+    viewer.notice = "";
+    state.filesBrowse._pendingWrite = {
+      gen: state.filesBrowse.writeGen,
+      cwd,
+      relPath: viewer.relPath,
+    };
+    renderRemoteFilesChrome();
+    vscode.postMessage({
+      type: "writeProjectFile",
+      cwd,
+      relPath: viewer.relPath,
+      text,
+      stamp: viewer.stamp,
+      expectedAbsPath: viewer.absPath,
+    });
+  }
+
+  function startRemoteFileOverwrite() {
+    const v = state.filesBrowse.viewer;
+    if (!v || !v.relPath || !remoteFilesEditAvailable()) return;
+    // Deliberate second action: re-read for a fresh stamp, then save the draft
+    // with that stamp. Never re-use a failed stamp.
+    const cwd = remoteFilesRepoCwd();
+    if (!cwd) return;
+    state.filesBrowse.readGen += 1;
+    const gen = state.filesBrowse.readGen;
+    state.filesBrowse.loading = true;
+    state.filesBrowse._pendingRead = {
+      gen,
+      cwd,
+      relPath: v.relPath,
+      forOverwrite: true,
+    };
+    v.notice = "Refreshing version…";
+    v.conflict = false;
+    renderRemoteFilesChrome();
+    vscode.postMessage({ type: "readProjectFile", cwd, relPath: v.relPath });
   }
 
   function navigateRemoteFilesUp() {
@@ -12327,15 +12449,97 @@
       backToList.innerHTML = ICON.chevronRight;
       backToList.style.transform = "rotate(180deg)";
       backToList.addEventListener("click", () => {
+        // Discard in-progress edit when leaving — no silent write.
         state.filesBrowse.viewer = null;
+        state.filesBrowse._pendingWrite = null;
         renderRemoteFilesChrome();
       });
       const vName = document.createElement("div");
       vName.className = "files-browse-viewer-name";
       vName.textContent = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
+      if (v.dirty) vName.textContent += " •";
       vHead.appendChild(backToList);
       vHead.appendChild(vName);
+      // Edit/Save only when the host advertised edit AND we have stamp+absPath
+      // from the read (without both, a save cannot prove identity/version).
+      const canEdit =
+        remoteFilesEditAvailable() &&
+        remoteFileIsEditableKind(v.kind) &&
+        v.stamp &&
+        v.absPath &&
+        !v.error &&
+        !v.loading;
+      if (canEdit) {
+        if (v.editing) {
+          const cancelBtn = document.createElement("button");
+          cancelBtn.type = "button";
+          cancelBtn.className = "files-browse-action";
+          cancelBtn.textContent = "Cancel";
+          cancelBtn.disabled = !!v.saving;
+          cancelBtn.addEventListener("click", () => {
+            v.editing = false;
+            v.draft = typeof v.text === "string" ? v.text : "";
+            v.dirty = false;
+            v.conflict = false;
+            v.notice = "";
+            renderRemoteFilesChrome();
+          });
+          const saveBtn = document.createElement("button");
+          saveBtn.type = "button";
+          saveBtn.className = "files-browse-action files-browse-action-primary";
+          saveBtn.textContent = v.saving ? "Saving…" : "Save";
+          saveBtn.disabled = !!v.saving || !v.dirty;
+          saveBtn.addEventListener("click", () => {
+            if (!v.dirty || v.saving) return;
+            postRemoteFileWrite(v, typeof v.draft === "string" ? v.draft : "");
+          });
+          vHead.appendChild(cancelBtn);
+          vHead.appendChild(saveBtn);
+        } else {
+          const editBtn = document.createElement("button");
+          editBtn.type = "button";
+          editBtn.className = "files-browse-action";
+          editBtn.title = "Edit file";
+          editBtn.setAttribute("aria-label", "Edit file");
+          editBtn.innerHTML = ICON.pencil;
+          editBtn.addEventListener("click", () => {
+            v.editing = true;
+            v.draft = typeof v.text === "string" ? v.text : "";
+            v.dirty = false;
+            v.notice = "";
+            v.conflict = false;
+            renderRemoteFilesChrome();
+          });
+          vHead.appendChild(editBtn);
+        }
+      }
       viewer.appendChild(vHead);
+      if (v.notice) {
+        const notice = document.createElement("div");
+        notice.className = "files-browse-notice" + (v.conflict || (v.notice && v.notice !== "Saved.") ? " files-browse-notice-warn" : "");
+        notice.textContent = v.notice;
+        viewer.appendChild(notice);
+        if (v.conflict) {
+          const actions = document.createElement("div");
+          actions.className = "files-browse-conflict-actions";
+          const reloadBtn = document.createElement("button");
+          reloadBtn.type = "button";
+          reloadBtn.className = "files-browse-action";
+          reloadBtn.textContent = "Reload";
+          reloadBtn.addEventListener("click", () => {
+            // Drop draft; re-open the host's version.
+            requestRemoteFile(v.relPath);
+          });
+          const overwriteBtn = document.createElement("button");
+          overwriteBtn.type = "button";
+          overwriteBtn.className = "files-browse-action files-browse-action-danger";
+          overwriteBtn.textContent = "Overwrite";
+          overwriteBtn.addEventListener("click", () => startRemoteFileOverwrite());
+          actions.appendChild(reloadBtn);
+          actions.appendChild(overwriteBtn);
+          viewer.appendChild(actions);
+        }
+      }
       const vBody = document.createElement("div");
       vBody.className = "files-browse-viewer-body";
       if (v.loading || state.filesBrowse.loading && v.loading !== false && !v.error && !v.kind) {
@@ -12344,6 +12548,26 @@
       } else if (v.error) {
         vBody.className += " files-browse-error";
         vBody.textContent = v.error;
+      } else if (v.editing) {
+        const ta = document.createElement("textarea");
+        ta.className = "files-browse-editor";
+        ta.value = typeof v.draft === "string" ? v.draft : (v.text || "");
+        ta.spellcheck = false;
+        ta.setAttribute("aria-label", "Edit " + (v.relPath || "file"));
+        ta.addEventListener("input", () => {
+          v.draft = ta.value;
+          v.dirty = ta.value !== (v.text || "");
+          // Update dirty marker + Save enablement without rebuilding the textarea
+          // (would steal focus / lose caret on every keystroke).
+          const nameEl = viewer.querySelector(".files-browse-viewer-name");
+          if (nameEl) {
+            const base = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
+            nameEl.textContent = v.dirty ? base + " •" : base;
+          }
+          const save = viewer.querySelector(".files-browse-action-primary");
+          if (save) save.disabled = !!v.saving || !v.dirty;
+        });
+        vBody.appendChild(ta);
       } else if (v.kind === "image" && v.dataUrl) {
         const img = document.createElement("img");
         img.src = v.dataUrl;

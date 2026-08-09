@@ -146,6 +146,7 @@ import {
   projectFileContentForWire,
   readRemoteProjectFile,
   resolveRemoteFileRoot,
+  writeRemoteProjectFile,
 } from "./remote-files";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
@@ -188,7 +189,7 @@ import {
   MAX_INLINE_MEDIA_BYTES,
   resolveChatOpenFilePath,
 } from "./media-serve";
-import { revalidateOpenFileForUse } from "./desktop/desktop-policy";
+import { isExecutableOpenTarget, revalidateOpenFileForUse } from "./desktop/desktop-policy";
 import {
   describeFfmpegProblem,
   ffmpegInstallHint,
@@ -5566,8 +5567,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "listProjectDir": {
-        // READ-ONLY remote file browse. Fence: repoScopeFor (which root) +
-        // listTreeDir/resolveTreePath (paths inside it). No write path exists.
+        // Remote file browse. Fence: repoScopeFor (which root) +
+        // listTreeDir/resolveTreePath (paths inside it).
         // Local VS Code / desktop webviews may receive the capability flag but
         // never mount a second explorer — only remotes post these messages.
         const rel = typeof msg.relPath === "string" ? msg.relPath : "";
@@ -5610,7 +5611,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "readProjectFile": {
-        // READ-ONLY: one file, text/image preview caps from file-tree.ts. No save.
+        // One file, text/image preview caps from file-tree.ts. When the host
+        // advertises edit, text kinds also carry stamp + absPath for a save
+        // round-trip (see writeProjectFile).
         const selectedCwd = origin === "remote" && clientId
           ? this.remoteClients.cwd(clientId)
           : this.workspaceRoot();
@@ -5641,7 +5644,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           break;
         }
         const read = readRemoteProjectFile(rootResult.root, msg.relPath);
-        const wire = projectFileContentForWire(read);
+        // includeEditMeta only when we advertise the write path — otherwise a
+        // browse-only host must not leak absPath/stamp to the phone.
+        const wire = projectFileContentForWire(read, {
+          includeEditMeta: !!HOST_CAPABILITIES.editProjectFiles,
+        });
         if (wire.ok) {
           replyFile({
             type: "projectFileContent",
@@ -5652,6 +5659,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             ...(wire.text !== undefined ? { text: wire.text } : {}),
             ...(wire.dataUrl !== undefined ? { dataUrl: wire.dataUrl } : {}),
             ...(wire.pretty !== undefined ? { pretty: wire.pretty } : {}),
+            ...(wire.stamp !== undefined ? { stamp: wire.stamp } : {}),
+            ...(wire.absPath !== undefined ? { absPath: wire.absPath } : {}),
           });
         } else {
           replyFile({
@@ -5660,6 +5669,83 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             relPath: msg.relPath,
             ok: false,
             reason: wire.reason,
+          });
+        }
+        break;
+      }
+      case "writeProjectFile": {
+        // Existing-file save only (no create/delete/rename). Reuses writeTreeFile
+        // so stamp + expectedAbsPath both apply — a remote tab that went stale
+        // after the desk switched projects is the expectedAbsPath scenario.
+        // Capability gate: a host that does not advertise edit refuses here so
+        // an older client cannot invent a write path the UI never offered.
+        const replyWrite = (body: Extract<HostMsg, { type: "projectFileWriteResult" }>) => {
+          if (requester) this.sendRemoteRequester(requester, body);
+          else this.post(body);
+        };
+        if (!HOST_CAPABILITIES.editProjectFiles) {
+          replyWrite({
+            type: "projectFileWriteResult",
+            cwd: msg.cwd,
+            relPath: msg.relPath,
+            ok: false,
+            reason: "editing is not available",
+          });
+          break;
+        }
+        const selectedCwd = origin === "remote" && clientId
+          ? this.remoteClients.cwd(clientId)
+          : this.workspaceRoot();
+        const rootResult = resolveRemoteFileRoot({
+          origin,
+          claimedCwd: msg.cwd,
+          selectedCwd,
+          workspaceRoot: this.workspaceRoot(),
+          isKnownCwd: (cwd) =>
+            origin === "remote"
+              ? this.remoteTargetableCwd(cwd)
+              : pathsEqual(cwd, this.workspaceRoot()),
+          sameCwd: pathsEqual,
+        });
+        if (!rootResult.ok) {
+          this.host.appendLine(`[remote-files] write rejected: ${rootResult.reason} (${msg.cwd})`);
+          replyWrite({
+            type: "projectFileWriteResult",
+            cwd: msg.cwd,
+            relPath: msg.relPath,
+            ok: false,
+            reason: rootResult.reason,
+          });
+          break;
+        }
+        const written = writeRemoteProjectFile(
+          rootResult.root,
+          msg.relPath,
+          msg.text,
+          msg.stamp,
+          {
+            expectedAbsPath: msg.expectedAbsPath,
+            // Same executable policy as desktop opens/saves — do not weaken it
+            // for remote just because the phone never shell.opens the path.
+            isExecutableOpenTarget: (absPath) => isExecutableOpenTarget(absPath),
+          },
+        );
+        if (written.ok) {
+          replyWrite({
+            type: "projectFileWriteResult",
+            cwd: msg.cwd,
+            relPath: written.relPath,
+            ok: true,
+            stamp: written.stamp,
+          });
+        } else {
+          this.host.appendLine(`[remote-files] write refused: ${written.reason} (${msg.relPath})`);
+          replyWrite({
+            type: "projectFileWriteResult",
+            cwd: msg.cwd,
+            relPath: msg.relPath,
+            ok: false,
+            reason: written.reason,
           });
         }
         break;

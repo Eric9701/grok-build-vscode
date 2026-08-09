@@ -46,6 +46,8 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.send).toBe("propose");
     expect(INBOUND_DISPOSITION.steerSend).toBe("propose");
     expect(INBOUND_DISPOSITION.uploadFile).toBe("propose");
+    // Workspace file mutation — propose (not view); existing files only.
+    expect(INBOUND_DISPOSITION.writeProjectFile).toBe("propose");
     expect(INBOUND_DISPOSITION.permissionAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.exitPlanAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.logout).toBe("full");
@@ -131,6 +133,32 @@ describe("remote repo target gate", () => {
     expect(allowRemoteRepoTarget({ type: "listProjectDir", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "readProjectFile", cwd: "/work/a", relPath: "a.ts" }, discovered)).toBe(true);
     expect(allowRemoteRepoTarget({ type: "readProjectFile", cwd: "/etc", relPath: "passwd" }, discovered)).toBe(false);
+    expect(
+      allowRemoteRepoTarget(
+        {
+          type: "writeProjectFile",
+          cwd: "/work/a",
+          relPath: "a.ts",
+          text: "x",
+          stamp: { mtimeMs: 1, size: 1 },
+          expectedAbsPath: "/work/a/a.ts",
+        },
+        discovered,
+      ),
+    ).toBe(true);
+    expect(
+      allowRemoteRepoTarget(
+        {
+          type: "writeProjectFile",
+          cwd: "/etc",
+          relPath: "passwd",
+          text: "x",
+          stamp: { mtimeMs: 1, size: 1 },
+          expectedAbsPath: "/etc/passwd",
+        },
+        discovered,
+      ),
+    ).toBe(false);
     expect(allowRemoteRepoTarget({ type: "selectRepo", cwd: "/etc" }, discovered)).toBe(false);
     expect(allowRemoteRepoTarget({ type: "toggleRepoPin", cwd: "/etc", pinned: true }, discovered)).toBe(false);
     // A colour write that names an arbitrary cwd is the same hole as archive/pin.
@@ -874,6 +902,7 @@ describe("capabilities a remote may see", () => {
       servesMediaRanges: true,
       showInFolder: true,
       browseProjectFiles: true,
+      editProjectFiles: true,
       relocateView: true,
       secondarySideBar: true,
       showOutput: true,
@@ -888,6 +917,7 @@ describe("capabilities a remote may see", () => {
     // The file browser is the one a remote genuinely needs — a phone has no
     // editor to fall back on, so stripping it would take the feature away.
     expect(seen.browseProjectFiles).toBe(true);
+    expect(seen.editProjectFiles).toBe(true);
     expect(seen.uploadFile).toBe(true);
     expect(seen.remoteVoice).toBe(true);
   });
