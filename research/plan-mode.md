@@ -8,8 +8,11 @@
 > follow-up verdict prompt, `afterTurn`, or verdict-time cancellation. The
 > client-side gate remains because the CLI still passes `terminal/create` while
 > planning. Legacy primer/marker readers remain for sessions already on disk.
-> Plan is unavailable fail-closed below `GROK_REQUIRED_VERSION`, or when the CLI
-> version cannot be read. The 0.2.3 analysis below is preserved as history.
+> Plan is unavailable fail-closed below `GROK_REQUIRED_VERSION`. When the CLI
+> version cannot be read the gate is still fail-closed, but that outcome is
+> re-checkable on the next Plan pick (`decidePlanModeAvailability` /
+> `recheckPlanModeAvailability`) rather than latched for the session. The 0.2.3
+> analysis below is preserved as history.
 
 Research notes. Status as of `grok` 0.2.3 (native Windows), extension v1.1.0, 2026-05-27.
 

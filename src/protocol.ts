@@ -60,6 +60,11 @@ export const HOST_CAPABILITIES = {
   // went, so the delete did not stick — and a client that offers the control
   // anyway is offering one that answers with a refusal. Capability, not version.
   deleteActiveSession: true,
+  // Read-only project file browse for AFK Pilot (phone/browser). Field presence
+  // is the gate — never a version check. Local VS Code / desktop webviews
+  // receive the flag but must not draw a second explorer; only IS_REMOTE clients
+  // mount the in-page browser. Older hosts omit the field → nothing advertised.
+  browseProjectFiles: true,
 } as const;
 
 /** Host-kind affordances merged into `initialState.capabilities` at post time. */
@@ -67,6 +72,12 @@ export type HostUiCapabilities = {
   uploadFile: boolean;
   remoteVoice: boolean;
   deleteActiveSession?: boolean;
+  /**
+   * Read-only project file browse (list dir + read previewable files) for
+   * remote clients. OPT-IN: absent/false = hide. Current hosts set true via
+   * HOST_CAPABILITIES; the webview still only mounts UI when remote.
+   */
+  browseProjectFiles?: boolean;
   /**
    * Whether generated media is served with honest byte-range responses. This
    * is opt-in: hosts without this capability must keep generated videos lazy.
@@ -129,7 +140,9 @@ export type HostMsg =
    *  session swap, so without this the webview keeps a stale true and rebuilds
    *  the hint the user has already acted on. */
   | { type: "moveViewHint"; value: boolean }
-  | { type: "planModeAvailability"; available: boolean; reason?: string }
+  /** Plan picker gate. `recheckable` means the version probe failed (not a
+   *  verified-old CLI) — the row stays clickable so a later pick re-probes. */
+  | { type: "planModeAvailability"; available: boolean; reason?: string; recheckable?: boolean }
   | { type: "showThinking"; value: boolean }
   /** Live update of the global app-purpose preference (Knowledge work / Coding). */
   | { type: "appPurpose"; value: "knowledge" | "coding" }
@@ -172,6 +185,37 @@ export type HostMsg =
   // workspace-relative paths (forward slashes), ranked by src/mention.ts. The
   // echoed `query` lets the webview drop stale replies after further typing.
   | { type: "mentionResults"; query: string; files: string[] }
+  /**
+   * Answer to `listProjectDir` (remote read-only file browse). `cwd` echoes the
+   * scoped root; `relPath` is the listed directory ("" = repo root). No absolute
+   * host paths — only workspace-relative entry paths. READ-ONLY by design.
+   */
+  | {
+      type: "projectDirListing";
+      cwd: string;
+      relPath: string;
+      ok: true;
+      entries: Array<{ name: string; kind: "file" | "dir"; relPath: string }>;
+      truncated: boolean;
+    }
+  | { type: "projectDirListing"; cwd: string; relPath: string; ok: false; reason: string }
+  /**
+   * Answer to `readProjectFile`. Preview kinds match desktop `classifyFilePreview`
+   * (markdown/json/image/text); binary / external / oversize fail with `ok:false`.
+   * Caps: {@link FILE_PREVIEW_MAX_BYTES} / {@link FILE_PREVIEW_MAX_IMAGE_BYTES}
+   * in `src/file-tree.ts`. Never carries an absolute host path.
+   */
+  | {
+      type: "projectFileContent";
+      cwd: string;
+      relPath: string;
+      ok: true;
+      kind: "markdown" | "json" | "image" | "text";
+      text?: string;
+      dataUrl?: string;
+      pretty?: boolean;
+    }
+  | { type: "projectFileContent"; cwd: string; relPath: string; ok: false; reason: string }
   /** `steer` marks a mid-turn interjection (#52). It paints a user bubble but is
    *  NOT a prompt and gets no rewind point, so the bubble must not consume a
    *  rewind index — see refreshUserRewindButtons. */
@@ -418,6 +462,18 @@ export type WebviewMsg =
   // (same pipeline as drop / the + picker). The `@rel/path` text stays in the
   // composer, so the prompt carries both the prose reference and the chip.
   | { type: "addMentionFile"; relPath: string }
+  /**
+   * Remote read-only file browse: list one directory under the tab's selected
+   * repo (`cwd` must be that scope — see `resolveRemoteFileRoot`). `relPath`
+   * optional ("" / omit = repo root). Answered by `projectDirListing`.
+   * READ-ONLY: no write/save/delete path exists for remotes.
+   */
+  | { type: "listProjectDir"; cwd: string; relPath?: string }
+  /**
+   * Remote read-only file open: read one previewable file under the tab's
+   * selected repo. Answered by `projectFileContent`. Same fence as list.
+   */
+  | { type: "readProjectFile"; cwd: string; relPath: string }
   | { type: "pasteImage"; mimeType: string; data: string; previewId?: string }
   // Remote browser upload: an untrusted basename plus base64 bytes. The host
   // allowlists/sanitizes/stages it, then routes it through addDroppedFile.
@@ -480,7 +536,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
-  chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,
+  chips: true, commandsUpdate: true, mentionResults: true, projectDirListing: true, projectFileContent: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, historyBatch: true, permissionHistoryQueue: true, planHistoryQueue: true,
   toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
@@ -510,6 +566,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setRepoArchived: true, setRepoColor: true,
   resumeSession: true, renameSession: true, deleteSession: true,
   clearAllSessions: true, pickFile: true, mentionQuery: true, addMentionFile: true,
+  listProjectDir: true, readProjectFile: true,
   pasteImage: true, uploadFile: true, voiceStart: true,
   voiceStop: true, remoteVoiceStart: true, remoteVoiceChunk: true,
   remoteVoiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,

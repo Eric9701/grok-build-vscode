@@ -1754,10 +1754,31 @@ describe("file-tree panel assets", () => {
     const headActionsRule = chatCss.match(/#session-head-actions\s*\{[^}]+\}/)?.[0] ?? "";
     expect(headActionsRule).toBeTruthy();
     expect(headActionsRule).not.toMatch(/border-right/);
-    // Panel toggle carries the left-edge separator (desktop-only mount).
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-top-toggle\s*\{[\s\S]*?border-left:\s*1px solid/,
-    );
+    // The separator is its OWN element now, not a border on the toggle. As a
+    // border it made the button read as a box and pushed its glyph off centre —
+    // a border on a fixed-size button always distorts the button. Still
+    // desktop-only by construction: remote mounts neither node.
+    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-top-sep\s*\{[\s\S]*?background:/);
+    const toggleRule = FILE_TREE_PANEL_CSS.match(/\.desk-ft-top-toggle\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(toggleRule).toBeTruthy();
+    expect(toggleRule).not.toMatch(/border-left/);
+    expect(toggleRule).not.toMatch(/padding-left/);
+    // ...and it now matches the other top-bar icon buttons instead of shouting:
+    // muted foreground, no border, chat.css's .icon-btn radius.
+    expect(toggleRule).toMatch(/color:\s*var\(--vscode-descriptionForeground\)/);
+    expect(toggleRule).toMatch(/border:\s*0/);
+    expect(toggleRule).toMatch(/border-radius:\s*8px/);
+    // Anchored: an unanchored `.icon-btn {` also matches `.top-bar > .icon-btn`,
+    // which carries only `flex: none`.
+    const iconBtnRule = chatCss.match(/^\.icon-btn\s*\{[^}]+\}/m)?.[0] ?? "";
+    expect(iconBtnRule).toMatch(/border-radius:\s*8px/);
+    expect(iconBtnRule).toMatch(/color:\s*var\(--vscode-descriptionForeground\)/);
+
+    // Created and torn down together. A border could not be orphaned; a
+    // sibling can, and a re-inject would stack them up.
+    const boot = fileTreePanelBootSource();
+    expect(boot).toContain('sep.id = "desk-ft-top-sep"');
+    expect(boot).toContain('getElementById("desk-ft-top-sep")?.remove()');
   });
 
   it("scopes CSS under desk-ft- and boots without chat.js symbols", () => {

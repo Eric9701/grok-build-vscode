@@ -60,12 +60,13 @@ import { listGitWorktreePaths } from "./git-worktree-list";
 import {
   locateGrokCli,
   extensionWasUpgraded,
-  isGrokVersionBelowRequired,
   isStdioBrokenGrokVersion,
   parseGrokVersion,
   grokUpdatePolicy,
   shouldReactivelyDowngrade,
   isLockedBinaryError,
+  decidePlanModeAvailability,
+  probeVersionOutput,
   GROK_REQUIRED_VERSION,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "./cli-locator";
@@ -139,7 +140,13 @@ import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
-import { allowFromRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, capabilitiesForRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import {
+  listRemoteProjectDir,
+  projectFileContentForWire,
+  readRemoteProjectFile,
+  resolveRemoteFileRoot,
+} from "./remote-files";
 import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
@@ -321,6 +328,8 @@ interface RemoteBrowserPreferences {
 interface CliCompatibilityResult {
   planModeAvailable: boolean;
   planModeUnavailableReason?: string;
+  /** False only when the probe got no parseable version (re-checkable). */
+  planModeVersionVerified: boolean;
 }
 
 // History pagination: rows fetched per "page" (initial open + each load-more / search page).
@@ -405,7 +414,11 @@ function guessMediaMime(p: string): string {
 
 export class GrokSidebar {
   public static readonly viewId = "grok.chat";
+  /** Primary side bar projects rail — separate webview, not a second chat client. */
+  public static readonly projectsViewId = "grok.projects";
   private view?: HostWebviewView;
+  /** Second local consumer of catalog-shaped host messages. Absent until resolved. */
+  private projectsRail?: HostWebviewView;
   /** The session currently shown in the chat — one member of {@link pool}. */
   private focused = this.newLocalSession();
   /**
@@ -590,15 +603,7 @@ export class GrokSidebar {
       enableScripts: true,
       // Extension assets keep extensionUri identity (vscode-remote on remote hosts).
       // Staging + grok home are genuinely local disk paths → Uri.file.
-      localResourceRoots: [
-        Uri.joinPath(this.context.extensionUri, "media"),
-        Uri.joinPath(this.context.extensionUri, "resources"),
-        Uri.file(this.imageStagingDir()),
-        // grok writes generated media under ~/.grok/sessions/<cwd>/<id>/{images,videos};
-        // serving it via asWebviewUri (instead of a base64 data: URI) lets the
-        // webview stream a multi-MB video from disk — see postGeneratedMedia.
-        Uri.file(resolveGrokHome()),
-      ],
+      localResourceRoots: this.chatLocalResourceRoots(),
     };
     view.webview.html = this.getHtml(view.webview);
     // Message handlers run async; without this catch a throw (e.g. an fs error
@@ -700,6 +705,72 @@ export class GrokSidebar {
     this.configWatcher = disposeAll(configChanges, authWatcher);
     this.applyTerminalShellPref();
     void this.maybeStartUplink();
+  }
+
+  /**
+   * Primary side bar projects rail. Same catalog stream as the chat webview
+   * (`repos` / `sessions` / `repoSessions` / `pinnedSessions` / `sessionDot`),
+   * never chat traffic — a second `chat.js` client would double-own sessions.
+   */
+  resolveProjectsRailView(view: HostWebviewView): void {
+    this.projectsRail = view;
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        Uri.joinPath(this.context.extensionUri, "media"),
+        Uri.joinPath(this.context.extensionUri, "resources"),
+      ],
+    };
+    view.webview.html = this.getProjectsRailHtml(view.webview);
+    view.webview.onDidReceiveMessage((raw) => {
+      const m = raw as WebviewMsg;
+      void this.onProjectsRailMessage(m).catch((e) => {
+        const msg = (e as Error)?.message ?? String(e);
+        this.host.appendLine(`[projects-rail] ${m.type} failed: ${msg}`);
+        void this.host.showErrorMessage(`Grok Projects: ${m.type} failed — ${msg}`);
+      });
+    });
+  }
+
+  /** Drop the rail handle when the view is disposed (or re-created). */
+  disposeProjectsRailView(): void {
+    this.projectsRail = undefined;
+  }
+
+  private chatLocalResourceRoots(): Uri[] {
+    return [
+      Uri.joinPath(this.context.extensionUri, "media"),
+      Uri.joinPath(this.context.extensionUri, "resources"),
+      Uri.file(this.imageStagingDir()),
+      // grok writes generated media under ~/.grok/sessions/<cwd>/<id>/{images,videos};
+      // serving it via asWebviewUri (instead of a base64 data: URI) lets the
+      // webview stream a multi-MB video from disk — see postGeneratedMedia.
+      Uri.file(resolveGrokHome()),
+    ];
+  }
+
+  /**
+   * Rail actions only. `ready` pushes catalog — never postInitialState / startSession
+   * (those belong to the chat view). Everything else reuses onMessage so there is
+   * one host path for resume/pin/rename/delete.
+   */
+  private async onProjectsRailMessage(msg: WebviewMsg): Promise<void> {
+    if (msg.type === "ready") {
+      this.pushProjectsRailCatalog();
+      return;
+    }
+    if (!GrokSidebar.PROJECTS_RAIL_WEBVIEW_TYPES.has(msg.type)) {
+      this.host.appendLine(`[projects-rail] ignored ${msg.type}`);
+      return;
+    }
+    await this.onMessage(msg, "local");
+  }
+
+  /** Catalog snapshot for a freshly-resolved rail (or its ready handshake). */
+  private pushProjectsRailCatalog(): void {
+    if (!this.projectsRail) return;
+    this.postRepoCatalog();
+    this.postSessionsList();
   }
 
   /** Push the `grok.terminalShell` preference (#46) into the shared shell
@@ -1033,12 +1104,27 @@ Only continue if you trust this code.`,
     // The mode button is disabled while busy; this backstops the toggle-mode command.
     if (!session.client || !session.client.sessionId || session.priming) return;
     if (modeId === "plan" && !session.planModeAvailable) {
-      this.reportRequester(
-        requester,
-        "warning",
-        session.planModeUnavailableReason ?? "Plan mode is unavailable for this Grok CLI version.",
-      );
-      return;
+      // Unverified probe: re-check now rather than forcing a session restart.
+      // A verified-old CLI is latched and stays refused.
+      if (!session.planModeVersionVerified) {
+        const rechecked = await this.recheckPlanModeAvailability(session);
+        if (!rechecked || !session.planModeAvailable) {
+          this.reportRequester(
+            requester,
+            "warning",
+            session.planModeUnavailableReason ?? "Plan mode is unavailable for this Grok CLI version.",
+          );
+          return;
+        }
+        // Probe succeeded — fall through and enter Plan on this same click.
+      } else {
+        this.reportRequester(
+          requester,
+          "warning",
+          session.planModeUnavailableReason ?? "Plan mode is unavailable for this Grok CLI version.",
+        );
+        return;
+      }
     }
     if (!session.planModeAvailable && session.planActive) {
       // An agent-initiated unavailable Plan transition is still being forced
@@ -3345,7 +3431,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private postPinnedSessions(clientId?: string): void {
     const hasRemote = this.remoteClients.clients().length > 0;
-    const hasLocalRail = this.host.canSwitchWorkspaceFolder;
+    // Desktop multi-folder rail OR the VS Code primary-side-bar projects view.
+    const hasLocalRail = this.host.canSwitchWorkspaceFolder || !!this.projectsRail;
     if (!clientId && !hasRemote && !hasLocalRail) return;
     // Built against the live authorized set for every recipient (same open set
     // on desktop; full catalog on VS Code).
@@ -3634,33 +3721,86 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
   }
 
-  /** Read the installed version and decide Plan availability. This deliberately
-   * performs no update, availability check, caching, or pool orchestration. */
-  private async planModeCompatibility(cliPath: string): Promise<CliCompatibilityResult> {
-    const versionOutput = await this.readGrokVersion(cliPath);
-    const installed = parseGrokVersion(versionOutput)?.join(".");
-    if (!installed) {
-      const message = `Could not verify the grok CLI version; this extension requires grok ${GROK_REQUIRED_VERSION} or newer.`;
-      this.host.appendLine(`${message} Continuing best-effort with the current binary.`);
-      void this.host.showWarningMessage(message);
-      return {
-        planModeAvailable: false,
-        planModeUnavailableReason:
-          `Plan mode requires Grok CLI ${GROK_REQUIRED_VERSION} or newer; ` +
-          "the installed version could not be verified.",
-      };
+  /**
+   * Probe the installed CLI and decide Plan availability. Fail-closed when the
+   * version cannot be read, but that outcome is *not* latched — only a parseable
+   * below-floor banner sticks for the session. Retries once on empty/unparseable
+   * output (slow first spawn). Performs no update or pool orchestration.
+   */
+  private async planModeCompatibility(
+    cliPath: string,
+    opts: { notify?: boolean } = {},
+  ): Promise<CliCompatibilityResult> {
+    const notify = opts.notify !== false;
+    const versionOutput = await probeVersionOutput(
+      () => this.readGrokVersion(cliPath),
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    );
+    const decision = decidePlanModeAvailability(versionOutput);
+    if (decision.available) {
+      return { planModeAvailable: true, planModeVersionVerified: true };
     }
-    if (isGrokVersionBelowRequired(versionOutput)) {
-      const message = `grok CLI ${installed} is below required version ${GROK_REQUIRED_VERSION}; Plan mode is unavailable.`;
+    if (decision.verified) {
+      const message =
+        `grok CLI ${decision.installed} is below required version ${GROK_REQUIRED_VERSION}; ` +
+        "Plan mode is unavailable.";
       this.host.appendLine(message);
-      void this.host.showWarningMessage(message);
+      if (notify) void this.host.showWarningMessage(message);
       return {
         planModeAvailable: false,
-        planModeUnavailableReason:
-          `Plan mode requires Grok CLI ${GROK_REQUIRED_VERSION} or newer; installed version is ${installed}.`,
+        planModeVersionVerified: true,
+        planModeUnavailableReason: decision.reason,
       };
     }
-    return { planModeAvailable: true };
+    // Unverified: log + optional toast once at session start; a later Plan pick
+    // re-probes without forcing a restart (#105).
+    const message =
+      `Could not verify the Grok CLI version; Plan mode is unavailable until it can be checked ` +
+      `(needs ${GROK_REQUIRED_VERSION}+). Continuing best-effort with the current binary.`;
+    this.host.appendLine(message);
+    if (notify) {
+      void this.host.showWarningMessage(
+        `Could not verify the Grok CLI version; Plan mode is unavailable until it can be checked ` +
+          `(needs ${GROK_REQUIRED_VERSION}+).`,
+      );
+    }
+    return {
+      planModeAvailable: false,
+      planModeVersionVerified: false,
+      planModeUnavailableReason: decision.reason,
+    };
+  }
+
+  /** Push a Plan-availability decision onto the session and its views. */
+  private applyPlanModeCompatibility(session: Session, compatibility: CliCompatibilityResult): void {
+    session.planModeAvailable = compatibility.planModeAvailable;
+    session.planModeUnavailableReason = compatibility.planModeUnavailableReason;
+    session.planModeVersionVerified = compatibility.planModeVersionVerified;
+    this.emit(session, {
+      type: "planModeAvailability",
+      available: compatibility.planModeAvailable,
+      reason: compatibility.planModeUnavailableReason,
+      recheckable: !compatibility.planModeAvailable && !compatibility.planModeVersionVerified,
+    });
+  }
+
+  /**
+   * Re-run the version probe for an unverified session when the user picks Plan.
+   * Returns false if the CLI path is missing or the session was torn down mid-probe.
+   */
+  private async recheckPlanModeAvailability(session: Session): Promise<boolean> {
+    const gen = session.gen;
+    const cliPath = this.cliPath || locateGrokCli(
+      this.host.getConfiguration("grok").get<string>("cliPath", ""),
+    );
+    if (!cliPath) return false;
+    this.host.appendLine("Re-checking Grok CLI version for Plan mode…");
+    // Silent: the initial session-start probe already notified; a second toast
+    // on every pick would turn a transient into noise.
+    const compatibility = await this.planModeCompatibility(cliPath, { notify: false });
+    if (gen !== session.gen) return false;
+    this.applyPlanModeCompatibility(session, compatibility);
+    return true;
   }
 
   /** Pin the bounded Windows stdio-hang range before spawning ACP. */
@@ -4073,13 +4213,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (gen !== session.gen) return undefined;
     const compatibility = await this.planModeCompatibility(cliPath);
     if (gen !== session.gen) return undefined;
-    session.planModeAvailable = compatibility.planModeAvailable;
-    session.planModeUnavailableReason = compatibility.planModeUnavailableReason;
-    this.emit(session, {
-      type: "planModeAvailability",
-      available: compatibility.planModeAvailable,
-      reason: compatibility.planModeUnavailableReason,
-    });
+    this.applyPlanModeCompatibility(session, compatibility);
 
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
@@ -5319,8 +5453,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "listRepoSessions":
         // Preview rows for a repo WITHOUT selecting it (the projects rail).
-        // Local answers when the host can switch folders (desktop rail); VS Code
-        // never posts this (no rail mount), so the local branch is inert there.
+        // Local: desktop multi-folder rail and the VS Code primary-side-bar rail.
         if (origin === "remote" && clientId) {
           this.sendRepoSessionsPreview(clientId, msg.cwd, msg.limit);
         } else {
@@ -5328,8 +5461,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         break;
       case "toggleSessionPin":
-        // Rail pin. Remote always; local when multi-folder desktop has a rail.
-        if (origin === "remote" || this.host.canSwitchWorkspaceFolder) {
+        // Rail pin. Remote always; local when any projects rail is live
+        // (desktop multi-folder or VS Code primary-side-bar view).
+        if (origin === "remote" || this.host.canSwitchWorkspaceFolder || this.projectsRail) {
           await this.toggleSessionPin(msg.id, msg.cwd, msg.pinned);
         }
         break;
@@ -5429,6 +5563,105 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           break;
         }
         await this.trackAttach(this.addDroppedFile(abs, false, attachmentOwner));
+        break;
+      }
+      case "listProjectDir": {
+        // READ-ONLY remote file browse. Fence: repoScopeFor (which root) +
+        // listTreeDir/resolveTreePath (paths inside it). No write path exists.
+        // Local VS Code / desktop webviews may receive the capability flag but
+        // never mount a second explorer — only remotes post these messages.
+        const rel = typeof msg.relPath === "string" ? msg.relPath : "";
+        const selectedCwd = origin === "remote" && clientId
+          ? this.remoteClients.cwd(clientId)
+          : this.workspaceRoot();
+        const rootResult = resolveRemoteFileRoot({
+          origin,
+          claimedCwd: msg.cwd,
+          selectedCwd,
+          workspaceRoot: this.workspaceRoot(),
+          isKnownCwd: (cwd) =>
+            origin === "remote"
+              ? this.remoteTargetableCwd(cwd)
+              : pathsEqual(cwd, this.workspaceRoot()),
+          sameCwd: pathsEqual,
+        });
+        const replyList = (body: Extract<HostMsg, { type: "projectDirListing" }>) => {
+          if (requester) this.sendRemoteRequester(requester, body);
+          else this.post(body);
+        };
+        if (!rootResult.ok) {
+          this.host.appendLine(`[remote-files] list rejected: ${rootResult.reason} (${msg.cwd})`);
+          replyList({ type: "projectDirListing", cwd: msg.cwd, relPath: rel, ok: false, reason: rootResult.reason });
+          break;
+        }
+        const listed = listRemoteProjectDir(rootResult.root, rel);
+        if (!listed.ok) {
+          replyList({ type: "projectDirListing", cwd: msg.cwd, relPath: rel, ok: false, reason: listed.reason });
+        } else {
+          replyList({
+            type: "projectDirListing",
+            cwd: msg.cwd,
+            relPath: rel,
+            ok: true,
+            entries: listed.entries,
+            truncated: listed.truncated,
+          });
+        }
+        break;
+      }
+      case "readProjectFile": {
+        // READ-ONLY: one file, text/image preview caps from file-tree.ts. No save.
+        const selectedCwd = origin === "remote" && clientId
+          ? this.remoteClients.cwd(clientId)
+          : this.workspaceRoot();
+        const rootResult = resolveRemoteFileRoot({
+          origin,
+          claimedCwd: msg.cwd,
+          selectedCwd,
+          workspaceRoot: this.workspaceRoot(),
+          isKnownCwd: (cwd) =>
+            origin === "remote"
+              ? this.remoteTargetableCwd(cwd)
+              : pathsEqual(cwd, this.workspaceRoot()),
+          sameCwd: pathsEqual,
+        });
+        const replyFile = (body: Extract<HostMsg, { type: "projectFileContent" }>) => {
+          if (requester) this.sendRemoteRequester(requester, body);
+          else this.post(body);
+        };
+        if (!rootResult.ok) {
+          this.host.appendLine(`[remote-files] read rejected: ${rootResult.reason} (${msg.cwd})`);
+          replyFile({
+            type: "projectFileContent",
+            cwd: msg.cwd,
+            relPath: msg.relPath,
+            ok: false,
+            reason: rootResult.reason,
+          });
+          break;
+        }
+        const read = readRemoteProjectFile(rootResult.root, msg.relPath);
+        const wire = projectFileContentForWire(read);
+        if (wire.ok) {
+          replyFile({
+            type: "projectFileContent",
+            cwd: msg.cwd,
+            relPath: wire.relPath,
+            ok: true,
+            kind: wire.kind,
+            ...(wire.text !== undefined ? { text: wire.text } : {}),
+            ...(wire.dataUrl !== undefined ? { dataUrl: wire.dataUrl } : {}),
+            ...(wire.pretty !== undefined ? { pretty: wire.pretty } : {}),
+          });
+        } else {
+          replyFile({
+            type: "projectFileContent",
+            cwd: msg.cwd,
+            relPath: msg.relPath,
+            ok: false,
+            reason: wire.reason,
+          });
+        }
         break;
       }
       case "voiceStart":
@@ -8290,9 +8523,37 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private static readonly TRANSIENT_TYPES = new Set([
     "restoreComposer", "focusInput", "openModePopover",
   ]);
+  /**
+   * Host→rail catalog surface. Everything else stays chat-only so a user who
+   * never opens the rail sees exactly today's behaviour.
+   */
+  private static readonly PROJECTS_RAIL_HOST_TYPES = new Set<HostMsg["type"]>([
+    "repos",
+    "sessions",
+    "repoSessions",
+    "pinnedSessions",
+    "sessionDot",
+    "session",
+    "sessionName",
+  ]);
+  /** Webview→host actions the rail may post. Closed set — never send/cancel/etc. */
+  private static readonly PROJECTS_RAIL_WEBVIEW_TYPES = new Set<WebviewMsg["type"]>([
+    "listSessions",
+    "listRepoSessions",
+    "selectRepo",
+    "resumeSession",
+    "newSession",
+    "toggleSessionPin",
+    "renameSession",
+    "deleteSession",
+    "clearAllSessions",
+    "setRepoArchived",
+    "setRepoColor",
+  ]);
   private post(message: HostMsg): void {
     if (this.focused.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     this.view?.webview.postMessage(message);
+    this.mirrorToProjectsRail(message);
     if (GrokSidebar.DEVICE_GLOBAL_REMOTE_TYPES.has(message.type)) {
       this.broadcastRemoteDevice(message);
     } else {
@@ -8300,10 +8561,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
   }
 
-  /** Post to the VS Code webview only. */
+  /** Post to the VS Code webview only (plus catalog mirror to the projects rail). */
   private postLocal(message: HostMsg): void {
     this.postTap?.("local", message);
     this.view?.webview.postMessage(message);
+    this.mirrorToProjectsRail(message);
+  }
+
+  /**
+   * Second local destination for catalog-shaped frames. A view that has never
+   * resolved is simply skipped — no parallel data path, no throw.
+   */
+  private mirrorToProjectsRail(message: HostMsg): void {
+    if (!this.projectsRail) return;
+    if (!GrokSidebar.PROJECTS_RAIL_HOST_TYPES.has(message.type)) return;
+    void this.projectsRail.webview.postMessage(message);
   }
 
   /**
@@ -8342,15 +8614,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Remote clients receive media bytes only through the remote media policy;
-   * they must never inherit the desk host's local range-serving capability. */
+   *  they must never inherit capabilities that describe the DESK machine. The
+   *  list lives with the rest of the remote policy (DESK_ONLY_CAPABILITIES) so
+   *  adding a capability has one obvious place to check, and so the stripping
+   *  is testable without standing up a sidebar. */
   private messageForRemote(message: HostMsg): HostMsg {
     if (message.type !== "initialState") return message;
-    const {
-      servesMediaRanges: _servesMediaRanges,
-      showInFolder: _showInFolder,
-      ...capabilities
-    } = message.capabilities;
-    return { ...message, capabilities };
+    return { ...message, capabilities: capabilitiesForRemote(message.capabilities) };
   }
 
   /** Target one opaque relay clientId. */
@@ -8723,6 +8993,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postTap?.("local", message);
       const webview = this.view?.webview;
       if (webview) webview.postMessage(this.localizeHistoryMessage(message, webview));
+      // Active-session identity for the projects rail (highlight + pin home).
+      this.mirrorToProjectsRail(message);
     }
     if (!session.replaying) this.sendRemoteSession(session, message);
   }
@@ -9214,6 +9486,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!id) return;
     const message: HostMsg = { type: "sessionDot", id, dot: this.dotForId(id) };
     this.view?.webview.postMessage(message);
+    this.mirrorToProjectsRail(message);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const sent = new Set<string>();
     for (const clientId of this.remoteClients.clients()) {
@@ -10539,6 +10812,37 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return out;
   }
 
+  /**
+   * HTML for the primary-side-bar projects rail. Self-contained: does not load
+   * chat.js (that would create a second chat client).
+   */
+  private getProjectsRailHtml(webview: HostWebview): string {
+    const nonce = getNonce();
+    const mediaUri = (file: string) =>
+      webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "media", file));
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+<link rel="stylesheet" href="${mediaUri("projects-rail.css")}" />
+</head>
+<body>
+  <aside id="projects-rail" class="projects-rail" aria-label="Projects">
+    <div class="rail-search-wrap">
+      <span class="rail-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </span>
+      <input id="rail-search" class="rail-search" type="search" placeholder="Filter projects…" autocomplete="off" spellcheck="false" aria-label="Filter projects" />
+    </div>
+    <div id="rail-scroll" class="rail-scroll"></div>
+  </aside>
+  <script nonce="${nonce}" src="${mediaUri("projects-rail.js")}"></script>
+</body>
+</html>`;
+  }
+
   private getHtml(webview: HostWebview): string {
     const nonce = getNonce();
     // Join under extensionUri so remote hosts keep vscode-remote:// (Uri.file
@@ -10550,7 +10854,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
     // Desktop multi-folder: host ships the rail mount. VS Code never does —
     // absence of `#projects-rail` is the property that keeps the extension's
-    // UI single-column even when a `repos` frame arrives for clear-all.
+    // chat column free of an in-panel rail (the projects view is a separate
+    // primary-side-bar webview). A `repos` frame still arrives for clear-all.
     // Chrome mirrors AFK Pilot: brand + panel toggle, search, scroll, footer
     // theme toggle (no account avatar). chat.js only empties #rail-scroll.
     const railMark = this.host.canSwitchWorkspaceFolder

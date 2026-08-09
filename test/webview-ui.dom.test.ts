@@ -596,7 +596,7 @@ describe("mode picker (the plan-gate entry path)", () => {
 
   it("disables only Plan with the host's version reason, then re-enables it", () => {
     const { window, posted, doc } = bootWebview();
-    const reason = "Plan mode requires Grok CLI 0.2.117 or newer.";
+    const reason = "Plan mode requires Grok CLI 0.2.117 or newer; installed version is 0.2.100.";
     dispatch(window, { type: "planModeAvailability", available: false, reason });
 
     const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
@@ -620,6 +620,29 @@ describe("mode picker (the plan-gate entry path)", () => {
     expect(planItem.className).not.toContain("disabled");
     expect(planItem.querySelector(".mode-item-disabled-note")).toBeNull();
     click(window, planItem);
+    expect(posted).toContainEqual({ type: "setMode", modeId: "plan" });
+  });
+
+  it("keeps Plan clickable when the host marks an unverified probe recheckable (#105)", () => {
+    const { window, posted, doc } = bootWebview();
+    const reason =
+      "Could not verify the installed Grok CLI version, so Plan mode is unavailable. " +
+      "Once verified, Plan requires 0.2.117 or newer.";
+    dispatch(window, {
+      type: "planModeAvailability",
+      available: false,
+      reason,
+      recheckable: true,
+    });
+
+    click(window, $(doc, "mode-btn"));
+    const pop = $(doc, "mode-popover");
+    const planItem = [...pop.querySelectorAll(".mode-popover-item")]
+      .find((el) => el.querySelector(".mode-item-label")!.textContent === "Plan mode") as HTMLElement;
+    expect(planItem.className).not.toContain("disabled");
+    expect(planItem.querySelector(".mode-item-disabled-note")?.textContent).toBe(reason);
+    click(window, planItem);
+    // Click still posts setMode — the host re-probes and may enable Plan on this pick.
     expect(posted).toContainEqual({ type: "setMode", modeId: "plan" });
   });
 

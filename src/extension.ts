@@ -3,6 +3,7 @@ import { GrokSidebar } from "./sidebar";
 import { createVsCodeHost, createVsCodeHostContext, fromVsCodeUri, wrapWebviewView } from "./vscode-host";
 import {
   GROK_VIEW_ID,
+  GROK_PROJECTS_VIEW_ID,
   PANEL_CONTAINER_ID,
   PRIMARY_CONTAINER_ID,
   SECONDARY_CONTAINER_ID,
@@ -171,6 +172,21 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       {
         resolveWebviewView(view) {
           sidebar.resolveWebviewView(wrapWebviewView(view));
+        },
+      },
+      {
+        webviewOptions: { retainContextWhenHidden: true },
+      },
+    ),
+    // Projects rail: fixed in the primary side bar (`grokPrimary`). No Cursor
+    // special-casing — registering a view in the primary bar works the same in
+    // both editors (Cursor only reserves the *secondary* bar for its agent UI).
+    vscode.window.registerWebviewViewProvider(
+      GROK_PROJECTS_VIEW_ID,
+      {
+        resolveWebviewView(view) {
+          sidebar.resolveProjectsRailView(wrapWebviewView(view));
+          view.onDidDispose(() => sidebar.disposeProjectsRailView());
         },
       },
       {

@@ -20,10 +20,15 @@
 
 export const GROK_VIEW_ID = "grok.chat";
 
+/** Projects rail — fixed in the primary side bar (`grokPrimary`). Separate from
+ *  the chat view so opening it never creates a second chat client. */
+export const GROK_PROJECTS_VIEW_ID = "grok.projects";
+
 /** Contributed containers, one per dock location (package.json prefixes each id
- *  with `workbench.view.extension.`). `grokSidebar` homes the view; the other
- *  two are empty by default (an empty container renders nothing) and exist only
- *  as `vscode.moveViews` targets. */
+ *  with `workbench.view.extension.`). `grokSidebar` homes the chat view;
+ *  `grokPrimary` homes the projects rail (and is also a move target for chat);
+ *  `grokPanel` is empty by default and exists only as a `vscode.moveViews`
+ *  target. */
 export const SECONDARY_CONTAINER_ID = "workbench.view.extension.grokSidebar";
 export const PRIMARY_CONTAINER_ID = "workbench.view.extension.grokPrimary";
 export const PANEL_CONTAINER_ID = "workbench.view.extension.grokPanel";

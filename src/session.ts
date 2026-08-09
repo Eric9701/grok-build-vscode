@@ -87,6 +87,13 @@ export class Session {
   /** Whether this session's CLI is new enough for native plan verdicts. */
   planModeAvailable = true;
   planModeUnavailableReason?: string;
+  /**
+   * True once `grok --version` produced a parseable answer for this session.
+   * Unverified (false) stays fail-closed for Plan but is re-checkable when the
+   * user picks Plan — a transient slow probe must not latch for the session.
+   * A verified below-floor answer keeps this true so we never re-ask a known-old CLI.
+   */
+  planModeVersionVerified = true;
 
   /** Latest attempt to force an unavailable Plan session back to Agent. */
   planModeRecoveryAttempt = 0;
@@ -420,6 +427,8 @@ export function sessionUiSnapshot(
     type: "planModeAvailability",
     available: session.planModeAvailable,
     reason: session.planModeUnavailableReason,
+    // Unverified probes stay clickable so the user can re-check without restart.
+    recheckable: !session.planModeAvailable && !session.planModeVersionVerified,
   });
   for (const [requestId, pending] of session.pendingPermissions) {
     messages.push({

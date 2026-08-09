@@ -4,7 +4,7 @@ Standalone Electron host for the same Grok Build agent UI that the VS Code
 extension uses. It speaks ACP over `grok agent stdio`, stores nothing private
 beyond what the extension already does, and is published from this public repo.
 
-Not affiliated with or endorsed by xAI.
+Not affiliated with or endorsed by SpaceXAI (formerly xAI).
 
 ## Download (installers)
 

@@ -12,6 +12,8 @@ import {
   isLockedBinaryError,
   isGrokVersionBelowRequired,
   isStdioBrokenGrokVersion,
+  decidePlanModeAvailability,
+  probeVersionOutput,
   GROK_REQUIRED_VERSION,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "../src/cli-locator";
@@ -133,6 +135,124 @@ describe("required grok behavior floor", () => {
       expect(isGrokVersionBelowRequired(`grok ${version} (x) [stable]`)).toBe(false);
     }
     expect(isGrokVersionBelowRequired("grok (dev build)")).toBe(false);
+  });
+});
+
+describe("decidePlanModeAvailability (#105 — verified-old vs unverified)", () => {
+  it("enables Plan for the floor and newer (including 1.0.0)", () => {
+    for (const version of ["0.2.117", "0.2.118", "1.0.0"]) {
+      expect(decidePlanModeAvailability(`grok ${version} (x) [stable]`)).toEqual({
+        available: true,
+        verified: true,
+      });
+    }
+  });
+
+  it("disables Plan with a latched verified-old reason for a parseable below-floor CLI", () => {
+    const decision = decidePlanModeAvailability("grok 0.2.100 (x) [stable]");
+    expect(decision).toEqual({
+      available: false,
+      verified: true,
+      installed: "0.2.100",
+      reason: `Plan mode requires Grok CLI ${GROK_REQUIRED_VERSION} or newer; installed version is 0.2.100.`,
+    });
+    // Distinct from the unverified copy — users must not conclude "too old" from a probe miss.
+    expect(decision.reason).toContain("installed version is");
+    expect(decision.reason).not.toMatch(/could not verify/i);
+  });
+
+  it("fails closed but marks unverified when the banner cannot be parsed", () => {
+    for (const banner of ["", "grok (dev build)", "not a version"]) {
+      const decision = decidePlanModeAvailability(banner);
+      expect(decision.available).toBe(false);
+      expect(decision.verified).toBe(false);
+      if (decision.available || decision.verified) throw new Error("expected unverified");
+      expect(decision.reason).toMatch(/could not verify/i);
+      expect(decision.reason).toContain(GROK_REQUIRED_VERSION);
+      expect(decision.reason).not.toContain("installed version is");
+    }
+  });
+
+  it("keeps the two unavailable reasons distinguishable", () => {
+    const old = decidePlanModeAvailability("grok 0.2.50 (x)");
+    const unverified = decidePlanModeAvailability("");
+    expect(old.available).toBe(false);
+    expect(unverified.available).toBe(false);
+    expect(old.verified).toBe(true);
+    expect(unverified.verified).toBe(false);
+    if (!old.available && old.verified && !unverified.available && !unverified.verified) {
+      expect(old.reason).not.toBe(unverified.reason);
+      expect(old.reason).toContain("installed version is 0.2.50");
+      expect(unverified.reason).toMatch(/could not verify/i);
+    }
+  });
+});
+
+describe("probeVersionOutput (#105 — retry empty probe, latch parseable)", () => {
+  it("returns the first parseable answer without retrying", async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const out = await probeVersionOutput(
+      async () => {
+        calls += 1;
+        return "grok 0.2.50 (x) [stable]";
+      },
+      async (ms) => { sleeps.push(ms); },
+    );
+    expect(out).toBe("grok 0.2.50 (x) [stable]");
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it("retries once after backoff when the first read is empty, then succeeds", async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const out = await probeVersionOutput(
+      async () => {
+        calls += 1;
+        return calls === 1 ? "" : "grok 1.0.0 (x) [stable]";
+      },
+      async (ms) => { sleeps.push(ms); },
+      50,
+    );
+    expect(out).toBe("grok 1.0.0 (x) [stable]");
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([50]);
+    // End state after fail-then-succeed: Plan available (the behaviour that matters).
+    expect(decidePlanModeAvailability(out)).toEqual({ available: true, verified: true });
+  });
+
+  it("retries unparseable output once and stays fail-closed if still empty", async () => {
+    let calls = 0;
+    const out = await probeVersionOutput(
+      async () => {
+        calls += 1;
+        return "";
+      },
+      async () => {},
+    );
+    expect(out).toBe("");
+    expect(calls).toBe(2);
+    const decision = decidePlanModeAvailability(out);
+    expect(decision.available).toBe(false);
+    expect(decision.verified).toBe(false);
+  });
+
+  it("does not retry a parseable below-floor CLI however many times asked", async () => {
+    // Simulate "user reaches for Plan" N times: each probe sees a stable old banner.
+    for (let i = 0; i < 3; i++) {
+      let calls = 0;
+      const out = await probeVersionOutput(
+        async () => {
+          calls += 1;
+          return "grok 0.2.100 (x) [stable]";
+        },
+        async () => { throw new Error("sleep should not run for parseable output"); },
+      );
+      expect(calls).toBe(1);
+      const decision = decidePlanModeAvailability(out);
+      expect(decision).toMatchObject({ available: false, verified: true, installed: "0.2.100" });
+    }
   });
 });
 

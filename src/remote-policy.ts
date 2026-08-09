@@ -10,7 +10,7 @@
 //   - inbound  (remote client -> host): WebviewMsg, gated by capability tier.
 //   - outbound (host -> remote client): HostMsg, mirrored / transformed / suppressed.
 
-import type { HostMsg, WebviewMsg } from "./protocol";
+import type { HostMsg, HostUiCapabilities, WebviewMsg } from "./protocol";
 import { isImageChip, type FileChip } from "./chips";
 import { isPrimerText } from "./grok-primer";
 import { countsAsUserBubble } from "./plan-restore";
@@ -215,6 +215,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
   mentionQuery: "view",
+  // Read-only project file browse (list dir + open one file). The fence is
+  // repoScopeFor + resolveTreePath — not a second root concept. WRITE paths are
+  // intentionally absent; do not widen these to propose without a save design.
+  listProjectDir: "view",
+  readProjectFile: "view",
   // input/turn control (propose+)
   send: "propose",
   newSession: "propose",
@@ -371,6 +376,11 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     case "setRepoColor":
     case "clearAllSessions":
     case "listRepoSessions":
+    // File browse names a cwd. Without this case the default branch returns
+    // true and a remote could claim an arbitrary path that never appeared in
+    // the catalog — the exact trap the comment on this function exists for.
+    case "listProjectDir":
+    case "readProjectFile":
       return isKnownCwd(msg.cwd);
     case "resumeSession":
     // Same shape as resume: the cwd is optional (the host falls back to its own
@@ -430,6 +440,36 @@ export function repoScopeFor(
 
 // ---------- outbound: HostMsg to a remote client ----------
 
+/**
+ * Capabilities that describe THE DESK MACHINE and would be actively misleading
+ * on a phone, so they are removed from the `initialState` a remote receives.
+ *
+ * - `servesMediaRanges` — the desk host's own byte-range serving. A remote gets
+ *   media through the remote media policy instead, so inheriting this would
+ *   make the browser preload video the relay never sends.
+ * - `showInFolder` — would offer "Show in folder" on a phone for a folder that
+ *   only exists on the desk machine.
+ *
+ * A list rather than a destructure at the call site so there is ONE place to
+ * look when a capability is added, and so the removal is testable without a
+ * whole sidebar. Belt-and-braces: `allowFromRemote` already refuses the
+ * messages these unlock. Capabilities a remote genuinely needs — the file
+ * browser, for one — must NOT be listed here.
+ */
+export const DESK_ONLY_CAPABILITIES = [
+  "servesMediaRanges",
+  "showInFolder",
+] as const satisfies ReadonlyArray<keyof HostUiCapabilities>;
+
+/** `capabilities` as a remote may see them. Pure; see DESK_ONLY_CAPABILITIES. */
+export function capabilitiesForRemote(
+  capabilities: HostUiCapabilities,
+): HostUiCapabilities {
+  const out = { ...capabilities };
+  for (const key of DESK_ONLY_CAPABILITIES) delete out[key];
+  return out;
+}
+
 export type OutboundDisposition =
   /** Pure data — ferry as-is. */
   | "mirror"
@@ -469,6 +509,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   chips: "mirror",
   commandsUpdate: "mirror",
   mentionResults: "mirror",
+  // Targeted answers to a phone's list/read; no absPath, safe to ferry.
+  projectDirListing: "mirror",
+  projectFileContent: "mirror",
   userMessage: "mirror",
   agentStart: "mirror",
   thoughtChunk: "mirror",
@@ -615,6 +658,10 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   planModeAvailability: "scope",
   commandsUpdate: "scope",
   mentionResults: "scope",
+  // Carry the scoped repo cwd; authorize against that field (message-cwd) so a
+  // closed project cannot keep answering file reads after rehome.
+  projectDirListing: "message-cwd",
+  projectFileContent: "message-cwd",
   userMessage: "scope",
   agentStart: "scope",
   thoughtChunk: "scope",

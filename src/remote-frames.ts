@@ -244,6 +244,20 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
         : null;
     case "addMentionFile":
       return isRemoteMentionPath(value.relPath) ? msg as WebviewMsg : null;
+    // Read-only project browse. cwd must look like a catalog path; relPath must
+    // be relative (or empty for the repo root on list). Host still runs
+    // resolveRemoteFileRoot + resolveTreePath — this only keeps garbage off the wire.
+    case "listProjectDir":
+      return isRemoteCwd(value.cwd) &&
+        (value.relPath === undefined ||
+          value.relPath === "" ||
+          isRemoteMentionPath(value.relPath))
+        ? msg as WebviewMsg
+        : null;
+    case "readProjectFile":
+      return isRemoteCwd(value.cwd) && isRemoteMentionPath(value.relPath)
+        ? msg as WebviewMsg
+        : null;
     case "uploadFile":
       return isRemoteUploadName(value.name) ? msg as WebviewMsg : null;
     case "pasteImage":

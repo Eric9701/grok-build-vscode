@@ -149,9 +149,12 @@ backstop at `initialize` or `session/new` when proactive recovery could not run.
 
 Version verification now has a second, independent safety role: a CLI below
 `GROK_REQUIRED_VERSION`, or one whose version cannot be read, may still run Agent and
-Auto accept but receives `planModeAvailable:false`. The picker disables Plan, forged
-Plan requests are rejected, restored/agent-initiated Plan is forced back to Agent, and
-a stray `exit_plan_mode` receives an error instead of an unsafe native verdict.
+Auto accept but receives `planModeAvailable:false`. A parseable below-floor CLI latches
+that off for the session; an unreadable probe stays re-checkable on the next Plan pick
+(`probeVersionOutput` / `decidePlanModeAvailability` / `recheckPlanModeAvailability`).
+Forged Plan requests against a verified-old CLI are rejected, restored/agent-initiated
+Plan is forced back to Agent, and a stray `exit_plan_mode` receives an error instead of
+an unsafe native verdict.
 
 > **History:** v1.4.12 introduced the 0.2.60 pin (range closed at 0.2.64); v1.4.13 added
 > the reactive net; v1.4.15 extended the range to 0.2.67 and broadened the reactive trigger

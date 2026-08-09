@@ -137,14 +137,17 @@ and the update retries once if a lingering lock still slips through.
 `maybeUpdateCliOnUpgrade` retains the normal session-start trigger: once per
 activation it compares `CLI_UPDATE_VERSION_KEY`, updating only after an extension
 version change; a fresh install records its baseline without updating. After that,
-every session start reads `grok --version`. On Windows, `maybePinBrokenCli` uses the
+every session start reads `grok --version` through `probeVersionOutput` (one short
+retry when the first read is empty/unparseable). On Windows, `maybePinBrokenCli` uses the
 bounded `isStdioBrokenGrokVersion` check to move 0.2.61–0.2.70 to the current
 `GROK_STDIO_DOWNGRADE_TARGET` before ACP spawn. `GROK_REQUIRED_VERSION` is the
-cross-platform ACP behavior floor and the current recovery target. A CLI below the floor, or whose version cannot be
-verified, still starts in Agent/Auto accept, but that `Session` carries
-`planModeAvailable:false`: the host emits `planModeAvailability`, the picker disables
-only Plan and shows the exact reason, and `setMode` rejects stale or forged Plan
-requests. Agent-initiated and restored Plan transitions raise the client safety gate.
+cross-platform ACP behavior floor and the current recovery target.
+`decidePlanModeAvailability` is fail-closed: a parseable CLI below the floor latches
+Plan off (`planModeVersionVerified:true`); an unreadable probe also sets
+`planModeAvailable:false` but stays re-checkable — the picker keeps Plan clickable
+(`planModeAvailability.recheckable`) and `setMode` re-probes via
+`recheckPlanModeAvailability` instead of forcing a restart. A verified-old CLI still
+hard-disables the Plan row and rejects forged Plan requests. Agent-initiated and restored Plan transitions raise the client safety gate.
 A live untrusted planning turn is cancelled, and the gate stays raised until both
 that `session/prompt` settles and `session/set_mode(default)` confirms Agent; a
 failure or stalled recovery stays gated and is surfaced explicitly.

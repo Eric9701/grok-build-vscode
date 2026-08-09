@@ -588,23 +588,25 @@ body.desk-ft-viewing .desk-ft-body {
 .desk-ft-node.desk-ft-open > .desk-ft-children {
   display: block;
 }
-/* Top-bar panel toggle (Lucide panel-right). Trailing separator: only this
-   desktop control exists after the ⋯ overflow — remote clients never mount it,
-   so the divider is absent there by construction. */
+/* Top-bar panel toggle (Lucide panel-right). Deliberately identical to
+   chat.css's .icon-btn — the muted descriptionForeground, no padding, no
+   border, the same 8px radius — because it sits in the same row as History and
+   the overflow menu, and had been reading as a boxed, brighter, off-centre
+   outlier. The glyph was off-centre for a concrete reason: a padding-left
+   inside a fixed 28px box centres within what is LEFT of it. The old
+   border-left was doing double duty as a separator; that is now its own
+   element (.desk-ft-top-sep), because a border on the button will always
+   distort the button. */
 .desk-ft-top-toggle {
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  margin-left: 6px;
   padding: 0;
-  padding-left: 6px;
-  border: none;
-  border-left: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,.35));
-  border-radius: 4px;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
-  color: var(--vscode-foreground, #ccc);
+  color: var(--vscode-descriptionForeground);
   cursor: pointer;
-  font-size: 14px;
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -616,7 +618,19 @@ body.desk-ft-viewing .desk-ft-body {
   display: block;
 }
 .desk-ft-top-toggle:hover {
+  color: var(--vscode-foreground, #ccc);
   background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
+/* The separator, as its own element rather than a border on the button. Only
+   this desktop control exists after the ⋯ overflow — remote clients never mount
+   it, so the divider is absent there by construction. Inset vertically so it
+   reads as a divider between groups rather than a full-height rule. */
+.desk-ft-top-sep {
+  flex: 0 0 1px;
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 6px;
+  background: var(--vscode-editorWidget-border, rgba(128,128,128,.35));
 }
 /* Rail collapse toggle (Lucide panel-left) — desktop shell only */
 .desk-rail-toggle {
@@ -1003,6 +1017,9 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   }
   document.getElementById("desk-ft-style")?.remove();
   document.getElementById("desk-ft-top-toggle")?.remove();
+  // Its separator is a sibling now, not a border on the button — so it needs
+  // removing too, or a re-inject leaves one behind on every reload.
+  document.getElementById("desk-ft-top-sep")?.remove();
   document.getElementById("desk-rail-toggle")?.remove();
   document.getElementById("desk-rail-open-btn")?.remove();
   document.body.classList.remove("desk-ft-closed", "desk-with-ft", "desk-ft-viewing", "desk-ft-collapsed", "desk-rail-collapsed");
@@ -1135,6 +1152,15 @@ export function fileTreePanelBootSource(iconsDir?: string): string {
   const topBar = document.querySelector(".top-bar");
   let topToggle = document.getElementById("desk-ft-top-toggle");
   if (!topToggle && topBar) {
+    // Separator first, as a sibling. It used to be a border-left on the button,
+    // which is what made the button look boxed and pushed its glyph off centre.
+    if (!document.getElementById("desk-ft-top-sep")) {
+      const sep = document.createElement("span");
+      sep.id = "desk-ft-top-sep";
+      sep.className = "desk-ft-top-sep";
+      sep.setAttribute("aria-hidden", "true");
+      topBar.appendChild(sep);
+    }
     topToggle = document.createElement("button");
     topToggle.type = "button";
     topToggle.id = "desk-ft-top-toggle";

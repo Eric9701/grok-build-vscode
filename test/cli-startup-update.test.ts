@@ -48,8 +48,9 @@ describe("CLI startup compatibility", () => {
   });
 
   it("keeps version gating separate from all update orchestration", () => {
-    expect(compatibility).toContain("await this.readGrokVersion(cliPath)");
-    expect(compatibility).toContain("isGrokVersionBelowRequired(versionOutput)");
+    expect(compatibility).toContain("probeVersionOutput");
+    expect(compatibility).toContain("decidePlanModeAvailability(versionOutput)");
+    expect(compatibility).toContain("this.readGrokVersion(cliPath)");
     expect(compatibility).not.toContain("runGrokUpdate");
     expect(compatibility).not.toContain("execGrokCli");
     expect(compatibility).not.toContain("this.pool");
@@ -69,29 +70,32 @@ describe("CLI startup compatibility", () => {
   });
 
   it("disables only Plan for a parseable CLI below the floor", () => {
-    expect(compatibility).toMatch(/isGrokVersionBelowRequired[\s\S]+planModeAvailable: false/);
-    expect(compatibility).toContain("installed version is ${installed}");
-    expect(sessionStart).toContain("session.planModeAvailable = compatibility.planModeAvailable");
-    expect(sessionStart).toContain('type: "planModeAvailability"');
+    expect(compatibility).toContain("planModeAvailable: false");
+    expect(compatibility).toContain("planModeVersionVerified: true");
+    expect(compatibility).toContain("decision.reason");
+    expect(sessionStart).toContain("this.applyPlanModeCompatibility(session, compatibility)");
+    expect(sidebar).toContain('type: "planModeAvailability"');
     expect(setMode).toContain('modeId === "plan" && !session.planModeAvailable');
     expect(setMode).toContain("session.planModeUnavailableReason");
     expect(setMode).toContain("!session.planModeAvailable && session.planActive");
     expect(setMode).toContain("this.recoverUnavailablePlanMode(session, session.client, session.gen)");
   });
 
-  it("fails closed for Plan when the installed version cannot be verified", () => {
-    const unknown = compatibility.slice(
-      compatibility.indexOf("if (!installed)"),
-      compatibility.indexOf("if (isGrokVersionBelowRequired"),
-    );
-    expect(unknown).toContain("Continuing best-effort with the current binary");
-    expect(unknown).toContain("planModeAvailable: false");
-    expect(unknown).toContain("the installed version could not be verified");
+  it("fails closed for Plan when the installed version cannot be verified, without latching", () => {
+    expect(compatibility).toContain("planModeVersionVerified: false");
+    expect(compatibility).toContain("Continuing best-effort with the current binary");
+    expect(compatibility).toContain("planModeAvailable: false");
+    // Unverified copy must not lead with the "requires X or newer" floor line alone.
+    expect(compatibility).toMatch(/Could not verify the Grok CLI version/);
+    // A later Plan pick re-probes instead of forcing a session restart (#105).
+    expect(setMode).toContain("!session.planModeVersionVerified");
+    expect(setMode).toContain("this.recheckPlanModeAvailability(session)");
+    expect(sidebar).toContain("private async recheckPlanModeAvailability");
   });
 
   it("re-enables Plan for a later session that meets the floor", () => {
-    expect(compatibility).toContain("return { planModeAvailable: true }");
-    expect(sessionStart).toContain("compatibility.planModeUnavailableReason");
+    expect(compatibility).toContain("return { planModeAvailable: true, planModeVersionVerified: true }");
+    expect(sessionStart).toContain("this.applyPlanModeCompatibility(session, compatibility)");
   });
 
   it("awaits the replaced process before the upgrade trigger can replace the binary", () => {

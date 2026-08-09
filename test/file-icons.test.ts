@@ -187,7 +187,10 @@ describe("markdown preview uses the conversation's renderer", () => {
       "utf8",
     );
     expect(chatCss).toMatch(/\.desk-ft-md\s+ul|\.desk-ft-md ul/);
-    expect(chatCss).toMatch(/\.msg\.agent \.body ul,\s*\n\.desk-ft-md ul|\.desk-ft-md ul \{ list-style-type: disc/);
+    // Shared with remote files-browse-md as well as the desktop panel class.
+    expect(chatCss).toMatch(
+      /\.desk-ft-md ul(?:, \.files-browse-md ul)? \{ list-style-type: disc|\.msg\.agent \.body ul,\s*\n\.desk-ft-md ul/,
+    );
     expect(chatCss).toContain(".desk-ft-md th");
     expect(chatCss).toMatch(
       /\.desk-ft-md th[\s\S]*textBlockQuote-background|textBlockQuote-background[\s\S]*\.desk-ft-md th/,

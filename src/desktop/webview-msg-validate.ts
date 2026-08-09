@@ -237,6 +237,13 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "addMentionFile":
       if (!isString(raw.relPath)) return null;
       break;
+    case "listProjectDir":
+      if (!isString(raw.cwd)) return null;
+      if (!opt(raw.relPath, isString)) return null;
+      break;
+    case "readProjectFile":
+      if (!isString(raw.cwd) || !isString(raw.relPath)) return null;
+      break;
     case "pasteImage":
       if (!isString(raw.mimeType) || !isString(raw.data)) return null;
       if (!opt(raw.previewId, isString)) return null;

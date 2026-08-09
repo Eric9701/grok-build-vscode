@@ -438,6 +438,22 @@
     // until it says, so a control that needs one is withheld rather than offered
     // and then refused.
     hostCaps: {},
+    // Remote read-only file browse (list + open). Capability-gated; never mounted
+    // in the local VS Code / desktop webview even if the host flag is true —
+    // those hosts already have a real explorer. Phone UI stays collapsed by
+    // default (screen space is scarce; the rail is already a drawer).
+    filesBrowse: {
+      open: false,
+      relPath: "",
+      entries: [],
+      truncated: false,
+      error: "",
+      loading: false,
+      // In-page viewer (phone has no host editor to hand off to).
+      viewer: null, // { relPath, kind, text?, dataUrl?, pretty?, error? }
+      listGen: 0,
+      readGen: 0,
+    },
     railCollapsed: {},
     /** The project the live conversation was in at the last render. Only used to
      *  notice it MOVED, so a fold can be corrected once on arrival instead of
@@ -554,6 +570,8 @@
     startingPhase: false,
     planModeAvailable: true,
     planModeUnavailableReason: "",
+    // Unverified version probe: Plan row stays clickable so a pick re-probes.
+    planModeRecheckable: false,
     // Extension version (from initialState) — shown in the gear → About panel.
     extVersion: "",
     // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
@@ -2524,7 +2542,7 @@
     fine.className = "popover-fineprint";
     fine.textContent =
       "Unofficial · community-built · MIT | " +
-      "A VS Code UI for xAI’s Grok Build CLI - not affiliated with or endorsed by xAI. " +
+      "A VS Code UI for SpaceXAI’s Grok Build CLI - not affiliated with or endorsed by SpaceXAI (formerly xAI). " +
       "Grok, Grok Build, and xAI are trademarks of xAI; this project uses those names only to describe what it’s compatible with.";
     gearPopover.appendChild(fine);
 
@@ -3220,8 +3238,11 @@
     for (const [id, meta] of Object.entries(MODE_META)) {
       const el = document.createElement("div");
       const active = id === state.currentModeId;
+      // Verified-old CLI: hard-disable Plan. Unverified probe: keep it clickable
+      // so the host re-checks on pick instead of forcing a session restart (#105).
       const planUnavailable = id === "plan" && !state.planModeAvailable;
-      const disabled = !!meta.disabled || planUnavailable;
+      const planRecheckable = planUnavailable && state.planModeRecheckable;
+      const disabled = !!meta.disabled || (planUnavailable && !planRecheckable);
       const disabledNote = planUnavailable ? state.planModeUnavailableReason : meta.disabledNote;
       el.className = "toolbar-popover-item mode-popover-item" +
         (active ? " active" : "") +
@@ -10691,6 +10712,8 @@
         // cannot, which is the safe way round.
         state.hostCaps = (msg.capabilities && typeof msg.capabilities === "object") ? msg.capabilities : {};
         restoreRememberedRemoteSession();
+        // Capability field presence — never a version check. Local hosts ignore.
+        ensureRemoteFilesBrowser();
         if (typeof msg.showThinking === "boolean") state.showThinking = msg.showThinking;
         if (typeof msg.expandCommandOutputs === "boolean") state.expandCommandOutputs = msg.expandCommandOutputs;
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
@@ -10723,6 +10746,8 @@
         state.planModeUnavailableReason = state.planModeAvailable
           ? ""
           : String(msg.reason || "Plan mode is unavailable.");
+        // Only an unverified probe is recheckable; a verified-old CLI stays latched.
+        state.planModeRecheckable = !state.planModeAvailable && msg.recheckable === true;
         updateSendButton();
         break;
       case "remoteStatus":
@@ -12004,6 +12029,15 @@
         if (!repoPopover.hidden) renderRepoPopover();
         renderRail();
         requestRailPreviews();
+        // Selected repo is the file-browse root — a switch must not leave the
+        // panel listing another project's paths under the new name.
+        if (state.filesBrowse.open && remoteFilesBrowseAvailable()) {
+          state.filesBrowse.relPath = "";
+          state.filesBrowse.viewer = null;
+          requestRemoteDir("");
+        } else {
+          ensureRemoteFilesBrowser();
+        }
         // A rail "+" on another repo waits for the switch to land before starting
         // the session, so it can never open one in the repo we were leaving.
         break;
@@ -12013,6 +12047,12 @@
         else delete state.dots[msg.id];
         if (!historyPopover.hidden) patchSessionDot(msg.id);
         patchSessionDot(msg.id, rail());
+        break;
+      case "projectDirListing":
+        handleProjectDirListing(msg);
+        break;
+      case "projectFileContent":
+        handleProjectFileContent(msg);
         break;
       default:
         // No case ran. Either the host posted a type outside the contract (drift
@@ -12054,6 +12094,335 @@
   if (document.getElementById("session-head-actions") && newBtn) newBtn.hidden = true;
   modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busyLocked) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
+
+  // ---------- remote read-only project files ----------
+  //
+  // Browse + open under the tab's selected repo. Host fence is repoScopeFor +
+  // resolveTreePath (see src/remote-files.ts). This surface is READ-ONLY on
+  // purpose — no edit/save/delete. Capability-gated (field presence); local
+  // VS Code / desktop never mount it even when the host advertises the flag.
+
+  function remoteFilesBrowseAvailable() {
+    return IS_REMOTE && !!(state.hostCaps && state.hostCaps.browseProjectFiles);
+  }
+
+  function remoteFilesRepoCwd() {
+    return state.selectedRepoCwd || state.activeRepoCwd || state.cwd || "";
+  }
+
+  function ensureRemoteFilesBrowser() {
+    const on = remoteFilesBrowseAvailable();
+    let btn = document.getElementById("files-browse-btn");
+    let panel = document.getElementById("files-browse-panel");
+    if (!on) {
+      if (btn) btn.hidden = true;
+      if (panel) {
+        panel.hidden = true;
+        document.body.classList.remove("files-browse-open");
+      }
+      return;
+    }
+    const topBar = document.querySelector(".top-bar");
+    if (!btn && topBar) {
+      btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "files-browse-btn";
+      btn.className = "icon-btn";
+      btn.title = "Project files";
+      btn.setAttribute("aria-label", "Project files");
+      btn.setAttribute("aria-expanded", "false");
+      btn.innerHTML = ICON.listTree;
+      // After history so the remote chrome order stays: remote · history · files · …
+      const history = document.getElementById("history-btn");
+      if (history && history.parentNode === topBar) {
+        topBar.insertBefore(btn, history.nextSibling);
+      } else {
+        topBar.appendChild(btn);
+      }
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleRemoteFilesBrowser();
+      });
+    }
+    if (btn) btn.hidden = false;
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "files-browse-panel";
+      panel.className = "files-browse-panel";
+      panel.hidden = true;
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", "Project files");
+      panel.innerHTML =
+        `<div class="files-browse-head">` +
+          `<button type="button" class="icon-btn files-browse-back" title="Up" aria-label="Parent folder" hidden>${ICON.chevronRight}</button>` +
+          `<div class="files-browse-title"></div>` +
+          `<button type="button" class="icon-btn files-browse-close" title="Close" aria-label="Close">${ICON.x}</button>` +
+        `</div>` +
+        `<div class="files-browse-path" aria-live="polite"></div>` +
+        `<div class="files-browse-body"></div>` +
+        `<div class="files-browse-viewer" hidden></div>`;
+      // Sibling of the chat column so it can overlay on a phone without
+      // reflowing the projects rail. Prefer .app-main when present.
+      const host = document.querySelector(".app-main") || document.body;
+      host.appendChild(panel);
+      panel.querySelector(".files-browse-close").addEventListener("click", () => {
+        setRemoteFilesOpen(false);
+      });
+      panel.querySelector(".files-browse-back").addEventListener("click", () => {
+        navigateRemoteFilesUp();
+      });
+      // On a phone the rail is already a drawer — keep this one collapsed by
+      // default. Wider remote browsers may open it once (memory in sessionStorage).
+      try {
+        const remembered = sessionStorage.getItem("grok.remote.filesOpen");
+        if (remembered === "1" && !remoteUsesTouchComposer()) {
+          setRemoteFilesOpen(true);
+        }
+      } catch (_) { /* private mode */ }
+    }
+    renderRemoteFilesChrome();
+  }
+
+  function setRemoteFilesOpen(open) {
+    state.filesBrowse.open = !!open;
+    const panel = document.getElementById("files-browse-panel");
+    const btn = document.getElementById("files-browse-btn");
+    if (panel) panel.hidden = !state.filesBrowse.open;
+    if (btn) btn.setAttribute("aria-expanded", String(state.filesBrowse.open));
+    document.body.classList.toggle("files-browse-open", state.filesBrowse.open);
+    try {
+      sessionStorage.setItem("grok.remote.filesOpen", state.filesBrowse.open ? "1" : "0");
+    } catch (_) { /* */ }
+    if (state.filesBrowse.open) {
+      // Close viewer when reopening so the tree is the entry point.
+      if (!state.filesBrowse.viewer) requestRemoteDir(state.filesBrowse.relPath || "");
+      renderRemoteFilesChrome();
+    }
+  }
+
+  function toggleRemoteFilesBrowser() {
+    if (!remoteFilesBrowseAvailable()) return;
+    ensureRemoteFilesBrowser();
+    setRemoteFilesOpen(!state.filesBrowse.open);
+  }
+
+  function requestRemoteDir(relPath) {
+    const cwd = remoteFilesRepoCwd();
+    if (!cwd) {
+      state.filesBrowse.error = "No repository selected.";
+      state.filesBrowse.loading = false;
+      renderRemoteFilesChrome();
+      return;
+    }
+    state.filesBrowse.listGen += 1;
+    const gen = state.filesBrowse.listGen;
+    state.filesBrowse.relPath = relPath || "";
+    state.filesBrowse.loading = true;
+    state.filesBrowse.error = "";
+    state.filesBrowse.viewer = null;
+    renderRemoteFilesChrome();
+    // Host does not echo gen — accept the next listing that matches this path/cwd.
+    state.filesBrowse._pendingList = { gen, cwd, relPath: state.filesBrowse.relPath };
+    vscode.postMessage({
+      type: "listProjectDir",
+      cwd,
+      relPath: state.filesBrowse.relPath,
+    });
+  }
+
+  function requestRemoteFile(relPath) {
+    const cwd = remoteFilesRepoCwd();
+    if (!cwd || !relPath) return;
+    state.filesBrowse.readGen += 1;
+    const gen = state.filesBrowse.readGen;
+    state.filesBrowse.loading = true;
+    state.filesBrowse.error = "";
+    state.filesBrowse.viewer = { relPath, loading: true };
+    state.filesBrowse._pendingRead = { gen, cwd, relPath };
+    renderRemoteFilesChrome();
+    vscode.postMessage({ type: "readProjectFile", cwd, relPath });
+  }
+
+  function handleProjectDirListing(msg) {
+    const pending = state.filesBrowse._pendingList;
+    if (pending && (msg.cwd !== pending.cwd || (msg.relPath || "") !== (pending.relPath || ""))) {
+      // Stale answer for a previous path — ignore.
+      return;
+    }
+    state.filesBrowse.loading = false;
+    if (!msg.ok) {
+      state.filesBrowse.error = msg.reason || "Could not list folder.";
+      state.filesBrowse.entries = [];
+      state.filesBrowse.truncated = false;
+    } else {
+      state.filesBrowse.error = "";
+      state.filesBrowse.entries = Array.isArray(msg.entries) ? msg.entries : [];
+      state.filesBrowse.truncated = !!msg.truncated;
+      state.filesBrowse.relPath = msg.relPath || "";
+    }
+    renderRemoteFilesChrome();
+  }
+
+  function handleProjectFileContent(msg) {
+    const pending = state.filesBrowse._pendingRead;
+    if (pending && (msg.cwd !== pending.cwd || msg.relPath !== pending.relPath)) return;
+    state.filesBrowse.loading = false;
+    if (!msg.ok) {
+      state.filesBrowse.viewer = {
+        relPath: msg.relPath || (pending && pending.relPath) || "",
+        error: msg.reason || "Could not open file.",
+      };
+    } else {
+      state.filesBrowse.viewer = {
+        relPath: msg.relPath,
+        kind: msg.kind,
+        text: msg.text,
+        dataUrl: msg.dataUrl,
+        pretty: msg.pretty,
+      };
+    }
+    renderRemoteFilesChrome();
+  }
+
+  function navigateRemoteFilesUp() {
+    const cur = state.filesBrowse.relPath || "";
+    if (!cur) return;
+    const parts = cur.replace(/\\/g, "/").split("/").filter(Boolean);
+    parts.pop();
+    requestRemoteDir(parts.join("/"));
+  }
+
+  function renderRemoteFilesChrome() {
+    const panel = document.getElementById("files-browse-panel");
+    if (!panel || !remoteFilesBrowseAvailable()) return;
+    const title = panel.querySelector(".files-browse-title");
+    const pathEl = panel.querySelector(".files-browse-path");
+    const body = panel.querySelector(".files-browse-body");
+    const viewer = panel.querySelector(".files-browse-viewer");
+    const back = panel.querySelector(".files-browse-back");
+    if (!title || !pathEl || !body || !viewer || !back) return;
+
+    const repo = remoteFilesRepoCwd();
+    const leaf = cwdLeaf(repo) || "Project";
+    title.textContent = leaf;
+    const rel = state.filesBrowse.relPath || "";
+    pathEl.textContent = rel ? rel.replace(/\\/g, "/") : "/";
+    back.hidden = !rel;
+    // Chevron points right in the icon set; flip for "up/back".
+    back.style.transform = "rotate(180deg)";
+
+    const v = state.filesBrowse.viewer;
+    if (v) {
+      body.hidden = true;
+      viewer.hidden = false;
+      viewer.innerHTML = "";
+      const vHead = document.createElement("div");
+      vHead.className = "files-browse-viewer-head";
+      const backToList = document.createElement("button");
+      backToList.type = "button";
+      backToList.className = "icon-btn";
+      backToList.title = "Back to files";
+      backToList.setAttribute("aria-label", "Back to files");
+      backToList.innerHTML = ICON.chevronRight;
+      backToList.style.transform = "rotate(180deg)";
+      backToList.addEventListener("click", () => {
+        state.filesBrowse.viewer = null;
+        renderRemoteFilesChrome();
+      });
+      const vName = document.createElement("div");
+      vName.className = "files-browse-viewer-name";
+      vName.textContent = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
+      vHead.appendChild(backToList);
+      vHead.appendChild(vName);
+      viewer.appendChild(vHead);
+      const vBody = document.createElement("div");
+      vBody.className = "files-browse-viewer-body";
+      if (v.loading || state.filesBrowse.loading && v.loading !== false && !v.error && !v.kind) {
+        vBody.className += " muted";
+        vBody.textContent = "Loading…";
+      } else if (v.error) {
+        vBody.className += " files-browse-error";
+        vBody.textContent = v.error;
+      } else if (v.kind === "image" && v.dataUrl) {
+        const img = document.createElement("img");
+        img.src = v.dataUrl;
+        img.alt = v.relPath || "";
+        vBody.appendChild(img);
+      } else if (v.kind === "markdown" && typeof v.text === "string") {
+        const md = document.createElement("div");
+        // Shared markdown styles: class files-browse-md in chat.css (paired with
+        // the desktop panel's preview class). chat.js must not mention the
+        // desktop panel class prefix (isolation test in desktop-host-pure).
+        md.className = "files-browse-md";
+        md.innerHTML = renderMarkdown(v.text);
+        applyAutoDir(md);
+        vBody.appendChild(md);
+      } else {
+        const pre = document.createElement("pre");
+        pre.textContent = typeof v.text === "string" ? v.text : "";
+        vBody.appendChild(pre);
+      }
+      viewer.appendChild(vBody);
+      return;
+    }
+
+    viewer.hidden = true;
+    viewer.innerHTML = "";
+    body.hidden = false;
+    body.innerHTML = "";
+    if (state.filesBrowse.loading) {
+      const loading = document.createElement("div");
+      loading.className = "files-browse-empty muted";
+      loading.textContent = "Loading…";
+      body.appendChild(loading);
+      return;
+    }
+    if (state.filesBrowse.error) {
+      const err = document.createElement("div");
+      err.className = "files-browse-empty files-browse-error";
+      err.textContent = state.filesBrowse.error;
+      body.appendChild(err);
+      return;
+    }
+    const entries = state.filesBrowse.entries || [];
+    if (!entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "files-browse-empty muted";
+      empty.textContent = "Empty folder";
+      body.appendChild(empty);
+      return;
+    }
+    for (const ent of entries) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "files-browse-row";
+      const icon = document.createElement("span");
+      icon.className = "files-browse-row-icon";
+      icon.innerHTML = ent.kind === "dir" ? ICON.folder : ICON.file;
+      const name = document.createElement("span");
+      name.className = "files-browse-row-name";
+      name.textContent = ent.name;
+      row.appendChild(icon);
+      row.appendChild(name);
+      if (ent.kind === "dir") {
+        const chev = document.createElement("span");
+        chev.className = "files-browse-row-chev";
+        chev.innerHTML = ICON.chevronRight;
+        row.appendChild(chev);
+        row.addEventListener("click", () => requestRemoteDir(ent.relPath));
+      } else {
+        row.addEventListener("click", () => requestRemoteFile(ent.relPath));
+      }
+      body.appendChild(row);
+    }
+    if (state.filesBrowse.truncated) {
+      const note = document.createElement("div");
+      note.className = "files-browse-empty muted";
+      note.textContent = "Listing truncated — folder has more entries.";
+      body.appendChild(note);
+    }
+  }
 
   // Welcome screen's "about" link → open the gear popover's Version & about panel.
   const welcomeAboutLink = $("welcome-about-link");

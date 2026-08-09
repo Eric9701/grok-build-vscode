@@ -36,7 +36,12 @@ describe("marketplace vs GitHub README", () => {
   // they might actually want exists.
   it("marketplace README stays extension-primary, companions only as a footnote", () => {
     expect(marketplace).toMatch(/Grok Build for VS Code \(Community\)/);
-    expect(marketplace).toMatch(/not affiliated with or endorsed by xAI/i);
+    // The non-affiliation line must be there; WHO it names moved when xAI
+    // rebranded to SpaceXAI, so match the shape rather than the company. The
+    // trademark attribution is asserted separately and deliberately still says
+    // xAI — their own brand guidelines and copyright line still do.
+    expect(marketplace).toMatch(/not affiliated with or endorsed by\s+\S+/i);
+    expect(marketplace).toMatch(/trademarks of xAI/i);
 
     // Build/packaging internals are noise for someone installing an extension,
     // and stay banned regardless of the relaxation above.

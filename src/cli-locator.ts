@@ -82,6 +82,66 @@ export function isGrokVersionBelowRequired(versionOutput: string): boolean {
 }
 
 /**
+ * Pause between an empty/unparseable `grok --version` and one retry. A fresh
+ * binary's first spawn is often the slow one (Windows AV scanning); a second
+ * attempt a beat later is usually instant. Only "no answer" retries — a
+ * parseable below-floor banner is a stable answer and must not be re-probed.
+ */
+export const VERSION_PROBE_RETRY_BACKOFF_MS = 400;
+
+/**
+ * Read version with one short retry when the first attempt yields nothing
+ * parseable. `readOnce` / `sleep` are injected so unit tests stay process-free.
+ */
+export async function probeVersionOutput(
+  readOnce: () => Promise<string>,
+  sleep: (ms: number) => Promise<void>,
+  backoffMs = VERSION_PROBE_RETRY_BACKOFF_MS,
+): Promise<string> {
+  const first = (await readOnce())?.trim() ?? "";
+  if (parseGrokVersion(first)) return first;
+  await sleep(backoffMs);
+  return (await readOnce())?.trim() ?? "";
+}
+
+/**
+ * Plan-mode gate from a `grok --version` banner. Fail-closed when the banner
+ * cannot be parsed (`verified:false` — re-checkable later) or when the install
+ * is below the floor (`verified:true` — latched for that process). Pure.
+ */
+export type PlanModeAvailabilityDecision =
+  | { available: true; verified: true }
+  | { available: false; verified: true; installed: string; reason: string }
+  | { available: false; verified: false; reason: string };
+
+export function decidePlanModeAvailability(versionOutput: string): PlanModeAvailabilityDecision {
+  const parsed = parseGrokVersion(versionOutput);
+  if (!parsed) {
+    // Lead with "could not verify" — leading with the version floor reads as
+    // "your CLI is too old" when the probe simply did not answer (#105).
+    return {
+      available: false,
+      verified: false,
+      reason:
+        `Could not verify the installed Grok CLI version, so Plan mode is unavailable. ` +
+        `Once verified, Plan requires ${GROK_REQUIRED_VERSION} or newer.`,
+    };
+  }
+  const installed = parsed.join(".");
+  if (isGrokVersionBelowRequired(versionOutput)) {
+    return {
+      available: false,
+      verified: true,
+      installed,
+      reason:
+        `Plan mode requires Grok CLI ${GROK_REQUIRED_VERSION} or newer; ` +
+        `installed version is ${installed}.`,
+    };
+  }
+  return { available: true, verified: true };
+}
+
+/**
  * Decision for "Update Grok Build CLI" (manual and extension-upgrade updates),
  * given the installed version + platform.
  *
