@@ -12433,6 +12433,13 @@
           // The relay adds this right-column host. Until then (and on phones),
           // responsive presentation deliberately falls back to an overlay.
           dockHost: document.getElementById("file-panel-dock"),
+          // The row the panel shares with the chat, so a resize knows what it
+          // is allowed to eat into. The dock host itself is shrink-wrapped
+          // around the panel, so measuring that would make its own width the
+          // ceiling and strand the panel at its minimum.
+          widthBasis: document.getElementById("app-body")
+            || document.querySelector(".app-main")
+            || document.body,
           toggleHost: remoteFilesButtonHost(),
           presentation: "responsive",
           id: "files-browse-panel",

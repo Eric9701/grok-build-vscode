@@ -24,6 +24,7 @@ async function settle() {
 function harness(options?: {
   write?: (scopeId: string, request: Record<string, unknown>) => Promise<unknown>;
   read?: (scopeId: string, relPath: string) => Promise<unknown>;
+  list?: (scopeId: string, relPath: string) => Promise<unknown>;
   confirm?: (request: { title: string }) => Promise<string>;
 }) {
   const window = new Window({ url: "https://example.test/" });
@@ -52,6 +53,7 @@ function harness(options?: {
       return () => { scopeListener = null; };
     },
     list: async (scopeId: string, relPath: string) => {
+      if (options?.list) return options.list(scopeId, relPath);
       if (!relPath) {
         return {
           ok: true,
@@ -205,6 +207,182 @@ describe("shared file-panel component", () => {
     expect(h.document.querySelector(".gfp-notice")?.textContent).toContain("typed more");
   });
 
+  it("reloads a conflicted tab into the scope that owns it after a scope switch", async () => {
+    const reload = deferred<unknown>();
+    let appReads = 0;
+    const h = harness({
+      read: async (scopeId, relPath) => {
+        if (scopeId === "scope-a") {
+          appReads++;
+          if (appReads === 2) return reload.promise;
+          return {
+            ok: true, kind: "markdown", relPath, text: "one",
+            stamp: { mtimeMs: 1, size: 3 }, absPath: "/work/app/notes.md",
+          };
+        }
+        return {
+          ok: true, kind: "markdown", relPath, text: "other",
+          stamp: { mtimeMs: 1, size: 5 }, absPath: "/work/relay/notes.md",
+        };
+      },
+      write: async () => ({ ok: false, reason: "changed" }),
+    });
+    await settle();
+    await openAndEdit(h, "notes.md", "app draft");
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+    click(h.window, [...h.document.querySelectorAll(".gfp-conflict-actions .gfp-action")]
+      .find((node) => node.textContent === "Reload") || null);
+
+    await h.switchScope(h.scopes.b);
+    await h.panel.openPath("notes.md", true);
+    click(h.window, h.document.querySelector(".gfp-mode"));
+    type(h.window, h.document, "relay draft");
+    reload.resolve({
+      ok: true, kind: "markdown", relPath: "notes.md", text: "fresh app",
+      stamp: { mtimeMs: 2, size: 9 }, absPath: "/work/app/notes.md",
+    });
+    await settle();
+
+    const relayTab = h.panel._scopes.get("scope-b")?.tabs.get("notes.md");
+    expect(relayTab?.scopeId).toBe("scope-b");
+    expect(relayTab?.draftText).toBe("relay draft");
+    expect(h.panel._scopes.get("scope-a")?.tabs.get("notes.md")?.baselineText).toBe("fresh app");
+    await h.switchScope(h.scopes.a);
+    expect(h.document.querySelector(".gfp-markdown")?.textContent).toContain("fresh app");
+  });
+
+  it("overwrites the latest text typed while the stamp refresh is in flight", async () => {
+    const refresh = deferred<unknown>();
+    let reads = 0;
+    let writes = 0;
+    const h = harness({
+      read: async (_scopeId, relPath) => {
+        reads++;
+        if (reads === 2) return refresh.promise;
+        return {
+          ok: true, kind: "markdown", relPath, text: "one",
+          stamp: { mtimeMs: 1, size: 3 }, absPath: "/work/app/notes.md",
+        };
+      },
+      write: async (_scopeId, request) => {
+        writes++;
+        return writes === 1
+          ? { ok: false, reason: "changed" }
+          : { ok: true, relPath: request.relPath, stamp: { mtimeMs: 3, size: String(request.text).length } };
+      },
+    });
+    await settle();
+    await openAndEdit(h, "notes.md", "draft before overwrite");
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+    click(h.window, [...h.document.querySelectorAll(".gfp-conflict-actions .gfp-action")]
+      .find((node) => node.textContent === "Overwrite") || null);
+    type(h.window, h.document, "draft typed during refresh");
+    refresh.resolve({
+      ok: true, kind: "markdown", relPath: "notes.md", text: "host version",
+      stamp: { mtimeMs: 2, size: 12 }, absPath: "/work/app/notes.md",
+    });
+    await settle();
+
+    expect(h.writes).toHaveLength(2);
+    expect(h.writes[1].request.text).toBe("draft typed during refresh");
+    expect(h.panel._scopes.get("scope-a")?.tabs.get("notes.md")?.baselineText).toBe("draft typed during refresh");
+    expect(h.document.querySelector(".gfp-viewer-body pre")?.textContent).toContain("draft typed during refresh");
+  });
+
+  it("renders the cached tree when returning to a previous scope", async () => {
+    const h = harness({
+      list: async (scopeId) => ({
+        ok: true,
+        entries: [{
+          name: scopeId === "scope-a" ? "app-only.txt" : "relay-only.txt",
+          kind: "file",
+          relPath: scopeId === "scope-a" ? "app-only.txt" : "relay-only.txt",
+        }],
+        truncated: false,
+      }),
+    });
+    h.panel.setOpen(true);
+    await settle();
+    expect(h.document.querySelector(".gfp-tree")?.textContent).toContain("app-only.txt");
+    await h.switchScope(h.scopes.b);
+    expect(h.document.querySelector(".gfp-tree")?.textContent).toContain("relay-only.txt");
+    await h.switchScope(h.scopes.a);
+
+    expect(h.document.querySelector(".gfp-tree")?.textContent).toContain("app-only.txt");
+    expect(h.document.querySelector(".gfp-tree")?.textContent).not.toContain("relay-only.txt");
+  });
+
+  it("finishes an in-flight tree load when the same scope id is reasserted with a fresh object", async () => {
+    const root = deferred<unknown>();
+    const h = harness({ list: async () => root.promise });
+    h.panel.setOpen(true);
+    await settle();
+    const sameProject = { ...h.scopes.a };
+    const reassigned = h.panel.setScope(sameProject);
+    root.resolve({
+      ok: true,
+      entries: [{ name: "loaded.txt", kind: "file", relPath: "loaded.txt" }],
+      truncated: false,
+    });
+    await reassigned;
+    await settle();
+
+    expect(h.document.querySelector(".gfp-tree")?.textContent).toContain("loaded.txt");
+    expect(h.document.querySelector(".gfp-tree")?.textContent).not.toContain("Loading");
+  });
+
+  it("leaves clean edit mode when Cancel is clicked", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-edit"));
+    expect(h.document.querySelector(".gfp-editor")).toBeTruthy();
+    click(h.window, h.document.querySelector(".gfp-cancel"));
+    await settle();
+
+    expect(h.document.querySelector(".gfp-editor")).toBeNull();
+    expect(h.document.querySelector(".gfp-edit")).toBeTruthy();
+  });
+
+  it("shows Markdown Preview after source editing has started", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("notes.md");
+    click(h.window, h.document.querySelector(".gfp-mode"));
+    type(h.window, h.document, "preview this draft");
+    click(h.window, h.document.querySelector(".gfp-mode"));
+
+    expect(h.document.querySelector(".gfp-editor")).toBeNull();
+    expect(h.document.querySelector(".gfp-markdown")?.textContent).toContain("preview this draft");
+  });
+
+  it("uses overlay presentation while the responsive dock host is display-none", async () => {
+    const window = new Window({ url: "https://example.test/" });
+    const document = window.document;
+    const panelHost = document.createElement("main");
+    const dockHost = document.createElement("aside");
+    dockHost.style.display = "none";
+    document.body.append(panelHost, dockHost);
+    const panel = createFilePanel({
+      access: { currentScope: async () => null, list: async () => ({ ok: true, entries: [] }) },
+      document,
+      window,
+      mount: { panelHost, dockHost, presentation: "responsive" },
+    });
+
+    panel.setOpen(true);
+    await settle();
+    expect(panel.element.classList.contains("gfp-overlay")).toBe(true);
+    expect(panel.element.parentElement).toBe(panelHost);
+
+    dockHost.style.display = "block";
+    window.dispatchEvent(new window.Event("resize"));
+    expect(panel.element.classList.contains("gfp-docked")).toBe(true);
+    expect(panel.element.parentElement).toBe(dockHost);
+  });
+
   it("refreshes a stamp for Overwrite but refuses a different file identity", async () => {
     let reads = 0;
     const h = harness({
@@ -231,5 +409,48 @@ describe("shared file-panel component", () => {
     expect(h.writes).toHaveLength(1);
     expect(h.document.querySelector(".gfp-notice")?.textContent).toContain("no longer the one you opened");
     expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement).value).toBe("draft");
+  });
+
+  it("sizes a drag against the shared row, not its own shrink-wrapped column", () => {
+    // The relay docks the panel into a `flex: 0 0 auto` host, so that host's
+    // width IS the panel's width. Measuring it collapses the computed maximum
+    // to the minimum, and one drag strands the panel at 200px with no way to
+    // widen it again.
+    const window = new Window({ url: "https://example.test/" });
+    const document = window.document;
+    // happy-dom has no layout engine; these are the only measurements
+    // setPanelWidth reads.
+    const width = (el: unknown, px: number) => {
+      (el as { getBoundingClientRect: () => { width: number } }).getBoundingClientRect =
+        () => ({ width: px });
+    };
+
+    const row = document.createElement("div");
+    const dock = document.createElement("div");
+    row.appendChild(dock);
+    document.body.appendChild(row);
+    width(row, 1400);
+    // The shrink-wrapped column reports only what the panel already occupies.
+    width(dock, 200);
+
+    const panel = createFilePanel({
+      access: {
+        currentScope: async () => null,
+        list: async () => ({ ok: true, entries: [], truncated: false }),
+        read: async () => ({ ok: false, reason: "none" }),
+      },
+      document,
+      window,
+      mount: {
+        panelHost: document.body,
+        dockHost: dock,
+        toggleHost: document.body,
+        presentation: "docked",
+        widthBasis: row,
+      },
+      ui: { confirm: async () => "discard", renderMarkdown: (s: string) => s },
+    });
+
+    expect(panel.setWidth(520, false)).toBe(520);
   });
 });

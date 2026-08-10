@@ -201,6 +201,7 @@
     let destroyed = false;
     let open = false;
     let treeMode = true;
+    let renderedTreeState = null;
     let unsubscribeScope = null;
     let menu = null;
 
@@ -278,9 +279,19 @@
     function isOverlay() {
       if (mount.presentation === "overlay") return true;
       if (mount.presentation !== "responsive") return false;
-      if (!mount.dockHost) return true;
+      if (!dockHostIsDisplayed()) return true;
       const breakpoint = Number(mount.breakpointPx) || MOBILE_BREAKPOINT;
       return typeof win.matchMedia === "function" && win.matchMedia("(max-width: " + breakpoint + "px)").matches;
+    }
+
+    function dockHostIsDisplayed() {
+      if (!mount.dockHost) return false;
+      for (let element = mount.dockHost; element; element = element.parentElement) {
+        if (element.hidden) return false;
+        const style = typeof win.getComputedStyle === "function" ? win.getComputedStyle(element) : null;
+        if (style && style.display === "none") return false;
+      }
+      return true;
     }
 
     function applyPresentation() {
@@ -309,7 +320,23 @@
     }
 
     function setPanelWidth(px, persist) {
-      const hostWidth = (rootEl.parentElement && rootEl.parentElement.getBoundingClientRect().width)
+      // What a drag may eat into is the ROW the panel shares with the chat, not
+      // the panel's own column.
+      //
+      // Those are the same element on the desktop and different on the relay,
+      // where the dock host is shrink-wrapped around the panel (`flex: 0 0
+      // auto`). Measuring the column there returns the panel's own width, so
+      // `hostWidth - MIN_CHAT_WIDTH` falls below MIN_WIDTH and the first drag
+      // pins the panel at 200px with no way to enlarge it again.
+      //
+      // The host names the row instead of the component guessing: any
+      // climb-until-an-ancestor-looks-wider rule is a heuristic that breaks the
+      // next time either layout moves. `win.innerWidth` is not a substitute
+      // either — on the relay the rail lives inside that width, so the chat
+      // would be squeezed below its own minimum.
+      const basis = mount.widthBasis && mount.widthBasis.getBoundingClientRect().width;
+      const hostWidth = basis
+        || (rootEl.parentElement && rootEl.parentElement.getBoundingClientRect().width)
         || win.innerWidth || 800;
       const max = Math.max(MIN_WIDTH, Math.min(hostWidth * 0.7, hostWidth - MIN_CHAT_WIDTH));
       const value = Math.max(MIN_WIDTH, Math.min(max, Math.round(Number(px) || DEFAULT_WIDTH)));
@@ -376,15 +403,17 @@
 
     async function setScope(scope) {
       if (destroyed) return;
-      abortPending();
-      currentScope = scope || null;
-      currentState = scope ? scopeState(scope) : null;
+      const nextState = scope ? scopeState(scope) : null;
+      if (currentState !== nextState) abortPending();
+      currentState = nextState;
+      currentScope = nextState ? nextState.scope : null;
       title.textContent = scope ? scope.label : "Files";
       title.title = scope && (scope.title || scope.label) || "Show file tree";
       filter.value = currentState ? currentState.filter : "";
       treeMode = !(currentState && currentState.activeRelPath);
       renderTabs();
       if (!currentState) {
+        renderedTreeState = null;
         tree.textContent = "No repository selected.";
         viewer.textContent = "";
         viewer.hidden = true;
@@ -401,8 +430,8 @@
 
     async function loadRootTree() {
       if (!currentScope || !currentState) return;
-      const scope = currentScope;
       const state = currentState;
+      const scopeId = state.scope.id;
       // Hosts may reassert one scope from adjacent state/catalog events. Share
       // its in-flight root load so that one transition produces one request.
       // A late result is cached only on the scope that requested it and is
@@ -411,22 +440,27 @@
       tree.textContent = "";
       appendStatus(tree, "Loading…");
       state.rootLoad = (async () => {
-        const result = await callAccess("list", scope.id, "");
+        const result = await callAccess("list", scopeId, "");
         if (result && result.ok) state.tree = result;
-        if (destroyed || currentScope !== scope || currentState !== state) return;
+        if (destroyed || currentState !== state) return;
         tree.textContent = "";
         if (!result || !result.ok) {
           appendStatus(tree, result && result.reason || "Could not list folder.", true);
           return;
         }
-        renderDirectory(tree, result, "");
-        applyTreeFilter();
+        renderRootTree(state);
       })();
       try {
         await state.rootLoad;
       } finally {
         state.rootLoad = null;
       }
+    }
+
+    function renderRootTree(state) {
+      renderDirectory(tree, state.tree, "");
+      renderedTreeState = state;
+      applyTreeFilter();
     }
 
     function renderDirectory(container, result, parentRelPath) {
@@ -518,14 +552,14 @@
       currentState.expanded.add(entry.relPath);
       if (children.dataset.loaded === "1") return;
       appendStatus(children, "Loading…");
-      const scope = currentScope;
       const state = currentState;
-      const seq = (directorySeq.get(scopeKey(scope.id, entry.relPath)) || 0) + 1;
-      directorySeq.set(scopeKey(scope.id, entry.relPath), seq);
-      const result = await callAccess("list", scope.id, entry.relPath);
+      const scopeId = state.scope.id;
+      const seq = (directorySeq.get(scopeKey(scopeId, entry.relPath)) || 0) + 1;
+      directorySeq.set(scopeKey(scopeId, entry.relPath), seq);
+      const result = await callAccess("list", scopeId, entry.relPath);
       if (
-        destroyed || currentScope !== scope || currentState !== state
-        || directorySeq.get(scopeKey(scope.id, entry.relPath)) !== seq
+        destroyed || currentState !== state
+        || directorySeq.get(scopeKey(scopeId, entry.relPath)) !== seq
       ) return;
       children.textContent = "";
       if (!result || !result.ok) {
@@ -587,25 +621,25 @@
 
     async function openFile(relPath, force) {
       if (!currentScope || !currentState || !relPath) return { ok: false, reason: "no repository scope" };
-      const scope = currentScope;
       const state = currentState;
+      const scopeId = state.scope.id;
       if (!force && state.tabs.has(relPath)) {
         activateTab(relPath);
         return { ok: true };
       }
       const existing = state.tabs.get(relPath);
       const readSeq = existing ? ++existing.readSeq : 1;
-      const result = await callAccess("read", scope.id, relPath);
-      if (destroyed || currentScope !== scope || currentState !== state) return { ok: false, reason: "scope changed" };
+      const result = await callAccess("read", scopeId, relPath);
+      if (destroyed || currentState !== state) return { ok: false, reason: "scope changed" };
       if (existing && existing.readSeq !== readSeq) return { ok: false, reason: "superseded" };
       if (!result || !result.ok) {
         if (result && result.openExternal && access.openExternal) {
-          return access.openExternal(scope.id, relPath);
+          return access.openExternal(scopeId, relPath);
         }
         showViewerError(relPath, result && result.reason || "Could not open file.");
         return result || { ok: false, reason: "read failed" };
       }
-      const tab = makeTab(scope.id, result);
+      const tab = makeTab(scopeId, result);
       state.tabs.set(relPath, tab);
       if (!state.order.includes(relPath)) state.order.push(relPath);
       state.activeRelPath = relPath;
@@ -696,7 +730,11 @@
       tree.hidden = false;
       viewer.hidden = true;
       renderTabs();
-      if (currentState && !currentState.tree && open) void loadRootTree();
+      if (currentState && currentState.tree && renderedTreeState !== currentState) {
+        renderRootTree(currentState);
+      } else if (currentState && !currentState.tree && open) {
+        void loadRootTree();
+      }
     }
 
     function showViewerError(relPath, reason) {
@@ -789,6 +827,7 @@
               tab.editing = true;
             } else {
               tab.mode = "preview";
+              tab.editing = false;
             }
             renderViewer();
             const editor = viewer.querySelector(".gfp-editor");
@@ -842,13 +881,14 @@
     }
 
     async function cancelChanges(tab) {
-      if (!tab.dirty) return false;
-      const answer = await confirmChoice({
-        title: "Cancel changes?",
-        body: "This discards your unsaved edits and restores the last loaded version.",
-        actions: [{ id: "discard", label: "Discard", danger: true }],
-      });
-      if (answer !== "discard") return false;
+      if (tab.dirty) {
+        const answer = await confirmChoice({
+          title: "Cancel changes?",
+          body: "This discards your unsaved edits and restores the last loaded version.",
+          actions: [{ id: "discard", label: "Discard", danger: true }],
+        });
+        if (answer !== "discard") return false;
+      }
       tab.draftText = tab.baselineText;
       tab.dirty = false;
       tab.editing = false;
@@ -907,26 +947,35 @@
     }
 
     async function reloadTab(tab) {
+      const state = scopes.get(tab.scopeId);
+      if (!state || state.tabs.get(tab.relPath) !== tab) return false;
       const result = await access.read(tab.scopeId, tab.relPath);
+      if (destroyed || state.tabs.get(tab.relPath) !== tab) return false;
       if (!result || !result.ok) {
         tab.conflict = false;
         tab.notice = result && result.reason || "Could not reload the current file version.";
-        return renderViewer();
+        if (currentState === state && state.activeRelPath === tab.relPath) renderViewer();
+        return false;
       }
       const fresh = makeTab(tab.scopeId, result);
-      currentState.tabs.set(tab.relPath, fresh);
-      renderTabs();
-      renderViewer();
+      state.tabs.set(tab.relPath, fresh);
+      if (currentState === state) {
+        renderTabs();
+        if (state.activeRelPath === tab.relPath) renderViewer();
+      }
+      return true;
     }
 
     async function overwriteTab(tab) {
       if (!access.write || tab.saving) return false;
-      const draft = tab.draftText;
+      const state = scopes.get(tab.scopeId);
+      if (!state || state.tabs.get(tab.relPath) !== tab) return false;
       tab.saving = true;
       tab.conflict = false;
       tab.notice = "Refreshing version…";
       renderViewer();
       const fresh = await access.read(tab.scopeId, tab.relPath);
+      if (destroyed || state.tabs.get(tab.relPath) !== tab) return false;
       if (!fresh || !fresh.ok || !fresh.stamp || !fresh.absPath) {
         tab.saving = false;
         tab.notice = fresh && fresh.reason || "Could not reload the current file version.";
@@ -941,8 +990,7 @@
       }
       tab.stamp = fresh.stamp;
       tab.saving = false;
-      tab.draftText = draft;
-      tab.dirty = draft !== tab.baselineText;
+      tab.dirty = tab.draftText !== tab.baselineText;
       return saveTab(tab);
     }
 
@@ -1013,6 +1061,7 @@
       abortPending();
       scopes.clear();
       currentState = currentScope ? scopeState(currentScope) : null;
+      renderedTreeState = null;
       treeMode = true;
       renderTabs();
       showTree();
