@@ -25,6 +25,9 @@ const CWD_B = "/work/relay";
 
 function remoteHost(): Harness {
   const h = bootWebview({ remote: true });
+  // Cancel asks before discarding. Tests that are not about the question answer
+  // it yes by default; the ones that are override this.
+  (h.window as never as { confirm: () => boolean }).confirm = () => true;
   dispatch(h.window, {
     type: "initialState",
     cwd: CWD_A,
@@ -123,14 +126,15 @@ function beginEdit(h: Harness, relPath: string, text: string, typed: string, cwd
   type(h, typed);
 }
 
-// Back to the tree is the PROJECT NAME now, matching the desktop panel: it
-// leaves the file open as a tab, so nothing is discarded and nothing is asked.
+// Leaving the file parks the text — no discard, so no question.
 const back = (h: Harness) =>
-  click(h.window, h.doc.querySelector(".files-browse-title")!);
+  click(h.window, h.doc.querySelector(".files-browse-viewer-head .icon-btn")!);
 
-/** Closing the file — the one control that discards, so the one that asks. */
-const closeTab = (h: Harness) =>
-  click(h.window, h.doc.querySelector(".files-browse-tab-close")!);
+/** Cancel — the one action that throws the edit away, so the one that asks. */
+const cancel = (h: Harness) => {
+  const actions = [...h.doc.querySelectorAll(".files-browse-viewer-head .files-browse-action")];
+  click(h.window, actions.find((b) => b.textContent === "Cancel")!);
+};
 
 describe("remote file drafts", () => {
   it("brings the draft back after Back to files", () => {
@@ -216,9 +220,7 @@ describe("remote file drafts", () => {
     const h = remoteHost();
     openPanel(h);
     beginEdit(h, "notes.md", "one", "one two");
-    // Cancel is the second button in the head (Cancel, then Save).
-    const actions = [...h.doc.querySelectorAll(".files-browse-viewer-head .files-browse-action")];
-    click(h.window, actions.find((b) => b.textContent === "Cancel")!);
+    cancel(h);
     back(h);
 
     sendFile(h, "notes.md", "one");
@@ -288,7 +290,7 @@ describe("late answers from the project you left", () => {
 
     // Still dirty, still in the editor, nothing claiming it was saved.
     expect(editor(h)?.value).toBe("b text edited");
-    expect(h.doc.querySelector(".files-browse-tab-dirty")?.textContent).toBe("•");
+    expect(h.doc.querySelector(".files-browse-viewer-name")?.textContent).toContain("•");
     expect(h.doc.querySelector(".files-browse-notice")?.textContent || "").not.toContain("Saved");
   });
 });
@@ -525,8 +527,7 @@ describe("a parked draft is not consumed by reading it", () => {
     const h = remoteHost();
     openPanel(h);
     beginEdit(h, "notes.md", "one", "one two");
-    const actions = [...h.doc.querySelectorAll(".files-browse-viewer-head .files-browse-action")];
-    click(h.window, actions.find((b) => b.textContent === "Cancel")!);
+    cancel(h);
 
     back(h);
     sendFile(h, "notes.md", "one");
@@ -663,7 +664,7 @@ describe("a save result that cannot be matched to a request", () => {
   });
 });
 
-describe("closing the file", () => {
+describe("throwing an edit away", () => {
   const withConfirm = (h: Harness, answer: boolean) => {
     const seen: string[] = [];
     (h.window as never as { confirm: (m: string) => boolean }).confirm = (m) => {
@@ -673,49 +674,46 @@ describe("closing the file", () => {
     return seen;
   };
 
-  it("asks before discarding, like the desktop panel's tab close", () => {
-    // The desktop app asks "Discard changes?" when a dirty tab is closed. The
-    // web panel had no equivalent because nothing was ever discarded — but that
-    // also meant there was no way to say "throw this away" from the file's own
-    // chrome, and the two apps behaved differently for the same gesture.
+  it("Cancel asks first, in the desktop panel's words", () => {
+    // The desktop asks here (`cancelChanges`) and this panel did not. An earlier
+    // attempt hung the question on a close-the-file button instead, which meant
+    // inventing a tab that could never have a sibling.
     const h = remoteHost();
     openPanel(h);
     beginEdit(h, "notes.md", "one", "one two");
     const asked = withConfirm(h, true);
 
-    closeTab(h);
+    cancel(h);
     expect(asked.length).toBe(1);
-    expect(asked[0]).toContain("Discard changes?");
-    expect(h.doc.querySelector(".files-browse-tab")).toBeNull();
+    expect(asked[0]).toContain("Cancel changes?");
+    expect(editor(h)).toBeNull();
 
-    // Discarded for real — reopening shows the file, not the edit.
+    // Gone for real — reopening shows the file, not the edit.
+    back(h);
     sendFile(h, "notes.md", "one");
     expect(editor(h)).toBeNull();
   });
 
-  it("keeps the file and the edit when the answer is no", () => {
+  it("keeps the edit when the answer is no", () => {
     const h = remoteHost();
     openPanel(h);
     beginEdit(h, "notes.md", "one", "one two");
     withConfirm(h, false);
-
-    closeTab(h);
+    cancel(h);
     expect(editor(h)?.value).toBe("one two");
-    expect(h.doc.querySelector(".files-browse-tab")).toBeTruthy();
   });
 
   it("does not ask when there is nothing unsaved", () => {
     const h = remoteHost();
     openPanel(h);
-    sendFile(h, "notes.md", "one"); // opened, never edited
+    sendFile(h, "notes.md", "one");
+    click(h.window, h.doc.querySelector(".files-browse-viewer-head .files-browse-action")!);
     const asked = withConfirm(h, true);
-    closeTab(h);
+    cancel(h);
     expect(asked).toEqual([]);
-    expect(h.doc.querySelector(".files-browse-tab")).toBeNull();
   });
 
-  it("going back to the tree by the project name asks nothing and keeps the text", () => {
-    // Desktop's title click keeps open tabs; this is the same relationship.
+  it("leaving the file asks nothing and keeps the text", () => {
     const h = remoteHost();
     openPanel(h);
     beginEdit(h, "notes.md", "one", "one two");
@@ -725,5 +723,13 @@ describe("closing the file", () => {
     expect(asked).toEqual([]);
     sendFile(h, "notes.md", "one");
     expect(editor(h)?.value).toBe("one two");
+  });
+
+  it("shows no tab bar — one file at a time is not a tab", () => {
+    const h = remoteHost();
+    openPanel(h);
+    sendFile(h, "notes.md", "one");
+    expect(h.doc.querySelector(".files-browse-tabs")).toBeNull();
+    expect(h.doc.querySelector(".files-browse-tab")).toBeNull();
   });
 });
