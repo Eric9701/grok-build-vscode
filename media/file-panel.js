@@ -312,7 +312,18 @@
       // Its BOTTOM edge, not its height: the relay page has a second header
       // above this bar, and a height alone would start the panel that much too
       // high. Clamped at zero so a scrolled-away bar cannot push it off-screen.
-      const bar = overlay && mount.overlayTopFrom;
+      //
+      // Resolved on every call rather than captured at mount, because WHICH bar
+      // is on screen changes at runtime: the relay hides `.top-bar` and shows
+      // `#session-head` the moment the host sends a project catalog. A captured
+      // reference measured a hidden element, got zero, and left the overlay
+      // covering the conversation header — the exact thing this offset exists to
+      // prevent. Defaulting to the toggle's own container keeps it honest: the
+      // panel starts below whichever bar its button lives in.
+      const from = typeof mount.overlayTopFrom === "function"
+        ? mount.overlayTopFrom()
+        : mount.overlayTopFrom;
+      const bar = overlay && (from || toggle.parentElement);
       const top = bar ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom)) : 0;
       rootEl.style.setProperty("--gfp-overlay-top", top + "px");
       resizer.hidden = !open || overlay;
@@ -351,8 +362,17 @@
       // next time either layout moves. `win.innerWidth` is not a substitute
       // either — on the relay the rail lives inside that width, so the chat
       // would be squeezed below its own minimum.
-      const basis = mount.widthBasis && mount.widthBasis.getBoundingClientRect().width;
-      const hostWidth = basis
+      // `widthPeer` is the element the panel must not starve — the chat column.
+      // Available space is that column plus whatever the panel already occupies,
+      // which is exactly the width the two of them share and nothing else.
+      //
+      // A whole-row basis is wrong for the same reason the panel's own column
+      // was: on the relay the row also contains the project rail, so reserving
+      // MIN_CHAT_WIDTH from the row let a drag squeeze the chat to ~150px on a
+      // 1366px window and persist it.
+      const peer = mount.widthPeer && mount.widthPeer.getBoundingClientRect().width;
+      const hostWidth = (peer ? peer + rootEl.getBoundingClientRect().width : 0)
+        || (mount.widthBasis && mount.widthBasis.getBoundingClientRect().width)
         || (rootEl.parentElement && rootEl.parentElement.getBoundingClientRect().width)
         || win.innerWidth || 800;
       const max = Math.max(MIN_WIDTH, Math.min(hostWidth * 0.7, hostWidth - MIN_CHAT_WIDTH));
@@ -809,6 +829,8 @@
         editor.className = "gfp-editor desk-ft-editor files-browse-editor";
         editor.value = tab.draftText;
         editor.spellcheck = false;
+        // Held, not hidden, while a Reload is in flight — see reloadTab.
+        editor.readOnly = !!tab.reloading;
         editor.setAttribute("aria-label", "Edit " + tab.relPath);
         editor.addEventListener("input", () => {
           applyDraft(tab, editor.value);
@@ -933,6 +955,30 @@
       return true;
     }
 
+    /**
+     * Whether `tab` is the one actually painted right now.
+     *
+     * Async work must not repaint the viewer for a tab nobody is looking at:
+     * `renderViewer()` rebuilds the live textarea, and takes the caret, the
+     * selection and any in-progress IME composition with it. Save A, switch to
+     * B, start typing, and A's answer landing would disturb what you are typing
+     * in B. `reloadTab` learned this the hard way; keeping the rule in one
+     * place is what stops the next awaiting path from having to.
+     */
+    function isOnScreen(tab) {
+      const state = scopes.get(tab.scopeId);
+      return !!state
+        && currentState === state
+        && state.activeRelPath === tab.relPath
+        && state.tabs.get(tab.relPath) === tab;
+    }
+
+    /** Repaint only what `tab` actually owns on screen. */
+    function repaintFor(tab) {
+      if (scopes.get(tab.scopeId) === currentState) renderTabs();
+      if (isOnScreen(tab)) renderViewer();
+    }
+
     async function saveTab(tab) {
       if (!access.write || !tab.dirty || tab.saving || !tab.stamp || !tab.expectedAbsPath) return false;
       const sentText = tab.draftText;
@@ -950,8 +996,7 @@
       if (destroyed || tab.saveSeq !== seq) return false;
       if (result && result.ok) {
         applySaveSuccess(tab, sentText, result);
-        renderTabs();
-        renderViewer();
+        repaintFor(tab);
         return true;
       }
       tab.saving = false;
@@ -966,7 +1011,7 @@
         tab.conflict = false;
         tab.notice = result && result.reason || "Save refused.";
       }
-      renderViewer();
+      repaintFor(tab);
       return false;
     }
 
@@ -982,21 +1027,28 @@
 
     async function reloadTab(tab) {
       const state = scopes.get(tab.scopeId);
-      if (!state || state.tabs.get(tab.relPath) !== tab) return false;
+      if (!state || state.tabs.get(tab.relPath) !== tab || tab.reloading) return false;
+      // Reload replaces the whole tab with the host's version, so anything typed
+      // while the read is in flight would vanish without a word — and on a phone
+      // that flight is long enough to type into. The editor is held read-only
+      // for the duration instead: Reload means "take the file's version", and
+      // the honest way to say that is to stop accepting edits, not to accept
+      // them and then drop them.
+      tab.reloading = true;
+      tab.notice = "Reloading…";
+      repaintFor(tab);
       const result = await access.read(tab.scopeId, tab.relPath);
+      tab.reloading = false;
       if (destroyed || state.tabs.get(tab.relPath) !== tab) return false;
       if (!result || !result.ok) {
         tab.conflict = false;
         tab.notice = result && result.reason || "Could not reload the current file version.";
-        if (currentState === state && state.activeRelPath === tab.relPath) renderViewer();
+        repaintFor(tab);
         return false;
       }
       const fresh = makeTab(tab.scopeId, result);
       state.tabs.set(tab.relPath, fresh);
-      if (currentState === state) {
-        renderTabs();
-        if (state.activeRelPath === tab.relPath) renderViewer();
-      }
+      repaintFor(fresh);
       return true;
     }
 
@@ -1024,6 +1076,14 @@
       }
       tab.stamp = fresh.stamp;
       tab.saving = false;
+      // Dirty against what is ON DISK NOW, not against the version this tab was
+      // opened at. Overwrite exists precisely because the file moved underneath
+      // us, so the opened baseline is the one value that is certainly stale.
+      // Comparing against it meant that typing your way back to the opened text
+      // during the refresh made the tab read "clean", `saveTab` then refused to
+      // run, and the panel showed the older content as saved while the disk kept
+      // the newer bytes — and closing it would not have warned.
+      if (typeof fresh.text === "string") tab.baselineText = fresh.text;
       tab.dirty = tab.draftText !== tab.baselineText;
       return saveTab(tab);
     }

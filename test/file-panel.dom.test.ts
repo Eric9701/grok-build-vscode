@@ -414,6 +414,87 @@ describe("shared file-panel component", () => {
     expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement).value).toBe("draft");
   });
 
+  it("holds the editor while a Reload is in flight instead of dropping what you type", async () => {
+    // Reload replaces the whole tab with the host's version. On a phone that
+    // round trip is long enough to type into, and those keystrokes used to
+    // vanish without a word when the answer arrived.
+    const pending = deferred<unknown>();
+    let reads = 0;
+    const h = harness({
+      read: async (_scopeId, relPath) => {
+        reads++;
+        if (reads === 2) return pending.promise;
+        return { ok: true, kind: "text", relPath, text: "one", stamp: { mtimeMs: 1, size: 3 }, absPath: "/work/app/notes.md" };
+      },
+      write: async () => ({ ok: false, reason: "changed" }),
+    });
+    await settle();
+    await openAndEdit(h, "src/a.ts", "mine");
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+    click(h.window, [...h.document.querySelectorAll(".gfp-conflict-actions .gfp-action")].find((n) => n.textContent === "Reload") || null);
+    await settle();
+
+    expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement)?.readOnly).toBe(true);
+    pending.resolve({ ok: true, kind: "text", relPath: "src/a.ts", text: "host version", stamp: { mtimeMs: 2, size: 12 }, absPath: "/work/app/src/a.ts" });
+    await settle();
+    expect(h.document.querySelector(".gfp-viewer-body")?.textContent).toContain("host version");
+  });
+
+  it("measures Overwrite's dirtiness against the bytes now on disk", async () => {
+    // Overwrite exists because the file moved underneath us, so the version the
+    // tab was OPENED at is the one value certain to be stale. Comparing against
+    // it meant typing your way back to the opened text during the refresh made
+    // the tab read clean, the write was skipped, and the panel then showed the
+    // older content as saved while the disk kept the newer bytes.
+    let reads = 0;
+    const writes: string[] = [];
+    const h = harness({
+      read: async (_scopeId, relPath) => {
+        reads++;
+        return {
+          ok: true, kind: "text", relPath,
+          text: reads === 1 ? "opened" : "newer on disk",
+          stamp: { mtimeMs: reads, size: 6 }, absPath: "/work/app/src/a.ts",
+        };
+      },
+      write: async (_scopeId, request) => {
+        writes.push(String(request.text));
+        return { ok: writes.length > 1, reason: "changed", relPath: request.relPath, stamp: { mtimeMs: 9, size: 6 } };
+      },
+    });
+    await settle();
+    await openAndEdit(h, "src/a.ts", "mine");
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+    // Type back to exactly what the tab was opened at, then Overwrite.
+    type(h.window, h.document, "opened");
+    click(h.window, [...h.document.querySelectorAll(".gfp-conflict-actions .gfp-action")].find((n) => n.textContent === "Overwrite") || null);
+    await settle();
+
+    expect(writes).toEqual(["mine", "opened"]);
+  });
+
+  it("does not rebuild the visible editor when a background save lands", async () => {
+    // renderViewer() recreates the textarea, taking the caret, the selection and
+    // any in-progress IME composition with it. A save finishing in another
+    // project must not disturb what you are typing here.
+    const pending = deferred<unknown>();
+    const h = harness({ write: async () => pending.promise });
+    await settle();
+    await openAndEdit(h, "notes.md", "app draft");
+    click(h.window, h.document.querySelector(".gfp-save"));
+
+    await h.switchScope(h.scopes.b);
+    await h.panel.openPath("notes.md", true);
+    click(h.window, h.document.querySelectorAll(".gfp-mode")[1]);
+    const editorBefore = h.document.querySelector(".gfp-editor");
+    pending.resolve({ ok: true, relPath: "notes.md", stamp: { mtimeMs: 2, size: 9 } });
+    await settle();
+
+    expect(h.document.querySelector(".gfp-editor")).toBe(editorBefore);
+  });
+
   it("gives Markdown the desktop's two-icon mode pair, with the current one marked", async () => {
     // Markdown had become the only file type with a WORDED toggle while every
     // other text file got a pencil, which is what made the toolbar read as

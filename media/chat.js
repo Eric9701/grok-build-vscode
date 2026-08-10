@@ -12433,17 +12433,17 @@
           // The relay adds this right-column host. Until then (and on phones),
           // responsive presentation deliberately falls back to an overlay.
           dockHost: document.getElementById("file-panel-dock"),
-          // The row the panel shares with the chat, so a resize knows what it
-          // is allowed to eat into. The dock host itself is shrink-wrapped
-          // around the panel, so measuring that would make its own width the
-          // ceiling and strand the panel at its minimum.
-          widthBasis: document.getElementById("app-body")
-            || document.querySelector(".app-main")
-            || document.body,
-          // As an overlay the panel stops below the top bar, the way the docked
-          // one does — rather than covering the bar and the toggle that opened
-          // it.
-          overlayTopFrom: document.querySelector(".top-bar"),
+          // The element the panel must not starve. Available width is this plus
+          // whatever the panel already occupies — NOT the whole row, which also
+          // contains the projects rail and would let a drag squeeze the chat to
+          // nothing.
+          widthPeer: document.getElementById("chat-column"),
+          // As an overlay the panel stops below the bar its toggle lives in,
+          // the way the docked one does, rather than covering that bar and the
+          // button that opened it. A function because which bar that is changes
+          // at runtime: `.top-bar` is hidden and `#session-head` takes over the
+          // moment a project catalog arrives.
+          overlayTopFrom: () => remoteFilesButtonHost(),
           toggleHost: remoteFilesButtonHost(),
           presentation: "responsive",
           id: "files-browse-panel",
