@@ -306,6 +306,77 @@ describe("VS Code projects rail renderer", () => {
     expect(previews.every((p) => p.cwd !== "/work/alpha")).toBe(true);
   });
 
+  it("does not re-read every project on a repeated catalog push", () => {
+    // `postRepoCatalog()` has 26 call sites and most push an UNCHANGED catalog
+    // because a selection or a pin moved. Each preview is a session-index pass
+    // per project on the host, so re-asking on every push is the whole cost.
+    const { window, posted } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+    expect(posted.filter((p) => p.type === "listRepoSessions")).toHaveLength(2);
+
+    posted.length = 0;
+    loadCatalog(api, "/work/alpha");
+    loadCatalog(api, "/work/alpha");
+    expect(
+      posted.filter((p) => p.type === "listRepoSessions"),
+      "an unchanged catalog must not make every other project rescan",
+    ).toEqual([]);
+  });
+
+  it("asks a project that is new to the catalog, without re-asking the rest", () => {
+    const { window, posted } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+
+    posted.length = 0;
+    loadCatalog(api, "/work/alpha", [
+      ...repos,
+      { cwd: "/work/delta", label: "delta", available: true, updatedAt: 5 },
+    ]);
+    expect(posted.filter((p) => p.type === "listRepoSessions").map((p) => p.cwd)).toEqual([
+      "/work/delta",
+    ]);
+  });
+
+  it("re-reads every project when the rail comes back into view", () => {
+    // The counterweight to the two tests above: caching must not defeat the
+    // refresh that exists because Recent's order moves when a phone drives a
+    // turn this view never sees.
+    const { window, doc, posted } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+
+    posted.length = 0;
+    Object.defineProperty(doc, "visibilityState", { value: "visible", configurable: true });
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    // `ready` makes the host re-push the catalog; that push must now re-probe.
+    loadCatalog(api, "/work/alpha");
+    expect(
+      posted.filter((p) => p.type === "listRepoSessions").map((p) => p.cwd).sort(),
+    ).toEqual(["/work/beta", "/work/gamma"]);
+  });
+
+  it("forgets a project that has left the catalog", () => {
+    const { window, posted } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+    api.onMessage({
+      type: "repoSessions",
+      cwd: "/work/gamma",
+      entries: [row("g1", "/work/gamma", "gone with it", 99)],
+      total: 1,
+    });
+    expect(api.recentRows().some((s) => s.id === "g1")).toBe(true);
+
+    posted.length = 0;
+    loadCatalog(api, "/work/alpha", repos.filter((r) => r.cwd !== "/work/gamma"));
+    expect(
+      api.recentRows().some((s) => s.id === "g1"),
+      "a removed project's rows must stop feeding Recent",
+    ).toBe(false);
+  });
+
   describe("Pinned", () => {
     it("shows no Pinned group until the pinnedSessions frame arrives", () => {
       const { window, doc } = h;

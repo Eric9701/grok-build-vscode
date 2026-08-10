@@ -1268,8 +1268,34 @@
         // and behave as before rather than losing the marker entirely.
         state.workspaceCwd = msg.workspaceCwd || msg.selectedCwd || "";
         state.canAddProject = msg.canAddProject === true;
-        // Re-probe other projects when the catalog changes.
-        state.previewsAsked = {};
+        // Forget projects that have left the catalog — otherwise their rows keep
+        // feeding Recent and the search index after they are gone, and the two
+        // maps grow for the life of the window.
+        //
+        // What this deliberately does NOT do is wipe `previewsAsked` wholesale.
+        // It used to, so every catalog push re-asked every other project for its
+        // rows: measured on a real store that is 18 `listRepoSessions` round
+        // trips, each one a session-index pass on the host (~9-30 ms), and
+        // `postRepoCatalog()` has 26 call sites — most of which push an
+        // unchanged catalog because a selection or a pin moved. A project that
+        // is new to the catalog still gets asked, because it has no entry here.
+        //
+        // Freshness does not depend on the storm. The host re-pushes the
+        // affected project's `repoSessions` itself after a rename or a delete
+        // (`sendLocalRepoSessionsPreview`, and its comment says why), leaving a
+        // project hands its live rows back below, and the selected project is
+        // never drawn from this cache at all. The residue is that a project you
+        // never visit can show rows from earlier in the window if it was changed
+        // from somewhere else — cosmetic, and a reload cures it.
+        {
+          const live = new Set(state.repos.map((r) => cwdKey(r.cwd)));
+          for (const key of Object.keys(state.previewsAsked)) {
+            if (!live.has(key)) delete state.previewsAsked[key];
+          }
+          for (const key of Object.keys(state.previews)) {
+            if (!live.has(key)) delete state.previews[key];
+          }
+        }
         // The selection moved. `currentSessions` still holds the OLD project's
         // rows and the `sessions` frame carries no cwd of its own, so anything
         // rendered between here and its arrival would file A's conversations
@@ -1385,7 +1411,21 @@
   // Only on the way IN. Firing on hide would ask a view nobody is looking at to
   // rescan every project's session directory.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") vscode.postMessage({ type: "ready" });
+    if (document.visibilityState !== "visible") return;
+    // THIS is where other projects get re-read, and the only place. Recent ranks
+    // by transcript mtime, which moves whenever a turn finishes anywhere —
+    // including turns driven from a phone this view never sees — so a rail
+    // coming back from hidden is showing a stale order and has earned the
+    // rescan. Dropping the asked-set makes the `repos` answer to this `ready`
+    // re-probe every project.
+    //
+    // The catalog handler deliberately does not do this. It runs on every
+    // `postRepoCatalog()` — 26 call sites, most of them a selection or a pin
+    // moving — and each rescan is one session-index pass per project on the
+    // host. Becoming visible is rare and is a real signal; a catalog push is
+    // neither.
+    state.previewsAsked = {};
+    vscode.postMessage({ type: "ready" });
   });
 
   vscode.postMessage({ type: "ready" });
