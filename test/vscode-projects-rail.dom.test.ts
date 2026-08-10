@@ -240,6 +240,44 @@ describe("VS Code projects rail renderer", () => {
     expect(doc.querySelector(".rail-session.active .rail-session-name")?.textContent).toBe("there");
   });
 
+  it("lets a NEW session identify itself even while a resume is pending", () => {
+    // The in-flight rule is right for a frame already on the wire and wrong the
+    // moment the user asks for something else: a resume that never lands would
+    // otherwise silence the identity of a conversation created after it, and
+    // then the timer would put the old highlight back.
+    const { window, doc } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+    loadSessions(api, [row("a1", "/work/alpha", "here"), row("a2", "/work/alpha", "there")], "a1");
+
+    const target = [...doc.querySelectorAll(".rail-session")].find(
+      (e) => e.querySelector(".rail-session-name")?.textContent === "there",
+    ) as HTMLElement;
+    target.click(); // resume a2 — suppose the host never answers
+
+    const plus = [...doc.querySelectorAll('.rail-action-btn[title="New session"]')][0] as HTMLButtonElement;
+    expect(plus, "the rail offers New session per project").toBeTruthy();
+    plus.click();
+
+    // The host's answer for the BRAND NEW conversation must be applied.
+    api.onMessage({
+      type: "sessions",
+      entries: [
+        row("a1", "/work/alpha", "here"),
+        row("a2", "/work/alpha", "there"),
+        row("a3", "/work/alpha", "brand new"),
+      ],
+      activeId: "a3",
+      dots: {},
+      offset: 0,
+      total: 3,
+      hasMore: false,
+    });
+    expect(doc.querySelector(".rail-session.active .rail-session-name")?.textContent).toBe(
+      "brand new",
+    );
+  });
+
   it("re-asks the host for everything when the rail becomes visible again", () => {
     // Recent ranks by the session file's mtime, which moves whenever a turn
     // finishes anywhere — including turns driven from a phone this view never

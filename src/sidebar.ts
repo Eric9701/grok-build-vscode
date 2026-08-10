@@ -8,6 +8,7 @@ import type {
   HostWebviewView,
 } from "./host";
 import { Uri, disposeAll, formatRemoteInstallId, shouldRehydrateOnWebviewReady } from "./host";
+import { isCanonicallyInsideRoot } from "./file-tree";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -2214,131 +2215,153 @@ Only continue if you trust this code.`,
             return void this.host.showErrorMessage("Could not start Grok to create a worktree.");
           }
           const { client, disposeAfter } = creator;
+          // Disposed in the OUTER finally, not here. Validation below asks this
+          // same client for its worktree list, and killing it first made that
+          // call reject every time — invisible for a linked worktree, which
+          // local git lists anyway, and fatal for a clone-mode one, which only
+          // the ACP list ever mentions. Creating a worktree before any session
+          // existed for the project therefore failed and left the clone behind.
           let created;
           try {
             created = await client.createWorktree({
               sourcePath,
               label: label || undefined,
             });
-          } finally {
-            if (disposeAfter) await client.dispose();
-          }
-          if (created === "unsupported") {
-            return void this.host.showWarningMessage(
-              "Worktrees need a newer Grok Build CLI. Update via the gear menu → Version & about.",
-            );
-          }
-          const wtPath = created.worktreePath;
-          const wtLabel = label || path.basename(wtPath);
-          this.host.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
+            if (created === "unsupported") {
+              return void this.host.showWarningMessage(
+                "Worktrees need a newer Grok Build CLI. Update via the gear menu → Version & about.",
+              );
+            }
+            const wtPath = created.worktreePath;
+            const wtLabel = label || path.basename(wtPath);
+            this.host.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
 
-          // create is ASYNC — the RPC returns "creating" before git writes the
-          // checkout (its dir + `.git` pointer appear a beat later). Spawning a
-          // session in a not-yet-existing cwd hangs the whole flow, so wait for
-          // the checkout to land before validating or starting the session.
-          const ready = await this.waitForWorktreeReady(wtPath, 30000);
-          if (!ready) {
-            return void this.host.showErrorMessage(
-              `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
-            );
-          }
+            // create is ASYNC — the RPC returns "creating" before git writes the
+            // checkout (its dir + `.git` pointer appear a beat later). Spawning a
+            // session in a not-yet-existing cwd hangs the whole flow, so wait for
+            // the checkout to land before validating or starting the session.
+            const ready = await this.waitForWorktreeReady(wtPath, 30000);
+            if (!ready) {
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" was created but its checkout never appeared on disk — the session wasn't started. Try again, or check \`git worktree list\`.`,
+              );
+            }
 
-          // Validate against an authoritative worktree list before cache /
-          // overrides / auth roots. A compromised or malformed ACP path must
-          // not become a trusted session cwd.
-          const sourceGitRoot =
-            created.sourceGitRoot || gitRootForPath(sourcePath, defaultFs) || sourcePath;
-          // Ask more than once. The create RPC returns as soon as git is asked,
-          // and `waitForWorktreeReady` only proves the DIRECTORY exists — the
-          // worktree can still be missing from `git worktree list` for a beat
-          // after that. Validating on the first answer refused a perfectly good
-          // checkout roughly 14ms after creating it: "not in git worktree list".
-          //
-          // This weakens nothing. The path must still appear in an authoritative
-          // list; it is only given the moment it needs to get there.
-          let listedPaths = await this.listAuthoritativeWorktreePaths(
-            client,
-            sourcePath,
-            sourceGitRoot,
-          );
-          for (let attempt = 0; attempt < 6; attempt++) {
-            if (listedPaths.some((p) => pathsEqual(p, wtPath))) break;
-            await new Promise((r) => setTimeout(r, 250));
-            listedPaths = await this.listAuthoritativeWorktreePaths(
+            // Validate against an authoritative worktree list before cache /
+            // overrides / auth roots. A compromised or malformed ACP path must
+            // not become a trusted session cwd.
+            //
+            // The root we QUERY is derived locally from the folder the user
+            // actually asked to branch — never from the response. Taking
+            // `created.sourceGitRoot` first (as this did) made the check answer
+            // itself: the same value arrived as both the claim and the thing the
+            // claim was compared against, so it always matched. A response naming
+            // repository B could then hand back a genuine worktree OF B, have git
+            // truthfully list it, and be filed under A.
+            const sourceGitRoot = gitRootForPath(sourcePath, defaultFs) || sourcePath;
+            const claimedGitRoot = created.sourceGitRoot?.trim() || undefined;
+            if (claimedGitRoot && !pathsEqual(claimedGitRoot, sourceGitRoot) && !pathsEqual(claimedGitRoot, sourcePath)) {
+              this.host.appendLine(
+                `[worktree] refused: create claims source ${claimedGitRoot}, but ${sourcePath} is in ${sourceGitRoot}`,
+              );
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" came back attributed to a different repository, so no session was started.`,
+              );
+            }
+            // Ask more than once. The create RPC returns as soon as git is asked,
+            // and `waitForWorktreeReady` only proves the DIRECTORY exists — the
+            // worktree can still be missing from `git worktree list` for a beat
+            // after that. Validating on the first answer refused a perfectly good
+            // checkout roughly 14ms after creating it: "not in git worktree list".
+            //
+            // This weakens nothing. The path must still appear in an authoritative
+            // list; it is only given the moment it needs to get there.
+            let listedPaths = await this.listAuthoritativeWorktreePaths(
               client,
               sourcePath,
               sourceGitRoot,
             );
-          }
-          if (
-            !worktreePathAuthorizedForRepo({
-              worktreePath: wtPath,
-              sourceRepo: sourcePath,
-              listedWorktreePaths: listedPaths,
-              claimedSourceGitRoot: created.sourceGitRoot || undefined,
-              sourceGitRoot,
-            })
-          ) {
-            this.host.appendLine(
-              `[worktree] refused unlisted/unauthorized path from create: ${wtPath}`,
-            );
-            // The CLI already wrote a checkout there — for a clone-mode repo, a
-            // full copy of it. Refusing without saying so left the directory
-            // behind silently, so the next attempt with the same label got a
-            // "-2" suffix and the owner accumulated orphans they had no way to
-            // see. We do not delete it: it is real work on disk and this path
-            // is reached precisely when we could NOT establish what it is.
-            return void this.host.showErrorMessage(
-              `Worktree "${wtLabel}" could not be confirmed as part of this repository, so no session was started. The checkout was left at ${wtPath} — remove it yourself if you don't want it.`,
-            );
-          }
-
-          // Refresh cache only after validation.
-          this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wtPath));
-          this.worktreeCache.push({
-            id: wtLabel,
-            path: wtPath,
-            sourceRepo: sourcePath,
-            repoName: path.basename(sourcePath),
-            kind: "session",
-            creationMode: "linked",
-            gitRef: "HEAD",
-            headCommit: "",
-            status: "alive",
-            label: wtLabel,
-            userProvidedLabel: !!label,
-          });
-
-          // Open a brand-new session whose process cwd is the worktree.
-          this.parkFocused();
-          this.focused = this.newLocalSession();
-          this.pool.add(this.focused);
-          this.focused.cwd = wtPath;
-          this.focused.worktree = {
-            path: wtPath,
-            label: wtLabel,
-            sourceGitRoot,
-          };
-          await this.startSession();
-          const id = this.focused.activeSessionId;
-          if (id) {
-            const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-            await this.state.update(SESSION_META_KEY, {
-              ...overrides,
-              [id]: {
-                ...(overrides[id] ?? {}),
-                customName: worktreeDisplayName(wtLabel),
-                worktreePath: wtPath,
-                worktreeLabel: wtLabel,
+            for (let attempt = 0; attempt < 6; attempt++) {
+              if (listedPaths.some((p) => pathsEqual(p, wtPath))) break;
+              await new Promise((r) => setTimeout(r, 250));
+              listedPaths = await this.listAuthoritativeWorktreePaths(
+                client,
+                sourcePath,
                 sourceGitRoot,
-              },
+              );
+            }
+            if (
+              !worktreePathAuthorizedForRepo({
+                worktreePath: wtPath,
+                sourceRepo: sourcePath,
+                listedWorktreePaths: listedPaths,
+                claimedSourceGitRoot: claimedGitRoot,
+                sourceGitRoot,
+              })
+            ) {
+              this.host.appendLine(
+                `[worktree] refused unlisted/unauthorized path from create: ${wtPath}`,
+              );
+              // The CLI already wrote a checkout there — for a clone-mode repo, a
+              // full copy of it. Refusing without saying so left the directory
+              // behind silently, so the next attempt with the same label got a
+              // "-2" suffix and the owner accumulated orphans they had no way to
+              // see. We do not delete it: it is real work on disk and this path
+              // is reached precisely when we could NOT establish what it is.
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" could not be confirmed as part of this repository, so no session was started. The checkout was left at ${wtPath} — remove it yourself if you don't want it.`,
+              );
+            }
+
+            // Refresh cache only after validation.
+            this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wtPath));
+            this.worktreeCache.push({
+              id: wtLabel,
+              path: wtPath,
+              sourceRepo: sourcePath,
+              repoName: path.basename(sourcePath),
+              kind: "session",
+              creationMode: "linked",
+              gitRef: "HEAD",
+              headCommit: "",
+              status: "alive",
+              label: wtLabel,
+              userProvidedLabel: !!label,
             });
-            this.sessionCache.delete(id);
+
+            // Open a brand-new session whose process cwd is the worktree.
+            this.parkFocused();
+            this.focused = this.newLocalSession();
+            this.pool.add(this.focused);
+            this.focused.cwd = wtPath;
+            this.focused.worktree = {
+              path: wtPath,
+              label: wtLabel,
+              sourceGitRoot,
+            };
+            await this.startSession();
+            const id = this.focused.activeSessionId;
+            if (id) {
+              const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+              await this.state.update(SESSION_META_KEY, {
+                ...overrides,
+                [id]: {
+                  ...(overrides[id] ?? {}),
+                  customName: worktreeDisplayName(wtLabel),
+                  worktreePath: wtPath,
+                  worktreeLabel: wtLabel,
+                  sourceGitRoot,
+                },
+              });
+              this.sessionCache.delete(id);
+            }
+              this.postSessionsList();
+              void this.host.showInformationMessage(
+                `Worktree session ready: ${wtLabel}. Edits stay isolated until you Apply worktree.`,
+              );
+          } finally {
+            if (disposeAfter) await client.dispose();
           }
-          this.postSessionsList();
-          void this.host.showInformationMessage(
-            `Worktree session ready: ${wtLabel}. Edits stay isolated until you Apply worktree.`,
-          );
         } catch (e: any) {
           void this.host.showErrorMessage(`Create worktree failed: ${e?.message ?? e}`);
         }
@@ -2714,6 +2737,25 @@ Only continue if you trust this code.`,
     sourceRepo: string,
     sourceGitRoot: string,
   ): boolean {
+    // LOCATION FIRST, and it is not optional. A marker is a file, and a file is
+    // something whoever proposed the path can write — so on its own it proves
+    // only that the proposer touched that directory, not that we made it. Grok
+    // creates clone-mode worktrees under its own root and nowhere else, so
+    // anything outside that root is not one of ours whatever it contains.
+    // Canonical, because a symlink planted inside the root and pointing
+    // somewhere else entirely would satisfy a textual prefix check.
+    //
+    // The DELETE path already demanded this. Authorization is the more
+    // dangerous of the two: it ends with a Grok process running in that
+    // directory, the path persisted on the session, and the path in the
+    // trusted-cwd set a linked remote is allowed to target.
+    const root = path.join(resolveGrokHome(), "worktrees");
+    if (!isCanonicallyInsideRoot(root, worktreePath)) {
+      this.host.appendLine(
+        `[worktree] refused clone provenance for ${worktreePath}: outside ${root}`,
+      );
+      return false;
+    }
     const ok = cloneWorktreeSourceMatches({
       worktreePath,
       sourceRepo,

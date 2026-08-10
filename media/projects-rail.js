@@ -891,6 +891,8 @@
       add.title = "New session";
       add.onclick = (e) => {
         e.stopPropagation();
+        // Whatever resume was still in flight is no longer what the user wants.
+        cancelPendingResume();
         vscode.postMessage({ type: "newSession", cwd: repo.cwd });
       };
       actions.appendChild(add);
@@ -1077,6 +1079,21 @@
     clearTimeout(pendingResume.timer);
     pendingResume = null;
     return true;
+  }
+
+  /**
+   * Abandon a pending resume because the user asked for something else.
+   *
+   * The in-flight rule — ignore any active id that is not the one we are
+   * waiting for — is right for a frame that was already on the wire, and wrong
+   * the moment a NEW action starts: a conversation created after a resume that
+   * failed would have its own identity ignored for the rest of the timeout, and
+   * then the timer would put the old highlight back. The newest intent wins.
+   */
+  function cancelPendingResume() {
+    if (!pendingResume) return;
+    clearTimeout(pendingResume.timer);
+    pendingResume = null;
   }
 
   function renderSession(s, repo, opts) {

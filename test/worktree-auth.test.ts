@@ -288,6 +288,59 @@ describe("worktree validation reads git first", () => {
     );
   });
 
+  it("requires the clone to live under grok's own worktrees root", () => {
+    // A marker is a FILE, so whoever proposed the path can write one. On its
+    // own it proves the proposer touched that directory, not that we made it —
+    // and accepting it ends with a grok process running there, the path
+    // persisted on the session, and the path in the trusted-cwd set a linked
+    // remote may target. Location has to come first, canonically, or a symlink
+    // planted inside the root satisfies a textual prefix check.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private cloneWorktreeBelongsTo");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  }", start));
+    const fence = body.indexOf("isCanonicallyInsideRoot");
+    const marker = body.indexOf("cloneWorktreeSourceMatches");
+    expect(fence, "location fence must exist").toBeGreaterThan(-1);
+    expect(marker, "and the marker check after it").toBeGreaterThan(fence);
+    expect(body).toContain('path.join(resolveGrokHome(), "worktrees")');
+  });
+
+  it("derives the git root locally and treats the response as a claim", () => {
+    // This check used to answer itself: `created.sourceGitRoot` was taken as
+    // the root to query AND handed back as the claim to compare against, so it
+    // always matched. A response naming repository B could hand back a genuine
+    // worktree OF B, have git truthfully list it, and be filed under A.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("Creating git worktree");
+    const region = src.slice(start, src.indexOf("this.worktreeCache.push", start));
+    expect(region).toContain("const sourceGitRoot = gitRootForPath(sourcePath, defaultFs) || sourcePath;");
+    expect(region, "the response must not choose the root").not.toMatch(
+      /const sourceGitRoot\s*=\s*\n?\s*created\.sourceGitRoot/,
+    );
+    // And a claim that disagrees with the local answer is refused outright.
+    expect(region).toContain("claims source");
+    expect(region).toContain("claimedSourceGitRoot: claimedGitRoot");
+  });
+
+  it("keeps the temporary create client alive through validation", () => {
+    // Validation asks this same client for its worktree list. Disposing right
+    // after `createWorktree` made that call reject every time — invisible for a
+    // linked worktree, which local git lists anyway, and fatal for a clone,
+    // which only the ACP list mentions. So creating one before any session
+    // existed for the project failed and left the clone on disk.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("const creator = await this.clientForWorktreeCreate(sourcePath);");
+    expect(start).toBeGreaterThan(-1);
+    const region = src.slice(start, src.indexOf("Create worktree failed", start));
+    const validate = region.indexOf("listAuthoritativeWorktreePaths");
+    const dispose = region.indexOf("if (disposeAfter) await client.dispose();");
+    expect(validate).toBeGreaterThan(-1);
+    expect(dispose, "dispose must come after validation").toBeGreaterThan(validate);
+    // Exactly one dispose site, so the old early one cannot linger alongside it.
+    expect(region.split("if (disposeAfter) await client.dispose();").length - 1).toBe(1);
+  });
+
   it("does not demand a clone marker from a worktree git already listed", () => {
     // Linked worktrees have no marker BY DESIGN. Running the check on them
     // logged "no clone provenance" for perfectly valid checkouts — which is
