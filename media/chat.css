@@ -887,7 +887,9 @@ a:hover {
 
 .top-bar {
   display: flex;
-  align-items: center;
+  /* Top, not centre: the name chip becomes two lines when it carries a project,
+     and centring would drag History and New Session down with it. */
+  align-items: flex-start;
   justify-content: flex-end;
   padding: 2px 4px;
   border-bottom: 1px solid var(--vscode-editorWidget-border);

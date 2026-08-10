@@ -143,7 +143,7 @@ describe("VS Code projects rail section parity", () => {
       .toBeNull();
     expect([...h.doc.querySelectorAll(".rail-projects .rail-repo-label")].map((el) => el.textContent))
       .toEqual(["zeta", "alpha"]);
-    expect(h.doc.querySelector(".rail-projects .rail-current-tag")?.textContent).toBe("Current");
+    expect(h.doc.querySelector(".rail-projects .rail-current-tag")?.textContent).toBe("Your IDE");
     expect(h.doc.querySelector(".rail-archived")).toBeNull();
     expect(groupButton(h.doc, "Project Archive").getAttribute("aria-expanded")).toBe("false");
   });

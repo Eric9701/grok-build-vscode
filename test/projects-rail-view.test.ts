@@ -69,14 +69,13 @@ describe("projects rail view registration", () => {
     }
   });
 
-  it("gives the rail container its own icon, not the chat one", () => {
-    // Two identical Grok marks in the activity bar is not a layout, it is a
-    // coin toss.
+  it("gives the rail container a real icon that ships", () => {
+    // Both activity-bar containers wear the Grok mark by the owner's choice —
+    // the folder glyph that was here briefly read as a file explorer. What still
+    // matters is that the icon exists in the package.
     const containers = pkg().contributes.viewsContainers.activitybar;
-    const chatIcon = containers.find((c) => c.id === "grokPrimary")?.icon;
     const railIcon = containers.find((c) => c.id === "grokProjects")?.icon;
     expect(railIcon).toBeTruthy();
-    expect(railIcon).not.toBe(chatIcon);
     expect(fs.existsSync(path.join(root, railIcon!))).toBe(true);
   });
 

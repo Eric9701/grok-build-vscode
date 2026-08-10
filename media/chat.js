@@ -730,8 +730,12 @@
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
     folder: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h5l2 3h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>`,
     // Lucide folder-closed / folder-open — project expand/collapse (replaces chevron).
-    folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M2 10h20"/></svg>`,
-    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+    // Solid folder marks supplied by the owner (media/icons/folder-*.svg),
+    // inlined because the rail sets them with innerHTML. `fill:currentColor`
+    // is the change from the originals — it is what lets a project's colour
+    // tint them, and what keeps them legible in a light theme.
+    folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 408 408" fill="currentColor" aria-hidden="true"><path d="M372,88.661H206.32l-33-39.24c-0.985-1.184-2.461-1.848-4-1.8H36c-19.956,0.198-36.023,16.443-36,36.4v240c-0.001,19.941,16.06,36.163,36,36.36h336c19.94-0.197,36.001-16.419,36-36.36v-199C408.001,105.08,391.94,88.859,372,88.661z"/></svg>`,
+    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -57 511.99973 511" fill="currentColor" aria-hidden="true"><path d="m506.039062 180.988281c-7.78125-12.546875-21.53125-20.046875-36.78125-20.046875h-339.5625c-16.832031 0-32.140624 9.488282-39.011718 24.179688l-89.8125 188.308594c3.390625 13.789062 16.269531 24.089843 31.609375 24.089843h361.269531c15.445312 0 29.5625-8.734375 36.460938-22.554687l77.628906-155.59375c6.128906-12.3125 5.449218-26.660156-1.800782-38.382813zm0 0"/><path d="m72.402344 156.15625c6.863281-14.6875 22.175781-24.179688 39.011718-24.179688h319.753907v-40.898437c0-16.859375-14.222657-30.578125-31.703125-30.578125h-186.445313c-.273437 0-.460937-.070312-.53125-.121094l-33.371093-46.660156c-5.910157-8.277344-15.671876-13.21875-26.101563-13.21875h-121.304687c-17.488282 0-31.710938 13.71875-31.710938 30.578125v276.875zm0 0"/></svg>`,
     // Palette glyph for "Set color" — stroke-only so it inherits menu icon tint.
     palette: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="0.5" fill="currentColor"/><circle cx="17.5" cy="10.5" r="0.5" fill="currentColor"/><circle cx="8.5" cy="7.5" r="0.5" fill="currentColor"/><circle cx="6.5" cy="12.5" r="0.5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>`,
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z"/></svg>`,
@@ -5236,9 +5240,8 @@
       label: labelEl,
       editBtn,
     };
-    // AFTER the flag is set — the project label reads it to decide. The chip
-    // grows to fit the input (chat.css .session-name-chip:has(.session-name-input)),
-    // and a label still wedged beside it eats the width that grow just bought.
+    // The label is a row of its own now, so editing no longer hides it — this
+    // keeps it correct if the conversation changed under the edit.
     renderSessionNameRepo();
     setTimeout(() => { inputEl.focus(); inputEl.select(); }, 0);
   }
@@ -5390,9 +5393,15 @@
     // happened to match another project's name, project A's conversation was
     // labelled as project B. The host names the owner when the two differ.
     const projectCwd = named?.repoCwd || cwd;
-    const label = projectCwd && state.repos.length > 1 ? railRepoLabelFor(projectCwd) : "";
-    const editing = state.sessionNameEditing?.surface === "local";
-    el.hidden = !label || editing;
+    // Only when it is NOT the folder this window has open. There, the window
+    // title already says it and the line is noise; the whole point of the label
+    // is "this conversation is somewhere else".
+    const ide = state.workspaceRepoCwd || "";
+    const elsewhere = !!projectCwd && (!ide || !sameCwd(projectCwd, ide));
+    const label = elsewhere ? railRepoLabelFor(projectCwd) : "";
+    // Stays put while the name is being edited: it is a second ROW now, not
+    // something competing with the input for width.
+    el.hidden = !label;
     if (el.hidden) return;
     el.textContent = label;
     el.title = projectCwd === cwd ? cwd : `${cwd}
@@ -12074,6 +12083,9 @@
         const wasSelected = state.selectedRepoCwd;
         state.selectedRepoCwd = msg.selectedCwd || "";
         state.activeRepoCwd = msg.activeCwd || "";
+        // The folder the EDITOR has open — not the selection. The header names
+        // the conversation's project only when it differs from this one.
+        state.workspaceRepoCwd = msg.workspaceCwd || "";
         // A repo we just left keeps stale cached rows; drop them so its section
         // re-reads rather than showing the list from before the switch. The repo
         // we arrived in reads the live `sessions` list, so its cache is dead weight.

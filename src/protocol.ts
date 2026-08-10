@@ -379,6 +379,15 @@ export type HostMsg =
       selectedCwd: string;
       activeCwd: string;
       canAddProject?: boolean;
+      /**
+       * The folder the EDITOR has open, which since history started following
+       * the rail is no longer the same thing as `selectedCwd`. The VS Code rail
+       * marks this one "Your IDE" and pins it to the top: you can be working in
+       * another project while the window stays where it was, and the rail has to
+       * be able to say which is which. Optional and additive — a client that
+       * never sees it falls back to the selection, as it did before.
+       */
+      workspaceCwd?: string;
     }
   | { type: "sessionDot"; id: string; dot: Dot }
   // Full snapshot of the focused session's host-owned send queue (#37) — the

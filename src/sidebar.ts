@@ -2246,11 +2246,28 @@ Only continue if you trust this code.`,
           // not become a trusted session cwd.
           const sourceGitRoot =
             created.sourceGitRoot || gitRootForPath(sourcePath, defaultFs) || sourcePath;
-          const listedPaths = await this.listAuthoritativeWorktreePaths(
+          // Ask more than once. The create RPC returns as soon as git is asked,
+          // and `waitForWorktreeReady` only proves the DIRECTORY exists — the
+          // worktree can still be missing from `git worktree list` for a beat
+          // after that. Validating on the first answer refused a perfectly good
+          // checkout roughly 14ms after creating it: "not in git worktree list".
+          //
+          // This weakens nothing. The path must still appear in an authoritative
+          // list; it is only given the moment it needs to get there.
+          let listedPaths = await this.listAuthoritativeWorktreePaths(
             client,
             sourcePath,
             sourceGitRoot,
           );
+          for (let attempt = 0; attempt < 6; attempt++) {
+            if (listedPaths.some((p) => pathsEqual(p, wtPath))) break;
+            await new Promise((r) => setTimeout(r, 250));
+            listedPaths = await this.listAuthoritativeWorktreePaths(
+              client,
+              sourcePath,
+              sourceGitRoot,
+            );
+          }
           if (
             !worktreePathAuthorizedForRepo({
               worktreePath: wtPath,
@@ -2876,6 +2893,10 @@ Only continue if you trust this code.`,
       // project opens a native folder dialog on the desk, which a phone can
       // neither see nor answer (remote-policy: `addProjectFolder` is host-local).
       canAddProject: this.canAddProjectFolder(),
+      // What the EDITOR has open, sent alongside the selection rather than
+      // instead of it — the rail needs both to say "you are working here, your
+      // window is there".
+      workspaceCwd: this.workspaceRoot() || "",
     });
     for (const clientId of this.remoteClients.clients()) {
       this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));

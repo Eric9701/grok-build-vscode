@@ -18,12 +18,14 @@ const REPOS = [
   { cwd: "/work/relay", label: "relay", available: true, pinned: false, updatedAt: 1 },
 ];
 
-function sendRepos(h: Harness, entries = REPOS) {
+/** `workspaceCwd` is the folder the EDITOR has open — the label's whole test. */
+function sendRepos(h: Harness, entries = REPOS, workspaceCwd = "/work/app") {
   dispatch(h.window, {
     type: "repos",
     entries,
     selectedCwd: "/work/app",
     activeCwd: "/work/app",
+    workspaceCwd,
   } as never);
 }
 
@@ -54,27 +56,29 @@ describe("session name project label", () => {
     expect(tag(h).textContent).toBe("beta/site");
   });
 
-  it("stays hidden with a single project — nothing to disambiguate", () => {
+  it("stays quiet when the conversation is in the folder VS Code has open", () => {
+    // There the window title already says it, and the line is noise. The label
+    // exists to say "this conversation is somewhere else".
     const h = bootWebview();
-    sendRepos(h, [REPOS[0]]);
+    sendRepos(h, REPOS, "/work/app");
     nameSession(h, "/work/app");
     expect(tag(h).hidden).toBe(true);
   });
 
-  it("appears when a second project shows up, without a new sessionName frame", () => {
-    const h = bootWebview();
-    sendRepos(h, [REPOS[0]]);
-    nameSession(h, "/work/app");
-    expect(tag(h).hidden).toBe(true);
+  it("appears once the catalog says which folder the editor has open", () => {
     // The catalog usually lands after the name; the header has to catch up.
-    sendRepos(h);
+    const h = bootWebview();
+    nameSession(h, "/work/relay");
+    sendRepos(h, REPOS, "/work/app");
     expect(tag(h).hidden).toBe(false);
-    expect(tag(h).textContent).toBe("app");
+    expect(tag(h).textContent).toBe("relay");
   });
 
-  it("gets out of the way while the name is being edited", () => {
+  it("stays put while the name is being edited", () => {
+    // It is a second ROW now rather than something competing with the rename
+    // input for width, so hiding it would only make the chip jump.
     const h = bootWebview();
-    sendRepos(h);
+    sendRepos(h, REPOS, "/work/app");
     nameSession(h, "/work/relay");
     expect(tag(h).hidden).toBe(false);
 
@@ -83,10 +87,9 @@ describe("session name project label", () => {
       "click",
       { bubbles: true, cancelable: true },
     ));
-    // The rename input takes the chip's full width; a label wedged beside it is
-    // what pushed the field narrower than the name it replaced (see chat.css).
     expect(h.doc.querySelector(".session-name-input")).toBeTruthy();
-    expect(tag(h).hidden).toBe(true);
+    expect(tag(h).hidden).toBe(false);
+    expect(tag(h).textContent).toBe("relay");
   });
 
   it("is not mounted on the remote client, which shows the project on its own line", () => {

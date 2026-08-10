@@ -61,8 +61,8 @@
         },
         {
           "id": "grokProjects",
-          "title": "Grok Projects",
-          "icon": "resources/grok-projects-icon.svg"
+          "title": "Grok",
+          "icon": "resources/grok-icon.svg"
         }
       ],
       "panel": [

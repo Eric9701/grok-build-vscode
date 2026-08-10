@@ -9,8 +9,12 @@
   const vscode = acquireVsCodeApi();
 
   const ICON = {
-    folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M2 10h20"/></svg>`,
-    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+    // Solid folder marks supplied by the owner (media/icons/folder-*.svg),
+    // inlined because the rail sets them with innerHTML. `fill:currentColor`
+    // is the change from the originals — it is what lets a project's colour
+    // tint them, and what keeps them legible in a light theme.
+    folderClosed: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 408 408" fill="currentColor" aria-hidden="true"><path d="M372,88.661H206.32l-33-39.24c-0.985-1.184-2.461-1.848-4-1.8H36c-19.956,0.198-36.023,16.443-36,36.4v240c-0.001,19.941,16.06,36.163,36,36.36h336c19.94-0.197,36.001-16.419,36-36.36v-199C408.001,105.08,391.94,88.859,372,88.661z"/></svg>`,
+    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -57 511.99973 511" fill="currentColor" aria-hidden="true"><path d="m506.039062 180.988281c-7.78125-12.546875-21.53125-20.046875-36.78125-20.046875h-339.5625c-16.832031 0-32.140624 9.488282-39.011718 24.179688l-89.8125 188.308594c3.390625 13.789062 16.269531 24.089843 31.609375 24.089843h361.269531c15.445312 0 29.5625-8.734375 36.460938-22.554687l77.628906-155.59375c6.128906-12.3125 5.449218-26.660156-1.800782-38.382813zm0 0"/><path d="m72.402344 156.15625c6.863281-14.6875 22.175781-24.179688 39.011718-24.179688h319.753907v-40.898437c0-16.859375-14.222657-30.578125-31.703125-30.578125h-186.445313c-.273437 0-.460937-.070312-.53125-.121094l-33.371093-46.660156c-5.910157-8.277344-15.671876-13.21875-26.101563-13.21875h-121.304687c-17.488282 0-31.710938 13.71875-31.710938 30.578125v276.875zm0 0"/></svg>`,
     plus: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
     pin: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z"/></svg>`,
     pinFilled: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="m5 17 2-7V5l-2-2h14l-2 2v5l2 7Z" fill="currentColor"/></svg>`,
@@ -31,6 +35,14 @@
   // Keep in lockstep with RAIL_RECENT_CAP in src/projects-rail.ts.
   const RECENT_CAP = 10;
   const RAIL_RECENT_KEY = "__recent__";
+  // The same age rule the desktop/browser rail applies (media/chat.js). Without
+  // it VS Code showed every project Grok has ever run in, forever — which for
+  // anyone with a few years of history is a mess rather than a list.
+  const RAIL_ARCHIVE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+  // A floor, and a requirement rather than a rounding error: however quiet
+  // things have been, the newest few stay in view. Coming back from a month away
+  // would otherwise archive everything at once and read as broken.
+  const RAIL_ALWAYS_VISIBLE = 3;
 
   /** Palette the host accepts — ids match REPO_COLOR_IDS in sessions.ts. */
   const REPO_COLOR_SWATCHES = [
@@ -48,6 +60,14 @@
   const state = {
     repos: [],
     currentCwd: "",
+    /**
+     * The folder the EDITOR has open. Since history follows the rail, this is
+     * NOT the same as `currentCwd` (the selection): you can be working in
+     * grok-build with the window still open on Editor. The "Your IDE" marker and
+     * the top slot belong to THIS one — the selection is shown by the active
+     * conversation, not by pinning a project.
+     */
+    workspaceCwd: "",
     activeCwd: "",
     activeSessionId: null,
     /** Sessions for the SELECTED project (from `sessions`) — which is the open
@@ -173,9 +193,9 @@
     // No fallback needed when the open folder has no Grok history yet: the host
     // passes it to discoverRepos as a trusted cwd, which adds a catalog row for
     // it (updatedAt 0). The current project is therefore always present here.
-    const current = state.repos.find((r) => sameCwd(r.cwd, state.currentCwd));
+    const current = state.repos.find((r) => sameCwd(r.cwd, state.workspaceCwd));
     const other = state.repos
-      .filter((r) => !sameCwd(r.cwd, state.currentCwd))
+      .filter((r) => !sameCwd(r.cwd, state.workspaceCwd))
       .slice()
       .sort((a, b) => {
         const la = (a.label || leaf(a.cwd)).toLowerCase();
@@ -442,8 +462,7 @@
     }
 
     const { current, other } = partitionRepos();
-    const active = other.filter((r) => !r.archived);
-    const archived = other.filter((r) => r.archived);
+    const { active, archived } = splitByArchive(other);
 
     // Open folder stays first inside Projects; everything else remains alphabetical.
     const projectRepos = (current ? [current, ...active] : active)
@@ -483,7 +502,6 @@
         group: "archived",
         open,
         forcedOpenBySearch: forcedOpen,
-        icon: ICON.archive,
         openTitle: "Hide archived projects",
         closedTitle: "Show archived projects",
         searchTitle: "Open while your search matches an archived project",
@@ -624,6 +642,62 @@
     }
   }
 
+  /** Newest conversation in a project, or the catalog stamp when unknown. */
+  function repoActivity(repo) {
+    const { entries, known } = sessionsForRepo(repo);
+    if (!known) return Number(repo.updatedAt) || 0;
+    let newest = 0;
+    for (const s of entries) {
+      const at = Number(s && s.updatedAt) || 0;
+      if (at > newest) newest = at;
+    }
+    return newest;
+  }
+
+  /**
+   * Where a project belongs, counting the age rule — not just the stored flag.
+   *
+   * Mirrors `railRepoArchived` in media/chat.js, including the parts that look
+   * like hedging and are not:
+   *  - the folder VS Code has OPEN is never archived. Opening an archived
+   *    project brings it straight back out, which is what the owner asked for
+   *    and needs no bookkeeping;
+   *  - a stored choice stands until the project is worked in again;
+   *  - the age rule NEVER runs on a guess. `updatedAt` is the session
+   *    directory's mtime and does not move when you continue an existing
+   *    conversation, so without the project's own rows we leave it in view
+   *    rather than hide one that is in daily use;
+   *  - and a project with no conversations at all is archived — there is nothing
+   *    for it to have been recent about.
+   */
+  function repoIsArchived(repo, floorKeys, now) {
+    if (sameCwd(repo.cwd, state.workspaceCwd)) return false;
+    if (sameCwd(repo.cwd, state.currentCwd)) return false;
+    const { known } = sessionsForRepo(repo);
+    const at = repoActivity(repo);
+    const archivedAt = Number(repo.archivedAt) || 0;
+    if (archivedAt > 0 && (!known || archivedAt >= at)) return !!repo.archived;
+    if (!known) return !!repo.archived;
+    if (floorKeys.has(cwdKey(repo.cwd))) return false;
+    return at > 0 ? now - at > RAIL_ARCHIVE_AFTER_MS : true;
+  }
+
+  /** Split the catalog into what belongs in Projects and what belongs in the Archive. */
+  function splitByArchive(repos) {
+    const now = Date.now();
+    const byActivity = state.repos.slice().sort((a, b) => repoActivity(b) - repoActivity(a));
+    const floorKeys = new Set(
+      byActivity
+        .filter((r) => !sameCwd(r.cwd, state.workspaceCwd))
+        .slice(0, RAIL_ALWAYS_VISIBLE)
+        .map((r) => cwdKey(r.cwd)),
+    );
+    const active = [];
+    const archived = [];
+    for (const repo of repos) (repoIsArchived(repo, floorKeys, now) ? archived : active).push(repo);
+    return { active, archived };
+  }
+
   function repoLabelFor(cwd) {
     const hit = state.repos.find((r) => sameCwd(r.cwd, cwd));
     return hit?.label || leaf(cwd);
@@ -673,11 +747,11 @@
     if (opts.isCurrent) {
       const currentTag = document.createElement("span");
       currentTag.className = "rail-current-tag";
-      currentTag.textContent = "Current";
-      // Spelled out because the tag can disagree with VS Code's Explorer: this
-      // marks the project Grok works in, and the rail can move it without the
-      // window's open folder moving.
-      currentTag.title = "History and New Session point here. VS Code's open folder is separate.";
+      currentTag.textContent = "Your IDE";
+      // Named for what it IS. "Current" read as "the project you are working
+      // in", which is a different thing now that history follows the rail — you
+      // can be working in another project entirely while the window stays here.
+      currentTag.title = "The folder this VS Code window has open";
       name.appendChild(currentTag);
     }
     head.appendChild(name);
@@ -734,27 +808,14 @@
     menuBtn.setAttribute("aria-label", menuBtn.title);
     const getMenuItems = () => {
       const items = [];
-      // "Open project" is the plain way to make this the project VS Code's
-      // history, New Session and chat header are all reading. Without it the
-      // only routes were resuming one of its conversations — impossible for a
-      // project that has none — or starting a new one, which is not what you
-      // want when you only meant to look.
-      if (!opts.isCurrent && repo.available !== false) {
-        items.push({
-          label: "Open project",
-          title: "Point history and New Session at this project",
-          onSelect: () => vscode.postMessage({ type: "selectRepo", cwd: repo.cwd }),
-        });
-        items.push(null);
-      }
-      // "Hide project", the same name and the same message the desktop rail
-      // uses for the same act — it posts `removeProjectFolder` there too. The
-      // word matters: nothing is deleted on either surface, the folder simply
-      // leaves the list, and + adds it back.
+      // "Hide project" — the same name and the same message the desktop rail
+      // uses for the same act, and it posts `removeProjectFolder` there too.
+      // Nothing is deleted on either surface: the folder leaves the list, and
+      // Add project brings it back.
       //
-      // Only on rows that exist because the user added the folder: `added` is
+      // Only on rows that exist because the user added the folder. `added` is
       // set by the host and absent everywhere else, so this is capability by
-      // field presence like the rest. Every other row is listed because Grok has
+      // field presence like the rest; every other row is listed because Grok has
       // run there, and archive is how those are put away.
       if (repo.added) {
         items.push({
@@ -770,7 +831,7 @@
                   // The row vanishes from every linked device at once, and a
                   // phone editing a file in it loses the route back to its
                   // unsaved text. The desk cannot see whether that is happening,
-                  // so the only honest thing is to say so before removing.
+                  // so the only honest thing is to say so first.
                   "If a linked device has this project open, any unsaved file edits " +
                   "there will be lost.",
               )
@@ -1001,6 +1062,9 @@
         state.repos = Array.isArray(msg.entries) ? msg.entries : [];
         state.currentCwd = msg.selectedCwd || "";
         state.activeCwd = msg.activeCwd || "";
+        // Older host: no separate workspace root, so fall back to the selection
+        // and behave as before rather than losing the marker entirely.
+        state.workspaceCwd = msg.workspaceCwd || msg.selectedCwd || "";
         state.canAddProject = msg.canAddProject === true;
         // Re-probe other projects when the catalog changes.
         state.previewsAsked = {};

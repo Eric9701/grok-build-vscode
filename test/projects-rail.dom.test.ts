@@ -1346,24 +1346,25 @@ describe("projects rail", () => {
       const twisty = () => alpha().querySelector(".rail-twisty") as HTMLElement;
       // Expanded: ONE flag drives icon + session list (data-expanded + folder-open).
       expect(alpha().getAttribute("data-expanded")).toBe("1");
-      // Expanded: folder-open path includes m6 14 (open flap).
-      expect(twisty().innerHTML).toMatch(/m6 14/);
-      expect(twisty().innerHTML).not.toMatch(/M2 10h20/);
+      // The two marks are told apart by viewBox — they are the owner's solid
+      // folder artwork (media/icons/folder-*.svg), not a shared 24x24 grid.
+      expect(twisty().innerHTML).toMatch(/viewBox="0 -57 511/);
+      expect(twisty().innerHTML).not.toMatch(/viewBox="0 0 408 408"/);
       expect(alpha().querySelector(".rail-sessions")).not.toBe(null);
       // Icon and list cannot disagree: sessions present ⇒ open icon path.
       expect(!!alpha().querySelector(".rail-sessions")).toBe(
-        /m6 14/.test(twisty().innerHTML),
+        /viewBox="0 -57 511/.test(twisty().innerHTML),
       );
       // Folder is an indicator (not a button); the whole head toggles.
       expect(twisty().tagName).toBe("SPAN");
       click(window, alpha().querySelector(".rail-repo-head") as HTMLElement);
-      // Collapsed: folder-closed has M2 10h20; no sessions; data-expanded=0.
+      // Collapsed: the closed mark, no sessions, data-expanded=0.
       expect(alpha().getAttribute("data-expanded")).toBe("0");
-      expect(twisty().innerHTML).toMatch(/M2 10h20/);
-      expect(twisty().innerHTML).not.toMatch(/m6 14/);
+      expect(twisty().innerHTML).toMatch(/viewBox="0 0 408 408"/);
+      expect(twisty().innerHTML).not.toMatch(/viewBox="0 -57 511/);
       expect(alpha().querySelector(".rail-sessions")).toBe(null);
       expect(!!alpha().querySelector(".rail-sessions")).toBe(
-        /m6 14/.test(twisty().innerHTML),
+        /viewBox="0 -57 511/.test(twisty().innerHTML),
       );
     });
 

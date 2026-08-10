@@ -160,7 +160,7 @@ describe("VS Code projects rail renderer", () => {
     expect(
       [...(projects?.querySelectorAll(".rail-repo-label") || [])].map((e) => e.textContent),
     ).toEqual(["beta", "alpha", "gamma"]);
-    expect(projects?.querySelector(".rail-current-tag")?.textContent).toBe("Current");
+    expect(projects?.querySelector(".rail-current-tag")?.textContent).toBe("Your IDE");
     expect(repoLabels(doc)).toEqual(["beta", "alpha", "gamma"]);
   });
 
@@ -501,32 +501,6 @@ describe("VS Code projects rail renderer", () => {
       posted.length = 0;
       (plus[1] as HTMLButtonElement).click();
       expect(posted).toEqual([{ type: "newSession", cwd: "/work/beta" }]);
-    });
-
-    it("offers Open project on the others, and not on the one you are in", () => {
-      // Without it the only routes into a project were resuming one of its
-      // conversations — impossible when it has none — or starting a new one,
-      // which is not what you want when you only meant to look.
-      const { doc, window, posted } = bootRail();
-      loadCatalog(railApi(window), "/work/alpha");
-      const repos = [...doc.querySelectorAll(".rail-repo")];
-      const menuOf = (el: Element) =>
-        (el.querySelector('.rail-action-btn[title="Project actions"]') as HTMLButtonElement);
-
-      menuOf(repos[0]).click(); // alpha — the current one
-      expect(
-        [...doc.querySelectorAll(".rail-menu-item")].map((i) => i.textContent),
-      ).not.toContain("Open project");
-      doc.body.click();
-
-      menuOf(repos[1]).click(); // beta
-      const open = [...doc.querySelectorAll(".rail-menu-item")].find(
-        (i) => i.textContent === "Open project",
-      ) as HTMLButtonElement;
-      expect(open).toBeTruthy();
-      posted.length = 0;
-      open.click();
-      expect(posted).toEqual([{ type: "selectRepo", cwd: "/work/beta" }]);
     });
 
     it("still folds on a head click rather than switching, same as desktop", () => {
