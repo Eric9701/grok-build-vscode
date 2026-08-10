@@ -223,8 +223,8 @@ body.desk-ft-resizing * {
   flex: 0 1 auto;
   /* Uncapped by default. The 40% cap below exists to stop a long project name
      crowding out the tabs, which is only a problem when there ARE tabs — with
-     none open the strip is empty and truncating "GROK-REMOTE" to "GROK-REM..."
-     hides information for no one's benefit. */
+     none open the strip is empty and truncating "MY-LONG-PROJECT" to
+     "MY-LONG-PR..." hides information for no one's benefit. */
   max-width: none;
   min-width: 0;
   min-height: var(--rail-row-min-height, 30px);
