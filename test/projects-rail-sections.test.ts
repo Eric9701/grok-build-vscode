@@ -234,6 +234,17 @@ describe("VS Code projects rail section parity", () => {
     expect(h.doc.querySelector(".rail-menu")?.textContent).toContain("Delete");
   });
 
+  it("lets section labels scroll away with their own rows", () => {
+    // The desktop rail freezes one section label at the top. Here that read as
+    // the label being stuck while the rows it belongs to slid up underneath it,
+    // so the owner asked for the difference (2026-08-10). The two rails share a
+    // visual language and a copy-paste back from chat.css would silently
+    // reintroduce it — hence a guard rather than a comment.
+    const head = railCss.match(/\n\.rail-head\s*{([^}]*)}/);
+    expect(head, ".rail-head rule must exist").toBeTruthy();
+    expect(head![1]).not.toMatch(/position:\s*sticky/);
+  });
+
   it("keeps a destructive confirm red under the pointer", () => {
     // The confirm button is `rail-dialog-btn rail-dialog-primary rail-dialog-danger`
     // — danger is a MODIFIER on primary. `.rail-dialog-primary:hover` alone
