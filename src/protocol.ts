@@ -144,7 +144,17 @@ export type HostUiCapabilities = {
 };
 
 export type HostMsg =
-  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; /** Global "Use this app for" — absent on older hosts means Knowledge work. */ appPurpose?: "knowledge" | "coding"; capabilities: HostUiCapabilities }
+  | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; /** Global "Use this app for" — absent on older hosts means Knowledge work. */ appPurpose?: "knowledge" | "coding";
+      /** Which GUI is on the other end. A phone is looking at neither the
+       *  extension nor the desktop app, so it cannot infer this, and its
+       *  Version & about page has to name what it is connected to. Optional and
+       *  additive: absent means an older host, and the page keeps the local
+       *  panel rather than inventing an answer. */
+      hostKind?: "extension" | "desktop";
+      /** The desk machine's display name — the same string the device list
+       *  shows, so "Connected to" names something the user recognises. */
+      hostName?: string;
+      capabilities: HostUiCapabilities }
   /** Live retraction of `capabilities.moveViewHint`, sent the moment the user
    *  opens the host's move-view picker. `initialState` is not re-sent on a
    *  session swap, so without this the webview keeps a stale true and rebuilds

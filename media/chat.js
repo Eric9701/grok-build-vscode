@@ -571,6 +571,10 @@
     planModeRecheckable: false,
     // Extension version (from initialState) — shown in the gear → About panel.
     extVersion: "",
+    // Which GUI is on the other end and what the desk machine is called. Only a
+    // remote needs these; a local webview is already looking at the thing.
+    hostKind: "",
+    hostName: "",
     // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
     // async grokUpdateStatus only re-renders About when it's the visible view.
     gearView: "main",
@@ -2493,13 +2497,24 @@
   // async grokUpdateStatus reply re-renders this view (check=false) to fill it in.
   function renderAboutPanel(check) {
     state.gearView = "about";
-    if (check) {
+    // A remote never checks. The binaries live on the desk machine and only the
+    // desk can replace them, so asking would spin a "Checking for updates…" the
+    // phone can do nothing with — which is exactly what it used to do. The host
+    // now refuses the message anyway (remote-policy: host-local); not sending it
+    // is what stops the spinner existing in the first place.
+    if (check && !remoteAboutPanel()) {
       state.grokUpdate = { checking: true };
       vscode.postMessage({ type: "checkGrokUpdate" });
     }
     const u = state.grokUpdate || {};
     gearPopover.innerHTML = "";
     addGearItem('<span class="popover-back">← Version &amp; about</span>', renderGearMain);
+
+    if (remoteAboutPanel()) {
+      renderRemoteAboutBody(u);
+      renderAboutFinePrint();
+      return;
+    }
 
     // Updates can be paused for compatibility (issue #22): the host blocks moving
     // the CLI onto an unsupported build on Windows.
@@ -2554,7 +2569,71 @@
       gearPopover.appendChild(btn);
     }
 
-    // ── Unofficial + trademark fine print ────────────────────────────────
+    renderAboutFinePrint();
+  }
+
+  /**
+   * Whether this About panel is describing a machine somewhere else.
+   *
+   * Capability by field presence, as everywhere: a host too old to send
+   * `hostKind` cannot be described, so the phone keeps the local panel rather
+   * than rendering a page with blanks where the answers should be.
+   */
+  function remoteAboutPanel() {
+    return IS_REMOTE && !!state.hostKind;
+  }
+
+  /** The web client's own build, stamped into the page by the relay. */
+  function webAppVersion() {
+    const meta = document.querySelector('meta[name="grok-web-version"]');
+    return (meta && meta.getAttribute("content")) || "";
+  }
+
+  /**
+   * The remote reading of this page. Four facts and no actions.
+   *
+   * The old panel said "This extension" over a spinner that never resolved,
+   * which was wrong twice: the phone is not the extension, and the update check
+   * is a host-local probe a remote can neither answer nor act on. What a person
+   * on a phone actually wants to know is what they are holding, what it is
+   * talking to, and what is installed over there.
+   */
+  function renderRemoteAboutBody(u) {
+    const row = (label, value) =>
+      addGearInfo(`<span>${escapeHtml(label)}</span><span class="popover-ver">${escapeHtml(value)}</span>`);
+
+    const web = webAppVersion();
+    row("Web app", web ? `v${web}` : "—");
+
+    const gui = state.hostKind === "desktop" ? "Desktop app" : "Extension";
+    const machine = state.hostName ? `${state.hostName} · ${gui}` : gui;
+    row("Connected to", machine);
+
+    addGearSep();
+
+    // No update state on this line, deliberately: nothing in the extension
+    // probes for a GUI update — VS Code updates the extension itself and never
+    // tells us, and the desktop app has no updater at all. A "(up to date)"
+    // here would be a claim the code cannot back.
+    row(state.hostKind === "desktop" ? "Grok Build Desktop" : "Grok Build extension",
+      state.extVersion ? `v${state.extVersion}` : "—");
+
+    const cliVer = state.cliVersion || u.current || "";
+    row("Grok Build CLI", cliVer ? `v${cliVer}` : "—");
+
+    // The status still travels (`grokUpdateStatus` is mirrored to remotes), so a
+    // phone can learn the CLI is behind — it just cannot do anything about it,
+    // and is told so rather than being offered a button that would not work.
+    if (u.updateAvailable) {
+      addGearInfo(
+        `<span class="popover-update-avail">CLI update available${u.latest ? ` · v${escapeHtml(u.latest)}` : ""}</span>`,
+      );
+      addGearInfo('<span class="popover-ver">Update it at the desk — this device can’t.</span>');
+    }
+  }
+
+  /** Shared tail: the non-affiliation note and the repository link. */
+  function renderAboutFinePrint() {
     addGearSep();
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
@@ -2564,7 +2643,6 @@
       "Grok, Grok Build, and xAI are trademarks of xAI; this project uses those names only to describe what it’s compatible with.";
     gearPopover.appendChild(fine);
 
-    // ── Repository link (bottom) ─────────────────────────────────────────
     addGearSep();
     const ghIcon = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align:-2px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
     addGearItem(
@@ -10790,6 +10868,11 @@
         state.effort = msg.effort || "";
         state.cwd = msg.cwd || "";
         state.extVersion = msg.extVersion || "";
+        // Field presence, not a version check: an older host sends neither, and
+        // the About panel then keeps its local shape rather than naming a
+        // machine or a GUI it was never told about.
+        state.hostKind = msg.hostKind || "";
+        state.hostName = msg.hostName || "";
         // What this particular host can do, as the host itself reports it. Every
         // remote snapshot carries an initialState, so this is answered before
         // any control is drawn — and a host that says nothing is a host that

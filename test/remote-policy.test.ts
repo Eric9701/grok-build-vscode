@@ -515,9 +515,22 @@ describe("allowFromRemote tier gating", () => {
   });
 
   it("approvals and destructive ops need full", () => {
-    for (const t of ["permissionAnswer", "exitPlanAnswer", "logout", "deleteSession", "clearAllSessions", "updateGrok"] as const) {
+    for (const t of ["permissionAnswer", "exitPlanAnswer", "logout", "deleteSession", "clearAllSessions"] as const) {
       expect(allowFromRemote(t, "propose")).toBe(false);
       expect(allowFromRemote(t, "full")).toBe(true);
+    }
+  });
+
+  it("a remote can never replace the CLI binary, at any tier", () => {
+    // `updateGrok` / `checkGrokUpdate` used to sit in the list above, which
+    // meant a phone could start a binary replacement on the desk machine. The
+    // binaries live there and only the desk can replace them, so they are
+    // host-local now — and the remote Version & about page is informational for
+    // the same reason. The STATUS still travels: grokUpdateStatus is mirrored,
+    // so a phone can see the CLI is behind without being able to act on it.
+    for (const t of ["updateGrok", "checkGrokUpdate"] as const) {
+      expect(allowFromRemote(t, "propose")).toBe(false);
+      expect(allowFromRemote(t, "full")).toBe(false);
     }
   });
 

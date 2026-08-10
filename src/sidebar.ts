@@ -9548,6 +9548,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
       appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
+      // For a remote's Version & about page. A phone is looking at neither GUI,
+      // so it has to be told which one is on the other end and what the machine
+      // is called. `canSwitchWorkspaceFolder` is the desktop app's defining
+      // capability and is already how every other host-kind decision here is
+      // made. The name is the same string the device list shows, so the two
+      // surfaces cannot disagree about what the machine is called.
+      hostKind: this.host.canSwitchWorkspaceFolder ? "desktop" : "extension",
+      hostName: deviceDisplayName(os.hostname(), process.platform, os.release()),
       // Wire baseline + host-kind UI affordances (gear Move view / Show logs).
       capabilities: {
         ...HOST_CAPABILITIES,

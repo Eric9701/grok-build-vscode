@@ -1421,6 +1421,73 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     expect(types(h.posted)).toContain("checkGrokUpdate");
   });
 
+  describe("on a remote, About describes the desk machine and offers nothing", () => {
+    function bootRemoteAbout(extra?: Record<string, unknown>) {
+      const h = bootWebview({ remote: true });
+      const meta = h.doc.createElement("meta");
+      meta.setAttribute("name", "grok-web-version");
+      meta.setAttribute("content", "3.5.0");
+      h.doc.head.appendChild(meta);
+      dispatch(h.window, {
+        type: "initialState",
+        useCtrlEnter: false,
+        effort: "",
+        cwd: "/x",
+        extVersion: "1.4.0",
+        hostKind: "desktop",
+        hostName: "Pawel-Desk",
+        capabilities: { uploadFile: true, deleteActiveSession: true },
+        ...extra,
+      });
+      dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });
+      h.posted.length = 0;
+      click(h.window, $(h.doc, "gear-btn"));
+      click(h.window, itemByText(h.doc, "Version & about"));
+      return h;
+    }
+
+    it("names what you are holding and what it is connected to", () => {
+      const h = bootRemoteAbout();
+      const text = gear(h.doc).textContent || "";
+      expect(text).toContain("Web app");
+      expect(text).toContain("v3.5.0");
+      expect(text).toContain("Connected to");
+      expect(text).toContain("Pawel-Desk");
+      expect(text).toContain("Desktop app");
+      expect(text).toContain("v1.4.0");
+      expect(text).toContain("v0.2.33");
+      // "This extension" is the local panel's wording, and it is wrong on a
+      // phone — the phone is not the thing being versioned.
+      expect(text).not.toContain("This extension");
+    });
+
+    it("never asks the host to check for updates", () => {
+      // The old panel did, and the answer never arrived — a spinner that could
+      // not resolve. Not sending it is what removes the spinner.
+      const h = bootRemoteAbout();
+      expect(types(h.posted)).not.toContain("checkGrokUpdate");
+      expect(gear(h.doc).textContent).not.toContain("Checking for updates");
+    });
+
+    it("reports an available CLI update but offers no way to run it", () => {
+      const h = bootRemoteAbout();
+      dispatch(h.window, {
+        type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.33", updateAvailable: true,
+      });
+      const text = gear(h.doc).textContent || "";
+      expect(text).toContain("CLI update available");
+      expect(text).toContain("at the desk");
+      expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+    });
+
+    it("keeps the local panel when the host is too old to describe itself", () => {
+      // Capability by field presence: no hostKind means no answers, and a page
+      // of blanks is worse than the panel that was already there.
+      const h = bootRemoteAbout({ hostKind: undefined, hostName: undefined });
+      expect(gear(h.doc).textContent).toContain("This extension");
+    });
+  });
+
   it("enables Update Grok Build when an update is available and posts updateGrok", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));

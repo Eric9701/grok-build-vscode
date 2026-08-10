@@ -286,11 +286,17 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   logout: "full",
   deleteSession: "full",
   clearAllSessions: "full",
-  updateGrok: "full",
-  checkGrokUpdate: "full",
   runInstallCmd: "full",
   runGrokLogin: "full",
   // host-local: native pickers/editors/config/mic on the dev box
+  // Replacing the CLI binary belongs here, not in "full" (2026-08-11). The
+  // binaries live on the desk machine and only the desk can replace them, so a
+  // phone offering it was offering something it has no business doing — and the
+  // remote Version & about page is now purely informational for that reason.
+  // The status still travels: `grokUpdateStatus` is mirrored, so a phone can
+  // see the CLI is out of date while being unable to act on it.
+  updateGrok: "host-local",
+  checkGrokUpdate: "host-local",
   pickModel: "host-local",
   openFile: "host-local",
   showInFolder: "host-local",
