@@ -430,7 +430,7 @@ describe("worktree validation reads git first", () => {
     // watcher actually uses it, and feeds it the in-flight count that makes a
     // pathless progress event attributable.
     expect(body).toContain("worktreeStatusIsForCreate(e, {");
-    expect(body).toContain("soleCreateInFlight: this.worktreeCreatesInFlight.get(client) === 1,");
+    expect(body).toContain("soleCreateInFlight: this.worktreeCreatesInFlight.sole(client),");
     // Events arriving before the RPC named the path must not be lost: a small
     // repo finishes before the call resolves.
     expect(body).toContain("// Replay what arrived before the path was known.");
@@ -474,13 +474,20 @@ describe("worktree validation reads git first", () => {
     const start = src.indexOf("private watchWorktreeCreate");
     const body = src.slice(start, src.indexOf("\n  private worktreeCreatesInFlight", start));
     expect(body).toContain('detach({ keepSlot: outcome === "stalled" });');
-    expect(body).toContain("if (opts?.keepSlot) {");
+    expect(body).toContain("releaseSlot({ keep: opts?.keepSlot });");
     // ...and it cannot outlive the process it describes. The listener that
-    // guarantees that is registered ONLY when a slot is actually retained —
-    // one per ordinary create would accumulate on a reused workspace client
-    // until it exits, and eventually warn about it.
-    const keep = body.slice(body.indexOf("if (opts?.keepSlot) {"));
-    expect(keep.slice(0, keep.indexOf("return;"))).toContain('client.once?.("exit"');
+    // guarantees that is registered when the slot is TAKEN, because `exit` is
+    // one-shot: registering it at the moment a stall decides to hold the slot —
+    // which is what this used to do — attaches to an event a CLI that crashed
+    // mid-copy has already emitted.
+    //
+    // That ordering is a lifetime, and a lifetime is the one thing this kind of
+    // source-text assertion cannot check. The real coverage is the
+    // WorktreeCreateSlots suite in test/worktree.test.ts; all this pins is that
+    // the watcher has not gone back to doing its own bookkeeping.
+    expect(body).toContain("const releaseSlot = this.worktreeCreatesInFlight.take(client);");
+    expect(body, "no hand-rolled listener or count in the watcher").not.toContain('"exit"');
+    expect(body).not.toContain("worktreeCreatesInFlight.set(");
   });
 
   it("a retry after a stall fails closed, because we know this CLI reports", () => {

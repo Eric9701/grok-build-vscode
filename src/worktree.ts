@@ -508,6 +508,79 @@ export function mergeSessionIndexes(
   return out;
 }
 
+/** The emitter surface {@link WorktreeCreateSlots} needs from an `AcpClient`. */
+export interface WorktreeSlotClient {
+  on(event: string, fn: (...args: any[]) => void): unknown;
+  off?(event: string, fn: (...args: any[]) => void): unknown;
+}
+
+/**
+ * How many worktree creates are live on each CLI client, and the listeners that
+ * release them.
+ *
+ * Extracted from the watcher because the bug this fixes is a LIFETIME bug, and
+ * a lifetime is the one thing a source-text assertion cannot check. The
+ * watcher's correlation logic stays where it is; only the bookkeeping moved.
+ *
+ * Two properties, and both were wrong before:
+ *
+ *  - **The exit listener is registered when the slot is taken.** `exit` is
+ *    one-shot. Registering it later — at the moment a stalled create decides to
+ *    hold its slot, minutes after the CLI may have died — attaches to an event
+ *    that has already gone, and the slot outlives the process.
+ *  - **The counts are WEAK.** Only ever read by client key, never iterated, so
+ *    the weak form is a drop-in and a slot that is never released costs nothing
+ *    instead of pinning a dead process's listeners and session graph for the
+ *    life of the sidebar. The listener still releases promptly; this is what
+ *    stops a missed release from being a leak.
+ */
+export class WorktreeCreateSlots {
+  private readonly counts = new WeakMap<WorktreeSlotClient, number>();
+
+  /**
+   * Take a slot on `client`, returning its release.
+   *
+   * `release({ keep: true })` drops nothing: a STALLED create is one we stopped
+   * waiting for, not one that ended, so its slot has to outlive the call — and
+   * the exit listener stays behind as the thing that eventually frees it. Every
+   * other release drops the listener and the count together, which is what
+   * keeps an ordinary create from leaving a callback on a reused workspace
+   * client.
+   */
+  take(client: WorktreeSlotClient): (opts?: { keep?: boolean }) => void {
+    this.counts.set(client, (this.counts.get(client) ?? 0) + 1);
+    const onExit = () => this.counts.delete(client);
+    try {
+      client.on("exit", onExit);
+    } catch {
+      /* a client that cannot subscribe is bounded by its own lifetime anyway */
+    }
+    let released = false;
+    return (opts?: { keep?: boolean }) => {
+      // Idempotent: a second release would under-count, and an under-count reads
+      // as "only one create in flight" — which is exactly the state that makes a
+      // pathless progress event trusted when it should not be.
+      if (released) return;
+      released = true;
+      if (opts?.keep) return;
+      try {
+        client.off?.("exit", onExit);
+      } catch {
+        /* best effort — a disposed client has nothing to detach from */
+      }
+      const left = (this.counts.get(client) ?? 1) - 1;
+      if (left > 0) this.counts.set(client, left);
+      else this.counts.delete(client);
+    };
+  }
+
+  /** True when exactly one create is live on `client`, so a notification that
+   *  names no worktree path can only belong to it. */
+  sole(client: WorktreeSlotClient): boolean {
+    return this.counts.get(client) === 1;
+  }
+}
+
 /** Sanitize a user-typed worktree label for the create RPC (no path separators). */
 export function sanitizeWorktreeLabel(raw: string): string {
   return raw

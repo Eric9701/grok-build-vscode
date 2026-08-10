@@ -15,6 +15,7 @@ import {
   mergeWorktreeRefresh,
   mergeSessionIndexes,
   sanitizeWorktreeLabel,
+  WorktreeCreateSlots,
   pathsEqual,
   pathIsInside,
   isGitRepo,
@@ -329,5 +330,125 @@ describe("gitRootForPath", () => {
 
     expect(gitRootForPath(path.join(parent, "packages", "editor"), fs)).toBe(parent);
     expect(gitRootForPath(path.join(nested, "src"), fs)).toBe(nested);
+  });
+});
+
+describe("WorktreeCreateSlots", () => {
+  /** Minimal EventEmitter stand-in: enough to see WHEN listeners are attached,
+   *  and to fire `exit` exactly once like AcpClient's does. */
+  function fakeClient() {
+    const listeners = new Map<string, Array<(...a: any[]) => void>>();
+    let exited = false;
+    return {
+      on(event: string, fn: (...a: any[]) => void) {
+        const list = listeners.get(event) ?? [];
+        list.push(fn);
+        listeners.set(event, list);
+      },
+      off(event: string, fn: (...a: any[]) => void) {
+        const list = listeners.get(event) ?? [];
+        const i = list.indexOf(fn);
+        if (i >= 0) list.splice(i, 1);
+      },
+      count(event: string) {
+        return (listeners.get(event) ?? []).length;
+      },
+      /** One-shot, like the real `exit`: a listener attached after this has
+       *  fired will never be called. */
+      exit() {
+        if (exited) return;
+        exited = true;
+        for (const fn of [...(listeners.get("exit") ?? [])]) fn();
+      },
+    };
+  }
+
+  it("counts creates so a pathless event is only attributable when one is live", () => {
+    const slots = new WorktreeCreateSlots();
+    const client = fakeClient();
+    expect(slots.sole(client)).toBe(false);
+
+    const releaseA = slots.take(client);
+    expect(slots.sole(client)).toBe(true);
+    const releaseB = slots.take(client);
+    expect(slots.sole(client), "two in flight — nothing pathless is attributable").toBe(false);
+
+    releaseB();
+    expect(slots.sole(client)).toBe(true);
+    releaseA();
+    expect(slots.sole(client)).toBe(false);
+  });
+
+  it("releases a held slot when the CLI dies AFTER reporting progress", () => {
+    // The bug this exists for. `exit` is one-shot: a CLI that crashes mid-copy
+    // emits it long before the idle clock decides the create has stalled. The
+    // listener used to be registered at that later moment, so it was attached
+    // to an event that had already gone and the slot outlived the process.
+    const slots = new WorktreeCreateSlots();
+    const client = fakeClient();
+
+    const release = slots.take(client);
+    client.exit();               // the CLI dies while the watch is still running
+    release({ keep: true });     // ...and only THEN does the watch call it stalled
+
+    expect(slots.sole(client), "a dead client holds no creates").toBe(false);
+  });
+
+  it("keeps a stalled create's slot while the client is still alive", () => {
+    // The property the retention exists for: a stalled create is one we stopped
+    // waiting for, not one that ended, so a retry must not read its pathless
+    // progress as its own.
+    const slots = new WorktreeCreateSlots();
+    const client = fakeClient();
+
+    const stalled = slots.take(client);
+    stalled({ keep: true });
+    expect(slots.sole(client), "the abandoned create still counts").toBe(true);
+
+    const retry = slots.take(client);
+    expect(slots.sole(client), "so the retry cannot claim to be alone").toBe(false);
+    retry();
+
+    client.exit();
+    expect(slots.sole(client)).toBe(false);
+  });
+
+  it("leaves no listener behind on an ordinary create", () => {
+    // Why the listener could not simply always be registered before: a reused
+    // workspace client would accumulate one per create until it exited.
+    const slots = new WorktreeCreateSlots();
+    const client = fakeClient();
+
+    for (let i = 0; i < 50; i++) slots.take(client)();
+    expect(client.count("exit")).toBe(0);
+
+    // A retained slot is the one case that keeps its listener — that listener
+    // IS what eventually frees the slot.
+    slots.take(client)({ keep: true });
+    expect(client.count("exit")).toBe(1);
+  });
+
+  it("ignores a second release rather than under-counting", () => {
+    // An under-count reads as "only one create in flight", which is exactly the
+    // state that makes a pathless progress event trusted when it should not be.
+    const slots = new WorktreeCreateSlots();
+    const client = fakeClient();
+
+    const first = slots.take(client);
+    slots.take(client);
+    first();
+    first();
+    expect(slots.sole(client)).toBe(true);
+  });
+
+  it("survives a client that refuses to subscribe", () => {
+    const slots = new WorktreeCreateSlots();
+    const client = {
+      on() { throw new Error("no listeners here"); },
+    };
+    const release = slots.take(client);
+    expect(slots.sole(client)).toBe(true);
+    expect(() => release()).not.toThrow();
+    expect(slots.sole(client)).toBe(false);
   });
 });

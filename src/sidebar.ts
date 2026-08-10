@@ -210,6 +210,7 @@ import {
   normalizeFsPath,
   pathsEqual,
   sanitizeWorktreeLabel,
+  WorktreeCreateSlots,
   type WorktreeCreateOutcome,
   worktreeStatusIsForCreate,
   worktreeStatusVerdict,
@@ -2531,7 +2532,7 @@ Only continue if you trust this code.`,
     const mine = (e: { worktreePath?: string }) =>
       worktreeStatusIsForCreate(e, {
         target,
-        soleCreateInFlight: this.worktreeCreatesInFlight.get(client) === 1,
+        soleCreateInFlight: this.worktreeCreatesInFlight.sole(client),
       });
     const verdict = worktreeStatusVerdict;
     // Arrow, so `this` is the sidebar: the object returned below has methods
@@ -2555,7 +2556,12 @@ Only continue if you trust this code.`,
       if (outcome) settleNow(outcome);
     };
 
-    this.worktreeCreatesInFlight.set(client, (this.worktreeCreatesInFlight.get(client) ?? 0) + 1);
+    // Taking the slot also registers the listener that releases it when the CLI
+    // dies — at watch START, which is the whole point. `exit` is one-shot, so
+    // registering it later (as this used to, only once a stall decided to hold
+    // the slot) attaches to an event a crashed CLI has already emitted.
+    // See WorktreeCreateSlots for the two properties and why they are there.
+    const releaseSlot = this.worktreeCreatesInFlight.take(client);
     try {
       client.on("worktreeStatus", onStatus);
     } catch {
@@ -2568,22 +2574,7 @@ Only continue if you trust this code.`,
       } catch {
         /* best effort — a disposed client has nothing to detach from */
       }
-      if (opts?.keepSlot) {
-        // Only a RETAINED slot needs an owner to outlive this call, so only
-        // then is a listener worth registering. Attaching one per watch left a
-        // callback behind on every ordinary create too — a reused workspace
-        // client accumulates them until it exits, and eventually warns about
-        // it. `exit` is what AcpClient emits when its child goes.
-        try {
-          client.once?.("exit", () => this.worktreeCreatesInFlight.delete(client));
-        } catch {
-          /* the slot is bounded by the client's own lifetime regardless */
-        }
-        return;
-      }
-      const left = (this.worktreeCreatesInFlight.get(client) ?? 1) - 1;
-      if (left > 0) this.worktreeCreatesInFlight.set(client, left);
-      else this.worktreeCreatesInFlight.delete(client);
+      releaseSlot({ keep: opts?.keepSlot });
     };
 
     return {
@@ -2661,9 +2652,10 @@ Only continue if you trust this code.`,
 
   /**
    * Live creates per client, so an event with no `worktreePath` can be trusted
-   * only when there is exactly one create it could belong to.
+   * only when there is exactly one create it could belong to. Lifetime rules
+   * and their reasons live on {@link WorktreeCreateSlots}.
    */
-  private worktreeCreatesInFlight = new Map<AcpClient, number>();
+  private worktreeCreatesInFlight = new WorktreeCreateSlots();
 
   /**
    * Clients observed emitting `worktree/status` at least once.
