@@ -13241,10 +13241,27 @@
     closePopovers();
     const a = e.target.closest("a[href]");
     if (!a) return;
+    // The browser client is a real web page with real navigation in its chrome:
+    // the AFK Pilot brand in the top bar, the same brand in the rail, and the
+    // "Pick another device" link in a connection notice. All of them point at
+    // `/`, and this handler swallowed every one — preventDefault, then an
+    // openFile for a path named "/" that the host correctly refused. Clicking
+    // the logo did nothing and logged a policy drop.
+    //
+    // The page marks those anchors. Deliberately an explicit opt-out rather
+    // than a rule about what the href looks like: a plan link is `/home/…` and
+    // resolves same-origin exactly like `/` does, so any positional or
+    // origin-based guess turns real file references into navigation away from
+    // the conversation, which is worse than the bug.
+    if (a.closest("[data-native-link]")) return;
     e.preventDefault();
     const href = a.getAttribute("href") || "";
     if (/^https?:\/\//i.test(href)) {
-      vscode.postMessage({ type: "openUrl", url: href });
+      // A remote has no host to route through: openUrl is host-local and is
+      // dropped there, which is why the gear's repository link already opens
+      // its own window. Same rule for a link in the transcript.
+      if (IS_REMOTE) window.open(href, "_blank", "noopener");
+      else vscode.postMessage({ type: "openUrl", url: href });
     } else if (/^[a-zA-Z]:[\\/]/.test(href) || href.startsWith("\\\\") || !/^[a-z][a-z0-9+.-]*:/i.test(href)) {
       vscode.postMessage({ type: "openFile", path: href });
     }

@@ -333,12 +333,34 @@ describe("worktree validation reads git first", () => {
     const start = src.indexOf("const creator = await this.clientForWorktreeCreate(sourcePath);");
     expect(start).toBeGreaterThan(-1);
     const region = src.slice(start, src.indexOf("Create worktree failed", start));
-    const validate = region.indexOf("listAuthoritativeWorktreePaths");
-    const dispose = region.indexOf("if (disposeAfter) await client.dispose();");
-    expect(validate).toBeGreaterThan(-1);
-    expect(dispose, "dispose must come after validation").toBeGreaterThan(validate);
-    // Exactly one dispose site, so the old early one cannot linger alongside it.
-    expect(region.split("if (disposeAfter) await client.dispose();").length - 1).toBe(1);
+    const lastValidate = region.lastIndexOf("listAuthoritativeWorktreePaths");
+    const release = region.indexOf("await releaseCreator();");
+    const sessionStart = region.indexOf("await this.startSession();");
+    expect(lastValidate).toBeGreaterThan(-1);
+    expect(release, "released after the last validation query").toBeGreaterThan(lastValidate);
+    // ...and BEFORE the persistent session starts. A temporary grok.exe still
+    // running holds the executable's lock on Windows, and the first session
+    // after an extension upgrade is when the silent CLI updater runs: it would
+    // fail, then record the version anyway, skipping the update for the whole
+    // release.
+    expect(sessionStart, "the new session starts after the creator is gone").toBeGreaterThan(release);
+    // Idempotent, so the belt in `finally` cannot double-dispose.
+    expect(region).toContain("if (creatorDisposed || !disposeAfter) return;");
+  });
+
+  it("refuses a path that already existed before the create", () => {
+    // "A worktree of this repo" is not "the worktree I just asked you to make".
+    // Every SIBLING passes the first test, so a response naming one would take
+    // over a checkout somebody else is working in — and Apply and Remove would
+    // then act on it.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("const creator = await this.clientForWorktreeCreate(sourcePath);");
+    const region = src.slice(start, src.indexOf("this.worktreeCache.push", start));
+    const snapshot = region.indexOf("const preExisting = await this.listAuthoritativeWorktreePaths");
+    const create = region.indexOf("await client.createWorktree");
+    expect(snapshot, "the snapshot must be taken BEFORE creating").toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(snapshot);
+    expect(region).toContain("preExisting.some((p) => pathsEqual(p, wtPath))");
   });
 
   it("does not demand a clone marker from a worktree git already listed", () => {

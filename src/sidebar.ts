@@ -2215,14 +2215,35 @@ Only continue if you trust this code.`,
             return void this.host.showErrorMessage("Could not start Grok to create a worktree.");
           }
           const { client, disposeAfter } = creator;
-          // Disposed in the OUTER finally, not here. Validation below asks this
-          // same client for its worktree list, and killing it first made that
-          // call reject every time — invisible for a linked worktree, which
-          // local git lists anyway, and fatal for a clone-mode one, which only
-          // the ACP list ever mentions. Creating a worktree before any session
-          // existed for the project therefore failed and left the clone behind.
+          // Disposed after the LAST validation query, not here and not at the
+          // end. Not here, because validation asks this same client for its
+          // worktree list and killing it first made that call reject every time
+          // — invisible for a linked worktree, which local git lists anyway,
+          // and fatal for a clone-mode one, which only the ACP list mentions.
+          // Not at the end either: a temporary `grok.exe` still running while
+          // the new session starts holds the executable's file lock on Windows,
+          // and the first session after an extension upgrade is when the silent
+          // CLI updater runs — it would fail, and then record the version
+          // anyway, so the update would be skipped for the whole release.
           let created;
+          let creatorDisposed = false;
+          const releaseCreator = async () => {
+            if (creatorDisposed || !disposeAfter) return;
+            creatorDisposed = true;
+            await client.dispose();
+          };
           try {
+            // The authoritative set BEFORE creating anything. Without it,
+            // "is this path a worktree of this repo" is the only question the
+            // validator can answer — and an existing SIBLING worktree passes
+            // it. A response naming one would have been cached, opened,
+            // persisted, made remotely targetable, and later applied or
+            // removed as though we had just made it.
+            const preExisting = await this.listAuthoritativeWorktreePaths(
+              client,
+              sourcePath,
+              gitRootForPath(sourcePath, defaultFs) || sourcePath,
+            );
             created = await client.createWorktree({
               sourcePath,
               label: label || undefined,
@@ -2312,6 +2333,22 @@ Only continue if you trust this code.`,
                 `Worktree "${wtLabel}" could not be confirmed as part of this repository, so no session was started. The checkout was left at ${wtPath} — remove it yourself if you don't want it.`,
               );
             }
+            // "A worktree of this repo" is not the same claim as "the worktree
+            // I just asked you to make". Every sibling passes the first test,
+            // so a response naming one would take over a checkout somebody else
+            // is working in — and Apply and Remove would then act on it.
+            if (preExisting.some((p) => pathsEqual(p, wtPath))) {
+              this.host.appendLine(
+                `[worktree] refused: ${wtPath} already existed before this create`,
+              );
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" already existed before this request, so no session was started. Open it from the conversation list instead.`,
+              );
+            }
+
+            // Every question that needed the creator has been asked. Let it go
+            // BEFORE the session starts — see the note where it was obtained.
+            await releaseCreator();
 
             // Refresh cache only after validation.
             this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wtPath));
@@ -2360,7 +2397,8 @@ Only continue if you trust this code.`,
                 `Worktree session ready: ${wtLabel}. Edits stay isolated until you Apply worktree.`,
               );
           } finally {
-            if (disposeAfter) await client.dispose();
+            // Belt: every early return above lands here too.
+            await releaseCreator();
           }
         } catch (e: any) {
           void this.host.showErrorMessage(`Create worktree failed: ${e?.message ?? e}`);
