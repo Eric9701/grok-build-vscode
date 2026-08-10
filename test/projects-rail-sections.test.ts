@@ -234,6 +234,27 @@ describe("VS Code projects rail section parity", () => {
     expect(h.doc.querySelector(".rail-menu")?.textContent).toContain("Delete");
   });
 
+  it("does not dismiss a popup the pointer has not reached yet", () => {
+    // A menu anchored to the ⋯ button opens at the RIGHT of the rail. On a wide
+    // rail the cursor that opened it is already further away than the walk-away
+    // radius, so the popup vanished on the way to it. Leaving is only something
+    // you can do after arriving.
+    const start = railSrc.indexOf('document.addEventListener("mousemove"');
+    expect(start).toBeGreaterThan(-1);
+    const body = railSrc.slice(start, railSrc.indexOf("});", start));
+    expect(body).toContain("if (distance === 0) pointerEnteredPopup = true;");
+    expect(body).toContain("else if (pointerEnteredPopup && distance > 50) closeMenu();");
+  });
+
+  it("opens the colour swatches where the menu was, not back at the button", () => {
+    // Same symptom, different cause: the picker re-anchored to the ⋯ button, so
+    // choosing "Set color" from a menu opened at the pointer threw the swatches
+    // across a wide rail — and then walking after them dismissed them.
+    expect(railSrc).toContain("lastMenuRect = menuEl ? menuEl.getBoundingClientRect() : null;");
+    expect(railSrc).toContain("openColorPicker(menuBtn, repo, lastMenuRect)");
+    expect(railSrc).toContain("at ? { x: at.left, y: at.top } : undefined");
+  });
+
   it("lets section labels scroll away with their own rows", () => {
     // The desktop rail freezes one section label at the top. Here that read as
     // the label being stuck while the rows it belongs to slid up underneath it,

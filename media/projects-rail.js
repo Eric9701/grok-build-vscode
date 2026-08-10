@@ -238,13 +238,26 @@
   // that signal; so is the pointer wandering well away from the popup.
   window.addEventListener("blur", closeMenu);
   document.addEventListener("mouseleave", closeMenu);
+  // Walking away closes it — but only once you have actually been ON it.
+  //
+  // Without that condition the rule fires against a popup the pointer has not
+  // reached yet, which is how a menu could vanish on the way to it: open one
+  // anchored to the ⋯ button at the right of a WIDE rail, and the cursor that
+  // clicked further left is already outside the radius. Requiring an entry
+  // first means "leaving" is something you can only do after arriving.
+  let pointerEnteredPopup = false;
   document.addEventListener("mousemove", (e) => {
     const el = menuEl || colorPickerEl;
-    if (!el) return;
+    if (!el) {
+      pointerEnteredPopup = false;
+      return;
+    }
     const r = el.getBoundingClientRect();
     const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
     const dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom);
-    if (Math.hypot(dx, dy) > 50) closeMenu();
+    const distance = Math.hypot(dx, dy);
+    if (distance === 0) pointerEnteredPopup = true;
+    else if (pointerEnteredPopup && distance > 50) closeMenu();
   });
 
   /**
@@ -340,6 +353,9 @@
     el.style.top = top + "px";
   }
 
+  /** Where the menu stood when an item was chosen — see the item's onclick. */
+  let lastMenuRect = null;
+
   function openMenu(anchor, items, at) {
     closeMenu();
     const menu = document.createElement("div");
@@ -361,6 +377,11 @@
       btn.textContent = item.label;
       btn.onclick = (e) => {
         e.stopPropagation();
+        // Where the MENU was, for whatever replaces it. A submenu anchored to
+        // the ⋯ button instead reopens at the right edge of the rail, which on
+        // a wide one is nowhere near the item just clicked — it reads as the
+        // popup jumping away, and then walking after it dismisses it.
+        lastMenuRect = menuEl ? menuEl.getBoundingClientRect() : null;
         // Menu only — onSelect may open the colour picker next.
         closeMenuOnly();
         if (!item.disabled && item.onSelect) item.onSelect();
@@ -388,7 +409,7 @@
    * Six hues + empty "none". Host-persisted via setRepoColor; capability-gated
    * by colorSupported (field presence on catalog rows, never a version check).
    */
-  function openColorPicker(anchor, repo) {
+  function openColorPicker(anchor, repo, at) {
     closeColorPicker();
     if (!anchor || !repo) return;
     const current = typeof repo.color === "string" ? repo.color : "";
@@ -419,7 +440,9 @@
     }
     document.body.appendChild(picker);
     colorPickerEl = picker;
-    placePopover(picker, anchor);
+    // Open over the menu it replaced when we know where that was, so the
+    // swatches appear under the pointer rather than back at the ⋯ button.
+    placePopover(picker, anchor, at ? { x: at.left, y: at.top } : undefined);
   }
 
   document.addEventListener("click", (e) => {
@@ -966,7 +989,7 @@
         items.push({
           label: "Set color",
           title: "Tint this project's folder icon so it is easy to find",
-          onSelect: () => openColorPicker(menuBtn, repo),
+          onSelect: () => openColorPicker(menuBtn, repo, lastMenuRect),
         });
         items.push(null);
       }
