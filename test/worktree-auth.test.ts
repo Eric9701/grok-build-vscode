@@ -381,23 +381,54 @@ describe("worktree validation reads git first", () => {
     expect(body).toContain("// Replay what arrived before the path was known.");
   });
 
-  it("tells 'this CLI never reports' apart from 'the copy never finished'", () => {
-    // Both are "no completion event", and they need opposite answers. Silence
-    // from an older CLI must fall through to the disk checks — that is how
-    // this worked before the event existed. A CLI that reported progress and
-    // then stopped must NOT, because registration lands before the files do
-    // and those checks would call a half-copied checkout valid.
+  it("waits on ONE long clock, never a short has-it-spoken-yet window", () => {
+    // A short silence window was tried and was worse than the problem it
+    // solved: a create-capable CLI whose first notification is slow, or whose
+    // copy simply takes longer, got classified as a build that never reports
+    // and admitted through the disk checks — which approve a half-copied
+    // checkout, because registration lands before the files do. It widened the
+    // unsafe window from "copies over two minutes" to "copies over five
+    // seconds".
     const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     const watch = src.slice(src.indexOf("private watchWorktreeCreate"));
-    expect(watch.slice(0, watch.indexOf("\n  private worktreeCreatesInFlight"))).toContain(
-      'finish(spoke ? "stalled" : "silent")',
-    );
+    const body = watch.slice(0, watch.indexOf("\n  private worktreeCreatesInFlight"));
+    expect(body).toContain('timers.push(setTimeout(() => finish("silent"), timeoutMs));');
+    expect(body, "no second, shorter clock").not.toContain("silenceMs");
+    // Running out falls through to the disk checks — unchanged behaviour from
+    // every release before the event was consulted, so not a NEW risk.
     const create = src.slice(src.indexOf("Creating git worktree"));
     const region = create.slice(0, create.indexOf("this.worktreeCache.push"));
-    expect(region).toContain('if (outcome === "stalled")');
-    expect(region).toContain("never finished being created");
-    // Silence proceeds; it is the compatibility path and must not be an error.
-    expect(region).not.toMatch(/if \(outcome === "silent"\)[\s\S]{0,120}showErrorMessage/);
+    expect(region).toContain('if (outcome === "silent")');
+    expect(region).not.toMatch(/if \(outcome === "silent"\)[\s\S]{0,200}showErrorMessage/);
+  });
+
+  it("refuses a second worktree create while one is running", () => {
+    // The CLI's progress notifications carry no worktree path — only the
+    // terminal one does — so two overlapping creates on one reused client
+    // produce events that cannot be told apart. Serialising is the honest fix;
+    // correlating uncorrelatable events is not.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("async newWorktreeSession");
+    const body = src.slice(start, src.indexOf("private worktreeCreateInFlight", start));
+    expect(body).toContain("if (this.worktreeCreateInFlight) {");
+    expect(body).toContain("already being created");
+    // Released on every exit, or the feature dies after its first failure.
+    expect(body).toMatch(/finally \{\s*this\.worktreeCreateInFlight = false;/);
+  });
+
+  it("a failed CLI update does not count as done", () => {
+    // The likeliest failure is transient — on Windows another grok.exe holds
+    // the binary's lock, which is the state a worktree create leaves for a
+    // moment. Recording the version anyway suppressed every retry for the rest
+    // of the release. A `return` in the catch would not fix it: finally runs
+    // on the way out.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private async maybeUpdateCliOnUpgrade");
+    const body = src.slice(start, src.indexOf("\n  }", src.indexOf("finally", start)));
+    expect(body).toContain("updateFailed = true;");
+    expect(body).toContain(
+      "if (!updateFailed) void this.state.update(CLI_UPDATE_VERSION_KEY, current);",
+    );
   });
 
   it("persists the worktree onto the session it created, not whatever is focused", () => {

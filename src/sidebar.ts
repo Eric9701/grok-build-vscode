@@ -2191,6 +2191,34 @@ Only continue if you trust this code.`,
         "Worktree sessions need a git repository. Open a folder that is a git checkout (or run git init).",
       );
     }
+    // One at a time. Creation reuses whatever live client the project already
+    // has, and the CLI's progress notifications carry no worktree path — only
+    // the terminal one does — so two overlapping creates on one client produce
+    // events that cannot be told apart. Serialising is the honest fix; trying
+    // to correlate uncorrelatable events is not. Nothing legitimate wants two
+    // at once: this is a deliberate action, and only the desk can start it
+    // (remote-policy keeps `newWorktreeSession` host-local).
+    if (this.worktreeCreateInFlight) {
+      return void this.host.showWarningMessage(
+        "A worktree is already being created. Wait for it to finish before starting another.",
+      );
+    }
+    this.worktreeCreateInFlight = true;
+    try {
+      await this.createWorktreeSession(sourcePath, opts);
+    } finally {
+      this.worktreeCreateInFlight = false;
+    }
+  }
+
+  /** Guards {@link newWorktreeSession} against overlapping creates. */
+  private worktreeCreateInFlight = false;
+
+  /** The body of {@link newWorktreeSession}, run under its single-flight guard. */
+  private async createWorktreeSession(
+    sourcePath: string,
+    opts?: { fromRemote?: boolean },
+  ): Promise<void> {
     // Remote origin: skip the host input box (invisible to the phone). Local
     // and Command Palette still prompt for an optional label.
     let label = "";
@@ -2287,19 +2315,16 @@ Only continue if you trust this code.`,
                 `Worktree "${wtLabel}" was not created: the Grok CLI reported it failed.`,
               );
             }
-            if (outcome === "stalled") {
-              // It speaks the protocol, reported progress, and then stopped.
-              // Falling through would hand the disk checks a half-copied
-              // checkout they are guaranteed to approve — registration lands
-              // before the files do.
-              this.host.appendLine(`[worktree] create stalled without completing: ${wtPath}`);
-              return void this.host.showErrorMessage(
-                `Worktree "${wtLabel}" never finished being created, so no session was started. The partial checkout was left at ${wtPath}.`,
-              );
+            if (outcome === "silent") {
+              // Nothing terminal within the timeout: either a CLI that predates
+              // the status event, or a copy still running. They are not
+              // distinguishable from here, and the checks below approve both —
+              // registration lands before the files do. Falling through is the
+              // behaviour of every release before this event was consulted, so
+              // the risk is unchanged rather than new, and it is bounded by a
+              // copy that takes longer than the timeout.
+              this.host.appendLine(`[worktree] no completion reported for ${wtPath}; using disk checks`);
             }
-            // "silent" — nothing was ever reported about this create, so the
-            // CLI predates the status event. The disk and git checks below are
-            // exactly how this worked before it existed.
             // create is ASYNC — the RPC returns "creating" before git writes the
             // checkout (its dir + `.git` pointer appear a beat later). Spawning a
             // session in a not-yet-existing cwd hangs the whole flow, so wait for
@@ -2485,11 +2510,10 @@ Only continue if you trust this code.`,
    *    before the files are copied, so the disk checks would call a partial
    *    checkout valid. Refuse instead.
    */
-  private watchWorktreeCreate(client: AcpClient, timeoutMs = 120000, silenceMs = 5000) {
+  private watchWorktreeCreate(client: AcpClient, timeoutMs = 120000) {
     const events: Array<{ status?: string; worktreePath?: string }> = [];
     let target: string | undefined;
     let settleNow: ((o: WorktreeCreateOutcome) => void) | undefined;
-    let spoke = false;
 
     const mine = (e: { worktreePath?: string }) => {
       const named = e.worktreePath?.trim();
@@ -2508,7 +2532,6 @@ Only continue if you trust this code.`,
       events.push(status || {});
       if (!settleNow || !target) return; // buffered; replayed once we know ours
       if (!mine(status)) return;
-      spoke = true;
       const outcome = verdict(status);
       if (outcome) settleNow(outcome);
     };
@@ -2548,22 +2571,25 @@ Only continue if you trust this code.`,
             resolve(outcome);
           };
           settleNow = finish;
-          // Two clocks, because "still working" and "does not report at all"
-          // are different states, and one long timeout conflates them — which
-          // is what made every create on a non-reporting CLI sit behind an
-          // uncancellable progress bar for two minutes before succeeding.
+          // ONE clock, and a long one.
           //
-          // A CLI that reports does so promptly: it is the same process that
-          // just answered the RPC. Silence through the short window therefore
-          // means this build predates the event, and the disk checks take over
-          // exactly as they did before it existed. Once it HAS spoken the long
-          // clock owns the outcome, and running out of that is a stall.
-          timers.push(setTimeout(() => { if (!spoke) finish("silent"); }, silenceMs));
-          timers.push(setTimeout(() => finish(spoke ? "stalled" : "silent"), timeoutMs));
+          // A short "has it said anything yet" window was tried and was worse
+          // than the problem: a create-capable CLI whose first notification is
+          // slow, or whose copy simply takes longer, was classified as a build
+          // that never reports and admitted through the disk checks — which
+          // approve a half-copied checkout, because registration lands before
+          // the files do. That widened the unsafe window from "copies over two
+          // minutes" to "copies over five seconds".
+          //
+          // So: wait properly, and treat running out as silence rather than a
+          // stall. Silence falls through to the disk checks, which is how this
+          // worked for every release before the event was consulted at all —
+          // an unchanged risk, not a new one, and bounded by a copy that takes
+          // longer than the timeout.
+          timers.push(setTimeout(() => finish("silent"), timeoutMs));
           // Replay what arrived before the path was known.
           for (const e of events) {
             if (!mine(e)) continue;
-            spoke = true;
             const outcome = verdict(e);
             if (outcome) return finish(outcome);
           }
@@ -4434,6 +4460,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.cliUpdateChecked = true;
     const current = this.context.extensionVersion;
     const lastSeen = this.state.get<string>(CLI_UPDATE_VERSION_KEY);
+    let updateFailed = false;
     try {
       if (!extensionWasUpgraded(lastSeen, current)) return;
       const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
@@ -4453,10 +4480,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (stdout?.trim()) this.host.appendLine(stdout.trim());
         if (stderr?.trim()) this.host.appendLine(stderr.trim());
       } catch (e) {
+        // A FAILED update must not count as having happened. Recording the
+        // version regardless suppressed every retry for the rest of the
+        // release — and the likeliest reason to fail is transient: on Windows
+        // another grok.exe still holds the binary's lock, which is exactly the
+        // state a worktree create leaves for a moment. Leaving the marker
+        // unwritten means the next window tries again.
+        //
+        // A `return` here would not do it: `finally` runs on the way out.
+        updateFailed = true;
         this.host.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
       }
     } finally {
-      void this.state.update(CLI_UPDATE_VERSION_KEY, current);
+      // Every path except a failed update: nothing to do, policy declined, or
+      // it succeeded. `cliUpdateChecked` still caps this at one attempt per
+      // window, so a failure retries on the next one rather than in a loop.
+      if (!updateFailed) void this.state.update(CLI_UPDATE_VERSION_KEY, current);
     }
   }
 
