@@ -1228,6 +1228,36 @@ describe("desktop quick pick and input dialogs", () => {
     expect(html).not.toContain("not available");
   });
 
+  it("dresses the dialogs as part of the app, not as a page", () => {
+    // Owner, on the worktree prompt: no padding, Electron's logo, "looks like
+    // a new page, not a popup". The first and third are this document — a card
+    // with its own padding and no full-bleed header/footer rules — and the
+    // palette is DESKTOP_THEME_CSS's, not VS Code's greys.
+    const html = buildInputBoxHtml({ title: "New worktree", prompt: "Label" });
+    expect(html).toMatch(/\.wrap\s*\{[^}]*padding:/);
+    expect(html, "no chrome bars across the window").not.toMatch(/border-(top|bottom):\s*1px solid #3c3c3c/);
+    expect(html, "app background, not VS Code's editor widget grey").toContain("background: #1e1e1e");
+    expect(html).not.toContain("#252526");
+    // Dark+ selection blue is deliberately absent app-wide (neutral greys).
+    expect(html).not.toContain("#094771");
+  });
+
+  it("gives dialog windows the app icon and dialog chrome", () => {
+    // The logo half of the same report: no `icon` meant Electron's atom in the
+    // title bar of every prompt. Minimise/maximise are what made the frame read
+    // as a window rather than a dialog.
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "electron-host.ts"),
+      "utf8",
+    );
+    const dialog = src.slice(src.indexOf("function showHtmlDialog"));
+    const opts = dialog.slice(0, dialog.indexOf("installWindowSecurityLocks"));
+    expect(opts).toMatch(/icon:\s*dialogIcon\(\)/);
+    expect(opts).toMatch(/minimizable:\s*false/);
+    expect(opts).toMatch(/maximizable:\s*false/);
+    expect(opts).toContain('backgroundColor: "#1e1e1e"');
+  });
+
   it("buildInputBoxHtml is a real form, not a cancel stub", () => {
     const html = buildInputBoxHtml({ prompt: "Worktree label", value: "wt" });
     expect(html).toContain("Worktree label");

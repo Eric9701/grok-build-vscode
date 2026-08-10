@@ -27,52 +27,69 @@ export interface BuildInputBoxHtmlOptions {
   password?: boolean;
 }
 
+/**
+ * These windows are `data:` URLs, so they cannot load chat.css and have no
+ * theme tokens to inherit — the palette is DESKTOP_THEME_CSS's dark values
+ * copied literally. Keep them in step: a dialog in VS Code's greys next to an
+ * app in AFK Pilot's is exactly what made this read as a foreign page.
+ *
+ * The layout rule is the other half of that: one padded card. Full-bleed
+ * header and footer rules turn a 440x230 window into a miniature web page with
+ * a chrome bar at each end, which is what the owner saw.
+ */
 const DIALOG_CSS = `
 :root { color-scheme: dark; }
 html, body {
   margin: 0; height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
   font-size: 13px;
-  background: #252526; color: #cccccc;
+  background: #1e1e1e; color: #e6e6e6;
 }
-.wrap { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
-.hdr {
-  padding: 12px 14px 8px; border-bottom: 1px solid #3c3c3c; flex-shrink: 0;
+.wrap {
+  display: flex; flex-direction: column; height: 100%;
+  box-sizing: border-box; padding: 20px 22px 18px;
 }
-.hdr h1 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #e0e0e0; }
-.hdr p { margin: 0; font-size: 12px; color: #9d9d9d; }
+.hdr { flex-shrink: 0; }
+.hdr h1 { margin: 0; font-size: 15px; font-weight: 600; color: #f2f2f2; letter-spacing: -.01em; }
+.hdr p { margin: 6px 0 0; font-size: 12.5px; line-height: 1.45; color: #9d9d9d; }
+/* The list bleeds back out through the card padding so a hovered row reads as
+   a full-width row rather than a floating pill. */
 .list {
-  flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 0;
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+  margin: 14px -8px 0; padding: 2px 0;
 }
 .item {
   display: block; width: 100%; text-align: left;
   border: none; background: transparent; color: inherit;
-  font: inherit; padding: 8px 14px; cursor: pointer;
+  font: inherit; padding: 8px 10px; border-radius: 6px; cursor: pointer;
   box-sizing: border-box;
 }
-.item:hover, .item:focus { background: #094771; color: #fff; outline: none; }
+.item:hover { background: #2a2d2e; outline: none; }
+.item:focus { background: #37373d; color: #fff; outline: none; }
 .item .lab { font-weight: 500; }
 .item .desc { font-size: 11px; color: #9d9d9d; margin-top: 2px; }
 .item:hover .desc, .item:focus .desc { color: #c0c0c0; }
 .foot {
-  flex-shrink: 0; padding: 10px 14px; border-top: 1px solid #3c3c3c;
+  flex-shrink: 0; padding-top: 16px;
   display: flex; gap: 8px; justify-content: flex-end; align-items: center;
 }
 input[type="text"], input[type="password"] {
   width: 100%; box-sizing: border-box;
-  margin: 12px 14px 0; padding: 8px 10px;
-  border: 1px solid #3c3c3c; border-radius: 4px;
-  background: #3c3c3c; color: #ccc; font: inherit; outline: none;
+  margin: 14px 0 0; padding: 8px 11px;
+  border: 1px solid #3c3c3c; border-radius: 6px;
+  background: #313131; color: #e6e6e6; font: inherit; outline: none;
 }
-input:focus { border-color: #007fd4; }
+input::placeholder { color: #8a8a8a; }
+input:focus { border-color: #007fd4; box-shadow: 0 0 0 1px #007fd4; }
 button.btn {
-  border: none; border-radius: 4px; padding: 6px 14px; font: inherit; cursor: pointer;
+  border: none; border-radius: 6px; padding: 7px 16px; font: inherit; cursor: pointer;
 }
+button.btn:focus-visible { outline: 2px solid #007fd4; outline-offset: 2px; }
 button.primary { background: #0e639c; color: #fff; }
 button.primary:hover { background: #1177bb; }
-button.secondary { background: #3a3d41; color: #ccc; }
-button.secondary:hover { background: #454545; }
-.empty { padding: 24px 14px; color: #9d9d9d; text-align: center; }
+button.secondary { background: #3a3d41; color: #e6e6e6; }
+button.secondary:hover { background: #45494d; }
+.empty { padding: 24px 0; color: #9d9d9d; text-align: center; }
 `;
 
 function shell(title: string, body: string, boot: string): string {

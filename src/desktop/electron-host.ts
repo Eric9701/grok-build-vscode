@@ -98,6 +98,7 @@ import {
   resolveMessageBoxChoice,
   selectQuickPickIndex,
 } from "./host-dialogs";
+import { resolveExtensionRoot } from "./paths";
 import { installWindowSecurityLocks } from "./window-security";
 
 function splitMessageArgs(
@@ -237,6 +238,33 @@ function openHtmlDocumentWindow(
 }
 
 /**
+ * The app icon, for dialog title bars. Resolved once and cached — the lookup
+ * touches the disk, and these windows open on a click.
+ *
+ * Same two candidates main.ts uses for the app window, in the same order. A
+ * missing file is not an error worth surfacing: Electron simply falls back to
+ * its own icon, which is what happened before this existed.
+ */
+let cachedDialogIcon: string | null | undefined;
+function dialogIcon(): string | null {
+  if (cachedDialogIcon !== undefined) return cachedDialogIcon;
+  cachedDialogIcon = null;
+  try {
+    const root = resolveExtensionRoot();
+    for (const name of ["grok-icon-round-512.png", "grok-icon.png"]) {
+      const candidate = path.join(root, "resources", name);
+      if (fs.existsSync(candidate)) {
+        cachedDialogIcon = candidate;
+        break;
+      }
+    }
+  } catch {
+    /* outside Electron (tests) — no icon, no failure */
+  }
+  return cachedDialogIcon;
+}
+
+/**
  * Modal HTML dialog window that returns a single IPC payload (or null on cancel).
  * Used for quick pick (any size) and text input — not native message-box caps.
  */
@@ -260,7 +288,16 @@ function showHtmlDialog(
       parent: parent ?? undefined,
       modal: !!parent,
       show: true,
-      backgroundColor: "#252526",
+      // Same background as the app. #252526 was VS Code's, and against a
+      // #1e1e1e app it read as a window from somewhere else.
+      backgroundColor: "#1e1e1e",
+      // Without an icon Windows draws Electron's atom in the title bar of every
+      // one of these. The main window already resolves the same file.
+      icon: dialogIcon() ?? undefined,
+      // A dialog that can be minimised or maximised is a window; strip both so
+      // the title bar carries a close button only.
+      minimizable: false,
+      maximizable: false,
       autoHideMenuBar: true,
       webPreferences: {
         preload: dialogPreload,
@@ -678,7 +715,8 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
         getWindow,
         options?.title ?? "Input",
         html,
-        { width: 440, height: 220 },
+        // The card's padding grew; 220 clipped the buttons against the frame.
+        { width: 440, height: 250 },
       );
       if (raw === null || raw === undefined) return undefined;
       const parsed = parseDialogSubmit(raw);
