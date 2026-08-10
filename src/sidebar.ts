@@ -71,6 +71,7 @@ import {
   GROK_REQUIRED_VERSION,
   GROK_STDIO_DOWNGRADE_TARGET,
 } from "./cli-locator";
+import { OpenClock } from "./open-timing";
 import {
   TerminalManager,
   grokShellEnvValue,
@@ -5015,6 +5016,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
     const session = target;
+    // Timed from here, before anything is torn down — see src/open-timing.ts
+    // for why: four of the five costs in an open are invisible from outside,
+    // and "sometimes it takes ages" is not something anyone can act on.
+    const clock = new OpenClock();
     const replacedClient = session.client;
     if (replacedClient) {
       this.queueInFlightPlanCommentsOnExit(session, replacedClient, session.gen);
@@ -5047,6 +5052,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // process has actually exited.
     if (replacedClient) {
       await replacedClient.dispose();
+      clock.mark("dispose");
       if (gen !== session.gen) return undefined;
     }
     // A brand-new session starts in the remembered mode (#25) immediately, so the
@@ -5118,6 +5124,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const compatibility = await this.planModeCompatibility(cliPath);
     if (gen !== session.gen) return undefined;
     this.applyPlanModeCompatibility(session, compatibility);
+    // Every open spawns `grok --version` at least once (twice on the first open
+    // of a window, and the update check can be far more than that).
+    clock.mark("probe");
 
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
@@ -5546,6 +5555,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
     try {
       await client.start();
+      clock.mark("spawn");
       if (gen !== session.gen) { client.dispose(); return undefined; }
       const defaultModel = cfg.get<string>("defaultModel", "");
       if (resumeId) {
@@ -5617,6 +5627,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             );
           }
         });
+        // The CLI's own work — rereading the transcript and rebuilding the
+        // prompt context, which indexes the repository — plus replaying it all
+        // into the webview. Expected to dominate, and the reason a project you
+        // have not touched in weeks feels slower than the one you are in.
+        clock.mark("load+replay");
         session.activeSessionId = resumeId;
         session.titleGenerated = true; // existing session, name already in storage
         session.hasHistory = true;
@@ -5649,9 +5664,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.restoreUsage(session);
       } else {
         await client.newSession(defaultModel || undefined);
+        clock.mark("new-session");
         session.activeSessionId = client.sessionId;
       }
       if (gen !== session.gen) { client.dispose(); session.client = undefined; return undefined; }
+      this.host.appendLine(clock.summary(resumeId ? "resume" : "new", cwd));
       this.postSessionName(session);
 
       if (defaultModel && client.currentModelId && client.currentModelId !== defaultModel) {
