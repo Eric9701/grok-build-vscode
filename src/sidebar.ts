@@ -2534,6 +2534,7 @@ Only continue if you trust this code.`,
         soleCreateInFlight: this.worktreeCreatesInFlight.get(client) === 1,
       });
     const verdict = worktreeStatusVerdict;
+    let onActivity: (() => void) | undefined;
     const onStatus = (status: { status?: string; worktreePath?: string }) => {
       events.push(status || {});
       if (!settleNow || !target) return; // buffered; replayed once we know ours
@@ -2541,6 +2542,7 @@ Only continue if you trust this code.`,
       // Any matched event counts, progress included — that is the whole point
       // of the flag. Only a terminal one settles the wait.
       spoke = true;
+      onActivity?.();
       const outcome = verdict(status);
       if (outcome) settleNow(outcome);
     };
@@ -2552,20 +2554,29 @@ Only continue if you trust this code.`,
       /* a client that cannot subscribe simply never reports */
     }
 
-    const detach = () => {
+    const detach = (opts?: { keepSlot?: boolean }) => {
       try {
         client.off?.("worktreeStatus", onStatus);
       } catch {
         /* best effort — a disposed client has nothing to detach from */
       }
+      if (opts?.keepSlot) return;
       const left = (this.worktreeCreatesInFlight.get(client) ?? 1) - 1;
       if (left > 0) this.worktreeCreatesInFlight.set(client, left);
       else this.worktreeCreatesInFlight.delete(client);
     };
+    // A client that dies takes its accounting with it, so a slot held for a
+    // stalled create cannot outlive the process it was describing. `exit` is
+    // what AcpClient emits when its child goes.
+    try {
+      client.once?.("exit", () => this.worktreeCreatesInFlight.delete(client));
+    } catch {
+      /* the slot is bounded by the client's own lifetime regardless */
+    }
 
     return {
       /** Abandon the watch without waiting (the RPC failed or was unsupported). */
-      cancel: detach,
+      cancel: () => detach(),
       /** Wait for OUR create to finish, now that the RPC has named its path. */
       settled(worktreePath: string): Promise<WorktreeCreateOutcome> {
         target = worktreePath;
@@ -2576,7 +2587,13 @@ Only continue if you trust this code.`,
             if (done) return;
             done = true;
             for (const t of timers) clearTimeout(t);
-            detach();
+            // A stalled create is one we STOPPED WAITING FOR, not one that
+            // ended: the CLI may still be copying. Releasing its slot would let
+            // the next create believe it is the only one in flight and trust
+            // pathless progress events that belong to this one. The listener is
+            // dropped either way; only the count is held, and only until the
+            // client goes.
+            detach({ keepSlot: outcome === "stalled" });
             resolve(outcome);
           };
           settleNow = finish;
@@ -2595,7 +2612,20 @@ Only continue if you trust this code.`,
           // over-correction: a CLI that reported progress and then stopped is
           // an unfinished copy, and letting it fall through hands the disk
           // checks the partial checkout they are guaranteed to approve.
-          timers.push(setTimeout(() => finish(spoke ? "stalled" : "silent"), timeoutMs));
+          //
+          // IDLE, not elapsed. A fixed deadline calls a copy stopped for taking
+          // long, which for a big repository it legitimately does — and the
+          // protocol emits progress while copying, so quiet is the signal, not
+          // duration. Every matched event restarts the clock; only silence
+          // running out ends the wait.
+          let idle: ReturnType<typeof setTimeout>;
+          const arm = () => {
+            clearTimeout(idle);
+            idle = setTimeout(() => finish(spoke ? "stalled" : "silent"), timeoutMs);
+            timers.push(idle);
+          };
+          onActivity = arm;
+          arm();
           // Replay what arrived before the path was known.
           for (const e of events) {
             if (!mine(e)) continue;

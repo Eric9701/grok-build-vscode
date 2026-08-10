@@ -449,6 +449,11 @@ describe("worktree validation reads git first", () => {
     const body = watch.slice(0, watch.indexOf("\n  private worktreeCreatesInFlight"));
     expect(body).toContain('finish(spoke ? "stalled" : "silent")');
     expect(body, "no second, shorter clock").not.toContain("silenceMs");
+    // IDLE, not elapsed. A fixed deadline calls a copy stopped for taking
+    // long, which a big repository legitimately does — and the protocol emits
+    // progress while copying, so quiet is the signal, not duration.
+    expect(body).toContain("onActivity = arm;");
+    expect(body).toMatch(/const arm = \(\) => \{\s*clearTimeout\(idle\);/);
     // ...but running OUT of it still means different things. A CLI that
     // reported progress and then stopped is an unfinished copy and must be
     // refused; one that never spoke predates the event and falls through to
@@ -459,6 +464,19 @@ describe("worktree validation reads git first", () => {
     expect(region).toContain("never finished being created");
     expect(region).toContain('if (outcome === "silent")');
     expect(region).not.toMatch(/if \(outcome === "silent"\)[\s\S]{0,200}showErrorMessage/);
+  });
+
+  it("holds a stalled create's slot so a retry cannot misread its events", () => {
+    // A stalled create is one we STOPPED WAITING FOR, not one that ended — the
+    // CLI may still be copying. Releasing the slot would let the next create
+    // believe it is alone and trust pathless progress belonging to this one.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private watchWorktreeCreate");
+    const body = src.slice(start, src.indexOf("\n  private worktreeCreatesInFlight", start));
+    expect(body).toContain('detach({ keepSlot: outcome === "stalled" });');
+    expect(body).toContain("if (opts?.keepSlot) return;");
+    // ...and it cannot outlive the process it describes.
+    expect(body).toContain('client.once?.("exit"');
   });
 
   it("refuses a second worktree create while one is running", () => {
