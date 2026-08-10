@@ -897,17 +897,23 @@ a:hover {
   position: relative;
 }
 .top-bar > .icon-btn { flex: none; }
+/* Two rows: the conversation's name, and under it the project it belongs to.
+   A grid rather than a wrapping flex row so the project line sits beneath the
+   NAME and not beneath the rename pencil, and so it holds its place while the
+   name is being edited. */
 .session-name-chip {
   min-width: 0;
   max-width: min(52%, 280px);
   flex: 0 1 auto;
   margin-right: auto;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
   align-items: center;
-  gap: 2px;
+  gap: 0 2px;
   padding: 1px 2px 1px 6px;
   border-radius: 5px;
 }
+.session-name-chip > .session-name-repo { grid-column: 1 / -1; }
 .session-name-chip[hidden] { display: none; }
 .session-name-label {
   min-width: 0;
@@ -929,13 +935,12 @@ a:hover {
    they check. Mirrors .rail-session-repo, which says the same thing on the
    rail's cross-project rows. */
 .session-name-repo {
-  flex: 0 1 auto;
   min-width: 0;
-  max-width: 45%;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 0 2px;
+  padding: 0 2px 1px 3px;
   color: var(--vscode-descriptionForeground);
   font-size: 10px;
   letter-spacing: .02em;

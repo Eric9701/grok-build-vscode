@@ -233,6 +233,100 @@
     closeColorPicker();
   }
 
+  // A click somewhere else in VS Code never reaches this document, so a menu
+  // opened here had no way to learn it had been left behind. Losing focus is
+  // that signal; so is the pointer wandering well away from the popup.
+  window.addEventListener("blur", closeMenu);
+  document.addEventListener("mouseleave", closeMenu);
+  document.addEventListener("mousemove", (e) => {
+    const el = menuEl || colorPickerEl;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right);
+    const dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom);
+    if (Math.hypot(dx, dy) > 50) closeMenu();
+  });
+
+  /**
+   * In-page confirm / prompt.
+   *
+   * `window.confirm` and `window.prompt` DO NOTHING in a VS Code webview — they
+   * are disabled outright, return undefined, and take the caller's "cancelled"
+   * branch. Rename, Delete, Clear all history and Hide project were all wired to
+   * them, so every one of those menu items silently did nothing. That is why the
+   * rail looked like it was ignoring the context menu.
+   *
+   * Resolves to the typed string for a prompt, true/false for a confirm.
+   */
+  function railDialog(opts) {
+    return new Promise((resolve) => {
+      closeMenu();
+      const scrim = document.createElement("div");
+      scrim.className = "rail-dialog-scrim";
+      const box = document.createElement("div");
+      box.className = "rail-dialog";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+
+      const title = document.createElement("div");
+      title.className = "rail-dialog-title";
+      title.textContent = opts.title;
+      box.appendChild(title);
+
+      if (opts.body) {
+        const body = document.createElement("div");
+        body.className = "rail-dialog-body";
+        body.textContent = opts.body;
+        box.appendChild(body);
+      }
+
+      let input = null;
+      if (opts.input !== undefined) {
+        input = document.createElement("input");
+        input.type = "text";
+        input.className = "rail-dialog-input";
+        input.value = opts.input || "";
+        box.appendChild(input);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "rail-dialog-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "rail-dialog-btn";
+      cancel.textContent = "Cancel";
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "rail-dialog-btn rail-dialog-primary" + (opts.danger ? " rail-dialog-danger" : "");
+      ok.textContent = opts.confirmLabel || "OK";
+      actions.appendChild(cancel);
+      actions.appendChild(ok);
+      box.appendChild(actions);
+      scrim.appendChild(box);
+      document.body.appendChild(scrim);
+
+      let done = false;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        scrim.remove();
+        document.removeEventListener("keydown", onKey, true);
+        resolve(value);
+      };
+      const accept = () => finish(input ? input.value : true);
+      const dismiss = () => finish(input ? null : false);
+      function onKey(e) {
+        if (e.key === "Escape") { e.preventDefault(); dismiss(); }
+        else if (e.key === "Enter" && input) { e.preventDefault(); accept(); }
+      }
+      document.addEventListener("keydown", onKey, true);
+      cancel.addEventListener("click", dismiss);
+      ok.addEventListener("click", accept);
+      scrim.addEventListener("mousedown", (e) => { if (e.target === scrim) dismiss(); });
+      if (input) { input.focus(); input.select(); } else ok.focus();
+    });
+  }
+
   function placePopover(el, anchor, at) {
     const rect = anchor.getBoundingClientRect();
     const mw = el.offsetWidth;
@@ -486,6 +580,7 @@
         for (const repo of projectRepos) {
           list.appendChild(renderRepo(repo, {
             isCurrent: !!current && sameCwd(repo.cwd, current.cwd),
+            inArchive: false,
           }));
         }
         root.appendChild(list);
@@ -509,7 +604,9 @@
       if (open) {
         const list = document.createElement("div");
         list.className = "rail-list rail-archived";
-        for (const repo of visibleArchived) list.appendChild(renderRepo(repo, { isCurrent: false }));
+        for (const repo of visibleArchived) {
+          list.appendChild(renderRepo(repo, { isCurrent: false, inArchive: true }));
+        }
         root.appendChild(list);
       }
       shown = true;
@@ -821,36 +918,41 @@
         items.push({
           label: "Hide project",
           title: "Take this project out of the list. Nothing is deleted — the folder stays on disk, and + adds it back.",
-          onSelect: () => {
-            if (
-              !window.confirm(
-                `Hide “${repo.label || leaf(repo.cwd)}”?\n\n` +
-                  "Nothing is deleted — the folder stays on disk and Add project " +
-                  "brings it back. Any conversation still working in it ends; the " +
-                  "host asks again if that is the case.\n\n" +
-                  // The row vanishes from every linked device at once, and a
-                  // phone editing a file in it loses the route back to its
-                  // unsaved text. The desk cannot see whether that is happening,
-                  // so the only honest thing is to say so first.
-                  "If a linked device has this project open, any unsaved file edits " +
-                  "there will be lost.",
-              )
-            ) {
-              return;
-            }
-            vscode.postMessage({ type: "removeProjectFolder", cwd: repo.cwd });
+          onSelect: async () => {
+            const ok = await railDialog({
+              title: `Hide “${repo.label || leaf(repo.cwd)}”?`,
+              // The row vanishes from every linked device at once, and a phone
+              // editing a file in it loses the route back to its unsaved text.
+              // The desk cannot see whether that is happening, so say it first.
+              body:
+                "Nothing is deleted — the folder stays on disk and Add project brings "
+                + "it back. Any conversation still working in it ends. If a linked "
+                + "device has this project open, unsaved file edits there are lost.",
+              confirmLabel: "Hide",
+              danger: true,
+            });
+            if (ok) vscode.postMessage({ type: "removeProjectFolder", cwd: repo.cwd });
           },
         });
         items.push(null);
       }
       if (archiveSupported) {
+        // The verb follows the SECTION this row is drawn in, not the stored
+        // flag. Since the age rule arrived those disagree all the time: a
+        // project auto-archived for being quiet has no stored flag, and one held
+        // in Projects by the always-visible floor may carry `archived: true`. So
+        // the menu offered "Move to Projects" on a row already under Projects.
+        const inArchive = !!opts.inArchive;
         items.push({
-          label: repo.archived ? "Move to Projects" : "Archive project",
+          label: inArchive ? "Move to Projects" : "Archive project",
+          title: inArchive
+            ? "Show this project under Projects again"
+            : "Move this project out of the way. Its conversations stay, and working here brings it back.",
           onSelect: () =>
             vscode.postMessage({
               type: "setRepoArchived",
               cwd: repo.cwd,
-              archived: !repo.archived,
+              archived: !inArchive,
             }),
         });
         items.push(null);
@@ -870,9 +972,14 @@
         label: "Clear all history",
         danger: true,
         disabled: repo.available === false,
-        onSelect: () => {
-          if (!window.confirm(`Clear history for “${repo.label || leaf(repo.cwd)}”?`)) return;
-          vscode.postMessage({ type: "clearAllSessions", cwd: repo.cwd });
+        onSelect: async () => {
+          const ok = await railDialog({
+            title: `Clear history for “${repo.label || leaf(repo.cwd)}”?`,
+            body: "Every conversation in this project is deleted. This cannot be undone.",
+            confirmLabel: "Clear all",
+            danger: true,
+          });
+          if (ok) vscode.postMessage({ type: "clearAllSessions", cwd: repo.cwd });
         },
       });
       return items;
@@ -1000,8 +1107,12 @@
       openMenu(menuBtn, [
         {
           label: "Rename",
-          onSelect: () => {
-            const next = window.prompt("Rename session", s.displayName || "");
+          onSelect: async () => {
+            const next = await railDialog({
+              title: "Rename conversation",
+              input: s.displayName || "",
+              confirmLabel: "Rename",
+            });
             if (next == null) return;
             const name = next.trim();
             if (!name || name === s.displayName) return;
@@ -1023,9 +1134,14 @@
         {
           label: "Delete",
           danger: true,
-          onSelect: () => {
-            if (!window.confirm(`Delete “${s.displayName || "session"}”?`)) return;
-            vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName, cwd });
+          onSelect: async () => {
+            const ok = await railDialog({
+              title: `Delete “${s.displayName || "session"}”?`,
+              body: "The conversation and its history are removed. This cannot be undone.",
+              confirmLabel: "Delete",
+              danger: true,
+            });
+            if (ok) vscode.postMessage({ type: "deleteSession", id: s.id, name: s.displayName, cwd });
           },
         },
       ]);

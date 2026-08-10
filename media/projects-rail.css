@@ -551,3 +551,76 @@ html, body {
   .rail-menu-item { padding: 11px 10px; }
   .rail-head-btn { padding-block: 12px 8px; }
 }
+
+/* In-page confirm / prompt. VS Code webviews disable window.confirm and
+   window.prompt outright, so every menu item wired to them silently did
+   nothing — this is what Rename, Delete, Clear all history and Hide project
+   use instead. */
+.rail-dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in oklab, var(--vscode-editor-background) 55%, transparent);
+}
+.rail-dialog {
+  width: 100%;
+  max-width: 280px;
+  padding: 14px;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+  border-radius: 8px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  color: var(--vscode-foreground);
+  box-shadow: 0 8px 28px color-mix(in oklab, var(--vscode-widget-shadow) 45%, transparent);
+}
+.rail-dialog-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
+.rail-dialog-body {
+  margin-top: 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.rail-dialog-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 10px;
+  padding: 5px 7px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.rail-dialog-input:focus { border-color: var(--vscode-focusBorder); }
+.rail-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 14px;
+}
+.rail-dialog-btn {
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground, var(--vscode-toolbar-hoverBackground));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rail-dialog-btn:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); }
+.rail-dialog-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.rail-dialog-primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.rail-dialog-primary:hover { background: var(--vscode-button-hoverBackground); }
+.rail-dialog-danger {
+  background: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+  color: var(--vscode-button-foreground);
+}

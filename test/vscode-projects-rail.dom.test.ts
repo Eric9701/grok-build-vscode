@@ -585,7 +585,10 @@ describe("VS Code projects rail renderer", () => {
       expect(menuLabels(doc)).toContain("Hide project");
     });
 
-    it("asks first, then posts removeProjectFolder for that cwd", () => {
+    it("asks first, then posts removeProjectFolder for that cwd", async () => {
+      // The question is an IN-PAGE dialog: `window.confirm` does nothing at all
+      // in a VS Code webview, which is why every menu item wired to it silently
+      // failed. Clicking Hide must raise the dialog, not act.
       const { doc, window, posted } = bootRail();
       withAdded(railApi(window));
       const added = [...doc.querySelectorAll(".rail-repo")][1];
@@ -596,6 +599,12 @@ describe("VS Code projects rail renderer", () => {
 
       posted.length = 0;
       remove.click();
+      expect(posted, "asking is not doing").toEqual([]);
+      const dialog = doc.querySelector(".rail-dialog");
+      expect(dialog, "Hide must raise a dialog").toBeTruthy();
+
+      (dialog!.querySelector(".rail-dialog-primary") as HTMLButtonElement).click();
+      await Promise.resolve();
       expect(posted).toEqual([{ type: "removeProjectFolder", cwd: "/work/added" }]);
     });
   });
