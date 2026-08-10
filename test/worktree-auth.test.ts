@@ -14,6 +14,8 @@ import {
   mergeWorktreeRefresh,
   parseGitWorktreeListPorcelain,
   worktreePathAuthorizedForRepo,
+  worktreeStatusIsForCreate,
+  worktreeStatusVerdict,
   type WorktreeRecord,
 } from "../src/worktree";
 
@@ -169,6 +171,58 @@ describe("sidebar create path validates before cache (source)", () => {
  * So the provenance marker the CLI writes is the second form of proof — read
  * from local disk by us, never taken from the agent.
  */
+describe("worktree status correlation (the real decision, not its source text)", () => {
+  const WT = "/home/u/.grok/worktrees/app/feat";
+  const OTHER = "/home/u/.grok/worktrees/app/other";
+
+  it("accepts a terminal event naming our worktree", () => {
+    expect(
+      worktreeStatusIsForCreate(
+        { worktreePath: WT },
+        { target: WT, soleCreateInFlight: false },
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a terminal event naming a DIFFERENT worktree", () => {
+    // The bug this closes: one create's completion released another's wait,
+    // and that flow then started in a checkout still being copied.
+    expect(
+      worktreeStatusIsForCreate(
+        { worktreePath: OTHER },
+        { target: WT, soleCreateInFlight: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("accepts a PATHLESS progress event only while ours is the sole create", () => {
+    // Progress notifications carry no path at all, so attribution rests
+    // entirely on there being one create it could belong to.
+    expect(worktreeStatusIsForCreate({}, { target: WT, soleCreateInFlight: true })).toBe(true);
+    expect(worktreeStatusIsForCreate({}, { target: WT, soleCreateInFlight: false })).toBe(false);
+  });
+
+  it("rejects a named event before the path is known", () => {
+    // Events can arrive before the create RPC has answered; they are buffered
+    // and replayed, never matched against nothing.
+    expect(worktreeStatusIsForCreate({ worktreePath: WT }, { soleCreateInFlight: false })).toBe(
+      false,
+    );
+  });
+
+  it("reads only terminal statuses as an outcome", () => {
+    expect(worktreeStatusVerdict({ status: "created" })).toBe("created");
+    expect(worktreeStatusVerdict({ status: "done" })).toBe("created");
+    expect(worktreeStatusVerdict({ status: "failed" })).toBe("failed");
+    expect(worktreeStatusVerdict({ status: "error" })).toBe("failed");
+    // Progress is what proves the CLI speaks the protocol, and must NOT settle
+    // the wait — that distinction is what separates "old CLI" from "stalled".
+    expect(worktreeStatusVerdict({ status: "progress" })).toBeUndefined();
+    expect(worktreeStatusVerdict({})).toBeUndefined();
+    expect(worktreeStatusVerdict(null)).toBeUndefined();
+  });
+});
+
 describe("cloneWorktreeSourceMatches", () => {
   // The owner's real paths — note the lowercase drive letter in the marker the
   // CLI wrote against the uppercase one in the worktree path. Windows treats
@@ -372,10 +426,11 @@ describe("worktree validation reads git first", () => {
     const start = src.indexOf("private watchWorktreeCreate");
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, src.indexOf("\n  private worktreeCreatesInFlight", start));
-    expect(body).toContain("pathsEqual(named, target)");
-    // An event with no path is only trustworthy when there is exactly one
-    // create it could belong to.
-    expect(body).toContain("this.worktreeCreatesInFlight.get(client) === 1");
+    // The decision itself is pure and tested above; what this pins is that the
+    // watcher actually uses it, and feeds it the in-flight count that makes a
+    // pathless progress event attributable.
+    expect(body).toContain("worktreeStatusIsForCreate(e, {");
+    expect(body).toContain("soleCreateInFlight: this.worktreeCreatesInFlight.get(client) === 1,");
     // Events arriving before the RPC named the path must not be lost: a small
     // repo finishes before the call resolves.
     expect(body).toContain("// Replay what arrived before the path was known.");
@@ -392,12 +447,16 @@ describe("worktree validation reads git first", () => {
     const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     const watch = src.slice(src.indexOf("private watchWorktreeCreate"));
     const body = watch.slice(0, watch.indexOf("\n  private worktreeCreatesInFlight"));
-    expect(body).toContain('timers.push(setTimeout(() => finish("silent"), timeoutMs));');
+    expect(body).toContain('finish(spoke ? "stalled" : "silent")');
     expect(body, "no second, shorter clock").not.toContain("silenceMs");
-    // Running out falls through to the disk checks — unchanged behaviour from
-    // every release before the event was consulted, so not a NEW risk.
+    // ...but running OUT of it still means different things. A CLI that
+    // reported progress and then stopped is an unfinished copy and must be
+    // refused; one that never spoke predates the event and falls through to
+    // the disk checks, exactly as every release before this did.
     const create = src.slice(src.indexOf("Creating git worktree"));
     const region = create.slice(0, create.indexOf("this.worktreeCache.push"));
+    expect(region).toContain('if (outcome === "stalled")');
+    expect(region).toContain("never finished being created");
     expect(region).toContain('if (outcome === "silent")');
     expect(region).not.toMatch(/if \(outcome === "silent"\)[\s\S]{0,200}showErrorMessage/);
   });

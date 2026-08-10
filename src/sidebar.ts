@@ -211,6 +211,8 @@ import {
   pathsEqual,
   sanitizeWorktreeLabel,
   type WorktreeCreateOutcome,
+  worktreeStatusIsForCreate,
+  worktreeStatusVerdict,
   worktreePathAuthorizedForRepo,
   type WorktreeParentRef,
   type WorktreeRecord,
@@ -2315,15 +2317,20 @@ Only continue if you trust this code.`,
                 `Worktree "${wtLabel}" was not created: the Grok CLI reported it failed.`,
               );
             }
+            if (outcome === "stalled") {
+              // It reported progress and then stopped. That is an unfinished
+              // copy, not an old CLI — and the checks below cannot tell the
+              // difference, because registration lands before the files do.
+              this.host.appendLine(`[worktree] create reported progress then stalled: ${wtPath}`);
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" never finished being created, so no session was started. The partial checkout was left at ${wtPath}.`,
+              );
+            }
             if (outcome === "silent") {
-              // Nothing terminal within the timeout: either a CLI that predates
-              // the status event, or a copy still running. They are not
-              // distinguishable from here, and the checks below approve both —
-              // registration lands before the files do. Falling through is the
-              // behaviour of every release before this event was consulted, so
-              // the risk is unchanged rather than new, and it is bounded by a
-              // copy that takes longer than the timeout.
-              this.host.appendLine(`[worktree] no completion reported for ${wtPath}; using disk checks`);
+              // Nothing at all was said about this create, so the CLI predates
+              // the status event. The checks below are how this worked before
+              // it existed — an unchanged risk rather than a new one.
+              this.host.appendLine(`[worktree] no status reported for ${wtPath}; using disk checks`);
             }
             // create is ASYNC — the RPC returns "creating" before git writes the
             // checkout (its dir + `.git` pointer appear a beat later). Spawning a
@@ -2514,24 +2521,26 @@ Only continue if you trust this code.`,
     const events: Array<{ status?: string; worktreePath?: string }> = [];
     let target: string | undefined;
     let settleNow: ((o: WorktreeCreateOutcome) => void) | undefined;
+    // Whether this CLI has said ANYTHING about our create. It is what separates
+    // "does not speak the protocol" from "spoke, then stopped", and it is only
+    // trustworthy because creates are serialised: progress notifications carry
+    // no worktree path, so attributing one depends on there being exactly one
+    // create it could belong to.
+    let spoke = false;
 
-    const mine = (e: { worktreePath?: string }) => {
-      const named = e.worktreePath?.trim();
-      // No path on the event: only trustworthy while this is the sole create
-      // in flight on this client — see the correlation note above.
-      if (!named) return this.worktreeCreatesInFlight.get(client) === 1;
-      return !!target && pathsEqual(named, target);
-    };
-    const verdict = (e: { status?: string }): WorktreeCreateOutcome | undefined => {
-      const v = String(e?.status ?? "").toLowerCase();
-      if (v === "created" || v === "ready" || v === "done") return "created";
-      if (v === "failed" || v === "error") return "failed";
-      return undefined;
-    };
+    const mine = (e: { worktreePath?: string }) =>
+      worktreeStatusIsForCreate(e, {
+        target,
+        soleCreateInFlight: this.worktreeCreatesInFlight.get(client) === 1,
+      });
+    const verdict = worktreeStatusVerdict;
     const onStatus = (status: { status?: string; worktreePath?: string }) => {
       events.push(status || {});
       if (!settleNow || !target) return; // buffered; replayed once we know ours
       if (!mine(status)) return;
+      // Any matched event counts, progress included — that is the whole point
+      // of the flag. Only a terminal one settles the wait.
+      spoke = true;
       const outcome = verdict(status);
       if (outcome) settleNow(outcome);
     };
@@ -2581,15 +2590,16 @@ Only continue if you trust this code.`,
           // the files do. That widened the unsafe window from "copies over two
           // minutes" to "copies over five seconds".
           //
-          // So: wait properly, and treat running out as silence rather than a
-          // stall. Silence falls through to the disk checks, which is how this
-          // worked for every release before the event was consulted at all —
-          // an unchanged risk, not a new one, and bounded by a copy that takes
-          // longer than the timeout.
-          timers.push(setTimeout(() => finish("silent"), timeoutMs));
+          // What running out MEANS still depends on whether it ever spoke.
+          // Deleting that distinction along with the short clock was the
+          // over-correction: a CLI that reported progress and then stopped is
+          // an unfinished copy, and letting it fall through hands the disk
+          // checks the partial checkout they are guaranteed to approve.
+          timers.push(setTimeout(() => finish(spoke ? "stalled" : "silent"), timeoutMs));
           // Replay what arrived before the path was known.
           for (const e of events) {
             if (!mine(e)) continue;
+            spoke = true;
             const outcome = verdict(e);
             if (outcome) return finish(outcome);
           }

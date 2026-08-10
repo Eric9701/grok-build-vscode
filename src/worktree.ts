@@ -43,6 +43,36 @@ export interface WorktreeRecord {
  */
 export type WorktreeCreateOutcome = "created" | "failed" | "stalled" | "silent";
 
+/**
+ * Whether a `worktree/status` notification belongs to the create we are
+ * waiting on.
+ *
+ * The CLI's PROGRESS notifications carry no `worktreePath` — only the terminal
+ * one does (research/worktree.md) — so a pathless event can only be attributed
+ * when there is exactly one create it could belong to. That is why creates are
+ * serialised rather than correlated: correlation is impossible for the events
+ * that matter most.
+ */
+export function worktreeStatusIsForCreate(
+  event: { worktreePath?: string } | null | undefined,
+  opts: { target?: string; soleCreateInFlight: boolean; sameCwd?: (a: string, b: string) => boolean },
+): boolean {
+  const named = event?.worktreePath?.trim();
+  if (!named) return opts.soleCreateInFlight;
+  if (!opts.target) return false;
+  return (opts.sameCwd ?? pathsEqual)(named, opts.target);
+}
+
+/** Terminal reading of a `worktree/status` notification, or undefined for progress. */
+export function worktreeStatusVerdict(
+  event: { status?: string } | null | undefined,
+): "created" | "failed" | undefined {
+  const value = String(event?.status ?? "").toLowerCase();
+  if (value === "created" || value === "ready" || value === "done") return "created";
+  if (value === "failed" || value === "error") return "failed";
+  return undefined;
+}
+
 export interface WorktreeCreateResult {
   status: string;
   sessionId?: string;
