@@ -46,8 +46,55 @@ function openPanel(h: Harness) {
   click(h.window, h.doc.getElementById("files-browse-btn")!);
 }
 
-/** Deliver a file read, as the host answers `readProjectFile`. */
+/**
+ * Ask for a file the way the panel does — click its row in the listing.
+ *
+ * The client only accepts a `projectFileContent` for a read it actually issued
+ * (one request, one answer), so a test that dispatches the answer out of the
+ * blue is testing nothing. This drives the real request first.
+ */
+function openFile(h: Harness, relPath: string, cwd = CWD_A) {
+  dispatch(h.window, {
+    type: "projectDirListing",
+    ok: true,
+    cwd,
+    relPath: "",
+    entries: [{ name: relPath, kind: "file", relPath }],
+    truncated: false,
+  } as never);
+  const row = [...h.doc.querySelectorAll(".files-browse-row")].find(
+    (r) => (r.textContent || "").includes(relPath),
+  );
+  expect(row, `no row for ${relPath}`).toBeTruthy();
+  click(h.window, row!);
+}
+
+/**
+ * The host's answer alone — for cases where the code under test already issued
+ * the read (Reload), or where the point IS that no read was issued.
+ */
+function answerFile(
+  h: Harness,
+  relPath: string,
+  text: string,
+  cwd = CWD_A,
+  stamp: { mtimeMs: number; size: number } = { mtimeMs: 1, size: text.length },
+) {
+  dispatch(h.window, {
+    type: "projectFileContent",
+    ok: true,
+    cwd,
+    kind: "text",
+    relPath,
+    text,
+    stamp,
+    absPath: `/abs/${relPath}`,
+  } as never);
+}
+
+/** Open a file the way a user does, and let the host answer. */
 function sendFile(h: Harness, relPath: string, text: string, cwd = CWD_A) {
+  openFile(h, relPath, cwd);
   dispatch(h.window, {
     type: "projectFileContent",
     ok: true,
@@ -76,8 +123,14 @@ function beginEdit(h: Harness, relPath: string, text: string, typed: string, cwd
   type(h, typed);
 }
 
+// Back to the tree is the PROJECT NAME now, matching the desktop panel: it
+// leaves the file open as a tab, so nothing is discarded and nothing is asked.
 const back = (h: Harness) =>
-  click(h.window, h.doc.querySelector(".files-browse-viewer-head .icon-btn")!);
+  click(h.window, h.doc.querySelector(".files-browse-title")!);
+
+/** Closing the file — the one control that discards, so the one that asks. */
+const closeTab = (h: Harness) =>
+  click(h.window, h.doc.querySelector(".files-browse-tab-close")!);
 
 describe("remote file drafts", () => {
   it("brings the draft back after Back to files", () => {
@@ -103,16 +156,8 @@ describe("remote file drafts", () => {
     back(h);
 
     // Reopened — and someone edited the file at the desk in the meantime.
-    dispatch(h.window, {
-      type: "projectFileContent",
-      ok: true,
-      cwd: CWD_A,
-      kind: "text",
-      relPath: "notes.md",
-      text: "changed at the desk",
-      stamp: { mtimeMs: 999, size: 19 },
-      absPath: "/abs/notes.md",
-    } as never);
+    openFile(h, "notes.md");
+    answerFile(h, "notes.md", "changed at the desk", CWD_A, { mtimeMs: 999, size: 19 });
     expect(h.doc.querySelector(".files-browse-notice")?.textContent || "").toContain(
       "changed since",
     );
@@ -219,7 +264,7 @@ describe("late answers from the project you left", () => {
     const h = remoteHost();
     openPanel(h);
     switchTo(h, CWD_B);
-    sendFile(h, "notes.md", "PROJECT A CONTENTS", CWD_A);
+    answerFile(h, "notes.md", "PROJECT A CONTENTS", CWD_A);
     const shown = h.doc.querySelector(".files-browse-viewer-body")?.textContent || "";
     expect(shown).not.toContain("PROJECT A CONTENTS");
   });
@@ -243,8 +288,7 @@ describe("late answers from the project you left", () => {
 
     // Still dirty, still in the editor, nothing claiming it was saved.
     expect(editor(h)?.value).toBe("b text edited");
-    const head = h.doc.querySelector(".files-browse-viewer-head")?.textContent || "";
-    expect(head).toContain("•");
+    expect(h.doc.querySelector(".files-browse-tab-dirty")?.textContent).toBe("•");
     expect(h.doc.querySelector(".files-browse-notice")?.textContent || "").not.toContain("Saved");
   });
 });
@@ -533,16 +577,8 @@ describe("taking the host's version", () => {
     beginEdit(h, "notes.md", "one", "my edit");
     back(h);
     // Reopen; the desk has changed the file since, so Save conflicts.
-    dispatch(h.window, {
-      type: "projectFileContent",
-      ok: true,
-      cwd: CWD_A,
-      kind: "text",
-      relPath: "notes.md",
-      text: "changed at the desk",
-      stamp: { mtimeMs: 999, size: 19 },
-      absPath: "/abs/notes.md",
-    } as never);
+    openFile(h, "notes.md");
+    answerFile(h, "notes.md", "changed at the desk", CWD_A, { mtimeMs: 999, size: 19 });
     click(h.window, h.doc.querySelector(".files-browse-action-primary")!);
     dispatch(h.window, {
       type: "projectFileWriteResult",
@@ -556,9 +592,9 @@ describe("taking the host's version", () => {
       (b) => b.textContent === "Reload",
     ) as HTMLButtonElement | undefined;
     expect(reload, "a conflict must offer Reload").toBeTruthy();
-    reload!.click();
+    reload!.click(); // issues its own read
 
-    sendFile(h, "notes.md", "changed at the desk");
+    answerFile(h, "notes.md", "changed at the desk", CWD_A, { mtimeMs: 999, size: 19 });
     expect(editor(h)).toBeNull();
     expect(h.doc.querySelector(".files-browse-viewer-body")?.textContent).toContain(
       "changed at the desk",
@@ -615,5 +651,70 @@ describe("a save result that cannot be matched to a request", () => {
     back(h);
     sendFile(h, "notes.md", "one");
     expect(editor(h)?.value).toBe("newer text typed after");
+  });
+});
+
+describe("closing the file", () => {
+  const withConfirm = (h: Harness, answer: boolean) => {
+    const seen: string[] = [];
+    (h.window as never as { confirm: (m: string) => boolean }).confirm = (m) => {
+      seen.push(m);
+      return answer;
+    };
+    return seen;
+  };
+
+  it("asks before discarding, like the desktop panel's tab close", () => {
+    // The desktop app asks "Discard changes?" when a dirty tab is closed. The
+    // web panel had no equivalent because nothing was ever discarded — but that
+    // also meant there was no way to say "throw this away" from the file's own
+    // chrome, and the two apps behaved differently for the same gesture.
+    const h = remoteHost();
+    openPanel(h);
+    beginEdit(h, "notes.md", "one", "one two");
+    const asked = withConfirm(h, true);
+
+    closeTab(h);
+    expect(asked.length).toBe(1);
+    expect(asked[0]).toContain("Discard changes?");
+    expect(h.doc.querySelector(".files-browse-tab")).toBeNull();
+
+    // Discarded for real — reopening shows the file, not the edit.
+    sendFile(h, "notes.md", "one");
+    expect(editor(h)).toBeNull();
+  });
+
+  it("keeps the file and the edit when the answer is no", () => {
+    const h = remoteHost();
+    openPanel(h);
+    beginEdit(h, "notes.md", "one", "one two");
+    withConfirm(h, false);
+
+    closeTab(h);
+    expect(editor(h)?.value).toBe("one two");
+    expect(h.doc.querySelector(".files-browse-tab")).toBeTruthy();
+  });
+
+  it("does not ask when there is nothing unsaved", () => {
+    const h = remoteHost();
+    openPanel(h);
+    sendFile(h, "notes.md", "one"); // opened, never edited
+    const asked = withConfirm(h, true);
+    closeTab(h);
+    expect(asked).toEqual([]);
+    expect(h.doc.querySelector(".files-browse-tab")).toBeNull();
+  });
+
+  it("going back to the tree by the project name asks nothing and keeps the text", () => {
+    // Desktop's title click keeps open tabs; this is the same relationship.
+    const h = remoteHost();
+    openPanel(h);
+    beginEdit(h, "notes.md", "one", "one two");
+    const asked = withConfirm(h, false);
+
+    back(h);
+    expect(asked).toEqual([]);
+    sendFile(h, "notes.md", "one");
+    expect(editor(h)?.value).toBe("one two");
   });
 });

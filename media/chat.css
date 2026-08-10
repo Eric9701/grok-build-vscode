@@ -2353,24 +2353,101 @@ body.vscode-light {
   padding: 4px 6px;
   border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
 }
+/* Project name — a button back to the tree, not a tab. Same relationship the
+   desktop panel's .desk-ft-title has to its .desk-ft-tab. */
 .files-browse-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.files-browse-title:hover { background: var(--vscode-toolbar-hoverBackground); }
+.files-browse-title:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.files-browse-tabs {
+  display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 2px;
+  overflow: hidden;
+}
+.files-browse-tab {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+.files-browse-tab-active {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-activeSelectionBackground, var(--vscode-toolbar-hoverBackground));
+}
+.files-browse-tab-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.files-browse-tab-dirty { flex: none; font-size: 14px; line-height: 1; }
+.files-browse-tab-dirty:empty { display: none; }
+.files-browse-tab-close {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.files-browse-tab-close:hover { background: var(--vscode-toolbar-hoverBackground); }
+.files-browse-tab-close svg { width: 11px; height: 11px; }
 .files-browse-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
   padding: 4px 12px 6px;
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+.files-browse-path[hidden] { display: none; }
+.files-browse-path-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+/* Panel-toggle separator in the bar. A sibling, not a border on the button —
+   see the note on desk-ft-top-sep: a border boxes the button and shifts its
+   glyph off centre. */
+.files-browse-sep {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
 }
 .files-browse-body {
   flex: 1 1 auto;
@@ -2442,14 +2519,18 @@ body.vscode-light {
   padding: 2px 6px;
   border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.25));
 }
-.files-browse-viewer-name {
+/* The file's path, muted — its NAME is on the tab above. */
+.files-browse-viewer-path {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
+  padding-left: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  direction: rtl;
+  text-align: left;
 }
 .files-browse-viewer-body {
   flex: 1 1 auto;

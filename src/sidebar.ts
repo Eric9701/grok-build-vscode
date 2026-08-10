@@ -2466,6 +2466,16 @@ Only continue if you trust this code.`,
           "Remove worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
         );
       }
+      // WHO OWNED IT — captured before the records that answer that are erased.
+      // `resolveLocalRepoTarget` finds the owning project by walking session
+      // ownership, and the next few lines drop the worktree from the cache and
+      // strip its bindings from session meta, after which the lookup returns
+      // nothing and the fallback lands on the git ROOT. For a nested project
+      // (`/repo/packages/app` inside a `/repo` checkout) that is one level up,
+      // free to touch sibling packages — and on desktop, where `/repo` is not an
+      // open folder, startSession refuses it and the promised replacement
+      // conversation never appears at all.
+      const worktreeOwnerCwd = this.resolveLocalRepoTarget(wt.path)?.cwd;
       this.worktreeCache = this.worktreeCache.filter((w) => !pathsEqual(w.path, wt.path));
       this.host.appendLine(`[worktree] removed ${wt.path} (removed=${r.removed})`);
       // Clear worktree binding on meta for sessions that pointed here.
@@ -2489,17 +2499,10 @@ Only continue if you trust this code.`,
       this.parkFocused();
       this.focused = this.newLocalSession();
       this.pool.add(this.focused);
-      // The catalog PROJECT that owned the worktree, not its git root. For a
-      // nested project — `/repo/packages/app` inside a `/repo` checkout — the
-      // git root is `/repo`, so landing there put the replacement conversation
-      // one level up, free to touch sibling packages, while the rail and history
-      // still said `packages/app`. `resolveLocalRepoTarget` answers by ownership
-      // (worktrees surface under the project whose sessions include them), which
-      // is the same relationship the rail draws.
-      this.focused.cwd =
-        this.resolveLocalRepoTarget(wt.path)?.cwd
-        || wt.sourceGitRoot
-        || this.historyCwdFor("local");
+      // The catalog PROJECT that owned the worktree (captured above), not its
+      // git root — that is the relationship the rail draws, and where the work
+      // goes back to.
+      this.focused.cwd = worktreeOwnerCwd || wt.sourceGitRoot || this.historyCwdFor("local");
       await this.startSession();
       this.postSessionsList();
       // Re-home the remote tabs that were on the removed worktree: a fresh
@@ -2676,6 +2679,15 @@ Only continue if you trust this code.`,
     // project invisible but still authorized — the row would be gone while the
     // phone carried on browsing and editing it.
     const removed = this.removedProjectFolderKeys();
+    if (!removed.size) return discovered;
+    // A folder VS Code actually has OPEN outranks its own tombstone. Removal
+    // refuses to tombstone the open folder, but one written while the folder was
+    // CLOSED still applied when it was opened later: the project vanished from
+    // the rail, `postRepoCatalog` silently selected a different one, so History
+    // and New Session pointed somewhere other than the Explorer — while the root
+    // stayed authorized for remotes the whole time, invisibly. Opening a folder
+    // is a louder statement of intent than having once removed its row.
+    for (const open of this.openWorkspaceFolders()) removed.delete(normalizeRepoPath(open));
     if (!removed.size) return discovered;
     return discovered.filter((r) => !removed.has(normalizeRepoPath(r.cwd)));
   }

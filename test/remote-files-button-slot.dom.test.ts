@@ -61,12 +61,17 @@ function sendRepos(h: Harness) {
 }
 
 describe("remote files button placement", () => {
-  it("sits after history in the top bar when the page has no rail", () => {
+  it("sits last in the top bar, behind a separator, when the page has no rail", () => {
+    // A panel toggle, placed like the desktop panel's: at the end, after a
+    // separator. It used to sit between History and the overflow, where it read
+    // as one more conversation action.
     const h = remoteWithFiles();
     const btn = h.doc.getElementById("files-browse-btn");
     expect(btn).toBeTruthy();
-    expect(btn!.closest(".top-bar")).toBeTruthy();
-    expect(h.doc.getElementById("history-btn")!.nextSibling).toBe(btn);
+    const bar = btn!.closest(".top-bar");
+    expect(bar).toBeTruthy();
+    expect(bar!.lastElementChild).toBe(btn);
+    expect(btn!.previousElementSibling?.id).toBe("files-browse-sep");
   });
 
   it("moves out of the hidden top bar into the session head when the rail arrives", () => {
@@ -81,7 +86,8 @@ describe("remote files button placement", () => {
     // The regression: still parented to the now-`display:none` bar.
     expect(btn.closest(".top-bar")).toBeNull();
     expect(btn.parentElement?.id).toBe("session-head");
-    expect(h.doc.getElementById("session-history")!.nextSibling).toBe(btn);
+    expect(btn.parentElement!.lastElementChild).toBe(btn);
+    expect(btn.previousElementSibling?.id).toBe("files-browse-sep");
     expect((btn as HTMLButtonElement).hidden).toBe(false);
   });
 
@@ -91,7 +97,8 @@ describe("remote files button placement", () => {
     sendRepos(h);
     sendRepos(h);
     expect(h.doc.querySelectorAll("#files-browse-btn").length).toBe(1);
-    expect(h.doc.getElementById("session-history")!.nextSibling).toBe(
+    expect(h.doc.querySelectorAll("#files-browse-sep").length).toBe(1);
+    expect(h.doc.getElementById("session-head")!.lastElementChild).toBe(
       h.doc.getElementById("files-browse-btn"),
     );
   });

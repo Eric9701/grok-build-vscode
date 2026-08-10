@@ -85,10 +85,10 @@
     if (!replacement) return;
     remoteTabToken = replacement;
     saveRememberedRemoteSession(null);
-    // Unsaved file edits are copied state too. Duplicating a tab clones the
-    // whole of sessionStorage, so tab B would restore tab A's drafts, show A's
-    // unfinished text under B's editor, and be able to save it — the same
-    // cross-tab bleed the token replacement exists to stop, one key over.
+    // Unsaved file edits go with the identity. They are in memory only now, so a
+    // duplicated tab cannot inherit them in the first place — this is here so
+    // the rule survives if they are ever made durable again, which is exactly
+    // how the leak arrived the first time.
     clearRemoteFileDrafts();
     try {
       sessionStorage.setItem(REMOTE_TAB_TOKEN_KEY, replacement);
@@ -12294,6 +12294,10 @@
   function stashRemoteFileDraft() {
     const v = state.filesBrowse.viewer;
     if (!v || typeof v.relPath !== "string") return;
+    // A viewer that is still loading holds no text of the user's — it is a
+    // placeholder. It must neither park anything nor, by looking "clean", drop
+    // a parked draft that belongs to a file nobody has opened yet.
+    if (v.loading) return;
     const cwdNow = state.filesBrowse.draftCwd || remoteFilesRepoCwd();
     if (!v.dirty || typeof v.draft !== "string") {
       // Back to what is on disk (or never edited). Any parked copy is stale and
@@ -12364,31 +12368,38 @@
    * repo catalog landed and `has-rail` went on, then disappeared for good — so
    * the file browser was unreachable on every browser wide enough to get a rail.
    *
-   * Anchored on the history control the page is ACTUALLY showing, chosen by
-   * presence, which is the same capability rule the rest of this file follows.
-   * Re-checked on every ensure() because `has-rail` arrives with `repos`, long
-   * after the button is first built.
+   * Chosen by presence, which is the same capability rule the rest of this file
+   * follows, and re-checked on every ensure() because `has-rail` arrives with
+   * `repos`, long after the button is first built.
+   *
+   * LAST in the bar, behind a separator — the same shape the desktop panel's
+   * own toggle uses. It sat between History and
+   * the overflow ⋯ to begin with, which read as one more conversation action
+   * rather than as a panel toggle. The separator is a sibling and not a border
+   * on the button, for the reason the desktop one learned: a border boxes the
+   * button in and pushes its glyph off centre.
    */
-  function remoteFilesButtonSlot() {
+  function remoteFilesButtonHost() {
     if (document.body.classList.contains("has-rail")) {
-      const head = document.getElementById("session-history");
-      if (head && head.parentNode) return { parent: head.parentNode, after: head };
+      const head = document.getElementById("session-head");
+      if (head) return head;
     }
-    const topBar = document.querySelector(".top-bar");
-    if (!topBar) return null;
-    // After history so the remote chrome order stays: remote · history · files · …
-    const history = document.getElementById("history-btn");
-    return { parent: topBar, after: history && history.parentNode === topBar ? history : null };
+    return document.querySelector(".top-bar");
   }
 
   function placeRemoteFilesButton(btn) {
-    const slot = remoteFilesButtonSlot();
-    if (!slot) return;
-    if (slot.after) {
-      if (slot.after.nextSibling !== btn) slot.parent.insertBefore(btn, slot.after.nextSibling);
-    } else if (btn.parentNode !== slot.parent) {
-      slot.parent.appendChild(btn);
+    const host = remoteFilesButtonHost();
+    if (!host) return;
+    let sep = document.getElementById("files-browse-sep");
+    if (!sep) {
+      sep = document.createElement("span");
+      sep.id = "files-browse-sep";
+      sep.className = "files-browse-sep";
+      sep.setAttribute("aria-hidden", "true");
     }
+    if (host.lastElementChild === btn && sep.nextElementSibling === btn) return;
+    host.appendChild(sep);
+    host.appendChild(btn);
   }
 
   function ensureRemoteFilesBrowser() {
@@ -12403,15 +12414,17 @@
       }
       return;
     }
-    if (!btn && remoteFilesButtonSlot()) {
+    if (!btn && remoteFilesButtonHost()) {
       btn = document.createElement("button");
       btn.type = "button";
       btn.id = "files-browse-btn";
       btn.className = "icon-btn";
-      btn.title = "Project files";
-      btn.setAttribute("aria-label", "Project files");
+      btn.title = "Show file panel";
+      btn.setAttribute("aria-label", "Toggle file panel");
       btn.setAttribute("aria-expanded", "false");
-      btn.innerHTML = ICON.listTree;
+      // The desktop panel's glyph, not a tree icon — this is a panel toggle and
+      // should read as one wherever it appears.
+      btn.innerHTML = ICON.panelRight;
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         toggleRemoteFilesBrowser();
@@ -12429,13 +12442,21 @@
       panel.hidden = true;
       panel.setAttribute("role", "dialog");
       panel.setAttribute("aria-label", "Project files");
+      // Header shaped like the desktop panel's: the project NAME is a button
+      // back to the tree (not a tab), and the open file is a tab beside it with
+      // its own dirty marker and close. The old header was a back-chevron plus a
+      // plain title, which looked like a different feature to the same person's
+      // desktop app.
       panel.innerHTML =
         `<div class="files-browse-head">` +
-          `<button type="button" class="icon-btn files-browse-back" title="Up" aria-label="Parent folder" hidden>${ICON.chevronRight}</button>` +
-          `<div class="files-browse-title"></div>` +
+          `<button type="button" class="files-browse-title" title="Show file tree" aria-label="Show file tree"></button>` +
+          `<div class="files-browse-tabs" role="tablist" aria-label="Open files"></div>` +
           `<button type="button" class="icon-btn files-browse-close" title="Close" aria-label="Close">${ICON.x}</button>` +
         `</div>` +
-        `<div class="files-browse-path" aria-live="polite"></div>` +
+        `<div class="files-browse-path" aria-live="polite">` +
+          `<button type="button" class="icon-btn files-browse-back" title="Parent folder" aria-label="Parent folder" hidden>${ICON.chevronRight}</button>` +
+          `<span class="files-browse-path-text"></span>` +
+        `</div>` +
         `<div class="files-browse-body"></div>` +
         `<div class="files-browse-viewer" hidden></div>`;
       // Sibling of the chat column so it can overlay on a phone without
@@ -12447,6 +12468,17 @@
       });
       panel.querySelector(".files-browse-back").addEventListener("click", () => {
         navigateRemoteFilesUp();
+      });
+      // The project name returns to the tree WITHOUT closing the file — same as
+      // clicking the desktop panel's title, where open tabs survive. The draft
+      // is parked, so there is nothing to discard and nothing to ask about.
+      panel.querySelector(".files-browse-title").addEventListener("click", () => {
+        if (!state.filesBrowse.viewer) return;
+        stashRemoteFileDraft();
+        state.filesBrowse.viewer = null;
+        state.filesBrowse._pendingRead = null;
+        state.filesBrowse._pendingWrite = null;
+        renderRemoteFilesChrome();
       });
       // On a phone the rail is already a drawer — keep this one collapsed by
       // default. Wider remote browsers may open it once (memory in sessionStorage).
@@ -12518,6 +12550,12 @@
     state.filesBrowse.loading = true;
     state.filesBrowse.error = "";
     state.filesBrowse.viewer = { relPath, loading: true };
+    // The draft key follows the request, not the last successful read. The
+    // placeholder above carries a relPath and no content, so stashRemoteFileDraft
+    // reads it as "clean" and drops the parked draft at (draftCwd, relPath) — and
+    // draftCwd still named the PREVIOUS project. Opening B's `notes.md` and
+    // pressing Back before it loaded therefore deleted A's parked `notes.md`.
+    state.filesBrowse.draftCwd = cwd;
     state.filesBrowse._pendingRead = { gen, cwd, relPath };
     renderRemoteFilesChrome();
     vscode.postMessage({ type: "readProjectFile", cwd, relPath });
@@ -12563,10 +12601,20 @@
   function handleProjectFileContent(msg) {
     if (!remoteFileAnswerIsCurrent(msg)) return;
     const pending = state.filesBrowse._pendingRead;
-    if (pending && (msg.cwd !== pending.cwd || msg.relPath !== pending.relPath)) return;
+    if (!pending || msg.cwd !== pending.cwd || msg.relPath !== pending.relPath) {
+      // Same rule as the write result, and for the same reason: reads are
+      // correlated by cwd+path with no generation echoed by the host, so two
+      // reads of ONE file are indistinguishable. Open a file, press Back while
+      // it loads, open it again — the first answer renders, the user starts
+      // typing, and the second answer matched too and replaced the live editor
+      // with disk content that had never been parked. One request, one answer.
+      return;
+    }
+    // Consumed. A duplicate or superseded answer now has nothing to match.
+    state.filesBrowse._pendingRead = null;
     // A re-read for overwrite must not clobber the user's draft if it races a
     // normal open of a different path (pending already gates cwd/relPath).
-    const keepDraft = pending && pending.forOverwrite && state.filesBrowse.viewer;
+    const keepDraft = pending.forOverwrite && state.filesBrowse.viewer;
     state.filesBrowse.loading = false;
     if (!msg.ok) {
       if (keepDraft) {
@@ -12760,6 +12808,64 @@
     requestRemoteDir(parts.join("/"));
   }
 
+  /**
+   * The open file, as a tab beside the project name — the desktop panel's shape.
+   *
+   * One tab, because this panel opens one file at a time; the point is that the
+   * control which CLOSES a file is a tab close, where the desktop app puts it,
+   * and so is the question it asks. Going back to the tree by the project name
+   * leaves the tab alone, exactly as it does there.
+   */
+  function renderRemoteFileTabs() {
+    const panel = document.getElementById("files-browse-panel");
+    const tabs = panel && panel.querySelector(".files-browse-tabs");
+    if (!tabs) return;
+    tabs.textContent = "";
+    const v = state.filesBrowse.viewer;
+    if (!v || !v.relPath) return;
+
+    const tab = document.createElement("div");
+    tab.className = "files-browse-tab files-browse-tab-active";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", "true");
+    tab.title = v.relPath;
+
+    const name = document.createElement("span");
+    name.className = "files-browse-tab-name";
+    name.textContent = (v.relPath || "").split(/[\\/]/).pop() || v.relPath;
+    tab.appendChild(name);
+
+    const dirty = document.createElement("span");
+    dirty.className = "files-browse-tab-dirty";
+    dirty.textContent = v.dirty ? "•" : "";
+    if (v.dirty) dirty.setAttribute("aria-label", "Unsaved changes");
+    tab.appendChild(dirty);
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "files-browse-tab-close";
+    close.title = "Close file";
+    close.setAttribute("aria-label", "Close file");
+    close.innerHTML = ICON.x;
+    close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // The one place that DISCARDS, so the one place that asks — the same rule
+      // and the same words as the desktop panel's tab close. Everything else
+      // (project name, panel close, switching project) parks the text instead,
+      // so it has nothing to ask about.
+      if (v.dirty && !window.confirm("Discard changes?\n\nYour edits have not been saved.")) {
+        return;
+      }
+      dropRemoteFileDraft(state.filesBrowse.draftCwd || remoteFilesRepoCwd(), v.relPath);
+      state.filesBrowse.viewer = null;
+      state.filesBrowse._pendingRead = null;
+      state.filesBrowse._pendingWrite = null;
+      renderRemoteFilesChrome();
+    });
+    tab.appendChild(close);
+    tabs.appendChild(tab);
+  }
+
   function renderRemoteFilesChrome() {
     const panel = document.getElementById("files-browse-panel");
     if (!panel || !remoteFilesBrowseAvailable()) return;
@@ -12773,11 +12879,16 @@
     const repo = remoteFilesRepoCwd();
     const leaf = cwdLeaf(repo) || "Project";
     title.textContent = leaf;
+    title.title = repo || "Show file tree";
     const rel = state.filesBrowse.relPath || "";
-    pathEl.textContent = rel ? rel.replace(/\\/g, "/") : "/";
+    const pathText = pathEl.querySelector(".files-browse-path-text");
+    if (pathText) pathText.textContent = rel ? rel.replace(/\\/g, "/") : "/";
     back.hidden = !rel;
     // Chevron points right in the icon set; flip for "up/back".
     back.style.transform = "rotate(180deg)";
+    renderRemoteFileTabs();
+    // The breadcrumb belongs to the tree; a file's own name is on its tab.
+    pathEl.hidden = !!state.filesBrowse.viewer;
 
     const v = state.filesBrowse.viewer;
     if (v) {
@@ -12786,28 +12897,14 @@
       viewer.innerHTML = "";
       const vHead = document.createElement("div");
       vHead.className = "files-browse-viewer-head";
-      const backToList = document.createElement("button");
-      backToList.type = "button";
-      backToList.className = "icon-btn";
-      backToList.title = "Back to files";
-      backToList.setAttribute("aria-label", "Back to files");
-      backToList.innerHTML = ICON.chevronRight;
-      backToList.style.transform = "rotate(180deg)";
-      backToList.addEventListener("click", () => {
-        // Leaving is not saving — but it is not discarding either. The draft is
-        // parked and comes back when this file is reopened; Cancel is the
-        // discard. (Before this, a tap here silently ate everything typed.)
-        stashRemoteFileDraft();
-        state.filesBrowse.viewer = null;
-        state.filesBrowse._pendingWrite = null;
-        renderRemoteFilesChrome();
-      });
-      const vName = document.createElement("div");
-      vName.className = "files-browse-viewer-name";
-      vName.textContent = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
-      if (v.dirty) vName.textContent += " •";
-      vHead.appendChild(backToList);
-      vHead.appendChild(vName);
+      // No back-chevron and no filename here any more: the tab in the panel
+      // header carries the name and its dirty marker, and the project name
+      // beside it is the way back to the tree. This row is the file's ACTIONS.
+      const vPath = document.createElement("div");
+      vPath.className = "files-browse-viewer-path";
+      vPath.textContent = (v.relPath || "").replace(/\\/g, "/");
+      vPath.title = v.relPath || "";
+      vHead.appendChild(vPath);
       // Edit/Save only when the host advertised edit AND we have stamp+absPath
       // from the read (without both, a save cannot prove identity/version).
       const canEdit =
@@ -12929,12 +13026,10 @@
           v.draft = ta.value;
           v.dirty = ta.value !== (v.text || "");
           // Update dirty marker + Save enablement without rebuilding the textarea
-          // (would steal focus / lose caret on every keystroke).
-          const nameEl = viewer.querySelector(".files-browse-viewer-name");
-          if (nameEl) {
-            const base = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
-            nameEl.textContent = v.dirty ? base + " •" : base;
-          }
+          // (would steal focus / lose caret on every keystroke). The marker lives
+          // on the tab now, so it is patched there.
+          const dirtyEl = document.querySelector(".files-browse-tab-dirty");
+          if (dirtyEl) dirtyEl.textContent = v.dirty ? "•" : "";
           const save = viewer.querySelector(".files-browse-action-primary");
           if (save) save.disabled = !!v.saving || !v.dirty;
         });
