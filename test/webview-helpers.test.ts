@@ -112,6 +112,31 @@ describe("looksLikeFileRef", () => {
     expect(looksLikeFileRef("a".repeat(201) + ".ts")).toBe(false);
   });
 
+  it("rejects a BARE extension, which names a file type and not a file", () => {
+    // Owner, 2026-08-10, from a real reply: "I'll list the main `.md` files and
+    // what each is for." `.md` became a link to nothing.
+    expect(looksLikeFileRef(".md")).toBe(false);
+    expect(looksLikeFileRef(".json")).toBe(false);
+    expect(looksLikeFileRef(".ts")).toBe(false);
+    expect(looksLikeFileRef(".TSX")).toBe(false);
+  });
+
+  it("still accepts the bare dotted tokens that ARE whole filenames", () => {
+    // The set of known extensions conflates suffixes with dotfile names, and
+    // only these are files someone can actually open.
+    expect(looksLikeFileRef(".env")).toBe(true);
+    expect(looksLikeFileRef(".gitignore")).toBe(true);
+    expect(looksLikeFileRef(".dockerignore")).toBe(true);
+  });
+
+  it("leaves dotted names with a directory part alone", () => {
+    // A path is a claim about a location, which is never how a file TYPE is
+    // written in prose — so the bare-token rule stops at the first separator.
+    expect(looksLikeFileRef("config/.env")).toBe(true);
+    expect(looksLikeFileRef("packages/app/.gitignore")).toBe(true);
+    expect(looksLikeFileRef("src/index.md")).toBe(true);
+  });
+
   it("rejects code-looking spans with a trailing dot only", () => {
     expect(looksLikeFileRef("obj.")).toBe(false);
     expect(looksLikeFileRef(".")).toBe(false);

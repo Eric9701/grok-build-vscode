@@ -8,6 +8,16 @@
     "vue","svelte","astro","sql","prisma","graphql","gql",
   ]);
 
+  /**
+   * The members of FILE_EXTS that are WHOLE FILENAMES, not type names.
+   *
+   * The set above conflates two things, which is fine everywhere except for a
+   * token that is nothing but a dot and a suffix. `.env` and `.gitignore` are
+   * files someone can open; `.md` and `.json` are kinds of file. Only these
+   * three survive as bare tokens.
+   */
+  const BARE_DOTFILE_NAMES = new Set(["env", "gitignore", "dockerignore"]);
+
   // The host <-> webview message contract. These MUST stay in sync with the TS
   // discriminated unions in src/protocol.ts (which is the source of truth) — the
   // webview is plain JS and can't import the compiled types, so it carries its own
@@ -85,7 +95,20 @@
     if (/[\s"'`<>|&;]/.test(core)) return false;
     const m = core.match(/\.([A-Za-z0-9]+)$/);
     if (!m) return false;
-    return FILE_EXTS.has(m[1].toLowerCase());
+    const ext = m[1].toLowerCase();
+    if (!FILE_EXTS.has(ext)) return false;
+    // "I'll list the main `.md` files" — a bare extension names a TYPE. There is
+    // no file behind it, so the link fails: the desk opens an editor on a
+    // missing path and the phone asks the host for a file it hasn't got. A link
+    // that leads nowhere is worse than a missing one, because it teaches people
+    // not to trust the ones that work.
+    //
+    // Only applied to a token with no directory part. `docs/.md` would be a
+    // strange filename but it is unambiguously a PATH — nobody writes that
+    // while talking about a file type — whereas `.md` on its own is almost
+    // always prose.
+    if (/^\.[A-Za-z0-9]+$/.test(core)) return BARE_DOTFILE_NAMES.has(ext);
+    return true;
   }
 
   function formatRelativeTime(ts, now) {
