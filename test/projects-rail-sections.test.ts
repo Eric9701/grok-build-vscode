@@ -234,6 +234,17 @@ describe("VS Code projects rail section parity", () => {
     expect(h.doc.querySelector(".rail-menu")?.textContent).toContain("Delete");
   });
 
+  it("keeps a destructive confirm red under the pointer", () => {
+    // The confirm button is `rail-dialog-btn rail-dialog-primary rail-dialog-danger`
+    // — danger is a MODIFIER on primary. `.rail-dialog-primary:hover` alone
+    // outranks a plain `.rail-dialog-danger` (a pseudo-class adds specificity),
+    // so Delete and Clear all turned button-blue the moment you pointed at them.
+    const dangerHover = railCss.match(/\.rail-dialog-danger:hover[^{]*{([^}]*)}/);
+    expect(dangerHover, "danger needs its own hover rule").toBeTruthy();
+    expect(dangerHover![1]).toMatch(/errorForeground|inputValidation-errorBorder/);
+    expect(dangerHover![1]).not.toMatch(/button-hoverBackground/);
+  });
+
   it("matches desktop row rhythm and uses an opaque layered action scrim", () => {
     expect(railCss).toMatch(/--rail-row-font-size:\s*13px/);
     expect(railCss).toMatch(/--rail-row-min-height:\s*30px/);

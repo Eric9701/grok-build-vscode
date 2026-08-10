@@ -913,7 +913,12 @@ a:hover {
   padding: 1px 2px 1px 6px;
   border-radius: 5px;
 }
-.session-name-chip > .session-name-repo { grid-column: 1 / -1; }
+/* Both cells are placed EXPLICITLY. Auto-placement puts the project line on
+   row 2 (it spans both columns), which moves the placement cursor past row 1 —
+   and the rename pencil, placing itself, then landed on a third row underneath
+   the project instead of beside the name. */
+.session-name-chip > .session-name-repo { grid-column: 1 / -1; grid-row: 2; }
+.session-name-chip > .session-name-edit { grid-column: 2; grid-row: 1; }
 .session-name-chip[hidden] { display: none; }
 .session-name-label {
   min-width: 0;

@@ -235,7 +235,11 @@ export interface FsLike {
   readdirSync(p: string): string[];
   readFileSync(p: string, encoding: "utf8"): string;
   statSync(p: string): { isDirectory(): boolean; mtimeMs: number };
-  rmSync?(p: string, opts?: { recursive?: boolean; force?: boolean }): void;
+  /** `maxRetries`/`retryDelay` are load-bearing on Windows — see RM_RETRY. */
+  rmSync?(
+    p: string,
+    opts?: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+  ): void;
   rmdirSync(p: string, opts?: { recursive?: boolean }): void;
 }
 
@@ -1192,6 +1196,14 @@ export function isEmptySession(
 }
 
 /** Remove the on-disk session directory. No-op if missing. Searches case-aliases. */
+/**
+ * Windows loses a directory delete to whatever still holds a handle inside it —
+ * the grok process that just exited, a virus scanner, the search indexer — and
+ * reports it as ENOTEMPTY, which reads like a logic bug and is not one. Node
+ * retries exactly these errors when asked to; nothing else here changes.
+ */
+const RM_RETRY = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
+
 export function deleteSessionDir(deps: DeleteDeps): void {
   const { fs, grokHome, cwd, id } = deps;
   const platform = deps.platform ?? process.platform;
@@ -1199,7 +1211,7 @@ export function deleteSessionDir(deps: DeleteDeps): void {
   if (!dir) return;
   if (!fs.existsSync(dir)) return;
   if (fs.rmSync) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_RETRY);
   } else {
     fs.rmdirSync(dir, { recursive: true });
   }
@@ -1253,7 +1265,7 @@ export function clearSessions(deps: ClearDeps): string[] {
         continue;
       }
       try {
-        if (fs.rmSync) fs.rmSync(full, { recursive: true, force: true });
+        if (fs.rmSync) fs.rmSync(full, RM_RETRY);
         else fs.rmdirSync(full, { recursive: true });
         if (!removedSet.has(name)) {
           removedSet.add(name);

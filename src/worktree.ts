@@ -376,6 +376,54 @@ export function worktreePathAuthorizedForRepo(opts: {
 }
 
 /**
+ * Where the CLI records which repository a CLONE-mode worktree came from.
+ *
+ * Not every "worktree" the CLI makes is a `git worktree add`. For some repos it
+ * produces a standalone clone instead — its `.git` is a real directory with its
+ * own object store, so the source repo's `git worktree list` will never mention
+ * it, no matter how long we wait. That is not a lag; it is a different thing.
+ * The CLI leaves this file behind naming the source.
+ */
+export const CLONE_WORKTREE_SOURCE_MARKER = ".git/grok-worktree-source";
+
+/**
+ * Read the clone-mode provenance marker and say whether it names `sourceRepo`.
+ *
+ * This is what makes a clone-mode checkout trustable WITHOUT taking the agent's
+ * word for it: the claim is a file the CLI wrote on local disk, checked by us,
+ * against the repo the user actually asked to branch from. An agent that lied
+ * about a path cannot forge a marker inside a directory it does not control —
+ * and if it could write there, it already had the access.
+ *
+ * Pure over an injected reader so it is testable and so the caller decides what
+ * "read a file" means.
+ */
+export function cloneWorktreeSourceMatches(opts: {
+  worktreePath: string;
+  sourceRepo: string;
+  sourceGitRoot?: string;
+  readMarker: (markerPath: string) => string | undefined;
+  joinPath?: (a: string, b: string) => string;
+  sameCwd?: (a: string, b: string) => boolean;
+}): boolean {
+  const { worktreePath, sourceRepo } = opts;
+  if (!worktreePath || !sourceRepo) return false;
+  const same = opts.sameCwd ?? pathsEqual;
+  const join = opts.joinPath ?? ((a, b) => `${a.replace(/[\\/]+$/, "")}/${b}`);
+  let raw: string | undefined;
+  try {
+    raw = opts.readMarker(join(worktreePath, CLONE_WORKTREE_SOURCE_MARKER));
+  } catch {
+    return false;
+  }
+  const claimed = (raw ?? "").trim();
+  if (!claimed) return false;
+  // A marker naming the worktree itself proves nothing about provenance.
+  if (same(claimed, worktreePath)) return false;
+  return same(claimed, sourceRepo) || (!!opts.sourceGitRoot && same(claimed, opts.sourceGitRoot));
+}
+
+/**
  * Parse `git worktree list --porcelain` stdout into absolute worktree paths.
  * Pure against the text (no spawn).
  */

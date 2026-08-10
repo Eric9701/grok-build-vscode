@@ -1034,6 +1034,51 @@
     return el;
   }
 
+  /**
+   * Optimistic selection.
+   *
+   * The desktop rail lives in the SAME document as the chat, so a click can
+   * move the highlight itself and be right. Here the rail is a separate
+   * webview: the click posts `resumeSession`, the host loads the conversation,
+   * and only the frame coming back moved the highlight — a visible dead beat
+   * on a loaded machine. So paint it now and reconcile when the host answers.
+   *
+   * While a resume is in flight, an `activeId` naming some OTHER conversation
+   * is stale by definition — it was sent before the click — and applying it
+   * would flick the highlight back to where it started.
+   */
+  let pendingResume = null;
+  function markResuming(id) {
+    if (!id) return;
+    // Chained clicks keep the ORIGINAL selection as the thing to fall back to;
+    // the one we painted a moment ago was never real.
+    const previous = pendingResume ? pendingResume.previous : state.activeSessionId;
+    if (pendingResume) clearTimeout(pendingResume.timer);
+    state.activeSessionId = id;
+    pendingResume = {
+      id,
+      previous,
+      // A resume that dies without a word — host restart, a session file that
+      // vanished — must not leave the highlight on a conversation nobody opened.
+      timer: setTimeout(() => {
+        if (!pendingResume || pendingResume.id !== id) return;
+        pendingResume = null;
+        state.activeSessionId = previous;
+        render();
+      }, 8000),
+    };
+    render();
+  }
+
+  /** Whether a host-sent active id may be written to state. */
+  function acceptActiveId(id) {
+    if (!pendingResume) return true;
+    if (id !== pendingResume.id) return false;
+    clearTimeout(pendingResume.timer);
+    pendingResume = null;
+    return true;
+  }
+
   function renderSession(s, repo, opts) {
     const row = document.createElement("div");
     const active = !!(state.activeSessionId && s.id === state.activeSessionId);
@@ -1160,6 +1205,7 @@
     // any discovered catalog cwd for local sessions (localTrustedSessionCwds).
     row.onclick = () => {
       if (active) return;
+      markResuming(s.id);
       vscode.postMessage({
         type: "resumeSession",
         id: s.id,
@@ -1214,7 +1260,9 @@
         if (msg.offset === 0 || msg.offset == null) {
           state.currentSessions = Array.isArray(msg.entries) ? msg.entries : [];
           state.currentSessionsKnown = true;
-          if (msg.activeId != null) state.activeSessionId = msg.activeId || null;
+          if (msg.activeId != null && acceptActiveId(msg.activeId || null)) {
+            state.activeSessionId = msg.activeId || null;
+          }
           if (msg.dots && typeof msg.dots === "object") {
             Object.assign(state.dots, msg.dots);
           }
@@ -1253,7 +1301,7 @@
       }
       case "session":
       case "sessionName": {
-        if (msg.sessionId) {
+        if (msg.sessionId && acceptActiveId(msg.sessionId)) {
           state.activeSessionId = msg.sessionId;
           render();
         }
@@ -1287,6 +1335,18 @@
     RAIL_EXPANDED,
     RECENT_CAP,
   };
+
+  // Coming back to the rail is a refresh. Conversations move up the Recent list
+  // whenever a turn finishes — including turns driven from a phone, which this
+  // view never sees — so a rail restored after being hidden is showing an order
+  // that stopped being true while it was away. `ready` is the same push the view
+  // does on boot: catalog, then previews for every project.
+  //
+  // Only on the way IN. Firing on hide would ask a view nobody is looking at to
+  // rescan every project's session directory.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") vscode.postMessage({ type: "ready" });
+  });
 
   vscode.postMessage({ type: "ready" });
 })();

@@ -52,3 +52,43 @@ describe("a new local session refreshes the rail", () => {
     expect(list).toBeGreaterThan(sweep);
   });
 });
+
+/**
+ * A FINISHED TURN must refresh it too — the gap the rail's Recent group fell
+ * into. The list ranks by `updatedAt`, which is the session file's mtime, and
+ * the extension is not what writes that file: the agent process is. So rename
+ * and delete refreshed (we do those) and sending a message did not. Recent kept
+ * whatever order it was built with until something unrelated redrew it.
+ */
+describe("turn end refreshes the project preview", () => {
+  it("hangs off the one place every turn ends, not off the success path", () => {
+    // done AND error AND cancel — a cancelled turn still wrote a user message,
+    // so the row still moved. `setStatus` is where all three meet.
+    const start = src.indexOf("private setStatus(");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  }", start));
+    expect(body).toMatch(/status === "done" \|\| status === "error"/);
+    expect(body).toContain("refreshSessionOrderAfterTurn");
+  });
+
+  it("re-reads a beat later, and again, because the agent owns the write", () => {
+    // Reading immediately races the agent's own transcript write. A single
+    // delay is a guess about someone else's disk; two cheap scans cover it.
+    const start = src.indexOf("private refreshSessionOrderAfterTurn(");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  /**", start));
+    expect(body).toContain("sendLocalRepoSessionsPreview");
+    const delays = body.match(/for \(const delay of \[([^\]]+)\]/);
+    expect(delays, "delays are declared as a list, not hidden in a chain").toBeTruthy();
+    expect(delays![1].split(",").length).toBeGreaterThan(1);
+    // Timers are tracked so a disposed sidebar does not post into a dead view.
+    expect(body).toContain("turnOrderTimers");
+  });
+
+  it("clears its pending timers on dispose", () => {
+    const start = src.indexOf("dispose(): void {");
+    const body = src.slice(start, src.indexOf("\n  }", start));
+    expect(body).toContain("turnOrderTimers");
+    expect(body).toContain("clearTimeout");
+  });
+});

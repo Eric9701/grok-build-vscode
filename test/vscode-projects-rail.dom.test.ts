@@ -192,6 +192,73 @@ describe("VS Code projects rail renderer", () => {
     expect(posted.some((p) => p.type === "selectRepo")).toBe(false);
   });
 
+  it("highlights the clicked conversation immediately, before the host answers", () => {
+    // The desktop rail shares a document with the chat, so its click can move
+    // the highlight and be right. Here the rail is a separate webview and the
+    // highlight waited on a round-trip through the extension host, which reads
+    // as a dead click.
+    const { window, doc } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+    loadSessions(api, [row("a1", "/work/alpha", "here"), row("a2", "/work/alpha", "there")], "a1");
+
+    const target = [...doc.querySelectorAll(".rail-session")].find(
+      (e) => e.querySelector(".rail-session-name")?.textContent === "there",
+    ) as HTMLElement;
+    target.click();
+
+    const active = [...doc.querySelectorAll(".rail-session.active")];
+    expect(active.length).toBeGreaterThan(0);
+    expect(
+      active.every((e) => e.querySelector(".rail-session-name")?.textContent === "there"),
+      "the clicked row is the highlighted one",
+    ).toBe(true);
+  });
+
+  it("ignores an activeId for a different conversation while a resume is in flight", () => {
+    // A `sessions` frame already on the wire when the click happened names the
+    // OLD conversation. Applying it would snap the highlight back and read as
+    // the click being undone.
+    const { window, doc } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+    loadSessions(api, [row("a1", "/work/alpha", "here"), row("a2", "/work/alpha", "there")], "a1");
+
+    const target = [...doc.querySelectorAll(".rail-session")].find(
+      (e) => e.querySelector(".rail-session-name")?.textContent === "there",
+    ) as HTMLElement;
+    target.click();
+
+    loadSessions(api, [row("a1", "/work/alpha", "here"), row("a2", "/work/alpha", "there")], "a1");
+    expect(
+      doc.querySelector(".rail-session.active .rail-session-name")?.textContent,
+      "stale frame must not undo the click",
+    ).toBe("there");
+
+    // The host's real answer lands and is applied.
+    api.onMessage({ type: "session", sessionId: "a2" });
+    expect(doc.querySelector(".rail-session.active .rail-session-name")?.textContent).toBe("there");
+  });
+
+  it("re-asks the host for everything when the rail becomes visible again", () => {
+    // Recent ranks by the session file's mtime, which moves whenever a turn
+    // finishes anywhere — including turns driven from a phone this view never
+    // sees. A rail restored after being hidden is showing a stale order.
+    const { window, doc, posted } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+
+    posted.length = 0;
+    Object.defineProperty(doc, "visibilityState", { value: "visible", configurable: true });
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    expect(posted.some((p) => p.type === "ready")).toBe(true);
+
+    posted.length = 0;
+    Object.defineProperty(doc, "visibilityState", { value: "hidden", configurable: true });
+    doc.dispatchEvent(new window.Event("visibilitychange"));
+    expect(posted, "a hidden view must not ask every project to rescan").toEqual([]);
+  });
+
   it("requests listRepoSessions for other projects only", () => {
     const { window, posted } = h;
     const api = railApi(window);

@@ -198,6 +198,8 @@ import {
   type FfmpegResolution,
 } from "./ffmpeg-locate";
 import {
+  CLONE_WORKTREE_SOURCE_MARKER,
+  cloneWorktreeSourceMatches,
   filterWorktreesForSourceRepo,
   gitRootForPath,
   isGitRepo,
@@ -2280,8 +2282,14 @@ Only continue if you trust this code.`,
             this.host.appendLine(
               `[worktree] refused unlisted/unauthorized path from create: ${wtPath}`,
             );
+            // The CLI already wrote a checkout there — for a clone-mode repo, a
+            // full copy of it. Refusing without saying so left the directory
+            // behind silently, so the next attempt with the same label got a
+            // "-2" suffix and the owner accumulated orphans they had no way to
+            // see. We do not delete it: it is real work on disk and this path
+            // is reached precisely when we could NOT establish what it is.
             return void this.host.showErrorMessage(
-              `Worktree path was not accepted as part of this repository (not in git worktree list). Session not started.`,
+              `Worktree "${wtLabel}" could not be confirmed as part of this repository, so no session was started. The checkout was left at ${wtPath} — remove it yourself if you don't want it.`,
             );
           }
 
@@ -2351,7 +2359,11 @@ Only continue if you trust this code.`,
       } catch { /* keep polling */ }
       await new Promise((r) => setTimeout(r, 200));
     }
-    try { return fs.existsSync(worktreePath); } catch { return false; }
+    // The timeout fallback used to accept the bare directory. A directory with
+    // no `.git` is not a checkout — it is what is left when creation failed
+    // halfway — and calling it ready is how grok came to be spawned in an empty
+    // folder and exit 1. If the loop above never saw a `.git`, there isn't one.
+    return false;
   }
 
   /**
@@ -2474,7 +2486,27 @@ Only continue if you trust this code.`,
       }
       let r;
       try {
-        r = await client.removeWorktree(wt.path);
+        try {
+          r = await client.removeWorktree(wt.path);
+        } catch (rpcErr: any) {
+          // The CLI refuses ("Internal error") for a checkout git does not
+          // recognise as a worktree — which is exactly the clone-mode case,
+          // where `git worktree remove` has nothing to remove. That left the
+          // user with a directory they explicitly asked to delete, an error
+          // they could do nothing about, and a row still in the rail.
+          //
+          // We delete it ourselves, but only where we can prove all three:
+          // it lives under the grok worktrees root, it carries the marker
+          // naming this repo, and it is not the repo itself. Anything less
+          // and the error stands.
+          const detail = rpcErr?.message ?? String(rpcErr);
+          if (!this.canSelfRemoveWorktree(wt)) throw rpcErr;
+          this.host.appendLine(
+            `[worktree] CLI remove failed (${detail}); removing verified clone checkout directly`,
+          );
+          fs.rmSync(wt.path, { recursive: true, force: true });
+          r = { removed: true };
+        }
       } finally {
         if (disposeAfter) await client.dispose();
       }
@@ -2576,31 +2608,99 @@ Only continue if you trust this code.`,
     sourcePath: string,
     sourceGitRoot: string,
   ): Promise<string[]> {
+    // git first, and ALWAYS — it is the only party here that cannot be wrong
+    // about its own worktrees, and it is a local process that answers in
+    // milliseconds. What used to happen: an ACP list with any attributed row
+    // was returned as-is and git was consulted only when that list came back
+    // empty. So a path the agent named, and nothing else could confirm, passed
+    // a check whose whole job was to confirm it — which is how an EMPTY
+    // DIRECTORY became a session cwd and grok exited 1 inside it.
+    const gitPaths = await listGitWorktreePaths(sourceGitRoot || sourcePath, {
+      log: (m) => this.host.appendLine(m),
+    });
+    const authorized = [...gitPaths];
+    const add = (p: string) => {
+      if (p && !authorized.some((existing) => pathsEqual(existing, p))) authorized.push(p);
+    };
     try {
       const list = await client.listWorktrees({});
       if (list !== "unsupported" && Array.isArray(list)) {
-        const trusted = filterWorktreesForSourceRepo(list, sourcePath, { sourceGitRoot });
-        const paths = trusted.map((r) => r.path);
-        // list may omit sourceRepo on some builds — also accept raw paths that
-        // git itself reports for this checkout.
-        if (paths.length) return paths;
-        const allListed = list.map((r) => r.path).filter(Boolean);
-        if (allListed.length) {
-          // Cross-check with git so we do not trust unattributed ACP rows alone.
-          const gitPaths = await listGitWorktreePaths(sourceGitRoot || sourcePath, {
-            log: (m) => this.host.appendLine(m),
-          });
-          return allListed.filter((p) =>
-            gitPaths.some((g) => pathsEqual(g, p)),
-          );
+        // ACP rows still need corroboration, but a CLONE-mode checkout has a
+        // second kind of proof available: the marker the CLI writes inside it.
+        // Those never appear in the source repo's `git worktree list` — they
+        // are separate repositories — so before this they were refused outright
+        // and the feature simply did not work for any repo the CLI clones.
+        for (const row of filterWorktreesForSourceRepo(list, sourcePath, { sourceGitRoot })) {
+          if (this.cloneWorktreeBelongsTo(row.path, sourcePath, sourceGitRoot)) add(row.path);
         }
       }
     } catch (e: any) {
       this.host.appendLine(`[worktree] listWorktrees for validate failed: ${e?.message ?? e}`);
     }
-    return listGitWorktreePaths(sourceGitRoot || sourcePath, {
-      log: (m) => this.host.appendLine(m),
+    return authorized;
+  }
+
+  /**
+   * Whether we may delete this checkout ourselves after the CLI refused to.
+   *
+   * Three independent facts, all required, none of them taken from the agent:
+   * the path sits under grok's own worktrees root; it carries the clone marker
+   * naming the repo it claims to come from; and it is not that repo. A
+   * recursive delete is the most destructive thing in this file, so the fence
+   * is deliberately narrow — the user's confirmation already said "this deletes
+   * the isolated checkout", and this decides only whether the thing in front of
+   * us IS an isolated checkout.
+   */
+  private canSelfRemoveWorktree(wt: { path: string; sourceGitRoot?: string }): boolean {
+    const target = wt?.path;
+    // The session's own binding carries only the git root; the cache has the
+    // full record when we have one. Either way this is the repo the MARKER has
+    // to name — get it wrong and the check fails closed, which is the point.
+    const cached = this.worktreeCache.find((w) => pathsEqual(w.path, target));
+    const source = cached?.sourceRepo || wt?.sourceGitRoot || this.workspaceRoot();
+    if (!target || !source || !path.isAbsolute(target)) return false;
+    const root = path.join(resolveGrokHome(), "worktrees");
+    const rel = relativePathWithin(root, target);
+    if (!rel) {
+      this.host.appendLine(`[worktree] self-remove refused: ${target} is outside ${root}`);
+      return false;
+    }
+    if (pathsEqual(target, source) || pathsEqual(target, root)) return false;
+    for (const folder of this.openWorkspaceFolders()) {
+      if (pathsEqual(target, folder)) {
+        this.host.appendLine(`[worktree] self-remove refused: ${target} is an open folder`);
+        return false;
+      }
+    }
+    return this.cloneWorktreeBelongsTo(target, source, gitRootForPath(source, defaultFs) || source);
+  }
+
+  /**
+   * Whether `worktreePath` carries an on-disk marker naming `sourceRepo`.
+   *
+   * The I/O wrapper around {@link cloneWorktreeSourceMatches} — kept here so the
+   * decision itself stays pure and testable, and so every refusal says why in
+   * the log rather than leaving the owner with "not in git worktree list" for a
+   * checkout that was never going to be in one.
+   */
+  private cloneWorktreeBelongsTo(
+    worktreePath: string,
+    sourceRepo: string,
+    sourceGitRoot: string,
+  ): boolean {
+    const ok = cloneWorktreeSourceMatches({
+      worktreePath,
+      sourceRepo,
+      sourceGitRoot,
+      readMarker: (markerPath) => fs.readFileSync(markerPath, "utf8"),
+      joinPath: (a, b) => path.join(a, ...b.split("/")),
     });
+    if (!ok) {
+      this.host.appendLine(
+        `[worktree] no clone provenance for ${worktreePath} (expected ${CLONE_WORKTREE_SOURCE_MARKER} naming ${sourceRepo})`,
+      );
+    }
+    return ok;
   }
 
   /** Every open workspace folder root (desktop multi-folder, or VS Code folders). */
@@ -4009,6 +4109,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   dispose(): void {
     void this.host.setContext("grok.composerFocus", false);
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
+    for (const timer of this.turnOrderTimers) clearTimeout(timer);
+    this.turnOrderTimers.clear();
     this.uplink?.dispose();
     this.uplink = undefined;
     try { this.keepAwake.stop(); } catch { /* the pid watcher reaps it anyway */ }
@@ -10002,7 +10104,42 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.pushDot(session);
     // Wake lock: a turn starting or ending can change turnInFlight.
     this.refreshKeepAwake();
+    if (status === "done" || status === "error") this.refreshSessionOrderAfterTurn(session);
   }
+
+  /**
+   * Re-push the project preview a finished turn just reordered.
+   *
+   * The rail's Recent group ranks by `updatedAt`, which is the session FILE's
+   * mtime — and the extension is not what writes that file, the agent process
+   * is. So rename and delete refresh (we do those) while sending a message did
+   * not: nothing in here knew the row had moved. Recent stayed on whatever
+   * order it was built with until something unrelated happened to redraw it.
+   *
+   * The turn ending is the closest signal we own. The agent writes the
+   * transcript around the same moment, not necessarily before, so this reads a
+   * beat later — and once more after that, because a single delay is a guess
+   * about someone else's disk write. Two cheap directory scans, only when a
+   * turn actually ended.
+   */
+  private refreshSessionOrderAfterTurn(session: Session): void {
+    const cwd = this.sessionCwd(session);
+    if (!cwd) return;
+    for (const delay of [400, 1600]) {
+      const timer = setTimeout(() => {
+        this.turnOrderTimers.delete(timer);
+        try {
+          this.sendLocalRepoSessionsPreview(cwd);
+        } catch {
+          /* a preview refresh is never worth failing a turn over */
+        }
+      }, delay);
+      this.turnOrderTimers.add(timer);
+    }
+  }
+
+  /** Pending {@link refreshSessionOrderAfterTurn} timers, so dispose can clear them. */
+  private turnOrderTimers = new Set<ReturnType<typeof setTimeout>>();
 
   /** True when any live pool member is mid-turn or waiting on the user. */
   private anyTurnInFlight(): boolean {

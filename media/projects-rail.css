@@ -620,7 +620,20 @@ html, body {
   color: var(--vscode-button-foreground);
 }
 .rail-dialog-primary:hover { background: var(--vscode-button-hoverBackground); }
-.rail-dialog-danger {
+/* Danger is a MODIFIER on top of primary, so it needs its own hover and focus
+   rules: `.rail-dialog-primary:hover` alone outranks a plain `.rail-dialog-danger`
+   (a pseudo-class adds specificity), and the red Delete button turned button-blue
+   the moment you pointed at it. */
+.rail-dialog-danger,
+.rail-dialog-primary.rail-dialog-danger {
   background: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
   color: var(--vscode-button-foreground);
+}
+.rail-dialog-danger:hover,
+.rail-dialog-primary.rail-dialog-danger:hover {
+  background: color-mix(
+    in oklab,
+    var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)) 82%,
+    var(--vscode-foreground) 18%
+  );
 }

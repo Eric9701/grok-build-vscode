@@ -8,6 +8,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  CLONE_WORKTREE_SOURCE_MARKER,
+  cloneWorktreeSourceMatches,
   filterWorktreesForSourceRepo,
   mergeWorktreeRefresh,
   parseGitWorktreeListPorcelain,
@@ -136,8 +138,13 @@ describe("sidebar create path validates before cache (source)", () => {
     expect(src).toMatch(/from\s+["']\.\/git-worktree-list["']/);
 
     const createStart = src.indexOf("Creating git worktree");
-    // From create progress through cache push.
-    const createRegion = src.slice(createStart, createStart + 4500);
+    // From create progress through the cache push it guards. Bounded by the
+    // push itself, not by a character count — a fixed window silently stops
+    // covering the code it is about the moment a comment grows.
+    const createRegion = src.slice(
+      createStart,
+      src.indexOf("this.worktreeCache.push", createStart) + 40,
+    );
     const authIdx = createRegion.indexOf("worktreePathAuthorizedForRepo");
     const cachePush = createRegion.indexOf("this.worktreeCache.push");
     expect(authIdx).toBeGreaterThan(0);
@@ -145,5 +152,117 @@ describe("sidebar create path validates before cache (source)", () => {
 
     // Mutation: if we pushed to cache before validation, order flips.
     expect(cachePush).toBeGreaterThan(authIdx);
+  });
+});
+
+/**
+ * Clone-mode worktrees.
+ *
+ * Not every "worktree" the CLI produces is a `git worktree add`. For some repos
+ * it makes a standalone clone — its `.git` is a real directory with its own
+ * object store — and the source repo's `git worktree list` will never mention
+ * it. The owner hit exactly that: the checkout was created, refused as "not in
+ * git worktree list", and left on disk; the retry that "worked" only passed
+ * because the ACP list was trusted on its own, and what it waved through was an
+ * empty directory that grok then exited 1 inside.
+ *
+ * So the provenance marker the CLI writes is the second form of proof — read
+ * from local disk by us, never taken from the agent.
+ */
+describe("cloneWorktreeSourceMatches", () => {
+  // The owner's real paths — note the lowercase drive letter in the marker the
+  // CLI wrote against the uppercase one in the worktree path. Windows treats
+  // them as the same place and so must this.
+  const SOURCE = String.raw`c:\GitHub\accredia`;
+  const WT = String.raw`C:\Users\Dell\.grok\worktrees\github-accredia\worktree-test`;
+  const winJoin = (a: string, b: string) => `${a}\\${b.split("/").join("\\")}`;
+  const reader = (contents: Record<string, string>) => (p: string) => {
+    const hit = contents[p];
+    if (hit === undefined) throw new Error("ENOENT: no such file");
+    return hit;
+  };
+  const marker = (dir: string) => winJoin(dir, CLONE_WORKTREE_SOURCE_MARKER);
+  const call = (opts: { source?: string; gitRoot?: string; contents?: Record<string, string> }) =>
+    cloneWorktreeSourceMatches({
+      worktreePath: WT,
+      sourceRepo: opts.source ?? SOURCE,
+      sourceGitRoot: opts.gitRoot,
+      readMarker: reader(opts.contents ?? {}),
+      joinPath: winJoin,
+    });
+
+  it("accepts a marker naming the source repo", () => {
+    expect(call({ contents: { [marker(WT)]: `${SOURCE}\n` } })).toBe(true);
+  });
+
+  it("accepts a marker naming the git root when the project is a subfolder", () => {
+    expect(
+      call({
+        source: String.raw`c:\GitHub\accredia\packages\app`,
+        gitRoot: SOURCE,
+        contents: { [marker(WT)]: SOURCE },
+      }),
+    ).toBe(true);
+  });
+
+  it("refuses a marker naming a DIFFERENT repo", () => {
+    // The whole point: a path the agent claims is a worktree of this repo, but
+    // whose own on-disk record says it came from somewhere else.
+    expect(call({ contents: { [marker(WT)]: String.raw`c:\GitHub\some-other-repo` } })).toBe(false);
+  });
+
+  it("refuses when there is no marker at all", () => {
+    // An empty directory the CLI left behind reads exactly like this.
+    expect(call({})).toBe(false);
+  });
+
+  it("refuses an empty or self-referential marker", () => {
+    expect(call({ contents: { [marker(WT)]: "   \n" } })).toBe(false);
+    expect(call({ contents: { [marker(WT)]: WT } })).toBe(false);
+  });
+});
+
+describe("worktree validation reads git first", () => {
+  it("never returns an ACP path git has not confirmed, without proof of its own", () => {
+    // The regression that shipped: `listAuthoritativeWorktreePaths` returned the
+    // agent's list verbatim whenever it had any attributed row, and consulted
+    // git only when that list was EMPTY. The guard's whole job is to confirm the
+    // agent's claim, and it was satisfied by the claim.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private async listAuthoritativeWorktreePaths");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  private ", start + 40));
+    // git runs unconditionally, before any use of the ACP answer.
+    const gitAt = body.indexOf("listGitWorktreePaths");
+    const acpAt = body.indexOf("client.listWorktrees");
+    expect(gitAt).toBeGreaterThan(-1);
+    expect(acpAt).toBeGreaterThan(gitAt);
+    // Every ACP row that gets added has to clear the provenance check.
+    expect(body).toMatch(/cloneWorktreeBelongsTo\([^)]*\)\)\s*add\(/);
+  });
+
+  it("a directory with no .git is never 'ready'", () => {
+    // waitForWorktreeReady used to fall back to `existsSync(worktreePath)` on
+    // timeout, so an empty folder counted as a checkout and grok was spawned in
+    // it. That is the `grok exited with code 1` in the owner's log.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private async waitForWorktreeReady");
+    const body = src.slice(start, src.indexOf("\n  }", start) + 4);
+    expect(body).toContain('path.join(worktreePath, ".git")');
+    expect(body).not.toMatch(/return fs\.existsSync\(worktreePath\)/);
+  });
+
+  it("self-removal is fenced to a proven clone under grok's worktrees root", () => {
+    // The fallback for "Remove worktree failed: Internal error" is a recursive
+    // delete, so the fence is the thing worth pinning: grok's own root, the
+    // provenance marker, and not an open folder.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private canSelfRemoveWorktree");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  /**", start));
+    expect(body).toContain('path.join(resolveGrokHome(), "worktrees")');
+    expect(body).toContain("relativePathWithin");
+    expect(body).toContain("openWorkspaceFolders");
+    expect(body).toContain("cloneWorktreeBelongsTo");
   });
 });

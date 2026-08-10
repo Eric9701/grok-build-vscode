@@ -11,6 +11,9 @@
  * disambiguate or when the name is being edited.
  */
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { bootWebview, dispatch, type Harness } from "./webview-harness";
 
 const REPOS = [
@@ -90,6 +93,25 @@ describe("session name project label", () => {
     expect(h.doc.querySelector(".session-name-input")).toBeTruthy();
     expect(tag(h).hidden).toBe(false);
     expect(tag(h).textContent).toBe("relay");
+  });
+
+  it("puts the rename pencil beside the NAME, not under the project line", () => {
+    // Grid auto-placement, and the reason the pencil ended up on a third row:
+    // the project line spans both columns, so it takes row 2 and moves the
+    // placement cursor past row 1 — anything placing itself after it lands on
+    // row 3. Both cells have to be placed explicitly.
+    const css = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    const chip = css.slice(css.indexOf(".session-name-chip {"));
+    const repoRule = chip.slice(chip.indexOf(".session-name-chip > .session-name-repo"));
+    expect(repoRule.slice(0, repoRule.indexOf("}"))).toMatch(/grid-row:\s*2/);
+    const editRule = chip.slice(chip.indexOf(".session-name-chip > .session-name-edit"));
+    expect(editRule.indexOf("{")).toBeGreaterThan(-1);
+    const editBody = editRule.slice(0, editRule.indexOf("}"));
+    expect(editBody).toMatch(/grid-column:\s*2/);
+    expect(editBody).toMatch(/grid-row:\s*1/);
   });
 
   it("is not mounted on the remote client, which shows the project on its own line", () => {
