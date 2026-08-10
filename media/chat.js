@@ -12440,6 +12440,10 @@
           widthBasis: document.getElementById("app-body")
             || document.querySelector(".app-main")
             || document.body,
+          // As an overlay the panel stops below the top bar, the way the docked
+          // one does — rather than covering the bar and the toggle that opened
+          // it.
+          overlayTopFrom: document.querySelector(".top-bar"),
           toggleHost: remoteFilesButtonHost(),
           presentation: "responsive",
           id: "files-browse-panel",

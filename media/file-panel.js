@@ -177,6 +177,12 @@
     chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
     file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
+    // book-open-text / code — the two Markdown modes, kept as the icon pair the
+    // desktop panel has always used rather than a worded toggle. A worded
+    // button made Markdown the odd one out beside the pencil every other text
+    // file gets.
+    preview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/></svg>',
+    code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>',
     pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>',
   };
 
@@ -298,6 +304,17 @@
       const overlay = isOverlay();
       rootEl.classList.toggle("gfp-overlay", overlay);
       rootEl.classList.toggle("gfp-docked", !overlay);
+      // An overlay starts below the host's own bar, so it occupies the same band
+      // the docked panel does instead of painting over the chrome — including,
+      // on a phone, the button that just opened it. Measured rather than
+      // hardcoded because the bar wraps to two rows on a narrow screen, and
+      // re-measured here because this runs on every resize.
+      // Its BOTTOM edge, not its height: the relay page has a second header
+      // above this bar, and a height alone would start the panel that much too
+      // high. Clamped at zero so a scrolled-away bar cannot push it off-screen.
+      const bar = overlay && mount.overlayTopFrom;
+      const top = bar ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom)) : 0;
+      rootEl.style.setProperty("--gfp-overlay-top", top + "px");
       resizer.hidden = !open || overlay;
       closePanel.hidden = !overlay;
       if (!overlay && mount.dockHost && rootEl.parentElement !== mount.dockHost) {
@@ -819,22 +836,39 @@
     function renderViewerActions(head, tab) {
       if (EDITABLE_KINDS.has(tab.kind) && access.write && tab.stamp && tab.expectedAbsPath) {
         if (tab.kind === "markdown") {
-          // Markdown follows the desktop reference: Preview and Edit source are
-          // the two modes. There is no second generic Edit control beside them.
-          const mode = actionButton(tab.mode === "preview" ? "Edit source" : "Preview", "", () => {
-            if (tab.mode === "preview") {
-              tab.mode = "code";
-              tab.editing = true;
-            } else {
-              tab.mode = "preview";
-              tab.editing = false;
-            }
-            renderViewer();
-            const editor = viewer.querySelector(".gfp-editor");
-            if (editor) editor.focus();
-          });
-          mode.classList.add("gfp-mode", "gfp-edit");
-          head.appendChild(mode);
+          // Markdown has two modes and the desktop panel has always shown them
+          // as a PAIR of icon buttons with the current one marked active — not
+          // as one worded toggle. The worded version was a divergence
+          // introduced by the extraction, and it made Markdown read as a
+          // different kind of file from every other text file, which shows the
+          // pencil below.
+          const modeButton = (icon, label, mode) => {
+            const button = actionButton("", "", () => {
+              tab.mode = mode;
+              tab.editing = mode === "code";
+              if (mode === "code") {
+                tab.notice = "";
+                tab.conflict = false;
+              }
+              renderViewer();
+              const editor = viewer.querySelector(".gfp-editor");
+              if (editor) editor.focus();
+            });
+            button.classList.add("gfp-mode", "files-browse-action");
+            // "Edit source" IS Markdown's edit control, so it keeps the class
+            // every other text file's pencil carries. One selector means
+            // "the control that puts this file into edit mode", whatever the
+            // file type — which is what callers and tests actually want.
+            if (mode === "code") button.classList.add("gfp-edit");
+            if (tab.mode === mode) button.classList.add("gfp-active", "desk-ft-active");
+            button.innerHTML = icon;
+            button.title = label;
+            button.setAttribute("aria-label", label);
+            button.setAttribute("aria-pressed", String(tab.mode === mode));
+            return button;
+          };
+          head.appendChild(modeButton(ICON.preview, "Preview", "preview"));
+          head.appendChild(modeButton(ICON.code, "Edit source", "code"));
         } else if (!tab.editing) {
           const edit = actionButton("", "", () => {
             tab.editing = true;

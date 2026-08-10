@@ -236,7 +236,9 @@ describe("shared file-panel component", () => {
 
     await h.switchScope(h.scopes.b);
     await h.panel.openPath("notes.md", true);
-    click(h.window, h.document.querySelector(".gfp-mode"));
+    // Markdown's modes are a pair: [Preview, Edit source]. The second enters
+    // edit mode; the first is already active on open and would be a no-op.
+    click(h.window, h.document.querySelectorAll(".gfp-mode")[1]);
     type(h.window, h.document, "relay draft");
     reload.resolve({
       ok: true, kind: "markdown", relPath: "notes.md", text: "fresh app",
@@ -350,9 +352,10 @@ describe("shared file-panel component", () => {
     const h = harness();
     await settle();
     await h.panel.openPath("notes.md");
-    click(h.window, h.document.querySelector(".gfp-mode"));
+    // Markdown's modes are a pair: [Preview, Edit source]. Edit, then back.
+    click(h.window, h.document.querySelectorAll(".gfp-mode")[1]);
     type(h.window, h.document, "preview this draft");
-    click(h.window, h.document.querySelector(".gfp-mode"));
+    click(h.window, h.document.querySelectorAll(".gfp-mode")[0]);
 
     expect(h.document.querySelector(".gfp-editor")).toBeNull();
     expect(h.document.querySelector(".gfp-markdown")?.textContent).toContain("preview this draft");
@@ -409,6 +412,41 @@ describe("shared file-panel component", () => {
     expect(h.writes).toHaveLength(1);
     expect(h.document.querySelector(".gfp-notice")?.textContent).toContain("no longer the one you opened");
     expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement).value).toBe("draft");
+  });
+
+  it("gives Markdown the desktop's two-icon mode pair, with the current one marked", async () => {
+    // Markdown had become the only file type with a WORDED toggle while every
+    // other text file got a pencil, which is what made the toolbar read as
+    // inconsistent. The desktop reference has always shown Preview and Edit
+    // source as an icon pair with the active mode marked.
+    const h = harness();
+    await settle();
+    await h.panel.openPath("notes.md");
+
+    const modes = [...h.document.querySelectorAll(".gfp-mode")];
+    expect(modes.map((m) => m.getAttribute("title"))).toEqual(["Preview", "Edit source"]);
+    expect(modes.every((m) => !m.textContent?.trim())).toBe(true);
+    expect(modes[0].classList.contains("gfp-active")).toBe(true);
+    expect(modes[1].classList.contains("gfp-active")).toBe(false);
+
+    click(h.window, modes[1]);
+    await settle();
+    const after = [...h.document.querySelectorAll(".gfp-mode")];
+    expect(after[1].classList.contains("gfp-active")).toBe(true);
+    expect(h.document.querySelector(".gfp-editor")).toBeTruthy();
+  });
+
+  it("marks the panel as viewing only while a file is open", async () => {
+    // The filter searches the tree, so it is hidden with a file open — by CSS,
+    // keyed on this class. The class is the contract worth pinning here.
+    const h = harness();
+    await settle();
+    expect(h.panel.element.classList.contains("gfp-viewing")).toBe(false);
+    await h.panel.openPath("notes.md");
+    expect(h.panel.element.classList.contains("gfp-viewing")).toBe(true);
+    h.panel.element.querySelector(".gfp-title")?.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(h.panel.element.classList.contains("gfp-viewing")).toBe(false);
   });
 
   it("sizes a drag against the shared row, not its own shrink-wrapped column", () => {
