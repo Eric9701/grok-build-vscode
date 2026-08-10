@@ -3435,7 +3435,10 @@ Only continue if you trust this code.`,
     // named. A row a phone cannot open is a dead affordance, and the catalog is
     // also what the client builds its own Archive group from — leaving them in
     // would put a section on screen whose every row fails.
-    const reachable = entries.filter((r) => this.remoteTargetableCwd(r.cwd));
+    // Against the set already computed above — `remoteTargetableCwd` would
+    // rebuild it per row, and on VS Code building it re-runs project discovery,
+    // so a per-row call turns one catalog post into one disk walk per project.
+    const reachable = entries.filter((r) => cwdIsAuthorized(r.cwd, authorized, pathsEqual));
     return {
       type: "repos",
       // Same catalog as local, less what a remote may not reach.

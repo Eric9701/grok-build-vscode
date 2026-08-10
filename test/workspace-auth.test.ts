@@ -295,7 +295,7 @@ describe("sidebar close-revocation wiring (source)", () => {
     // Rows a remote cannot reach are dropped, not merely refused when named:
     // the catalog is what the client builds its own Archive group from, so
     // leaving them in would paint a section whose every row fails.
-    expect(reposMsgBody).toContain("entries.filter((r) => this.remoteTargetableCwd(r.cwd))");
+    expect(reposMsgBody).toContain("entries.filter((r) => cwdIsAuthorized(r.cwd, authorized, pathsEqual))");
   });
 
   it("RemoteUplink is the sole socket write path and enforces project auth", () => {
