@@ -1,5 +1,5 @@
 // Shared test harness for driving the REAL shipped webview scripts
-// (media/chat.js + media/webview-helpers.js) inside a happy-dom window.
+// (media/chat.js + its shared media components) inside a happy-dom window.
 //
 // happy-dom doesn't execute inline <script> text synchronously, but window.eval
 // runs in the window's realm and shares its globals — webview-helpers sets
@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const helperSrc = read("../media/webview-helpers.js");
+const filePanelSrc = read("../media/file-panel.js");
 const chatSrc = read("../media/chat.js");
 
 // Mirror of getHtml()'s <body> — only the ids chat.js queries at startup matter.
@@ -93,6 +94,9 @@ export function bootWebview(opts: {
   if (opts.remote) (window as any).grokRemoteClient = true;
   if (opts.beforeScripts) opts.beforeScripts(window);
   (window as any).eval(helperSrc);
+  // Relay chat.html loads this before chat.js; VS Code does not load it at all,
+  // but evaluating an inert component global here lets one harness cover both.
+  (window as any).eval(filePanelSrc);
   (window as any).eval(chatSrc);
   // The webview now boots busy+locked (startup spinner) and only goes idle once
   // the host posts setBusy:false after the session is live. Most tests exercise

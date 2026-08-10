@@ -83,7 +83,7 @@ import {
   writeTreeFile,
 } from "../src/desktop/file-tree";
 import { isIpcFromMainWindow, resolveTreeOpenTarget } from "../src/desktop/file-tree-ipc";
-import { FILE_TREE_PANEL_CSS, fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
+import { fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
 import { mayRegisterResourcePath } from "../src/desktop/media-provenance";
 import {
   ResourceRegistry,
@@ -113,6 +113,7 @@ import {
   resolveMessageBoxChoice,
   selectQuickPickIndex,
 } from "../src/desktop/host-dialogs";
+
 import {
   isAllowedAppNavigationUrl,
   shouldBlockNavigation,
@@ -129,6 +130,10 @@ import {
   secondInstanceShouldOpenDevTools,
   shouldOpenDevToolsAtStartup,
 } from "../src/desktop/app-menu";
+
+const testRepoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const filePanelJs = fs.readFileSync(path.join(testRepoRoot, "media", "file-panel.js"), "utf8");
+const filePanelCss = fs.readFileSync(path.join(testRepoRoot, "media", "file-panel.css"), "utf8");
 
 describe("desktop ConfigStore", () => {
   let dir: string;
@@ -559,7 +564,7 @@ describe("desktop main wiring (source gates)", () => {
     expect(main).toContain("remoteActions");
   });
 
-  it("registers file-tree IPC and injects the panel without touching getHtml", () => {
+  it("registers file-tree IPC while getHtml loads the component only for desktop", () => {
     const main = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
       "utf8",
@@ -583,6 +588,18 @@ describe("desktop main wiring (source gates)", () => {
     expect(chatJs).not.toContain("grokDesktopFileTree");
     // Capability flag only — chat may detect desktop shell for client zoom.
     expect(chatJs).toContain("grokDesktopShell");
+
+    const sidebar = fs.readFileSync(path.join(testRepoRoot, "src", "sidebar.ts"), "utf8");
+    const assetGate = sidebar.slice(
+      sidebar.indexOf("const filePanelStyle"),
+      sidebar.indexOf("return `<!DOCTYPE html>", sidebar.indexOf("const filePanelStyle")),
+    );
+    expect(assetGate).toContain("this.host.canSwitchWorkspaceFolder");
+    expect(assetGate).toContain('mediaUri("file-panel.css")');
+    expect(assetGate).toContain('mediaUri("file-panel.js")');
+    // An empty branch means the VS Code webview receives neither tag; absence
+    // of a mount call is not the thing enforcing the product decision.
+    expect(assetGate.match(/:\s*"";/g)).toHaveLength(2);
   });
 
   it("does not expose a process-global lastOpen path (cross-project leak)", () => {
@@ -1788,14 +1805,14 @@ describe("file-tree panel assets", () => {
     // border it made the button read as a box and pushed its glyph off centre —
     // a border on a fixed-size button always distorts the button. Still
     // desktop-only by construction: remote mounts neither node.
-    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-top-sep\s*\{[\s\S]*?background:/);
-    const toggleRule = FILE_TREE_PANEL_CSS.match(/\.desk-ft-top-toggle\s*\{[^}]+\}/)?.[0] ?? "";
+    expect(filePanelCss).toMatch(/\.desk-ft-top-sep\s*\{[\s\S]*?background:/);
+    const toggleRule = filePanelCss.match(/\.desk-ft-top-toggle\s*\{[^}]+\}/)?.[0] ?? "";
     expect(toggleRule).toBeTruthy();
     expect(toggleRule).not.toMatch(/border-left/);
     expect(toggleRule).not.toMatch(/padding-left/);
     // ...and it now matches the other top-bar icon buttons instead of shouting:
     // muted foreground, no border, chat.css's .icon-btn radius.
-    expect(toggleRule).toMatch(/color:\s*var\(--vscode-descriptionForeground\)/);
+    expect(toggleRule).toMatch(/color:\s*var\(--vscode-descriptionForeground(?:,|\))/);
     expect(toggleRule).toMatch(/border:\s*0/);
     expect(toggleRule).toMatch(/border-radius:\s*8px/);
     // Anchored: an unanchored `.icon-btn {` also matches `.top-bar > .icon-btn`,
@@ -1807,113 +1824,48 @@ describe("file-tree panel assets", () => {
     // Created and torn down together. A border could not be orphaned; a
     // sibling can, and a re-inject would stack them up.
     const boot = fileTreePanelBootSource();
-    expect(boot).toContain('sep.id = "desk-ft-top-sep"');
+    expect(boot).toContain('separator.id = "desk-ft-top-sep"');
     expect(boot).toContain('getElementById("desk-ft-top-sep")?.remove()');
   });
 
-  it("scopes CSS under desk-ft- and boots without chat.js symbols", () => {
-    expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-panel");
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-closed");
-    // Top bar (body or .app-main host); panel takes no space when closed.
-    expect(FILE_TREE_PANEL_CSS).toContain("body.desk-with-ft .top-bar");
-    expect(FILE_TREE_PANEL_CSS).toContain("body.desk-ft-closed .desk-ft-panel");
-    expect(FILE_TREE_PANEL_CSS).toContain("display: none !important");
-    // Coexists with projects rail (row layout when has-rail).
-    expect(FILE_TREE_PANEL_CSS).toContain("has-rail");
-    expect(FILE_TREE_PANEL_CSS).toContain(".app-main");
-    // Viewer replaces tree (not side-by-side).
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-viewer");
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-viewing");
-    // Open panel is visually separated (resizer border + own background).
-    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-resizer[\s\S]*border-left|col-resize/);
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-panel[\s\S]*background:\s*var\(--vscode-editor-background/,
-    );
-    // Width is variable + resizable (not a fixed 280px-only panel).
-    expect(FILE_TREE_PANEL_CSS).toContain("--desk-ft-width");
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-resizer");
-    // No unprefixed layout hijacks of chat primitives.
-    expect(FILE_TREE_PANEL_CSS).not.toMatch(/(?:^|\n)\.messages\s*\{/);
-    expect(FILE_TREE_PANEL_CSS).not.toMatch(/(?:^|\n)\.composer\s*\{/);
-
+  it("keeps rendering in the shared asset and host concerns in the desktop adapter", () => {
     const boot = fileTreePanelBootSource();
+
+    // Component CSS is namespaced and leaves chat primitives alone. Hidden is
+    // structural, so closing the drawer cannot retain layout width.
+    expect(filePanelCss).toContain(".gfp-panel");
+    expect(filePanelCss).toContain(".gfp-panel[hidden] { display: none !important; }");
+    expect(filePanelCss).toContain("--gfp-width");
+    expect(filePanelCss).toContain(".gfp-resizer");
+    expect(filePanelCss).not.toMatch(/(?:^|\n)\.messages\s*\{/);
+    expect(filePanelCss).not.toMatch(/(?:^|\n)\.composer\s*\{/);
+
+    // The injected source only mounts/adapts. Tabs, nested rows, editing,
+    // conflicts and menus must remain in the one shared renderer asset.
+    expect(boot).toContain("shared.createFilePanel");
     expect(boot).toContain("grokDesktopFileTree");
-    expect(boot).toContain("desk-ft-panel");
-    expect(boot).toContain("desk-ft-top-toggle");
-    expect(boot).toContain("desk-ft-open");
-    expect(boot).toContain("localStorage");
-    expect(boot).toContain("api.read");
-    expect(boot).toContain("desk-ft-toolbar");
-    expect(boot).toContain("desk-ft-tabs");
-    expect(boot).toContain("desk-ft-title");
-    // Navigation is tabs + project name — no Back control or breadcrumb path.
-    expect(boot).not.toContain("desk-ft-crumb-back");
-    expect(boot).not.toContain("ICON_ARROW_LEFT");
-    expect(boot).not.toContain("breadcrumbSegments");
-    expect(FILE_TREE_PANEL_CSS).not.toContain("desk-ft-crumb-back");
-    expect(FILE_TREE_PANEL_CSS).not.toContain("desk-ft-crumb-seg");
-    // Multi-folder rail host: shell mounts inside .app-main when present.
-    expect(boot).toContain("app-main");
-    expect(boot).toContain("projects-rail");
-    // Lucide panel-left (rail) / panel-right (file tree) — not unicode glyphs.
-    expect(boot).toContain("ICON_PANEL_LEFT");
-    expect(boot).toContain("ICON_PANEL_RIGHT");
-    expect(boot).toContain('d="M9 3v18"'); // panel-left divider
-    expect(boot).toContain('d="M15 3v18"'); // panel-right divider
-    expect(boot).not.toContain("◧");
-    expect(boot).not.toContain("◫");
-    expect(boot).toContain("desk-rail-toggle");
-    // Seti file icons (not emoji).
-    expect(boot).toContain("SETI_ICONS");
-    expect(boot).toContain("data-icon");
-    expect(boot).not.toContain("🟨");
-    // Tree reuses rail row CSS variables.
-    expect(FILE_TREE_PANEL_CSS).toContain("--rail-row-font-size");
-    expect(FILE_TREE_PANEL_CSS).toContain("--rail-hover-bg");
-    // Resize persistence + host chat-open hook.
-    expect(boot).toContain("desk-ft-width");
-    expect(boot).toContain("WIDTH_MIN");
-    // Full-screen video resize must not re-measure the panel (same trap as the rail).
-    expect(boot).toContain("fullscreenElement");
-    expect(boot).toMatch(/wireFullscreenSafeReclamp|fullscreenchange/);
+    expect(boot).toContain('presentation: "dock"');
+    expect(boot).toContain("absPath: request.expectedAbsPath");
     expect(boot).toContain("__grokDeskFtOpen");
-    expect(boot).toContain("Open in default app");
-    // Tree-row overflow: hover ⋯ (rail pattern) + right-click; files get Open +
-    // Reveal, folders Reveal only. Menu position uses chat zoom helpers.
-    expect(boot).toContain("openRowMenu");
-    expect(boot).toContain("showRowContextMenu");
-    expect(boot).toContain("desk-ft-row-actions");
-    expect(boot).toContain("desk-ft-menu-btn");
-    expect(boot).toContain('addEventListener("contextmenu"');
-    expect(boot).toContain("desk-ft-ctx-menu");
-    expect(boot).toContain("chatZoomFactor");
-    expect(boot).toContain("unzoomClientPx");
-    expect(boot).toMatch(/kind\s*!==\s*["']dir["']/);
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-ctx-menu");
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-row-actions");
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-row-actions\s*\{[^}]*position:\s*absolute/s,
-    );
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-row-actions\s*\{[^}]*linear-gradient/s,
-    );
-    // Cancel is mounted only while dirty (not always-present + hidden).
-    expect(boot).toMatch(/if\s*\(\s*file\.dirty\s*\)[\s\S]*desk-ft-cancel/);
-    // Markdown preview defers typography to chat.css (shared tokens), not a
-    // private panel palette that drifted from message rendering.
-    expect(FILE_TREE_PANEL_CSS).not.toMatch(
-      /\.desk-ft-md\s+code[\s\S]*textCodeBlock-background/,
-    );
-    expect(FILE_TREE_PANEL_CSS).not.toMatch(
-      /\.desk-ft-md\s+th[\s\S]*textCodeBlock-background/,
-    );
-    // Directory disclosure: SVG chevrons, never filled triangles.
-    expect(boot).toContain("ICON_CHEVRON_RIGHT");
-    expect(boot).toContain("ICON_CHEVRON_DOWN");
-    expect(boot).not.toMatch(/["']▶["']|["']▼["']|["']▸["']|["']▾["']/);
-    // Does not call into acquireVsCodeApi / Host message bus.
+    expect(filePanelJs).toContain("gfp-tabs");
+    expect(filePanelJs).toContain("renderDirectory");
+    expect(filePanelJs).toContain("openRowMenu");
+    expect(filePanelJs).toContain('addEventListener("contextmenu"');
+    expect(filePanelJs).toContain('actionButton("Reload"');
+    expect(filePanelJs).toContain('actionButton("Overwrite"');
+
+    // Desktop still owns its shell, rail collapse and shared width coordinator.
+    expect(boot).toContain('document.querySelector(".app-main")');
+    expect(boot).toContain('getElementById("projects-rail")');
+    expect(boot).toContain('getElementById("desk-rail-toggle")');
+    expect(boot).toContain("__grokRegisterSidePanel");
+    expect(boot).toContain("__grokReclampSidePanels");
+
+    // Seti assets are fetched lazily from the desktop media scheme, not baked
+    // into executeJavaScript, and the adapter never joins the host message bus.
+    expect(boot).toContain('new URL("file-icons/", componentScript.src)');
+    expect(boot).not.toContain("data:image/svg+xml");
     expect(boot).not.toContain("acquireVsCodeApi");
-    expect(boot).not.toMatch(/type:\s*["']openFile["']/);
     expect(boot).not.toContain("postMessage");
   });
 });
@@ -3494,7 +3446,7 @@ describe("editable file-tree writes", () => {
 
 describe("file-tree editing panel contract", () => {
   it("has the Markdown default preview, edit/save controls, scoped save shortcut, and safe confirmations", () => {
-    const src = fileTreePanelBootSource();
+    const src = filePanelJs;
     expect(src).toContain('mode: result.kind === "markdown" ? "preview"');
     // Icon buttons now, so the assertion is on the accessible name rather than
     // visible text — that is what a user of either eyes or a screen reader
@@ -3504,14 +3456,20 @@ describe("file-tree editing panel contract", () => {
     expect(src).toContain('"Preview"');
     expect(src).toContain('"Edit source"');
     expect(src).toContain('aria-label');
-    expect(src).toContain("FT_ICON.save");
-    expect(src).toContain('"Save (Ctrl+S)"');
+    expect(src).toContain('"Save"');
     expect(src).toContain('event.ctrlKey || event.metaKey');
     expect(src).toContain('event.preventDefault();');
-    expect(src).toContain('confirmLabel: "Discard"');
-    expect(src).toContain('settle("cancel")');
-    expect(src).toContain('confirmLabel: "Reload"');
+    expect(src).toContain('{ id: "discard", label: "Discard", danger: true }');
+    expect(src).toContain('answer !== "discard"');
+    expect(src).toContain('actionButton("Reload"');
     expect(src).toContain('"Overwrite"');
+    // The remote editor is the reference for editor state: Save advances the
+    // baseline only to the captured payload, never to later textarea contents.
+    expect(src).toContain("tab.baselineText = sentText");
+    expect(src).toContain("tab.dirty = tab.draftText !== sentText");
+    // Overwrite may refresh a stamp but cannot switch the tab's file identity.
+    expect(src).toContain("fresh.absPath !== tab.expectedAbsPath");
+    expect(src).not.toContain("tab.expectedAbsPath = fresh.absPath");
   });
 
   it("exposes the save bridge and unregisters its IPC handler", () => {
@@ -3781,10 +3739,14 @@ describe("local workspace switch serialization (P1-2)", () => {
 });
 
 describe("file tree rebind on project change (P2-3)", () => {
-  it("panel boot source listens for root changes and rebinds", () => {
+  it("panel boot source listens for root changes and switches isolated scopes", () => {
     const src = fileTreePanelBootSource();
     expect(src).toContain("onRootChanged");
-    expect(src).toContain("rebindToCurrentRoot");
+    expect(src).toContain("onScopeChanged");
+    expect(src).toContain("listener(normalizeRoot(await api.root()))");
+    expect(filePanelJs).toContain("function setScope(scope)");
+    expect(filePanelJs).toContain("state = makeScopeState(scope)");
+    expect(filePanelJs).toContain("scopes.set(scope.id, state)");
   });
 
   it("preload exposes onRootChanged; main sends desk-ft:root-changed", () => {

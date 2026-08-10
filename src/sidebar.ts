@@ -6583,6 +6583,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // Local VS Code / desktop webviews may receive the capability flag but
         // never mount a second explorer — only remotes post these messages.
         const rel = typeof msg.relPath === "string" ? msg.relPath : "";
+        const correlation = typeof msg.requestId === "string" ? { requestId: msg.requestId } : {};
         const selectedCwd = origin === "remote" && clientId
           ? this.remoteClients.cwd(clientId)
           : this.workspaceRoot();
@@ -6603,15 +6604,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         };
         if (!rootResult.ok) {
           this.host.appendLine(`[remote-files] list rejected: ${rootResult.reason} (${msg.cwd})`);
-          replyList({ type: "projectDirListing", cwd: msg.cwd, relPath: rel, ok: false, reason: rootResult.reason });
+          replyList({ type: "projectDirListing", ...correlation, cwd: msg.cwd, relPath: rel, ok: false, reason: rootResult.reason });
           break;
         }
         const listed = listRemoteProjectDir(rootResult.root, rel);
         if (!listed.ok) {
-          replyList({ type: "projectDirListing", cwd: msg.cwd, relPath: rel, ok: false, reason: listed.reason });
+          replyList({ type: "projectDirListing", ...correlation, cwd: msg.cwd, relPath: rel, ok: false, reason: listed.reason });
         } else {
           replyList({
             type: "projectDirListing",
+            ...correlation,
             cwd: msg.cwd,
             relPath: rel,
             ok: true,
@@ -6625,6 +6627,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // One file, text/image preview caps from file-tree.ts. When the host
         // advertises edit, text kinds also carry stamp + absPath for a save
         // round-trip (see writeProjectFile).
+        const correlation = typeof msg.requestId === "string" ? { requestId: msg.requestId } : {};
         const selectedCwd = origin === "remote" && clientId
           ? this.remoteClients.cwd(clientId)
           : this.workspaceRoot();
@@ -6647,6 +6650,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.host.appendLine(`[remote-files] read rejected: ${rootResult.reason} (${msg.cwd})`);
           replyFile({
             type: "projectFileContent",
+            ...correlation,
             cwd: msg.cwd,
             relPath: msg.relPath,
             ok: false,
@@ -6663,6 +6667,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (wire.ok) {
           replyFile({
             type: "projectFileContent",
+            ...correlation,
             cwd: msg.cwd,
             relPath: wire.relPath,
             ok: true,
@@ -6676,6 +6681,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         } else {
           replyFile({
             type: "projectFileContent",
+            ...correlation,
             cwd: msg.cwd,
             relPath: msg.relPath,
             ok: false,
@@ -6690,6 +6696,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // after the desk switched projects is the expectedAbsPath scenario.
         // Capability gate: a host that does not advertise edit refuses here so
         // an older client cannot invent a write path the UI never offered.
+        const correlation = typeof msg.requestId === "string" ? { requestId: msg.requestId } : {};
         const replyWrite = (body: Extract<HostMsg, { type: "projectFileWriteResult" }>) => {
           if (requester) this.sendRemoteRequester(requester, body);
           else this.post(body);
@@ -6697,6 +6704,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (!HOST_CAPABILITIES.editProjectFiles) {
           replyWrite({
             type: "projectFileWriteResult",
+            ...correlation,
             cwd: msg.cwd,
             relPath: msg.relPath,
             ok: false,
@@ -6722,6 +6730,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.host.appendLine(`[remote-files] write rejected: ${rootResult.reason} (${msg.cwd})`);
           replyWrite({
             type: "projectFileWriteResult",
+            ...correlation,
             cwd: msg.cwd,
             relPath: msg.relPath,
             ok: false,
@@ -6744,6 +6753,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (written.ok) {
           replyWrite({
             type: "projectFileWriteResult",
+            ...correlation,
             cwd: msg.cwd,
             relPath: written.relPath,
             ok: true,
@@ -6753,6 +6763,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.host.appendLine(`[remote-files] write refused: ${written.reason} (${msg.relPath})`);
           replyWrite({
             type: "projectFileWriteResult",
+            ...correlation,
             cwd: msg.cwd,
             relPath: msg.relPath,
             ok: false,
@@ -12251,6 +12262,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       : "";
     const openMain = this.host.canSwitchWorkspaceFolder ? `<div class="app-main">` : "";
     const closeMain = this.host.canSwitchWorkspaceFolder ? `</div>` : "";
+    // The shared file-panel asset is desktop-only in this generated document.
+    // Remote browsers load it from the relay's own web/chat.html; VS Code gets
+    // neither the tag nor the bytes, making the no-file-panel decision structural.
+    const filePanelStyle = this.host.canSwitchWorkspaceFolder
+      ? `<link rel="stylesheet" href="${mediaUri("file-panel.css")}" />`
+      : "";
+    const filePanelScript = this.host.canSwitchWorkspaceFolder
+      ? `<script nonce="${nonce}" src="${mediaUri("file-panel.js")}"></script>`
+      : "";
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -12269,6 +12289,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   .welcome { visibility: hidden; }
 </style>
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
+${filePanelStyle}
 </head>
 <body class="desk${this.showThinking() ? "" : " thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
 ${railMount}
@@ -12360,6 +12381,7 @@ ${closeMain}
   <script nonce="${nonce}" src="${mediaUri("mathjax/tex-svg-full.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("mermaid/mermaid.min.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("webview-helpers.js")}"></script>
+  ${filePanelScript}
   <script nonce="${nonce}" src="${mediaUri("chat.js")}"></script>
 </body>
 </html>`;

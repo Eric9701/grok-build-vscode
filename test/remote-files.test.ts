@@ -340,14 +340,16 @@ describe("capability advertisement", () => {
     );
     expect(chatSrc).toContain("editProjectFiles");
     expect(chatSrc).toContain("remoteFilesEditAvailable");
-    // write posts are gated on remoteFilesEditAvailable (not only browse).
-    const writeIdx = chatSrc.indexOf('type: "writeProjectFile"');
-    expect(writeIdx).toBeGreaterThan(0);
-    const postFn = chatSrc.slice(
-      chatSrc.lastIndexOf("function postRemoteFileWrite", writeIdx),
-      writeIdx,
-    );
-    expect(postFn).toContain("remoteFilesEditAvailable");
+    // The shared adapter only receives a write method when the separate edit
+    // capability is present. With browse-only access the component therefore
+    // cannot construct a write request at all.
+    const sharedStart = chatSrc.indexOf("function ensureSharedRemoteFilePanel");
+    const sharedEnd = chatSrc.indexOf("function remoteFilesButtonHost", sharedStart);
+    expect(sharedStart).toBeGreaterThan(0);
+    expect(sharedEnd).toBeGreaterThan(sharedStart);
+    const sharedAdapter = chatSrc.slice(sharedStart, sharedEnd);
+    expect(sharedAdapter).toContain("if (remoteFilesEditAvailable())");
+    expect(sharedAdapter).toContain('type: "writeProjectFile"');
   });
 
   it("classifies list/read as view and write as propose (mutation tier)", () => {

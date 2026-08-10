@@ -2,36 +2,42 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  buildFileIconDataUrlMap,
-  defaultFileIconsDir,
-  fileIconId,
-  isMonochromeIconSvg,
-  monochromeIconIds,
-  resolveFileIconSrc,
-} from "../src/desktop/file-icons";
-import { FILE_TREE_PANEL_CSS, fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
+import { fileTreePanelBootSource } from "../src/desktop/file-tree-panel";
+import { Window } from "happy-dom";
 
 const iconsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "file-icons");
+const filePanelJs = fs.readFileSync(path.join(iconsDir, "..", "file-panel.js"), "utf8");
+const filePanelCss = fs.readFileSync(path.join(iconsDir, "..", "file-panel.css"), "utf8");
+const iconWindow = new Window();
+(iconWindow as never as { eval: (source: string) => void }).eval(filePanelJs);
+const sharedIconId = (iconWindow as never as {
+  GrokFilePanel: { defaultFileIconId: (kind: string, name: string) => string };
+}).GrokFilePanel.defaultFileIconId;
+
+function isMonochromeSvg(svg: string): boolean {
+  const fills = [...svg.matchAll(/\bfill\s*=\s*["']([^"']+)["']/gi)]
+    .map((match) => match[1].trim().toLowerCase())
+    .filter((fill) => fill !== "none" && fill !== "currentcolor");
+  return fills.length === 0;
+}
 
 describe("fileIconId (Seti mapping)", () => {
   it("maps known extensions and directories", () => {
-    expect(fileIconId("dir", "src")).toBe("folder");
-    expect(fileIconId("file", "app.js")).toBe("javascript");
-    expect(fileIconId("file", "app.ts")).toBe("typescript");
-    expect(fileIconId("file", "App.tsx")).toBe("react");
-    expect(fileIconId("file", "photo.png")).toBe("image");
-    expect(fileIconId("file", "photo.PNG")).toBe("image");
-    expect(fileIconId("file", "readme.md")).toBe("markdown");
-    expect(fileIconId("file", "package.json")).toBe("npm");
-    expect(fileIconId("file", "styles.css")).toBe("css");
-    expect(fileIconId("file", "unknown.xyz")).toBe("default");
+    expect(sharedIconId("dir", "src")).toBe("folder");
+    expect(sharedIconId("file", "app.js")).toBe("javascript");
+    expect(sharedIconId("file", "app.ts")).toBe("typescript");
+    expect(sharedIconId("file", "App.tsx")).toBe("react");
+    expect(sharedIconId("file", "photo.png")).toBe("image");
+    expect(sharedIconId("file", "photo.PNG")).toBe("image");
+    expect(sharedIconId("file", "readme.md")).toBe("markdown");
+    expect(sharedIconId("file", "package.json")).toBe("npm");
+    expect(sharedIconId("file", "styles.css")).toBe("css");
+    expect(sharedIconId("file", "unknown.xyz")).toBe("default");
   });
 });
 
 describe("Seti icon assets", () => {
   it("ships the icons used for common extensions", () => {
-    const map = buildFileIconDataUrlMap(iconsDir);
     for (const id of [
       "javascript",
       "typescript",
@@ -42,98 +48,46 @@ describe("Seti icon assets", () => {
       "folder",
       "default",
     ]) {
-      expect(map[id], id).toBeTruthy();
-      expect(map[id].startsWith("data:image/svg+xml")).toBe(true);
+      const svg = fs.readFileSync(path.join(iconsDir, `${id}.svg`), "utf8");
+      expect(svg.trim().startsWith("<svg"), id).toBe(true);
     }
-    // Resolve end-to-end like the tree panel does.
-    expect(resolveFileIconSrc("file", "x.js", map).id).toBe("javascript");
-    expect(resolveFileIconSrc("file", "x.png", map).src).toContain("data:image/svg+xml");
-    expect(resolveFileIconSrc("dir", "lib", map).id).toBe("folder");
+    expect(sharedIconId("file", "x.js")).toBe("javascript");
+    expect(sharedIconId("file", "x.png")).toBe("image");
+    expect(sharedIconId("dir", "lib")).toBe("folder");
   });
 
-  it("embeds Seti icons in the file-tree boot source for known extensions", () => {
+  it("passes a lazy icon resolver to the shared component without embedding SVG payloads", () => {
     const boot = fileTreePanelBootSource(iconsDir);
-    expect(boot).toContain("SETI_ICONS");
-    expect(boot).toContain("fileIconId");
-    expect(boot).toContain("data-icon");
-    // No emoji fallbacks for the extensions the owner called out.
-    expect(boot).not.toContain("🟨");
-    expect(boot).not.toContain("🖼");
-    // Icons actually present in the embedded map.
-    expect(boot).toContain("javascript");
-    expect(boot).toContain("image");
-    // CSS reuses rail row tokens.
-    expect(FILE_TREE_PANEL_CSS).toContain("--rail-row-font-size");
-    expect(FILE_TREE_PANEL_CSS).toContain("--rail-hover-bg");
-    expect(FILE_TREE_PANEL_CSS).toContain("--rail-row-min-height");
-    expect(defaultFileIconsDir()).toMatch(/file-icons/);
+    expect(boot).toContain('new URL("file-icons/", componentScript.src)');
+    expect(boot).toContain("fileIcons: { baseUrl: iconBase }");
+    expect(boot).not.toContain("fileIconId");
+    expect(boot).not.toContain("monochromeIds");
+    expect(boot).not.toContain("data:image/svg+xml");
+    expect(sharedIconId("file", "app.test.tsx")).toBe("react");
+    expect(sharedIconId("file", "package.json")).toBe("npm");
+    expect(sharedIconId("file", "photo.PNG")).toBe("image");
+    expect(filePanelJs).toContain('img.src = src');
+    expect(filePanelCss).toContain("--rail-hover-bg");
+    expect(filePanelCss).toContain("--rail-row-min-height");
   });
 
   it("directory rows use a disclosure chevron and no folder Seti glyph", () => {
-    const boot = fileTreePanelBootSource(iconsDir);
-    // Chevrons (Codex / VS Code SVG > / v), not filled triangle glyphs.
-    expect(boot).toMatch(/twistGlyph/);
-    expect(boot).toContain("ICON_CHEVRON_RIGHT");
-    expect(boot).toContain("ICON_CHEVRON_DOWN");
-    expect(boot).toMatch(/m9 18 6-6-6-6/); // chevron-right path
-    expect(boot).toMatch(/m6 9 6 6 6-6/); // chevron-down path
-    expect(boot).not.toMatch(/["']▶["']|["']▼["']|["']▸["']|["']▾["']|["']›["']|["']⌄["']/);
-    // Dirs skip Seti: iconFor returns empty for kind===dir.
-    expect(boot).toMatch(/if\s*\(\s*kind\s*===\s*["']dir["']\s*\)\s*return\s*\{\s*id:\s*["']["']/);
-    expect(boot).toMatch(/data-kind/);
-    // Single lead column: chevron OR icon, shared 16px box (no file spacer column).
-    expect(FILE_TREE_PANEL_CSS).toContain("desk-ft-lead");
-    expect(FILE_TREE_PANEL_CSS).toMatch(/--desk-ft-lead-size:\s*16px/);
-    // No empty disclosure spacer kept for alignment on dir rows.
-    expect(FILE_TREE_PANEL_CSS).not.toMatch(
-      /\.desk-ft-row\[data-kind=["']dir["']\]\s*\.desk-ft-icon\s*\{[^}]*visibility:\s*hidden/s,
-    );
-    // Row height unchanged from the rail density pass.
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height/s,
-    );
-    // Tight lead→label gap (not the rail's 6px).
-    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-row\s*\{[^}]*gap:\s*2px/s);
-    // Chevron fills the lead box (optical parity with 16px Seti icons).
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-twist svg\s*\{[^}]*width:\s*var\(--desk-ft-lead-size/s,
-    );
-    // makeNode: one lead child — twist for dirs, icon for files (never both).
-    expect(boot).toMatch(/desk-ft-lead/);
-    expect(boot).toMatch(/classList\.add\(["']desk-ft-twist["']\)/);
-    expect(boot).toMatch(/classList\.add\(["']desk-ft-icon["']\)/);
-    // Only one append of the lead before name — no second glyph column.
-    expect(boot).toMatch(/row\.appendChild\(lead\);\s*row\.appendChild\(name\)/);
-    // File branch attaches data-icon on the lead; dir branch uses twistGlyph.
-    expect(boot).toMatch(
-      /entry\.kind\s*===\s*["']dir["']\s*\)\s*\{[\s\S]*?desk-ft-twist[\s\S]*?twistGlyph/,
-    );
-    expect(boot).toMatch(
-      /else\s*\{[\s\S]*?desk-ft-icon[\s\S]*?data-icon/,
-    );
-    // twistGlyph must return the SVG constants (not a triangle/unicode glyph).
-    expect(boot).toMatch(
-      /function twistGlyph\s*\(\s*open\s*\)\s*\{\s*return open \? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT/,
-    );
+    expect(filePanelJs).toContain('lead.innerHTML = ICON.chevronRight');
+    expect(filePanelJs).toContain('else renderFileIcon(lead, entry.name, entry.kind)');
+    expect(filePanelJs).toContain('lead.innerHTML = opening ? ICON.chevronDown : ICON.chevronRight');
+    expect(filePanelJs).toMatch(/m9 18 6-6-6-6/);
+    expect(filePanelJs).toMatch(/m6 9 6 6 6-6/);
+    expect(filePanelJs).not.toMatch(/["']▶["']|["']▼["']|["']▸["']|["']▾["']/);
+    expect(filePanelCss).toMatch(/\.gfp-lead\s*\{[^}]*flex:\s*0 0 16px/s);
+    expect(filePanelCss).toMatch(/\.gfp-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height/s);
   });
 
   it("file and folder leads share the same column model and per-level indent", () => {
-    const boot = fileTreePanelBootSource(iconsDir);
-    // Same depth → same paddingLeft formula (per-level indent preserved).
-    expect(boot).toMatch(/const indent = 8 \+ depth \* 12/);
-    expect(boot).toMatch(/row\.style\.paddingLeft = indent \+ ["']px["']/);
-    // Leading glyph is exactly one of twist|icon under .desk-ft-lead — not
-    // twist+icon (which would push files right by a chevron width).
-    expect(boot).toMatch(/lead\.className = ["']desk-ft-lead["']/);
-    expect(boot).not.toMatch(/appendChild\(twist\);\s*row\.appendChild\(icon\)/);
-    // Shared lead box width for both glyphs.
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-lead\s*\{[^}]*--desk-ft-lead-size:\s*16px/s,
-    );
-    // Row min-height still the rail density token (must not grow).
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*30px\)/s,
-    );
+    expect(filePanelJs).toContain('row.style.setProperty("--gfp-depth", String(depth))');
+    expect(filePanelJs).toContain('lead.className = "gfp-lead desk-ft-lead files-browse-row-icon"');
+    expect(filePanelCss).toContain("calc(6px + var(--gfp-depth, 0) * 12px)");
+    expect(filePanelCss).toMatch(/\.gfp-lead\s*\{[^}]*width:\s*16px/s);
+    expect(filePanelCss).toMatch(/\.gfp-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*30px\)/s);
   });
 });
 
@@ -141,14 +95,19 @@ describe("fill-less Seti glyphs are theme-tinted, not black", () => {
   it("classifies by the SVG's own fill, not a hand-kept list", () => {
     // A coloured glyph carries an explicit fill; a plain one carries none, and
     // SVG then defaults it to BLACK — invisible on a dark theme.
-    expect(isMonochromeIconSvg('<svg><path fill="#cbcb41" d="M0 0"/></svg>')).toBe(false);
-    expect(isMonochromeIconSvg('<svg><path d="M0 0"/></svg>')).toBe(true);
+    expect(isMonochromeSvg('<svg><path fill="#cbcb41" d="M0 0"/></svg>')).toBe(false);
+    expect(isMonochromeSvg('<svg><path d="M0 0"/></svg>')).toBe(true);
     // `fill="none"` is a stroke-drawn glyph, which is still uncoloured.
-    expect(isMonochromeIconSvg('<svg><path fill="none" stroke="#abc" d="M0 0"/></svg>')).toBe(true);
+    expect(isMonochromeSvg('<svg><path fill="none" stroke="#abc" d="M0 0"/></svg>')).toBe(true);
   });
 
   it("catches the generic text icon the user reported, and its whole class", () => {
-    const mono = new Set(monochromeIconIds(iconsDir));
+    const mono = new Set(
+      fs.readdirSync(iconsDir)
+        .filter((name) => name.endsWith(".svg"))
+        .filter((name) => isMonochromeSvg(fs.readFileSync(path.join(iconsDir, name), "utf8")))
+        .map((name) => name.slice(0, -4)),
+    );
     // `.dockerignore` and every other unmapped file falls back to `default`.
     expect(mono.has("default")).toBe(true);
     // Not an isolated glyph — a third of the vendored set had the same defect.
@@ -160,14 +119,17 @@ describe("fill-less Seti glyphs are theme-tinted, not black", () => {
 
   it("renders those as a currentColor-independent theme token, never opacity", () => {
     const boot = fileTreePanelBootSource(iconsDir);
-    expect(boot).toContain("SETI_MONO");
-    expect(boot).toContain("desk-ft-icon-mono");
+    expect(boot).toContain("fileIcons: { baseUrl: iconBase }");
+    expect(filePanelJs).toContain("MONOCHROME_FILE_ICONS.has(id)");
+    expect(filePanelJs).toContain('"default"');
+    expect(filePanelJs).toContain("gfp-file-icon-mono desk-ft-icon-mono");
+    expect(filePanelJs).toContain('--gfp-icon-url');
     // The tint must resolve per theme — the desktop defines
     // --vscode-descriptionForeground for BOTH light and dark.
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-icon-mono\s*\{[^}]*--vscode-descriptionForeground/s,
+    expect(filePanelCss).toMatch(
+      /\.gfp-file-icon-mono\s*\{[^}]*--vscode-descriptionForeground/s,
     );
-    expect(FILE_TREE_PANEL_CSS).toMatch(/\.desk-ft-icon-mono\s*\{[^}]*mask-image/s);
+    expect(filePanelCss).toMatch(/\.gfp-file-icon-mono\s*\{[^}]*mask:/s);
   });
 });
 
@@ -177,7 +139,7 @@ describe("markdown preview uses the conversation's renderer", () => {
     // One renderer for both surfaces — the private subset dropped bullets and
     // tables entirely, which is exactly what this replaces.
     expect(boot).toContain("window.__grokRenderMarkdown");
-    expect(boot).toContain("renderMarkdownFallback");
+    expect(filePanelJs).toContain('"<pre>" + escapeHtml(source) + "</pre>"');
   });
 
   it("defers markdown typography to chat.css; keeps only panel layout bounds", () => {
@@ -196,10 +158,10 @@ describe("markdown preview uses the conversation's renderer", () => {
       /\.desk-ft-md th[\s\S]*textBlockQuote-background|textBlockQuote-background[\s\S]*\.desk-ft-md th/,
     );
     // Panel only constrains table width so a wide table does not grow the column.
-    expect(FILE_TREE_PANEL_CSS).toContain(".desk-ft-md .md-table-wrap");
-    expect(FILE_TREE_PANEL_CSS).toMatch(
-      /\.desk-ft-md \.md-table-wrap\s*\{[^}]*max-width:\s*100%/s,
+    expect(filePanelCss).toContain(".gfp-markdown .md-table-wrap");
+    expect(filePanelCss).toMatch(
+      /\.gfp-markdown \.md-table-wrap\s*\{[^}]*max-width:\s*100%/s,
     );
-    expect(FILE_TREE_PANEL_CSS).not.toMatch(/textCodeBlock-background/);
+    expect(filePanelCss).not.toMatch(/textCodeBlock-background/);
   });
 });

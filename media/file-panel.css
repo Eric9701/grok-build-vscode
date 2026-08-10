@@ -1,0 +1,450 @@
+/* Shared project-file panel. Keep selectors component-scoped and low-specificity:
+   the relay intentionally loads touch affordances after the vendored media. */
+body.desk-with-ft:not(.has-rail) { display: flex; flex-direction: column; }
+body.desk-with-ft.has-rail { display: flex; flex-direction: row; align-items: stretch; }
+body.desk-with-ft .top-bar {
+  z-index: 30;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+}
+body.desk-with-ft.has-rail > .app-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.desk-ft-shell {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.desk-ft-chat {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--vscode-sideBar-background, #252526);
+}
+.desk-ft-top-sep {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+.files-browse-sep {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+.desk-ft-top-toggle {
+  color: var(--vscode-descriptionForeground, #999);
+  border: 0;
+  border-radius: 8px;
+}
+body.desk-rail-collapsed #projects-rail,
+body.desk-rail-collapsed #rail-resizer { display: none !important; }
+body.desk-rail-collapsed.has-rail { flex-direction: column; }
+body.desk-rail-collapsed.has-rail > .app-main { width: 100%; }
+.desk-rail-open-btn {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #999);
+  cursor: pointer;
+}
+.desk-rail-open-btn svg { width: 16px; height: 16px; }
+.desk-rail-open-btn:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.14)); }
+body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
+
+.gfp-panel {
+  --gfp-width: 280px;
+  --gfp-border: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+  --gfp-hover: var(--rail-hover-bg, var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.14)));
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 var(--gfp-width);
+  flex-direction: column;
+  width: var(--gfp-width);
+  min-width: 200px;
+  min-height: 0;
+  overflow: hidden;
+  container: desk-ft / inline-size;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+  color: var(--vscode-foreground, #ccc);
+  border-left: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  font-size: 13px;
+}
+
+.gfp-panel[hidden] { display: none !important; }
+
+.gfp-panel.gfp-overlay {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 40;
+  width: min(var(--gfp-width), 100vw);
+  max-width: 100vw;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.25);
+}
+
+.gfp-resizer {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 5px;
+  width: 5px;
+  margin: 0 -2px;
+  border-left: 1px solid var(--gfp-border);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.gfp-resizer[hidden] { display: none !important; }
+.gfp-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  background: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+.gfp-resizer:hover::after,
+.gfp-resizing + .gfp-resizer::after { background: var(--vscode-focusBorder, #007acc); }
+
+.gfp-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  min-height: 38px;
+  border-bottom: 1px solid var(--gfp-border);
+}
+
+.gfp-title {
+  flex: 0 1 auto;
+  min-width: 68px;
+  max-width: 42%;
+  overflow: hidden;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.gfp-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.gfp-tabs:empty { display: none; }
+.gfp-tabs::-webkit-scrollbar { display: none; }
+
+.gfp-tab {
+  position: relative;
+  display: flex;
+  flex: 0 1 150px;
+  align-items: center;
+  min-width: 72px;
+  max-width: 170px;
+  padding: 0 3px 0 9px;
+  border-left: 1px solid var(--gfp-border);
+  color: var(--vscode-descriptionForeground, #999);
+  cursor: pointer;
+}
+.gfp-tab:hover { background: var(--gfp-hover); color: inherit; }
+.gfp-tab-active { color: inherit; background: var(--vscode-tab-activeBackground, rgba(128, 128, 128, 0.08)); }
+.gfp-tab-active::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background: var(--vscode-focusBorder, #007acc);
+}
+.gfp-tab-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gfp-tab-dirty { flex: 0 0 10px; text-align: center; }
+.gfp-tab-close,
+.gfp-close,
+.gfp-icon-button,
+.gfp-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #999);
+  cursor: pointer;
+}
+.gfp-tab-close { width: 22px; height: 22px; }
+.gfp-tab-close:hover,
+.gfp-close:hover,
+.gfp-icon-button:hover,
+.gfp-toggle:hover { background: var(--gfp-hover); color: inherit; }
+.gfp-tab-close svg { width: 12px; height: 12px; }
+.gfp-close svg { width: 18px; height: 18px; }
+.gfp-icon-button svg,
+.gfp-toggle svg { width: 16px; height: 16px; }
+
+.gfp-close { align-self: center; margin: 0 6px 0 2px; color: inherit; }
+.gfp-close[hidden] { display: none !important; }
+
+.gfp-filter {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: auto;
+  height: 28px;
+  margin: 7px 8px 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--vscode-input-border, var(--gfp-border));
+  border-radius: 5px;
+  outline: none;
+  background: var(--vscode-input-background, rgba(0, 0, 0, 0.12));
+  color: var(--vscode-input-foreground, inherit);
+  font: inherit;
+}
+.gfp-filter:focus { border-color: var(--vscode-focusBorder, #007acc); }
+
+.gfp-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 6px 12px;
+}
+.gfp-tree[hidden] { display: none !important; }
+
+.gfp-node[hidden] { display: none !important; }
+.gfp-children { display: none; }
+.gfp-expanded > .gfp-children { display: block; }
+
+.gfp-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--rail-row-min-height, 30px);
+  padding: 3px 6px 3px calc(6px + var(--gfp-depth, 0) * 12px);
+  border-radius: var(--rail-row-radius, 5px);
+  cursor: pointer;
+  outline: none;
+}
+.gfp-row:hover,
+.gfp-row:focus-visible { background: var(--gfp-hover); }
+.gfp-row:focus-visible { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #007acc); }
+.gfp-lead {
+  display: inline-flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--vscode-descriptionForeground, #999);
+}
+.gfp-lead svg,
+.gfp-lead img { display: block; width: 16px; height: 16px; }
+.gfp-file-icon-mono {
+  display: block;
+  width: 16px;
+  height: 16px;
+  background: var(--vscode-descriptionForeground, #999);
+  -webkit-mask: var(--gfp-icon-url) center / contain no-repeat;
+  mask: var(--gfp-icon-url) center / contain no-repeat;
+}
+.gfp-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gfp-row-actions {
+  position: absolute;
+  inset: 1px 2px 1px auto;
+  display: none;
+  align-items: center;
+  padding-left: 14px;
+  background: linear-gradient(90deg, transparent, var(--vscode-sideBar-background, #1e1e1e) 12px);
+}
+.gfp-row:hover .gfp-row-actions,
+.gfp-row:focus-within .gfp-row-actions { display: flex; }
+
+.gfp-status { padding: 16px 12px; color: var(--vscode-descriptionForeground, #999); text-align: center; }
+.gfp-error { color: var(--vscode-errorForeground, #f44); }
+
+.gfp-viewer {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.gfp-viewer[hidden] { display: none !important; }
+.gfp-viewer-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--gfp-border);
+}
+.gfp-back svg { transform: rotate(180deg); }
+.gfp-viewer-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gfp-viewer-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+}
+.gfp-viewer-body:has(.gfp-editor) { padding: 0; }
+.gfp-viewer-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.gfp-viewer-body img { display: block; max-width: 100%; height: auto; }
+.gfp-markdown .md-table-wrap { max-width: 100%; overflow: auto; }
+.gfp-editor {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  resize: none;
+  outline: none;
+  background: var(--vscode-editor-background, transparent);
+  color: var(--vscode-editor-foreground, inherit);
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.gfp-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid var(--vscode-button-border, var(--gfp-border));
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, inherit);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.gfp-action:disabled { opacity: 0.5; cursor: default; }
+.gfp-action-primary { border-color: transparent; background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); }
+.gfp-action-danger { border-color: var(--vscode-errorForeground, #f44); color: var(--vscode-errorForeground, #f44); }
+
+.gfp-notice {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--gfp-border);
+  color: var(--vscode-descriptionForeground, #999);
+  font-size: 12px;
+}
+.gfp-notice-warning { color: var(--vscode-inputValidation-warningForeground, var(--vscode-editorWarning-foreground, #cca700)); }
+.gfp-conflict-actions { display: flex; flex: 0 0 auto; gap: 8px; padding: 6px 12px 8px; border-bottom: 1px solid var(--gfp-border); }
+
+.gfp-menu {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  min-width: 190px;
+  flex-direction: column;
+  padding: 4px;
+  border: 1px solid var(--gfp-border);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+  color: var(--vscode-menu-foreground, inherit);
+}
+.gfp-menu-item {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.gfp-menu-item:hover { background: var(--vscode-menu-selectionBackground, var(--gfp-hover)); }
+
+@media (max-width: 640px) {
+  .gfp-panel.gfp-overlay {
+    left: 0;
+    width: 100vw;
+    border-left: 0;
+    box-shadow: none;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .gfp-close { width: 40px; height: 40px; }
+  .gfp-close svg { width: 20px; height: 20px; }
+  .gfp-row-actions { display: flex; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gfp-panel, .gfp-resizer { scroll-behavior: auto; }
+}

@@ -208,13 +208,14 @@ export type HostMsg =
    */
   | {
       type: "projectDirListing";
+      requestId?: string;
       cwd: string;
       relPath: string;
       ok: true;
       entries: Array<{ name: string; kind: "file" | "dir"; relPath: string }>;
       truncated: boolean;
     }
-  | { type: "projectDirListing"; cwd: string; relPath: string; ok: false; reason: string }
+  | { type: "projectDirListing"; requestId?: string; cwd: string; relPath: string; ok: false; reason: string }
   /**
    * Answer to `readProjectFile`. Preview kinds match desktop `classifyFilePreview`
    * (markdown/json/image/text); binary / external / oversize fail with `ok:false`.
@@ -227,6 +228,7 @@ export type HostMsg =
    */
   | {
       type: "projectFileContent";
+      requestId?: string;
       cwd: string;
       relPath: string;
       ok: true;
@@ -243,7 +245,7 @@ export type HostMsg =
        */
       absPath?: string;
     }
-  | { type: "projectFileContent"; cwd: string; relPath: string; ok: false; reason: string }
+  | { type: "projectFileContent"; requestId?: string; cwd: string; relPath: string; ok: false; reason: string }
   /**
    * Answer to `writeProjectFile`. Success returns the new stamp so the client
    * can keep editing without re-reading. Failure reasons mirror `writeTreeFile`
@@ -251,6 +253,7 @@ export type HostMsg =
    */
   | {
       type: "projectFileWriteResult";
+      requestId?: string;
       cwd: string;
       relPath: string;
       ok: true;
@@ -258,6 +261,7 @@ export type HostMsg =
     }
   | {
       type: "projectFileWriteResult";
+      requestId?: string;
       cwd: string;
       relPath: string;
       ok: false;
@@ -538,12 +542,12 @@ export type WebviewMsg =
    * (`cwd` must be that scope — see `resolveRemoteFileRoot`). `relPath`
    * optional ("" / omit = repo root). Answered by `projectDirListing`.
    */
-  | { type: "listProjectDir"; cwd: string; relPath?: string }
+  | { type: "listProjectDir"; requestId?: string; cwd: string; relPath?: string }
   /**
    * Remote file open: read one previewable file under the tab's selected repo.
    * Answered by `projectFileContent`. Same fence as list.
    */
-  | { type: "readProjectFile"; cwd: string; relPath: string }
+  | { type: "readProjectFile"; requestId?: string; cwd: string; relPath: string }
   /**
    * Remote save of an EXISTING text file under the tab's selected repo.
    * No create / delete / rename in this pass — only rewrite content of a file
@@ -558,6 +562,7 @@ export type WebviewMsg =
    */
   | {
       type: "writeProjectFile";
+      requestId?: string;
       cwd: string;
       relPath: string;
       text: string;

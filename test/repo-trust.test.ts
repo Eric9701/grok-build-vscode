@@ -258,7 +258,7 @@ describe("a save cannot follow the workspace to another project", () => {
     expect(body).toContain("expectedAbsPath");
   });
 
-  it("the panel sends the path it read, on both the normal and overwrite paths", () => {
+  it("the shared panel sends the path it read on normal and overwrite saves", () => {
     // Overwrite is the dangerous one: it is the branch the user reaches AFTER
     // being told the file changed, so it must carry the binding too.
     const panel = fs.readFileSync(
@@ -266,8 +266,16 @@ describe("a save cannot follow the workspace to another project", () => {
       "utf8",
     );
     const saves = panel.match(/api\.save\(\{[^}]*\}/g) || [];
-    expect(saves.length).toBeGreaterThanOrEqual(2);
-    for (const call of saves) expect(call).toContain("absPath");
+    // One adapter method serves every save path; Overwrite refreshes its stamp
+    // in the shared component and then deliberately calls that same method.
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toContain("absPath");
+    const shared = fs.readFileSync(
+      path.join(__dirname, "..", "media", "file-panel.js"),
+      "utf8",
+    );
+    expect(shared).toContain("fresh.absPath !== tab.expectedAbsPath");
+    expect(shared).toContain("return saveTab(tab)");
   });
 });
 

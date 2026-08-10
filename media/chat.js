@@ -89,7 +89,7 @@
     // duplicated tab cannot inherit them in the first place — this is here so
     // the rule survives if they are ever made durable again, which is exactly
     // how the leak arrived the first time.
-    clearRemoteFileDrafts();
+    state.filesBrowse.component?.clearMemory?.();
     try {
       sessionStorage.setItem(REMOTE_TAB_TOKEN_KEY, replacement);
     } catch (_) { /* storage unavailable/private mode */ }
@@ -449,25 +449,7 @@
     // by default (screen space is scarce; the rail is already a drawer).
     filesBrowse: {
       open: false,
-      relPath: "",
-      entries: [],
-      truncated: false,
-      error: "",
-      loading: false,
-      // In-page viewer (phone has no host editor to hand off to).
-      // edit fields when host advertises editProjectFiles + text kind:
-      // stamp, absPath, editing, draft, dirty, saveGen, conflict, notice
-      viewer: null,
-      // Unsaved edits parked when the viewer is torn down — see
-      // stashRemoteFileDraft. [{ key: "<cwd> <relPath>", draft }], newest last.
-      drafts: [],
-      // The repo the open viewer's file was read from, captured at read time so
-      // a draft parked DURING a repo switch is keyed to where it came from
-      // rather than to where we just arrived.
-      draftCwd: "",
-      listGen: 0,
-      readGen: 0,
-      writeGen: 0,
+      component: null,
     },
     railCollapsed: {},
     /** The project the live conversation was in at the last render. Only used to
@@ -1938,7 +1920,7 @@
   // Replaces the host's native modals for chat-triggered destructive actions,
   // so they confirm identically on desktop and in the browser client — where a
   // host-side modal would stall invisibly on the desk's screen.
-  function uiConfirm(opts) {
+  function uiChoice(opts) {
     return new Promise((resolve) => {
       const overlay = document.createElement("div");
       overlay.className = "confirm-overlay";
@@ -1960,31 +1942,48 @@
       cancelBtn.type = "button";
       cancelBtn.className = "confirm-btn";
       cancelBtn.textContent = "Cancel";
-      const okBtn = document.createElement("button");
-      okBtn.type = "button";
-      okBtn.className = "confirm-btn " + (opts.danger ? "confirm-danger" : "confirm-primary");
-      okBtn.textContent = opts.confirmLabel || "OK";
       const done = (v) => {
         document.removeEventListener("keydown", onKey, true);
         overlay.remove();
-        resolve(v);
+        resolve(opts.booleanResult ? v === "confirm" : v);
       };
       const onKey = (e) => {
-        if (e.key === "Escape") { e.stopPropagation(); done(false); }
+        if (e.key === "Escape") { e.stopPropagation(); done("cancel"); }
       };
       document.addEventListener("keydown", onKey, true);
-      cancelBtn.onclick = (e) => { e.stopPropagation(); done(false); };
-      okBtn.onclick = (e) => { e.stopPropagation(); done(true); };
+      cancelBtn.onclick = (e) => { e.stopPropagation(); done("cancel"); };
       // A click on the backdrop (not the panel) cancels, same as Escape.
-      overlay.onclick = (e) => { if (e.target === overlay) { e.stopPropagation(); done(false); } };
+      overlay.onclick = (e) => { if (e.target === overlay) { e.stopPropagation(); done("cancel"); } };
       actions.appendChild(cancelBtn);
-      actions.appendChild(okBtn);
+      const choices = Array.isArray(opts.actions) && opts.actions.length
+        ? opts.actions
+        : [{ id: "confirm", label: opts.confirmLabel || "OK", danger: !!opts.danger }];
+      let focusButton = cancelBtn;
+      for (const choice of choices) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "confirm-btn " + (choice.danger ? "confirm-danger" : "confirm-primary");
+        button.textContent = choice.label;
+        button.onclick = (e) => { e.stopPropagation(); done(choice.id); };
+        actions.appendChild(button);
+        focusButton = button;
+      }
       panel.appendChild(actions);
       overlay.appendChild(panel);
       document.body.appendChild(overlay);
-      okBtn.focus();
+      focusButton.focus();
     });
   }
+
+  function uiConfirm(opts) {
+    // Resolve the original promise as a boolean instead of adding a second
+    // `.then()` hop. Existing host confirm round-trips intentionally settle one
+    // microtask after the click; file-panel callers use uiChoice's action ids.
+    return uiChoice({ ...opts, booleanResult: true });
+  }
+
+  // Public UI service consumed by media/file-panel.js in both renderer hosts.
+  window.__grokFilePanelConfirm = uiChoice;
 
   /** uiConfirm with a single text field. Resolves to the string, or null on
    *  cancel — an empty string is a real answer the caller may want to reject on
@@ -10469,37 +10468,6 @@
   window.addEventListener("pagehide", teardownBrowserMic);
   window.addEventListener("beforeunload", teardownBrowserMic);
 
-  /**
-   * Ask before a reload or a closed tab takes unsaved file edits with it.
-   *
-   * The drafts the file editor parks live in memory and nowhere else — nothing
-   * about them is persisted, on this side of the wire or the other — so a
-   * refresh really is a discard. That was the one remaining path where typed
-   * work disappeared without anyone being asked, and it is the easiest one to
-   * hit: a phone reloads a backgrounded tab on its own.
-   *
-   * Conditional on purpose. An unconditional handler puts the browser's "Leave
-   * site?" dialog in front of every ordinary reload, and a prompt that always
-   * fires is a prompt nobody reads. Composer text is deliberately NOT counted:
-   * it survives a reload through the outbox, so there is nothing to warn about.
-   */
-  function remoteFileEditsPending() {
-    if (!IS_REMOTE) return false;
-    if (state.filesBrowse.drafts.length) return true;
-    const v = state.filesBrowse.viewer;
-    return !!(v && v.dirty);
-  }
-
-  window.addEventListener("beforeunload", (e) => {
-    if (!remoteFileEditsPending()) return;
-    // Both spellings: the returnValue assignment is what older browsers honour,
-    // preventDefault() is what the current spec asks for. The string itself is
-    // ignored — every browser shows its own wording.
-    e.preventDefault();
-    e.returnValue = "";
-    return "";
-  });
-
   // Append a transcript to whatever's typed (batch mode — one-shot result).
   function insertTranscript(text) {
     const t = (text || "").trim();
@@ -12163,24 +12131,10 @@
         // its viewer, and reopening skips the directory request whenever a
         // viewer exists — so close the panel in project A, switch to B, reopen,
         // and A's file was sitting there under B's heading.
-        if (remoteFilesBrowseAvailable()) {
-          // Park anything unsaved under the repo it belongs to BEFORE the root
-          // moves — a switch is a navigation, not a decision to throw the text
-          // away, and the draft must not follow us into the other project.
-          stashRemoteFileDraft();
-          state.filesBrowse.relPath = "";
-          state.filesBrowse.viewer = null;
-          // Requests made in the repo we are leaving are no longer ours to
-          // answer. remoteFileAnswerIsCurrent already refuses them; dropping the
-          // correlation too means a late answer cannot match anything at all.
-          state.filesBrowse._pendingRead = null;
-          state.filesBrowse._pendingWrite = null;
-          state.filesBrowse.entries = [];
-          if (state.filesBrowse.open) requestRemoteDir("");
-          else ensureRemoteFilesBrowser();
-        } else {
-          ensureRemoteFilesBrowser();
-        }
+        // Shared state is keyed by scope. Switching projects changes the active
+        // scope but keeps each project's tabs/drafts parked in memory; it cannot
+        // render one scope's content under another scope's title.
+        ensureRemoteFilesBrowser();
         // A rail "+" on another repo waits for the switch to land before starting
         // the session, so it can never open one in the repo we were leaving.
         break;
@@ -12262,156 +12216,165 @@
     return state.selectedRepoCwd || state.activeRepoCwd || state.cwd || "";
   }
 
-  function remoteFileIsEditableKind(kind) {
-    return kind === "markdown" || kind === "json" || kind === "text";
+  // Promise adapter over the relay's message round trip. New hosts echo the
+  // additive requestId; released extensions may not, so requests to an
+  // unproven/legacy host are serialized per operation+repo+path. A timed-out
+  // legacy key is poisoned until refresh: sending another indistinguishable
+  // request would let the late first answer satisfy the second and cross-wire
+  // editor state. Refresh is the intentionally acceptable recovery here.
+  let remoteFileRequestSeq = 0;
+  let remoteFileRequestIdsSupported = null;
+  const remoteFilePending = new Map();
+  const remoteFileTails = new Map();
+  const remoteFilePoisoned = new Set();
+
+  function remoteFileRequestKey(kind, cwd, relPath) {
+    return kind + "\0" + String(cwd || "") + "\0" + String(relPath || "");
   }
 
-  /**
-   * Unsaved edits survive leaving the file.
-   *
-   * Tearing the viewer down used to drop the draft on the floor: "Back to files"
-   * did it, and so did a repo switch, both without asking. The editor already has
-   * an explicit **Cancel** — that is the discard action, and it should be the
-   * only one. Navigating away is not a decision about the text you typed.
-   *
-   * Keyed by repo AND path, so a draft can never surface in another project.
-   * Held in memory only: nothing here is persisted, on this side of the wire or
-   * the other, and a reload is still a discard.
-   */
-  /**
-   * Nothing is evicted. Two attempts at a bound were both worse than none:
-   *
-   *   - a count cap dropped the ninth file's draft without a word — the same
-   *     silent discard this mechanism exists to remove, moved somewhere harder
-   *     to notice;
-   *   - a size cap announced the loss AFTER destroying the text, and did not
-   *     even bound anything, since the newest draft was exempt and so a single
-   *     large one could exceed the limit on its own.
-   *
-   * A resource limit that deletes unsaved work is not a limit, it is the bug
-   * with a budget. The growth is already bounded by the things that produce it:
-   * each draft is at most FILE_PREVIEW_MAX_BYTES (2 MiB, `src/file-tree.ts`),
-   * re-editing one file replaces its entry rather than adding one, and drafts
-   * are dropped on Cancel and on a successful save. What is left is one entry
-   * per file a person edited and walked away from without saving, in one tab,
-   * in one session — and every one of those is text they typed and would want
-   * back. If this ever needs a ceiling, the shape is to REFUSE the next park and
-   * say so, never to discard silently after the fact.
-   */
-
-  function remoteDraftKey(cwd, relPath) {
-    return String(cwd || "") + " " + String(relPath || "");
-  }
-  /**
-   * Parked drafts are held in memory only, for the life of this page.
-   *
-   * There WAS a sessionStorage layer here so a draft could survive a mobile
-   * browser discarding the backgrounded tab. It was removed deliberately. Across
-   * seven consecutive independent review rounds it produced a high-severity
-   * finding every single time — quota shedding that dropped the very drafts it
-   * existed to protect, a throttled write with no flush when the page was
-   * suspended, cloned drafts leaking into a duplicated tab, a key not scoped to
-   * the linked device, a baseline copy that doubled every payload, restore
-   * ordering. Each fix was correct and each one opened the next door, because
-   * durable storage of half-finished edits is a much bigger problem than the one
-   * being solved.
-   *
-   * What is promised now is narrow and true: unsaved text survives navigating
-   * away from the file, switching project and closing the panel, and a reload or
-   * tab close is stopped by a confirmation. It does NOT survive the operating
-   * system killing a backgrounded tab. That is the same contract as any ordinary
-   * web editor, and the fallback — Save — is one tap away and always was.
-   */
-
-  /** Park the open viewer's unsaved text before something replaces it. */
-  function stashRemoteFileDraft() {
-    const v = state.filesBrowse.viewer;
-    if (!v || typeof v.relPath !== "string") return;
-    // A viewer that is still loading holds no text of the user's — it is a
-    // placeholder. It must neither park anything nor, by looking "clean", drop
-    // a parked draft that belongs to a file nobody has opened yet.
-    if (v.loading) return;
-    const cwdNow = state.filesBrowse.draftCwd || remoteFilesRepoCwd();
-    if (!v.dirty || typeof v.draft !== "string") {
-      // Back to what is on disk (or never edited). Any parked copy is stale and
-      // must go, or reopening would resurrect text the user has already undone —
-      // the drafts are non-consuming now, so nothing else would clear it.
-      dropRemoteFileDraft(cwdNow, v.relPath);
-      return;
+  function postRemoteFileRequest(kind, payload) {
+    const key = remoteFileRequestKey(kind, payload.cwd, payload.relPath);
+    if (remoteFilePoisoned.has(key)) {
+      return Promise.resolve({ ok: false, reason: "Request state is stale. Refresh this page and try again." });
     }
-    const key = remoteDraftKey(cwdNow, v.relPath);
-    const drafts = state.filesBrowse.drafts;
-    const at = drafts.findIndex((d) => d.key === key);
-    if (at >= 0) drafts.splice(at, 1);
-    // The BASELINE travels with the draft: the version the user was editing
-    // against (stamp) and what the file said at the time (text). Restoring the
-    // draft onto whatever stamp the next read happens to return would hand the
-    // save fence a fresh ticket for a stale edit — a desk-side change made while
-    // the draft sat parked would then be overwritten without a word, which is
-    // precisely what mtime+size exists to prevent.
-    drafts.push({
-      key,
-      draft: v.draft,
-      relPath: v.relPath,
-      stamp: v.stamp,
-      absPath: v.absPath,
+    const send = () => new Promise((resolve) => {
+      const requestId = "file-" + (++remoteFileRequestSeq);
+      const timer = setTimeout(() => {
+        remoteFilePending.delete(requestId);
+        if (remoteFileRequestIdsSupported !== true) remoteFilePoisoned.add(key);
+        resolve({ ok: false, reason: "File request timed out. Refresh this page and try again." });
+      }, 30000);
+      remoteFilePending.set(requestId, {
+        requestId,
+        kind,
+        cwd: payload.cwd,
+        relPath: payload.relPath || "",
+        key,
+        timer,
+        resolve,
+      });
+      vscode.postMessage({ ...payload, requestId });
     });
+    if (remoteFileRequestIdsSupported === true) return send();
+    const previous = remoteFileTails.get(key) || Promise.resolve();
+    const request = previous.then(send, send);
+    remoteFileTails.set(key, request);
+    request.finally(() => {
+      if (remoteFileTails.get(key) === request) remoteFileTails.delete(key);
+    });
+    return request;
   }
 
-  /**
-   * Read a parked draft WITHOUT consuming it.
-   *
-   * Consuming on restore looked tidy and lost work: two reads of the same file
-   * can both be in flight (open it, press Back, open it again — answers are
-   * matched on cwd+path, and the request generation is not echoed by the host),
-   * and the first answer restored the draft and deleted it, so the second
-   * replaced the editor with the disk version and there was nothing left to
-   * recover. The parked copy stays until something actually resolves it: a save,
-   * a Cancel, or the text being typed back to what is on disk.
-   */
-  function peekRemoteFileDraft(cwd, relPath) {
-    const key = remoteDraftKey(cwd, relPath);
-    return state.filesBrowse.drafts.find((d) => d.key === key);
-  }
-
-  /** Forget every parked draft — memory and the parked copy alike. */
-  function clearRemoteFileDrafts() {
-    state.filesBrowse.drafts = [];
-    if (state.filesBrowse.viewer) {
-      state.filesBrowse.viewer.dirty = false;
-      state.filesBrowse.viewer.editing = false;
+  function settleRemoteFileRequest(kind, msg) {
+    if (!state.filesBrowse.component) return false;
+    let pending = null;
+    if (typeof msg.requestId === "string") {
+      remoteFileRequestIdsSupported = true;
+      const candidate = remoteFilePending.get(msg.requestId) || null;
+      // Correlation is necessary but not sufficient: retain the repo/path fence
+      // at the renderer boundary too. A relayed response carrying a real id for
+      // a different operation or scope must not populate this request's tab.
+      if (
+        candidate
+        && candidate.kind === kind
+        && candidate.cwd === msg.cwd
+        && candidate.relPath === (msg.relPath || "")
+      ) {
+        pending = candidate;
+      }
+    } else {
+      if (remoteFileRequestIdsSupported === null) remoteFileRequestIdsSupported = false;
+      for (const candidate of remoteFilePending.values()) {
+        if (
+          candidate.kind === kind
+          && candidate.cwd === msg.cwd
+          && candidate.relPath === (msg.relPath || "")
+        ) {
+          pending = candidate;
+          break;
+        }
+      }
     }
+    // A response with no live consumer is stale. Once the shared component is
+    // mounted it must never fall through into the legacy renderer's state.
+    if (!pending) return true;
+    clearTimeout(pending.timer);
+    remoteFilePending.delete(pending.requestId);
+    pending.resolve(msg);
+    return true;
   }
 
-  function dropRemoteFileDraft(cwd, relPath) {
-    const key = remoteDraftKey(cwd, relPath);
-    const drafts = state.filesBrowse.drafts;
-    const at = drafts.findIndex((d) => d.key === key);
-    if (at < 0) return;
-    drafts.splice(at, 1);
+  function currentRemoteFileScope() {
+    const cwd = remoteFilesRepoCwd();
+    return cwd ? { id: cwd, label: cwdLeaf(cwd) || "Project", title: cwd } : null;
   }
 
-  /**
-   * Where the Project files button belongs — which is NOT always `.top-bar`.
-   *
-   * A rail host hides the app-wide bar outright (`body.has-rail .top-bar {
-   * display: none }` on the browser client) and carries the conversation's own
-   * controls in `#session-head` instead. Building the button into the top bar
-   * there put it inside a hidden element: it showed for the one frame before the
-   * repo catalog landed and `has-rail` went on, then disappeared for good — so
-   * the file browser was unreachable on every browser wide enough to get a rail.
-   *
-   * Chosen by presence, which is the same capability rule the rest of this file
-   * follows, and re-checked on every ensure() because `has-rail` arrives with
-   * `repos`, long after the button is first built.
-   *
-   * LAST in the bar, behind a separator — the same shape the desktop panel's
-   * own toggle uses. It sat between History and
-   * the overflow ⋯ to begin with, which read as one more conversation action
-   * rather than as a panel toggle. The separator is a sibling and not a border
-   * on the button, for the reason the desktop one learned: a border boxes the
-   * button in and pushes its glyph off centre.
-   */
+  function ensureSharedRemoteFilePanel() {
+    if (!remoteFilesBrowseAvailable()) return false;
+    const shared = window.GrokFilePanel;
+    if (!shared || typeof shared.createFilePanel !== "function") return false;
+    let panel = state.filesBrowse.component;
+    if (!panel) {
+      const componentScript = document.querySelector('script[src*="file-panel.js"]');
+      const iconBase = componentScript && componentScript.src
+        ? new URL("file-icons/", componentScript.src).href
+        : "";
+      const access = {
+        currentScope: async () => currentRemoteFileScope(),
+        list: (cwd, relPath) => postRemoteFileRequest("list", {
+          type: "listProjectDir", cwd, relPath: relPath || "",
+        }),
+        read: (cwd, relPath) => postRemoteFileRequest("read", {
+          type: "readProjectFile", cwd, relPath,
+        }),
+      };
+      if (remoteFilesEditAvailable()) {
+        access.write = (cwd, request) => postRemoteFileRequest("write", {
+          type: "writeProjectFile",
+          cwd,
+          relPath: request.relPath,
+          text: request.text,
+          stamp: request.stamp,
+          expectedAbsPath: request.expectedAbsPath,
+        });
+      }
+      let initialOpen = false;
+      try {
+        initialOpen = sessionStorage.getItem("grok.remote.filesOpen") === "1"
+          && !remoteUsesTouchComposer();
+      } catch (_) { /* private mode */ }
+      panel = shared.createFilePanel({
+        access,
+        mount: {
+          panelHost: document.querySelector(".app-main") || document.body,
+          // The relay adds this right-column host. Until then (and on phones),
+          // responsive presentation deliberately falls back to an overlay.
+          dockHost: document.getElementById("file-panel-dock"),
+          toggleHost: remoteFilesButtonHost(),
+          presentation: "responsive",
+          id: "files-browse-panel",
+        },
+        ui: {
+          confirm: uiChoice,
+          renderMarkdown,
+          fileIcons: { baseUrl: iconBase },
+        },
+        initialOpen,
+        onOpenChanged: (open) => {
+          state.filesBrowse.open = open;
+          document.body.classList.toggle("files-browse-open", open);
+          try { sessionStorage.setItem("grok.remote.filesOpen", open ? "1" : "0"); } catch (_) { /* private mode */ }
+        },
+      });
+      state.filesBrowse.component = panel;
+      panel.toggleElement.id = "files-browse-btn";
+      panel.toggleElement.classList.add("icon-btn");
+    }
+    placeRemoteFilesButton(panel.toggleElement);
+    panel.toggleElement.hidden = false;
+    void panel.setScope(currentRemoteFileScope());
+    return true;
+  }
   function remoteFilesButtonHost() {
     if (document.body.classList.contains("has-rail")) {
       const head = document.getElementById("session-head");
@@ -12436,684 +12399,33 @@
   }
 
   function ensureRemoteFilesBrowser() {
-    const on = remoteFilesBrowseAvailable();
-    let btn = document.getElementById("files-browse-btn");
-    let panel = document.getElementById("files-browse-panel");
-    if (!on) {
-      if (btn) btn.hidden = true;
-      if (panel) {
-        panel.hidden = true;
-        document.body.classList.remove("files-browse-open");
-      }
+    const available = remoteFilesBrowseAvailable();
+    const panel = state.filesBrowse.component;
+    if (!available) {
+      const button = document.getElementById("files-browse-btn");
+      if (button) button.hidden = true;
+      if (panel) panel.setOpen(false);
       return;
     }
-    if (!btn && remoteFilesButtonHost()) {
-      btn = document.createElement("button");
-      btn.type = "button";
-      btn.id = "files-browse-btn";
-      btn.className = "icon-btn";
-      btn.title = "Show file panel";
-      btn.setAttribute("aria-label", "Toggle file panel");
-      btn.setAttribute("aria-expanded", "false");
-      // The desktop panel's glyph, not a tree icon — this is a panel toggle and
-      // should read as one wherever it appears.
-      btn.innerHTML = ICON.panelRight;
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleRemoteFilesBrowser();
-      });
+    // file-panel.js is part of the remote page's vendored UI bundle. There is no
+    // second renderer here: a missing component is a packaging error, surfaced
+    // visibly and recoverable by refreshing after the deploy is corrected.
+    if (!ensureSharedRemoteFilePanel()) {
+      console.error("Remote project files require media/file-panel.js");
     }
-    if (btn) {
-      placeRemoteFilesButton(btn);
-      btn.hidden = false;
-    }
-
-    if (!panel) {
-      panel = document.createElement("div");
-      panel.id = "files-browse-panel";
-      panel.className = "files-browse-panel";
-      panel.hidden = true;
-      panel.setAttribute("role", "dialog");
-      panel.setAttribute("aria-label", "Project files");
-      // Project name, then the file's own row below it. Deliberately NOT a tab
-      // bar: this panel opens one file at a time, and a single tab that can
-      // never become two advertises switching that does not exist — the same
-      // dishonesty as a tree glyph on a panel toggle. Tabs arrive when they mean
-      // something (see the one-file-panel extraction in the backlog).
-      panel.innerHTML =
-        `<div class="files-browse-head">` +
-          `<div class="files-browse-title"></div>` +
-          `<button type="button" class="icon-btn files-browse-close" title="Close" aria-label="Close">${ICON.x}</button>` +
-        `</div>` +
-        `<div class="files-browse-path" aria-live="polite">` +
-          `<button type="button" class="icon-btn files-browse-back" title="Parent folder" aria-label="Parent folder" hidden>${ICON.chevronRight}</button>` +
-          `<span class="files-browse-path-text"></span>` +
-        `</div>` +
-        `<div class="files-browse-body"></div>` +
-        `<div class="files-browse-viewer" hidden></div>`;
-      // Sibling of the chat column so it can overlay on a phone without
-      // reflowing the projects rail. Prefer .app-main when present.
-      const host = document.querySelector(".app-main") || document.body;
-      host.appendChild(panel);
-      panel.querySelector(".files-browse-close").addEventListener("click", () => {
-        setRemoteFilesOpen(false);
-      });
-      // A second way out. The panel is a full-bleed overlay on a phone, so it
-      // covers the top-bar toggle that opened it — miss the X and there is no
-      // other exit. Escape is free on anything with a keyboard; it does not
-      // help a phone, which is why the X itself was made unmissable rather
-      // than this being the fix.
-      document.addEventListener("keydown", (e) => {
-        if (e.key !== "Escape" || !state.filesBrowse.open) return;
-        // An open editor owns Escape first — it has its own unsaved-work
-        // question and closing the panel out from under it would skip it.
-        if (state.filesBrowse.viewer) return;
-        e.preventDefault();
-        setRemoteFilesOpen(false);
-      });
-      panel.querySelector(".files-browse-back").addEventListener("click", () => {
-        navigateRemoteFilesUp();
-      });
-      // On a phone the rail is already a drawer — keep this one collapsed by
-      // default. Wider remote browsers may open it once (memory in sessionStorage).
-      try {
-        const remembered = sessionStorage.getItem("grok.remote.filesOpen");
-        if (remembered === "1" && !remoteUsesTouchComposer()) {
-          setRemoteFilesOpen(true);
-        }
-      } catch (_) { /* private mode */ }
-    }
-    renderRemoteFilesChrome();
-  }
-
-  function setRemoteFilesOpen(open) {
-    state.filesBrowse.open = !!open;
-    const panel = document.getElementById("files-browse-panel");
-    const btn = document.getElementById("files-browse-btn");
-    if (panel) panel.hidden = !state.filesBrowse.open;
-    if (btn) btn.setAttribute("aria-expanded", String(state.filesBrowse.open));
-    document.body.classList.toggle("files-browse-open", state.filesBrowse.open);
-    try {
-      sessionStorage.setItem("grok.remote.filesOpen", state.filesBrowse.open ? "1" : "0");
-    } catch (_) { /* */ }
-    if (state.filesBrowse.open) {
-      // Close viewer when reopening so the tree is the entry point.
-      if (!state.filesBrowse.viewer) requestRemoteDir(state.filesBrowse.relPath || "");
-      renderRemoteFilesChrome();
-    }
-  }
-
-  function toggleRemoteFilesBrowser() {
-    if (!remoteFilesBrowseAvailable()) return;
-    ensureRemoteFilesBrowser();
-    setRemoteFilesOpen(!state.filesBrowse.open);
-  }
-
-  function requestRemoteDir(relPath) {
-    const cwd = remoteFilesRepoCwd();
-    if (!cwd) {
-      state.filesBrowse.error = "No repository selected.";
-      state.filesBrowse.loading = false;
-      renderRemoteFilesChrome();
-      return;
-    }
-    state.filesBrowse.listGen += 1;
-    const gen = state.filesBrowse.listGen;
-    state.filesBrowse.relPath = relPath || "";
-    state.filesBrowse.loading = true;
-    state.filesBrowse.error = "";
-    // Any directory navigation replaces the viewer too, so it is the same
-    // discard path as Back and gets the same treatment.
-    stashRemoteFileDraft();
-    state.filesBrowse.viewer = null;
-    renderRemoteFilesChrome();
-    // Host does not echo gen — accept the next listing that matches this path/cwd.
-    state.filesBrowse._pendingList = { gen, cwd, relPath: state.filesBrowse.relPath };
-    vscode.postMessage({
-      type: "listProjectDir",
-      cwd,
-      relPath: state.filesBrowse.relPath,
-    });
-  }
-
-  function requestRemoteFile(relPath) {
-    const cwd = remoteFilesRepoCwd();
-    if (!cwd || !relPath) return;
-    state.filesBrowse.readGen += 1;
-    const gen = state.filesBrowse.readGen;
-    state.filesBrowse.loading = true;
-    state.filesBrowse.error = "";
-    state.filesBrowse.viewer = { relPath, loading: true };
-    // The draft key follows the request, not the last successful read. The
-    // placeholder above carries a relPath and no content, so stashRemoteFileDraft
-    // reads it as "clean" and drops the parked draft at (draftCwd, relPath) — and
-    // draftCwd still named the PREVIOUS project. Opening B's `notes.md` and
-    // pressing Back before it loaded therefore deleted A's parked `notes.md`.
-    state.filesBrowse.draftCwd = cwd;
-    state.filesBrowse._pendingRead = { gen, cwd, relPath };
-    renderRemoteFilesChrome();
-    vscode.postMessage({ type: "readProjectFile", cwd, relPath });
-  }
-
-  /**
-   * Whether a file-browser answer is for the project the panel is showing NOW.
-   *
-   * The per-request `_pending*` correlation is not enough on its own: it matches
-   * an answer against the repo the REQUEST was made in, so an in-flight response
-   * from project A still matched after a switch to B. A's file then rendered
-   * under B's heading, and — worse — A's save result marked B's unsaved draft
-   * clean and said "Saved", so navigating away discarded text that was never
-   * written anywhere. The host's `expectedAbsPath` fence stops the cross-project
-   * WRITE; it cannot stop a cross-project answer being believed by the client.
-   */
-  function remoteFileAnswerIsCurrent(msg) {
-    const cwd = remoteFilesRepoCwd();
-    return !!cwd && !!msg && msg.cwd === cwd;
   }
 
   function handleProjectDirListing(msg) {
-    if (!remoteFileAnswerIsCurrent(msg)) return;
-    const pending = state.filesBrowse._pendingList;
-    if (pending && (msg.cwd !== pending.cwd || (msg.relPath || "") !== (pending.relPath || ""))) {
-      // Stale answer for a previous path — ignore.
-      return;
-    }
-    state.filesBrowse.loading = false;
-    if (!msg.ok) {
-      state.filesBrowse.error = msg.reason || "Could not list folder.";
-      state.filesBrowse.entries = [];
-      state.filesBrowse.truncated = false;
-    } else {
-      state.filesBrowse.error = "";
-      state.filesBrowse.entries = Array.isArray(msg.entries) ? msg.entries : [];
-      state.filesBrowse.truncated = !!msg.truncated;
-      state.filesBrowse.relPath = msg.relPath || "";
-    }
-    renderRemoteFilesChrome();
+    settleRemoteFileRequest("list", msg);
   }
 
   function handleProjectFileContent(msg) {
-    if (!remoteFileAnswerIsCurrent(msg)) return;
-    const pending = state.filesBrowse._pendingRead;
-    if (!pending || msg.cwd !== pending.cwd || msg.relPath !== pending.relPath) {
-      // Same rule as the write result, and for the same reason: reads are
-      // correlated by cwd+path with no generation echoed by the host, so two
-      // reads of ONE file are indistinguishable. Open a file, press Back while
-      // it loads, open it again — the first answer renders, the user starts
-      // typing, and the second answer matched too and replaced the live editor
-      // with disk content that had never been parked. One request, one answer.
-      return;
-    }
-    // Consumed. A duplicate or superseded answer now has nothing to match.
-    state.filesBrowse._pendingRead = null;
-    // A re-read for overwrite must not clobber the user's draft if it races a
-    // normal open of a different path (pending already gates cwd/relPath).
-    const keepDraft = pending.forOverwrite && state.filesBrowse.viewer;
-    state.filesBrowse.loading = false;
-    if (!msg.ok) {
-      if (keepDraft) {
-        state.filesBrowse.viewer.notice = msg.reason || "Could not reload the current file version.";
-        state.filesBrowse.viewer.conflict = false;
-      } else {
-        state.filesBrowse.viewer = {
-          relPath: msg.relPath || (pending && pending.relPath) || "",
-          error: msg.reason || "Could not open file.",
-        };
-      }
-    } else if (keepDraft) {
-      // Fresh stamp for a deliberate overwrite — do not replace the draft text.
-      const v = state.filesBrowse.viewer;
-      v.stamp = msg.stamp;
-      v.absPath = msg.absPath;
-      v.conflict = false;
-      v.notice = "";
-      // Proceed with the overwrite save using the new stamp.
-      if (v.stamp && v.absPath && typeof v.draft === "string") {
-        postRemoteFileWrite(v, v.draft);
-      } else {
-        v.notice = "Could not reload the current file version.";
-      }
-    } else {
-      state.filesBrowse.viewer = {
-        relPath: msg.relPath,
-        kind: msg.kind,
-        text: msg.text,
-        dataUrl: msg.dataUrl,
-        pretty: msg.pretty,
-        stamp: msg.stamp,
-        absPath: msg.absPath,
-        editing: false,
-        draft: typeof msg.text === "string" ? msg.text : "",
-        dirty: false,
-        conflict: false,
-        notice: "",
-      };
-      // Reclaim what the user typed before they navigated away, together with
-      // the version it was written against.
-      //
-      // The parked STAMP is restored, not the fresh one. If nothing changed the
-      // two are identical and the save proceeds as normal; if the file moved on
-      // the desk while the draft sat here, the stale stamp is exactly what makes
-      // the save stop and offer Reload / Overwrite instead of quietly replacing
-      // work that arrived in the meantime. Adopting the fresh stamp handed the
-      // fence a valid ticket for an edit based on content that no longer existed.
-      const cwd = remoteFilesRepoCwd();
-      const parked = peekRemoteFileDraft(cwd, msg.relPath);
-      state.filesBrowse.draftCwd = cwd;
-      if (parked && remoteFileIsEditableKind(msg.kind)) {
-        const v = state.filesBrowse.viewer;
-        const onDisk = typeof msg.text === "string" ? msg.text : "";
-        v.draft = parked.draft;
-        v.dirty = parked.draft !== onDisk;
-        v.editing = v.dirty;
-        if (parked.stamp) v.stamp = parked.stamp;
-        if (parked.absPath) v.absPath = parked.absPath;
-          // "Has the file moved since?" is the STAMP's question, not a text
-        // comparison — mtime+size is the same signal the save fence uses, and
-        // it means the parked entry no longer has to carry a second full copy
-        // of the file. Storing the baseline doubled every draft in
-        // sessionStorage, which is what made the quota shedding reachable at
-        // all, and it put host file contents in storage for no other purpose.
-        const movedUnderUs = !!parked.stamp && !!msg.stamp
-          && (parked.stamp.mtimeMs !== msg.stamp.mtimeMs || parked.stamp.size !== msg.stamp.size);
-        if (v.dirty) {
-          v.notice = movedUnderUs
-            ? "Unsaved changes from before you left — and the file has changed since. Saving will ask first."
-            : "Unsaved changes from before you left this file.";
-        }
-      }
-    }
-    renderRemoteFilesChrome();
+    settleRemoteFileRequest("read", msg);
   }
 
   function handleProjectFileWriteResult(msg) {
-    if (!remoteFileAnswerIsCurrent(msg)) return;
-    const pending = state.filesBrowse._pendingWrite;
-    if (!pending || msg.cwd !== pending.cwd || msg.relPath !== pending.relPath) {
-      // No correlation, no conclusion. The result carries no request id, so an
-      // answer arriving after its `_pendingWrite` was cleared — Back clears it,
-      // and so does a repo switch — cannot be shown to be about the text now in
-      // the editor. It used to fall through and take the live draft as "what was
-      // written": save, Back, reopen, type more, and the late result marked the
-      // NEWER text clean and dropped its parked copy, while the disk held only
-      // the earlier save. Ignoring it costs a "Saved." notice; believing it costs
-      // the user's work.
-      return;
-    }
-    const v = state.filesBrowse.viewer;
-    if (!v || v.relPath !== msg.relPath) return;
-    v.saving = false;
-    if (msg.ok) {
-      // What is on disk is what was SENT, not whatever the textarea holds now.
-      // Typing does not stop while "Saving…" is up, and taking the live draft
-      // here marked those later keystrokes saved — the UI said "Saved.", the
-      // host had never seen them, and leaving the file then discarded them as
-      // if they were safe.
-      // `pending` is guaranteed above; there is no live-draft fallback here on
-      // purpose, because that fallback WAS the bug.
-      const written = typeof pending.text === "string" ? pending.text : v.text;
-      v.text = written;
-      v.stamp = msg.stamp;
-      v.dirty = typeof v.draft === "string" && v.draft !== written;
-      // Still typing? Stay in the editor with Save live again, rather than
-      // dropping them out of edit mode on top of unsaved text.
-      v.editing = v.dirty;
-      v.conflict = false;
-      v.notice = v.dirty ? "Saved — you have typed more since." : "Saved.";
-      // On disk now — a parked copy would only come back as a phantom edit.
-      // Still dirty means they typed on during the save, so the parked copy is
-      // left in place: it is the newer text, and it is what Back must preserve.
-      if (!v.dirty) dropRemoteFileDraft(state.filesBrowse.draftCwd || remoteFilesRepoCwd(), v.relPath);
-      state.filesBrowse._pendingWrite = null;
-      renderRemoteFilesChrome();
-      return;
-    }
-    // Stamp mismatch: do NOT silently overwrite — same as the desktop panel.
-    // "workspace changed" means a different file (cross-project); no overwrite.
-    if (msg.reason === "changed") {
-      v.conflict = true;
-      v.notice = "File changed on disk. Reload the host's version, or keep your edits and overwrite.";
-    } else if (msg.reason === "workspace changed") {
-      v.conflict = false;
-      v.notice = "This file is no longer the one you opened (project may have switched). Re-open it from the list.";
-    } else {
-      v.conflict = false;
-      v.notice = msg.reason || "Save refused.";
-    }
-    state.filesBrowse._pendingWrite = null;
-    renderRemoteFilesChrome();
+    settleRemoteFileRequest("write", msg);
   }
-
-  function postRemoteFileWrite(viewer, text) {
-    const cwd = remoteFilesRepoCwd();
-    if (!cwd || !viewer || !viewer.relPath || !viewer.stamp || !viewer.absPath) return;
-    if (!remoteFilesEditAvailable()) return;
-    state.filesBrowse.writeGen += 1;
-    viewer.saving = true;
-    viewer.notice = "";
-    state.filesBrowse._pendingWrite = {
-      gen: state.filesBrowse.writeGen,
-      cwd,
-      relPath: viewer.relPath,
-      // What was actually SENT. The textarea stays editable while the save is in
-      // flight, so by the time the result lands `viewer.draft` may have moved on
-      // — and believing it is what reached the disk is how "Saved." was shown
-      // over text the host never received.
-      text,
-    };
-    renderRemoteFilesChrome();
-    vscode.postMessage({
-      type: "writeProjectFile",
-      cwd,
-      relPath: viewer.relPath,
-      text,
-      stamp: viewer.stamp,
-      expectedAbsPath: viewer.absPath,
-    });
-  }
-
-  function startRemoteFileOverwrite() {
-    const v = state.filesBrowse.viewer;
-    if (!v || !v.relPath || !remoteFilesEditAvailable()) return;
-    // Deliberate second action: re-read for a fresh stamp, then save the draft
-    // with that stamp. Never re-use a failed stamp.
-    const cwd = remoteFilesRepoCwd();
-    if (!cwd) return;
-    state.filesBrowse.readGen += 1;
-    const gen = state.filesBrowse.readGen;
-    state.filesBrowse.loading = true;
-    state.filesBrowse._pendingRead = {
-      gen,
-      cwd,
-      relPath: v.relPath,
-      forOverwrite: true,
-    };
-    v.notice = "Refreshing version…";
-    v.conflict = false;
-    renderRemoteFilesChrome();
-    vscode.postMessage({ type: "readProjectFile", cwd, relPath: v.relPath });
-  }
-
-  function navigateRemoteFilesUp() {
-    const cur = state.filesBrowse.relPath || "";
-    if (!cur) return;
-    const parts = cur.replace(/\\/g, "/").split("/").filter(Boolean);
-    parts.pop();
-    requestRemoteDir(parts.join("/"));
-  }
-
-  function renderRemoteFilesChrome() {
-    const panel = document.getElementById("files-browse-panel");
-    if (!panel || !remoteFilesBrowseAvailable()) return;
-    const title = panel.querySelector(".files-browse-title");
-    const pathEl = panel.querySelector(".files-browse-path");
-    const body = panel.querySelector(".files-browse-body");
-    const viewer = panel.querySelector(".files-browse-viewer");
-    const back = panel.querySelector(".files-browse-back");
-    if (!title || !pathEl || !body || !viewer || !back) return;
-
-    const repo = remoteFilesRepoCwd();
-    const leaf = cwdLeaf(repo) || "Project";
-    title.textContent = leaf;
-    title.title = repo || "Show file tree";
-    const rel = state.filesBrowse.relPath || "";
-    const pathText = pathEl.querySelector(".files-browse-path-text");
-    if (pathText) pathText.textContent = rel ? rel.replace(/\\/g, "/") : "/";
-    back.hidden = !rel;
-    // Chevron points right in the icon set; flip for "up/back".
-    back.style.transform = "rotate(180deg)";
-    // The breadcrumb belongs to the tree; the open file names itself in the
-    // row below.
-    pathEl.hidden = !!state.filesBrowse.viewer;
-
-    const v = state.filesBrowse.viewer;
-    if (v) {
-      body.hidden = true;
-      viewer.hidden = false;
-      viewer.innerHTML = "";
-      const vHead = document.createElement("div");
-      vHead.className = "files-browse-viewer-head";
-      const backToList = document.createElement("button");
-      backToList.type = "button";
-      backToList.className = "icon-btn";
-      backToList.title = "Back to files";
-      backToList.setAttribute("aria-label", "Back to files");
-      backToList.innerHTML = ICON.chevronRight;
-      backToList.style.transform = "rotate(180deg)";
-      backToList.addEventListener("click", () => {
-        // Leaving is not saving — but it is not discarding either. The draft is
-        // parked and comes back when this file is reopened. Cancel is the
-        // discard, and Cancel is where the question gets asked.
-        stashRemoteFileDraft();
-        state.filesBrowse.viewer = null;
-        state.filesBrowse._pendingRead = null;
-        state.filesBrowse._pendingWrite = null;
-        renderRemoteFilesChrome();
-      });
-      const vName = document.createElement("div");
-      vName.className = "files-browse-viewer-name";
-      vName.textContent = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
-      if (v.dirty) vName.textContent += " •";
-      vName.title = v.relPath || "";
-      vHead.appendChild(backToList);
-      vHead.appendChild(vName);
-      // Edit/Save only when the host advertised edit AND we have stamp+absPath
-      // from the read (without both, a save cannot prove identity/version).
-      const canEdit =
-        remoteFilesEditAvailable() &&
-        remoteFileIsEditableKind(v.kind) &&
-        v.stamp &&
-        v.absPath &&
-        !v.error &&
-        !v.loading;
-      if (canEdit) {
-        if (v.editing) {
-          const cancelBtn = document.createElement("button");
-          cancelBtn.type = "button";
-          cancelBtn.className = "files-browse-action";
-          cancelBtn.textContent = "Cancel";
-          cancelBtn.disabled = !!v.saving;
-          cancelBtn.addEventListener("click", () => {
-            // The ONE discard in this panel, so the one place that asks — the
-            // desktop panel asks here too (`cancelChanges`), in these words.
-            // Leaving the file parks the text and needs no question; throwing it
-            // away does.
-            if (
-              v.dirty
-              && !window.confirm(
-                "Cancel changes?\n\nThis discards your unsaved edits and restores the last loaded version.",
-              )
-            ) {
-              return;
-            }
-            // Clean the VIEWER before dropping the parked copy: the parked set is
-            // refreshed from the live dirty editor, so dropping while it still
-            // read as dirty put the cancelled text straight back.
-            v.editing = false;
-            v.draft = typeof v.text === "string" ? v.text : "";
-            v.dirty = false;
-            v.conflict = false;
-            v.notice = "";
-            dropRemoteFileDraft(state.filesBrowse.draftCwd || remoteFilesRepoCwd(), v.relPath);
-            renderRemoteFilesChrome();
-          });
-          const saveBtn = document.createElement("button");
-          saveBtn.type = "button";
-          saveBtn.className = "files-browse-action files-browse-action-primary";
-          saveBtn.textContent = v.saving ? "Saving…" : "Save";
-          saveBtn.disabled = !!v.saving || !v.dirty;
-          saveBtn.addEventListener("click", () => {
-            if (!v.dirty || v.saving) return;
-            postRemoteFileWrite(v, typeof v.draft === "string" ? v.draft : "");
-          });
-          vHead.appendChild(cancelBtn);
-          vHead.appendChild(saveBtn);
-        } else {
-          const editBtn = document.createElement("button");
-          editBtn.type = "button";
-          editBtn.className = "files-browse-action";
-          editBtn.title = "Edit file";
-          editBtn.setAttribute("aria-label", "Edit file");
-          editBtn.innerHTML = ICON.pencil;
-          editBtn.addEventListener("click", () => {
-            v.editing = true;
-            v.draft = typeof v.text === "string" ? v.text : "";
-            v.dirty = false;
-            v.notice = "";
-            v.conflict = false;
-            renderRemoteFilesChrome();
-          });
-          vHead.appendChild(editBtn);
-        }
-      }
-      viewer.appendChild(vHead);
-      // Said out loud, on the file it applies to. Storage refused this draft, so
-      // it is held in this page only and an OS tab discard takes it — the very
-      // event the parked copy exists to survive. Silently shedding it and hoping
-      // is what every other finding in this area has been about.
-      if (v.notice) {
-        const notice = document.createElement("div");
-        notice.className = "files-browse-notice" + (v.conflict || (v.notice && v.notice !== "Saved.") ? " files-browse-notice-warn" : "");
-        notice.textContent = v.notice;
-        viewer.appendChild(notice);
-        if (v.conflict) {
-          const actions = document.createElement("div");
-          actions.className = "files-browse-conflict-actions";
-          const reloadBtn = document.createElement("button");
-          reloadBtn.type = "button";
-          reloadBtn.className = "files-browse-action";
-          reloadBtn.textContent = "Reload";
-          reloadBtn.addEventListener("click", () => {
-            // Take the host's version — which means dropping the draft FIRST.
-            // Parked drafts stopped being consumed on read, so the re-read found
-            // this one and put it straight back: the one control that promises
-            // to discard could not discard. The viewer's dirty state has to go
-            // with it, or the parked copy would be re-added on the way past.
-            v.editing = false;
-            v.dirty = false;
-            v.conflict = false;
-            v.draft = typeof v.text === "string" ? v.text : "";
-            dropRemoteFileDraft(state.filesBrowse.draftCwd || remoteFilesRepoCwd(), v.relPath);
-            requestRemoteFile(v.relPath);
-          });
-          const overwriteBtn = document.createElement("button");
-          overwriteBtn.type = "button";
-          overwriteBtn.className = "files-browse-action files-browse-action-danger";
-          overwriteBtn.textContent = "Overwrite";
-          overwriteBtn.addEventListener("click", () => startRemoteFileOverwrite());
-          actions.appendChild(reloadBtn);
-          actions.appendChild(overwriteBtn);
-          viewer.appendChild(actions);
-        }
-      }
-      const vBody = document.createElement("div");
-      vBody.className = "files-browse-viewer-body";
-      if (v.loading || state.filesBrowse.loading && v.loading !== false && !v.error && !v.kind) {
-        vBody.className += " muted";
-        vBody.textContent = "Loading…";
-      } else if (v.error) {
-        vBody.className += " files-browse-error";
-        vBody.textContent = v.error;
-      } else if (v.editing) {
-        const ta = document.createElement("textarea");
-        ta.className = "files-browse-editor";
-        ta.value = typeof v.draft === "string" ? v.draft : (v.text || "");
-        ta.spellcheck = false;
-        ta.setAttribute("aria-label", "Edit " + (v.relPath || "file"));
-        ta.addEventListener("input", () => {
-          v.draft = ta.value;
-          v.dirty = ta.value !== (v.text || "");
-          // Update dirty marker + Save enablement without rebuilding the textarea
-          // (would steal focus / lose caret on every keystroke).
-          const nameEl = viewer.querySelector(".files-browse-viewer-name");
-          if (nameEl) {
-            const base = (v.relPath || "").split(/[\\/]/).pop() || v.relPath || "File";
-            nameEl.textContent = v.dirty ? base + " •" : base;
-          }
-          const save = viewer.querySelector(".files-browse-action-primary");
-          if (save) save.disabled = !!v.saving || !v.dirty;
-        });
-        vBody.appendChild(ta);
-      } else if (v.kind === "image" && v.dataUrl) {
-        const img = document.createElement("img");
-        img.src = v.dataUrl;
-        img.alt = v.relPath || "";
-        vBody.appendChild(img);
-      } else if (v.kind === "markdown" && typeof v.text === "string") {
-        const md = document.createElement("div");
-        // Shared markdown styles: class files-browse-md in chat.css (paired with
-        // the desktop panel's preview class). chat.js must not mention the
-        // desktop panel class prefix (isolation test in desktop-host-pure).
-        md.className = "files-browse-md";
-        md.innerHTML = renderMarkdown(v.text);
-        applyAutoDir(md);
-        vBody.appendChild(md);
-      } else {
-        const pre = document.createElement("pre");
-        pre.textContent = typeof v.text === "string" ? v.text : "";
-        vBody.appendChild(pre);
-      }
-      viewer.appendChild(vBody);
-      return;
-    }
-
-    viewer.hidden = true;
-    viewer.innerHTML = "";
-    body.hidden = false;
-    body.innerHTML = "";
-    if (state.filesBrowse.loading) {
-      const loading = document.createElement("div");
-      loading.className = "files-browse-empty muted";
-      loading.textContent = "Loading…";
-      body.appendChild(loading);
-      return;
-    }
-    if (state.filesBrowse.error) {
-      const err = document.createElement("div");
-      err.className = "files-browse-empty files-browse-error";
-      err.textContent = state.filesBrowse.error;
-      body.appendChild(err);
-      return;
-    }
-    const entries = state.filesBrowse.entries || [];
-    if (!entries.length) {
-      const empty = document.createElement("div");
-      empty.className = "files-browse-empty muted";
-      empty.textContent = "Empty folder";
-      body.appendChild(empty);
-      return;
-    }
-    for (const ent of entries) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "files-browse-row";
-      const icon = document.createElement("span");
-      icon.className = "files-browse-row-icon";
-      icon.innerHTML = ent.kind === "dir" ? ICON.folder : ICON.file;
-      const name = document.createElement("span");
-      name.className = "files-browse-row-name";
-      name.textContent = ent.name;
-      row.appendChild(icon);
-      row.appendChild(name);
-      if (ent.kind === "dir") {
-        const chev = document.createElement("span");
-        chev.className = "files-browse-row-chev";
-        chev.innerHTML = ICON.chevronRight;
-        row.appendChild(chev);
-        row.addEventListener("click", () => requestRemoteDir(ent.relPath));
-      } else {
-        row.addEventListener("click", () => requestRemoteFile(ent.relPath));
-      }
-      body.appendChild(row);
-    }
-    if (state.filesBrowse.truncated) {
-      const note = document.createElement("div");
-      note.className = "files-browse-empty muted";
-      note.textContent = "Listing truncated — folder has more entries.";
-      body.appendChild(note);
-    }
-  }
-
   // Welcome screen's "about" link → open the gear popover's Version & about panel.
   const welcomeAboutLink = $("welcome-about-link");
   if (welcomeAboutLink) welcomeAboutLink.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openAboutPanel(); };

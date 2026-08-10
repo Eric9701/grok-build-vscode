@@ -412,9 +412,10 @@ describe("desktop Electron app (real window + fake CLI)", () => {
       const resizer = document.getElementById("desk-ft-resizer");
       if (!resizer) return null;
       const cs = getComputedStyle(resizer);
+      const divider = getComputedStyle(resizer, "::after");
       return {
-        borderLeftWidth: cs.borderLeftWidth,
-        borderLeftStyle: cs.borderLeftStyle,
+        dividerBackground: divider.backgroundColor,
+        dividerWidth: divider.width,
         cursor: cs.cursor,
         display: cs.display,
       };
@@ -422,8 +423,8 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(sepCss).toBeTruthy();
     expect(sepCss!.display).not.toBe("none");
     expect(sepCss!.cursor).toMatch(/col-resize|ew-resize/);
-    expect(sepCss!.borderLeftStyle).not.toBe("none");
-    expect(parseFloat(sepCss!.borderLeftWidth)).toBeGreaterThan(0);
+    expect(sepCss!.dividerBackground).not.toMatch(/transparent|rgba\(0, 0, 0, 0\)/);
+    expect(parseFloat(sepCss!.dividerWidth)).toBeGreaterThan(0);
   });
 
   it("scroll-edge fades mount around #messages", async () => {
@@ -728,7 +729,7 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     expect(labels.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("rail draws styled chrome from chat.css (folder-open on expanded project)", async () => {
+  it("rail draws styled chrome from chat.css (solid open folder on expanded project)", async () => {
     // Proves Step 0: rail rules live in shared media/chat.css, not only the
     // web client's page shell — so the desktop column is not bare layout.
     await page.waitForSelector("#projects-rail:not([hidden])", { timeout: 45_000 });
@@ -754,8 +755,9 @@ describe("desktop Electron app (real window + fake CLI)", () => {
     // Shared CSS: sticky uppercase group heads + non-zero twisty box.
     expect(style.headLetter).toBe("uppercase");
     expect(style.twistyW).not.toBe("0px");
-    // Expanded project uses folder-open (Lucide path starts m6 14…).
-    expect(style.twistyHtml).toMatch(/m6 14/);
+    // Expanded project uses the owner's solid, theme-tinted open-folder asset.
+    expect(style.twistyHtml).toContain('viewBox="0 -57 511.99973 511"');
+    expect(style.twistyHtml).toContain('fill="currentColor"');
   });
 
   it("rail header chrome has brand + toggle above search (not crammed in one row)", async () => {
