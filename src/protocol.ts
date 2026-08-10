@@ -179,7 +179,13 @@ export type HostMsg =
   // The focused conversation's display name, using the same precedence as a
   // history row. It is separate from `sessions` because VS Code does not keep
   // that browser-only list populated while the history popover is closed.
-  | { type: "sessionName"; sessionId: string; name: string; cwd: string }
+  // `repoCwd` is the PROJECT this conversation belongs to, which is not always
+  // its `cwd`: a worktree session runs in an isolated checkout that is
+  // deliberately not a catalog row, so a client resolving the label from `cwd`
+  // alone falls back to that directory's leaf — and if the leaf happens to match
+  // another project's name, it presents one project's conversation as another's.
+  // Optional and additive: a client that never sees it keeps its old fallback.
+  | { type: "sessionName"; sessionId: string; name: string; cwd: string; repoCwd?: string }
   | { type: "modelChanged"; modelId: string }
   | { type: "modeChanged"; modeId: string }
   | { type: "openModePopover" }

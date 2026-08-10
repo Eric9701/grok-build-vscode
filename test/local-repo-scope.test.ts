@@ -205,3 +205,31 @@ describe("a row that names its own project", () => {
     expect(body).toMatch(/sendLocalRepoSessionsPreview\(localCwd\)/);
   });
 });
+
+describe("removing a project ends what is running in it", () => {
+  it("warns about work in flight and revokes, like the desktop close", () => {
+    // Tombstoning the row stopped new remote frames but left an agent already
+    // running in that folder executing commands and writing files — while the
+    // confirmation said "Nothing on disk is touched".
+    const body = methodBody("private async forgetExtraProjectFolder(");
+    expect(body).toMatch(/sessionsBoundToFolder\(cwd\)\.filter\(sessionHasWorkInFlight\)/);
+    expect(body).toMatch(/"Remove anyway"/);
+    expect(body).toMatch(/this\.revokeClosedProjectFolder\(cwd\)/);
+    // Revoke AFTER the tombstone is written, so the folder has already left the
+    // authorized set and a concurrent remote send cannot route into a doomed
+    // session — the same ordering the desktop close uses.
+    expect(body.indexOf("REMOVED_PROJECT_FOLDERS_KEY")).toBeLessThan(
+      body.indexOf("revokeClosedProjectFolder"),
+    );
+  });
+
+  it("labels a worktree conversation with its owning project", () => {
+    // A worktree's cwd is deliberately not a catalog row, so a client resolving
+    // the label from cwd alone falls back to that directory's leaf — and where
+    // the leaf matches another project's name, A's conversation is presented as
+    // B. The host names the owner when the two differ.
+    const body = methodBody("private postSessionName(");
+    expect(body).toMatch(/resolveLocalRepoTarget\(cwd\)/);
+    expect(body).toMatch(/repoCwd: owner/);
+  });
+});

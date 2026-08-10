@@ -759,8 +759,8 @@
             if (
               !window.confirm(
                 `Remove “${repo.label || leaf(repo.cwd)}” from the project list?\n\n` +
-                  "Nothing on disk is touched, and any conversations Grok has already " +
-                  "run there keep it listed.\n\n" +
+                  "No files are deleted, but any conversation still working in it " +
+                  "ends — the host asks again if that is the case.\n\n" +
                   // The row vanishes from every linked device at once, and a
                   // phone editing a file in it loses the route back to its
                   // unsaved text. The desk cannot see whether that is happening,

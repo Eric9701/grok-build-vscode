@@ -3269,6 +3269,24 @@ Only continue if you trust this code.`,
    */
   private async forgetExtraProjectFolder(cwd?: string): Promise<void> {
     if (!cwd) return;
+    // Removal is a REVOCATION here too, not a catalog filter. Tombstoning the
+    // row stopped new remote frames but left any agent already running in that
+    // folder executing commands and writing files — while the confirmation said
+    // "Nothing on disk is touched". Same warning and same disposal the desktop
+    // close performs, for the same reason: the user is being asked to end work
+    // they may not know is in flight.
+    const working = this.sessionsBoundToFolder(cwd).filter(sessionHasWorkInFlight);
+    if (working.length) {
+      const many = working.length > 1;
+      const ok = await this.host.showWarningMessage(
+        `Remove "${path.basename(cwd)}" from the project list?\n\n` +
+          `${many ? `${working.length} conversations are` : "A conversation is"} still working. ` +
+          `Removing ends ${many ? "them" : "it"} and discards the turn in progress.`,
+        { modal: true },
+        "Remove anyway",
+      );
+      if (ok !== "Remove anyway") return;
+    }
     // Never the open workspace folder. Its authorization does not come from the
     // catalog — `localTrustedSessionCwds` adds `workspaceRoot()` on its own — so
     // a tombstone would hide the row while every remote gate kept saying yes.
@@ -3311,6 +3329,17 @@ Only continue if you trust this code.`,
     const list = Array.isArray(tombstones) ? tombstones : [];
     if (!list.some((c) => normalizeRepoPath(c) === key)) {
       await this.state.update(REMOVED_PROJECT_FOLDERS_KEY, [...list, cwd]);
+    }
+    // Now that the tombstone is written — so `isAuthorizedCwd` already says no —
+    // end everything that folder still owns: agent processes disposed, remote
+    // ownership on that cwd released, image handles dropped, authEpoch bumped.
+    // Order matters the same way it does on desktop: revoke only once the folder
+    // has left the authorized set, or a concurrent remote send could still route
+    // into a doomed session.
+    this.revokeClosedProjectFolder(cwd);
+    if (!this.pool.has(this.focused) && !this.focused.client) {
+      this.focused = this.newLocalSession();
+      this.emit(this.focused, { type: "clearMessages" });
     }
     // The selection may have been pointing at it. postRepoCatalog re-validates
     // against the catalog it is about to send and moves it if the row is gone.
@@ -6356,11 +6385,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private postSessionName(session: Session, name = this.sessionDisplayName(session)): void {
     const id = session.activeSessionId;
     if (!id) return;
+    const cwd = this.sessionCwd(session);
+    // The owning PROJECT, resolved the same way the rail groups worktrees under
+    // their parent. Only when it differs from the cwd — an ordinary session is
+    // its own project and the field would be noise.
+    const owner = this.resolveLocalRepoTarget(cwd)?.cwd;
     const message: HostMsg = {
       type: "sessionName",
       sessionId: id,
       name,
-      cwd: this.sessionCwd(session),
+      cwd,
+      ...(owner && !pathsEqual(owner, cwd) ? { repoCwd: owner } : {}),
     };
     if (session === this.focused) this.postLocal(message);
     this.sendRemoteSession(session, message);

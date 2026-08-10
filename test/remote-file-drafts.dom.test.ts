@@ -514,15 +514,24 @@ describe("a parked draft is not consumed by reading it", () => {
     expect(editor(h)).toBeNull();
   });
 
-  it("does not resurrect a cancelled edit after a reload", () => {
-    // Cancel dropped the draft while the viewer was still marked dirty, and the
-    // stored payload includes the live dirty editor — so the call meant to
-    // remove the text wrote it straight back out.
+  it("does not resurrect a cancelled edit when the file is reopened", () => {
+    // Cancel used to drop the parked draft while the viewer was still marked
+    // dirty, and the payload written on the way past includes the live dirty
+    // editor — so the call meant to remove the text put it straight back.
+    //
+    // This assertion is the point of the test: an earlier version of it clicked
+    // Cancel and then checked nothing at all, so a regression where Cancel stops
+    // discarding would have kept it green.
     const h = remoteHost();
     openPanel(h);
     beginEdit(h, "notes.md", "one", "one two");
     const actions = [...h.doc.querySelectorAll(".files-browse-viewer-head .files-browse-action")];
     click(h.window, actions.find((b) => b.textContent === "Cancel")!);
+
+    back(h);
+    sendFile(h, "notes.md", "one");
+    expect(editor(h), "a cancelled edit must not come back").toBeNull();
+    expect(h.doc.querySelector(".files-browse-viewer-body")?.textContent).toContain("one");
   });
 });
 

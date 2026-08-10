@@ -5383,13 +5383,20 @@
     // The `sessionName` frame carries the conversation's own cwd, so prefer it:
     // a conversation resumed from another project may not be in any list this
     // webview holds, and `state.cwd` is the host's, not the conversation's.
-    const cwd = activeSessionName()?.cwd || activeSessionRecord()?.cwd || state.cwd || "";
-    const label = cwd && state.repos.length > 1 ? railRepoLabelFor(cwd) : "";
+    const named = activeSessionName();
+    const cwd = named?.cwd || activeSessionRecord()?.cwd || state.cwd || "";
+    // A worktree's cwd is deliberately NOT a catalog row, so resolving the label
+    // from it alone fell back to that directory's leaf — and where the leaf
+    // happened to match another project's name, project A's conversation was
+    // labelled as project B. The host names the owner when the two differ.
+    const projectCwd = named?.repoCwd || cwd;
+    const label = projectCwd && state.repos.length > 1 ? railRepoLabelFor(projectCwd) : "";
     const editing = state.sessionNameEditing?.surface === "local";
     el.hidden = !label || editing;
     if (el.hidden) return;
     el.textContent = label;
-    el.title = cwd;
+    el.title = projectCwd === cwd ? cwd : `${cwd}
+(in ${projectCwd})`;
   }
 
   function renderSessionHead() {
@@ -5409,7 +5416,10 @@
     titleEl.title = name;
 
     const cwd = record?.cwd || state.selectedRepoCwd;
-    subEl.textContent = cwd ? railRepoLabelFor(cwd) : "";
+    // Same worktree rule as the desk header: label the owning project, not the
+    // isolated checkout the conversation happens to run in.
+    const headProjectCwd = (activeSessionName()?.repoCwd) || cwd;
+    subEl.textContent = headProjectCwd ? railRepoLabelFor(headProjectCwd) : "";
     subEl.hidden = !cwd;
     // The name has its own tooltip on the title element; leave the header's to
     // the full path, which the truncated repo line below cannot show.
@@ -11076,6 +11086,10 @@
           sessionId: msg.sessionId,
           name: String(msg.name || "New session"),
           cwd: String(msg.cwd || ""),
+          // Present only when the conversation's cwd is not itself a project —
+          // a worktree. Absent from an older host, which is why the label below
+          // still has a fallback rather than depending on this.
+          repoCwd: typeof msg.repoCwd === "string" ? msg.repoCwd : "",
         };
         // Host-confirmed identity only. Optimistic rail clicks never write here.
         state.activeSessionId = msg.sessionId;
@@ -12341,7 +12355,7 @@
     return state.filesBrowse.drafts.find((d) => d.key === key);
   }
 
-  /** Forget every parked draft — memory and the discard-proof copy alike. */
+  /** Forget every parked draft — memory and the parked copy alike. */
   function clearRemoteFileDrafts() {
     state.filesBrowse.drafts = [];
     if (state.filesBrowse.viewer) {
@@ -12971,7 +12985,7 @@
       viewer.appendChild(vHead);
       // Said out loud, on the file it applies to. Storage refused this draft, so
       // it is held in this page only and an OS tab discard takes it — the very
-      // event the stored copy exists to survive. Silently shedding it and hoping
+      // event the parked copy exists to survive. Silently shedding it and hoping
       // is what every other finding in this area has been about.
       if (v.notice) {
         const notice = document.createElement("div");
@@ -12990,7 +13004,7 @@
             // Parked drafts stopped being consumed on read, so the re-read found
             // this one and put it straight back: the one control that promises
             // to discard could not discard. The viewer's dirty state has to go
-            // with it, or the persisted copy re-adds it on the way past.
+            // with it, or the parked copy would be re-added on the way past.
             v.editing = false;
             v.dirty = false;
             v.conflict = false;
