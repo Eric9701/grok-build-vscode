@@ -447,7 +447,7 @@ describe("worktree validation reads git first", () => {
     const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     const watch = src.slice(src.indexOf("private watchWorktreeCreate"));
     const body = watch.slice(0, watch.indexOf("\n  private worktreeCreatesInFlight"));
-    expect(body).toContain('finish(spoke ? "stalled" : "silent")');
+    expect(body).toContain('finish(capable() ? "stalled" : "silent")');
     expect(body, "no second, shorter clock").not.toContain("silenceMs");
     // IDLE, not elapsed. A fixed deadline calls a copy stopped for taking
     // long, which a big repository legitimately does — and the protocol emits
@@ -474,9 +474,27 @@ describe("worktree validation reads git first", () => {
     const start = src.indexOf("private watchWorktreeCreate");
     const body = src.slice(start, src.indexOf("\n  private worktreeCreatesInFlight", start));
     expect(body).toContain('detach({ keepSlot: outcome === "stalled" });');
-    expect(body).toContain("if (opts?.keepSlot) return;");
-    // ...and it cannot outlive the process it describes.
-    expect(body).toContain('client.once?.("exit"');
+    expect(body).toContain("if (opts?.keepSlot) {");
+    // ...and it cannot outlive the process it describes. The listener that
+    // guarantees that is registered ONLY when a slot is actually retained —
+    // one per ordinary create would accumulate on a reused workspace client
+    // until it exits, and eventually warn about it.
+    const keep = body.slice(body.indexOf("if (opts?.keepSlot) {"));
+    expect(keep.slice(0, keep.indexOf("return;"))).toContain('client.once?.("exit"');
+  });
+
+  it("a retry after a stall fails closed, because we know this CLI reports", () => {
+    // The interaction the retained slot creates: the retry cannot attribute
+    // its own pathless progress (two creates are counted, by design), so it
+    // would time out looking exactly like an old build — and fall through to
+    // the disk checks. But the retained slot exists BECAUSE this client
+    // reports, so "old build" is provably wrong there.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private watchWorktreeCreate");
+    const body = src.slice(start, src.indexOf("\n  private worktreeCreatesInFlight", start));
+    expect(body).toContain("this.worktreeStatusCapableClients.add(client);");
+    expect(body).toContain("const capable = () => spoke || clientReportsStatus();");
+    expect(body).toContain('finish(capable() ? "stalled" : "silent")');
   });
 
   it("refuses a second worktree create while one is running", () => {

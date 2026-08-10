@@ -2534,8 +2534,16 @@ Only continue if you trust this code.`,
         soleCreateInFlight: this.worktreeCreatesInFlight.get(client) === 1,
       });
     const verdict = worktreeStatusVerdict;
+    // Arrow, so `this` is the sidebar: the object returned below has methods
+    // of its own and would shadow it.
+    const clientReportsStatus = () => this.worktreeStatusCapableClients.has(client);
     let onActivity: (() => void) | undefined;
     const onStatus = (status: { status?: string; worktreePath?: string }) => {
+      // ANY event on this client — ours or not — proves the CLI emits status
+      // notifications. That fact outlives a single create, and it is the thing
+      // that makes "we heard nothing, so this must be an old build" a safe
+      // inference or a false one.
+      this.worktreeStatusCapableClients.add(client);
       events.push(status || {});
       if (!settleNow || !target) return; // buffered; replayed once we know ours
       if (!mine(status)) return;
@@ -2560,19 +2568,23 @@ Only continue if you trust this code.`,
       } catch {
         /* best effort — a disposed client has nothing to detach from */
       }
-      if (opts?.keepSlot) return;
+      if (opts?.keepSlot) {
+        // Only a RETAINED slot needs an owner to outlive this call, so only
+        // then is a listener worth registering. Attaching one per watch left a
+        // callback behind on every ordinary create too — a reused workspace
+        // client accumulates them until it exits, and eventually warns about
+        // it. `exit` is what AcpClient emits when its child goes.
+        try {
+          client.once?.("exit", () => this.worktreeCreatesInFlight.delete(client));
+        } catch {
+          /* the slot is bounded by the client's own lifetime regardless */
+        }
+        return;
+      }
       const left = (this.worktreeCreatesInFlight.get(client) ?? 1) - 1;
       if (left > 0) this.worktreeCreatesInFlight.set(client, left);
       else this.worktreeCreatesInFlight.delete(client);
     };
-    // A client that dies takes its accounting with it, so a slot held for a
-    // stalled create cannot outlive the process it was describing. `exit` is
-    // what AcpClient emits when its child goes.
-    try {
-      client.once?.("exit", () => this.worktreeCreatesInFlight.delete(client));
-    } catch {
-      /* the slot is bounded by the client's own lifetime regardless */
-    }
 
     return {
       /** Abandon the watch without waiting (the RPC failed or was unsupported). */
@@ -2618,10 +2630,19 @@ Only continue if you trust this code.`,
           // protocol emits progress while copying, so quiet is the signal, not
           // duration. Every matched event restarts the clock; only silence
           // running out ends the wait.
+          //
+          // "Silent" is a claim about the CLI, not about this create, so it is
+          // only safe while nothing has ever proved otherwise. A retry after a
+          // stall cannot attribute its own progress — the abandoned create's
+          // slot is still held, so pathless events are ambiguous by design —
+          // and reading that as "old build, fall through to the disk checks"
+          // would be provably wrong: the retained slot exists BECAUSE this
+          // client reports. Fail closed there.
+          const capable = () => spoke || clientReportsStatus();
           let idle: ReturnType<typeof setTimeout>;
           const arm = () => {
             clearTimeout(idle);
-            idle = setTimeout(() => finish(spoke ? "stalled" : "silent"), timeoutMs);
+            idle = setTimeout(() => finish(capable() ? "stalled" : "silent"), timeoutMs);
             timers.push(idle);
           };
           onActivity = arm;
@@ -2643,6 +2664,15 @@ Only continue if you trust this code.`,
    * only when there is exactly one create it could belong to.
    */
   private worktreeCreatesInFlight = new Map<AcpClient, number>();
+
+  /**
+   * Clients observed emitting `worktree/status` at least once.
+   *
+   * Kept per client rather than per create because it is a fact about the
+   * BUILD, and it is what stops "we heard nothing" from being read as "this
+   * CLI is too old" in a case where we already know better.
+   */
+  private worktreeStatusCapableClients = new WeakSet<AcpClient>();
 
   /** Poll until a freshly-created worktree's checkout exists on disk (its `.git`
    *  pointer file, which `git worktree add` writes). create is async — the RPC
