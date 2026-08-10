@@ -592,7 +592,7 @@ describe("VS Code projects rail renderer", () => {
     const menuLabels = (doc: Document) =>
       [...doc.querySelectorAll(".rail-menu-item")].map((i) => i.textContent);
 
-    it("offers Remove project only on the row that came from Add project", () => {
+    it("offers Hide project only on the row that came from Add project", () => {
       // A hand-added folder is the one catalog row with no expiry: every other
       // one is listed because Grok ran there and stops being listed when that
       // stops being true. It is remotely browsable like any project, so it has
@@ -604,11 +604,11 @@ describe("VS Code projects rail renderer", () => {
         el.querySelector('.rail-action-btn[title="Project actions"]') as HTMLButtonElement;
 
       menuOf(rows[0]).click(); // alpha — discovered, not added
-      expect(menuLabels(doc)).not.toContain("Remove project");
+      expect(menuLabels(doc)).not.toContain("Hide project");
       doc.body.click();
 
       menuOf(rows[1]).click(); // the added one
-      expect(menuLabels(doc)).toContain("Remove project");
+      expect(menuLabels(doc)).toContain("Hide project");
     });
 
     it("asks first, then posts removeProjectFolder for that cwd", () => {
@@ -617,7 +617,7 @@ describe("VS Code projects rail renderer", () => {
       const added = [...doc.querySelectorAll(".rail-repo")][1];
       (added.querySelector('.rail-action-btn[title="Project actions"]') as HTMLButtonElement).click();
       const remove = [...doc.querySelectorAll(".rail-menu-item")].find(
-        (i) => i.textContent === "Remove project",
+        (i) => i.textContent === "Hide project",
       ) as HTMLButtonElement;
 
       posted.length = 0;

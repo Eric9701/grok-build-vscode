@@ -300,7 +300,7 @@ const EXTRA_PROJECT_FOLDERS_KEY = "grok.extraProjectFolders";
 /**
  * Folders the user has explicitly REMOVED from the rail, which stay removed.
  *
- * Dropping the added-folder record was not enough to make "Remove project" mean
+ * Dropping the added-folder record was not enough to make "Hide project" mean
  * anything. VS Code's catalog is discovered from Grok's own session history, so
  * the moment anything ran in that folder the row came back on its own — and a
  * phone selecting the project is enough to create that history, because
@@ -3279,13 +3279,13 @@ Only continue if you trust this code.`,
     if (working.length) {
       const many = working.length > 1;
       const ok = await this.host.showWarningMessage(
-        `Remove "${path.basename(cwd)}" from the project list?\n\n` +
+        `Hide "${path.basename(cwd)}"?\n\n` +
           `${many ? `${working.length} conversations are` : "A conversation is"} still working. ` +
-          `Removing ends ${many ? "them" : "it"} and discards the turn in progress.`,
+          `Hiding it ends ${many ? "them" : "it"} and discards the turn in progress.`,
         { modal: true },
-        "Remove anyway",
+        "Hide anyway",
       );
-      if (ok !== "Remove anyway") return;
+      if (ok !== "Hide anyway") return;
     }
     // Never the open workspace folder. Its authorization does not come from the
     // catalog — `localTrustedSessionCwds` adds `workspaceRoot()` on its own — so

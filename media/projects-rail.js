@@ -747,20 +747,26 @@
         });
         items.push(null);
       }
-      // Only on rows that exist because the user added the folder — `added` is
+      // "Hide project", the same name and the same message the desktop rail
+      // uses for the same act — it posts `removeProjectFolder` there too. The
+      // word matters: nothing is deleted on either surface, the folder simply
+      // leaves the list, and + adds it back.
+      //
+      // Only on rows that exist because the user added the folder: `added` is
       // set by the host and absent everywhere else, so this is capability by
       // field presence like the rest. Every other row is listed because Grok has
-      // run there; there is nothing to revoke, and archive is how you hide it.
+      // run there, and archive is how those are put away.
       if (repo.added) {
         items.push({
-          label: "Remove project",
-          title: "Take this folder back out of the project list",
+          label: "Hide project",
+          title: "Take this project out of the list. Nothing is deleted — the folder stays on disk, and + adds it back.",
           onSelect: () => {
             if (
               !window.confirm(
-                `Remove “${repo.label || leaf(repo.cwd)}” from the project list?\n\n` +
-                  "No files are deleted, but any conversation still working in it " +
-                  "ends — the host asks again if that is the case.\n\n" +
+                `Hide “${repo.label || leaf(repo.cwd)}”?\n\n` +
+                  "Nothing is deleted — the folder stays on disk and Add project " +
+                  "brings it back. Any conversation still working in it ends; the " +
+                  "host asks again if that is the case.\n\n" +
                   // The row vanishes from every linked device at once, and a
                   // phone editing a file in it loses the route back to its
                   // unsaved text. The desk cannot see whether that is happening,
