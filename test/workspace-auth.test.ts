@@ -327,6 +327,33 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(src).toContain('this.isImagePathAuthorizedNow(source, "remote")');
   });
 
+  it("only a completed TURN retires an archive choice — never a session start", () => {
+    // A reconnecting phone whose CLI died restarts its session through the
+    // client-ready recovery path, which bypasses inbound authorization by
+    // design so a tab can rebuild what it already owned. Retiring the choice on
+    // any session start therefore let a remote clear the fence on a project
+    // archived while it was away — privilege regained by waiting.
+    //
+    // A turn cannot come from a fenced remote, so a turn in an archived project
+    // means the desk: the user actually working in it.
+    const src = sidebarSrc();
+    const start = src.indexOf("private async startSession(");
+    const nextMember = src.indexOf("  private ", start + 10);
+    const startBody = src.slice(start, nextMember);
+    // Guard the guard: an empty slice would satisfy the assertion below
+    // without proving anything.
+    expect(startBody).toContain("session.cwd = cwd;");
+    expect(startBody).not.toContain("this.retireArchiveChoiceOnActivity(");
+
+    const turn = src.indexOf("private refreshSessionOrderAfterTurn(");
+    const turnBody = src.slice(turn, turn + 700);
+    expect(turnBody).toContain("this.retireArchiveChoiceOnActivity(session);");
+
+    // ...and that is still the ONLY caller.
+    const calls = src.match(/this\.retireArchiveChoiceOnActivity\(/g) ?? [];
+    expect(calls).toHaveLength(1);
+  });
+
   it("RemoteUplink is the sole socket write path and enforces project auth", () => {
     const src = sidebarSrc();
     const uplinkSrc = fs.readFileSync(path.join(root, "src", "remote-uplink.ts"), "utf8");

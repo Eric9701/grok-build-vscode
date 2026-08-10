@@ -4200,6 +4200,26 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *
    * A worktree session counts for its source project: a worktree is not
    * something you archive separately.
+   *
+   * **Driven by a COMPLETED TURN, and only that.** Two reasons, and the second
+   * one cost a review round:
+   *
+   *  - it is what the renderer's rule already means. That rule compares the
+   *    newest transcript mtime against the choice, and a transcript only moves
+   *    when a turn runs — opening a conversation rewrites `summary.json` and
+   *    nothing else, which is why merely visiting one does not un-archive it on
+   *    the rail either. Hanging this off session start made the host MORE eager
+   *    than the renderer: a second disagreement, in the opposite direction to
+   *    the one being fixed.
+   *  - session start is not always the user. A reconnecting phone whose CLI
+   *    died restarts its session through the client-ready recovery path, which
+   *    bypasses inbound authorization by design. Retiring there let a remote
+   *    clear the fence on a project archived while it was away — a privilege it
+   *    regained by waiting, which is the opposite of what archiving promises.
+   *
+   * A turn cannot come from a fenced remote (it is refused long before this), so
+   * a turn in an archived project means the desk. That is the user working in
+   * it, which is exactly the event this is for.
    */
   private retireArchiveChoiceOnActivity(session: Session): void {
     if (!this.host.canArchiveRepos) return;
@@ -5192,10 +5212,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
     session.cwd = cwd;
-    // Opening a conversation IS working in the project, so any archive choice on
-    // it stops applying here — before the catalog is next built, so the rail and
-    // the remote fence never disagree about where this project belongs.
-    this.retireArchiveChoiceOnActivity(session);
+    // NOT the place to retire an archive choice, though it reads like one.
+    // Starting a session is not the same as the user working in a project: a
+    // reconnecting phone whose CLI died arrives here through the client-ready
+    // recovery path, which deliberately bypasses inbound authorization to
+    // rebuild the tab it already owned. Retiring here let that reconnect
+    // un-archive the project and hand the phone back something the user had put
+    // away, with no desk action at all. See retireArchiveChoiceOnActivity.
     // Re-bind worktree meta from override when resuming (cold open may only have cwd).
     if (!session.worktree && resumeId) {
       const o = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[resumeId];
