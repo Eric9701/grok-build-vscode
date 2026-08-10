@@ -3,16 +3,16 @@
    deliberately self-contained so the chat webview never loads it. */
 
 :root {
-  --rail-row-min-height: 28px;
+  --rail-row-min-height: 30px;
   --rail-repo-min-height: 34px;
   --rail-indent: 16px;
   --rail-icon-size: 14px;
   --rail-row-radius: 5px;
-  --rail-row-font-size: 12px;
-  --rail-row-line-height: 1.3;
-  --rail-repo-font-size: 12px;
-  --rail-repo-font-weight: 500;
-  --rail-repo-line-height: 1.3;
+  --rail-row-font-size: 13px;
+  --rail-row-line-height: 1.5;
+  --rail-repo-font-size: 14px;
+  --rail-repo-font-weight: 600;
+  --rail-repo-line-height: 1.45;
   --rail-row-gap: 6px;
   --rail-hover-bg: var(--vscode-list-hoverBackground);
   /* Same palette ids as media/chat.css — theme tokens only, never raw hex, so
@@ -107,9 +107,96 @@ html, body {
   text-transform: uppercase;
 }
 
+.rail-head-title {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.rail-head-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-right: 6px;
+  color: var(--vscode-descriptionForeground);
+}
+.rail-head-icon svg { width: 12px; height: 12px; }
+
+.rail-head-fold { padding: 0; }
+.rail-head-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 6px;
+  padding: 10px 16px 6px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: normal;
+  letter-spacing: .08em;
+  text-align: left;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.rail-head-btn:hover:not(:disabled) {
+  color: var(--vscode-foreground);
+  background: var(--vscode-list-hoverBackground);
+}
+.rail-head-btn:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+.rail-head-btn:disabled { cursor: default; }
+/* Trailing head control (Add project). The fold button takes the head's full
+   width, so the action overlays its right edge rather than shrinking the label;
+   it sits above in the stacking order and stops its own clicks, so pressing it
+   never folds the group underneath it. */
+.rail-head-fold { position: relative; }
+.rail-add-project {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+}
+.rail-add-project svg { width: 13px; height: 13px; }
+/* The empty rail's only control — a link, not a button: there is no chrome
+   around it to belong to. */
+.rail-empty-action {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.rail-empty-action:hover { text-decoration: underline; }
+.rail-empty-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.rail-head-twisty {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  margin-left: 2px;
+}
+.rail-head-twisty svg { width: 12px; height: 12px; }
+
 .rail-list { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
 .rail-repo { min-width: 0; border-radius: 6px; }
 .rail-repo.unavailable { opacity: .62; }
+.rail-repo.collapsed .rail-sessions { display: none; }
 
 .rail-repo-head {
   position: relative;
@@ -149,13 +236,14 @@ html, body {
 .rail-twisty[data-repo-color="coral"] { color: var(--repo-color-coral); }
 .rail-twisty[data-repo-color="purple"] { color: var(--repo-color-purple); }
 
-.rail-action-btn { cursor: pointer; }
+.rail-action-btn { width: 25px; height: 27px; cursor: pointer; }
 .rail-action-btn:hover,
 .rail-action-btn.active { color: var(--vscode-foreground); background: transparent; }
 .rail-action-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; cursor: default; }
 .rail-twisty svg,
-.rail-action-btn svg { width: var(--rail-icon-size); height: var(--rail-icon-size); }
+.rail-action-btn svg { width: 13px; height: 13px; }
+.rail-twisty svg { width: var(--rail-icon-size); height: var(--rail-icon-size); }
 
 .rail-repo-name {
   display: flex;
@@ -181,6 +269,18 @@ html, body {
   white-space: nowrap;
 }
 
+.rail-current-tag {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  color: var(--vscode-textLink-foreground);
+  background: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .rail-repo-actions,
 .rail-session-actions {
   position: absolute;
@@ -194,11 +294,20 @@ html, body {
   opacity: 0;
   pointer-events: none;
   transition: opacity .1s ease;
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    var(--rail-hover-bg, var(--vscode-list-hoverBackground)) 28%
-  );
+  /* VS Code theme selection tokens are often translucent. The lower gradient
+     supplies the opaque side-bar surface while the upper preserves the exact
+     hover tint, so trailing text fades away instead of reading through icons. */
+  background:
+    linear-gradient(
+      to right,
+      transparent 0%,
+      var(--rail-hover-bg, var(--vscode-list-hoverBackground)) 28%
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      var(--vscode-sideBar-background) 28%
+    );
   padding-left: 14px;
   border-radius: 4px;
 }
@@ -212,11 +321,17 @@ html, body {
 .rail-rebuilding .rail-session-actions { transition: none; }
 
 .rail-session.active .rail-session-actions {
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    var(--vscode-list-activeSelectionBackground) 28%
-  );
+  background:
+    linear-gradient(
+      to right,
+      transparent 0%,
+      var(--vscode-list-activeSelectionBackground) 28%
+    ),
+    linear-gradient(
+      to right,
+      transparent 0%,
+      var(--vscode-sideBar-background) 28%
+    );
 }
 
 .rail-sessions { display: flex; flex-direction: column; min-width: 0; gap: 1px; padding: 1px 0 5px 0; }
@@ -280,23 +395,53 @@ html, body {
   opacity: .85;
 }
 
+.rail-pinned { margin-bottom: 2px; }
+.rail-session-actions .rail-action-btn { width: 25px; height: 24px; }
+.rail-session-actions .rail-action-btn svg { width: 12px; height: 12px; }
+
+.rail-more {
+  align-self: flex-start;
+  margin: 2px 0 1px;
+  padding: 3px 7px 3px var(--rail-indent);
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font: 11px/1.3 var(--vscode-font-family);
+  opacity: .62;
+  cursor: pointer;
+}
+.rail-more:hover,
+.rail-more:focus-visible {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground);
+  opacity: 1;
+}
+.rail-more:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 .rail-note {
-  padding: 6px var(--rail-indent);
+  padding: 4px 7px 4px var(--rail-indent);
   color: var(--vscode-descriptionForeground);
   font-size: 12px;
+  font-style: italic;
 }
 
 .rail-menu {
   position: fixed;
   z-index: 1000;
-  min-width: 160px;
-  max-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 190px;
   padding: 4px;
-  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
-  color: var(--vscode-menu-foreground, var(--vscode-foreground));
-  border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 9px;
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--vscode-widget-shadow) 40%, transparent);
 }
 
 .rail-menu-item {
@@ -304,19 +449,22 @@ html, body {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 8px 9px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: inherit;
-  font: inherit;
-  font-size: 12px;
+  font: 13px/1.2 var(--vscode-font-family);
   text-align: left;
   cursor: pointer;
 }
 
 .rail-menu-item:hover:not(:disabled) {
   background: var(--vscode-list-hoverBackground);
+}
+.rail-menu-item:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
 }
 
 .rail-menu-item:disabled {
@@ -327,8 +475,8 @@ html, body {
 .rail-menu-item.danger { color: var(--vscode-errorForeground); }
 .rail-menu-sep {
   height: 1px;
-  margin: 4px 6px;
-  background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+  margin: 3px 2px;
+  background: var(--vscode-panel-border);
 }
 
 /* Project colour swatch picker — fixed under <body> like .rail-menu so the
@@ -342,7 +490,7 @@ html, body {
   background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
   border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
   border-radius: 6px;
-  box-shadow: 0 4px 16px color-mix(in oklab, var(--vscode-widget-shadow, #000) 40%, transparent);
+  box-shadow: 0 4px 16px color-mix(in oklab, var(--vscode-widget-shadow) 40%, transparent);
 }
 .rail-color-swatch {
   box-sizing: border-box;
@@ -387,10 +535,19 @@ html, body {
   .rail-repo-actions,
   .rail-session-actions {
     position: static;
+    right: auto;
+    top: auto;
     transform: none;
+    flex: 0 0 auto;
     opacity: 1;
     pointer-events: auto;
-    background: none;
+    background: transparent;
     padding-left: 0;
   }
+  .rail-action-btn { width: 32px; height: 32px; }
+  .rail-session-actions .rail-action-btn { width: 32px; height: 30px; }
+  .rail-repo-head { min-height: 40px; }
+  .rail-session { min-height: 38px; }
+  .rail-menu-item { padding: 11px 10px; }
+  .rail-head-btn { padding-block: 12px 8px; }
 }

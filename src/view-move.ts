@@ -20,18 +20,34 @@
 
 export const GROK_VIEW_ID = "grok.chat";
 
-/** Projects rail — fixed in the primary side bar (`grokPrimary`). Separate from
+/** Projects rail — its own activity-bar container (`grokProjects`). Separate from
  *  the chat view so opening it never creates a second chat client. */
 export const GROK_PROJECTS_VIEW_ID = "grok.projects";
 
 /** Contributed containers, one per dock location (package.json prefixes each id
  *  with `workbench.view.extension.`). `grokSidebar` homes the chat view;
- *  `grokPrimary` homes the projects rail (and is also a move target for chat);
- *  `grokPanel` is empty by default and exists only as a `vscode.moveViews`
- *  target. */
+ *  `grokPrimary` and `grokPanel` are empty by default and exist only as
+ *  `vscode.moveViews` targets for chat; `grokProjects` homes the rail. */
 export const SECONDARY_CONTAINER_ID = "workbench.view.extension.grokSidebar";
 export const PRIMARY_CONTAINER_ID = "workbench.view.extension.grokPrimary";
 export const PANEL_CONTAINER_ID = "workbench.view.extension.grokPanel";
+
+/**
+ * The rail's own container — deliberately NOT `grokPrimary`.
+ *
+ * The rail first shipped inside `grokPrimary`, and that container is also the
+ * destination the gear's "Sidebar" entry moves the CHAT view to
+ * ({@link moveViewContainerFor}). One container serving both roles means the two
+ * views are welded together: move chat to the sidebar and the rail comes with
+ * it, and drag that container anywhere and the rail goes there too. The owner
+ * hit exactly this — the rail arrived docked beside the chat and had to be
+ * dragged out by hand.
+ *
+ * A container of its own also gets the rail a fresh default placement on
+ * upgrade, which is what un-sticks anyone already living with the welded
+ * layout: VS Code has no remembered location for an id it has not seen.
+ */
+export const PROJECTS_CONTAINER_ID = "workbench.view.extension.grokProjects";
 
 /** Which edge the panel must be docked on for a destination to mean what its
  *  menu label says. */

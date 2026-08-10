@@ -169,6 +169,19 @@ export interface RepoListEntry {
   archived?: boolean;
   archivedAt?: number;
   /**
+   * This row exists because the user added the folder by hand, not because Grok
+   * has ever run there. Set by the host (VS Code only — see
+   * EXTRA_PROJECT_FOLDERS_KEY in `sidebar.ts`), never by {@link discoverRepos},
+   * which knows nothing about it.
+   *
+   * The client uses it to offer removal, and removal is the point: every other
+   * row is here because of work that happened, and stops being listed when that
+   * stops being true. A hand-added folder has no such expiry, and it is
+   * remotely browsable and editable like any other project — so the only way it
+   * is honest is if it can be taken back out.
+   */
+  added?: boolean;
+  /**
    * Folder-icon colour id flattened for the wire. **Present when the host
    * supports project colours** — even when unset (`""`), which is how the client
    * tells "no colour" from "this host cannot colour" without a version number
@@ -425,6 +438,48 @@ export function normalizeRepoPath(cwd: string, platform = process.platform): str
   if (normalized !== path.parse(normalized).root) normalized = normalized.replace(/[\\/]+$/, "");
   if (platform === "win32") normalized = normalized.toLowerCase();
   return normalized;
+}
+
+/**
+ * `absPath` expressed relative to `root`, or undefined when it is not inside it.
+ *
+ * Exists because "is this file part of this conversation's project?" became a
+ * real question. VS Code history follows the rail's selection now, so the active
+ * editor can be showing project A while the focused conversation belongs to
+ * project B — and attaching A's file, or worse A's selected source text, to B's
+ * prompt is content crossing projects.
+ *
+ * Compared on {@link normalizeRepoPath} keys, which is what makes it right in
+ * the two places a naive prefix test is wrong: Windows treats `C:\Repo` and
+ * `c:/repo` as one directory, and `/work/app-two` must not read as inside
+ * `/work/app`. The result uses forward slashes on every platform — it is a
+ * display and prompt path, not a filesystem one.
+ */
+export function relativePathWithin(
+  root: string,
+  absPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (!root || !absPath) return undefined;
+  // The platform's OWN path module, not the process's. `normalizeRepoPath` uses
+  // the native one, which is right for its callers (real paths on the machine
+  // they are on) and wrong here: this takes `platform` as an argument, so it has
+  // to answer for that platform on any host. Otherwise a Windows case decided on
+  // Linux CI compares `c:\work\app` against `c:/work/app` and says "outside" —
+  // the tests would pass on the author's machine and fail on the runner.
+  const p = platform === "win32" ? path.win32 : path.posix;
+  const key = (value: string): string => {
+    let n = p.normalize((value || "").trim());
+    if (n !== p.parse(n).root) n = n.replace(/[\\/]+$/, "");
+    return platform === "win32" ? n.toLowerCase() : n;
+  };
+  const rootKey = key(root);
+  const fileKey = key(absPath);
+  if (!rootKey || !fileKey || fileKey === rootKey) return undefined;
+  // Separator-terminated, so a sibling that merely shares a name prefix cannot
+  // match: `/work/app-two` is not inside `/work/app`.
+  if (!fileKey.startsWith(rootKey.replace(/[\\/]+$/, "") + p.sep)) return undefined;
+  return p.relative(root, absPath).split(/[\\/]/).join("/");
 }
 
 function pathSegments(cwd: string): string[] {

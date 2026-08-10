@@ -22,6 +22,7 @@ export const BODY = `
   <header class="top-bar">
     <div id="session-name-chip" class="session-name-chip" hidden>
       <button id="session-name-label" class="session-name-label" type="button"></button>
+      <span id="session-name-repo" class="session-name-repo" hidden></span>
       <button id="session-name-edit" class="session-name-edit icon-btn" type="button" hidden></button>
     </div>
     <button id="repo-btn" type="button"></button>

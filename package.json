@@ -58,6 +58,11 @@
           "id": "grokPrimary",
           "title": "Grok",
           "icon": "resources/grok-icon.svg"
+        },
+        {
+          "id": "grokProjects",
+          "title": "Grok Projects",
+          "icon": "resources/grok-projects-icon.svg"
         }
       ],
       "panel": [
@@ -76,7 +81,7 @@
           "name": "Grok"
         }
       ],
-      "grokPrimary": [
+      "grokProjects": [
         {
           "type": "webview",
           "id": "grok.projects",

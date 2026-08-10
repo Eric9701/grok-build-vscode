@@ -5,7 +5,13 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GROK_PROJECTS_VIEW_ID, PRIMARY_CONTAINER_ID } from "../src/view-move";
+import {
+  GROK_PROJECTS_VIEW_ID,
+  PANEL_CONTAINER_ID,
+  PRIMARY_CONTAINER_ID,
+  PROJECTS_CONTAINER_ID,
+  SECONDARY_CONTAINER_ID,
+} from "../src/view-move";
 import {
   partitionRailRepos,
   sameRepoCwd,
@@ -16,23 +22,25 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("projects rail view registration", () => {
-  it("registers grok.projects under the primary side bar container", () => {
-    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
+  const pkg = () =>
+    JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
       contributes: {
-        viewsContainers: { activitybar: { id: string }[] };
+        viewsContainers: { activitybar: { id: string; icon: string }[] };
         views: Record<string, { id: string; type: string; name: string }[]>;
       };
     };
-    // Container id without the workbench.view.extension. prefix.
-    expect(pkg.contributes.viewsContainers.activitybar.some((c) => c.id === "grokPrimary")).toBe(
-      true,
-    );
-    expect(PRIMARY_CONTAINER_ID).toBe("workbench.view.extension.grokPrimary");
 
-    const primary = pkg.contributes.views.grokPrimary;
-    expect(primary).toBeDefined();
-    const projects = primary.find((v) => v.id === "grok.projects");
-    expect(projects).toEqual({
+  it("registers grok.projects in its own activity bar container", () => {
+    const containers = pkg().contributes.viewsContainers.activitybar;
+    // Container ids without the workbench.view.extension. prefix.
+    expect(containers.some((c) => c.id === "grokPrimary")).toBe(true);
+    expect(containers.some((c) => c.id === "grokProjects")).toBe(true);
+    expect(PRIMARY_CONTAINER_ID).toBe("workbench.view.extension.grokPrimary");
+    expect(PROJECTS_CONTAINER_ID).toBe("workbench.view.extension.grokProjects");
+
+    const rail = pkg().contributes.views.grokProjects;
+    expect(rail).toBeDefined();
+    expect(rail.find((v) => v.id === "grok.projects")).toEqual({
       type: "webview",
       id: "grok.projects",
       name: "Projects",
@@ -40,9 +48,36 @@ describe("projects rail view registration", () => {
     expect(GROK_PROJECTS_VIEW_ID).toBe("grok.projects");
 
     // Chat stays in the secondary container — rail is alongside, not inside.
-    const chat = pkg.contributes.views.grokSidebar?.find((v) => v.id === "grok.chat");
+    const chat = pkg().contributes.views.grokSidebar?.find((v) => v.id === "grok.chat");
     expect(chat).toBeDefined();
-    expect(primary.some((v) => v.id === "grok.chat")).toBe(false);
+    expect(rail.some((v) => v.id === "grok.chat")).toBe(false);
+  });
+
+  it("keeps the rail out of every container chat can be moved into", () => {
+    // The regression this exists for: the rail shipped inside `grokPrimary`,
+    // which moveViewContainerFor("sidebar") also hands the CHAT view. One
+    // container for both roles welds them — moving chat drags the rail along,
+    // and dragging the rail drags chat. Whatever the move targets are, the
+    // rail's container must not be one of them.
+    const moveTargets = [PRIMARY_CONTAINER_ID, PANEL_CONTAINER_ID, SECONDARY_CONTAINER_ID];
+    expect(moveTargets).not.toContain(PROJECTS_CONTAINER_ID);
+    for (const target of moveTargets) {
+      const id = target.replace("workbench.view.extension.", "");
+      expect(pkg().contributes.views[id]?.some((v) => v.id === "grok.projects") ?? false).toBe(
+        false,
+      );
+    }
+  });
+
+  it("gives the rail container its own icon, not the chat one", () => {
+    // Two identical Grok marks in the activity bar is not a layout, it is a
+    // coin toss.
+    const containers = pkg().contributes.viewsContainers.activitybar;
+    const chatIcon = containers.find((c) => c.id === "grokPrimary")?.icon;
+    const railIcon = containers.find((c) => c.id === "grokProjects")?.icon;
+    expect(railIcon).toBeTruthy();
+    expect(railIcon).not.toBe(chatIcon);
+    expect(fs.existsSync(path.join(root, railIcon!))).toBe(true);
   });
 
   it("extension registers the projects view provider", () => {

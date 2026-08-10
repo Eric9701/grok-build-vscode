@@ -203,6 +203,50 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
     ).toBe(true);
   });
 
+  it("delivers the file-browser answers for an authorized project", () => {
+    // All three were classified `message-cwd` and then not handled in that
+    // branch, so every one fell through to false. The remote file browser sent
+    // its request, the host answered, and the answer was dropped here — the
+    // panel sat on "Loading…" for ever and the feature had never worked.
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "projectDirListing", cwd: open[0], relPath: "", ok: true, entries: [], truncated: false },
+        open,
+        undefined,
+        same,
+      ),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "projectFileContent", cwd: open[0], relPath: "a.md", ok: false, reason: "nope" },
+        open,
+        undefined,
+        same,
+      ),
+    ).toBe(true);
+    expect(
+      mayDeliverRemoteHostMsg(
+        { type: "projectFileWriteResult", cwd: open[0], relPath: "a.md", ok: true, stamp: { mtimeMs: 1, size: 2 } },
+        open,
+        undefined,
+        same,
+      ),
+    ).toBe(true);
+  });
+
+  it("still refuses a file-browser answer for a project that has since closed", () => {
+    // The whole point of classifying them `message-cwd`: the request was let in
+    // while the project was open, and the answer must be re-checked against the
+    // LIVE set rather than trusted from when it was accepted.
+    for (const msg of [
+      { type: "projectDirListing", cwd: closed, relPath: "", ok: true, entries: [], truncated: false },
+      { type: "projectFileContent", cwd: closed, relPath: "a.md", ok: true, kind: "text", text: "x" },
+      { type: "projectFileWriteResult", cwd: closed, relPath: "a.md", ok: true, stamp: { mtimeMs: 1, size: 2 } },
+    ] as const) {
+      expect(mayDeliverRemoteHostMsg(msg as never, open, closed, same), msg.type).toBe(false);
+    }
+  });
+
   it("refuses repos / initialState frames that carry a closed project's cwd", () => {
     // Unconditional "none" classification was the hole: builders could (and
     // rehome deliberately did) put a closed selectedCwd on the wire.

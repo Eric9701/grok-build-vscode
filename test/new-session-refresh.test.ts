@@ -41,8 +41,13 @@ describe("a new local session refreshes the rail", () => {
   it("posts it after the empty-session sweep", () => {
     // The sweep can retire the empty session this one replaced. A list built
     // before it would carry a row that no longer exists.
+    //
+    // lastIndexOf, not indexOf: the method now opens with a refusal path for a
+    // named project that has gone away, and that path posts a refresh of its
+    // own before returning. The ordering guarded here is the one on the way
+    // through to actually starting a session.
     const sweep = body.indexOf("sweepEmptySessions");
-    const list = body.indexOf("this.postSessionsList();");
+    const list = body.lastIndexOf("this.postSessionsList();");
     expect(sweep).toBeGreaterThan(-1);
     expect(list).toBeGreaterThan(sweep);
   });

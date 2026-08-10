@@ -137,10 +137,25 @@ describe("insertActiveMention accepts non-file schemes (regression #1)", () => {
     const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     const start = src.indexOf("insertActiveMention(");
     expect(start).toBeGreaterThan(-1);
-    const body = src.slice(start, start + 2000);
+    // To the end of the method, not a fixed byte window: a comment added inside
+    // it pushed the line these assertions are about past the old 2000-char cut,
+    // and the test then failed for a reason that had nothing to do with the
+    // regression it guards.
+    const end = src.indexOf("\n  newSession(", start);
+    expect(end, "insertActiveMention must still be followed by newSession").toBeGreaterThan(start);
+    const body = src.slice(start, end);
     expect(body).toMatch(/opts\?\s*\.\s*uri\s*\?\?\s*editor\?\s*\.\s*document\s*\.\s*uri/);
     expect(body).toMatch(/pathUri\?\.fsPath|pathUri\.fsPath/);
-    expect(body).toMatch(/asRelativePath\(\s*pathUri\s*\)/);
+    // The relative path is built from that same portable Uri's fsPath. It used
+    // to be `asRelativePath(pathUri)`; it is `relativePathWithin` now, because
+    // the attachment must belong to the CONVERSATION's project, and a project
+    // reached through the rail is not a VS Code workspace folder — asRelativePath
+    // would have labelled an ordinary file in its own repo with an absolute
+    // path. The remote-scheme guarantee this test exists for is untouched:
+    // `fsPath` is still what both the containment check and the label are built
+    // from, so `vscode-remote://` resolves exactly as a local path does.
+    expect(body).toMatch(/this\.conversationRelPath\(absPath\)/);
+    expect(body).not.toMatch(/this\.host\.asRelativePath/);
     expect(body).not.toMatch(/opts\?\s*\.\s*path\b/);
     expect(body).not.toMatch(/Uri\.file\(\s*opts\.path\s*\)/);
     // No scheme gate on the path line (refreshImplicitChip still filters file-

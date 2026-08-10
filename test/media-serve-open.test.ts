@@ -398,3 +398,45 @@ describe("resolveChatOpenFilePath", () => {
     ).toBe(absSession);
   });
 });
+
+/**
+ * The wiring, not the pure function above.
+ *
+ * A relative link in a conversation's prose must resolve against the
+ * CONVERSATION's repo, not the folder VS Code happens to have open. That has
+ * always been true, but it only mattered once the rail made history
+ * multi-workspace: a conversation from another project is now routinely on
+ * screen, and resolving its links against the open folder would send every one
+ * of them to a path in the wrong repo — silently, since a miss just offers to
+ * create the file (`resolveChatOpenFilePath` falls back to joining the first
+ * root when nothing exists).
+ *
+ * Source-level because `resolveChatOpenPath` is private and there is no sidebar
+ * harness. Weak as tests go, but it fails on the one edit that would regress
+ * this — swapping the session's cwd for the workspace root.
+ */
+describe("chat open path is rooted at the session", () => {
+  it("passes the session's cwd as the only workspace root", async () => {
+    const fs = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    // Newlines normalised: the repo checks out CRLF on Windows and the slice
+    // below counts on "\n  }\n" meaning end-of-method.
+    const src = fs
+      .readFileSync(
+        path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+        "utf8",
+      )
+      .replace(/\r\n/g, "\n");
+    // Sliced by index rather than by a body-matching regex: the declaration's
+    // return type is itself a braced block ending "\n  } {", so the obvious
+    // lazy match — and a plain search for "\n  }" — both stop at the end of the
+    // signature and never reach the call this has to inspect.
+    const at = src.indexOf("private resolveChatOpenPath(");
+    expect(at, "resolveChatOpenPath must still exist").toBeGreaterThan(-1);
+    const end = src.indexOf("\n  }\n", at);
+    expect(end).toBeGreaterThan(at);
+    const body = src.slice(at, end);
+    expect(body).toMatch(/workspaceRoots:\s*\[\s*this\.sessionCwd\(session\)\s*\]/);
+    expect(body).not.toMatch(/workspaceRoots:\s*\[\s*this\.workspaceRoot\(\)/);
+  });
+});

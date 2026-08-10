@@ -177,6 +177,7 @@ import {
   normalizeRepoPath,
   orderedResumeCwdCandidates,
   readContextUsage,
+  relativePathWithin,
   readSessionEntries,
   resolveGrokHome,
   sessionCatalogDirs,
@@ -267,6 +268,54 @@ const REPO_ARCHIVES_KEY = "grok.repoArchives";
  *  and VS Code host this (unlike archives, which desktop strips because open/
  *  close already owns the curated list). */
 const REPO_COLORS_KEY = "grok.repoColors";
+/**
+ * Folders the user added to the rail by hand, on a host that cannot open them.
+ *
+ * Desktop "Add project" changes the app's OWN workspace, so it needs no list —
+ * `workspaceFolders()` is the list. VS Code's workspace belongs to VS Code, and
+ * adding a folder to it converts a single-folder window into a multi-root one
+ * and reloads the extension host, which is a violent answer to "show me this
+ * project in the rail". So VS Code records the folder here instead: it joins
+ * `trustedCwds` and appears as an ordinary catalog row, VS Code's own Explorer
+ * is untouched, and nothing reloads.
+ *
+ * **It does grant reach, and that is the point.** An earlier version of this
+ * comment claimed otherwise on the grounds that `localTrustedSessionCwds`
+ * already trusts the whole discovered catalog — true, but the folder this
+ * feature adds is precisely the one Grok has NEVER run in, so it was not in
+ * that catalog and is now. It becomes selectable, and through the phone,
+ * browsable and editable like any other project. That is what the user asked
+ * for by picking it. What it must therefore also be is REVOCABLE — see
+ * {@link GrokSidebar.forgetExtraProjectFolder}, reachable from the rail's ⋯
+ * menu on exactly the rows that came from here.
+ *
+ * Absent from `DISK_KEYS`, so it lives in `globalState` rather than the shared
+ * `~/.grok/client-state` that pins and colours use. Deliberate: pins and colours
+ * are curation you want to follow you to the phone, this is a workaround for one
+ * editor's inability to show a folder it has not opened. Desktop filters it out
+ * anyway (`localRepoCatalogEntries` keeps only open folders there), so sharing
+ * it would move bytes around for no effect.
+ */
+const EXTRA_PROJECT_FOLDERS_KEY = "grok.extraProjectFolders";
+/**
+ * Folders the user has explicitly REMOVED from the rail, which stay removed.
+ *
+ * Dropping the added-folder record was not enough to make "Remove project" mean
+ * anything. VS Code's catalog is discovered from Grok's own session history, so
+ * the moment anything ran in that folder the row came back on its own — and a
+ * phone selecting the project is enough to create that history, because
+ * `selectRemoteRepo` opens or starts a session there. So a remote could make its
+ * own access permanent by selecting a newly added project before the user
+ * thought better of it, and the returning row carried no `added` marker, so the
+ * rail no longer offered to remove it.
+ *
+ * A tombstone is the only thing that survives that. Nothing on disk is touched
+ * and no conversation is deleted — the project is simply not listed, and
+ * therefore not trusted, until the user adds the folder again, which clears it.
+ * VS Code-local like its counterpart: absent from `DISK_KEYS`, so it lives in
+ * `globalState` rather than the shared client-state.
+ */
+const REMOVED_PROJECT_FOLDERS_KEY = "grok.removedProjectFolders";
 /** Shared client-state key for the anonymous per-install telemetry GUID (survives
  *  updates and identifies this machine across clients).
  *
@@ -803,7 +852,26 @@ export class GrokSidebar {
       }
       return;
     }
-    const relPath = this.host.asRelativePath(pathUri);
+    // Same fence as the implicit chip, and for the same reason: the attachment
+    // has to belong to the CONVERSATION, not to the window. Once the rail could
+    // put a project-B conversation on screen inside a window opened on A, "Add
+    // Selection to Grok" on an A file handed A's source to B — and with a
+    // selection the prompt builder reads that absolute path and embeds the text
+    // under an innocuous A-relative name like `src/foo.ts`.
+    //
+    // Also where the relative path comes from. `asRelativePath` resolves against
+    // VS Code's workspace folders, and a project reached through the rail is
+    // deliberately not one of them, so it would have labelled an ordinary file
+    // with its full absolute path.
+    const sessionRoot = this.sessionCwd(this.focused);
+    const relPath = this.conversationRelPath(absPath);
+    if (relPath === undefined) {
+      void this.host.showWarningMessage(
+        `That file is outside ${path.basename(sessionRoot) || "this project"}, which is where ` +
+          "this conversation is running. Open a conversation in its project first.",
+      );
+      return;
+    }
     let selStart: number | undefined;
     let selEnd: number | undefined;
     if (opts?.selection && editor && !editor.selection.isEmpty) {
@@ -2099,7 +2167,21 @@ Only continue if you trust this code.`,
         "You're already in a worktree. Start a new worktree from a normal session — worktrees don't nest.",
       );
     }
-    const sourcePath = this.workspaceRoot();
+    // The CONVERSATION's repository — not the open folder, and not the rail's
+    // selection either.
+    //
+    // Not the open folder, because a project-B conversation can be on screen in
+    // a window opened on A: that made an A worktree out of a B conversation, and
+    // Apply Worktree would later merge it into A. Not the selection, because
+    // selecting a project in the rail changes the history scope and leaves the
+    // focused conversation exactly where it was — "Continue in a worktree" is an
+    // id-less action about the conversation in front of you, so a selection made
+    // since would have branched from a checkout you never mentioned.
+    //
+    // One rule for every caller: a worktree is cut from the conversation it
+    // continues. The Command Palette lands here too, and `focused` is the
+    // conversation open there as well.
+    const sourcePath = this.sessionCwd(this.focused);
     if (!isGitRepo(sourcePath, fs)) {
       return void this.host.showWarningMessage(
         "Worktree sessions need a git repository. Open a folder that is a git checkout (or run git init).",
@@ -2399,11 +2481,25 @@ Only continue if you trust this code.`,
       }
       if (changed) await this.state.update(SESSION_META_KEY, next);
       this.focused.worktree = undefined;
-      // Leave the chat; start a normal workspace session so the user isn't stuck.
+      // Leave the chat; start a normal session so the user isn't stuck — in the
+      // repository this worktree was cut FROM, which is where the work goes back
+      // to. The open folder was right only while conversations were pinned to
+      // it; the rail can put you in another project entirely, and landing in the
+      // window's folder then dropped you somewhere you had not been working.
       this.parkFocused();
       this.focused = this.newLocalSession();
       this.pool.add(this.focused);
-      this.focused.cwd = this.workspaceRoot();
+      // The catalog PROJECT that owned the worktree, not its git root. For a
+      // nested project — `/repo/packages/app` inside a `/repo` checkout — the
+      // git root is `/repo`, so landing there put the replacement conversation
+      // one level up, free to touch sibling packages, while the rail and history
+      // still said `packages/app`. `resolveLocalRepoTarget` answers by ownership
+      // (worktrees surface under the project whose sessions include them), which
+      // is the same relationship the rail draws.
+      this.focused.cwd =
+        this.resolveLocalRepoTarget(wt.path)?.cwd
+        || wt.sourceGitRoot
+        || this.historyCwdFor("local");
       await this.startSession();
       this.postSessionsList();
       // Re-home the remote tabs that were on the removed worktree: a fresh
@@ -2499,6 +2595,47 @@ Only continue if you trust this code.`,
     return root ? [root] : [];
   }
 
+  /**
+   * Hand-added project folders (VS Code only — see EXTRA_PROJECT_FOLDERS_KEY).
+   *
+   * Not filtered for existence here: `discoverRepos` stats every trusted cwd and
+   * drops the ones that are gone, so a deleted folder disappears from the rail
+   * on its own without this having to police the stored list.
+   */
+  private extraProjectFolders(): string[] {
+    const raw = this.state.get<string[]>(EXTRA_PROJECT_FOLDERS_KEY, []);
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((c): c is string => typeof c === "string" && !!c && path.isAbsolute(c));
+  }
+
+  /** Normalised keys of folders the user removed — see REMOVED_PROJECT_FOLDERS_KEY. */
+  private removedProjectFolderKeys(): Set<string> {
+    const raw = this.state.get<string[]>(REMOVED_PROJECT_FOLDERS_KEY, []);
+    if (!Array.isArray(raw)) return new Set();
+    return new Set(
+      raw.filter((c): c is string => typeof c === "string" && !!c).map((c) => normalizeRepoPath(c)),
+    );
+  }
+
+  /**
+   * Whether this host offers "Add project" at all.
+   *
+   * Two different meanings behind one control: desktop opens the folder for
+   * real, VS Code records it for the rail ({@link EXTRA_PROJECT_FOLDERS_KEY}).
+   * Every local host can do one or the other, so this is flat true — it exists
+   * as a method because the two call sites read better for it and because the
+   * next host that cannot will want one place to say so.
+   *
+   * Deliberately NOT `canSwitchWorkspaceFolder`, which is what it used to be:
+   * that flag means "this host owns its own workspace", which VS Code does not
+   * and must not start claiming. Remotes are excluded twice over — the message
+   * is `host-local` at the policy gate, and the client never paints a control
+   * that opens a native dialog the phone could not see.
+   */
+  private canAddProjectFolder(): boolean {
+    return true;
+  }
+
   private repoCatalog() {
     const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
     const worktreeLabels = new Map<string, string>();
@@ -2510,7 +2647,7 @@ Only continue if you trust this code.`,
     for (const wt of this.worktreeCache) {
       worktreeLabels.set(normalizeRepoPath(wt.path), wt.label);
     }
-    return discoverRepos({
+    const discovered = discoverRepos({
       fs: defaultFs,
       grokHome: resolveGrokHome(process.env),
       pins,
@@ -2526,10 +2663,21 @@ Only continue if you trust this code.`,
       tmpDir: os.tmpdir(),
       // Open folders remain selectable before Grok creates a catalog row (and
       // bypass managed-worktree exclusion when the user opened a worktree).
-      trustedCwds: this.openWorkspaceFolders(),
+      // Hand-added folders join them: on VS Code that is the only thing keeping
+      // a never-used project in the rail, since it has no session history to be
+      // discovered from.
+      trustedCwds: [...this.openWorkspaceFolders(), ...this.extraProjectFolders()],
       worktreeLabels,
       log: (m) => this.host.appendLine(m),
     });
+    // Tombstoned folders are dropped HERE, at the single source, not in the
+    // display list. `localTrustedSessionCwds` reads this catalog directly on VS
+    // Code, so filtering only what the rail draws would have left a removed
+    // project invisible but still authorized — the row would be gone while the
+    // phone carried on browsing and editing it.
+    const removed = this.removedProjectFolderKeys();
+    if (!removed.size) return discovered;
+    return discovered.filter((r) => !removed.has(normalizeRepoPath(r.cwd)));
   }
 
   /**
@@ -2543,7 +2691,14 @@ Only continue if you trust this code.`,
     const full = this.repoCatalog();
     let entries: RepoListEntry[];
     if (!this.host.canSwitchWorkspaceFolder) {
-      entries = full;
+      // Hand-added rows are marked so the rail can offer to take them back out.
+      // A folder added by hand is the one kind of catalog row the user cannot
+      // otherwise revoke: everything else is here because Grok has run there,
+      // and stops being listed when that stops being true.
+      const added = new Set(this.extraProjectFolders().map((c) => normalizeRepoPath(c)));
+      entries = added.size
+        ? full.map((r) => (added.has(normalizeRepoPath(r.cwd)) ? { ...r, added: true } : r))
+        : full;
     } else {
       const open = this.openWorkspaceFolders();
       // Empty open set → empty rail (user may Add Project Folder). Never fall
@@ -2684,21 +2839,31 @@ Only continue if you trust this code.`,
       const root = this.host.workspaceRoot();
       this.selectedRepoCwd = root && inLocal(root) ? root : (localEntries[0]?.cwd ?? "");
     }
-    // Same split as the history list: remote clients see (and drive) the global
-    // selection, the VS Code webview always reads its own workspace. The chip is
-    // hidden locally, but this frame still feeds Clear-all's target and the name
-    // in its confirm dialog — so pointing it at a remotely-selected repo would
-    // aim a destructive action somewhere the user cannot see.
-    // Desktop multi-folder: selectedCwd tracks the open folder the user chose
-    // (may equal active session cwd once switch settles).
-    const localSelected = this.host.canSwitchWorkspaceFolder
-      ? (this.selectedRepoCwd || this.host.workspaceRoot() || "")
-      : this.workspaceRoot();
+    // Both hosts follow the selection the LOCAL user made. VS Code used to be
+    // pinned to its own workspace root — a rule from when remote showed one
+    // project at a time and VS Code had no rail. Now that both have one,
+    // history stuck on the open folder while the chat shows another project's
+    // conversation is simply wrong: the user picked that conversation.
+    //
+    // A remote still cannot drag this view. `selectRepo` routes by origin —
+    // `selectRemoteRepo` per client for remotes — so `selectedRepoCwd` is
+    // written by LOCAL selection only. That is what keeps the destructive
+    // actions this frame feeds (Clear-all's target, and the project name in its
+    // confirm dialog) aimed somewhere the user can actually see.
+    //
+    // Desktop multi-folder already worked this way: selectedCwd tracks the open
+    // folder the user chose, and may equal the active session cwd once a switch
+    // settles.
+    const localSelected = this.selectedRepoCwd || this.workspaceRoot() || "";
     this.postLocal({
       type: "repos",
       entries: localEntries,
       selectedCwd: localSelected,
       activeCwd,
+      // Local only. The remote frame below deliberately omits it: adding a
+      // project opens a native folder dialog on the desk, which a phone can
+      // neither see nor answer (remote-policy: `addProjectFolder` is host-local).
+      canAddProject: this.canAddProjectFolder(),
     });
     for (const clientId of this.remoteClients.clients()) {
       this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));
@@ -2997,7 +3162,7 @@ Only continue if you trust this code.`,
    * Picks a directory when `cwd` is omitted.
    */
   async addProjectFolder(cwd?: string): Promise<void> {
-    if (!this.host.canSwitchWorkspaceFolder) return;
+    if (!this.canAddProjectFolder()) return;
     let folder = cwd;
     if (!folder) {
       const picked = await this.host.showOpenDialog({
@@ -3009,12 +3174,136 @@ Only continue if you trust this code.`,
       folder = picked?.[0];
     }
     if (!folder) return;
+    const resolved = path.resolve(folder);
+    if (!this.host.canSwitchWorkspaceFolder) {
+      // VS Code. The workspace is VS Code's, and `updateWorkspaceFolders` on a
+      // single-folder window converts it to multi-root and restarts the
+      // extension host — conversations included. So the folder joins the rail's
+      // catalog and nothing else moves: the Explorer, the open folder and every
+      // running session stay exactly where they were.
+      await this.rememberExtraProjectFolder(resolved);
+      return;
+    }
     if (!this.host.addWorkspaceFolder(folder)) {
       void this.host.showWarningMessage(`Could not open folder:\n${folder}`);
       return;
     }
     this.authEpoch++;
-    await this.switchLocalWorkspaceFolder(path.resolve(folder));
+    await this.switchLocalWorkspaceFolder(resolved);
+  }
+
+  /**
+   * Record a hand-added folder and show it, without touching the workspace.
+   *
+   * Selecting it afterwards is the half that makes the button feel like the
+   * desktop's: there, adding a project switches to it. Here "switch" is only
+   * the rail's own selection — `selectedRepoCwd`, which `postRepoCatalog` reads
+   * — so the rail lands on the project you just added, expanded and ready, while
+   * VS Code itself has not moved.
+   */
+  private async rememberExtraProjectFolder(resolved: string): Promise<void> {
+    let ok = false;
+    try {
+      ok = fs.statSync(resolved).isDirectory();
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      void this.host.showWarningMessage(`Not a folder:\n${resolved}`);
+      return;
+    }
+    const key = normalizeRepoPath(resolved);
+    // Already here on its own — the open workspace folder, or a project Grok has
+    // run in. Recording it as hand-added would be a lie with consequences: the
+    // row would gain a Remove action, and removing it tombstones a project that
+    // has other reasons to exist. Worst of all for the OPEN folder, whose access
+    // cannot be revoked at all (`localTrustedSessionCwds` adds `workspaceRoot()`
+    // unconditionally, and every remote gate reads that set) — the row would
+    // vanish while the phone carried on reading and writing it. Just go there.
+    const alreadyListed =
+      !!this.resolveLocalRepoTarget(resolved) ||
+      pathsEqual(resolved, this.workspaceRoot() || "");
+    if (alreadyListed) {
+      await this.selectRepo(resolved);
+      return;
+    }
+    // Adding a folder is the undo for having removed it. Without this the
+    // tombstone would outlive the decision and the picker would appear to do
+    // nothing at all.
+    const tombstones = this.state.get<string[]>(REMOVED_PROJECT_FOLDERS_KEY, []);
+    if (Array.isArray(tombstones) && tombstones.some((c) => normalizeRepoPath(c) === key)) {
+      await this.state.update(
+        REMOVED_PROJECT_FOLDERS_KEY,
+        tombstones.filter((c) => normalizeRepoPath(c) !== key),
+      );
+    }
+    const stored = this.extraProjectFolders();
+    if (!stored.some((c) => normalizeRepoPath(c) === key)) {
+      await this.state.update(EXTRA_PROJECT_FOLDERS_KEY, [...stored, resolved]);
+    }
+    // Already in the catalog by other means (open folder, or Grok has run there)
+    // is not a failure — the user still gets taken to it.
+    await this.selectRepo(resolved);
+  }
+
+  /**
+   * Take a hand-added folder back out of the rail's catalog (VS Code).
+   *
+   * Deliberately NOT the desktop's revocation: nothing is disposed and no
+   * process is killed, because adding the folder started nothing. It removes
+   * the one reason this folder was listed. If Grok has since run there the row
+   * survives on its own history — same as every other project, and the
+   * conversations are still yours; archive is the way to hide those.
+   */
+  private async forgetExtraProjectFolder(cwd?: string): Promise<void> {
+    if (!cwd) return;
+    // Never the open workspace folder. Its authorization does not come from the
+    // catalog — `localTrustedSessionCwds` adds `workspaceRoot()` on its own — so
+    // a tombstone would hide the row while every remote gate kept saying yes.
+    // A revocation that does not revoke is worse than no button at all.
+    if (pathsEqual(cwd, this.workspaceRoot() || "")) {
+      void this.host.showWarningMessage(
+        "This is the folder VS Code has open, so it cannot be removed from the list. " +
+          "Close the folder in VS Code instead.",
+      );
+      return;
+    }
+    const key = normalizeRepoPath(cwd);
+    const stored = this.extraProjectFolders();
+    const next = stored.filter((c) => normalizeRepoPath(c) !== key);
+    if (next.length === stored.length) return;
+    await this.state.update(EXTRA_PROJECT_FOLDERS_KEY, next);
+    // …and the PIN, or this removes nothing.
+    //
+    // `discoverRepos` keeps a pinned cwd in the catalog on its own — "a pin is
+    // durable intent" — and a phone can pin any project it can see. So: add a
+    // folder, pin it from the phone, remove it at the desk, and it came back as
+    // an ordinary catalog row that VS Code trusts, still browsable and editable
+    // from the phone, and now WITHOUT the `added` marker, so the rail no longer
+    // offered to remove it. A revocation that a remote can pre-empt is not one.
+    //
+    // A pin on a folder being removed is not intent to keep it; it is the pin of
+    // a project that is going away.
+    const pins = this.state.get<RepoPins>(REPO_PINS_KEY, {});
+    if (pins[key]) {
+      const nextPins = { ...pins };
+      delete nextPins[key];
+      await this.state.update(REPO_PINS_KEY, nextPins);
+    }
+    // …and a tombstone, or the folder simply comes back. VS Code's catalog is
+    // discovered from Grok's own session history, so anything that has run there
+    // re-adds the row — and a phone can manufacture exactly that by selecting
+    // the project, which starts a session in it. Removal has to outrank
+    // discovery or it is not removal.
+    const tombstones = this.state.get<string[]>(REMOVED_PROJECT_FOLDERS_KEY, []);
+    const list = Array.isArray(tombstones) ? tombstones : [];
+    if (!list.some((c) => normalizeRepoPath(c) === key)) {
+      await this.state.update(REMOVED_PROJECT_FOLDERS_KEY, [...list, cwd]);
+    }
+    // The selection may have been pointing at it. postRepoCatalog re-validates
+    // against the catalog it is about to send and moves it if the row is gone.
+    this.postRepoCatalog();
+    this.postSessionsList();
   }
 
   /**
@@ -3024,7 +3313,15 @@ Only continue if you trust this code.`,
    * dropped. Closing the last folder leaves an empty rail (no re-seed).
    */
   async removeProjectFolder(cwd?: string): Promise<void> {
-    if (!this.host.canSwitchWorkspaceFolder) return;
+    if (!this.host.canSwitchWorkspaceFolder) {
+      // VS Code: the only thing there is to remove is a folder the user ADDED
+      // by hand. Everything else in the catalog is there because Grok has run
+      // in it, and no button here would change that. Without this the added
+      // folder was permanent — a mistaken or sensitive directory stayed
+      // selectable, and remotely browsable and editable, for ever.
+      await this.forgetExtraProjectFolder(cwd);
+      return;
+    }
     const target = cwd || this.host.workspaceRoot();
     if (!target) return;
     // Closing is a revocation: every session in the folder is disposed and its
@@ -4990,8 +5287,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         break;
       case "newSession":
+        // A remote's cwd is deliberately not forwarded: newRemoteSession starts
+        // in that tab's own repo, which is the only project it is entitled to.
         if (origin === "remote" && clientId) await this.newRemoteSession(clientId);
-        else await this.newFocusedSession(origin);
+        else await this.newFocusedSession(origin, msg.cwd);
         break;
       case "cancel": {
         const cancelled = session.turnToken;
@@ -5786,7 +6085,34 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * Remote callers bypass this legacy audience helper and resolve their own cwd
    * through RemoteClientState.
    */
+  /**
+   * Which repository the LOCAL surfaces are scoped to — the history list, New
+   * Session, and the last-resort cwd a delete falls back to.
+   *
+   * This used to be the open workspace folder unconditionally
+   * (`repoScopeFor`'s local branch), and the reason was sound at the time: VS
+   * Code hid the repo switcher, so a selection the local user could not see
+   * must not decide where Grok writes files. A phone that switched repos hours
+   * ago would otherwise have been aiming the desk's New Session at another
+   * checkout.
+   *
+   * Two things changed. VS Code has a projects rail now, so the selection is
+   * visible and deliberate. And the selection is provably not the phone's:
+   * `selectRepo` routes by origin — remotes go to `selectRemoteRepo`, which
+   * writes a per-client cwd — and every writer of `selectedRepoCwd` is a local
+   * path (selectRepo, postRepoCatalog's normalisation, the desktop folder
+   * switch, openSession's follow). What the old rule produces now is simply the
+   * wrong answer: a conversation from project B on screen with A's history
+   * beside it, and New Session starting in A.
+   *
+   * Desktop is unaffected in steady state — there `selectedRepoCwd` tracks the
+   * active folder, so the two agree.
+   *
+   * Remote scope is untouched and still goes through {@link repoScopeFor},
+   * which is where per-tab isolation lives.
+   */
   private historyCwdFor(origin: MsgOrigin): string {
+    if (origin === "local") return this.selectedHistoryCwd() || this.workspaceRoot();
     return repoScopeFor(origin, {
       selectedCwd: this.selectedHistoryCwd(),
       workspaceRoot: this.workspaceRoot(),
@@ -6410,6 +6736,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // rather than once per watcher.
     if (wasFocused) {
       this.focused = this.newLocalSession();
+      // …and so does the local view. Without this the replacement starts in the
+      // VS Code workspace folder while history and the rail stay on the project
+      // the deleted conversation belonged to — the exact split this repo scope
+      // exists to prevent, except now the user is typing into it. Same rule as
+      // newFocusedSession: the local scope IS the selection.
+      this.setSessionCwd(this.focused, this.historyCwdFor("local"), this.workspaceRoot());
       await this.startSession();
     }
     for (const watcher of watchers) await this.newRemoteSession(watcher, false);
@@ -8484,7 +8816,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.
-        addProjectFolder: this.host.canSwitchWorkspaceFolder,
+        addProjectFolder: this.canAddProjectFolder(),
       },
     };
   }
@@ -8635,6 +8967,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     "clearAllSessions",
     "setRepoArchived",
     "setRepoColor",
+    // Host-local by construction: it opens a native folder dialog. Reachable
+    // from the rail because that is where the project list lives; a remote
+    // cannot send it (remote-policy classifies it `host-local`).
+    "addProjectFolder",
+    // The way back out. Same host-local classification — on VS Code it forgets
+    // a hand-added folder, which is the only revocation that surface has.
+    "removeProjectFolder",
   ]);
   private post(message: HostMsg): void {
     if (this.focused.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
@@ -9266,6 +9605,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // message (that's what made creating/leaving a worktree replace the current
     // one). It's removed only via Remove worktree.
     if (cur.hasHistory || busy || cur.chips.length > 0 || cur.worktree) return; // real/active work — keep it parked & alive
+    // Still starting: `hasHistory` is the flag that says "this conversation is
+    // real, do not delete it", and on a RESUME it is set at the very end of
+    // startSession — after the client has already reported the session id and
+    // after the default-model await. In that window a resumed conversation looks
+    // exactly like an untouched new one, and the two lines below would delete the
+    // stored conversation off disk. Reachable by clicking a second rail row while
+    // the first is still opening, which the rail does not prevent because loads
+    // are reserved per session id, not globally.
+    if (cur.priming) return;
     // Co-attached: a remote tab still shows this session — not ours to tear down.
     if (this.remoteClients.clientsForActiveValue(cur).length > 0) return;
     // Empty session being left behind (New Session, or switching to
@@ -9715,14 +10063,36 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Start a brand-new session, keeping the current one alive in the background. */
-  private async newFocusedSession(origin: MsgOrigin): Promise<void> {
+  private async newFocusedSession(origin: MsgOrigin, requestedCwd?: string): Promise<void> {
     // Repo selection only changes history scope; New Session is the deliberate
     // second action that starts Grok in the selected cwd — deliberate only for
-    // the client that can SEE the selection. From VS Code, where the switcher
-    // is hidden, this always means the open workspace: otherwise a phone that
-    // switched repos hours ago would silently point the local New-session
-    // button at another checkout, and Grok would write files there.
-    const targetCwd = this.historyCwdFor(origin);
+    // the client that can SEE the selection. That used to exclude VS Code,
+    // whose switcher was hidden; the projects rail is that switcher, so it no
+    // longer does. The phone half of the old worry is handled where it always
+    // was: a remote's selection is per-client and never reaches
+    // `selectedRepoCwd` (see historyCwdFor).
+    //
+    // An explicitly named project (the rail's per-project "+") is honoured, and
+    // it MOVES the selection rather than starting somewhere the rest of the view
+    // is not looking. Resolved through the catalog, so an unknown path falls back
+    // to the scope instead of becoming a cwd nobody vouched for — the caller may
+    // be a webview, and a "+" on a row is not a licence to name a directory.
+    const named = requestedCwd ? this.resolveLocalRepoTarget(requestedCwd) : undefined;
+    if (requestedCwd && !named) {
+      // A specific project was asked for and it is not there any more — the rail
+      // was drawn before the folder was unmounted or deleted. Falling through to
+      // the scope would start Grok in whatever happens to be selected while the
+      // click plainly named another project, and the agent would then write
+      // there. Refuse, and refresh so the dead row goes away.
+      void this.host.showWarningMessage(`That project is no longer available:\n${requestedCwd}`);
+      this.postRepoCatalog();
+      this.postSessionsList();
+      return;
+    }
+    if (named && !pathsEqual(named.cwd, this.selectedRepoCwd || "")) {
+      this.selectedRepoCwd = named.cwd;
+    }
+    const targetCwd = named?.cwd ?? this.historyCwdFor(origin);
     this.parkFocused();
     this.focused = this.newLocalSession();
     this.setSessionCwd(this.focused, targetCwd, this.workspaceRoot());
@@ -10022,6 +10392,26 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // this repo's history — and the moment the session they just left became
     // abandonable. Only on success: a load that threw has told us nothing.
     this.sweepEmptySessions(this.sessionCwd(this.focused));
+    // The history list follows the conversation the LOCAL user just opened.
+    // With a rail in VS Code you can open one from another project, and leaving
+    // the list on the old project meant reading a conversation from B while the
+    // history beside it offered A's. Resolved through the catalog rather than
+    // taken raw, because a worktree session's cwd is the worktree and the row
+    // that owns it is the parent project.
+    //
+    // VS Code only. On desktop the selection and the ACTIVE FOLDER are one
+    // thing — the file tree, New Session and the rail all read it — so moving
+    // the selection without switching the folder would split them, and opening
+    // a conversation is not a request to change which project you are in.
+    // Desktop's own selectRepo does the whole switch; this is the half VS Code
+    // needs because it has no folder to switch.
+    if (this.host.canSwitchWorkspaceFolder) return;
+    const openedIn = this.resolveLocalRepoTarget(this.sessionCwd(this.focused));
+    if (openedIn && !pathsEqual(openedIn.cwd, this.selectedRepoCwd || "")) {
+      this.selectedRepoCwd = openedIn.cwd;
+      this.postRepoCatalog();
+      this.postSessionsList();
+    }
   }
 
   /**
@@ -10238,6 +10628,39 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  selection compares equal to the previous empty one, so nothing is posted.
    *  `forcePost` is for a fresh webview, which needs the current state even
    *  when it hasn't changed. */
+  /**
+   * The focused conversation's relative path for a file, or undefined when the
+   * file does not really belong to it.
+   *
+   * Lexical containment first ({@link relativePathWithin}), then CANONICAL.
+   * A symlink — or a Windows junction — inside project B pointing at project A
+   * passes the lexical test as `linked/secret.ts`, because it genuinely is at
+   * that path inside B. But `buildPrompt` opens the absolute path and reads
+   * whatever is on the other end, so A's source would be embedded in B's
+   * conversation under a name that looks like B's own. The remote file browser
+   * has always resolved canonically for exactly this reason
+   * (`resolveTreePath` in `file-tree.ts`); this fence has to as well.
+   *
+   * Unprovable means refused: if either side cannot be resolved (deleted,
+   * permissions), there is no containment to demonstrate, and a chip is not
+   * worth guessing about.
+   */
+  private conversationRelPath(absPath: string): string | undefined {
+    const root = this.sessionCwd(this.focused);
+    const lexical = relativePathWithin(root, absPath);
+    if (lexical === undefined) return undefined;
+    try {
+      if (relativePathWithin(fs.realpathSync(root), fs.realpathSync(absPath)) === undefined) {
+        return undefined;
+      }
+    } catch {
+      return undefined;
+    }
+    // The LEXICAL path is the label: it is where the user sees the file, and
+    // rewriting it to the link target would name a project they did not open.
+    return lexical;
+  }
+
   private refreshImplicitChip(forcePost = false): void {
     const includeActive = this.host.getConfiguration("grok")
       .get<boolean>("includeActiveFileByDefault", true);
@@ -10253,7 +10676,26 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
 
     const absPath = editor.document.uri.fsPath;
-    const relPath = this.host.asRelativePath(editor.document.uri);
+    // The chip must belong to the CONVERSATION, not to the window.
+    //
+    // While VS Code history was pinned to the open folder these were the same
+    // thing, so taking the active editor unconditionally was safe. It is not any
+    // more: the rail can put a project-B conversation on screen while VS Code
+    // still shows a project-A file. Sending then attached A's file — and for a
+    // SELECTION, `buildPrompt` reads that absolute path and embeds A's source
+    // text under an A-relative name — into B's prompt. Content crossing projects
+    // is exactly the class this scope work exists to close.
+    //
+    // Also the source of the relative path now. `asRelativePath` resolves
+    // against VS Code's workspace folders, and a project reached through the
+    // rail is deliberately not one of them, so it would have handed back an
+    // absolute path for a file that is perfectly ordinary inside its own repo.
+    const relPath = this.conversationRelPath(absPath);
+    if (relPath === undefined) {
+      this.chips = clearImplicitChips(this.chips);
+      if (prev || forcePost) this.postChips();
+      return;
+    }
     let selStart: number | undefined;
     let selEnd: number | undefined;
     if (!editor.selection.isEmpty) {
@@ -11003,6 +11445,11 @@ ${openMain}
   <header class="top-bar">
     <div id="session-name-chip" class="session-name-chip" hidden>
       <button id="session-name-label" class="session-name-label" type="button"></button>
+      <!-- Which project this conversation belongs to. History went
+           multi-workspace, so the open conversation is no longer necessarily
+           from the folder VS Code has open, and the name alone stopped saying
+           where you are. Same treatment the rail gives its cross-project rows. -->
+      <span id="session-name-repo" class="session-name-repo" hidden></span>
       <button id="session-name-edit" class="session-name-edit icon-btn" type="button" hidden></button>
     </div>
     <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>

@@ -178,9 +178,11 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
         webviewOptions: { retainContextWhenHidden: true },
       },
     ),
-    // Projects rail: fixed in the primary side bar (`grokPrimary`). No Cursor
-    // special-casing — registering a view in the primary bar works the same in
-    // both editors (Cursor only reserves the *secondary* bar for its agent UI).
+    // Projects rail: its own activity-bar container (`grokProjects`), never the
+    // chat's move target — see PROJECTS_CONTAINER_ID for why sharing one welded
+    // the two views together. No Cursor special-casing: registering a view in
+    // the primary bar works the same in both editors (Cursor only reserves the
+    // *secondary* bar for its agent UI).
     vscode.window.registerWebviewViewProvider(
       GROK_PROJECTS_VIEW_ID,
       {

@@ -19,13 +19,18 @@
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
     archive: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>`,
     archiveRestore: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h4"/><path d="M20 8v11a2 2 0 0 1-2 2h-4"/><path d="m9 15 3-3 3 3"/><path d="M12 12v9"/></svg>`,
+    chevronRight: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
+    chevronDown: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
   };
 
-  // Preview depth matches the browser rail's expanded cap so one refresh is enough.
-  const PREVIEW_LIMIT = 20;
-  // Cross-project RECENT is a shorter shortcut list — deliberately not PREVIEW_LIMIT.
+  // The host fetches the expanded depth once; rendering starts at three rows.
+  // Keep both values in lockstep with src/projects-rail.ts.
+  const RAIL_PREVIEW = 3;
+  const RAIL_EXPANDED = 20;
+  // Cross-project RECENT is a shorter shortcut list than RAIL_EXPANDED.
   // Keep in lockstep with RAIL_RECENT_CAP in src/projects-rail.ts.
   const RECENT_CAP = 10;
+  const RAIL_RECENT_KEY = "__recent__";
 
   /** Palette the host accepts — ids match REPO_COLOR_IDS in sessions.ts. */
   const REPO_COLOR_SWATCHES = [
@@ -38,12 +43,15 @@
     { id: "purple", label: "Purple" },
   ];
 
+  const savedRailShape = loadRailShape();
+
   const state = {
     repos: [],
     currentCwd: "",
     activeCwd: "",
     activeSessionId: null,
-    /** Sessions for the open workspace folder (from `sessions`). */
+    /** Sessions for the SELECTED project (from `sessions`) — which is the open
+     *  workspace folder until you pick another one in this rail. */
     currentSessions: [],
     currentSessionsKnown: false,
     /** cwd-key → { entries, dots, total } from `repoSessions`. */
@@ -53,21 +61,101 @@
     pinnedKnown: false,
     dots: {},
     filter: "",
-    /** cwd-key → true when collapsed. Current project starts expanded. */
-    collapsed: {},
+    /** cwd-key → true when collapsed. Repositories start expanded. */
+    collapsed: savedRailShape.collapsed,
+    /** cwd-key / synthetic list key -> true after Show more. */
+    expanded: savedRailShape.expanded,
+    /** Pinned is intentionally absent: it is the one static group. */
+    groupCollapsed: savedRailShape.groupCollapsed,
+    /**
+     * Whether the host answers `addProjectFolder`. Carried on the `repos` frame
+     * because this view is resolved on its own and gets no `initialState`, so it
+     * has no `capabilities` to read — field presence, never a version. A host
+     * that omits it gets no button, which is the safe way round.
+     */
+    canAddProject: false,
   };
 
   let menuEl = null;
   let colorPickerEl = null;
 
-  function sameCwd(a, b) {
-    if (!a || !b) return false;
-    const norm = (p) => String(p).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    return norm(a) === norm(b);
+  /**
+   * Identity key for a project cwd. Mirrors `cwdKey` in media/chat.js and
+   * `railRepoKey` in src/projects-rail.ts — this file had it wrong.
+   *
+   * An absolute POSIX path keeps its case and its characters. `/work/App` and
+   * `/work/app` are two directories on Linux, and a backslash is a legal
+   * filename character there, so folding either merged real projects: one could
+   * vanish as a "duplicate" of Current, and when both rendered their preview
+   * caches collided and whichever answer landed last put one project's
+   * conversations under the other. Only a Windows-shaped path is folded, where
+   * `C:\Repo` and `c:/repo` genuinely are the same place.
+   */
+  function cwdKey(cwd) {
+    const raw = String(cwd || "");
+    if (raw.charAt(0) === "/") return raw.replace(/\/+$/, "");
+    return raw.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
   }
 
-  function cwdKey(cwd) {
-    return String(cwd || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  function sameCwd(a, b) {
+    if (!a || !b) return false;
+    return cwdKey(a) === cwdKey(b);
+  }
+
+  function defaultGroupCollapsed() {
+    return { recent: false, projects: false, archived: true };
+  }
+
+  function trueMap(value) {
+    const out = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+    for (const key of Object.keys(value)) {
+      if (value[key] === true) out[key] = true;
+    }
+    return out;
+  }
+
+  function loadRailShape() {
+    const fallback = {
+      collapsed: {},
+      expanded: {},
+      groupCollapsed: defaultGroupCollapsed(),
+    };
+    try {
+      if (typeof vscode.getState !== "function") return fallback;
+      const saved = vscode.getState();
+      const shape = saved && typeof saved === "object" ? saved.railShape : null;
+      if (!shape || typeof shape !== "object" || Array.isArray(shape)) return fallback;
+      const groupCollapsed = defaultGroupCollapsed();
+      if (shape.groupCollapsed && typeof shape.groupCollapsed === "object") {
+        for (const key of Object.keys(groupCollapsed)) {
+          if (typeof shape.groupCollapsed[key] === "boolean") {
+            groupCollapsed[key] = shape.groupCollapsed[key];
+          }
+        }
+      }
+      return {
+        collapsed: trueMap(shape.collapsed),
+        expanded: trueMap(shape.expanded),
+        groupCollapsed,
+      };
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function saveRailShape() {
+    if (typeof vscode.setState !== "function") return;
+    try {
+      const previous = typeof vscode.getState === "function" ? vscode.getState() : null;
+      vscode.setState(Object.assign({}, previous && typeof previous === "object" ? previous : {}, {
+        railShape: {
+          collapsed: state.collapsed,
+          expanded: state.expanded,
+          groupCollapsed: state.groupCollapsed,
+        },
+      }));
+    } catch (_) { /* Webview state is a convenience; rendering still works without it. */ }
   }
 
   function leaf(cwd) {
@@ -125,19 +213,20 @@
     closeColorPicker();
   }
 
-  function placePopover(el, anchor) {
+  function placePopover(el, anchor, at) {
     const rect = anchor.getBoundingClientRect();
     const mw = el.offsetWidth;
     const mh = el.offsetHeight;
-    let left = rect.right - mw;
-    let top = rect.bottom + 2;
-    if (left < 4) left = 4;
-    if (top + mh > window.innerHeight - 4) top = Math.max(4, rect.top - mh - 2);
+    const anchorTop = at ? at.y : rect.top;
+    let left = at ? at.x : rect.right - mw;
+    let top = (at ? at.y : rect.bottom) + 2;
+    left = Math.max(4, Math.min(left, window.innerWidth - mw - 4));
+    if (top + mh > window.innerHeight - 4) top = Math.max(4, anchorTop - mh - 2);
     el.style.left = left + "px";
     el.style.top = top + "px";
   }
 
-  function openMenu(anchor, items) {
+  function openMenu(anchor, items, at) {
     closeMenu();
     const menu = document.createElement("div");
     menu.className = "rail-menu";
@@ -166,7 +255,19 @@
     }
     document.body.appendChild(menu);
     menuEl = menu;
-    placePopover(menu, anchor);
+    placePopover(menu, anchor, at);
+  }
+
+  // Match the desktop rail's second menu route without hijacking touch long-press.
+  function wireRowContextMenu(row, getAnchor, getItems) {
+    if (!row || !window.matchMedia || !window.matchMedia("(hover: hover)").matches) return;
+    row.addEventListener("contextmenu", (e) => {
+      const anchor = getAnchor();
+      if (!anchor) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openMenu(anchor, getItems(), { x: e.clientX, y: e.clientY });
+    });
   }
 
   /**
@@ -222,7 +323,7 @@
       const key = cwdKey(r.cwd);
       if (state.previewsAsked[key]) continue;
       state.previewsAsked[key] = true;
-      vscode.postMessage({ type: "listRepoSessions", cwd: r.cwd, limit: PREVIEW_LIMIT });
+      vscode.postMessage({ type: "listRepoSessions", cwd: r.cwd, limit: RAIL_EXPANDED });
     }
   }
 
@@ -300,7 +401,7 @@
         (s) => matchesFilter(s.displayName) || matchesFilter(repoLabelFor(s.cwd)),
       );
       if (pinned.length) {
-        root.appendChild(sectionHead("Pinned"));
+        root.appendChild(staticGroupHead("Pinned"));
         const list = document.createElement("div");
         list.className = "rail-list rail-pinned";
         for (const s of pinned) {
@@ -312,18 +413,31 @@
     }
 
     // RECENT sits above the project list: VS Code has no other cross-project
-    // surface, so this is the jump list — not collapsible, hard-capped at 10.
+    // surface, so this is the short cross-project jump list.
     const recentAll = recentRows().filter(
       (s) => matchesFilter(s.displayName) || matchesFilter(repoLabelFor(s.cwd)),
     );
     if (recentAll.length) {
-      root.appendChild(sectionHead("Recent"));
-      const list = document.createElement("div");
-      list.className = "rail-list rail-recent";
-      for (const s of recentAll) {
-        list.appendChild(renderSession(s, { cwd: s.cwd, available: true }, { showRepo: true }));
+      const forcedOpen = !!q;
+      const open = forcedOpen || !state.groupCollapsed.recent;
+      root.appendChild(collapsibleGroupHead({
+        title: "Recent",
+        group: "recent",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        openTitle: "Hide recent conversations",
+        closedTitle: "Show recent conversations",
+        searchTitle: "Open while your search matches a conversation",
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-recent";
+        appendSessionSlice(list, recentAll, RAIL_RECENT_KEY, (s) =>
+          renderSession(s, { cwd: s.cwd, available: true }, { showRepo: true }),
+          RECENT_CAP,
+        );
+        root.appendChild(list);
       }
-      root.appendChild(list);
       shown = true;
     }
 
@@ -331,33 +445,55 @@
     const active = other.filter((r) => !r.archived);
     const archived = other.filter((r) => r.archived);
 
-    // Open folder stays at the top of the *projects* (not above Pinned/Recent).
-    if (current && (!q || repoHasMatch(current))) {
-      root.appendChild(sectionHead("Current project"));
-      const list = document.createElement("div");
-      list.className = "rail-list rail-current";
-      list.appendChild(renderRepo(current, { isCurrent: true }));
-      root.appendChild(list);
-      shown = true;
-    }
-
-    const visibleOther = active.filter((r) => !q || repoHasMatch(r));
-    if (visibleOther.length) {
-      root.appendChild(sectionHead("Other projects"));
-      const list = document.createElement("div");
-      list.className = "rail-list rail-other";
-      for (const repo of visibleOther) list.appendChild(renderRepo(repo, { isCurrent: false }));
-      root.appendChild(list);
+    // Open folder stays first inside Projects; everything else remains alphabetical.
+    const projectRepos = (current ? [current, ...active] : active)
+      .filter((r) => !q || repoHasMatch(r));
+    if (projectRepos.length) {
+      const forcedOpen = !!q;
+      const open = forcedOpen || !state.groupCollapsed.projects;
+      root.appendChild(collapsibleGroupHead({
+        title: "Projects",
+        group: "projects",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        openTitle: "Hide projects",
+        closedTitle: "Show projects",
+        searchTitle: "Open while your search matches a project",
+        action: state.canAddProject ? addProjectButton : undefined,
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-projects";
+        for (const repo of projectRepos) {
+          list.appendChild(renderRepo(repo, {
+            isCurrent: !!current && sameCwd(repo.cwd, current.cwd),
+          }));
+        }
+        root.appendChild(list);
+      }
       shown = true;
     }
 
     const visibleArchived = archived.filter((r) => !q || repoHasMatch(r));
     if (visibleArchived.length) {
-      root.appendChild(sectionHead("Archived"));
-      const list = document.createElement("div");
-      list.className = "rail-list rail-archived";
-      for (const repo of visibleArchived) list.appendChild(renderRepo(repo, { isCurrent: false }));
-      root.appendChild(list);
+      const forcedOpen = !!q;
+      const open = forcedOpen || !state.groupCollapsed.archived;
+      root.appendChild(collapsibleGroupHead({
+        title: "Project Archive",
+        group: "archived",
+        open,
+        forcedOpenBySearch: forcedOpen,
+        icon: ICON.archive,
+        openTitle: "Hide archived projects",
+        closedTitle: "Show archived projects",
+        searchTitle: "Open while your search matches an archived project",
+      }));
+      if (open) {
+        const list = document.createElement("div");
+        list.className = "rail-list rail-archived";
+        for (const repo of visibleArchived) list.appendChild(renderRepo(repo, { isCurrent: false }));
+        root.appendChild(list);
+      }
       shown = true;
     }
 
@@ -365,17 +501,127 @@
       const note = document.createElement("div");
       note.className = "rail-note";
       note.textContent = q ? "No matches." : "No projects yet";
+      // An empty rail that only says "No projects yet" is a dead end on the one
+      // screen where the user has nothing else to click — and with no group
+      // heads rendered, the "+" above has nowhere to be.
+      if (!q && state.canAddProject) {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "rail-empty-action";
+        add.textContent = "Add a project folder";
+        add.onclick = () => vscode.postMessage({ type: "addProjectFolder" });
+        note.appendChild(add);
+      }
       root.appendChild(note);
     }
 
     requestAnimationFrame(() => root.classList.remove("rail-rebuilding"));
   }
 
-  function sectionHead(title) {
-    const el = document.createElement("div");
-    el.className = "rail-head";
-    el.textContent = title;
-    return el;
+  function staticGroupHead(title) {
+    const head = document.createElement("div");
+    head.className = "rail-head";
+    const label = document.createElement("span");
+    label.className = "rail-head-title";
+    label.textContent = title;
+    head.appendChild(label);
+    return head;
+  }
+
+  function collapsibleGroupHead(opts) {
+    const head = document.createElement("div");
+    head.className = "rail-head rail-head-fold";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-head-btn";
+    btn.setAttribute("aria-expanded", String(opts.open));
+    if (opts.icon) {
+      const icon = document.createElement("span");
+      icon.className = "rail-head-icon";
+      icon.innerHTML = opts.icon;
+      btn.appendChild(icon);
+    }
+    const titleEl = document.createElement("span");
+    titleEl.className = "rail-head-title";
+    titleEl.textContent = opts.title;
+    btn.appendChild(titleEl);
+    const twisty = document.createElement("span");
+    twisty.className = "rail-head-twisty";
+    twisty.innerHTML = opts.open ? ICON.chevronDown : ICON.chevronRight;
+    btn.appendChild(twisty);
+    btn.disabled = !!opts.forcedOpenBySearch;
+    btn.title = opts.forcedOpenBySearch
+      ? opts.searchTitle
+      : (opts.open ? opts.openTitle : opts.closedTitle);
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      state.groupCollapsed[opts.group] = opts.open;
+      saveRailShape();
+      render();
+    };
+    head.appendChild(btn);
+    // Trailing control, outside the fold button so clicking it never folds the
+    // group it sits on. Same arrangement as the desktop rail's head.
+    if (opts.action) head.appendChild(opts.action());
+    return head;
+  }
+
+  /**
+   * "Add project" — folder picker on the host.
+   *
+   * VS Code's answer is not the desktop's: the folder is recorded in the rail's
+   * own catalog rather than added to the VS Code workspace, because
+   * `updateWorkspaceFolders` on a single-folder window converts it to multi-root
+   * and restarts the extension host, taking running conversations with it. See
+   * EXTRA_PROJECT_FOLDERS_KEY in src/sidebar.ts.
+   */
+  function addProjectButton() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rail-action-btn rail-add-project";
+    btn.innerHTML = ICON.plus;
+    btn.title = "Add project folder";
+    btn.setAttribute("aria-label", "Add project folder");
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      vscode.postMessage({ type: "addProjectFolder" });
+    };
+    return btn;
+  }
+
+  // Labels deliberately carry no counts: host totals, loaded rows and the cap
+  // can disagree, and a lying digit must never strand a reachable conversation.
+  function appendSessionSlice(body, entries, expandKey, rowFactory, expandedLimit = RAIL_EXPANDED) {
+    const expanded = !!state.expanded[expandKey];
+    const visible = expanded ? expandedLimit : RAIL_PREVIEW;
+    const shown = entries.slice(0, visible);
+    for (const entry of shown) body.appendChild(rowFactory(entry));
+    const reachable = Math.min(entries.length, expandedLimit);
+    if (!expanded && reachable > shown.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "rail-more";
+      more.textContent = "Show more";
+      more.onclick = (e) => {
+        e.stopPropagation();
+        state.expanded[expandKey] = true;
+        saveRailShape();
+        render();
+      };
+      body.appendChild(more);
+    } else if (expanded && entries.length > RAIL_PREVIEW) {
+      const less = document.createElement("button");
+      less.type = "button";
+      less.className = "rail-more";
+      less.textContent = "Show less";
+      less.onclick = (e) => {
+        e.stopPropagation();
+        delete state.expanded[expandKey];
+        saveRailShape();
+        render();
+      };
+      body.appendChild(less);
+    }
   }
 
   function repoLabelFor(cwd) {
@@ -391,7 +637,7 @@
 
   function renderRepo(repo, opts) {
     const key = cwdKey(repo.cwd);
-    // Current project starts open; others start open until the user folds them.
+    // Repositories start open until the user folds them.
     const expanded = !state.collapsed[key];
     const sec = document.createElement("section");
     sec.className = "rail-repo" + (repo.available === false ? " unavailable" : "") + (expanded ? "" : " collapsed");
@@ -424,11 +670,27 @@
     label.className = "rail-repo-label";
     label.textContent = repo.label || leaf(repo.cwd);
     name.appendChild(label);
+    if (opts.isCurrent) {
+      const currentTag = document.createElement("span");
+      currentTag.className = "rail-current-tag";
+      currentTag.textContent = "Current";
+      // Spelled out because the tag can disagree with VS Code's Explorer: this
+      // marks the project Grok works in, and the rail can move it without the
+      // window's open folder moving.
+      currentTag.title = "History and New Session point here. VS Code's open folder is separate.";
+      name.appendChild(currentTag);
+    }
     head.appendChild(name);
 
+    // Head click folds, and folds only — same as the desktop rail. Switching
+    // projects is deliberately NOT bound to it: one gesture that means "fold"
+    // on the project you are in and "switch" on the one you are not is two
+    // gestures wearing one coat. The explicit routes are the row's "+" (start a
+    // conversation there, which switches) and "Open project" in its ⋯ menu.
     const toggle = () => {
       if (expanded) state.collapsed[key] = true;
       else delete state.collapsed[key];
+      saveRailShape();
       render();
     };
     head.onclick = (e) => {
@@ -446,10 +708,11 @@
     actions.className = "rail-repo-actions";
     actions.addEventListener("click", (e) => e.stopPropagation());
 
-    // New session only for the open folder: local newSession always starts in
-    // the workspace root (see newFocusedSession). Cross-project create would
-    // need a cwd-bearing newSession the host does not have yet.
-    if (opts.isCurrent && repo.available !== false) {
+    // New session on ANY available project. `newSession` carries the cwd now, so
+    // the host starts in the project named on the row and moves the selection
+    // with it — one message, no reliance on a selectRepo arriving first and
+    // being processed before this one.
+    if (repo.available !== false) {
       const add = document.createElement("button");
       add.type = "button";
       add.className = "rail-action-btn";
@@ -457,7 +720,7 @@
       add.title = "New session";
       add.onclick = (e) => {
         e.stopPropagation();
-        vscode.postMessage({ type: "newSession" });
+        vscode.postMessage({ type: "newSession", cwd: repo.cwd });
       };
       actions.appendChild(add);
     }
@@ -468,9 +731,51 @@
     menuBtn.className = "rail-action-btn";
     menuBtn.innerHTML = ICON.ellipsis;
     menuBtn.title = "Project actions";
-    menuBtn.onclick = (e) => {
-      e.stopPropagation();
+    menuBtn.setAttribute("aria-label", menuBtn.title);
+    const getMenuItems = () => {
       const items = [];
+      // "Open project" is the plain way to make this the project VS Code's
+      // history, New Session and chat header are all reading. Without it the
+      // only routes were resuming one of its conversations — impossible for a
+      // project that has none — or starting a new one, which is not what you
+      // want when you only meant to look.
+      if (!opts.isCurrent && repo.available !== false) {
+        items.push({
+          label: "Open project",
+          title: "Point history and New Session at this project",
+          onSelect: () => vscode.postMessage({ type: "selectRepo", cwd: repo.cwd }),
+        });
+        items.push(null);
+      }
+      // Only on rows that exist because the user added the folder — `added` is
+      // set by the host and absent everywhere else, so this is capability by
+      // field presence like the rest. Every other row is listed because Grok has
+      // run there; there is nothing to revoke, and archive is how you hide it.
+      if (repo.added) {
+        items.push({
+          label: "Remove project",
+          title: "Take this folder back out of the project list",
+          onSelect: () => {
+            if (
+              !window.confirm(
+                `Remove “${repo.label || leaf(repo.cwd)}” from the project list?\n\n` +
+                  "Nothing on disk is touched, and any conversations Grok has already " +
+                  "run there keep it listed.\n\n" +
+                  // The row vanishes from every linked device at once, and a
+                  // phone editing a file in it loses the route back to its
+                  // unsaved text. The desk cannot see whether that is happening,
+                  // so the only honest thing is to say so before removing.
+                  "If a linked device has this project open, any unsaved file edits " +
+                  "there will be lost.",
+              )
+            ) {
+              return;
+            }
+            vscode.postMessage({ type: "removeProjectFolder", cwd: repo.cwd });
+          },
+        });
+        items.push(null);
+      }
       if (archiveSupported) {
         items.push({
           label: repo.archived ? "Move to Projects" : "Archive project",
@@ -503,10 +808,15 @@
           vscode.postMessage({ type: "clearAllSessions", cwd: repo.cwd });
         },
       });
-      openMenu(menuBtn, items);
+      return items;
+    };
+    menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      openMenu(menuBtn, getMenuItems());
     };
     actions.appendChild(menuBtn);
     head.appendChild(actions);
+    wireRowContextMenu(head, () => menuBtn, getMenuItems);
     sec.appendChild(head);
 
     if (expanded) sec.appendChild(renderSessions(repo));
@@ -521,16 +831,25 @@
       return body;
     }
     const { entries, known } = sessionsForRepo(repo);
-    const filtered = entries.filter((s) => matchesFilter(s.displayName));
     if (!known) {
       body.appendChild(note("Loading…"));
       return body;
     }
-    if (!filtered.length) {
-      body.appendChild(note(state.filter.trim() ? "No matches." : "No sessions yet"));
+    const q = state.filter.trim();
+    const repoNameMatched = !q || matchesFilter(repo.label || leaf(repo.cwd));
+    if (q && !repoNameMatched) {
+      const hits = entries
+        .filter((s) => matchesFilter(s.displayName))
+        .slice(0, RAIL_EXPANDED);
+      for (const s of hits) body.appendChild(renderSession(s, repo, {}));
+      if (!hits.length) body.appendChild(note("No matches."));
       return body;
     }
-    for (const s of filtered) body.appendChild(renderSession(s, repo, {}));
+    if (!entries.length) {
+      body.appendChild(note("No sessions yet"));
+      return body;
+    }
+    appendSessionSlice(body, entries, cwdKey(repo.cwd), (s) => renderSession(s, repo, {}));
     return body;
   }
 
@@ -589,6 +908,7 @@
       pinBtn.className = "rail-action-btn rail-pin-btn" + (isPinned ? " active" : "");
       pinBtn.innerHTML = isPinned ? ICON.pinFilled : ICON.pin;
       pinBtn.title = isPinned ? "Unpin conversation" : "Pin conversation";
+      pinBtn.setAttribute("aria-label", pinBtn.title);
       pinBtn.onclick = (e) => {
         e.stopPropagation();
         vscode.postMessage({
@@ -606,6 +926,7 @@
     menuBtn.className = "rail-action-btn";
     menuBtn.innerHTML = ICON.ellipsis;
     menuBtn.title = "Session actions";
+    menuBtn.setAttribute("aria-label", menuBtn.title);
     menuBtn.onclick = (e) => {
       e.stopPropagation();
       const cwd = s.cwd || repo.cwd;
@@ -644,6 +965,13 @@
     };
     actions.appendChild(menuBtn);
     row.appendChild(actions);
+    if (window.matchMedia && window.matchMedia("(hover: hover)").matches) {
+      row.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        menuBtn.click();
+      });
+    }
 
     // Plain resume — no selectRepo, no window reload. The host already trusts
     // any discovered catalog cwd for local sessions (localTrustedSessionCwds).
@@ -663,17 +991,40 @@
     if (!msg || typeof msg !== "object") return;
     switch (msg.type) {
       case "repos": {
+        const leaving = state.currentCwd;
         state.repos = Array.isArray(msg.entries) ? msg.entries : [];
         state.currentCwd = msg.selectedCwd || "";
         state.activeCwd = msg.activeCwd || "";
+        state.canAddProject = msg.canAddProject === true;
         // Re-probe other projects when the catalog changes.
         state.previewsAsked = {};
+        // The selection moved. `currentSessions` still holds the OLD project's
+        // rows and the `sessions` frame carries no cwd of its own, so anything
+        // rendered between here and its arrival would file A's conversations
+        // under B's heading — and stay that way if that refresh never comes
+        // (a catalog-only push, or the selected folder disappearing).
+        //
+        // The rows are not thrown away: they are handed back to the project
+        // they belong to, which is where they were always going to be shown.
+        if (leaving && !sameCwd(leaving, state.currentCwd)) {
+          if (state.currentSessionsKnown) {
+            state.previews[cwdKey(leaving)] = {
+              entries: state.currentSessions.slice(0, RAIL_EXPANDED),
+            };
+            state.previewsAsked[cwdKey(leaving)] = true;
+          }
+          state.currentSessions = [];
+          state.currentSessionsKnown = false;
+        }
         render();
         requestPreviews();
         break;
       }
       case "sessions": {
-        // Local `sessions` is always the workspace root (repoScopeFor).
+        // Local `sessions` is the SELECTED project's list — it used to be the
+        // workspace root unconditionally, which is why this frame and
+        // `repos.selectedCwd` can be trusted to name the same repo (see
+        // historyCwdFor). Rows land under `state.currentCwd` on that basis.
         if (msg.offset === 0 || msg.offset == null) {
           state.currentSessions = Array.isArray(msg.entries) ? msg.entries : [];
           state.currentSessionsKnown = true;
@@ -746,6 +1097,8 @@
     sameCwd,
     recentRows,
     colorSupported,
+    RAIL_PREVIEW,
+    RAIL_EXPANDED,
     RECENT_CAP,
   };
 

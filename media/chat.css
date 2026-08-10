@@ -922,6 +922,24 @@ a:hover {
   text-align: left;
   cursor: pointer;
 }
+/* Which project the open conversation belongs to. Subordinate to the name and
+   allowed to shrink first: the name is what the user reads, the project is what
+   they check. Mirrors .rail-session-repo, which says the same thing on the
+   rail's cross-project rows. */
+.session-name-repo {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  letter-spacing: .02em;
+  opacity: .85;
+}
+.session-name-repo[hidden] { display: none; }
 .session-name-label:hover,
 .session-name-label:focus-visible,
 .session-name-chip:hover { color: var(--vscode-foreground); }

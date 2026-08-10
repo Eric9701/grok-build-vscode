@@ -4162,7 +4162,16 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     const localCatEnd = sidebar.indexOf("private selectedHistoryCwd(", localCatStart);
     const localCatBody = sidebar.slice(localCatStart, localCatEnd);
     expect(localCatBody).toMatch(/if\s*\(\s*!this\.host\.canSwitchWorkspaceFolder\s*\)/);
-    expect(localCatBody).toContain("entries = full");
+    // The rows ARE the full discovered catalog. No longer a bare `entries =
+    // full` — hand-added rows are tagged so the rail can offer to remove them —
+    // so guard the rule rather than the spelling: derived from `full`, and never
+    // narrowed to the open folders the desktop branch below uses.
+    const vscodeBranch = localCatBody.slice(
+      localCatBody.indexOf("!this.host.canSwitchWorkspaceFolder"),
+      localCatBody.indexOf("} else {"),
+    );
+    expect(vscodeBranch).toMatch(/\bfull\b/);
+    expect(vscodeBranch).not.toMatch(/openWorkspaceFolders/);
 
     // VS Code host never switches folders and reports success on setActive.
     const vscodeHost = fs.readFileSync(

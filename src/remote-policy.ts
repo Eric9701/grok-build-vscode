@@ -395,6 +395,11 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     // Host additionally re-checks the resolved pin home against the *live*
     // authorized open set before mutating (closed-project pin hole).
     case "toggleSessionPin":
+    // The host discards a remote's `newSession.cwd` outright — newRemoteSession
+    // starts in that tab's own repo — so this is belt to that braces. Listed
+    // because the default branch below returns TRUE, and a cwd-bearing message
+    // that is not named here is one refactor away from being trusted.
+    case "newSession":
       return !msg.cwd || isKnownCwd(msg.cwd);
     default:
       return true;
@@ -795,6 +800,23 @@ export function mayDeliverRemoteHostMsg(
         );
       }
       if (msg.type === "sessionName") {
+        return cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd);
+      }
+      // The file-browser answers. They were classified `message-cwd` above but
+      // never handled here, so all three fell through to `false` and every one
+      // was dropped: the panel just sat on "Loading…" forever. The whole remote
+      // file browser was dead at this gate, and nothing caught it because the
+      // button that opens it was separately invisible on the client.
+      //
+      // Same rule as the two above, and the reason this classification exists at
+      // all: a project closed between the request and the answer must not still
+      // be answering reads, so the cwd is authorized against the LIVE set here
+      // rather than trusted from when the request was let in.
+      if (
+        msg.type === "projectDirListing" ||
+        msg.type === "projectFileContent" ||
+        msg.type === "projectFileWriteResult"
+      ) {
         return cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd);
       }
       return false;
