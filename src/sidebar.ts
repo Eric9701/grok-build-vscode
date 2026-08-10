@@ -182,7 +182,7 @@ import {
   relativePathWithin,
   readSessionEntries,
   remoteAuthorizedCwds,
-  archiveChoicesRetiredBy,
+  effectiveArchivedRepoKeys,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -3337,14 +3337,51 @@ Only continue if you trust this code.`,
     // Nothing to subtract on a host that cannot archive: desktop ignores stored
     // choices entirely, and its remote set is already just the open folders.
     if (!this.host.canArchiveRepos) return authorized;
-    // Reads the stored choices, NOT the catalog. This runs on every inbound and
-    // outbound remote message and `repoCatalog()` re-runs discovery each call;
-    // with nothing archived — the ordinary case — this costs one state read.
-    return remoteAuthorizedCwds({
-      authorized,
+    return remoteAuthorizedCwds({ authorized, blocked: this.effectiveArchivedKeys() });
+  }
+
+  /**
+   * Which projects are archived right now, cached.
+   *
+   * Deciding this needs each archived project's newest transcript mtime, which
+   * is a stat per session in it — far too much for something consulted on every
+   * inbound AND outbound remote message. So it is computed when the catalog is
+   * built ({@link postRepoCatalog}) and read from here in between.
+   *
+   * The staleness that leaves is deliberately one-directional. **Tightening is
+   * immediate**: archiving posts a catalog, so a project goes out of reach the
+   * moment the user says so. **Loosening lags**: a project worked in since its
+   * choice stays fenced until the next catalog build, which any session open,
+   * project switch or pin will do. Erring toward withholding is the only
+   * direction that cannot hand a remote something it should not have, and it
+   * self-heals rather than needing anyone to notice.
+   */
+  private effectiveArchivedKeys(): ReadonlySet<string> {
+    // Never computed yet — a fresh window must not be briefly unfenced.
+    if (!this.archivedKeysCache) this.refreshEffectiveArchived();
+    return this.archivedKeysCache ?? new Set<string>();
+  }
+
+  private archivedKeysCache?: ReadonlySet<string>;
+
+  /** Recompute {@link effectiveArchivedKeys}. Cheap when nothing is archived. */
+  private refreshEffectiveArchived(): void {
+    if (!this.host.canArchiveRepos) {
+      this.archivedKeysCache = new Set<string>();
+      return;
+    }
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const grokHome = resolveGrokHome(process.env);
+    this.archivedKeysCache = effectiveArchivedRepoKeys({
       archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
-      openCwds: [...this.openWorkspaceFolders(), this.workspaceRoot()],
+      // The transcript, not `summary.json` — opening a conversation rewrites
+      // that one without the conversation gaining anything, which is exactly
+      // the trap `indexSessions` already documents. Only ever called for a
+      // project that carries an archived choice.
+      newestActivityAt: (cwd) =>
+        indexSessions({ fs: defaultFs, grokHome, cwd })[0]?.mtimeMs ?? 0,
       expand: (cwd) => this.sessionCwdsForRepo(cwd, overrides),
+      openCwds: [...this.openWorkspaceFolders(), this.workspaceRoot()],
     });
   }
 
@@ -3359,6 +3396,9 @@ Only continue if you trust this code.`,
   }
 
   private postRepoCatalog(): void {
+    // The catalog changing is exactly when "which projects are archived" can
+    // change, so it is recomputed here and read cheaply everywhere else.
+    this.refreshEffectiveArchived();
     // Both local and remote attached clients see the host's catalog: curated
     // open folders on desktop, full discovery on VS Code. Archive fields only
     // when canArchiveRepos (already applied inside localRepoCatalogEntries).
@@ -4174,70 +4214,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     else delete next[key];
     await this.state.update(REPO_PINS_KEY, next);
     this.postRepoCatalog();
-  }
-
-  /**
-   * Working in a project retires its archive choice.
-   *
-   * The rule already existed — `RepoArchiveChoice` says a choice holds "only
-   * until the project is worked in again" — but it was implemented as a
-   * TIMESTAMP COMPARISON IN THE RENDERER, re-derived on every paint. That was
-   * fine while archiving only decided where a row was drawn. It stopped being
-   * fine when the host started fencing remotes on the stored flag: the desk
-   * moved a project back into Projects while the host still called it archived,
-   * so a phone lost a project the rail was showing as perfectly ordinary, and
-   * refreshing could not help.
-   *
-   * The honest fix is not a second copy of the timestamp rule on the host —
-   * two re-derivations of one fact is what caused this. It is to make the
-   * transition an actual event, so the stored flag IS the answer and both sides
-   * read the same thing.
-   *
-   * The entry is DELETED rather than set to `archived: false`. Those are
-   * different statements: `false` is the user saying "keep showing me this one"
-   * and it also overrides the rail's age rule. Working in a project is not that
-   * claim — it just means the old choice has expired, which is exactly no entry.
-   *
-   * A worktree session counts for its source project: a worktree is not
-   * something you archive separately.
-   *
-   * **Driven by a COMPLETED TURN, and only that.** Two reasons, and the second
-   * one cost a review round:
-   *
-   *  - it is what the renderer's rule already means. That rule compares the
-   *    newest transcript mtime against the choice, and a transcript only moves
-   *    when a turn runs — opening a conversation rewrites `summary.json` and
-   *    nothing else, which is why merely visiting one does not un-archive it on
-   *    the rail either. Hanging this off session start made the host MORE eager
-   *    than the renderer: a second disagreement, in the opposite direction to
-   *    the one being fixed.
-   *  - session start is not always the user. A reconnecting phone whose CLI
-   *    died restarts its session through the client-ready recovery path, which
-   *    bypasses inbound authorization by design. Retiring there let a remote
-   *    clear the fence on a project archived while it was away — a privilege it
-   *    regained by waiting, which is the opposite of what archiving promises.
-   *
-   * A turn cannot come from a fenced remote (it is refused long before this), so
-   * a turn in an archived project means the desk. That is the user working in
-   * it, which is exactly the event this is for.
-   */
-  private retireArchiveChoiceOnActivity(session: Session): void {
-    if (!this.host.canArchiveRepos) return;
-    const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
-    const retired = archiveChoicesRetiredBy({
-      archives,
-      cwds: [session.cwd, session.worktree?.sourceGitRoot],
-    });
-    if (!retired.length) return;
-    const next: RepoArchives = { ...archives };
-    for (const key of retired) {
-      this.host.appendLine(`[archive] ${next[key]?.cwd ?? key} was worked in — its archive choice no longer applies`);
-      delete next[key];
-    }
-    void this.state.update(REPO_ARCHIVES_KEY, next).then(
-      () => this.postRepoCatalog(),
-      () => { /* a failed write just means the choice retires on the next turn */ },
-    );
   }
 
   /** Record where a project belongs in the rail. Both answers are stored,
@@ -5212,13 +5188,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
     session.cwd = cwd;
-    // NOT the place to retire an archive choice, though it reads like one.
-    // Starting a session is not the same as the user working in a project: a
-    // reconnecting phone whose CLI died arrives here through the client-ready
-    // recovery path, which deliberately bypasses inbound authorization to
-    // rebuild the tab it already owned. Retiring here let that reconnect
-    // un-archive the project and hand the phone back something the user had put
-    // away, with no desk action at all. See retireArchiveChoiceOnActivity.
+    // Note there is deliberately nothing here about archiving. Whether a
+    // project counts as archived is DERIVED when the catalog is built, never
+    // written from a lifecycle event like this one — see
+    // effectiveArchivedRepoKeys for the two attempts that taught us why.
     // Re-bind worktree meta from override when resuming (cold open may only have cwd).
     if (!session.worktree && resumeId) {
       const o = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[resumeId];
@@ -10679,10 +10652,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private refreshSessionOrderAfterTurn(session: Session): void {
     const cwd = this.sessionCwd(session);
     if (!cwd) return;
-    // A turn is working in the project, which retires any archive choice on it.
-    // Covers the case a session start cannot: archiving a project that already
-    // had a live conversation, then carrying on in it.
-    this.retireArchiveChoiceOnActivity(session);
     for (const delay of [400, 1600]) {
       const timer = setTimeout(() => {
         this.turnOrderTimers.delete(timer);

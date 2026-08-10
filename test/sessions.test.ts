@@ -23,7 +23,7 @@ import {
   readContextUsage,
   readSessionEntries,
   remoteAuthorizedCwds,
-  archiveChoicesRetiredBy,
+  effectiveArchivedRepoKeys,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -1353,106 +1353,82 @@ describe("session ordering follows the transcript, not a visit", () => {
   });
 });
 
-describe("remoteAuthorizedCwds (archived projects are out of reach from a phone)", () => {
+describe("effectiveArchivedRepoKeys / remoteAuthorizedCwds", () => {
   const A = "/work/a";
   const B = "/work/b";
   const AWT = "/home/u/.grok/worktrees/a/feat";
+  const k = (c: string) => normalizeRepoPath(c, "linux");
   const expand = (repo: string) => (repo === A ? [A, AWT] : [repo]);
-  const choice = (cwd: string, archived: boolean) => ({ cwd, at: 1, archived });
-  const call = (over: Partial<Parameters<typeof remoteAuthorizedCwds>[0]> = {}) =>
-    remoteAuthorizedCwds({
-      authorized: [A, AWT, B],
-      archives: {},
-      openCwds: [],
+  const choice = (cwd: string, archived: boolean, at = 1000) => ({ cwd, at, archived });
+
+  const keys = (over: object = {}) =>
+    effectiveArchivedRepoKeys({
+      archives: { [k(A)]: choice(A, true) },
+      newestActivityAt: () => 0,
       expand,
+      openCwds: [],
       platform: "linux",
       ...over,
     });
+  const fence = (blocked: ReadonlySet<string>) =>
+    remoteAuthorizedCwds({ authorized: [A, AWT, B], blocked, platform: "linux" });
 
-  it("passes the set straight through when nothing is archived", () => {
-    expect(call()).toEqual([A, AWT, B]);
-    // "not archived" is a real stored answer and must not be read as archived.
-    expect(call({ archives: { a: choice(A, false) } })).toEqual([A, AWT, B]);
-  });
-
-  it("drops an archived project AND the worktrees hanging off it", () => {
+  it("fences an archived project and the worktrees hanging off it", () => {
     // A worktree is not a project you archive separately — leaving it reachable
-    // would let a phone walk into the archived checkout through the side door.
-    expect(call({ archives: { a: choice(A, true) } })).toEqual([B]);
+    // would be a side door into the archived checkout.
+    expect(fence(keys())).toEqual([B]);
   });
 
-  it("never fences off a project the host currently has OPEN", () => {
-    // Opening a project does not clear its stored flag, and the rail already
-    // says "the folder VS Code has open is never archived". Without this the
-    // phone would go blind to the conversation the desk is working in.
-    expect(call({ archives: { a: choice(A, true) }, openCwds: [A] })).toEqual([A, AWT, B]);
+  it("passes everything through when nothing is archived", () => {
+    expect(fence(keys({ archives: {} }))).toEqual([A, AWT, B]);
+    // "not archived" is a real stored answer, not the absence of one.
+    expect(fence(keys({ archives: { [k(A)]: choice(A, false) } }))).toEqual([A, AWT, B]);
   });
 
-  it("keeps an archived project's worktree when the WORKTREE is the open folder", () => {
-    // VS Code opened on the worktree itself: that checkout is what the user is
-    // in, whatever its parent project's flag says.
-    expect(call({ archives: { a: choice(A, true) }, openCwds: [AWT] })).toEqual([AWT, B]);
+  it("treats a choice as expired once the project has been worked in since", () => {
+    // The renderer's own rule, and the reason the host has to share it: without
+    // this the desk showed a project in Projects while the phone could not
+    // reach it, and no refresh helped.
+    expect(fence(keys({ newestActivityAt: () => 2000 }))).toEqual([A, AWT, B]);
+    // ...but activity BEFORE the choice does not expire it.
+    expect(fence(keys({ newestActivityAt: () => 999 }))).toEqual([B]);
   });
 
-  it("ignores a stored choice with no cwd rather than blocking everything", () => {
-    expect(call({ archives: { a: { at: 1, archived: true } as never } })).toEqual([A, AWT, B]);
+  it("never fences a project the host has OPEN, worktrees included", () => {
+    // Opening a project does not clear its stored flag. Fencing it anyway would
+    // blind the phone to the conversation the desk is working in.
+    expect(fence(keys({ openCwds: [A] }))).toEqual([A, AWT, B]);
+  });
+
+  it("keeps an open WORKTREE reachable when its parent project is not", () => {
+    expect(fence(keys({ openCwds: [AWT] }))).toEqual([AWT, B]);
+  });
+
+  it("ignores a stored choice with no cwd rather than fencing everything", () => {
+    expect(fence(keys({ archives: { x: { at: 1, archived: true } as never } }))).toEqual([A, AWT, B]);
+  });
+
+  it("asks for activity only where a choice could actually be expired", () => {
+    // It is a stat per session in the project, so it must not run for projects
+    // that carry no archived choice at all.
+    const asked: string[] = [];
+    keys({
+      archives: { [k(A)]: choice(A, true), [k(B)]: choice(B, false) },
+      newestActivityAt: (cwd) => { asked.push(cwd); return 0; },
+    });
+    expect(asked).toEqual([A]);
   });
 
   it("matches paths by normalised key, so drive-letter case cannot slip through", () => {
-    const win = (over: object) =>
-      remoteAuthorizedCwds({
-        authorized: ["C:\work\a"],
-        archives: {},
-        openCwds: [],
-        expand: (r) => [r],
-        platform: "win32",
-        ...over,
-      });
-    expect(win({ archives: { a: choice("c:\WORK\a", true) } })).toEqual([]);
-  });
-});
-
-describe("archiveChoicesRetiredBy (working in a project expires its archive choice)", () => {
-  const A = "/work/a";
-  const WT = "/home/u/.grok/worktrees/a/feat";
-  // Keys are normalised paths, the way setRepoArchived writes them — an object
-  // literal keyed by the raw string silently never matches.
-  const archives = {
-    [normalizeRepoPath(A)]: { cwd: A, at: 1, archived: true },
-    [normalizeRepoPath("/work/b")]: { cwd: "/work/b", at: 1, archived: false },
-  };
-  const call = (cwds: (string | undefined)[], over = {}) =>
-    archiveChoicesRetiredBy({ archives, cwds, platform: "linux" as const, ...over });
-
-  it("retires the choice on the project being worked in", () => {
-    expect(call([A])).toEqual([normalizeRepoPath(A)]);
-  });
-
-  it("leaves a choice of 'keep showing me this' alone", () => {
-    // `archived: false` is a real stored answer, not the absence of one, and
-    // nothing here expires it.
-    expect(call(["/work/b"])).toEqual([]);
-  });
-
-  it("says nothing about projects with no choice at all", () => {
-    expect(call(["/work/never-archived"])).toEqual([]);
-    expect(call([undefined, ""])).toEqual([]);
-  });
-
-  it("retires the SOURCE project's choice when a worktree session runs", () => {
-    // A worktree is not something you archive separately.
-    expect(call([WT, A])).toEqual([normalizeRepoPath(A)]);
-  });
-
-  it("does not report the same project twice", () => {
-    expect(call([A, A])).toEqual([normalizeRepoPath(A)]);
-  });
-
-  it("matches by normalised key, so drive-letter case still retires the choice", () => {
-    expect(archiveChoicesRetiredBy({
-      archives: { "c:\work\a": { cwd: "C:\work\a", at: 1, archived: true } },
-      cwds: ["C:\WORK\a"],
+    const blocked = effectiveArchivedRepoKeys({
+      archives: { "c:\work\a": { cwd: "c:\WORK\a", at: 1, archived: true } },
+      newestActivityAt: () => 0,
+      expand: (r) => [r],
+      openCwds: [],
       platform: "win32",
-    })).toEqual(["c:\work\a"]);
+    });
+    expect(remoteAuthorizedCwds({
+      authorized: ["C:\work\a"], blocked, platform: "win32",
+    })).toEqual([]);
   });
 });

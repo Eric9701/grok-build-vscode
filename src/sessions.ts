@@ -126,89 +126,98 @@ export interface RepoArchiveChoice {
 export type RepoArchives = Record<string, RepoArchiveChoice>;
 
 /**
- * Which stored archive choices are retired by activity in `cwds`.
+ * Which projects are archived RIGHT NOW — the stored choice, less the ones
+ * newer activity has already superseded. Returns normalised keys, worktrees
+ * included, minus anything the host currently has open.
+ *
+ * ## Why this is a computation and not an event
  *
  * `RepoArchiveChoice` has always said a choice holds "only until the project is
- * worked in again". That was implemented as a timestamp comparison in the
- * renderer, re-derived on every paint — fine while archiving only decided where
- * a row was drawn, and not fine once the host began fencing remotes on the
- * stored flag, because the two sides then disagreed about the same project.
+ * worked in again", and the renderer implemented that as a timestamp comparison
+ * it re-derived on every paint. That was fine while archiving only decided where
+ * a row was drawn. It stopped being fine when the host began fencing remotes on
+ * the stored flag, because the two sides then disagreed about the same project:
+ * the desk showed it in Projects while the phone could not reach it.
  *
- * So the expiry is an event, evaluated here, and the stored flag is the single
- * answer both sides read. Returns the keys to DELETE: "expired" is no entry, not
- * `archived: false` — that is the user saying "keep showing me this one", which
- * also overrides the rail's age rule and is a claim nobody made.
+ * The first two attempts to fix that made the expiry an EVENT — delete the
+ * choice when the project is worked in — and both were wrong in the same way.
+ * Session start turned out to include a reconnecting phone's recovery restart,
+ * which bypasses inbound authorization by design; moving to "a completed turn"
+ * did not help, because a plain CLI exit reports `error` through the same
+ * status path. Each time, a remote could regain a project the user had archived
+ * by doing nothing but waiting.
+ *
+ * The shape was the problem, not the trigger. Retirement was a WRITE driven by
+ * process events, and process events are reachable by a remote. Deriving the
+ * answer instead is a read: there is no event to reach, nothing to spoof, and
+ * the two sides agree because they are reading the same computed value.
+ *
+ * `newestActivityAt` is the last time a conversation in that project actually
+ * MOVED — its transcript mtime, not `summary.json`, which is rewritten by
+ * merely opening one. That is the same signal the renderer compares against,
+ * which is what makes the two agree.
  */
-export function archiveChoicesRetiredBy(opts: {
+export function effectiveArchivedRepoKeys(opts: {
   archives: RepoArchives;
-  cwds: readonly (string | undefined)[];
+  /** Newest real activity in a project, ms. 0/undefined = none recorded. */
+  newestActivityAt: (repoCwd: string) => number;
+  /** A project's own cwd plus its worktrees. */
+  expand: (repoCwd: string) => readonly string[];
+  /** Projects the host has open — never fenced off, whatever the flag says. */
+  openCwds: readonly string[];
   platform?: NodeJS.Platform;
-}): string[] {
+}): Set<string> {
   const platform = opts.platform ?? process.platform;
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const cwd of opts.cwds) {
-    if (!cwd) continue;
-    const key = normalizeRepoPath(cwd, platform);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    if (opts.archives?.[key]?.archived) out.push(key);
+  const key = (c: string) => normalizeRepoPath(c, platform);
+  const open = new Set(opts.openCwds.filter(Boolean).map(key));
+  const blocked = new Set<string>();
+  for (const choice of Object.values(opts.archives ?? {})) {
+    // `archived: false` is a real stored answer — "keep showing me this one" —
+    // and is not the absence of one.
+    if (!choice?.archived || !choice.cwd) continue;
+    const root = key(choice.cwd);
+    // An OPEN project is exempt WHOLE. Deciding per cwd left the project
+    // reachable while its worktrees were not — a project half-open, and the
+    // half that vanishes is the one holding unmerged work.
+    if (!root || open.has(root)) continue;
+    // Worked in since the choice was made, so the choice has expired. Matches
+    // the renderer, which is the whole point.
+    const newest = opts.newestActivityAt(choice.cwd) || 0;
+    if (newest > 0 && newest > choice.at) continue;
+    for (const cwd of [choice.cwd, ...opts.expand(choice.cwd)]) {
+      const k = key(cwd);
+      // A worktree the host has open stays reachable even when its parent does
+      // not: that checkout is what the user is actually in.
+      if (k && !open.has(k)) blocked.add(k);
+    }
   }
-  return out;
+  return blocked;
 }
 
 /**
- * The host's authorized cwds, minus every project the user has archived.
+ * The host's authorized cwds, minus the projects that are archived right now.
  *
  * A REMOTE-only narrowing. On the desk, archiving means "fold this away" — the
  * project is one keystroke from being worked in — so subtracting it locally
  * would break the thing archiving is for. From a phone it should mean what it
  * looks like: out of reach.
  *
- * Two rules are what make it safe rather than merely strict.
- *
- * **The stored choice is the fence; the rail's age rule is not.** A project the
- * client hides for being 30 days idle is still reachable here. That rule lives
- * in the renderer and moves on its own, so binding a capability to it would
- * revoke a phone's access with no user action behind it — including in the
- * middle of a conversation.
- *
- * **A project the host has OPEN is never fenced off**, matching the rail's own
- * "the folder VS Code has open is never archived". Opening a project does not
- * clear its stored flag, so without this an archived-then-reopened project
- * would leave the phone blind to the very conversation the desk is working in.
- *
- * `expand` maps a project to the cwds that belong to it — its own root plus its
- * worktrees, which are not projects you archive separately.
+ * Takes the blocked set rather than deriving it, so there is exactly one place
+ * that decides what "archived" means ({@link effectiveArchivedRepoKeys}) and
+ * this is only the subtraction. Note what is NOT in that set: a project the
+ * rail merely hides for being 30 days idle is still reachable here. That rule
+ * lives in the renderer and moves on its own, so binding a capability to it
+ * would revoke a phone's access with nobody having done anything — including in
+ * the middle of a conversation.
  */
 export function remoteAuthorizedCwds(opts: {
   authorized: readonly string[];
-  archives: RepoArchives;
-  openCwds: readonly string[];
-  expand: (repoCwd: string) => readonly string[];
+  blocked: ReadonlySet<string>;
   platform?: NodeJS.Platform;
 }): string[] {
+  if (!opts.blocked.size) return [...opts.authorized];
   const platform = opts.platform ?? process.platform;
-  const key = (c: string) => normalizeRepoPath(c, platform);
-  const open = new Set(opts.openCwds.filter(Boolean).map(key));
-  const blocked = new Set<string>();
-  for (const choice of Object.values(opts.archives ?? {})) {
-    if (!choice?.archived || !choice.cwd) continue;
-    const root = key(choice.cwd);
-    // An OPEN project is exempt whole. Checking each cwd on its own instead
-    // left the project reachable while its worktrees were not, which is a
-    // project half-open — and the half that disappears is the one holding
-    // unmerged work.
-    if (!root || open.has(root)) continue;
-    for (const cwd of [choice.cwd, ...opts.expand(choice.cwd)]) {
-      const k = key(cwd);
-      // A worktree the host has open stays reachable even when its parent
-      // project does not: that checkout is what the user is actually in.
-      if (k && !open.has(k)) blocked.add(k);
-    }
-  }
-  if (!blocked.size) return [...opts.authorized];
-  return opts.authorized.filter((c) => !blocked.has(key(c)));
+  return opts.authorized.filter((c) => !opts.blocked.has(normalizeRepoPath(c, platform)));
 }
 
 /**

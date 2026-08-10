@@ -327,31 +327,32 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(src).toContain('this.isImagePathAuthorizedNow(source, "remote")');
   });
 
-  it("only a completed TURN retires an archive choice — never a session start", () => {
-    // A reconnecting phone whose CLI died restarts its session through the
-    // client-ready recovery path, which bypasses inbound authorization by
-    // design so a tab can rebuild what it already owned. Retiring the choice on
-    // any session start therefore let a remote clear the fence on a project
-    // archived while it was away — privilege regained by waiting.
+  it("derives whether a project is archived — never writes it from a lifecycle event", () => {
+    // Two attempts made this an EVENT ("delete the choice when the project is
+    // worked in") and both handed a remote back a project the user had
+    // archived, without anyone doing anything at the desk. Session start turned
+    // out to include a reconnecting phone's recovery restart, which bypasses
+    // inbound authorization by design; moving to "a completed turn" did not
+    // help either, because a plain CLI exit reports `error` down the same
+    // status path.
     //
-    // A turn cannot come from a fenced remote, so a turn in an archived project
-    // means the desk: the user actually working in it.
+    // The shape was the problem. A write driven by process events is reachable
+    // by a remote; deriving the answer is a read, with no event to reach.
     const src = sidebarSrc();
-    const start = src.indexOf("private async startSession(");
-    const nextMember = src.indexOf("  private ", start + 10);
-    const startBody = src.slice(start, nextMember);
-    // Guard the guard: an empty slice would satisfy the assertion below
-    // without proving anything.
-    expect(startBody).toContain("session.cwd = cwd;");
-    expect(startBody).not.toContain("this.retireArchiveChoiceOnActivity(");
+    expect(src).not.toContain("retireArchiveChoiceOnActivity");
+    expect(src).not.toContain("archiveChoicesRetiredBy");
 
-    const turn = src.indexOf("private refreshSessionOrderAfterTurn(");
-    const turnBody = src.slice(turn, turn + 700);
-    expect(turnBody).toContain("this.retireArchiveChoiceOnActivity(session);");
+    // Derived where the catalog is built, and read from a cache in between —
+    // it costs a stat per session in each archived project, which is far too
+    // much for something every inbound and outbound message consults.
+    const post = src.indexOf("private postRepoCatalog(");
+    expect(src.slice(post, post + 400)).toContain("this.refreshEffectiveArchived();");
+    const narrow = src.indexOf("private remoteAuthorizedSessionCwds(");
+    expect(src.slice(narrow, narrow + 600)).toContain("blocked: this.effectiveArchivedKeys()");
 
-    // ...and that is still the ONLY caller.
-    const calls = src.match(/this\.retireArchiveChoiceOnActivity\(/g) ?? [];
-    expect(calls).toHaveLength(1);
+    // A window that has never built a catalog must not be briefly unfenced.
+    const cache = src.indexOf("private effectiveArchivedKeys(");
+    expect(src.slice(cache, cache + 400)).toContain("if (!this.archivedKeysCache) this.refreshEffectiveArchived();");
   });
 
   it("RemoteUplink is the sole socket write path and enforces project auth", () => {
