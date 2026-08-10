@@ -960,6 +960,13 @@ a:hover {
 .session-name-edit { opacity: 0; }
 .session-name-chip:hover .session-name-edit,
 .session-name-edit:focus-visible { opacity: 1; }
+/* While renaming, the pencil goes away but its BOX stays. It is a fixed 28px
+   .icon-btn and the tallest thing in the chip's first row, so removing it let
+   the row collapse to the input's 21px and the top bar lost 7px on every
+   rename. `visibility` keeps the space and still takes the button out of the
+   tab order and the a11y tree, which `opacity: 0` alone would not. Applies to
+   the browser client's pencil too — same class, added by the same code path. */
+.session-name-edit-editing { visibility: hidden; }
 /* The chip is content-sized (`flex: 0 1 auto`), so while it holds the input the
    input's `width: 100%` would resolve against a parent that has already
    collapsed to the input's own default ~20-character width ÔÇö the field came out

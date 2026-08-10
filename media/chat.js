@@ -5207,6 +5207,7 @@
       vscode.postMessage({ type: "renameSession", id: edit.id, name: next, ...(edit.cwd ? { cwd: edit.cwd } : {}) });
     }
     if (edit.input.isConnected) edit.input.replaceWith(edit.label);
+    edit.editBtn.classList.remove("session-name-edit-editing");
     edit.editBtn.hidden = false;
     if (edit.surface === "local") renderSessionName();
     else renderSessionHead();
@@ -5230,7 +5231,13 @@
     };
     inputEl.onblur = () => finishSessionNameEdit(true);
     labelEl.replaceWith(inputEl);
-    editBtn.hidden = true;
+    // Hidden, not REMOVED. The pencil is a fixed 28px .icon-btn and the tallest
+    // thing in the chip's first row, so `hidden` collapsed that row to the
+    // input's 21px — the whole top bar shrank by 7px the moment you clicked the
+    // name, taking the project line and the separator up with it. Reserving the
+    // box costs nothing and is the only thing here that cannot drift: it holds
+    // whatever height the button has rather than restating it as a number.
+    editBtn.classList.add("session-name-edit-editing");
     state.sessionNameEditing = {
       surface,
       id: target.id,

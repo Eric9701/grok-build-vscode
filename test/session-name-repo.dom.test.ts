@@ -114,6 +114,47 @@ describe("session name project label", () => {
     expect(editBody).toMatch(/grid-row:\s*1/);
   });
 
+  it("keeps the rename pencil's BOX while editing, so the top bar cannot resize", () => {
+    // Measured against the real stylesheet before this was fixed: clicking the
+    // name took the top bar from 46px to 39px and pulled the project line and
+    // the separator up 7px with it. The pencil is a fixed 28px .icon-btn and
+    // the tallest thing in the chip's first row, so removing it — not the
+    // input's 2px — is what collapsed the row.
+    //
+    // jsdom has no layout, so this pins the mechanism rather than the pixels:
+    // the button must stay in the flow (`hidden` takes it out) and be hidden by
+    // visibility instead.
+    const h = bootWebview();
+    sendRepos(h);
+    nameSession(h, "/work/relay");
+    const pencil = h.doc.getElementById("session-name-edit")!;
+    expect(pencil.hidden).toBe(false);
+
+    h.doc.getElementById("session-name-label")!.dispatchEvent(
+      new (h.window as never as { MouseEvent: typeof MouseEvent }).MouseEvent(
+        "click",
+        { bubbles: true, cancelable: true },
+      ),
+    );
+    expect(h.doc.querySelector(".session-name-input")).toBeTruthy();
+    expect(pencil.hidden, "removing it collapses the row").toBe(false);
+    expect(pencil.classList.contains("session-name-edit-editing")).toBe(true);
+
+    const css = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    const rule = css.slice(css.indexOf(".session-name-edit-editing"));
+    // visibility, not opacity: opacity alone leaves it focusable and in the
+    // a11y tree while the field beside it has the caret.
+    expect(rule.slice(0, rule.indexOf("}"))).toMatch(/visibility:\s*hidden/);
+
+    // ...and it comes back when the edit ends.
+    const input = h.doc.querySelector(".session-name-input") as HTMLInputElement;
+    input.dispatchEvent(new (h.window as never as { Event: typeof Event }).Event("blur"));
+    expect(pencil.classList.contains("session-name-edit-editing")).toBe(false);
+  });
+
   it("is not mounted on the remote client, which shows the project on its own line", () => {
     const h = bootWebview({ remote: true });
     sendRepos(h);
