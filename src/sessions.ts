@@ -122,20 +122,6 @@ export interface RepoArchiveChoice {
   cwd: string;
   at: number;
   archived: boolean;
-  /** Session ids already live when this choice was made. Their next transcript
-   *  write can belong to work accepted before the choice and cannot retire it.
-   *  Kept until that live process is gone; a genuinely new turn retires the
-   *  choice at its own start instead. */
-  protectedSessionIds?: string[];
-  /** A host-owned queued prompt accepted before the choice. Its eventual turn
-   *  is pre-choice intent too, even though prompt() starts later. */
-  protectedQueuedSessionIds?: string[];
-  /** Last transcript mtime already accounted for when a protected live process
-   *  went away. A later write in the same session is new activity. */
-  activityFloor?: Record<string, number>;
-  /** Renderer watermark for activity produced by a protected turn. This is
-   *  presentation-only; authorization expiry still uses transcript evidence. */
-  displayAt?: number;
 }
 export type RepoArchives = Record<string, RepoArchiveChoice>;
 
@@ -150,9 +136,8 @@ export type RepoArchives = Record<string, RepoArchiveChoice>;
  */
 export interface TrustedSessionCwd {
   cwd: string;
-  /** Every catalog project that claims this cwd. Nested projects can share a
-   *  worktree through the same git root, so ownership is intentionally plural. */
-  repoCwds: string[];
+  /** The project this cwd belongs to: itself, or the project owning a worktree. */
+  repoCwd: string;
 }
 
 /**
@@ -187,7 +172,7 @@ export interface TrustedSessionCwd {
 export function expiredArchiveChoiceKeys(opts: {
   archives: RepoArchives;
   /** Newest TRANSCRIPT mtime across the project and its worktrees, ms. */
-  newestActivityAt: (repoCwd: string, choice: RepoArchiveChoice) => number;
+  newestActivityAt: (repoCwd: string) => number;
   platform?: NodeJS.Platform;
 }): string[] {
   const platform = opts.platform ?? process.platform;
@@ -196,7 +181,7 @@ export function expiredArchiveChoiceKeys(opts: {
     // `archived: false` is a real stored answer — "keep showing me this one" —
     // and expires the same way, so both are considered.
     if (!choice?.cwd) continue;
-    const newest = opts.newestActivityAt(choice.cwd, choice) || 0;
+    const newest = opts.newestActivityAt(choice.cwd) || 0;
     if (newest > 0 && newest > choice.at) {
       out.push(storedKey || normalizeRepoPath(choice.cwd, platform));
     }
@@ -239,10 +224,10 @@ export function archivedProjectKeys(opts: {
  * would break the thing archiving is for. From a phone it should mean what it
  * looks like: out of reach.
  *
- * Filters by every PROJECT that claims a cwd, not by the cwd itself. A worktree
- * is not something you archive separately, and nested catalog rows may both
- * claim one through the same git root. Any archived claimant narrows access;
- * choosing the first owner would make catalog order an authorization decision.
+ * Filters by each cwd's OWNING PROJECT, not by the cwd itself. A worktree is
+ * not something you archive separately, and matching only exact cwds let a
+ * worktree the host learned about after the fence was built walk straight
+ * through it — the project is the unit, so the project is what is checked.
  *
  * Note what `archived` does NOT include: a project the rail merely hides for
  * being 30 days idle is still reachable here. That rule lives in the renderer
@@ -257,9 +242,7 @@ export function remoteAuthorizedCwds(opts: {
   if (!opts.archivedProjects.size) return opts.trusted.map((t) => t.cwd);
   const platform = opts.platform ?? process.platform;
   return opts.trusted
-    .filter((t) => !t.repoCwds.some(
-      (repoCwd) => opts.archivedProjects.has(normalizeRepoPath(repoCwd, platform)),
-    ))
+    .filter((t) => !opts.archivedProjects.has(normalizeRepoPath(t.repoCwd, platform)))
     .map((t) => t.cwd);
 }
 
@@ -697,11 +680,7 @@ export function discoverRepos(deps: DiscoverReposDeps): RepoListEntry[] {
   const byKey = new Map<string, Omit<RepoListEntry, "label">>();
   const archiveOf = (key: string) => {
     const choice = deps.archives?.[key];
-    const protectedAt = choice?.protectedSessionIds?.length ? Number.MAX_SAFE_INTEGER : 0;
-    return {
-      archived: !!choice?.archived,
-      archivedAt: Math.max(choice?.at ?? 0, choice?.displayAt ?? 0, protectedAt),
-    };
+    return { archived: !!choice?.archived, archivedAt: choice?.at ?? 0 };
   };
   // Always emit `color` (possibly "") — field presence is the capability signal.
   // Stored choices are non-empty palette ids; anything else collapses to none.
@@ -1035,10 +1014,10 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
  * `events.jsonl` only moves when a turn actually runs. That is evidence a remote
  * cannot produce without already being allowed in.
  */
-export function transcriptMtimes(deps: IndexDeps): Map<string, number> {
+export function newestTranscriptMtime(deps: IndexDeps): number {
   const { fs, grokHome, cwd, log } = deps;
   const platform = deps.platform ?? process.platform;
-  const out = new Map<string, number>();
+  let newest = 0;
   for (const dir of sessionCatalogDirs({ fs, grokHome, cwd, platform })) {
     let names: string[];
     try {
@@ -1053,29 +1032,11 @@ export function transcriptMtimes(deps: IndexDeps): Map<string, number> {
       if (!isSessionDirChild(dir, sessionDir, platform)) continue;
       try {
         const st = fs.statSync(path.join(sessionDir, "events.jsonl"));
-        const previous = out.get(name) ?? 0;
-        if (st.mtimeMs > previous) out.set(name, st.mtimeMs);
+        if (st.mtimeMs > newest) newest = st.mtimeMs;
       } catch {
         // No transcript: never spoken to, so it says nothing about activity.
       }
     }
-  }
-  return out;
-}
-
-/**
- * Newest transcript activity not already covered by a protected-turn floor.
- * Floors are per session: a protected write in one conversation must never
- * hide newer work in another conversation in the same project.
- */
-export function newestTranscriptMtime(
-  deps: IndexDeps,
-  activityFloor: Readonly<Record<string, number>> = {},
-): number {
-  let newest = 0;
-  for (const [id, mtime] of transcriptMtimes(deps)) {
-    if (mtime <= (activityFloor[id] ?? 0)) continue;
-    if (mtime > newest) newest = mtime;
   }
   return newest;
 }

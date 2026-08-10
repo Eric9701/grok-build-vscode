@@ -305,23 +305,16 @@ capability-gated affordance in another shape: `#projects-rail` exists only in th
 relay's page, so the element lookup is the entire gate and the VS Code webview renders
 nothing new. Other projects' rows arrive on `repoSessions` (answering `listRepoSessions`);
 where that frame never comes the rail degrades to the selected repo's own list. Which
-section a project sits in — Projects or Archived — is derived from a timestamped
-`grok.repoArchives` choice plus the renderer-only thirty-day rule. The host retires a
-choice only on `events.jsonl` activity, never `summary.json` (a load rewrites that), and
-does so before publishing `archived`/`archivedAt`; a turn accepted after the choice
-retires it at the prompt commit point. Sessions already live when the choice is made are
-recorded on it, so their later transcript flush cannot masquerade as post-choice work;
-once that process is gone its final mtime becomes a per-session floor. The renderer gets
-a matching watermark while such a session is protected. The thirty-day rule never
-narrows capability: it can move with time alone.
-
-VS Code remote authorization starts from the unchanged local trusted set, then subtracts
-explicitly archived projects on every inbound and outbound message. Provenance remains
-lookup-only on that hot path: each trusted cwd carries *all* catalog projects that claim
-it, and any archived claimant fences the cwd. This matters for nested catalog rows that
-share a git-root worktree; keeping only the first owner would let the later nested owner
-escape. A project folder currently open on the host is never subtracted. Ordering and
-the VS Code repo picker are otherwise untouched.
+section a project sits in — Projects or Archived — is **derived in the client**, never a
+stored section: `setRepoArchived` records one timestamped choice per repo in
+`grok.repoArchives`, reported back on every catalog row as `archived`/`archivedAt`, and a
+project counts as archived when that choice outranks its newest conversation or when
+nothing has happened in it for thirty days. Activity newer than the choice simply
+overrides it, which is what makes "work in an archived project and it returns" need no
+bookkeeping. The age rule runs only on conversations the client actually holds — the
+catalog's `updatedAt` is the session *directory's* mtime, which does not move when an
+existing conversation continues, so trusting it against an older host would archive a
+project in daily use. Ordering and the VS Code repo picker are untouched by any of it.
 
 Selection and conversation ownership are **per remote browser tab**.
 `RemoteClientState` maps the current opaque relay `clientId` to its normalized cwd and
