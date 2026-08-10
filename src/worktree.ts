@@ -33,6 +33,16 @@ export interface WorktreeRecord {
   createdAt?: number;
 }
 
+/**
+ * How a worktree create ended, as far as the host can tell.
+ *
+ * `silent` and `stalled` both mean "no completion event arrived", and they call
+ * for opposite responses — one is an older CLI that never reports, the other is
+ * a copy that genuinely did not finish. Collapsing them into one "timeout" is
+ * what let a half-copied checkout be accepted.
+ */
+export type WorktreeCreateOutcome = "created" | "failed" | "stalled" | "silent";
+
 export interface WorktreeCreateResult {
   status: string;
   sessionId?: string;

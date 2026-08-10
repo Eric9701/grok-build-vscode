@@ -335,7 +335,7 @@ describe("worktree validation reads git first", () => {
     const region = src.slice(start, src.indexOf("Create worktree failed", start));
     const lastValidate = region.lastIndexOf("listAuthoritativeWorktreePaths");
     const release = region.indexOf("await releaseCreator();");
-    const sessionStart = region.indexOf("await this.startSession();");
+    const sessionStart = region.indexOf("await this.startSession(undefined, wtSession);");
     expect(lastValidate).toBeGreaterThan(-1);
     expect(release, "released after the last validation query").toBeGreaterThan(lastValidate);
     // ...and BEFORE the persistent session starts. A temporary grok.exe still
@@ -361,6 +361,58 @@ describe("worktree validation reads git first", () => {
     expect(snapshot, "the snapshot must be taken BEFORE creating").toBeGreaterThan(-1);
     expect(create).toBeGreaterThan(snapshot);
     expect(region).toContain("preExisting.some((p) => pathsEqual(p, wtPath))");
+  });
+
+  it("correlates the completion event to the worktree it asked for", () => {
+    // Creation reuses whatever live client the project already has, so two
+    // creates on one client interleave their notifications. Taking the first
+    // terminal event let one create's completion release another's wait — and
+    // that other flow would then start in a checkout still being copied.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private watchWorktreeCreate");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  private worktreeCreatesInFlight", start));
+    expect(body).toContain("pathsEqual(named, target)");
+    // An event with no path is only trustworthy when there is exactly one
+    // create it could belong to.
+    expect(body).toContain("this.worktreeCreatesInFlight.get(client) === 1");
+    // Events arriving before the RPC named the path must not be lost: a small
+    // repo finishes before the call resolves.
+    expect(body).toContain("// Replay what arrived before the path was known.");
+  });
+
+  it("tells 'this CLI never reports' apart from 'the copy never finished'", () => {
+    // Both are "no completion event", and they need opposite answers. Silence
+    // from an older CLI must fall through to the disk checks — that is how
+    // this worked before the event existed. A CLI that reported progress and
+    // then stopped must NOT, because registration lands before the files do
+    // and those checks would call a half-copied checkout valid.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const watch = src.slice(src.indexOf("private watchWorktreeCreate"));
+    expect(watch.slice(0, watch.indexOf("\n  private worktreeCreatesInFlight"))).toContain(
+      'finish(spoke ? "stalled" : "silent")',
+    );
+    const create = src.slice(src.indexOf("Creating git worktree"));
+    const region = create.slice(0, create.indexOf("this.worktreeCache.push"));
+    expect(region).toContain('if (outcome === "stalled")');
+    expect(region).toContain("never finished being created");
+    // Silence proceeds; it is the compatibility path and must not be an error.
+    expect(region).not.toMatch(/if \(outcome === "silent"\)[\s\S]{0,120}showErrorMessage/);
+  });
+
+  it("persists the worktree onto the session it created, not whatever is focused", () => {
+    // `startSession` awaits, and focus is free to move while it runs. Reading
+    // `this.focused` back afterwards wrote this worktree's name, path and
+    // source root onto some other conversation — and a cold restore later
+    // treats that saved binding as authoritative.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const create = src.slice(src.indexOf("Creating git worktree"));
+    const region = create.slice(0, create.indexOf("Worktree session ready"));
+    expect(region).toContain("await this.startSession(undefined, wtSession);");
+    expect(region).toContain("const id = wtSession.activeSessionId;");
+    expect(region, "the identifier must not be re-read from focus after the await").not.toMatch(
+      /const id = this\.focused\.activeSessionId/,
+    );
   });
 
   it("does not demand a clone marker from a worktree git already listed", () => {

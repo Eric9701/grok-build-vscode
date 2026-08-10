@@ -210,6 +210,7 @@ import {
   normalizeFsPath,
   pathsEqual,
   sanitizeWorktreeLabel,
+  type WorktreeCreateOutcome,
   worktreePathAuthorizedForRepo,
   type WorktreeParentRef,
   type WorktreeRecord,
@@ -2244,17 +2245,22 @@ Only continue if you trust this code.`,
               sourcePath,
               gitRootForPath(sourcePath, defaultFs) || sourcePath,
             );
-            // Subscribe BEFORE the RPC. `createWorktree` returns while the
-            // status is still "creating" and completion rides this event, so a
-            // small repo can finish before the call even resolves — a listener
-            // attached afterwards would wait for something that already
-            // happened.
-            const finished = this.awaitWorktreeCreated(client);
-            created = await client.createWorktree({
-              sourcePath,
-              label: label || undefined,
-            });
+            // Watch BEFORE the RPC. `createWorktree` returns while the status
+            // is still "creating" and completion rides an event, so a small
+            // repo can finish before the call even resolves — a listener
+            // attached afterwards waits for something that already happened.
+            const watch = this.watchWorktreeCreate(client);
+            try {
+              created = await client.createWorktree({
+                sourcePath,
+                label: label || undefined,
+              });
+            } catch (createErr) {
+              watch.cancel();
+              throw createErr;
+            }
             if (created === "unsupported") {
+              watch.cancel();
               return void this.host.showWarningMessage(
                 "Worktrees need a newer Grok Build CLI. Update via the gear menu → Version & about.",
               );
@@ -2275,12 +2281,25 @@ Only continue if you trust this code.`,
             // than failing: an older CLI may not emit the event at all, and
             // refusing a good worktree over a missing notification would be a
             // worse trade than the race it protects against.
-            const outcome = await finished;
+            const outcome = await watch.settled(wtPath);
             if (outcome === "failed") {
               return void this.host.showErrorMessage(
                 `Worktree "${wtLabel}" was not created: the Grok CLI reported it failed.`,
               );
             }
+            if (outcome === "stalled") {
+              // It speaks the protocol, reported progress, and then stopped.
+              // Falling through would hand the disk checks a half-copied
+              // checkout they are guaranteed to approve — registration lands
+              // before the files do.
+              this.host.appendLine(`[worktree] create stalled without completing: ${wtPath}`);
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" never finished being created, so no session was started. The partial checkout was left at ${wtPath}.`,
+              );
+            }
+            // "silent" — nothing was ever reported about this create, so the
+            // CLI predates the status event. The disk and git checks below are
+            // exactly how this worked before it existed.
             // create is ASYNC — the RPC returns "creating" before git writes the
             // checkout (its dir + `.git` pointer appear a beat later). Spawning a
             // session in a not-yet-existing cwd hangs the whole flow, so wait for
@@ -2392,16 +2411,24 @@ Only continue if you trust this code.`,
 
             // Open a brand-new session whose process cwd is the worktree.
             this.parkFocused();
-            this.focused = this.newLocalSession();
-            this.pool.add(this.focused);
-            this.focused.cwd = wtPath;
-            this.focused.worktree = {
+            // Held as an OBJECT across the await, never re-read from
+            // `this.focused`. Focus is free to move while startup runs — the
+            // user can click another conversation — and reading it back
+            // afterwards wrote this worktree's name, path and source root onto
+            // whatever session happened to be focused by then. A cold restore
+            // later treats that saved binding as authoritative, so the wrong
+            // conversation comes back believing it lives in the worktree.
+            const wtSession = this.newLocalSession();
+            this.focused = wtSession;
+            this.pool.add(wtSession);
+            wtSession.cwd = wtPath;
+            wtSession.worktree = {
               path: wtPath,
               label: wtLabel,
               sourceGitRoot,
             };
-            await this.startSession();
-            const id = this.focused.activeSessionId;
+            await this.startSession(undefined, wtSession);
+            const id = wtSession.activeSessionId;
             if (id) {
               const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
               await this.state.update(SESSION_META_KEY, {
@@ -2432,47 +2459,124 @@ Only continue if you trust this code.`,
   }
 
   /**
-   * Resolve when the CLI reports the worktree create finished, failed, or the
-   * wait times out.
+   * Watch one worktree create through to completion.
    *
-   * Must be called BEFORE `createWorktree` — see the call site. The listener is
-   * always removed, including on the timeout path, so a create that never
-   * reports cannot leave a handler on a client that outlives this call.
+   * Started BEFORE the RPC, because the CLI can finish a small repo before the
+   * call resolves — so events are BUFFERED until the path is known and then
+   * replayed. The path arrives from the RPC's own answer, which is why this is
+   * two steps rather than one call.
    *
-   * `"timeout"` is deliberately not an error: an older CLI may not emit the
-   * event, and refusing a good worktree over a missing notification is a worse
-   * trade than the race this closes. The disk and git checks still run.
+   * Correlation is the point. Creation reuses whatever live client the project
+   * already has, so two creates on one client interleave their notifications;
+   * accepting the first terminal event on the client let one create's
+   * completion release another's wait, and that other flow would then start in
+   * a checkout still being copied. An event with a `worktreePath` must name
+   * OURS. An event without one is only trusted while a single create is in
+   * flight on that client, which is the ordinary case and the one older CLIs
+   * produce.
+   *
+   * The timeout distinguishes two situations that look identical from here:
+   *
+   *  - the CLI never said ANYTHING about this create → it does not speak the
+   *    status protocol. Fall through to the disk and git checks, which is how
+   *    this worked before the event existed.
+   *  - the CLI DID report progress and then went quiet → it speaks the
+   *    protocol and the copy is genuinely unfinished. Registration happens
+   *    before the files are copied, so the disk checks would call a partial
+   *    checkout valid. Refuse instead.
    */
-  private awaitWorktreeCreated(
-    client: AcpClient,
-    timeoutMs = 120000,
-  ): Promise<"created" | "failed" | "timeout"> {
-    return new Promise((resolve) => {
-      let done = false;
-      const settle = (outcome: "created" | "failed" | "timeout") => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        try {
-          client.off?.("worktreeStatus", onStatus);
-        } catch {
-          /* best effort — a disposed client has nothing to detach from */
-        }
-        resolve(outcome);
-      };
-      const onStatus = (status: { status?: string }) => {
-        const value = String(status?.status ?? "").toLowerCase();
-        if (value === "created" || value === "ready" || value === "done") settle("created");
-        else if (value === "failed" || value === "error") settle("failed");
-      };
-      const timer = setTimeout(() => settle("timeout"), timeoutMs);
+  private watchWorktreeCreate(client: AcpClient, timeoutMs = 120000, silenceMs = 5000) {
+    const events: Array<{ status?: string; worktreePath?: string }> = [];
+    let target: string | undefined;
+    let settleNow: ((o: WorktreeCreateOutcome) => void) | undefined;
+    let spoke = false;
+
+    const mine = (e: { worktreePath?: string }) => {
+      const named = e.worktreePath?.trim();
+      // No path on the event: only trustworthy while this is the sole create
+      // in flight on this client — see the correlation note above.
+      if (!named) return this.worktreeCreatesInFlight.get(client) === 1;
+      return !!target && pathsEqual(named, target);
+    };
+    const verdict = (e: { status?: string }): WorktreeCreateOutcome | undefined => {
+      const v = String(e?.status ?? "").toLowerCase();
+      if (v === "created" || v === "ready" || v === "done") return "created";
+      if (v === "failed" || v === "error") return "failed";
+      return undefined;
+    };
+    const onStatus = (status: { status?: string; worktreePath?: string }) => {
+      events.push(status || {});
+      if (!settleNow || !target) return; // buffered; replayed once we know ours
+      if (!mine(status)) return;
+      spoke = true;
+      const outcome = verdict(status);
+      if (outcome) settleNow(outcome);
+    };
+
+    this.worktreeCreatesInFlight.set(client, (this.worktreeCreatesInFlight.get(client) ?? 0) + 1);
+    try {
+      client.on("worktreeStatus", onStatus);
+    } catch {
+      /* a client that cannot subscribe simply never reports */
+    }
+
+    const detach = () => {
       try {
-        client.on("worktreeStatus", onStatus);
+        client.off?.("worktreeStatus", onStatus);
       } catch {
-        settle("timeout");
+        /* best effort — a disposed client has nothing to detach from */
       }
-    });
+      const left = (this.worktreeCreatesInFlight.get(client) ?? 1) - 1;
+      if (left > 0) this.worktreeCreatesInFlight.set(client, left);
+      else this.worktreeCreatesInFlight.delete(client);
+    };
+
+    return {
+      /** Abandon the watch without waiting (the RPC failed or was unsupported). */
+      cancel: detach,
+      /** Wait for OUR create to finish, now that the RPC has named its path. */
+      settled(worktreePath: string): Promise<WorktreeCreateOutcome> {
+        target = worktreePath;
+        return new Promise<WorktreeCreateOutcome>((resolve) => {
+          let done = false;
+          const timers: Array<ReturnType<typeof setTimeout>> = [];
+          const finish = (outcome: WorktreeCreateOutcome) => {
+            if (done) return;
+            done = true;
+            for (const t of timers) clearTimeout(t);
+            detach();
+            resolve(outcome);
+          };
+          settleNow = finish;
+          // Two clocks, because "still working" and "does not report at all"
+          // are different states, and one long timeout conflates them — which
+          // is what made every create on a non-reporting CLI sit behind an
+          // uncancellable progress bar for two minutes before succeeding.
+          //
+          // A CLI that reports does so promptly: it is the same process that
+          // just answered the RPC. Silence through the short window therefore
+          // means this build predates the event, and the disk checks take over
+          // exactly as they did before it existed. Once it HAS spoken the long
+          // clock owns the outcome, and running out of that is a stall.
+          timers.push(setTimeout(() => { if (!spoke) finish("silent"); }, silenceMs));
+          timers.push(setTimeout(() => finish(spoke ? "stalled" : "silent"), timeoutMs));
+          // Replay what arrived before the path was known.
+          for (const e of events) {
+            if (!mine(e)) continue;
+            spoke = true;
+            const outcome = verdict(e);
+            if (outcome) return finish(outcome);
+          }
+        });
+      },
+    };
   }
+
+  /**
+   * Live creates per client, so an event with no `worktreePath` can be trusted
+   * only when there is exactly one create it could belong to.
+   */
+  private worktreeCreatesInFlight = new Map<AcpClient, number>();
 
   /** Poll until a freshly-created worktree's checkout exists on disk (its `.git`
    *  pointer file, which `git worktree add` writes). create is async — the RPC
