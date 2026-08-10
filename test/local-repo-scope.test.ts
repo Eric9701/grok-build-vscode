@@ -165,3 +165,43 @@ describe("cross-project fallout of following the selection", () => {
     expect(body.indexOf("cur.priming")).toBeLessThan(body.indexOf("removeSessionFromDisk"));
   });
 });
+
+describe("the very first conversation", () => {
+  it("starts in the selected project, not the open folder", () => {
+    // The pristine session carries no cwd and startSession's fallback is the
+    // WORKSPACE ROOT, so a project chosen in the rail before the chat view was
+    // ever revealed was ignored by the first conversation: rail and history said
+    // B while the agent ran in A, and the first prompt could read or write A.
+    // Every other entry point sets this; the one that starts by itself did not.
+    const at = sidebar.indexOf("void this.startSession().then(");
+    expect(at).toBeGreaterThan(-1);
+    const before = sidebar.slice(Math.max(0, at - 700), at);
+    expect(before).toMatch(/if \(!this\.focused\.cwd\)/);
+    expect(before).toMatch(/this\.setSessionCwd\(\s*this\.focused,\s*this\.historyCwdFor\("local"\)/);
+  });
+});
+
+describe("a row that names its own project", () => {
+  it("is honoured by a local delete, resolved through the catalog", () => {
+    // The rail lists other projects' conversations, and their rows carry a cwd
+    // the delete chain ignored. Rename a cold conversation in B (which drops its
+    // cache entry), then Delete that row: it resolved to the SELECTED project,
+    // deleted nothing, reported nothing wrong, and the conversation came back
+    // under its old name.
+    const body = methodBody("private async deleteSession(");
+    expect(body).toMatch(/origin === "local" && requestedCwd/);
+    expect(body).toMatch(/resolveLocalRepoTarget\(requestedCwd\)/);
+    // Ordered AFTER the evidence-bearing sources and BEFORE the scope fallback.
+    const named = body.indexOf("localNamedCwd ||");
+    const scope = body.indexOf('this.historyCwdFor(origin)');
+    expect(named).toBeGreaterThan(-1);
+    expect(scope).toBeGreaterThan(named);
+  });
+
+  it("has its project's rail list refreshed after a rename", () => {
+    // postSessionsList only refreshes the SELECTED project; every other project
+    // in the rail is drawn from its repoSessions preview.
+    const body = methodBody("private renameSession(");
+    expect(body).toMatch(/sendLocalRepoSessionsPreview\(localCwd\)/);
+  });
+});

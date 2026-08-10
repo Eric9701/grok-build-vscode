@@ -6588,6 +6588,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Recompute rather than echoing `trimmed`: an empty rename DROPS the custom
     // name, and the view then has to be told the title it falls back to.
     if (live) this.postSessionName(live);
+    // The renamed row's OWN project, not just the selected one. `postSessionsList`
+    // refreshes the selected project's list and the rail draws every other
+    // project from its `repoSessions` preview — so renaming a conversation in
+    // project B while A is selected left B's rows showing the old name, and the
+    // cache entry that would have corrected them was just dropped.
+    const localCwd = origin === "local" ? requestedCwd : undefined;
+    if (localCwd) this.sendLocalRepoSessionsPreview(localCwd);
     this.refreshRemoteRepoPreview(clientId, authorizedCwd);
   }
 
@@ -6709,11 +6716,27 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Last-resort cwd — and this one deletes files, so it resolves in the
     // ASKER's scope. A delete from VS Code must never fall back to a repo that
     // some remote client happens to have selected.
+    //
+    // A LOCAL row may name its own project, validated through the catalog. The
+    // rail lists other projects' conversations now, and their rows carry a cwd
+    // that this chain ignored: rename a cold conversation in project B (which
+    // drops its cache entry), then Delete the same row, and it resolved to the
+    // SELECTED project instead — deleting nothing under A, reporting nothing
+    // wrong, and leaving the conversation in B under its old name. Resolved
+    // rather than trusted: an unknown path falls through to the chain below.
+    const localNamedCwd =
+      origin === "local" && requestedCwd
+        ? this.resolveLocalRepoTarget(requestedCwd)?.cwd
+          ?? (this.localTrustedSessionCwds(overridesNow).some((c) => pathsEqual(c, requestedCwd))
+            ? requestedCwd
+            : undefined)
+        : undefined;
     const cwd =
       authorizedRemoteCwd ||
       live?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
+      localNamedCwd ||
       this.historyCwdFor(origin);
     // Tear the CLI down BEFORE touching the disk, not after. The live process
     // owns this conversation and re-persists it: delete the directory first and
@@ -8858,6 +8881,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Re-post the session list after start so a live empty "New session" row and
     // any id assigned by session/new land on the selected project's rail (ready
     // already pushed the disk list before the agent was up).
+    // The pristine session has no cwd, and `startSession`'s fallback is the
+    // WORKSPACE ROOT — so a project chosen in the rail before the chat view was
+    // ever revealed was ignored by the very first conversation. The rail and
+    // history said B while the agent ran in A, and the first prompt could read
+    // or write A. Every other entry point sets this (newFocusedSession, resume,
+    // the delete replacement); the one that starts by itself did not.
+    if (!this.focused.cwd) {
+      this.setSessionCwd(this.focused, this.historyCwdFor("local"), this.workspaceRoot());
+    }
     void this.startSession().then(() => {
       this.postSessionsList();
       this.sweepEmptySessions();
