@@ -182,6 +182,7 @@ import {
   relativePathWithin,
   readSessionEntries,
   remoteAuthorizedCwds,
+  archiveChoicesRetiredBy,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -4175,6 +4176,50 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.postRepoCatalog();
   }
 
+  /**
+   * Working in a project retires its archive choice.
+   *
+   * The rule already existed — `RepoArchiveChoice` says a choice holds "only
+   * until the project is worked in again" — but it was implemented as a
+   * TIMESTAMP COMPARISON IN THE RENDERER, re-derived on every paint. That was
+   * fine while archiving only decided where a row was drawn. It stopped being
+   * fine when the host started fencing remotes on the stored flag: the desk
+   * moved a project back into Projects while the host still called it archived,
+   * so a phone lost a project the rail was showing as perfectly ordinary, and
+   * refreshing could not help.
+   *
+   * The honest fix is not a second copy of the timestamp rule on the host —
+   * two re-derivations of one fact is what caused this. It is to make the
+   * transition an actual event, so the stored flag IS the answer and both sides
+   * read the same thing.
+   *
+   * The entry is DELETED rather than set to `archived: false`. Those are
+   * different statements: `false` is the user saying "keep showing me this one"
+   * and it also overrides the rail's age rule. Working in a project is not that
+   * claim — it just means the old choice has expired, which is exactly no entry.
+   *
+   * A worktree session counts for its source project: a worktree is not
+   * something you archive separately.
+   */
+  private retireArchiveChoiceOnActivity(session: Session): void {
+    if (!this.host.canArchiveRepos) return;
+    const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
+    const retired = archiveChoicesRetiredBy({
+      archives,
+      cwds: [session.cwd, session.worktree?.sourceGitRoot],
+    });
+    if (!retired.length) return;
+    const next: RepoArchives = { ...archives };
+    for (const key of retired) {
+      this.host.appendLine(`[archive] ${next[key]?.cwd ?? key} was worked in — its archive choice no longer applies`);
+      delete next[key];
+    }
+    void this.state.update(REPO_ARCHIVES_KEY, next).then(
+      () => this.postRepoCatalog(),
+      () => { /* a failed write just means the choice retires on the next turn */ },
+    );
+  }
+
   /** Record where a project belongs in the rail. Both answers are stored,
    *  including "not archived" — that one exists to hold a long-idle project in
    *  view against the rail's own age rule, so forgetting it is not the same as
@@ -4283,10 +4328,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   /** Every pinned conversation across every repo, newest pin first. Reads are
    *  grouped by the stored home cwd so this costs one index scan per repo that
    *  actually holds a pin — not one per repo in the catalog. */
-  private buildPinnedSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
+  private buildPinnedSessions(
+    /** Whose pins these are. Remote gets the archive-narrowed set — and it has
+     *  to be applied HERE, not at delivery: `pinnedSessions` is authorized as a
+     *  whole (every entry or nothing), so one pin in an archived project would
+     *  otherwise refuse the entire frame and take every other pin off the phone
+     *  with it. Defaults to the stricter answer. */
+    scope: "local" | "remote" = "remote",
+  ): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // Enforce authorization at build time — never trust pin metadata alone.
-    const authorized = this.authorizedSessionCwds();
+    const authorized =
+      scope === "remote" ? this.remoteAuthorizedSessionCwds() : this.authorizedSessionCwds();
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.host.appendLine(m);
     const byCwd = new Map<string, { cwd: string; ids: string[] }>();
@@ -4327,15 +4380,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Desktop multi-folder rail OR the VS Code primary-side-bar projects view.
     const hasLocalRail = this.host.canSwitchWorkspaceFolder || !!this.projectsRail;
     if (!clientId && !hasRemote && !hasLocalRail) return;
-    // Built against the live authorized set for every recipient (same open set
-    // on desktop; full catalog on VS Code).
-    const msg: HostMsg = { type: "pinnedSessions", ...this.buildPinnedSessions() };
+    // Built PER AUDIENCE, not once and fanned out: the desk keeps its pins in
+    // archived projects (archiving folds a project away, it does not put it out
+    // of your own reach), while a remote must not receive them at all.
     if (clientId) {
-      this.sendRemoteClient(clientId, msg);
+      this.sendRemoteClient(clientId, { type: "pinnedSessions", ...this.buildPinnedSessions("remote") });
       return;
     }
-    if (hasLocalRail) this.postLocal(msg);
-    for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, msg);
+    if (hasLocalRail) {
+      this.postLocal({ type: "pinnedSessions", ...this.buildPinnedSessions("local") });
+    }
+    const remotes = this.remoteClients.clients();
+    if (!remotes.length) return;
+    const forRemote: HostMsg = { type: "pinnedSessions", ...this.buildPinnedSessions("remote") };
+    for (const id of remotes) this.sendRemoteClient(id, forRemote);
   }
 
   private annotateWorktreeLabels(
@@ -5134,6 +5192,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
     session.cwd = cwd;
+    // Opening a conversation IS working in the project, so any archive choice on
+    // it stops applying here — before the catalog is next built, so the rail and
+    // the remote fence never disagree about where this project belongs.
+    this.retireArchiveChoiceOnActivity(session);
     // Re-bind worktree meta from override when resuming (cold open may only have cwd).
     if (!session.worktree && resumeId) {
       const o = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[resumeId];
@@ -5869,7 +5931,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (!source) break;
         // Revalidate against the current open set — a handle minted while a
         // folder was open must not survive closing that folder.
-        if (!this.isImagePathAuthorizedNow(source)) {
+        if (!this.isImagePathAuthorizedNow(source, "remote")) {
           this.host.appendLine(`[remote] refused imageFull (path no longer authorized)`);
           break;
         }
@@ -10594,6 +10656,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private refreshSessionOrderAfterTurn(session: Session): void {
     const cwd = this.sessionCwd(session);
     if (!cwd) return;
+    // A turn is working in the project, which retires any archive choice on it.
+    // Covers the case a session start cannot: archiving a project that already
+    // had a live conversation, then carrying on in it.
+    this.retireArchiveChoiceOnActivity(session);
     for (const delay of [400, 1600]) {
       const timer = setTimeout(() => {
         this.turnOrderTimers.delete(timer);
@@ -11527,8 +11593,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Fetch-time revalidation for remote image handles (open-set + session media). */
-  private isImagePathAuthorizedNow(imagePath: string): boolean {
-    const authorized = this.authorizedSessionCwds();
+  private isImagePathAuthorizedNow(
+    imagePath: string,
+    /** Whose request this is. A remote gets the archive-narrowed set: an image
+     *  handle minted before the project was archived must not outlive it, the
+     *  same way one minted before a folder was closed does not. Handles are
+     *  opaque and long-lived, so this is the only place that can say no —
+     *  the outbound gate scopes the reply to the client's CURRENT project,
+     *  which by then is an allowed one. Defaults to the stricter answer. */
+    scope: "local" | "remote" = "remote",
+  ): boolean {
+    const authorized =
+      scope === "remote" ? this.remoteAuthorizedSessionCwds() : this.authorizedSessionCwds();
     let home: string | undefined;
     try {
       home = resolveGrokHome(process.env);
@@ -12048,7 +12124,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // remote is answered HERE and never reaches onMessage's switch, so anything
     // pushed from there would simply never arrive on a fresh tab or a reconnect.
     // buildPinnedSessions filters to the live authorized set.
-    snap.push({ type: "pinnedSessions", ...this.buildPinnedSessions() });
+    snap.push({ type: "pinnedSessions", ...this.buildPinnedSessions("remote") });
     const out: HostMsg[] = [];
     for (const m of snap) {
       const t = transformHostMsgForRemote(m, this.remoteMediaDeps);

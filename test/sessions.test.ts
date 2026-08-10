@@ -23,6 +23,7 @@ import {
   readContextUsage,
   readSessionEntries,
   remoteAuthorizedCwds,
+  archiveChoicesRetiredBy,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -1408,5 +1409,50 @@ describe("remoteAuthorizedCwds (archived projects are out of reach from a phone)
         ...over,
       });
     expect(win({ archives: { a: choice("c:\WORK\a", true) } })).toEqual([]);
+  });
+});
+
+describe("archiveChoicesRetiredBy (working in a project expires its archive choice)", () => {
+  const A = "/work/a";
+  const WT = "/home/u/.grok/worktrees/a/feat";
+  // Keys are normalised paths, the way setRepoArchived writes them — an object
+  // literal keyed by the raw string silently never matches.
+  const archives = {
+    [normalizeRepoPath(A)]: { cwd: A, at: 1, archived: true },
+    [normalizeRepoPath("/work/b")]: { cwd: "/work/b", at: 1, archived: false },
+  };
+  const call = (cwds: (string | undefined)[], over = {}) =>
+    archiveChoicesRetiredBy({ archives, cwds, platform: "linux" as const, ...over });
+
+  it("retires the choice on the project being worked in", () => {
+    expect(call([A])).toEqual([normalizeRepoPath(A)]);
+  });
+
+  it("leaves a choice of 'keep showing me this' alone", () => {
+    // `archived: false` is a real stored answer, not the absence of one, and
+    // nothing here expires it.
+    expect(call(["/work/b"])).toEqual([]);
+  });
+
+  it("says nothing about projects with no choice at all", () => {
+    expect(call(["/work/never-archived"])).toEqual([]);
+    expect(call([undefined, ""])).toEqual([]);
+  });
+
+  it("retires the SOURCE project's choice when a worktree session runs", () => {
+    // A worktree is not something you archive separately.
+    expect(call([WT, A])).toEqual([normalizeRepoPath(A)]);
+  });
+
+  it("does not report the same project twice", () => {
+    expect(call([A, A])).toEqual([normalizeRepoPath(A)]);
+  });
+
+  it("matches by normalised key, so drive-letter case still retires the choice", () => {
+    expect(archiveChoicesRetiredBy({
+      archives: { "c:\work\a": { cwd: "C:\work\a", at: 1, archived: true } },
+      cwds: ["C:\WORK\a"],
+      platform: "win32",
+    })).toEqual(["c:\work\a"]);
   });
 });

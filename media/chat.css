@@ -887,9 +887,15 @@ a:hover {
 
 .top-bar {
   display: flex;
-  /* Top, not centre: the name chip becomes two lines when it carries a project,
-     and centring would drag History and New Session down with it. */
-  align-items: flex-start;
+  /* Centre, so the icon buttons sit the same distance from the top edge as from
+     the rule underneath. They used to be flush to the top, which left ~2px above
+     and ~15px below once the name chip grew a second row for the project — the
+     chip is the tallest thing here, so it sets the height and the icons were
+     hanging off the top of it.
+     Centring costs the chip nothing: centring the tallest item in a row is a
+     no-op, and its project line still hangs below its name rather than beside
+     it (that is the chip's own two-row grid, not this alignment). */
+  align-items: center;
   justify-content: flex-end;
   padding: 2px 4px;
   border-bottom: 1px solid var(--vscode-editorWidget-border);

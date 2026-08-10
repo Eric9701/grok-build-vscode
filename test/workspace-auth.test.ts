@@ -298,6 +298,35 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(reposMsgBody).toContain("entries.filter((r) => cwdIsAuthorized(r.cwd, authorized, pathsEqual))");
   });
 
+  it("narrows the BUILDERS a remote reads from, not only the gate they pass through", () => {
+    // The class of bug this pins. Narrowing delivery without narrowing what
+    // feeds it produced three separate failures in one review round, and two of
+    // them were worse than the leak the fence was closing.
+    const src = sidebarSrc();
+
+    // Pins: `pinnedSessions` is authorized as a WHOLE — every entry or nothing —
+    // so one pin in an archived project refused the entire frame and took every
+    // other pin off the phone with it. It has to be filtered at build time.
+    const pinStart = src.indexOf("private buildPinnedSessions(");
+    const pinBody = src.slice(pinStart, src.indexOf("private postPinnedSessions(", pinStart));
+    expect(pinBody).toContain("remoteAuthorizedSessionCwds");
+    expect(pinBody).toMatch(/scope:\s*"local"\s*\|\s*"remote"\s*=\s*"remote"/);
+
+    // ...and built per audience, not built once and fanned out to both.
+    const postStart = src.indexOf("private postPinnedSessions(");
+    const postBody = src.slice(postStart, postStart + 1400);
+    expect(postBody).toContain('this.buildPinnedSessions("local")');
+    expect(postBody).toContain('this.buildPinnedSessions("remote")');
+
+    // Images: a handle minted before the project was archived must not outlive
+    // it. The outbound gate cannot catch this — it scopes the reply to the
+    // client's CURRENT project, which by then is an allowed one.
+    const imgStart = src.indexOf("private isImagePathAuthorizedNow(");
+    const imgBody = src.slice(imgStart, imgStart + 900);
+    expect(imgBody).toContain("remoteAuthorizedSessionCwds");
+    expect(src).toContain('this.isImagePathAuthorizedNow(source, "remote")');
+  });
+
   it("RemoteUplink is the sole socket write path and enforces project auth", () => {
     const src = sidebarSrc();
     const uplinkSrc = fs.readFileSync(path.join(root, "src", "remote-uplink.ts"), "utf8");

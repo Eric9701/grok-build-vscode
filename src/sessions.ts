@@ -126,6 +126,38 @@ export interface RepoArchiveChoice {
 export type RepoArchives = Record<string, RepoArchiveChoice>;
 
 /**
+ * Which stored archive choices are retired by activity in `cwds`.
+ *
+ * `RepoArchiveChoice` has always said a choice holds "only until the project is
+ * worked in again". That was implemented as a timestamp comparison in the
+ * renderer, re-derived on every paint — fine while archiving only decided where
+ * a row was drawn, and not fine once the host began fencing remotes on the
+ * stored flag, because the two sides then disagreed about the same project.
+ *
+ * So the expiry is an event, evaluated here, and the stored flag is the single
+ * answer both sides read. Returns the keys to DELETE: "expired" is no entry, not
+ * `archived: false` — that is the user saying "keep showing me this one", which
+ * also overrides the rail's age rule and is a claim nobody made.
+ */
+export function archiveChoicesRetiredBy(opts: {
+  archives: RepoArchives;
+  cwds: readonly (string | undefined)[];
+  platform?: NodeJS.Platform;
+}): string[] {
+  const platform = opts.platform ?? process.platform;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const cwd of opts.cwds) {
+    if (!cwd) continue;
+    const key = normalizeRepoPath(cwd, platform);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    if (opts.archives?.[key]?.archived) out.push(key);
+  }
+  return out;
+}
+
+/**
  * The host's authorized cwds, minus every project the user has archived.
  *
  * A REMOTE-only narrowing. On the desk, archiving means "fold this away" — the
