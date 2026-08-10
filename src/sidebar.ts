@@ -2244,6 +2244,12 @@ Only continue if you trust this code.`,
               sourcePath,
               gitRootForPath(sourcePath, defaultFs) || sourcePath,
             );
+            // Subscribe BEFORE the RPC. `createWorktree` returns while the
+            // status is still "creating" and completion rides this event, so a
+            // small repo can finish before the call even resolves — a listener
+            // attached afterwards would wait for something that already
+            // happened.
+            const finished = this.awaitWorktreeCreated(client);
             created = await client.createWorktree({
               sourcePath,
               label: label || undefined,
@@ -2257,6 +2263,24 @@ Only continue if you trust this code.`,
             const wtLabel = label || path.basename(wtPath);
             this.host.appendLine(`[worktree] created ${wtPath} (label=${wtLabel})`);
 
+            // Wait for the CLI to say it is DONE, not merely for the checkout
+            // to exist. Registration happens before the files are copied, so
+            // `.git` on disk and a `git worktree list` entry both appear while
+            // the copy is still running — and the temporary creator we are
+            // about to dispose is the process doing the copying. Killing it
+            // then leaves a partial checkout that every later check calls
+            // valid, with staged or untracked work silently absent.
+            //
+            // Bounded, and a timeout falls through to the disk checks rather
+            // than failing: an older CLI may not emit the event at all, and
+            // refusing a good worktree over a missing notification would be a
+            // worse trade than the race it protects against.
+            const outcome = await finished;
+            if (outcome === "failed") {
+              return void this.host.showErrorMessage(
+                `Worktree "${wtLabel}" was not created: the Grok CLI reported it failed.`,
+              );
+            }
             // create is ASYNC — the RPC returns "creating" before git writes the
             // checkout (its dir + `.git` pointer appear a beat later). Spawning a
             // session in a not-yet-existing cwd hangs the whole flow, so wait for
@@ -2405,6 +2429,49 @@ Only continue if you trust this code.`,
         }
       },
     );
+  }
+
+  /**
+   * Resolve when the CLI reports the worktree create finished, failed, or the
+   * wait times out.
+   *
+   * Must be called BEFORE `createWorktree` — see the call site. The listener is
+   * always removed, including on the timeout path, so a create that never
+   * reports cannot leave a handler on a client that outlives this call.
+   *
+   * `"timeout"` is deliberately not an error: an older CLI may not emit the
+   * event, and refusing a good worktree over a missing notification is a worse
+   * trade than the race this closes. The disk and git checks still run.
+   */
+  private awaitWorktreeCreated(
+    client: AcpClient,
+    timeoutMs = 120000,
+  ): Promise<"created" | "failed" | "timeout"> {
+    return new Promise((resolve) => {
+      let done = false;
+      const settle = (outcome: "created" | "failed" | "timeout") => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        try {
+          client.off?.("worktreeStatus", onStatus);
+        } catch {
+          /* best effort — a disposed client has nothing to detach from */
+        }
+        resolve(outcome);
+      };
+      const onStatus = (status: { status?: string }) => {
+        const value = String(status?.status ?? "").toLowerCase();
+        if (value === "created" || value === "ready" || value === "done") settle("created");
+        else if (value === "failed" || value === "error") settle("failed");
+      };
+      const timer = setTimeout(() => settle("timeout"), timeoutMs);
+      try {
+        client.on("worktreeStatus", onStatus);
+      } catch {
+        settle("timeout");
+      }
+    });
   }
 
   /** Poll until a freshly-created worktree's checkout exists on disk (its `.git`

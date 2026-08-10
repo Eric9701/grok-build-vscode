@@ -2365,6 +2365,20 @@ body.vscode-light {
   padding: 4px 6px;
   border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
 }
+/* The one way out, so it is drawn like one.
+   This panel is a full-bleed overlay on a phone, which means it covers the
+   top-bar toggle that would otherwise close it — the X is not one of two
+   options, it is the only one. Rendered in descriptionForeground at 12px it
+   was a grey glyph in a corner that the person who built the app could not
+   find. Full foreground colour, and a 40px target on touch. */
+.files-browse-close {
+  color: var(--vscode-foreground);
+}
+.files-browse-close svg { width: 18px; height: 18px; }
+@media (hover: none) and (pointer: coarse) {
+  .files-browse-close { width: 40px; height: 40px; }
+  .files-browse-close svg { width: 20px; height: 20px; }
+}
 .files-browse-title {
   flex: 1 1 auto;
   min-width: 0;

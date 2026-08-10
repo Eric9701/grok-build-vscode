@@ -12491,6 +12491,19 @@
       panel.querySelector(".files-browse-close").addEventListener("click", () => {
         setRemoteFilesOpen(false);
       });
+      // A second way out. The panel is a full-bleed overlay on a phone, so it
+      // covers the top-bar toggle that opened it — miss the X and there is no
+      // other exit. Escape is free on anything with a keyboard; it does not
+      // help a phone, which is why the X itself was made unmissable rather
+      // than this being the fix.
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape" || !state.filesBrowse.open) return;
+        // An open editor owns Escape first — it has its own unsaved-work
+        // question and closing the panel out from under it would skip it.
+        if (state.filesBrowse.viewer) return;
+        e.preventDefault();
+        setRemoteFilesOpen(false);
+      });
       panel.querySelector(".files-browse-back").addEventListener("click", () => {
         navigateRemoteFilesUp();
       });
