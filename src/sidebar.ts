@@ -185,6 +185,7 @@ import {
   archivedProjectKeys,
   expiredArchiveChoiceKeys,
   newestTranscriptMtime,
+  transcriptMtimes,
   type TrustedSessionCwd,
   resolveGrokHome,
   sessionCatalogDirs,
@@ -3322,7 +3323,7 @@ Only continue if you trust this code.`,
    * Cheap on purpose: this runs on every inbound AND outbound remote message.
    * The stored choices are read as they are, because expired ones have already
    * been retired from the store ({@link normalizeArchiveChoices}), and the
-   * filter is by each cwd's owning project, which the trusted-set builder
+   * filter is by every project claiming each cwd, which the trusted-set builder
    * recorded on the way past.
    *
    * Nothing to subtract on a host that cannot archive: desktop ignores stored
@@ -3381,28 +3382,82 @@ Only continue if you trust this code.`,
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const grokHome = resolveGrokHome(process.env);
     const onlyKey = only ? normalizeRepoPath(only) : undefined;
-    const scoped: RepoArchives = onlyKey
-      ? (archives[onlyKey] ? { [onlyKey]: archives[onlyKey] } : {})
-      : archives;
+    const scopedKeys = onlyKey
+      ? (archives[onlyKey] ? [onlyKey] : [])
+      : Object.keys(archives);
+    let next: RepoArchives = archives;
+    let changed = false;
+    const liveSessionIds = new Set(
+      [...this.pool]
+        .map((session) => session.activeSessionId ?? session.client?.sessionId)
+        .filter((id): id is string => !!id),
+    );
+
+    // A session already live when the choice was made may still flush work that
+    // was accepted beforehand. Keep it quarantined while that process is live.
+    // Once the process is gone, freeze the final mtime as a per-session floor;
+    // newer work in that same conversation will exceed it normally.
+    for (const key of scopedKeys) {
+      const choice = next[key];
+      const protectedIds = choice?.protectedSessionIds?.filter(Boolean) ?? [];
+      const settled = protectedIds.filter((id) => !liveSessionIds.has(id));
+      if (!settled.length) continue;
+      const mtimes = this.projectTranscriptMtimes(choice.cwd, overrides);
+      const floor = { ...(choice.activityFloor ?? {}) };
+      for (const id of settled) floor[id] = Math.max(floor[id] ?? 0, mtimes.get(id) ?? 0);
+      const remaining = protectedIds.filter((id) => liveSessionIds.has(id));
+      const remainingQueued = (choice.protectedQueuedSessionIds ?? [])
+        .filter((id) => liveSessionIds.has(id));
+      if (!changed) next = { ...next };
+      next[key] = {
+        ...choice,
+        protectedSessionIds: remaining.length ? remaining : undefined,
+        protectedQueuedSessionIds: remainingQueued.length ? remainingQueued : undefined,
+        activityFloor: Object.keys(floor).length ? floor : undefined,
+        displayAt: Date.now(),
+      };
+      changed = true;
+    }
+
+    const scoped: RepoArchives = {};
+    for (const key of scopedKeys) if (next[key]) scoped[key] = next[key];
     const expired = expiredArchiveChoiceKeys({
       archives: scoped,
-      newestActivityAt: (cwd: string) => {
+      newestActivityAt: (cwd: string, choice) => {
         let newest = 0;
+        const floor = { ...(choice.activityFloor ?? {}) };
+        for (const id of choice.protectedSessionIds ?? []) floor[id] = Number.MAX_SAFE_INTEGER;
         for (const c of this.sessionCwdsForRepo(cwd, overrides)) {
-          const at = newestTranscriptMtime({ fs: defaultFs, grokHome, cwd: c });
+          const at = newestTranscriptMtime({ fs: defaultFs, grokHome, cwd: c }, floor);
           if (at > newest) newest = at;
         }
         return newest;
       },
     });
     if (!only) this.archiveChoicesNormalized = true;
-    if (!expired.length) return;
-    const next: RepoArchives = { ...archives };
+    if (!expired.length && !changed) return;
+    if (expired.length && !changed) next = { ...next };
     for (const key of expired) {
       this.host.appendLine(`[archive] ${next[key]?.cwd ?? key} has been worked in since — its archive choice no longer applies`);
       delete next[key];
     }
     void this.state.update(REPO_ARCHIVES_KEY, next);
+  }
+
+  /** Transcript mtimes for a project, merged across its own catalog and every
+   *  worktree catalog it claims. */
+  private projectTranscriptMtimes(
+    repoCwd: string,
+    overrides: SessionMetaOverrides,
+  ): Map<string, number> {
+    const grokHome = resolveGrokHome(process.env);
+    const out = new Map<string, number>();
+    for (const cwd of this.sessionCwdsForRepo(repoCwd, overrides)) {
+      for (const [id, mtime] of transcriptMtimes({ fs: defaultFs, grokHome, cwd })) {
+        if (mtime > (out.get(id) ?? 0)) out.set(id, mtime);
+      }
+    }
+    return out;
   }
 
   /**
@@ -4249,11 +4304,71 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!hit) return;
     const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
     const key = normalizeRepoPath(hit.cwd);
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const claimedCwds = this.sessionCwdsForRepo(hit.cwd, overrides);
+    const claimedSessions = [...this.pool]
+      .filter((session) => claimedCwds.some((c) => pathsEqual(c, this.sessionCwd(session))));
+    const protectedSessionIds = claimedSessions
+      .map((session) => session.activeSessionId ?? session.client?.sessionId)
+      .filter((id): id is string => !!id);
+    const protectedQueuedSessionIds = claimedSessions
+      .filter((session) => session.queuedSends.length > 0 || !!session.queuedSendCommit)
+      .map((session) => session.activeSessionId ?? session.client?.sessionId)
+      .filter((id): id is string => !!id);
     await this.state.update(REPO_ARCHIVES_KEY, {
       ...archives,
-      [key]: { cwd: hit.cwd, at: Date.now(), archived },
+      [key]: {
+        cwd: hit.cwd,
+        at: Date.now(),
+        archived,
+        protectedSessionIds: protectedSessionIds.length
+          ? [...new Set(protectedSessionIds)]
+          : undefined,
+        protectedQueuedSessionIds: protectedQueuedSessionIds.length
+          ? [...new Set(protectedQueuedSessionIds)]
+          : undefined,
+      },
     });
+    this.archiveChoicesNormalized = true;
     this.postRepoCatalog();
+  }
+
+  /** Retire every archive choice claimed by a turn that is starting now.
+   *
+   * This is narrower than the old lifecycle hooks: it runs only at the actual
+   * prompt commit point. An archived remote cannot reach that point because its
+   * inbound message was already refused; a pre-choice turn is instead recorded
+   * by setRepoArchived and protected from its delayed transcript write. */
+  private expireArchiveChoicesForStartedTurn(session: Session, fromQueuedPrompt: boolean): void {
+    if (!this.host.canArchiveRepos) return;
+    const cwd = this.sessionCwd(session);
+    if (!cwd) return;
+    const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
+    if (!Object.keys(archives).length) return;
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const sessionId = session.activeSessionId ?? session.client?.sessionId;
+    const claimed = Object.entries(archives)
+      .filter(([, choice]) => choice?.cwd)
+      .filter(([, choice]) => this.sessionCwdsForRepo(choice.cwd, overrides)
+        .some((candidate) => pathsEqual(candidate, cwd)));
+    if (!claimed.length) return;
+    const next = { ...archives };
+    let changed = false;
+    for (const [key, choice] of claimed) {
+      if (fromQueuedPrompt && sessionId && choice.protectedQueuedSessionIds?.includes(sessionId)) {
+        const remaining = choice.protectedQueuedSessionIds.filter((id) => id !== sessionId);
+        next[key] = {
+          ...choice,
+          protectedQueuedSessionIds: remaining.length ? remaining : undefined,
+        };
+        changed = true;
+        continue;
+      }
+      this.host.appendLine(`[archive] ${next[key]?.cwd ?? key} is starting a new turn — its archive choice no longer applies`);
+      delete next[key];
+      changed = true;
+    }
+    if (changed) void this.state.update(REPO_ARCHIVES_KEY, next).then(() => this.postRepoCatalog());
   }
 
   /** Record a project's folder-icon colour (or clear it). Empty `color` removes
@@ -9294,6 +9409,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // The token, not the status, is what says a turn is running from here on —
     // and only whoever holds it may end this one.
     const turn = beginTurn(session);
+    this.expireArchiveChoicesForStartedTurn(session, !!queuedSendCommit);
     this.setStatus(session, "working");
 
     try {
@@ -10672,6 +10788,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private refreshSessionOrderAfterTurn(session: Session): void {
     const cwd = this.sessionCwd(session);
     if (!cwd) return;
+    const repoCwd = session.worktree?.sourceGitRoot ?? cwd;
     // A turn is the one thing that moves a transcript, so it is the moment an
     // archive choice can expire. Scoped to this project — exactly one can have
     // changed — so it stays a stat per session in that project, and only when
@@ -10682,14 +10799,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // reconnect does not move one. Earlier versions read session-directory
     // mtimes, which a mere reload bumps, and that is what let a phone
     // manufacture activity in a project it was fenced out of.
-    this.normalizeArchiveChoices(session.worktree?.sourceGitRoot ?? cwd);
+    this.normalizeArchiveChoices(repoCwd);
     for (const delay of [400, 1600]) {
       const timer = setTimeout(() => {
         this.turnOrderTimers.delete(timer);
         try {
+          this.normalizeArchiveChoices(repoCwd);
+          this.postRepoCatalog();
           this.sendLocalRepoSessionsPreview(cwd);
         } catch {
-          /* a preview refresh is never worth failing a turn over */
+          /* a delayed rail refresh is never worth failing a turn over */
         }
       }, delay);
       this.turnOrderTimers.add(timer);
@@ -11226,7 +11345,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /**
-   * The same set, each cwd carrying the PROJECT it came from.
+   * The same set, each cwd carrying every PROJECT that claims it.
    *
    * Provenance is recorded here because here is where it is known — every cwd
    * below arrives by expanding a project — and re-deriving it later means
@@ -11237,13 +11356,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    */
   private localTrustedSessionEntries(overrides: SessionMetaOverrides): TrustedSessionCwd[] {
     const out: TrustedSessionCwd[] = [];
-    const seen = new Set<string>();
+    const byCwd = new Map<string, TrustedSessionCwd>();
     const add = (cwd: string | undefined, repoCwd: string | undefined) => {
       if (!cwd) return;
       const key = normalizeRepoPath(cwd);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      out.push({ cwd, repoCwd: repoCwd || cwd });
+      if (!key) return;
+      const owner = repoCwd || cwd;
+      const existing = byCwd.get(key);
+      if (existing) {
+        if (!existing.repoCwds.some((candidate) => pathsEqual(candidate, owner))) {
+          existing.repoCwds.push(owner);
+        }
+        return;
+      }
+      const entry: TrustedSessionCwd = { cwd, repoCwds: [owner] };
+      byCwd.set(key, entry);
+      out.push(entry);
     };
     if (this.host.canSwitchWorkspaceFolder) {
       for (const repoCwd of this.openWorkspaceFolders()) {

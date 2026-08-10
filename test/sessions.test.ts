@@ -1362,9 +1362,9 @@ describe("the archive fence", () => {
   const AWT = "/home/u/.grok/worktrees/a/feat";
   const k = (c: string) => normalizeRepoPath(c, "linux");
   const trusted = [
-    { cwd: A, repoCwd: A },
-    { cwd: AWT, repoCwd: A },
-    { cwd: B, repoCwd: B },
+    { cwd: A, repoCwds: [A] },
+    { cwd: AWT, repoCwds: [A] },
+    { cwd: B, repoCwds: [B] },
   ];
   const choice = (cwd: string, archived: boolean, at = 1000) => ({ cwd, at, archived });
 
@@ -1381,10 +1381,24 @@ describe("the archive fence", () => {
     // The blocked set names projects, and the trusted set carries each cwd's
     // project with it. Matching exact cwds instead let a worktree the host
     // discovered after the fence was built walk straight through.
-    const late = [...trusted, { cwd: "/home/u/.grok/worktrees/a/just-made", repoCwd: A }];
+    const late = [...trusted, { cwd: "/home/u/.grok/worktrees/a/just-made", repoCwds: [A] }];
     expect(remoteAuthorizedCwds({
       trusted: late, archivedProjects: blocked({ [k(A)]: choice(A, true) }), platform: "linux",
     })).toEqual([B]);
+  });
+
+  it("fences a shared worktree when ANY claiming project is archived", () => {
+    const nested = "/work/a/packages/app";
+    const overlapping = [
+      { cwd: A, repoCwds: [A] },
+      { cwd: AWT, repoCwds: [A, nested] },
+      { cwd: B, repoCwds: [B] },
+    ];
+    expect(remoteAuthorizedCwds({
+      trusted: overlapping,
+      archivedProjects: blocked({ [k(nested)]: choice(nested, true) }),
+      platform: "linux",
+    })).toEqual([A, B]);
   });
 
   it("passes everything through when nothing is archived", () => {
@@ -1401,6 +1415,29 @@ describe("the archive fence", () => {
 
   it("ignores a stored choice with no cwd rather than fencing everything", () => {
     expect(fence(blocked({ x: { at: 1, archived: true } }))).toEqual([A, AWT, B]);
+  });
+
+  it("keeps the renderer on the stored choice while a pre-choice session is protected", () => {
+    const home = "/home/u/.grok";
+    const sessionsRoot = path.join(home, "sessions");
+    const catalog = sessionsDirFor(home, A);
+    const fs = buildFs({
+      [sessionsRoot]: { isDir: true },
+      [catalog]: { isDir: true, mtimeMs: 9_000 },
+      [A]: { isDir: true },
+    });
+    const [repo] = discoverRepos({
+      fs,
+      grokHome: home,
+      pins: {},
+      archives: {
+        [k(A)]: { ...choice(A, true), protectedSessionIds: ["session-in-flight"] },
+      },
+      tmpDir: "/tmp",
+      platform: "linux",
+    });
+    expect(repo.archived).toBe(true);
+    expect(repo.archivedAt).toBe(Number.MAX_SAFE_INTEGER);
   });
 });
 
@@ -1507,5 +1544,26 @@ describe("newestTranscriptMtime (the evidence a remote cannot forge)", () => {
 
   it("reports nothing for a project that has never been spoken to", () => {
     expect(run({})).toBe(0);
+  });
+
+  it("ignores only transcript activity covered by a protected-turn floor", () => {
+    const files = {
+      [`${grokHome}/sessions/${leaf}/${ID1}/events.jsonl`]: 2_000,
+      [`${grokHome}/sessions/${leaf}/${ID2}/events.jsonl`]: 1_500,
+    };
+    expect(newestTranscriptMtime(
+      { fs: makeFs(files), grokHome, cwd, platform: "linux" },
+      { [ID1]: Number.MAX_SAFE_INTEGER },
+    )).toBe(1_500);
+    expect(newestTranscriptMtime(
+      { fs: makeFs(files), grokHome, cwd, platform: "linux" },
+      { [ID1]: 2_000, [ID2]: 1_500 },
+    )).toBe(0);
+    // A genuinely later turn in the formerly protected session crosses its
+    // concrete floor and becomes activity again.
+    expect(newestTranscriptMtime(
+      { fs: makeFs({ ...files, [`${grokHome}/sessions/${leaf}/${ID1}/events.jsonl`]: 2_001 }), grokHome, cwd, platform: "linux" },
+      { [ID1]: 2_000, [ID2]: 1_500 },
+    )).toBe(2_001);
   });
 });

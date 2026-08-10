@@ -81,6 +81,9 @@ describe("turn end refreshes the project preview", () => {
     const delays = body.match(/for \(const delay of \[([^\]]+)\]/);
     expect(delays, "delays are declared as a list, not hidden in a chain").toBeTruthy();
     expect(delays![1].split(",").length).toBeGreaterThan(1);
+    const timerBody = body.slice(body.indexOf("setTimeout("));
+    expect(timerBody).toContain("normalizeArchiveChoices(repoCwd)");
+    expect(timerBody).toContain("postRepoCatalog()");
     // Timers are tracked so a disposed sidebar does not post into a dead view.
     expect(body).toContain("turnOrderTimers");
   });

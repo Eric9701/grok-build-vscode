@@ -345,15 +345,31 @@ describe("sidebar close-revocation wiring (source)", () => {
     // indexSessions falls back to summary.json on purpose (a new conversation
     // must still list); that fallback must never decide authorization.
     const norm = src.indexOf("private normalizeArchiveChoices(");
-    const normBody = src.slice(norm, norm + 1400);
+    const normEnd = src.indexOf("private remoteTargetableCwd(", norm);
+    const normBody = src.slice(norm, normEnd);
     expect(normBody).toContain("newestTranscriptMtime(");
     expect(normBody).not.toContain("indexSessions(");
-    const transcript = sessions.indexOf("export function newestTranscriptMtime(");
-    expect(sessions.slice(transcript, transcript + 900)).not.toContain("summary.json");
+    const transcript = sessions.indexOf("export function transcriptMtimes(");
+    const transcriptEnd = sessions.indexOf("export function isWellFormedSessionSummary(", transcript);
+    expect(sessions.slice(transcript, transcriptEnd))
+      .not.toContain('path.join(sessionDir, "summary.json")');
 
     // Worktree activity counts for its project, or the host and the rail
     // disagree again — the rail merges those catalogs for the same question.
     expect(normBody).toContain("this.sessionCwdsForRepo(cwd, overrides)");
+
+    // A choice made over an already-running turn quarantines that session id;
+    // the delayed transcript belongs to the older turn. A new prompt retires
+    // the choice at its actual commit point instead.
+    const archive = src.indexOf("private async setRepoArchived(");
+    const archiveBody = src.slice(archive, src.indexOf("private async setRepoColor(", archive));
+    expect(archiveBody).toContain("const claimedSessions = [...this.pool]");
+    expect(archiveBody).toContain("protectedSessionIds");
+    expect(normBody).toContain("choice.protectedSessionIds");
+    expect(normBody).toContain("Number.MAX_SAFE_INTEGER");
+    const send = src.indexOf("private async handleSend(");
+    const sendBody = src.slice(send, src.indexOf("private async recoverAuthAndResend(", send));
+    expect(sendBody).toMatch(/beginTurn\(session\);\s*this\.expireArchiveChoicesForStartedTurn\(session, !!queuedSendCommit\);/);
 
     // Expiry is resolved in the STORE, so the fence stays a lookup rather than
     // a stat per session in every archived project on every message.
@@ -376,7 +392,8 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(entries).toBeGreaterThan(0);
     const nextMember = src.indexOf("  private ", entries + 10);
     const body = src.slice(entries, nextMember);
-    expect(body).toContain("repoCwd");
+    expect(body).toContain("repoCwds");
+    expect(body).toContain("existing.repoCwds.push(owner)");
     expect(body).toContain("add(c, repo.cwd)");
     // The old cwd-list builder still exists, and is now derived from this one —
     // two independently-built sets would drift.
