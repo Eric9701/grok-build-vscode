@@ -429,6 +429,7 @@
     "prepackage": "node -e \"const fs=require('fs'); for (const f of fs.readdirSync('.')) if (f.endsWith('.vsix')) fs.unlinkSync(f); fs.rmSync('out',{recursive:true,force:true})\" && npm run check:vsix",
     "package": "vsce package --readme-path README.marketplace.md",
     "publish": "vsce publish --readme-path README.marketplace.md",
+    "publish:ovsx": "node scripts/publish-ovsx.mjs",
     "dist": "npm run compile && electron-builder --publish never",
     "dist:mac": "npm run compile && electron-builder --mac --publish never",
     "dist:win": "npm run compile && electron-builder --win --x64 --publish never",

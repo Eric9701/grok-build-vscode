@@ -145,3 +145,4 @@ Run "gh release create $tag" { gh release create $tag --title "Release $tag" --n
 
 Write-Host "`nReleased $tag with $vsix attached." -ForegroundColor Green
 Write-Host "Marketplace publish is separate: npm run publish" -ForegroundColor DarkGray
+Write-Host "Open VSX publish:                npm run publish:ovsx" -ForegroundColor DarkGray
