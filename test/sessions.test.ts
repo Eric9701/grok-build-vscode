@@ -22,6 +22,7 @@ import {
   orderedResumeCwdCandidates,
   readContextUsage,
   readSessionEntries,
+  remoteAuthorizedCwds,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -1348,5 +1349,64 @@ describe("session ordering follows the transcript, not a visit", () => {
       fs, grokHome: home, cwd, ids: ["fresh"], overrides: {}, platform: "linux",
     });
     expect(entry.updatedAt).toBe(Date.parse("2026-03-04T05:06:07Z"));
+  });
+});
+
+describe("remoteAuthorizedCwds (archived projects are out of reach from a phone)", () => {
+  const A = "/work/a";
+  const B = "/work/b";
+  const AWT = "/home/u/.grok/worktrees/a/feat";
+  const expand = (repo: string) => (repo === A ? [A, AWT] : [repo]);
+  const choice = (cwd: string, archived: boolean) => ({ cwd, at: 1, archived });
+  const call = (over: Partial<Parameters<typeof remoteAuthorizedCwds>[0]> = {}) =>
+    remoteAuthorizedCwds({
+      authorized: [A, AWT, B],
+      archives: {},
+      openCwds: [],
+      expand,
+      platform: "linux",
+      ...over,
+    });
+
+  it("passes the set straight through when nothing is archived", () => {
+    expect(call()).toEqual([A, AWT, B]);
+    // "not archived" is a real stored answer and must not be read as archived.
+    expect(call({ archives: { a: choice(A, false) } })).toEqual([A, AWT, B]);
+  });
+
+  it("drops an archived project AND the worktrees hanging off it", () => {
+    // A worktree is not a project you archive separately — leaving it reachable
+    // would let a phone walk into the archived checkout through the side door.
+    expect(call({ archives: { a: choice(A, true) } })).toEqual([B]);
+  });
+
+  it("never fences off a project the host currently has OPEN", () => {
+    // Opening a project does not clear its stored flag, and the rail already
+    // says "the folder VS Code has open is never archived". Without this the
+    // phone would go blind to the conversation the desk is working in.
+    expect(call({ archives: { a: choice(A, true) }, openCwds: [A] })).toEqual([A, AWT, B]);
+  });
+
+  it("keeps an archived project's worktree when the WORKTREE is the open folder", () => {
+    // VS Code opened on the worktree itself: that checkout is what the user is
+    // in, whatever its parent project's flag says.
+    expect(call({ archives: { a: choice(A, true) }, openCwds: [AWT] })).toEqual([AWT, B]);
+  });
+
+  it("ignores a stored choice with no cwd rather than blocking everything", () => {
+    expect(call({ archives: { a: { at: 1, archived: true } as never } })).toEqual([A, AWT, B]);
+  });
+
+  it("matches paths by normalised key, so drive-letter case cannot slip through", () => {
+    const win = (over: object) =>
+      remoteAuthorizedCwds({
+        authorized: ["C:\work\a"],
+        archives: {},
+        openCwds: [],
+        expand: (r) => [r],
+        platform: "win32",
+        ...over,
+      });
+    expect(win({ archives: { a: choice("c:\WORK\a", true) } })).toEqual([]);
   });
 });

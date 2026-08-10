@@ -126,6 +126,60 @@ export interface RepoArchiveChoice {
 export type RepoArchives = Record<string, RepoArchiveChoice>;
 
 /**
+ * The host's authorized cwds, minus every project the user has archived.
+ *
+ * A REMOTE-only narrowing. On the desk, archiving means "fold this away" — the
+ * project is one keystroke from being worked in — so subtracting it locally
+ * would break the thing archiving is for. From a phone it should mean what it
+ * looks like: out of reach.
+ *
+ * Two rules are what make it safe rather than merely strict.
+ *
+ * **The stored choice is the fence; the rail's age rule is not.** A project the
+ * client hides for being 30 days idle is still reachable here. That rule lives
+ * in the renderer and moves on its own, so binding a capability to it would
+ * revoke a phone's access with no user action behind it — including in the
+ * middle of a conversation.
+ *
+ * **A project the host has OPEN is never fenced off**, matching the rail's own
+ * "the folder VS Code has open is never archived". Opening a project does not
+ * clear its stored flag, so without this an archived-then-reopened project
+ * would leave the phone blind to the very conversation the desk is working in.
+ *
+ * `expand` maps a project to the cwds that belong to it — its own root plus its
+ * worktrees, which are not projects you archive separately.
+ */
+export function remoteAuthorizedCwds(opts: {
+  authorized: readonly string[];
+  archives: RepoArchives;
+  openCwds: readonly string[];
+  expand: (repoCwd: string) => readonly string[];
+  platform?: NodeJS.Platform;
+}): string[] {
+  const platform = opts.platform ?? process.platform;
+  const key = (c: string) => normalizeRepoPath(c, platform);
+  const open = new Set(opts.openCwds.filter(Boolean).map(key));
+  const blocked = new Set<string>();
+  for (const choice of Object.values(opts.archives ?? {})) {
+    if (!choice?.archived || !choice.cwd) continue;
+    const root = key(choice.cwd);
+    // An OPEN project is exempt whole. Checking each cwd on its own instead
+    // left the project reachable while its worktrees were not, which is a
+    // project half-open — and the half that disappears is the one holding
+    // unmerged work.
+    if (!root || open.has(root)) continue;
+    for (const cwd of [choice.cwd, ...opts.expand(choice.cwd)]) {
+      const k = key(cwd);
+      // A worktree the host has open stays reachable even when its parent
+      // project does not: that checkout is what the user is actually in.
+      if (k && !open.has(k)) blocked.add(k);
+    }
+  }
+  if (!blocked.size) return [...opts.authorized];
+  return opts.authorized.filter((c) => !blocked.has(key(c)));
+}
+
+/**
  * Project-folder colour ids the rail understands. Empty string is "none"
  * (default): the host still puts `color: ""` on every catalog row so the client
  * can tell "no colour" from "this host cannot colour" without a version check.

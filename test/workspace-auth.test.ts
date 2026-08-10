@@ -231,8 +231,17 @@ describe("sidebar close-revocation wiring (source)", () => {
     // remoteTargetableCwd delegates — not a second open-set walk.
     const remoteTarget = src.indexOf("private remoteTargetableCwd(");
     const remoteTargetBody = src.slice(remoteTarget, remoteTarget + 200);
-    expect(remoteTargetBody).toContain("isAuthorizedCwd");
+    // Delegates to the shared authorized set, narrowed for remotes — not a
+    // second walk of the open set, and not the catalog (which is wider).
+    expect(remoteTargetBody).toContain("remoteAuthorizedSessionCwds");
     expect(remoteTargetBody).not.toContain("localRepoCatalogEntries");
+    // ...and that narrowing is itself built from the shared query, so there is
+    // still exactly one definition of "authorized" with one subtraction on top.
+    const narrowStart = src.indexOf("private remoteAuthorizedSessionCwds(");
+    expect(narrowStart).toBeGreaterThan(0);
+    const narrowBody = src.slice(narrowStart, narrowStart + 1200);
+    expect(narrowBody).toContain("localTrustedSessionCwds");
+    expect(narrowBody).toContain("remoteAuthorizedCwds");
   });
 
   it("every outbound remote builder enforces authorizedListCwd at build time", () => {
@@ -243,6 +252,10 @@ describe("sidebar close-revocation wiring (source)", () => {
     const listBody = src.slice(listStart, listEnd > listStart ? listEnd : listStart + 800);
     expect(listBody).toContain("authorizedListCwd");
     expect(listBody).toContain("authorizedSessionCwds");
+    // Remote lists use the narrower set, and the DEFAULT is the strict one so a
+    // caller that forgets to say whose list it is errs toward withholding.
+    expect(listBody).toContain("remoteAuthorizedSessionCwds");
+    expect(listBody).toMatch(/scope:\s*"local"\s*\|\s*"remote"\s*=\s*"remote"/);
     // Empty list when unauthorized (no indexSessions for closed cwd).
     expect(listBody).toMatch(/type:\s*"sessions"/);
     expect(listBody).toContain("entries: []");
@@ -259,7 +272,9 @@ describe("sidebar close-revocation wiring (source)", () => {
     const snapEnd = src.indexOf("private getHtml(", snapStart);
     const snapBody = src.slice(snapStart, snapEnd);
     expect(snapBody).toContain("authorizedListCwd");
-    expect(snapBody).toContain("authorizedSessionCwds");
+    // Remote-narrowed: a tab reconnecting into a project archived while it was
+    // away must come back unbound rather than resuming inside it.
+    expect(snapBody).toContain("remoteAuthorizedSessionCwds");
     expect(snapBody).toContain("buildSessionsList");
     expect(snapBody).toContain("buildPinnedSessions");
     // Must not assume revoke already cleared per-tab cwd.
@@ -274,9 +289,13 @@ describe("sidebar close-revocation wiring (source)", () => {
     // Remote repos builder scrubs closed selectedCwd before the choke point.
     const reposMsgStart = src.indexOf("private buildRemoteReposMsg(");
     expect(reposMsgStart).toBeGreaterThan(0);
-    const reposMsgBody = src.slice(reposMsgStart, reposMsgStart + 700);
+    const reposMsgBody = src.slice(reposMsgStart, reposMsgStart + 1600);
     expect(reposMsgBody).toContain("authorizedListCwd");
     expect(reposMsgBody).toContain('selectedCwd');
+    // Rows a remote cannot reach are dropped, not merely refused when named:
+    // the catalog is what the client builds its own Archive group from, so
+    // leaving them in would paint a section whose every row fails.
+    expect(reposMsgBody).toContain("entries.filter((r) => this.remoteTargetableCwd(r.cwd))");
   });
 
   it("RemoteUplink is the sole socket write path and enforces project auth", () => {
@@ -297,7 +316,9 @@ describe("sidebar close-revocation wiring (source)", () => {
 
     // Sidebar wires live auth into the uplink (not a one-shot capture).
     expect(src).toMatch(/auth:\s*\{/);
-    expect(src).toContain("authorizedCwds: () => this.authorizedSessionCwds()");
+    // The socket gate takes the REMOTE set: it is the last thing between an
+    // archived project and the wire.
+    expect(src).toContain("authorizedCwds: () => this.remoteAuthorizedSessionCwds()");
     expect(src).toContain("scopeCwdForClient:");
 
     // deliverRemote remains the live fan-out orchestrator (transform + postTap)
