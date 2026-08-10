@@ -252,10 +252,11 @@ describe("worktree validation reads git first", () => {
     expect(body).not.toMatch(/return fs\.existsSync\(worktreePath\)/);
   });
 
-  it("self-removal is fenced to a proven clone under grok's worktrees root", () => {
+  it("self-removal is fenced by location AND one positive answer", () => {
     // The fallback for "Remove worktree failed: Internal error" is a recursive
-    // delete, so the fence is the thing worth pinning: grok's own root, the
-    // provenance marker, and not an open folder.
+    // delete, so the fence is worth pinning: grok's own root, never an open
+    // folder or the source repo, and then either nothing-to-lose (gone or
+    // empty) or a marker naming this repo.
     const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     const start = src.indexOf("private canSelfRemoveWorktree");
     expect(start).toBeGreaterThan(-1);
@@ -264,5 +265,36 @@ describe("worktree validation reads git first", () => {
     expect(body).toContain("relativePathWithin");
     expect(body).toContain("openWorkspaceFolders");
     expect(body).toContain("cloneWorktreeBelongsTo");
+    // An empty directory has nothing to lose, and it is the case that kept the
+    // owner stuck: the CLI deletes the contents and THEN fails on the
+    // bookkeeping, so by the time it reports the error there is no marker left
+    // to prove anything with. Refusing there refuses to delete an empty folder
+    // the user explicitly asked to delete.
+    expect(body).toContain("readdirSync");
+    expect(body).toContain("if (!contents.length) return undefined");
+  });
+
+  it("refusals carry a reason, and the reason reaches the user", () => {
+    // "Remove worktree failed: Internal error" with nothing after it is what
+    // this round cost. A refusal has to say what it refused on.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private canSelfRemoveWorktree");
+    const body = src.slice(start, src.indexOf("\n  /**", start));
+    expect(body).toContain(": string | undefined {");
+    expect(body).toContain("return `it is outside");
+    const remove = src.slice(src.indexOf("async removeFocusedWorktree"));
+    expect(remove.slice(0, remove.indexOf("this.worktreeCache = "))).toContain(
+      "was left alone because",
+    );
+  });
+
+  it("does not demand a clone marker from a worktree git already listed", () => {
+    // Linked worktrees have no marker BY DESIGN. Running the check on them
+    // logged "no clone provenance" for perfectly valid checkouts — which is
+    // exactly the alarming line the owner reported for a worktree that worked.
+    const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    const start = src.indexOf("private async listAuthoritativeWorktreePaths");
+    const body = src.slice(start, src.indexOf("\n  private ", start + 40));
+    expect(body).toContain("if (authorized.some((p) => pathsEqual(p, row.path))) continue;");
   });
 });

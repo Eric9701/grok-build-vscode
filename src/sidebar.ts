@@ -2500,11 +2500,18 @@ Only continue if you trust this code.`,
           // naming this repo, and it is not the repo itself. Anything less
           // and the error stands.
           const detail = rpcErr?.message ?? String(rpcErr);
-          if (!this.canSelfRemoveWorktree(wt)) throw rpcErr;
+          const refusal = this.canSelfRemoveWorktree(wt);
+          if (refusal) {
+            this.host.appendLine(`[worktree] self-remove refused: ${refusal}`);
+            void this.host.showErrorMessage(
+              `Remove worktree failed: ${detail}. The checkout at ${wt.path} was left alone because ${refusal}.`,
+            );
+            return;
+          }
           this.host.appendLine(
-            `[worktree] CLI remove failed (${detail}); removing verified clone checkout directly`,
+            `[worktree] CLI remove failed (${detail}); removing the checkout directly`,
           );
-          fs.rmSync(wt.path, { recursive: true, force: true });
+          fs.rmSync(wt.path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
           r = { removed: true };
         }
       } finally {
@@ -2631,6 +2638,10 @@ Only continue if you trust this code.`,
         // are separate repositories — so before this they were refused outright
         // and the feature simply did not work for any repo the CLI clones.
         for (const row of filterWorktreesForSourceRepo(list, sourcePath, { sourceGitRoot })) {
+          // git already vouched for it — asking for a clone marker as well would
+          // fail every LINKED worktree and log an alarming line about a checkout
+          // that is perfectly valid.
+          if (authorized.some((p) => pathsEqual(p, row.path))) continue;
           if (this.cloneWorktreeBelongsTo(row.path, sourcePath, sourceGitRoot)) add(row.path);
         }
       }
@@ -2643,36 +2654,51 @@ Only continue if you trust this code.`,
   /**
    * Whether we may delete this checkout ourselves after the CLI refused to.
    *
-   * Three independent facts, all required, none of them taken from the agent:
-   * the path sits under grok's own worktrees root; it carries the clone marker
-   * naming the repo it claims to come from; and it is not that repo. A
-   * recursive delete is the most destructive thing in this file, so the fence
+   * A recursive delete is the most destructive thing in this file, so the fence
    * is deliberately narrow — the user's confirmation already said "this deletes
    * the isolated checkout", and this decides only whether the thing in front of
-   * us IS an isolated checkout.
+   * us IS an isolated checkout. Location is necessary but never sufficient; on
+   * top of it we need ONE of two positive answers:
+   *
+   *  - **nothing to lose** — the directory is gone or empty. This is the common
+   *    case in practice, and the one that kept the owner stuck: the CLI deletes
+   *    the contents and THEN fails to deregister, so by the time it reports
+   *    "Internal error" the checkout is already an empty folder with no marker,
+   *    no `.git`, and nothing left to prove anything with. Refusing there is
+   *    refusing to delete an empty directory the user asked us to delete.
+   *  - **provenance** — the clone marker names the repo it claims to come from,
+   *    for a checkout that still has contents worth being careful about.
+   *
+   * Returns the reason on refusal so the error the user sees can say it.
    */
-  private canSelfRemoveWorktree(wt: { path: string; sourceGitRoot?: string }): boolean {
+  private canSelfRemoveWorktree(wt: { path: string; sourceGitRoot?: string }): string | undefined {
     const target = wt?.path;
     // The session's own binding carries only the git root; the cache has the
     // full record when we have one. Either way this is the repo the MARKER has
     // to name — get it wrong and the check fails closed, which is the point.
     const cached = this.worktreeCache.find((w) => pathsEqual(w.path, target));
     const source = cached?.sourceRepo || wt?.sourceGitRoot || this.workspaceRoot();
-    if (!target || !source || !path.isAbsolute(target)) return false;
+    if (!target || !path.isAbsolute(target)) return "no absolute path to remove";
     const root = path.join(resolveGrokHome(), "worktrees");
-    const rel = relativePathWithin(root, target);
-    if (!rel) {
-      this.host.appendLine(`[worktree] self-remove refused: ${target} is outside ${root}`);
-      return false;
-    }
-    if (pathsEqual(target, source) || pathsEqual(target, root)) return false;
+    if (!relativePathWithin(root, target)) return `it is outside ${root}`;
+    if (pathsEqual(target, root)) return "it is the worktrees root itself";
+    if (source && pathsEqual(target, source)) return "it is the source repository";
     for (const folder of this.openWorkspaceFolders()) {
-      if (pathsEqual(target, folder)) {
-        this.host.appendLine(`[worktree] self-remove refused: ${target} is an open folder`);
-        return false;
-      }
+      if (pathsEqual(target, folder)) return "it is an open folder";
     }
-    return this.cloneWorktreeBelongsTo(target, source, gitRootForPath(source, defaultFs) || source);
+    let contents: string[] | undefined;
+    try {
+      contents = fs.readdirSync(target);
+    } catch {
+      // Already gone — the CLI removed it and then failed on the bookkeeping.
+      return undefined;
+    }
+    if (!contents.length) return undefined;
+    if (!source) return "the source repository is unknown";
+    if (this.cloneWorktreeBelongsTo(target, source, gitRootForPath(source, defaultFs) || source)) {
+      return undefined;
+    }
+    return `it has contents but no ${CLONE_WORKTREE_SOURCE_MARKER} naming ${source}`;
   }
 
   /**
