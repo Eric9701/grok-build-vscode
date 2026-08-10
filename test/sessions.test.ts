@@ -23,7 +23,10 @@ import {
   readContextUsage,
   readSessionEntries,
   remoteAuthorizedCwds,
-  effectiveArchivedRepoKeys,
+  archivedProjectKeys,
+  expiredArchiveChoiceKeys,
+  newestTranscriptMtime,
+  encodeSessionCatalogLeaf,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -1353,82 +1356,156 @@ describe("session ordering follows the transcript, not a visit", () => {
   });
 });
 
-describe("effectiveArchivedRepoKeys / remoteAuthorizedCwds", () => {
+describe("the archive fence", () => {
   const A = "/work/a";
   const B = "/work/b";
   const AWT = "/home/u/.grok/worktrees/a/feat";
   const k = (c: string) => normalizeRepoPath(c, "linux");
-  const expand = (repo: string) => (repo === A ? [A, AWT] : [repo]);
+  const trusted = [
+    { cwd: A, repoCwd: A },
+    { cwd: AWT, repoCwd: A },
+    { cwd: B, repoCwd: B },
+  ];
   const choice = (cwd: string, archived: boolean, at = 1000) => ({ cwd, at, archived });
 
-  const keys = (over: object = {}) =>
-    effectiveArchivedRepoKeys({
-      archives: { [k(A)]: choice(A, true) },
-      newestActivityAt: () => 0,
-      expand,
-      openCwds: [],
-      platform: "linux",
-      ...over,
-    });
-  const fence = (blocked: ReadonlySet<string>) =>
-    remoteAuthorizedCwds({ authorized: [A, AWT, B], blocked, platform: "linux" });
+  const blocked = (archives: object, openCwds: string[] = []) =>
+    archivedProjectKeys({ archives: archives as never, openCwds, platform: "linux" });
+  const fence = (archivedProjects: ReadonlySet<string>) =>
+    remoteAuthorizedCwds({ trusted, archivedProjects, platform: "linux" });
 
-  it("fences an archived project and the worktrees hanging off it", () => {
-    // A worktree is not a project you archive separately — leaving it reachable
-    // would be a side door into the archived checkout.
-    expect(fence(keys())).toEqual([B]);
+  it("fences an archived project and everything belonging to it", () => {
+    expect(fence(blocked({ [k(A)]: choice(A, true) }))).toEqual([B]);
+  });
+
+  it("fences by OWNING PROJECT, so a worktree learned later cannot slip past", () => {
+    // The blocked set names projects, and the trusted set carries each cwd's
+    // project with it. Matching exact cwds instead let a worktree the host
+    // discovered after the fence was built walk straight through.
+    const late = [...trusted, { cwd: "/home/u/.grok/worktrees/a/just-made", repoCwd: A }];
+    expect(remoteAuthorizedCwds({
+      trusted: late, archivedProjects: blocked({ [k(A)]: choice(A, true) }), platform: "linux",
+    })).toEqual([B]);
   });
 
   it("passes everything through when nothing is archived", () => {
-    expect(fence(keys({ archives: {} }))).toEqual([A, AWT, B]);
+    expect(fence(blocked({}))).toEqual([A, AWT, B]);
     // "not archived" is a real stored answer, not the absence of one.
-    expect(fence(keys({ archives: { [k(A)]: choice(A, false) } }))).toEqual([A, AWT, B]);
-  });
-
-  it("treats a choice as expired once the project has been worked in since", () => {
-    // The renderer's own rule, and the reason the host has to share it: without
-    // this the desk showed a project in Projects while the phone could not
-    // reach it, and no refresh helped.
-    expect(fence(keys({ newestActivityAt: () => 2000 }))).toEqual([A, AWT, B]);
-    // ...but activity BEFORE the choice does not expire it.
-    expect(fence(keys({ newestActivityAt: () => 999 }))).toEqual([B]);
+    expect(fence(blocked({ [k(A)]: choice(A, false) }))).toEqual([A, AWT, B]);
   });
 
   it("never fences a project the host has OPEN, worktrees included", () => {
-    // Opening a project does not clear its stored flag. Fencing it anyway would
-    // blind the phone to the conversation the desk is working in.
-    expect(fence(keys({ openCwds: [A] }))).toEqual([A, AWT, B]);
-  });
-
-  it("keeps an open WORKTREE reachable when its parent project is not", () => {
-    expect(fence(keys({ openCwds: [AWT] }))).toEqual([AWT, B]);
+    // Opening a project does not clear its flag; fencing it anyway would blind
+    // the phone to the conversation the desk is working in.
+    expect(fence(blocked({ [k(A)]: choice(A, true) }, [A]))).toEqual([A, AWT, B]);
   });
 
   it("ignores a stored choice with no cwd rather than fencing everything", () => {
-    expect(fence(keys({ archives: { x: { at: 1, archived: true } as never } }))).toEqual([A, AWT, B]);
+    expect(fence(blocked({ x: { at: 1, archived: true } }))).toEqual([A, AWT, B]);
   });
+});
 
-  it("asks for activity only where a choice could actually be expired", () => {
-    // It is a stat per session in the project, so it must not run for projects
-    // that carry no archived choice at all.
-    const asked: string[] = [];
-    keys({
-      archives: { [k(A)]: choice(A, true), [k(B)]: choice(B, false) },
-      newestActivityAt: (cwd) => { asked.push(cwd); return 0; },
-    });
-    expect(asked).toEqual([A]);
-  });
-
-  it("matches paths by normalised key, so drive-letter case cannot slip through", () => {
-    const blocked = effectiveArchivedRepoKeys({
-      archives: { "c:\work\a": { cwd: "c:\WORK\a", at: 1, archived: true } },
+describe("expiredArchiveChoiceKeys", () => {
+  const A = "/work/a";
+  const k = (c: string) => normalizeRepoPath(c, "linux");
+  const call = (over: object = {}) =>
+    expiredArchiveChoiceKeys({
+      archives: { [k(A)]: { cwd: A, at: 1000, archived: true } },
       newestActivityAt: () => 0,
-      expand: (r) => [r],
-      openCwds: [],
-      platform: "win32",
+      platform: "linux",
+      ...over,
     });
-    expect(remoteAuthorizedCwds({
-      authorized: ["C:\work\a"], blocked, platform: "win32",
-    })).toEqual([]);
+
+  it("expires a choice once the project has been worked in since", () => {
+    expect(call({ newestActivityAt: () => 2000 })).toEqual([k(A)]);
+  });
+
+  it("keeps a choice when the work predates it", () => {
+    expect(call({ newestActivityAt: () => 999 })).toEqual([]);
+    expect(call({ newestActivityAt: () => 1000 })).toEqual([]);
+  });
+
+  it("keeps a choice for a project with no transcript at all", () => {
+    // 0 means "nothing ever ran here", which is not evidence of work.
+    expect(call({ newestActivityAt: () => 0 })).toEqual([]);
+  });
+
+  it("expires an explicit keep-showing-me choice on the same terms", () => {
+    expect(call({
+      archives: { [k(A)]: { cwd: A, at: 1000, archived: false } },
+      newestActivityAt: () => 2000,
+    })).toEqual([k(A)]);
+  });
+});
+
+describe("newestTranscriptMtime (the evidence a remote cannot forge)", () => {
+  // Fake fs shaped like the real store: <grokHome>/sessions/<encoded-cwd>/<uuid>/
+  const grokHome = "/home/u/.grok";
+  const cwd = "/work/a";
+  const leaf = encodeSessionCatalogLeaf(cwd);
+  const ID1 = "019fd3d2-0000-4000-8000-00000000aaaa";
+  const ID2 = "019fd3d2-0000-4000-8000-00000000bbbb";
+
+  function makeFs(files: Record<string, number>) {
+    const dirs = new Set<string>([
+      `${grokHome}/sessions`,
+      `${grokHome}/sessions/${leaf}`,
+      `${grokHome}/sessions/${leaf}/${ID1}`,
+      `${grokHome}/sessions/${leaf}/${ID2}`,
+    ].map((d) => normalizeRepoPath(d, "linux")));
+    const norm = (p: string) => normalizeRepoPath(p, "linux");
+    const byPath = new Map(Object.entries(files).map(([p, m]) => [norm(p), m]));
+    return {
+      existsSync: (p: string) => dirs.has(norm(p)) || byPath.has(norm(p)),
+      readdirSync: (p: string) =>
+        norm(p) === norm(`${grokHome}/sessions`) ? [leaf]
+        : norm(p) === norm(`${grokHome}/sessions/${leaf}`) ? [ID1, ID2]
+        : [],
+      readFileSync: () => "{}",
+      statSync: (p: string) => {
+        const key = norm(p);
+        if (byPath.has(key)) return { isDirectory: () => false, mtimeMs: byPath.get(key)! };
+        if (dirs.has(key)) return { isDirectory: () => true, mtimeMs: 0 };
+        throw new Error("ENOENT " + p);
+      },
+    } as unknown as FsLike;
+  }
+
+  const run = (files: Record<string, number>) =>
+    newestTranscriptMtime({ fs: makeFs(files), grokHome, cwd, platform: "linux" });
+
+  it("takes the newest transcript across the project's sessions", () => {
+    expect(run({
+      [`${grokHome}/sessions/${leaf}/${ID1}/events.jsonl`]: 500,
+      [`${grokHome}/sessions/${leaf}/${ID2}/events.jsonl`]: 900,
+    })).toBe(900);
+  });
+
+  it("IGNORES summary.json — the thing a mere reload rewrites", () => {
+    // This is the whole point. indexSessions falls back to summary.json so a
+    // brand-new conversation still lists, and that fallback is exactly what let
+    // a reconnecting phone manufacture "this project was worked in" by getting
+    // an empty archived session reloaded.
+    const files = {
+      [`${grokHome}/sessions/${leaf}/${ID1}/summary.json`]: 9_000_000,
+      [`${grokHome}/sessions/${leaf}/${ID2}/summary.json`]: 9_000_000,
+    };
+    expect(run(files)).toBe(0);
+    // ...and the contrast, so this cannot pass because the fixture is wrong:
+    // indexSessions DOES see those files, which is why it must not be reused
+    // for an authorization decision.
+    expect(
+      indexSessions({ fs: makeFs(files), grokHome, cwd, platform: "linux" })[0]?.mtimeMs,
+    ).toBe(9_000_000);
+  });
+
+  it("counts only the transcript when a session has both", () => {
+    expect(run({
+      [`${grokHome}/sessions/${leaf}/${ID1}/events.jsonl`]: 100,
+      [`${grokHome}/sessions/${leaf}/${ID1}/summary.json`]: 9_000_000,
+    })).toBe(100);
+  });
+
+  it("reports nothing for a project that has never been spoken to", () => {
+    expect(run({})).toBe(0);
   });
 });

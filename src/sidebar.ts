@@ -182,7 +182,10 @@ import {
   relativePathWithin,
   readSessionEntries,
   remoteAuthorizedCwds,
-  effectiveArchivedRepoKeys,
+  archivedProjectKeys,
+  expiredArchiveChoiceKeys,
+  newestTranscriptMtime,
+  type TrustedSessionCwd,
   resolveGrokHome,
   sessionCatalogDirs,
   sessionDirFor,
@@ -3308,81 +3311,98 @@ Only continue if you trust this code.`,
   }
 
   /**
-   * Cwds a REMOTE client may name: the local authorized set, minus every
-   * project the user has archived.
+   * Cwds a REMOTE client may name: the trusted set, minus everything belonging
+   * to an archived project.
    *
-   * A narrowing, and deliberately remote-only. Archiving on the desk means
-   * "fold this away" — the project stays one keystroke from being worked in, so
+   * A narrowing, and deliberately remote-only. Archiving on the desk means "fold
+   * this away" — the project stays one keystroke from being worked in, so
    * subtracting it from the LOCAL set would break the thing archiving is for.
    * From a phone it should mean what it looks like: gone.
    *
-   * Two rules make it safe rather than merely strict:
+   * Cheap on purpose: this runs on every inbound AND outbound remote message.
+   * The stored choices are read as they are, because expired ones have already
+   * been retired from the store ({@link normalizeArchiveChoices}), and the
+   * filter is by each cwd's owning project, which the trusted-set builder
+   * recorded on the way past.
    *
-   *  - **The stored choice is the fence; the rail's 30-day age rule is not.**
-   *    That rule lives in the client and moves on its own, so binding a
-   *    capability to it would revoke a phone's access with no user action —
-   *    including mid-conversation.
-   *  - **A project the host has OPEN is never fenced off**, matching the rail's
-   *    own "the folder VS Code has open is never archived". A stored flag can
-   *    outlive the archiving (opening a project does not clear it), and blinding
-   *    the phone to the conversation the desk is actually working in would be a
-   *    worse bug than the one this fixes.
-   *
-   * Nothing to do on a host that cannot archive: desktop ignores stored choices
-   * entirely, and its remote set is already just the open folders.
+   * Nothing to subtract on a host that cannot archive: desktop ignores stored
+   * choices entirely, and its remote set is already just the open folders.
    */
   private remoteAuthorizedSessionCwds(): string[] {
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const authorized = this.localTrustedSessionCwds(overrides);
-    // Nothing to subtract on a host that cannot archive: desktop ignores stored
-    // choices entirely, and its remote set is already just the open folders.
-    if (!this.host.canArchiveRepos) return authorized;
-    return remoteAuthorizedCwds({ authorized, blocked: this.effectiveArchivedKeys() });
+    const trusted = this.localTrustedSessionEntries(overrides);
+    if (!this.host.canArchiveRepos) return trusted.map((t) => t.cwd);
+    // First use in this window: retire stale choices before trusting them, so a
+    // project worked in before the extension started is not fenced on a flag
+    // that expired long ago.
+    if (!this.archiveChoicesNormalized) this.normalizeArchiveChoices();
+    return remoteAuthorizedCwds({
+      trusted,
+      archivedProjects: archivedProjectKeys({
+        archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
+        openCwds: [...this.openWorkspaceFolders(), this.workspaceRoot()],
+      }),
+    });
   }
+
+  /** Whether stale archive choices have been retired since this window opened. */
+  private archiveChoicesNormalized = false;
 
   /**
-   * Which projects are archived right now, cached.
+   * Retire archive choices that newer work has already made moot, in the store.
    *
-   * Deciding this needs each archived project's newest transcript mtime, which
-   * is a stat per session in it — far too much for something consulted on every
-   * inbound AND outbound remote message. So it is computed when the catalog is
-   * built ({@link postRepoCatalog}) and read from here in between.
+   * Resolving the expiry ONCE, here, is what keeps the fence itself a plain
+   * lookup — deciding it per read would mean a stat per session in every
+   * archived project, on a path every remote message takes.
    *
-   * The staleness that leaves is deliberately one-directional. **Tightening is
-   * immediate**: archiving posts a catalog, so a project goes out of reach the
-   * moment the user says so. **Loosening lags**: a project worked in since its
-   * choice stays fenced until the next catalog build, which any session open,
-   * project switch or pin will do. Erring toward withholding is the only
-   * direction that cannot hand a remote something it should not have, and it
-   * self-heals rather than needing anyone to notice.
+   * Safe to run from anywhere, including paths a remote can trigger, because
+   * the evidence cannot be forged: {@link newestTranscriptMtime} reads
+   * `events.jsonl` and nothing else, and a remote cannot move a transcript
+   * without running a turn in a project it is fenced out of. That is the
+   * property four review rounds cost — earlier versions used session-directory
+   * mtimes, which move when a conversation is merely loaded, so a reconnecting
+   * phone could manufacture the proof that its archived project had been
+   * "worked in".
+   *
+   * Activity in a WORKTREE counts for its project: the rail merges those
+   * catalogs when it decides the same question, and a project half-expired
+   * would put the two back into disagreement.
+   *
+   * `only` limits the scan to one project, for the turn-end path where exactly
+   * one project can have changed.
    */
-  private effectiveArchivedKeys(): ReadonlySet<string> {
-    // Never computed yet — a fresh window must not be briefly unfenced.
-    if (!this.archivedKeysCache) this.refreshEffectiveArchived();
-    return this.archivedKeysCache ?? new Set<string>();
-  }
-
-  private archivedKeysCache?: ReadonlySet<string>;
-
-  /** Recompute {@link effectiveArchivedKeys}. Cheap when nothing is archived. */
-  private refreshEffectiveArchived(): void {
-    if (!this.host.canArchiveRepos) {
-      this.archivedKeysCache = new Set<string>();
+  private normalizeArchiveChoices(only?: string): void {
+    if (!this.host.canArchiveRepos) return;
+    const archives = this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {});
+    if (!Object.keys(archives).length) {
+      this.archiveChoicesNormalized = true;
       return;
     }
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const grokHome = resolveGrokHome(process.env);
-    this.archivedKeysCache = effectiveArchivedRepoKeys({
-      archives: this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
-      // The transcript, not `summary.json` — opening a conversation rewrites
-      // that one without the conversation gaining anything, which is exactly
-      // the trap `indexSessions` already documents. Only ever called for a
-      // project that carries an archived choice.
-      newestActivityAt: (cwd) =>
-        indexSessions({ fs: defaultFs, grokHome, cwd })[0]?.mtimeMs ?? 0,
-      expand: (cwd) => this.sessionCwdsForRepo(cwd, overrides),
-      openCwds: [...this.openWorkspaceFolders(), this.workspaceRoot()],
+    const onlyKey = only ? normalizeRepoPath(only) : undefined;
+    const scoped: RepoArchives = onlyKey
+      ? (archives[onlyKey] ? { [onlyKey]: archives[onlyKey] } : {})
+      : archives;
+    const expired = expiredArchiveChoiceKeys({
+      archives: scoped,
+      newestActivityAt: (cwd: string) => {
+        let newest = 0;
+        for (const c of this.sessionCwdsForRepo(cwd, overrides)) {
+          const at = newestTranscriptMtime({ fs: defaultFs, grokHome, cwd: c });
+          if (at > newest) newest = at;
+        }
+        return newest;
+      },
     });
+    if (!only) this.archiveChoicesNormalized = true;
+    if (!expired.length) return;
+    const next: RepoArchives = { ...archives };
+    for (const key of expired) {
+      this.host.appendLine(`[archive] ${next[key]?.cwd ?? key} has been worked in since — its archive choice no longer applies`);
+      delete next[key];
+    }
+    void this.state.update(REPO_ARCHIVES_KEY, next);
   }
 
   /**
@@ -3398,7 +3418,7 @@ Only continue if you trust this code.`,
   private postRepoCatalog(): void {
     // The catalog changing is exactly when "which projects are archived" can
     // change, so it is recomputed here and read cheaply everywhere else.
-    this.refreshEffectiveArchived();
+    this.normalizeArchiveChoices();
     // Both local and remote attached clients see the host's catalog: curated
     // open folders on desktop, full discovery on VS Code. Archive fields only
     // when canArchiveRepos (already applied inside localRepoCatalogEntries).
@@ -10652,6 +10672,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private refreshSessionOrderAfterTurn(session: Session): void {
     const cwd = this.sessionCwd(session);
     if (!cwd) return;
+    // A turn is the one thing that moves a transcript, so it is the moment an
+    // archive choice can expire. Scoped to this project — exactly one can have
+    // changed — so it stays a stat per session in that project, and only when
+    // that project carries a choice at all.
+    //
+    // Safe here even though `setStatus` also fires on a plain CLI exit, which a
+    // reconnecting remote can reach: the evidence is the TRANSCRIPT, and a
+    // reconnect does not move one. Earlier versions read session-directory
+    // mtimes, which a mere reload bumps, and that is what let a phone
+    // manufacture activity in a project it was fenced out of.
+    this.normalizeArchiveChoices(session.worktree?.sourceGitRoot ?? cwd);
     for (const delay of [400, 1600]) {
       const timer = setTimeout(() => {
         this.turnOrderTimers.delete(timer);
@@ -11191,28 +11222,42 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * checkout under grok home). That is the v3.1.0 behaviour and must not regress.
    */
   private localTrustedSessionCwds(overrides: SessionMetaOverrides): string[] {
-    const out: string[] = [];
+    return this.localTrustedSessionEntries(overrides).map((e) => e.cwd);
+  }
+
+  /**
+   * The same set, each cwd carrying the PROJECT it came from.
+   *
+   * Provenance is recorded here because here is where it is known — every cwd
+   * below arrives by expanding a project — and re-deriving it later means
+   * resolving a worktree back to its owner on a path that runs for every remote
+   * message. It is also what lets the archive fence check the project rather
+   * than the exact cwd: matching cwds let a worktree the host learned about
+   * after the fence was built pass straight through it.
+   */
+  private localTrustedSessionEntries(overrides: SessionMetaOverrides): TrustedSessionCwd[] {
+    const out: TrustedSessionCwd[] = [];
     const seen = new Set<string>();
-    const add = (cwd: string | undefined) => {
+    const add = (cwd: string | undefined, repoCwd: string | undefined) => {
       if (!cwd) return;
       const key = normalizeRepoPath(cwd);
       if (!key || seen.has(key)) return;
       seen.add(key);
-      out.push(cwd);
+      out.push({ cwd, repoCwd: repoCwd || cwd });
     };
     if (this.host.canSwitchWorkspaceFolder) {
       for (const repoCwd of this.openWorkspaceFolders()) {
-        for (const c of this.sessionCwdsForRepo(repoCwd, overrides)) add(c);
+        for (const c of this.sessionCwdsForRepo(repoCwd, overrides)) add(c, repoCwd);
       }
       // Active root as a backstop if the folders list is empty mid-init.
-      add(this.workspaceRoot());
+      add(this.workspaceRoot(), this.workspaceRoot());
       return out;
     }
     // VS Code: full historical catalog.
-    add(this.workspaceRoot());
-    if (this.selectedRepoCwd) add(this.selectedRepoCwd);
+    add(this.workspaceRoot(), this.workspaceRoot());
+    if (this.selectedRepoCwd) add(this.selectedRepoCwd, this.selectedRepoCwd);
     for (const repo of this.repoCatalog()) {
-      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c);
+      for (const c of this.sessionCwdsForRepo(repo.cwd, overrides)) add(c, repo.cwd);
     }
     return out;
   }
