@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.3.1 — 2026-08-10
+
+### Fixed
+
+- **Menus in the projects rail stop running away from the pointer.** On a wide rail a menu opens at the right-hand edge, next to the ⋯ button — far enough from the click that the "you have walked away" rule closed it before you could reach it. Walking away is now something you can only do after arriving.
+- **"Set color" opens its swatches where the menu was.** Right-clicking a project opens the menu under the pointer, but choosing Set color threw the colours back across the rail to the ⋯ button, out from under the cursor that was following them.
+
 ## 3.3.0 — 2026-08-10
 
 ### Added
