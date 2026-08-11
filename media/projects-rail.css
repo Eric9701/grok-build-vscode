@@ -195,16 +195,23 @@ html, body {
 .rail-head-twisty svg { width: 12px; height: 12px; }
 
 .rail-list { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
-/* Session rows sit flush, the way VS Code's own lists do. In this side bar the
-   host's explorer is the density people compare against, not our desktop app's
-   roomier rail — and `projects-rail.css` is loaded by the VS Code view alone
-   (src/sidebar.ts), so this cannot reach the desktop or the browser client.
-   The 4px stays on the PROJECT lists below: there a gap separates whole
+/* ONE gap between session rows, wherever they are listed: 2px.
+
+   They were inconsistent — 4px in PINNED/RECENT against 1px inside a project —
+   so the same kind of row breathed differently depending on which group it
+   happened to be in. 2px splits the difference, and more usefully it makes the
+   rule statable: 2px means "the next conversation".
+
+   The 4px stays on the PROJECT lists below, where a gap separates whole
    projects — a head plus its nested sessions — and is structural rather than
    decorative. Collapse it there and one project's last conversation reads as
-   the next project's first. */
+   the next project's first.
+
+   `projects-rail.css` is loaded by the VS Code view alone (src/sidebar.ts), so
+   none of this reaches the desktop app or the browser client — whose rails are
+   wider, and which on a phone need bigger targets, not tighter ones. */
 .rail-pinned,
-.rail-recent { gap: 0; }
+.rail-recent { gap: 2px; }
 .rail-repo { min-width: 0; border-radius: 6px; }
 .rail-repo.unavailable { opacity: .62; }
 .rail-repo.collapsed .rail-sessions { display: none; }
@@ -345,7 +352,10 @@ html, body {
     );
 }
 
-.rail-sessions { display: flex; flex-direction: column; min-width: 0; gap: 1px; padding: 1px 0 5px 0; }
+/* 2px, matching PINNED/RECENT above — see the note there. Was 1px, which is
+   what made a conversation inside a project sit tighter than the same
+   conversation listed in Recent. */
+.rail-sessions { display: flex; flex-direction: column; min-width: 0; gap: 2px; padding: 1px 0 5px 0; }
 
 .rail-session {
   position: relative;
