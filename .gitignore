@@ -41,3 +41,4 @@ src/**/*.js.map
 
 # Screenshot frames from `npm run e2e:screens` — regenerated per run, never committed.
 .screens/
+.screens-live/

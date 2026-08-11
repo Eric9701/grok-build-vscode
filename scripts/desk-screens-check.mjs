@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { buildQaFixture } from "./qa-fixture.mjs";
 
 const root = process.cwd();
 const OUT = process.env.SCREENS_DIR || ".screens";
@@ -33,26 +34,10 @@ assert.ok(fs.existsSync(electronExe), `Missing Electron at ${electronExe}`);
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
-const README = [
-  "# grok-remote",
-  "",
-  "Relay server and web client for driving the desk machine from a phone.",
-  "",
-  "## What this is",
-  "",
-  "- a relay (`src/server.ts`)",
-  "- a web client (`web/`)",
-  "- one file panel, shared with the desktop",
-  "",
-].join("\n");
-
-const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "grok-screens-ws-"));
-fs.writeFileSync(path.join(workspace, "README.md"), README);
-fs.writeFileSync(path.join(workspace, "package.json"), "{}\n");
-for (const d of ["docs", "src", "web"]) {
-  fs.mkdirSync(path.join(workspace, d), { recursive: true });
-  fs.writeFileSync(path.join(workspace, d, "server.ts"), "export const n = 1;\n");
-}
+// The shared grok-qa fixture: a fixed project AND a fixed session store, so the
+// rail has real history in it and the frames are comparable between runs.
+const qa = buildQaFixture();
+const workspace = qa.project;
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-screens-ud-"));
 fs.writeFileSync(path.join(userData, "test-config.json"), JSON.stringify({ "grok.cliPath": fixtureCli }), "utf8");
 
@@ -71,7 +56,9 @@ const BLANK_ICONS = `() => {
   return bad;
 }`;
 
-const env = { ...process.env };
+// GROK_HOME is the supported override for the session store (`resolveGrokHome`),
+// so the app reads the fixture's history instead of this machine's.
+const env = { ...process.env, GROK_HOME: qa.grokHome };
 delete env.ELECTRON_RUN_AS_NODE;
 
 const app = await electron.launch({
@@ -106,6 +93,29 @@ try {
   await page.waitForTimeout(500);
   await shot("desk-1-chat");
   await assertNoBlankIcons("desk chat");
+  // Proves the host actually READ the fixture store. Without this the check
+  // passes just as happily against an empty rail, which is exactly what a wrong
+  // session-directory encoding produces — silently.
+  const railTitles = await page.evaluate(
+    () => [...document.querySelectorAll(".rail-session .rail-session-name, .rail-session")]
+      .map((n) => (n.textContent || "").trim()).filter(Boolean),
+  );
+  // The rail previews only the newest few per project, so this asserts ORDER
+  // rather than presence of all four: whichever fixture conversations are shown
+  // must be the newest ones, newest first. That is the property worth pinning —
+  // ordering by transcript mtime is what a merely-opened session used to break.
+  const shown = [];
+  for (const text of railTitles) {
+    const hit = qa.expectedOrder.find((t) => text.startsWith(t));
+    if (hit && !shown.includes(hit)) shown.push(hit);
+  }
+  assert.ok(shown.length >= 2, `desk: the rail showed no fixture history — saw ${JSON.stringify(railTitles.slice(0, 8))}`);
+  assert.deepEqual(
+    shown,
+    qa.expectedOrder.slice(0, shown.length),
+    "desk: the rail must list the fixture conversations newest first",
+  );
+  log(`rail shows ${shown.length} fixture conversations, newest first`);
 
   if (!(await page.locator("#desk-ft-panel").isVisible().catch(() => false))) {
     await page.locator("#desk-ft-top-toggle").click();
@@ -167,6 +177,6 @@ try {
   log(`ALL CHECKS PASSED — 4 frames in ${OUT}/`);
 } finally {
   await app.close().catch(() => {});
-  fs.rmSync(workspace, { recursive: true, force: true });
+  qa.cleanup();
   fs.rmSync(userData, { recursive: true, force: true });
 }
