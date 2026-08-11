@@ -396,6 +396,13 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   font-size: 12px;
   cursor: pointer;
 }
+/* An action button's icon needs an explicit size, like every other icon holder
+   in this panel. These SVGs carry only a viewBox — the desktop originals baked
+   width/height into each string, and the extraction rewrote them without it, so
+   an icon-only action rendered as an EMPTY BOX. 15px is the desktop's number.
+   Not caught by any test: the DOM suite runs in happy-dom, which has no layout,
+   so a zero-sized icon satisfies every assertion about titles and classes. */
+.gfp-action svg { width: 15px; height: 15px; flex: 0 0 auto; }
 .gfp-action:disabled { opacity: 0.5; cursor: default; }
 .gfp-action-primary { border-color: transparent; background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); }
 .gfp-action-danger { border-color: var(--vscode-errorForeground, #f44); color: var(--vscode-errorForeground, #f44); }
