@@ -70,3 +70,8 @@ terminals/**
 .tmp-*/**
 .tmp-*
 .tmp-shots/**
+
+# Screenshot frames from the screens checks and the live smoke. Gitignored, but
+# .vscodeignore is a separate list — they were packaged into 3.5.0 before this.
+.screens/**
+.screens-live/**
