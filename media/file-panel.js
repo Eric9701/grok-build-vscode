@@ -1156,11 +1156,46 @@
       }
       if (!menu.childNodes.length) return closeMenu();
       doc.body.appendChild(menu);
-      const box = anchor.getBoundingClientRect();
-      const x = pointerEvent ? pointerEvent.clientX : box.right;
-      const y = pointerEvent ? pointerEvent.clientY : box.bottom + 4;
-      menu.style.top = Math.max(8, Math.round(y)) + "px";
-      menu.style.right = Math.max(8, win.innerWidth - Math.round(x)) + "px";
+
+      // Zoom-corrected and clamped to the viewport.
+      //
+      // The chat scales with `--chat-zoom`, and body zoom scales VISUAL rects
+      // while `position: fixed` top/left are LAYOUT pixels — so a menu placed at
+      // a raw `clientX/clientY` lands further off the further you are from the
+      // origin, which is what "appears randomly" looks like. `unzoomClientPx`
+      // converts between the two and is a no-op at zoom 1.
+      //
+      // This is the same maths the released desktop panel used and `openRailMenu`
+      // in chat.js still uses; the extraction dropped it, along with the flip-up
+      // and the bottom clamp, so the menu could also run off the screen.
+      const helpers = (win.GrokWebviewHelpers || root.GrokWebviewHelpers || {});
+      const zoomOf = typeof helpers.chatZoomFactor === "function" ? helpers.chatZoomFactor : () => 1;
+      const unzoom = typeof helpers.unzoomClientPx === "function" ? helpers.unzoomClientPx : (px) => px;
+      const z = zoomOf();
+      const size = menu.getBoundingClientRect();
+      const menuH = unzoom(size.height, z);
+      const menuW = unzoom(size.width, z);
+      const vh = unzoom(win.innerHeight, z);
+      const vw = unzoom(win.innerWidth, z);
+      const gap = 4;
+      let top;
+      let left;
+      if (pointerEvent) {
+        top = unzoom(pointerEvent.clientY, z);
+        left = unzoom(pointerEvent.clientX, z);
+        if (top + menuH > vh - 8) top = Math.max(8, vh - menuH - 8);
+        if (left + menuW > vw - 8) left = Math.max(8, vw - menuW - 8);
+      } else {
+        const box = anchor.getBoundingClientRect();
+        top = unzoom(box.bottom, z) + gap;
+        // Flip above the button rather than off the bottom of the panel.
+        if (top + menuH > vh - 8) top = Math.max(8, unzoom(box.top, z) - menuH - gap);
+        left = unzoom(box.right, z) - menuW;
+        left = Math.max(8, Math.min(left, vw - menuW - 8));
+      }
+      menu.style.top = Math.round(top) + "px";
+      menu.style.left = Math.round(left) + "px";
+      menu.style.right = "auto";
     }
 
     function menuItem(label, listener) {
