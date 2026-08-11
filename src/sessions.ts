@@ -31,6 +31,23 @@ export interface SessionListEntry {
 }
 
 export interface SessionMetaOverride {
+  /**
+   * "This conversation was used just now", asserted by the host rather than
+   * read off disk.
+   *
+   * Ordering is by transcript mtime, and measured against the real CLI that
+   * file is written about **2.1 seconds** after a send (the turn itself ended
+   * at 4.5s). So between sending and that write, the row you just typed into
+   * sits wherever it was — and a brand-new conversation is not in the list at
+   * all. Waiting is the wrong answer to "I just used this".
+   *
+   * Set when a message is sent and when a session is created. It is a FLOOR,
+   * never a ceiling: the transcript wins the moment it is newer, which it will
+   * be within seconds — which is also why persisting it alongside the other
+   * overrides is harmless rather than a lie that outlives the run. By the time
+   * anything reads it again the real file has overtaken it.
+   */
+  activeAt?: number;
   customName?: string;
   /** The extension's own title, taken from the first user message when a session's
    *  first turn completes. Deliberately NOT stored as `customName`: a name the
@@ -832,9 +849,17 @@ function buildEntry(
   const id = (raw?.info?.id as string) ?? dirName;
   const sessCwd = (raw?.info?.cwd as string) ?? cwd;
   const rawSummary = typeof raw?.session_summary === "string" ? raw.session_summary : "";
-  const updatedAt = typeof activityAt === "number" && activityAt > 0
+  const fromDisk = typeof activityAt === "number" && activityAt > 0
     ? activityAt
     : parseTimestamp(raw?.updated_at, fallbackNow);
+  // The host's "used just now" is a floor under the file's own timestamp, so a
+  // send or a new conversation ranks immediately and the transcript takes over
+  // as soon as it is written. Max, not override: a stale in-memory value must
+  // never hold a row above a conversation that really is newer.
+  const liveActivity = overrides[(raw?.info?.id as string) ?? dirName]?.activeAt;
+  const updatedAt = typeof liveActivity === "number" && liveActivity > fromDisk
+    ? liveActivity
+    : fromDisk;
   const createdAt = parseTimestamp(raw?.created_at, updatedAt);
   const numMessages = typeof raw?.num_messages === "number" ? raw.num_messages : 0;
   const modelId = typeof raw?.current_model_id === "string" ? raw.current_model_id : undefined;

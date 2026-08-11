@@ -904,6 +904,33 @@ describe("readSessionEntries", () => {
     expect(out.map((e) => e.id)).toEqual(["a", "b"]);
   });
 
+  it("lets the host say a conversation was used just now", () => {
+    // Ordering reads the transcript, and the CLI writes it ~2.1s after a send —
+    // measured against the real binary. Without this the row you just typed
+    // into sits still for that whole wait, and a brand-new conversation is
+    // absent from the list altogether.
+    const fs = buildTwo();
+    const now = Date.parse("2026-03-01T00:00:00Z");
+    const out = readSessionEntries({
+      fs, grokHome, cwd, ids: ["a", "b"], overrides: { a: { activeAt: now } },
+    });
+    expect(out.find((e) => e.id === "a")!.updatedAt).toBe(now);
+    expect(out.find((e) => e.id === "b")!.updatedAt).toBe(Date.parse("2026-02-01T00:00:00Z"));
+  });
+
+  it("never lets a stale activity stamp outrank a newer transcript", () => {
+    // A floor, not an override. It is persisted with the rest of the session
+    // meta, so a value left by an earlier run has to lose to the file the
+    // moment the file is newer — otherwise a conversation nobody has touched
+    // keeps the top of the list.
+    const fs = buildTwo();
+    const out = readSessionEntries({
+      fs, grokHome, cwd, ids: ["b"],
+      overrides: { b: { activeAt: Date.parse("2026-01-15T00:00:00Z") } },
+    });
+    expect(out[0].updatedAt).toBe(Date.parse("2026-02-01T00:00:00Z"));
+  });
+
   it("applies customName overrides", () => {
     const fs = buildTwo();
     const overrides: SessionMetaOverrides = { a: { customName: "Renamed" } };

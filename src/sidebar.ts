@@ -1607,6 +1607,33 @@ Only continue if you trust this code.`,
     void this.state.update(SESSION_META_KEY, next);
   }
 
+  /**
+   * Mark a conversation as used NOW, and re-push the lists that order by it.
+   *
+   * Called when a message is sent and when a session is created — the two
+   * moments a person would expect their conversation to jump to the top. The
+   * lists order by transcript mtime, and the CLI writes that file about 2.1
+   * seconds after a send (measured), so without this the row sits still through
+   * the whole wait and a brand-new conversation is missing entirely.
+   *
+   * Every project and every session is treated the same; there is no special
+   * case for archived, which is a VS Code presentation concept and has no
+   * business in the activity path.
+   */
+  private noteSessionActivity(session: Session): void {
+    const sid = session.activeSessionId ?? session.client?.sessionId;
+    if (!sid) return;
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    void this.state.update(SESSION_META_KEY, {
+      ...overrides,
+      [sid]: { ...(overrides[sid] ?? {}), activeAt: Date.now() },
+    });
+    const cwd = this.sessionCwd(session);
+    this.postSessionsList();
+    if (cwd) this.sendLocalRepoSessionsPreview(cwd);
+    this.refreshRemoteRepoPreview(undefined, cwd);
+  }
+
   /** Persist an answered permission card (title + allowed/rejected + position) so
    *  a resumed session can replay it collapsed — the CLI doesn't replay
    *  request_permission on session/load. */
@@ -9326,6 +9353,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // and only whoever holds it may end this one.
     const turn = beginTurn(session);
     this.setStatus(session, "working");
+    // The send IS the activity — the rail should not wait ~2s for the CLI to
+    // write a transcript before admitting you are working in this conversation.
+    this.noteSessionActivity(session);
 
     try {
       // Arm the compact-notification watch BEFORE the prompt: the live
@@ -9350,6 +9380,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       this.emit(session, { type: "agentEnd", meta });
       this.setStatus(session, "done");
+      // Again at the end: by now the transcript really has moved, so this is
+      // the push that makes the row's position true rather than asserted.
+      this.noteSessionActivity(session);
       session.authRecoveryTried = false; // a clean turn re-arms token auto-recovery
       this.maybeGenerateTitle(session);
       this.postSessionName(session);
