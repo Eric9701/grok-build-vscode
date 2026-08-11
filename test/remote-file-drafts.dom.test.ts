@@ -169,7 +169,10 @@ function beginEdit(h: Harness, value: string): void {
 }
 
 function backToTree(h: Harness): void {
-  click(h.window, h.doc.querySelector(".gfp-back")!);
+  // The project title is the way back to the tree. The viewer's own back
+  // chevron was removed: with the tab strip naming the file and the title
+  // beside it, the breadcrumb row was a third copy of the same two facts.
+  click(h.window, h.doc.querySelector(".gfp-title")!);
 }
 
 async function choose(h: Harness, label: string): Promise<void> {
@@ -426,7 +429,7 @@ describe("remote save state", () => {
     });
     expect(editor(h).value).toBe("one two three");
     expect((h.doc.querySelector(".gfp-save") as HTMLButtonElement).disabled).toBe(false);
-    expect(h.doc.querySelector(".gfp-viewer-name")?.textContent).toContain("•");
+    expect(h.doc.querySelector(".gfp-tab-dirty")?.textContent).toBe("•");
   });
 
   it("settles clean when the successful result covers the current text", async () => {
@@ -446,7 +449,7 @@ describe("remote save state", () => {
     });
 
     expect(h.doc.querySelector(".gfp-save")).toBeNull();
-    expect(h.doc.querySelector(".gfp-viewer-name")?.textContent).not.toContain("•");
+    expect(h.doc.querySelector(".gfp-tab-dirty")?.textContent).toBe("");
   });
 
   it("refreshes the stamp for Overwrite without adopting another identity", async () => {

@@ -38,3 +38,6 @@ terminals/
 # builds fine, so nothing notices until it is committed (it was, in a4ef390).
 src/**/*.js
 src/**/*.js.map
+
+# Screenshot frames from `npm run e2e:screens` — regenerated per run, never committed.
+.screens/

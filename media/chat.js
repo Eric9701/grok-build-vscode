@@ -12437,7 +12437,8 @@
           // whatever the panel already occupies — NOT the whole row, which also
           // contains the projects rail and would let a drag squeeze the chat to
           // nothing.
-          widthPeer: document.getElementById("chat-column"),
+          widthPeer: document.getElementById("chat-stack")
+            || document.getElementById("chat-column"),
           // As an overlay the panel stops below the bar its toggle lives in,
           // the way the docked one does, rather than covering that bar and the
           // button that opened it. A function because which bar that is changes

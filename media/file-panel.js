@@ -779,26 +779,21 @@
       tree.hidden = true;
       viewer.hidden = false;
       viewer.textContent = "";
-      const head = viewerHead(relPath, false);
+      const head = viewerHead();
       viewer.append(head);
       appendStatus(viewer, reason, true);
     }
 
-    function viewerHead(relPath, dirty) {
+    /**
+     * The open file's action row. No back chevron and no filename: both were
+     * saying something the panel already says. The tab strip above names the
+     * file and marks it dirty, and the project title beside it is the way back
+     * to the tree — so the breadcrumb row was a third copy of the same two
+     * facts, costing a row of height on a phone.
+     */
+    function viewerHead() {
       const head = doc.createElement("div");
       head.className = "gfp-viewer-head desk-ft-toolbar files-browse-viewer-head";
-      const back = doc.createElement("button");
-      back.type = "button";
-      back.className = "gfp-icon-button gfp-back";
-      back.innerHTML = ICON.chevronRight;
-      back.title = "Back to files";
-      back.setAttribute("aria-label", "Back to files");
-      back.addEventListener("click", showTree);
-      const name = doc.createElement("div");
-      name.className = "gfp-viewer-name files-browse-viewer-name";
-      name.textContent = fileName(relPath) + (dirty ? " •" : "");
-      name.title = relPath;
-      head.append(back, name);
       return head;
     }
 
@@ -811,7 +806,7 @@
       tree.hidden = true;
       viewer.hidden = false;
       viewer.textContent = "";
-      const head = viewerHead(tab.relPath, tab.dirty);
+      const head = viewerHead();
       renderViewerActions(head, tab);
       viewer.appendChild(head);
       if (tab.notice) {
@@ -928,8 +923,6 @@
     }
 
     function patchDirtyUi(tab) {
-      const name = viewer.querySelector(".gfp-viewer-name");
-      if (name) name.textContent = fileName(tab.relPath) + (tab.dirty ? " •" : "");
       const save = viewer.querySelector(".gfp-save");
       if (save) save.disabled = tab.saving || !tab.dirty;
       const item = tabsEl.querySelector('[data-rel="' + cssEscape(tab.relPath) + '"] .gfp-tab-dirty');

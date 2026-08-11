@@ -424,6 +424,7 @@
     "desktop": "npm run compile && node scripts/run-desktop.cjs",
     "desktop-dev": "npm run compile && node scripts/run-desktop.cjs --relay-dev --open-devtools",
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
+    "e2e:screens": "npm run compile && node scripts/desk-screens-check.mjs",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",
     "check:vsix": "npm run compile && node scripts/check-vsix-requires.mjs",
     "prepackage": "node -e \"const fs=require('fs'); for (const f of fs.readdirSync('.')) if (f.endsWith('.vsix')) fs.unlinkSync(f); fs.rmSync('out',{recursive:true,force:true})\" && npm run check:vsix",
