@@ -436,6 +436,13 @@ describe("shared file-panel component", () => {
     await settle();
 
     expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement)?.readOnly).toBe(true);
+    // Reload and Overwrite resolve the same conflict in opposite directions.
+    // Running both leaves the panel showing one outcome over a file holding the
+    // other, with no warning on close.
+    expect(
+      [...h.document.querySelectorAll(".gfp-conflict-actions .gfp-action")]
+        .map((n) => (n as HTMLButtonElement).disabled),
+    ).toEqual([true, true]);
     pending.resolve({ ok: true, kind: "text", relPath: "src/a.ts", text: "host version", stamp: { mtimeMs: 2, size: 12 }, absPath: "/work/app/src/a.ts" });
     await settle();
     expect(h.document.querySelector(".gfp-viewer-body")?.textContent).toContain("host version");
@@ -473,6 +480,39 @@ describe("shared file-panel component", () => {
     await settle();
 
     expect(writes).toEqual(["mine", "opened"]);
+  });
+
+  it("finishes an Overwrite the disk has already satisfied", async () => {
+    // If the refresh proves the file already holds exactly this text there is
+    // nothing to write — but saveTab refuses a clean tab and returns silently,
+    // which left "Refreshing version…" on screen forever.
+    let reads = 0;
+    const writes: string[] = [];
+    const h = harness({
+      read: async (_scopeId, relPath) => {
+        reads++;
+        return {
+          ok: true, kind: "text", relPath,
+          text: reads === 1 ? "opened" : "mine",
+          stamp: { mtimeMs: reads, size: 4 }, absPath: "/work/app/src/a.ts",
+        };
+      },
+      write: async (_scopeId, request) => {
+        writes.push(String(request.text));
+        return { ok: false, reason: "changed" };
+      },
+    });
+    await settle();
+    await openAndEdit(h, "src/a.ts", "mine");
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+    click(h.window, [...h.document.querySelectorAll(".gfp-conflict-actions .gfp-action")].find((n) => n.textContent === "Overwrite") || null);
+    await settle();
+
+    expect(writes).toEqual(["mine"]);
+    const notice = h.document.querySelector(".gfp-notice")?.textContent || "";
+    expect(notice).toContain("Already matches");
+    expect(notice).not.toContain("Refreshing");
   });
 
   it("does not rebuild the visible editor when a background save lands", async () => {

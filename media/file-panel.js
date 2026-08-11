@@ -1018,10 +1018,17 @@
     function renderConflictActions(tab) {
       const actions = doc.createElement("div");
       actions.className = "gfp-conflict-actions files-browse-conflict-actions";
-      actions.append(
-        actionButton("Reload", "", () => void reloadTab(tab)),
-        actionButton("Overwrite", "danger", () => void overwriteTab(tab)),
-      );
+      const reload = actionButton("Reload", "", () => void reloadTab(tab));
+      const overwrite = actionButton("Overwrite", "danger", () => void overwriteTab(tab));
+      // Reload and Overwrite resolve the SAME conflict in opposite directions,
+      // so running both is not a faster way to decide — it is a way to end up
+      // with a panel that misreports the file. Click Reload, then Overwrite
+      // while the first read is still out, and the write lands while the reload
+      // replaces the tab: the panel then shows the host's version, clean, over a
+      // file that actually holds the draft, and closing it warns about nothing.
+      // Whichever is chosen first owns the conflict until it finishes.
+      reload.disabled = overwrite.disabled = !!(tab.reloading || tab.saving);
+      actions.append(reload, overwrite);
       viewer.appendChild(actions);
     }
 
@@ -1085,6 +1092,17 @@
       // the newer bytes — and closing it would not have warned.
       if (typeof fresh.text === "string") tab.baselineText = fresh.text;
       tab.dirty = tab.draftText !== tab.baselineText;
+      if (!tab.dirty) {
+        // The refresh proved the file already holds exactly this text, so there
+        // is nothing to overwrite. `saveTab` refuses a clean tab and returns
+        // silently, which left "Refreshing version…" on screen forever — an
+        // operation that never finished, for the one case where it was already
+        // done.
+        tab.notice = "Already matches the file on disk.";
+        tab.editing = false;
+        repaintFor(tab);
+        return true;
+      }
       return saveTab(tab);
     }
 
