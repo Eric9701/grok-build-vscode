@@ -663,6 +663,17 @@ export interface Host {
     destinationId?: string | null,
     panelPosition?: PanelPosition | null,
   ): Thenable<void>;
+  /**
+   * Bring the chat into view. Called when someone opens a conversation from the
+   * PROJECTS rail, which lives in its own activity-bar container — so without
+   * this the chat can stay behind another view and the click reads as having
+   * done nothing.
+   *
+   * A no-op wherever the chat is always on screen: the desktop app has one
+   * window and no view containers. Must never throw — failing to focus a view
+   * cannot be allowed to fail opening the conversation.
+   */
+  revealChatView(): Thenable<void>;
 
   // ── Watchers / providers ───────────────────────────────────────────────
   onDidChangeConfiguration(

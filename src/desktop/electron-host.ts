@@ -1122,6 +1122,12 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
       await notYet("Move view");
     },
 
+    async revealChatView() {
+      // One window, chat always on screen — nothing to reveal. Deliberately NOT
+      // `notYet`: the rail calls this on every open, and a "not supported"
+      // notice on an ordinary click would be pure noise.
+    },
+
     onDidChangeConfiguration(listener) {
       return configListeners.onDidChange(listener);
     },

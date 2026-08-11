@@ -448,7 +448,10 @@ describe("remote save state", () => {
       absPath: String(write.expectedAbsPath),
     });
 
-    expect(h.doc.querySelector(".gfp-save")).toBeNull();
+    // A successful save now keeps you in edit mode, so Save is still on screen —
+    // disabled, because there is nothing left to write. It used to disappear,
+    // which is the same thing as being thrown back to the read view mid-edit.
+    expect((h.doc.querySelector(".gfp-save") as HTMLButtonElement).disabled).toBe(true);
     expect(h.doc.querySelector(".gfp-tab-dirty")?.textContent).toBe("");
   });
 

@@ -148,6 +148,21 @@ describe("shared file-panel model", () => {
     expect(tab.dirty).toBe(true);
     expect(tab.editing).toBe(true);
   });
+
+  it("stays in edit mode after a save that covered everything", () => {
+    // Saving is not "I am done with this file". Dropping to the read view on
+    // every successful save threw you out mid-thought and made you click Edit
+    // again — for the ordinary habit of saving as you work.
+    const tab = makeTab("a", {
+      relPath: "notes.md", kind: "text", text: "one",
+      stamp: { mtimeMs: 1, size: 3 }, absPath: "/work/app/notes.md",
+    });
+    applyDraft(tab, "one two");
+    applySaveSuccess(tab, "one two", { stamp: { mtimeMs: 2, size: 7 } });
+
+    expect(tab.dirty).toBe(false);
+    expect(tab.editing).toBe(true);
+  });
 });
 
 describe("shared file-panel component", () => {
@@ -290,7 +305,10 @@ describe("shared file-panel component", () => {
     expect(h.writes).toHaveLength(2);
     expect(h.writes[1].request.text).toBe("draft typed during refresh");
     expect(h.panel._scopes.get("scope-a")?.tabs.get("notes.md")?.baselineText).toBe("draft typed during refresh");
-    expect(h.document.querySelector(".gfp-viewer-body pre")?.textContent).toContain("draft typed during refresh");
+    // A successful save now leaves you in edit mode, so the surviving text is in
+    // the textarea rather than the read-only <pre> this used to look at.
+    expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement).value)
+      .toBe("draft typed during refresh");
   });
 
   it("renders the cached tree when returning to a previous scope", async () => {
@@ -480,6 +498,22 @@ describe("shared file-panel component", () => {
     await settle();
 
     expect(writes).toEqual(["mine", "opened"]);
+  });
+
+  it("keeps the caret where it was when a save repaints the editor", async () => {
+    // renderViewer() rebuilds the textarea, so saving mid-sentence sent the
+    // cursor back to position 0 and lost the selection — on every save.
+    const h = harness();
+    await settle();
+    await openAndEdit(h, "src/a.ts", "one two three");
+    const editor = h.document.querySelector(".gfp-editor") as HTMLTextAreaElement;
+    editor.setSelectionRange(4, 7);
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+
+    const after = h.document.querySelector(".gfp-editor") as HTMLTextAreaElement;
+    expect(after).toBeTruthy();
+    expect([after.selectionStart, after.selectionEnd]).toEqual([4, 7]);
   });
 
   it("finishes an Overwrite the disk has already satisfied", async () => {

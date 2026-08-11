@@ -418,7 +418,7 @@ body.rail-resizing * {
   min-height: 30px;
   margin-inline: -8px;
   background: var(--vscode-sideBar-background);
-  padding: 10px 16px 6px;
+  padding: 10px 16px 2px;
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
   font-weight: 700;
@@ -448,7 +448,7 @@ body.rail-resizing * {
   align-items: center;
   width: 100%;
   gap: 6px;
-  padding: 10px 16px 6px;
+  padding: 10px 16px 2px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   border: 0;
@@ -646,7 +646,11 @@ body.rail-resizing * {
 .rail-action-btn svg { width: 13px; height: 13px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; }
 /* Session indent: no left pad on the list; rows and Show more share --rail-indent. */
-.rail-sessions { display: flex; flex-direction: column; min-width: 0; gap: 1px; padding: 1px 0 5px 0; }
+/* 2px between conversations, the same value the VS Code rail uses. It was 1px
+   here against 4px in the cross-project lists, so the same row breathed
+   differently depending on which group it sat in. The 4px stays on the
+   project lists, where the gap separates whole projects. */
+.rail-sessions { display: flex; flex-direction: column; min-width: 0; gap: 2px; padding: 2px 0 5px 0; }
 .rail-session {
   position: relative;
   display: flex;

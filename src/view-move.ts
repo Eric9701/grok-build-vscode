@@ -24,6 +24,11 @@ export const GROK_VIEW_ID = "grok.chat";
  *  the chat view so opening it never creates a second chat client. */
 export const GROK_PROJECTS_VIEW_ID = "grok.projects";
 
+/** The chat view. Mirrors `GrokSidebar.viewId`; VS Code derives a
+ *  `<id>.focus` command from every contributed view, which is how opening a
+ *  conversation from the rail brings the chat forward. */
+export const GROK_CHAT_VIEW_ID = "grok.chat";
+
 /** Contributed containers, one per dock location (package.json prefixes each id
  *  with `workbench.view.extension.`). `grokSidebar` homes the chat view;
  *  `grokPrimary` and `grokPanel` are empty by default and exist only as

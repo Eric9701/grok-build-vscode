@@ -827,6 +827,18 @@ export class GrokSidebar {
       return;
     }
     await this.onMessage(msg, "local");
+    // Opening a conversation from the rail is someone saying which conversation
+    // they want to be in, so put them in it. The rail lives in its own activity
+    // bar container, so without this the chat can stay behind another view and
+    // the click looks like it did nothing.
+    //
+    // Only these two, and only from the RAIL: renaming, pinning or deleting a
+    // row is housekeeping done while looking at the list, and yanking the view
+    // out from under that would be the opposite of helpful. This handler is
+    // rail-only, so the chat asking for its own session never lands here.
+    if (msg.type === "resumeSession" || msg.type === "newSession") {
+      await this.host.revealChatView();
+    }
   }
 
   /** Catalog snapshot for a freshly-resolved rail (or its ready handshake). */

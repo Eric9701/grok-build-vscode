@@ -146,7 +146,11 @@
     tab.saving = false;
     tab.conflict = false;
     tab.dirty = tab.draftText !== sentText;
-    tab.editing = tab.dirty;
+    // Saving does not mean "I am finished with this file". Dropping out of edit
+    // mode on every successful save meant a save mid-thought threw you back to
+    // the read view and you had to click Edit again to carry on — for the very
+    // common case of saving as you work. You leave editing by asking to.
+    tab.editing = true;
     tab.notice = tab.dirty ? "Saved — you have typed more since." : "Saved.";
     return tab;
   }
@@ -207,6 +211,9 @@
     let destroyed = false;
     let open = false;
     let treeMode = true;
+    /** Which tab the live textarea belongs to, so a repaint only restores a
+     *  caret into the same file it came from. */
+    let editingTabKey = null;
     let renderedTreeState = null;
     let unsubscribeScope = null;
     let menu = null;
@@ -800,6 +807,23 @@
     function renderViewer() {
       const tab = currentTab();
       if (!tab) return showTree();
+      // Where the caret was, so a repaint does not throw it away.
+      //
+      // This function rebuilds the viewer from scratch, textarea included, and a
+      // save repaints — so saving mid-sentence moved the cursor to the start and
+      // lost the selection and the scroll position. Captured for THIS tab only;
+      // a repaint that swaps files should not move a caret into someone else's
+      // text.
+      const live = viewer.querySelector(".gfp-editor");
+      const carry = live && editingTabKey === tab.key
+        ? {
+            start: live.selectionStart,
+            end: live.selectionEnd,
+            scrollTop: live.scrollTop,
+            focused: doc.activeElement === live,
+          }
+        : null;
+      editingTabKey = tab.editing ? tab.key : null;
       treeMode = false;
       rootEl.classList.add("gfp-viewing");
       if (mount.viewingBodyClass) doc.body.classList.add(mount.viewingBodyClass);
@@ -848,6 +872,17 @@
         body.appendChild(pre);
       }
       viewer.appendChild(body);
+      // Put the caret back where the repaint found it.
+      if (carry) {
+        const next = viewer.querySelector(".gfp-editor");
+        if (next) {
+          try {
+            next.setSelectionRange(carry.start, carry.end);
+            next.scrollTop = carry.scrollTop;
+          } catch (_) { /* a non-text control has no selection range */ }
+          if (carry.focused) next.focus({ preventScroll: true });
+        }
+      }
     }
 
     function renderViewerActions(head, tab) {

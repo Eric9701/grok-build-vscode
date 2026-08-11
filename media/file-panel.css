@@ -151,7 +151,6 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 .gfp-title {
   flex: 0 1 auto;
   min-width: 68px;
-  max-width: 42%;
   overflow: hidden;
   padding: 0 10px;
   border: 0;
@@ -164,6 +163,11 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   white-space: nowrap;
   cursor: pointer;
 }
+/* Only share the strip when there is something to share it WITH. The cap was
+   unconditional, so a project name was truncated to 42% of the panel even with
+   no tabs open and the whole width free — `grok-build-vsc…` beside an empty
+   strip. */
+.gfp-header:has(.gfp-tabs > *) .gfp-title { max-width: 42%; }
 
 .gfp-tabs {
   display: flex;
@@ -304,16 +308,29 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The fade that masks row text under the action buttons. It has to end in the
+   colour the row is ACTUALLY painted, and the row it appears on is a hovered
+   one — so it fades to the hover background, not the side bar's. Fading to
+   `--vscode-sideBar-background` left a visibly wrong patch at the right end of
+   every hovered row. The rail solved this the same way, via `--rail-hover-bg`. */
 .gfp-row-actions {
   position: absolute;
   inset: 1px 2px 1px auto;
   display: none;
   align-items: center;
   padding-left: 14px;
-  background: linear-gradient(90deg, transparent, var(--vscode-sideBar-background, #1e1e1e) 12px);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--rail-hover-bg, var(--vscode-list-hoverBackground, var(--vscode-sideBar-background, #1e1e1e))) 12px
+  );
 }
 .gfp-row:hover .gfp-row-actions,
 .gfp-row:focus-within .gfp-row-actions { display: flex; }
+/* No actions, no fade. A host that supplies none — the browser client, where
+   Open-in-app and Reveal are host-local and cannot travel — still hovered up a
+   gradient with nothing in it, which reads as a shadow smeared over the row. */
+.gfp-row-actions:empty { display: none !important; }
 
 .gfp-status { padding: 16px 12px; color: var(--vscode-descriptionForeground, #999); text-align: center; }
 .gfp-error { color: var(--vscode-errorForeground, #f44); }
