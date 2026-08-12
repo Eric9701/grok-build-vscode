@@ -1493,6 +1493,131 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     hooks.remoteClientLeft(clientId);
   });
 
+  test("an image tag is numbered by its position in this message, not by the session", async () => {
+    // grok resolves `[Image #N]` against the images attached to the message it
+    // is reading, numbered from 1 — an index from an earlier message matches
+    // nothing (research/image-index-probe.cjs). The old session-scoped counter
+    // therefore sent a conversation's second image out as `[Image #2]` on a
+    // message carrying one image, and every image_edit on it was refused. The
+    // chip below is seeded with a stale high index, which is exactly what that
+    // counter produced. The pure renumbering has its own unit tests; what this
+    // covers is the wiring — that the send really does renumber before building
+    // the prompt, and that the bubble the user reads agrees with the tag.
+    const suffix = Date.now();
+    const clientId = `image-index-${suffix}`;
+    const id = `image-index-session-${suffix}`;
+    const text = "make it green";
+    const imgPath = path.join(repoB, `staged-${suffix}.png`);
+    fs.writeFileSync(imgPath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    const model = hooks.seedRemoteQueuedDispatch(clientId, id, repoB, text, [{
+      id: `stale-index-${suffix}`,
+      path: imgPath,
+      relPath: "Image #7",
+      hidden: false,
+      imageIndex: 7,
+      mimeType: "image/png",
+    }]);
+    const dispatch = posts.find((post) =>
+      post.clientIds?.includes(clientId) &&
+      post.msg?.type === "submitQueuedSend"
+    )?.msg;
+    assert.ok(dispatch?.id, JSON.stringify(posts));
+
+    hooks.fromRemote({ type: "send", text, queuedSendId: dispatch.id }, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    assert.strictEqual(model.promptCount(), 1, "the send must reach the CLI");
+    const blocks = model.lastPromptBlocks();
+    assert.ok(blocks, "the prompt blocks must have been captured");
+    const textBlock: any = blocks!.find((block: any) => block.type === "text");
+    const imageBlocks = blocks!.filter((block: any) => block.type === "image");
+    assert.strictEqual(imageBlocks.length, 1, "one visible image chip, one image block");
+    assert.ok(
+      /\[Image #1\]/.test(textBlock.text),
+      `the tag must name this message's first image, got: ${textBlock.text}`,
+    );
+    assert.ok(
+      !/\[Image #7\]/.test(textBlock.text),
+      `the stale session-scoped index must not survive, got: ${textBlock.text}`,
+    );
+
+    // …and the bubble the user reads must carry the same number as the tag, or
+    // the disagreement is invisible until someone reads a transcript.
+    const bubble = [...posts].reverse().find((post) => post.msg?.type === "userMessage")?.msg;
+    assert.ok(bubble, JSON.stringify(posts.map((post) => post.msg?.type)));
+    assert.deepStrictEqual(bubble.chips.map((chip: any) => chip.imageIndex), [1]);
+    assert.deepStrictEqual(bubble.chips.map((chip: any) => chip.relPath), ["Image #1"]);
+
+    hooks.remoteClientLeft(clientId);
+  });
+
+  test("sending bumps the conversation up its project's rail immediately", async () => {
+    // The send IS the activity: the rail must not wait for the CLI to write a
+    // transcript (~2s) before admitting you are working in this conversation.
+    // `noteSessionActivity` stamps `activeAt` and re-posts — but it called
+    // `refreshRemoteRepoPreview(undefined, cwd)`, whose first line is
+    // `if (!clientId || !cwd) return`, so the remote rail was never told at all.
+    const suffix = Date.now();
+    const clientId = `rail-bump-${suffix}`;
+    const id = `rail-bump-session-${suffix}`;
+    const text = "wake the rail up";
+    // Its OWN repo. Sharing repoB put ~30 sessions from other tests in the
+    // list, most of them written without an `updated_at` and so defaulting to
+    // "now" — which makes "ranks first" unsatisfiable no matter what the code
+    // does. An isolated catalog is the only way this assertion means anything.
+    const repoRail = path.join(hooks.workspaceRoot(), `.int-rail-${suffix}`);
+    fs.mkdirSync(repoRail, { recursive: true });
+    // An OLD conversation with NEWER ones above it — the realistic shape, and
+    // the only one where the bump is observable at all.
+    writeStoredSession(id, repoRail, "2020-01-01T00:00:00.000Z");
+    writeStoredSession(`rail-newer-a-${suffix}`, repoRail, "2021-01-01T00:00:00.000Z");
+    writeStoredSession(`rail-newer-b-${suffix}`, repoRail, "2022-01-01T00:00:00.000Z");
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    const model = hooks.seedRemoteQueuedDispatch(clientId, id, repoRail, text);
+    const dispatch = posts.find((post) =>
+      post.clientIds?.includes(clientId) &&
+      post.msg?.type === "submitQueuedSend"
+    )?.msg;
+    assert.ok(dispatch?.id, JSON.stringify(posts.map((p) => p.msg?.type)));
+
+    posts.length = 0;
+    hooks.fromRemote({ type: "send", text, queuedSendId: dispatch.id }, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.strictEqual(model.promptCount(), 1, "the send must reach the CLI");
+
+    // The list the rail renders from has to be re-posted by the send itself.
+    // Only lists for THIS repo. Other tests' sessions keep arriving as
+    // `repoSessions` previews for their own catalogs, and the last post overall
+    // is routinely one of those.
+    const sameRepo = (value: unknown) =>
+      typeof value === "string" &&
+      path.resolve(value).toLowerCase() === path.resolve(repoRail).toLowerCase();
+    const listed = posts.filter((post) =>
+      post.msg?.type === "sessions" ||
+      (post.msg?.type === "repoSessions" && sameRepo(post.msg.cwd)));
+    assert.ok(
+      listed.length > 0,
+      `sending must re-post the session list — got ${JSON.stringify(posts.map((p) => p.msg?.type))}`,
+    );
+    // …and the conversation just sent to must be at the top of it.
+    const withEntries = listed.filter((post) => Array.isArray(post.msg.entries) && post.msg.entries.length);
+    assert.ok(
+      withEntries.length > 0,
+      `the re-posted list must carry entries — got ${JSON.stringify(listed.map((p) => p.msg.type))}`,
+    );
+    // The LAST list posted is the state the rail ends in. Earlier ones can
+    // legitimately predate the activity stamp.
+    const final = withEntries[withEntries.length - 1].msg;
+    assert.strictEqual(
+      final.entries[0].id, id,
+      `${final.type}: the conversation just sent to must rank first — got ${JSON.stringify(final.entries.slice(0, 5).map((e: any) => e.id))}`,
+    );
+    hooks.remoteClientLeft(clientId);
+  });
+
   test("switching repos disposes a primer-only remote session before dropping its mapping", async () => {
     const id = `primer-only-${Date.now()}`;
     writeStoredSession(id);

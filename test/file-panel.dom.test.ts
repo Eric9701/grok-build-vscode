@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
 import { Window } from "happy-dom";
 // @ts-expect-error Plain-JS webview module intentionally has no TS build step.
 import {
   applyDraft,
   applySaveSuccess,
   createFilePanel,
+  resolveMarkdownLink,
   makeTab,
 } from "../media/file-panel.js";
 
@@ -645,5 +647,421 @@ describe("shared file-panel component", () => {
     });
 
     expect(panel.setWidth(520, false)).toBe(520);
+  });
+});
+
+// Syntax highlighting. The panel reads the highlighter off the global the way a
+// browser sets it via <script>; these tests install it explicitly and restore
+// it afterwards, so the rest of the file keeps exercising the no-highlighter
+// path — which is a real deployment (VS Code ships no panel, and a stale relay
+// page can predate the script).
+describe("file panel syntax highlighting", () => {
+  const require = createRequire(import.meta.url);
+  const api = require("../media/syntax-highlight.js");
+
+  beforeEach(() => { (globalThis as any).GrokSyntaxHighlight = api; });
+  afterEach(() => { delete (globalThis as any).GrokSyntaxHighlight; });
+
+  const SOURCE = 'const x = "hi"; // note\n';
+  const sourceHarness = () => harness({
+    read: async (_scopeId: string, relPath: string) => ({
+      ok: true,
+      kind: "text",
+      relPath,
+      absPath: `/work/app/${relPath}`,
+      text: SOURCE,
+      stamp: { mtimeMs: 1, size: SOURCE.length },
+    }),
+  });
+
+  it("paints tokens in read mode", async () => {
+    const h = sourceHarness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    const pre = h.document.querySelector(".gfp-viewer-body pre");
+    expect(pre).toBeTruthy();
+    expect(pre!.querySelector(".hl-kw")?.textContent).toBe("const");
+    expect(pre!.querySelector(".hl-str")?.textContent).toBe('"hi"');
+    expect(pre!.querySelector(".hl-com")?.textContent).toBe("// note");
+  });
+
+  it("shows the same text whether or not it is highlighted", async () => {
+    // Colour is the only difference the user should ever see.
+    const h = sourceHarness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    expect(h.document.querySelector(".gfp-viewer-body pre")!.textContent).toBe(SOURCE);
+  });
+
+  it("builds the overlay for a language it knows", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-edit"));
+
+    const wrap = h.document.querySelector(".gfp-code-edit");
+    expect(wrap).toBeTruthy();
+    const editor = wrap!.querySelector(".gfp-editor") as HTMLTextAreaElement;
+    const under = wrap!.querySelector(".gfp-code-underlay");
+    expect(editor).toBeTruthy();
+    expect(under).toBeTruthy();
+    // The textarea still holds the real text — the underlay is decoration.
+    expect(editor.value).toBe("a");
+    expect(under!.getAttribute("aria-hidden")).toBe("true");
+    // …and the underlay is BEHIND the textarea in document order, so the
+    // textarea takes the clicks.
+    expect(wrap!.firstElementChild).toBe(under);
+  });
+
+  it("repaints the underlay as you type", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-edit"));
+    type(h.window, h.document, 'const x = "hi";');
+    await settle();
+
+    const under = h.document.querySelector(".gfp-code-underlay")!;
+    expect(under.querySelector(".hl-kw")?.textContent).toBe("const");
+    expect(under.textContent).toContain('const x = "hi";');
+  });
+
+  it("keeps a trailing newline visible on the underlay", async () => {
+    // A textarea draws the empty last line; a <pre> does not, so without a
+    // sentinel the two layers drift by one line on almost every real file.
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-edit"));
+    type(h.window, h.document, "a\n");
+    await settle();
+
+    const under = h.document.querySelector(".gfp-code-underlay")!;
+    expect(under.textContent!.endsWith("\n")).toBe(false);
+    expect(under.textContent).toBe("a\n ");
+  });
+
+  it("never lets file contents become markup", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-edit"));
+    type(h.window, h.document, '<img src=x onerror="boom()">');
+    await settle();
+
+    const under = h.document.querySelector(".gfp-code-underlay")!;
+    expect(under.querySelector("img")).toBeNull();
+    expect(under.textContent).toContain('<img src=x onerror="boom()">');
+  });
+
+  it("degrades to a bare textarea when the highlighter is absent", async () => {
+    // The kill switch. Deleting the global must leave exactly the editor this
+    // replaced — no wrapper, no transparent text, nothing to misalign.
+    delete (globalThis as any).GrokSyntaxHighlight;
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-edit"));
+
+    expect(h.document.querySelector(".gfp-code-edit")).toBeNull();
+    expect(h.document.querySelector(".gfp-code-underlay")).toBeNull();
+    const editor = h.document.querySelector(".gfp-editor") as HTMLTextAreaElement;
+    expect(editor).toBeTruthy();
+    expect(editor.classList.contains("gfp-editor-overlaid")).toBe(false);
+  });
+
+  it("degrades for a file type it has no ruleset for", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("notes.md");
+    // Markdown opens in preview; switch to source editing.
+    click(h.window, h.document.querySelectorAll(".gfp-mode")[1]);
+
+    expect(h.document.querySelector(".gfp-code-edit")).toBeNull();
+    expect(h.document.querySelector(".gfp-editor")).toBeTruthy();
+  });
+
+  it("still sends what the textarea holds, highlighted or not", async () => {
+    // The save payload comes off the textarea; the underlay must not touch it.
+    const h = harness();
+    await settle();
+    await openAndEdit(h, "src/a.ts", "const saved = 1;\n");
+    click(h.window, h.document.querySelector(".gfp-save"));
+    await settle();
+
+    const write = h.writes.at(-1);
+    expect(write?.request.text).toBe("const saved = 1;\n");
+  });
+});
+
+// A relative link in a rendered README points at a file in this workspace, not
+// at a URL. Left as a plain <a href> the browser resolves it against the PAGE —
+// on a remote client that is the relay, so `_shared/auth.ts` navigated to
+// https://<relay>/_shared/auth.ts and the user lost the app.
+describe("markdown links open workspace files", () => {
+  it("resolves a link against the file it was written in", () => {
+    expect(resolveMarkdownLink("docs/README.md", "_shared/auth.ts")).toBe("docs/_shared/auth.ts");
+    expect(resolveMarkdownLink("README.md", "_shared/auth.ts")).toBe("_shared/auth.ts");
+    expect(resolveMarkdownLink("docs/README.md", "./auth.ts")).toBe("docs/auth.ts");
+    expect(resolveMarkdownLink("docs/a/b.md", "../../src/x.ts")).toBe("src/x.ts");
+  });
+
+  it("treats a leading slash as the workspace root, not the filesystem root", () => {
+    expect(resolveMarkdownLink("docs/deep/x.md", "/src/root.ts")).toBe("src/root.ts");
+  });
+
+  it("drops a query or fragment, which a repo link often carries", () => {
+    expect(resolveMarkdownLink("docs/README.md", "auth.ts#usage")).toBe("docs/auth.ts");
+    expect(resolveMarkdownLink("docs/README.md", "auth.ts?plain=1")).toBe("docs/auth.ts");
+  });
+
+  it("decodes percent-escapes so a spaced filename resolves", () => {
+    expect(resolveMarkdownLink("docs/README.md", "my%20file.ts")).toBe("docs/my file.ts");
+  });
+
+  it("leaves genuinely external links to the browser", () => {
+    for (const href of [
+      "https://example.com/x",
+      "http://example.com/x",
+      "mailto:someone@example.com",
+      "//cdn.example.com/x",
+      "#heading",
+      "",
+      "   ",
+    ]) {
+      expect(resolveMarkdownLink("docs/README.md", href), href).toBeNull();
+    }
+    expect(resolveMarkdownLink("docs/README.md", undefined as any)).toBeNull();
+  });
+
+  it("refuses to climb above the workspace root", () => {
+    // The host re-checks containment regardless; a link should not be the thing
+    // that asks for a path outside the workspace.
+    expect(resolveMarkdownLink("README.md", "../escape.ts")).toBeNull();
+    expect(resolveMarkdownLink("docs/a.md", "../../../etc/passwd")).toBeNull();
+  });
+
+  it("opens the linked file instead of navigating, when clicked", async () => {
+    const md = '<a href="_shared/auth.ts">auth</a>';
+    const h = harness({
+      read: async (_scopeId: string, relPath: string) => ({
+        ok: true,
+        kind: relPath.endsWith(".md") ? "markdown" : "text",
+        relPath,
+        absPath: `/work/app/${relPath}`,
+        text: md,
+        stamp: { mtimeMs: 1, size: md.length },
+      }),
+    });
+    await settle();
+    await h.panel.openPath("README.md");
+    const link = h.document.querySelector(".gfp-markdown a[href]") as HTMLAnchorElement;
+    expect(link).toBeTruthy();
+
+    const event = new h.window.MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    await settle();
+
+    // The browser must not be allowed to follow it…
+    expect(event.defaultPrevented).toBe(true);
+    // …and the panel must have asked the host for that file.
+    expect(h.reads.map((r) => r.relPath)).toContain("_shared/auth.ts");
+  });
+
+  it("does not intercept an external link", async () => {
+    const md = '<a href="https://example.com/docs">docs</a>';
+    const h = harness({
+      read: async (_scopeId: string, relPath: string) => ({
+        ok: true, kind: "markdown", relPath, absPath: `/work/app/${relPath}`,
+        text: md, stamp: { mtimeMs: 1, size: md.length },
+      }),
+    });
+    await settle();
+    await h.panel.openPath("README.md");
+    const link = h.document.querySelector(".gfp-markdown a[href]") as HTMLAnchorElement;
+    const event = new h.window.MouseEvent("click", { bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    await settle();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(h.reads.map((r) => r.relPath)).not.toContain("https://example.com/docs");
+  });
+});
+
+// A file that cannot be opened used to paint its message OVER THE TREE: no tab,
+// so nothing named the file that failed, and the tree's filter box stayed on
+// screen above a message about a file you could no longer see.
+describe("a file that cannot be opened gets a tab", () => {
+  const failing = () => harness({
+    read: async (_scopeId: string, relPath: string) =>
+      (relPath === "app.bin"
+        ? { ok: false, reason: "file type not previewable" }
+        : { ok: true, kind: "text", relPath, absPath: `/work/app/${relPath}`, text: "x", stamp: { mtimeMs: 1, size: 1 } }),
+  });
+
+  it("names the file in a tab of its own", async () => {
+    const h = failing();
+    await settle();
+    await h.panel.openPath("app.bin");
+    expect([...h.document.querySelectorAll(".gfp-tab-name")].map((n) => n.textContent))
+      .toContain("app.bin");
+  });
+
+  it("puts the reason inside the tab, not over the tree", async () => {
+    const h = failing();
+    await settle();
+    await h.panel.openPath("app.bin");
+    const body = h.document.querySelector(".gfp-viewer-body");
+    expect(body?.textContent).toContain("file type not previewable");
+    // The tree is not what you are looking at any more.
+    expect(h.document.querySelector(".gfp-tree")?.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("hides the tree's filter box, which searches a tree you are not in", async () => {
+    const h = failing();
+    await settle();
+    await h.panel.openPath("app.bin");
+    expect(h.panel.element.classList.contains("gfp-viewing")).toBe(true);
+  });
+
+  it("offers no Edit for something it could not read", async () => {
+    const h = failing();
+    await settle();
+    await h.panel.openPath("app.bin");
+    expect(h.document.querySelector(".gfp-edit")).toBeNull();
+  });
+
+  it("leaves the failed tab behind when you open something that works", async () => {
+    // It behaves like any other tab: still there, still named, still closable.
+    const h = failing();
+    await settle();
+    await h.panel.openPath("app.bin");
+    await h.panel.openPath("notes.md");
+    await settle();
+    expect([...h.document.querySelectorAll(".gfp-tab-name")].map((n) => n.textContent))
+      .toEqual(["app.bin", "notes.md"]);
+  });
+});
+
+// The viewer's "More actions" button did nothing at all on the desktop, and did
+// it silently: the document-level dismiss handler ran on the BUBBLE phase, so
+// the same click that opened the menu reached it and closed the menu again. The
+// tree's own more-button had been papered over with stopPropagation, which
+// fixes one button and leaves the trap set for the next.
+describe("the overflow menu opens from every button that offers it", () => {
+  const withOsAccess = () => harness({
+    read: async (_scopeId: string, relPath: string) => ({
+      ok: true, kind: "text", relPath, absPath: `/work/app/${relPath}`,
+      text: "x", stamp: { mtimeMs: 1, size: 1 },
+    }),
+  });
+
+  it("opens from the viewer's More actions, and survives its own click", async () => {
+    const h = withOsAccess();
+    (h.access as any).openExternal = async () => ({ ok: true });
+    (h.access as any).reveal = async () => ({ ok: true });
+    await settle();
+    await h.panel.openPath("src/a.ts");
+
+    const more = h.document.querySelector(".gfp-viewer .gfp-more");
+    expect(more, "the viewer must offer More actions when the host can open/reveal").toBeTruthy();
+    click(h.window, more);
+    await settle();
+
+    const menu = h.document.querySelector(".gfp-menu");
+    expect(menu, "the menu must still be open after the click that opened it").toBeTruthy();
+    expect(menu!.textContent).toContain("Open in default app");
+  });
+
+  it("still closes on a click somewhere else", async () => {
+    const h = withOsAccess();
+    (h.access as any).openExternal = async () => ({ ok: true });
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    click(h.window, h.document.querySelector(".gfp-viewer .gfp-more"));
+    await settle();
+    expect(h.document.querySelector(".gfp-menu")).toBeTruthy();
+
+    click(h.window, h.document.body);
+    await settle();
+    expect(h.document.querySelector(".gfp-menu")).toBeNull();
+  });
+});
+
+// A non-previewable file used to be handed straight to the OS on the desktop,
+// so the same click meant different things on different clients: a tab with a
+// message in the browser, a silently launched external app on the desktop.
+describe("a non-previewable file behaves the same on every client", () => {
+  const unopenable = () => harness({
+    read: async () => ({ ok: false, reason: "file type not previewable", openExternal: true }),
+  });
+
+  it("opens a tab instead of launching an app behind your back", async () => {
+    const h = unopenable();
+    let launched = 0;
+    (h.access as any).openExternal = async () => { launched += 1; return { ok: true }; };
+    await settle();
+    await h.panel.openPath("app.bin");
+
+    expect(launched, "the OS must not be handed the file uninvited").toBe(0);
+    expect([...h.document.querySelectorAll(".gfp-tab-name")].map((n) => n.textContent))
+      .toContain("app.bin");
+    expect(h.document.querySelector(".gfp-viewer-body")?.textContent)
+      .toContain("file type not previewable");
+  });
+
+  it("offers the OS route inside that tab, where you can see what it applies to", async () => {
+    const h = unopenable();
+    let launched: string[] = [];
+    (h.access as any).openExternal = async (_s: string, relPath: string) => {
+      launched.push(relPath);
+      return { ok: true };
+    };
+    await settle();
+    await h.panel.openPath("app.bin");
+
+    const open = h.document.querySelector(".gfp-open-external");
+    expect(open, "the desktop must still offer Open in default app").toBeTruthy();
+    click(h.window, open);
+    await settle();
+    expect(launched).toEqual(["app.bin"]);
+  });
+
+  it("offers nothing to open with when the host has no OS access", async () => {
+    // The browser client: there is no default app to hand it to.
+    const h = unopenable();
+    await settle();
+    await h.panel.openPath("app.bin");
+    expect(h.document.querySelector(".gfp-open-external")).toBeNull();
+    expect(h.document.querySelector(".gfp-viewer-body")?.textContent)
+      .toContain("file type not previewable");
+  });
+});
+
+// An empty toolbar over an error message is a row of chrome explaining nothing.
+describe("the error tab's action row appears only when it has actions", () => {
+  const unopenable = (withOs: boolean) => {
+    const h = harness({
+      read: async () => ({ ok: false, reason: "file type not previewable", openExternal: true }),
+    });
+    if (withOs) (h.access as any).openExternal = async () => ({ ok: true });
+    return h;
+  };
+
+  it("drops the bar on a client with nothing to put in it", async () => {
+    const h = unopenable(false);
+    await settle();
+    await h.panel.openPath("app.bin");
+    expect(h.document.querySelector(".gfp-viewer-head")).toBeNull();
+    expect(h.document.querySelector(".gfp-viewer-body")?.textContent)
+      .toContain("file type not previewable");
+  });
+
+  it("keeps the bar where the host can still act on the file", async () => {
+    const h = unopenable(true);
+    await settle();
+    await h.panel.openPath("app.bin");
+    expect(h.document.querySelector(".gfp-viewer-head")).toBeTruthy();
+    expect(h.document.querySelector(".gfp-more")).toBeTruthy();
   });
 });

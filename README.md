@@ -353,27 +353,7 @@ Full diagram, message flow, module map, and design notes: **[docs/architecture.m
 
 ## Development
 
-<details>
-<summary><strong>Build, test & repo conventions</strong></summary>
-
-```bash
-npm install
-npm test              # grok-free unit/DOM/fake-CLI integration suite
-npm run test:integration  # real VS Code Extension Host smoke (also required by CI)
-npm run test:desktop  # real Electron window + fake CLI (desktop host)
-npm run package       # → grok-vscode-phuryn-<version>.vsix (marketplace README only)
-npm run desktop       # run Desktop from the compile tree
-npm run dist:win      # Windows x64 installer → dist-desktop/
-npm run dist:mac      # macOS arm64 + x64 (must run on macOS)
-```
-
-`npm test` is grok-free and never spawns the real binary. CI also requires the separate `npm run test:integration` Electron smoke. An on-demand `npm run test:live` drives the actual `grok` end-to-end (handshake, restore, native plan verdicts, image/video gen) and is run **before a release**, not on every commit. Full test taxonomy: **[CLAUDE.md](CLAUDE.md#test-taxonomy--three-layers)**. Architecture: **[docs/architecture.md](docs/architecture.md)**. Desktop packaging: **[docs/desktop.md](docs/desktop.md)**.
-
-The Marketplace / Open VSX description is **[README.marketplace.md](README.marketplace.md)** (extension only). `npm run package` always passes `--readme-path README.marketplace.md` so the GitHub dual-host README cannot ship as the store listing by accident.
-
-**Repo conventions:** direct-to-`main`, no feature branches; commits explain the *why*; no speculative abstractions; the grok-free suite is the floor — every change keeps it green.
-
-</details>
+Building, testing and repo conventions live in **[docs/development.md](docs/development.md)**.
 
 ---
 

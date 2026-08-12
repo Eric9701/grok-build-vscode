@@ -98,6 +98,7 @@ import {
   removeChip,
   selectionLineRange,
   toggleChip,
+  withPerMessageImageIndices,
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { matchSlashCommand } from "./slash-filter";
@@ -1631,7 +1632,15 @@ Only continue if you trust this code.`,
     const cwd = this.sessionCwd(session);
     this.postSessionsList();
     if (cwd) this.sendLocalRepoSessionsPreview(cwd);
-    this.refreshRemoteRepoPreview(undefined, cwd);
+    // Once per connected client. This was `refreshRemoteRepoPreview(undefined,
+    // cwd)`, and that method opens with `if (!clientId || !cwd) return` — so it
+    // returned immediately, every time, and no remote rail was ever told that a
+    // project OTHER than the one it is looking at had just become active. The
+    // currently-viewed project still refreshed (via postSessionsList above),
+    // which is exactly why this went unnoticed.
+    for (const clientId of this.remoteClients.clients()) {
+      this.refreshRemoteRepoPreview(clientId, cwd);
+    }
   }
 
   /** Persist an answered permission card (title + allowed/rejected + position) so
@@ -5408,13 +5417,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           session.replayUserCounted = false;
         }
       }
-      // Re-seed the session-scoped [Image #N] counter from replayed prompts so
-      // images attached after a restore keep monotonically increasing tags
-      // instead of colliding with history's numbering.
-      for (const m of text.matchAll(/\[Image #(\d+)\]/g)) {
-        const n = Number(m[1]);
-        if (n > session.imageCounter) session.imageCounter = n;
-      }
+      // No counter to re-seed: numbering restarts at #1 on every message, so a
+      // restored conversation's tags say nothing about what the next one gets.
+      // (Old transcripts written under the session-scoped scheme still render
+      // correctly — the previews below are matched to the tags found in the
+      // very same text, whatever numbers that text happens to carry.)
       this.emit(session, {
         type: "userMessageChunk",
         text,
@@ -8943,9 +8950,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
   }
 
-  /** Write image bytes into staging and attach the chip. The `[Image #N]`
-   *  index is session-scoped (Session.imageCounter) so tags stay unique across
-   *  the whole conversation, not just one composer batch. */
+  /** Write image bytes into staging and attach the chip. The `[Image #N]` index
+   *  is the chip's position among the images already staged for THIS message —
+   *  the numbering the CLI resolves references against (see
+   *  `withPerMessageImageIndices`). postChips re-derives it after every
+   *  mutation, so this only has to be right at the moment of attach. */
   private async stageImageAttachment(
     bytes: Buffer,
     mimeType: string,
@@ -8973,7 +8982,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const originRelPath = rel && rel !== ".." && !rel.startsWith("../") && !path.isAbsolute(rel)
       ? rel
       : undefined;
-    const imageIndex = ++session.imageCounter;
+    const imageIndex = session.chips.filter((c) => isImageChip(c) && !c.hidden).length + 1;
     session.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath, previewId));
     this.postChips(session);
     return session;
@@ -9243,7 +9252,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // (every mutation routes through us + postChips).
     // `bare` sends (gear-menu /compact) deliberately carry no attachments, and
     // a background flush must not consume the FOCUSED view's composer chips.
-    const chips = bare ? [] : [...session.chips];
+    // Renumbered here as well as in postChips, so the guarantee is local to the
+    // send rather than inherited from whoever last posted: the `[Image #N]`
+    // tags, the image blocks they name, and the chips painted on the bubble all
+    // come off THIS list, in this order.
+    const chips = bare ? [] : withPerMessageImageIndices([...session.chips]);
 
     // Pre-read every visible image BEFORE anything is cleared or sent. Any
     // failure blocks the whole send with the chips intact — never a prompt
@@ -9709,6 +9722,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private postChips(session: Session = this.focused): void {
+    // The single chokepoint every chip mutation passes through, so it is where
+    // the `[Image #N]` labels are re-derived: removing the first of three
+    // attachments must renumber the rest to #1..#2 rather than leave a gap the
+    // send would then close silently, showing the user a number the agent was
+    // never told. See `withPerMessageImageIndices`.
+    session.chips = withPerMessageImageIndices(session.chips);
     const remoteMessage: HostMsg = { type: "chips", chips: session.chips };
     if (session === this.focused && this.view) {
       const webview = this.view.webview;
@@ -9968,7 +9987,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       cwd: string,
       queuedText: string,
       chips?: FileChip[],
-    ): { promptCount(): number; queuedSends(): string[] };
+    ): {
+      promptCount(): number;
+      queuedSends(): string[];
+      /** The blocks of the last prompt actually handed to the CLI — the only
+       *  place a test can read the `[Image #N]` tags and the image blocks they
+       *  name as one artifact. */
+      lastPromptBlocks(): Parameters<AcpClient["prompt"]>[0] | undefined;
+    };
     finishRemoteStartup(clientId: string): void;
     seedRemoteVoice(clientId: string): { cancelled(): boolean };
     emitContextUsage(clientId: string): void;
@@ -10081,6 +10107,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.remoteClients.ready(clientId);
         this.remoteClients.select(clientId, cwd);
         let prompts = 0;
+        let lastBlocks: Parameters<AcpClient["prompt"]>[0] | undefined;
         const session = new Session();
         session.cwd = cwd;
         session.activeSessionId = id;
@@ -10088,8 +10115,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           sessionId: id,
           availableCommands: [],
           dispose() {},
-          prompt: async (_blocks: Parameters<AcpClient["prompt"]>[0]) => {
+          prompt: async (blocks: Parameters<AcpClient["prompt"]>[0]) => {
             prompts += 1;
+            lastBlocks = blocks;
             return {};
           },
         } as unknown as AcpClient;
@@ -10104,6 +10132,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         return {
           promptCount: () => prompts,
           queuedSends: () => [...session.queuedSends],
+          lastPromptBlocks: () => lastBlocks,
         };
       },
       finishRemoteStartup: (clientId) => {
@@ -12321,8 +12350,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const filePanelStyle = this.host.canSwitchWorkspaceFolder
       ? `<link rel="stylesheet" href="${mediaUri("file-panel.css")}" />`
       : "";
+    // The highlighter rides the same gate and MUST precede the panel: the panel
+    // reads `GrokSyntaxHighlight` at render time, and a missing global there
+    // silently degrades every file to plain text rather than failing loudly.
     const filePanelScript = this.host.canSwitchWorkspaceFolder
-      ? `<script nonce="${nonce}" src="${mediaUri("file-panel.js")}"></script>`
+      ? `<script nonce="${nonce}" src="${mediaUri("syntax-highlight.js")}"></script>\n` +
+        `  <script nonce="${nonce}" src="${mediaUri("file-panel.js")}"></script>`
       : "";
 
     return `<!DOCTYPE html>

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { buildPrompt, buildPromptWithImages, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from "../src/prompt-builder";
-import { makeImplicitChip, makeExplicitChip, makeImageChip } from "../src/chips";
+import {
+  makeImplicitChip,
+  makeExplicitChip,
+  makeImageChip,
+  withPerMessageImageIndices,
+} from "../src/chips";
 import { STAGED_IMAGE_TAG_HINT, WORKSPACE_IMAGE_TAG_HINT } from "../src/image-history";
 
 const deps = {
@@ -266,5 +271,57 @@ describe("buildPromptWithImages", () => {
       "BBB",
       "AAA",
     ]);
+  });
+
+  // The CLI numbers the images of the message it is reading from 1 and resolves
+  // `[Image #N]` against THAT (research/image-index-probe.cjs). So the only
+  // thing that makes a tag resolvable is the tag number equalling the image
+  // block's own position — which is what these pin, end to end from the chips.
+  describe("tags name the block positions the CLI will count", () => {
+    // Exactly what sidebar's send does: renumber, then one image input per
+    // visible image chip, in list order.
+    const sendImages = (chips: ReturnType<typeof makeImageChip>[]) =>
+      withPerMessageImageIndices(chips)
+        .filter((c) => c.imageIndex != null && !c.hidden)
+        .map((c, i) => ({ index: c.imageIndex!, mimeType: c.mimeType!, data: `IMG${i}` }));
+
+    it("tags a lone image #1 even when it is the conversation's second", () => {
+      // THE BUG. Under session-scoped numbering this chip was staged as #2, the
+      // tag said #2, the CLI counted one image and called it #1, and image_edit
+      // refused: "does not match any attached image. Available: [Image #1]."
+      const chips = [makeImageChip("/s/second.png", 2, "image/png")];
+      const out = buildPromptWithImages("make it green", chips, sendImages(chips), deps);
+      expect(out.text).toBe(`make it green\n\n${PASTE_TAG(1)}`);
+      expect(out.blocks).toHaveLength(2);
+    });
+
+    it("keeps tag N pointing at the Nth image block, for any staged numbering", () => {
+      const chips = [
+        makeImageChip("/s/a.png", 4, "image/png"),
+        makeImageChip("/s/b.png", 9, "image/png"),
+        makeImageChip("/s/c.png", 11, "image/png"),
+      ];
+      const out = buildPromptWithImages("", chips, sendImages(chips), deps);
+      expect(out.text).toBe([PASTE_TAG(1), PASTE_TAG(2), PASTE_TAG(3)].join("\n"));
+      // The invariant stated directly: the k-th tag names the k-th image block.
+      const imageBlocks = out.blocks.filter((blk) => blk.type === "image");
+      const tagged = [...out.text.matchAll(/\[Image #(\d+)\]/g)].map((m) => Number(m[1]));
+      expect(tagged).toEqual(imageBlocks.map((_, i) => i + 1));
+      expect(imageBlocks.map((blk) => (blk.type === "image" ? blk.data : ""))).toEqual([
+        "IMG0",
+        "IMG1",
+        "IMG2",
+      ]);
+    });
+
+    it("a hidden image neither ships a block nor consumes a number", () => {
+      const chips = [
+        { ...makeImageChip("/s/a.png", 1, "image/png"), hidden: true },
+        makeImageChip("/s/b.png", 2, "image/png"),
+      ];
+      const out = buildPromptWithImages("", chips, sendImages(chips), deps);
+      expect(out.text).toBe(PASTE_TAG(1));
+      expect(out.blocks.filter((blk) => blk.type === "image")).toHaveLength(1);
+    });
   });
 });

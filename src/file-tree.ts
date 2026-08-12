@@ -376,6 +376,31 @@ const PREVIEW_TEXT_EXT = new Set([
   ".jsonc",
   ".mdx",
   ".svg",
+  // Added alongside syntax highlighting (2026-08-12). Each of these was handed
+  // to the OS before, which from a phone means it could not be opened at all —
+  // and each is a file people read far more often than they edit. `.sql` was
+  // asked for by name.
+  ".sql",
+  ".scss",
+  ".sass",
+  ".less",
+  ".ini",
+  ".cfg",
+  ".conf",
+  ".properties",
+  ".bash",
+  ".zsh",
+  ".rb",
+  ".php",
+  ".kt",
+  ".swift",
+  ".cs",
+  ".cc",
+  ".hh",
+  ".mts",
+  ".cts",
+  ".diff",
+  ".patch",
 ]);
 
 /** Cap for in-panel text/json previews (bytes). */
@@ -580,6 +605,17 @@ export function readTreeFile(
   if (kind === "json") {
     try {
       text = JSON.stringify(JSON.parse(text), null, 2);
+      // JSON.stringify never ends with a newline, so pretty-printing silently
+      // drops the file's — and the writer reads a missing final newline as the
+      // user deliberately deleting it (see writeTreeFile). Without this, saving
+      // any formatted JSON file that ended in a newline would strip it. The
+      // writer's rule holds only while the text the client was handed matches
+      // the file's own newline state, and this transform is the one thing on
+      // the read path that can break that.
+      // Same terminator test `textDetails.trailingNewline` uses — a CR-only
+      // file has a final line ending too, and the two must not disagree about
+      // whether this file ends in one.
+      if (/[\r\n]$/.test(decoded.text)) text += "\n";
       pretty = true;
     } catch {
       /* show raw */
@@ -702,14 +738,32 @@ export function writeTreeFile(
     return { ok: false, reason: "changed" };
   }
 
+  // Line endings ARE restored, and must be: a textarea normalises every CRLF it
+  // is handed to LF on read, so a submission's line endings say nothing about
+  // what the user typed. Reapplying the file's dominant style is what stops
+  // every save from rewriting a CRLF file wholesale.
+  //
+  // The FINAL NEWLINE is the opposite case — it survives that round-trip, so a
+  // submission that lacks one lacks it because the user deleted it. It used to
+  // be forced back to the file's previous state alongside the line endings,
+  // which silently reversed exactly that edit while the client recorded the
+  // text it sent as its clean baseline and reported "Saved." — the editor
+  // showed the change applied and the file on disk did not have it.
+  //
+  // Honouring the submission is safe here because `expectedStamp` has already
+  // proved the file is byte-identical to what this client was handed, so any
+  // difference between `decoded.text` and `text` is the user's edit and nothing
+  // else. An end of file nobody touched still round-trips its own newline.
+  //
+  // That argument depends on the client having been handed the file's own text.
+  // `readTreeFile` TRANSFORMS one kind — it pretty-prints JSON — and
+  // `JSON.stringify` emits no trailing newline, so the transform used to hand
+  // back a newline-less copy of a file that had one and this writer would then
+  // honour the "deletion" nobody made. The read path now carries the original's
+  // trailing newline across that transform, which is what keeps the rule below
+  // to a single case. Any future transform on the read path owes the same debt.
   const eol = textDetails(decoded.text, st, decoded.bom).lineEnding === "crlf" ? "\r\n" : "\n";
-  let normalized = text.replace(/\r\n|\r|\n/g, eol);
-  const hadTrailing = decoded.text.endsWith("\n") || decoded.text.endsWith("\r");
-  if (hadTrailing) {
-    if (!normalized.endsWith(eol)) normalized += eol;
-  } else {
-    while (normalized.endsWith(eol)) normalized = normalized.slice(0, -eol.length);
-  }
+  const normalized = text.replace(/\r\n|\r|\n/g, eol);
   const body = Buffer.from((decoded.bom ? "\ufeff" : "") + normalized, "utf8");
   if (body.byteLength > FILE_PREVIEW_MAX_BYTES) {
     return { ok: false, reason: "file too large" };

@@ -379,6 +379,132 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   font-size: 12px;
   line-height: 1.45;
 }
+
+/* ---- editable syntax highlighting -------------------------------------
+   A transparent-text <textarea> sitting exactly on top of a <pre> holding the
+   highlighted copy. The textarea still owns the text, the caret and the
+   selection; the <pre> is decoration and never feeds a save, so the worst this
+   can go wrong is misaligned colour.
+
+   Alignment IS the feature. Every metric below has to be identical on both
+   layers — font, size, line-height, padding, box-sizing, tab-size and, the one
+   that is easy to forget, the WRAP MODE: a textarea left on its default soft
+   wrap breaks lines in places a `pre-wrap` block does not, and the caret then
+   drifts further from the glyphs the further down the file you go. Both are
+   pinned to the same rules the read-only <pre> above already uses, so toggling
+   Edit does not reflow the file either. */
+.gfp-code-edit {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-height: 100%;
+}
+/* Both selectors are deliberately MORE SPECIFIC than the rules they have to
+   beat — `.gfp-editor` (which sets colour, background, padding and the font on
+   the same element) and `.gfp-viewer-body pre` (which sets the font and wrap
+   mode on the underlay). Written first as plain `.gfp-editor-overlaid`, it lost
+   to `.gfp-editor` purely on source order: the textarea kept its own opaque
+   background and foreground, painting its text over the highlighted copy and
+   hiding the underlay entirely — a browser-only failure that no DOM test can
+   see, caught by `npm run e2e:screens`. Specificity, not order, so moving these
+   rules cannot silently break it again. */
+.gfp-viewer-body pre.gfp-code-underlay,
+.gfp-editor.gfp-editor-overlaid {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  tab-size: 2;
+  /* The metric that got away from the list above. A classic (space-taking)
+     scrollbar shrinks the TEXTAREA's content box only, so once the file is long
+     enough to scroll the two layers wrap at different widths — measured at the
+     default 280px panel, 52 of 372 real lines laid out differently, which puts
+     the caret beside the wrong glyph on every one of them. Reserving the gutter
+     on BOTH layers keeps them identical whether or not a scrollbar is present.
+     Desk-only in practice (mobile uses overlay scrollbars) and invisible to the
+     screens gate, because headless Chromium reports a 0px gutter where headed
+     reports 8px. */
+  scrollbar-gutter: stable;
+}
+.gfp-viewer-body pre.gfp-code-underlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--vscode-editor-foreground, inherit);
+  background: var(--vscode-editor-background, transparent);
+}
+.gfp-editor.gfp-editor-overlaid {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  resize: none;
+  outline: none;
+  overflow: auto;
+  background: transparent;
+  /* The text is carried by the layer below; only the caret and the selection
+     are the textarea's to draw. */
+  color: transparent;
+  caret-color: var(--vscode-editor-foreground, #d4d4d4);
+}
+.gfp-editor.gfp-editor-overlaid::selection {
+  background: var(--vscode-editor-selectionBackground, rgba(120, 150, 200, 0.4));
+  color: transparent;
+}
+
+/* Token palette — VS Code's own Dark+/Light+ token colours, so a file looks the
+   way the same file looks in the editor next to it. Dark is the default and
+   light overrides on the VS Code body class, matching the inline-diff palette
+   in chat.css. A remote browser without that class gets the dark set, which is
+   also what the relay client's own chrome uses. */
+:root {
+  --hl-com: #6a9955;
+  --hl-str: #ce9178;
+  --hl-num: #b5cea8;
+  --hl-kw: #569cd6;
+  --hl-typ: #4ec9b0;
+  --hl-fn: #dcdcaa;
+  --hl-prop: #9cdcfe;
+  --hl-tag: #808080;
+  --hl-tagname: #569cd6;
+  --hl-atr: #9cdcfe;
+  --hl-add: #40c977;
+  --hl-del: #fa423e;
+}
+body.vscode-light {
+  --hl-com: #008000;
+  --hl-str: #a31515;
+  --hl-num: #098658;
+  --hl-kw: #0000ff;
+  --hl-typ: #267f99;
+  --hl-fn: #795e26;
+  --hl-prop: #0451a5;
+  --hl-tag: #800000;
+  --hl-tagname: #800000;
+  --hl-atr: #e50000;
+  --hl-add: #00a240;
+  --hl-del: #ba2623;
+}
+.hl-com { color: var(--hl-com); font-style: italic; }
+.hl-str { color: var(--hl-str); }
+.hl-num { color: var(--hl-num); }
+.hl-kw { color: var(--hl-kw); }
+.hl-typ { color: var(--hl-typ); }
+.hl-fn { color: var(--hl-fn); }
+.hl-prop { color: var(--hl-prop); }
+.hl-tag { color: var(--hl-tag); }
+.hl-tagname { color: var(--hl-tagname); }
+.hl-atr { color: var(--hl-atr); }
+.hl-add { color: var(--hl-add); }
+.hl-del { color: var(--hl-del); }
+
 .gfp-viewer-body img { display: block; max-width: 100%; height: auto; }
 .gfp-markdown .md-table-wrap { max-width: 100%; overflow: auto; }
 .gfp-editor {
@@ -481,13 +607,38 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
    the box is not merely useless there — it invites typing that does nothing. */
 .gfp-panel.gfp-viewing .gfp-filter { display: none; }
 
-@media (max-width: 640px) {
+/* 899, not 640, and the number is not arbitrary: it is the width at which the
+   browser client stops giving the panel a third column to dock into
+   (`#file-panel-dock` in web/chat.html flips at 900). Below that the panel is an
+   overlay, and an overlay that is neither docked nor full-screen is the worst of
+   both — it floated over the middle of the chat with the rail visible behind it.
+   Tying this to the SAME breakpoint means there is no width where the panel is
+   in between. */
+@media (max-width: 899px) {
+  /* The panel takes the WHOLE screen, host chrome included — the same thing the
+     projects rail does. A file browser squeezed under a session header is the
+     desktop layout wearing a narrow width: the header is the one row you are
+     not reading while you are looking for a file.
+
+     This deliberately reverses the earlier rule that stopped the overlay below
+     the host's bar (`--gfp-overlay-top`). That rule existed because covering the
+     bar also covered the button that had just opened the panel — a real problem,
+     and the reason the way out has to live INSIDE the panel. It does: the
+     header's own close button. Which is also why the per-tab X goes below —
+     one close control for the panel beats one per file. */
   .gfp-panel.gfp-overlay {
-    left: 0;
+    inset: 0;
     width: 100vw;
+    max-width: 100vw;
     border-left: 0;
     box-shadow: none;
+    /* Above the rail (1100), so whichever was opened last is the one you see. */
+    z-index: 1200;
   }
+  /* Closing a FILE is not a thing you do here — you leave the panel. Every tab
+     carrying its own X put a 20px target next to a 20px target and made the
+     project tab look closable, which it is not. */
+  .gfp-tab-close { display: none; }
 }
 
 @media (hover: none) and (pointer: coarse) {
@@ -498,4 +649,13 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 
 @media (prefers-reduced-motion: reduce) {
   .gfp-panel, .gfp-resizer { scroll-behavior: auto; }
+}
+
+/* The action offered inside a "could not open this" tab — the OS route, which
+   the desktop used to take on your behalf before you could see which file it
+   was. Centred under the message it belongs to. */
+.gfp-status-actions {
+  display: flex;
+  justify-content: center;
+  padding: 4px 12px 12px;
 }

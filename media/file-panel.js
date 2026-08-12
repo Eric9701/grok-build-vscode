@@ -128,6 +128,23 @@
       notice: "",
       readSeq: 0,
       saveSeq: 0,
+      error: "",
+    };
+  }
+
+  /**
+   * A tab for a file that could not be opened.
+   *
+   * The error used to be painted over the tree instead: no tab, so nothing
+   * named the file that had failed, and the tree's filter box stayed on screen
+   * above a message about a file you could no longer see. Giving the failure a
+   * tab makes it behave like every other open file — it says which file, it can
+   * be left open while you look at something else, and it closes the same way.
+   */
+  function makeErrorTab(scopeId, relPath, reason) {
+    return {
+      ...makeTab(scopeId, { relPath, kind: "error", text: "" }),
+      error: reason || "Could not open file.",
     };
   }
 
@@ -677,10 +694,24 @@
       if (destroyed || currentState !== state) return { ok: false, reason: "scope changed" };
       if (existing && existing.readSeq !== readSeq) return { ok: false, reason: "superseded" };
       if (!result || !result.ok) {
-        if (result && result.openExternal && access.openExternal) {
-          return access.openExternal(scopeId, relPath);
-        }
-        showViewerError(relPath, result && result.reason || "Could not open file.");
+        // Open it as a tab rather than painting the message over the tree, so
+        // the failure names its own file. Same path as a success from here on.
+        //
+        // This used to hand a non-previewable file straight to the OS on the
+        // desktop (`result.openExternal`), which meant the same click did two
+        // different things depending on which client you were sitting at — a
+        // tab with a message in the browser, a silently launched external app
+        // on the desktop. The tab is now the answer everywhere, and the OS
+        // route is offered INSIDE it rather than taken on your behalf.
+        const failed = makeErrorTab(scopeId, relPath, result && result.reason);
+        failed.canOpenExternally = !!(result && result.openExternal && access.openExternal);
+        state.tabs.set(relPath, failed);
+        if (!state.order.includes(relPath)) state.order.push(relPath);
+        state.activeRelPath = relPath;
+        treeMode = false;
+        renderTabs();
+        renderViewer();
+        setOpen(true);
         return result || { ok: false, reason: "read failed" };
       }
       const tab = makeTab(scopeId, result);
@@ -781,15 +812,6 @@
       }
     }
 
-    function showViewerError(relPath, reason) {
-      treeMode = false;
-      tree.hidden = true;
-      viewer.hidden = false;
-      viewer.textContent = "";
-      const head = viewerHead();
-      viewer.append(head);
-      appendStatus(viewer, reason, true);
-    }
 
     /**
      * The open file's action row. No back chevron and no filename: both were
@@ -802,6 +824,125 @@
       const head = doc.createElement("div");
       head.className = "gfp-viewer-head desk-ft-toolbar files-browse-viewer-head";
       return head;
+    }
+
+    /** The highlighter, or null where it was not loaded (VS Code does not ship
+     *  the panel at all, and a stale relay page may predate this script). Every
+     *  use is guarded: no highlighter means plain text, never a broken viewer. */
+    function highlighter() {
+      const api = root.GrokSyntaxHighlight;
+      return api && typeof api.highlightCode === "function" ? api : null;
+    }
+
+    /** Paint `text` into `el` as code — highlighted when we recognise the
+     *  language, plain otherwise. The ONLY place file contents become markup;
+     *  the highlighter escapes everything it emits, and the fallback assigns
+     *  textContent so raw source can never reach innerHTML. */
+    function paintCode(el, text, relPath) {
+      const api = highlighter();
+      const lang = api ? api.languageForPath(relPath || "") : "";
+      if (!api || !lang) {
+        el.textContent = text;
+        return;
+      }
+      el.innerHTML = api.highlightCode(text, lang);
+    }
+
+    /**
+     * The editable surface.
+     *
+     * With a known language this is the textarea-over-`<pre>` overlay: the
+     * textarea keeps its real text but paints it transparent (caret and
+     * selection stay visible), and an aria-hidden `<pre>` behind it shows the
+     * highlighted copy. The textarea remains the single source of truth for the
+     * bytes — the underlay is decoration and never feeds a save, so the worst
+     * failure this can produce is misaligned colour, never a wrong file.
+     *
+     * Alignment is the whole trick: both layers must agree on font, size,
+     * line-height, padding AND wrapping, which is why the CSS pins
+     * `white-space: pre-wrap` + `overflow-wrap: break-word` on both rather than
+     * leaving the textarea on its default soft wrap.
+     *
+     * Without a language (or without the highlighter) it degrades to exactly
+     * the plain textarea this replaced — the deliberate escape hatch, since a
+     * mobile keyboard's IME over transparent text is the one risk here that
+     * cannot be settled by reading the code.
+     */
+    function buildEditor(tab) {
+      const editor = doc.createElement("textarea");
+      editor.className = "gfp-editor desk-ft-editor files-browse-editor";
+      editor.value = tab.draftText;
+      editor.spellcheck = false;
+      // Held, not hidden, while a Reload is in flight — see reloadTab.
+      editor.readOnly = !!tab.reloading;
+      editor.setAttribute("aria-label", "Edit " + tab.relPath);
+
+      const api = highlighter();
+      const lang = api ? api.languageForPath(tab.relPath || "") : "";
+      if (!api || !lang) {
+        editor.addEventListener("input", () => {
+          applyDraft(tab, editor.value);
+          patchDirtyUi(tab);
+        });
+        return editor;
+      }
+
+      const wrap = doc.createElement("div");
+      wrap.className = "gfp-code-edit";
+      const under = doc.createElement("pre");
+      under.className = "gfp-code-underlay";
+      under.setAttribute("aria-hidden", "true");
+      editor.classList.add("gfp-editor-overlaid");
+
+      // A textarea shows a final empty line for a trailing newline; a `<pre>`
+      // does not. Without this sentinel the two drift apart by one line the
+      // moment the file ends in a newline — which is nearly every file.
+      const repaint = () => {
+        const text = editor.value;
+        under.innerHTML = api.highlightCode(text.endsWith("\n") ? text + " " : text, lang);
+      };
+      repaint();
+
+      // Small files repaint SYNCHRONOUSLY — highlighting a few KB costs well
+      // under a millisecond, and deferring it puts a visible frame of stale
+      // colour behind the caret for no gain. Only past the threshold is it
+      // worth coalescing to one repaint per frame, where the cost is real and a
+      // fast typist can outrun it.
+      //
+      // Scheduled THROUGH the view, not by pulling the function off it —
+      // `requestAnimationFrame` called detached from its window throws
+      // "Illegal invocation" in a browser, which a happy-dom test would never
+      // have shown because it falls through to the setTimeout branch there.
+      const COALESCE_ABOVE_BYTES = 32 * 1024;
+      const view = doc.defaultView || root;
+      let queued = false;
+      const schedule = () => {
+        if (editor.value.length <= COALESCE_ABOVE_BYTES) return repaint();
+        if (queued) return;
+        queued = true;
+        const run = () => {
+          queued = false;
+          repaint();
+        };
+        if (typeof view.requestAnimationFrame === "function") view.requestAnimationFrame(run);
+        else view.setTimeout(run, 16);
+      };
+      editor.addEventListener("input", () => {
+        applyDraft(tab, editor.value);
+        patchDirtyUi(tab);
+        schedule();
+      });
+      // Both layers scroll as one. Vertical is what matters (wrapping is
+      // identical, so there is no horizontal scroll), but syncing both costs
+      // nothing and survives a future change to the wrap mode.
+      editor.addEventListener("scroll", () => {
+        under.scrollTop = editor.scrollTop;
+        under.scrollLeft = editor.scrollLeft;
+      });
+
+      wrap.appendChild(under);
+      wrap.appendChild(editor);
+      return wrap;
     }
 
     function renderViewer() {
@@ -843,19 +984,31 @@
       const body = doc.createElement("div");
       body.className = "gfp-viewer-body desk-ft-viewer-body files-browse-viewer-body";
       if (elementIds.viewerBody) body.id = elementIds.viewerBody;
-      if (tab.editing) {
-        const editor = doc.createElement("textarea");
-        editor.className = "gfp-editor desk-ft-editor files-browse-editor";
-        editor.value = tab.draftText;
-        editor.spellcheck = false;
-        // Held, not hidden, while a Reload is in flight — see reloadTab.
-        editor.readOnly = !!tab.reloading;
-        editor.setAttribute("aria-label", "Edit " + tab.relPath);
-        editor.addEventListener("input", () => {
-          applyDraft(tab, editor.value);
-          patchDirtyUi(tab);
-        });
-        body.appendChild(editor);
+      if (tab.error) {
+        // Inside the tab's own body, under its own tab. The message is the
+        // content of this file as far as the panel is concerned.
+        //
+        // The action row above is dropped when it would be EMPTY — which is the
+        // remote's case, since there is no default app to offer and nothing to
+        // edit. An empty toolbar over an error is a row of chrome explaining
+        // nothing. The desktop keeps its row, because the "…" menu still has
+        // Open in default app and Reveal in it.
+        if (!head.childNodes.length) head.remove();
+        appendStatus(body, tab.error, true);
+        // The desktop can still hand it to the OS — offered here, not done for
+        // you, so the same click means the same thing on every client.
+        if (tab.canOpenExternally && access.openExternal) {
+          const open = actionButton("Open in default app", "", () => {
+            void access.openExternal(tab.scopeId, tab.relPath);
+          });
+          open.classList.add("gfp-open-external");
+          const row = doc.createElement("div");
+          row.className = "gfp-status-actions";
+          row.appendChild(open);
+          body.appendChild(row);
+        }
+      } else if (tab.editing) {
+        body.appendChild(buildEditor(tab));
       } else if (tab.kind === "image" && tab.dataUrl) {
         const image = doc.createElement("img");
         image.src = tab.dataUrl;
@@ -865,10 +1018,24 @@
         const markdown = doc.createElement("div");
         markdown.className = "gfp-markdown desk-ft-md files-browse-md";
         markdown.innerHTML = renderMarkdown(tab.draftText);
+        // A relative link in a rendered README points at a file in this
+        // workspace, not at a URL. Left alone the browser navigates away from
+        // the app entirely — on a remote client, to the relay's 404. Open it
+        // here instead; links that are genuinely external fall through to the
+        // browser untouched (see resolveMarkdownLink).
+        markdown.addEventListener("click", (event) => {
+          const node = event.target;
+          const anchor = node && node.closest ? node.closest("a[href]") : null;
+          if (!anchor || !markdown.contains(anchor)) return;
+          const target = resolveMarkdownLink(tab.relPath, anchor.getAttribute("href"));
+          if (!target) return;
+          event.preventDefault();
+          void openFile(target);
+        });
         body.appendChild(markdown);
       } else {
         const pre = doc.createElement("pre");
-        pre.textContent = tab.draftText;
+        paintCode(pre, tab.draftText, tab.relPath);
         body.appendChild(pre);
       }
       viewer.appendChild(body);
@@ -1250,7 +1417,9 @@
       if (typeof unsubscribeScope === "function") unsubscribeScope();
       win.removeEventListener("beforeunload", beforeUnload);
       win.removeEventListener("resize", applyPresentation);
-      doc.removeEventListener("click", closeMenuFromOutside);
+      // The `true` must match the registration, or this removes nothing and the
+      // listener outlives the panel.
+      doc.removeEventListener("click", closeMenuFromOutside, true);
       toggle.remove();
       resizer.remove();
       rootEl.remove();
@@ -1259,7 +1428,14 @@
     function closeMenuFromOutside(event) {
       if (menu && !menu.contains(event.target)) closeMenu();
     }
-    doc.addEventListener("click", closeMenuFromOutside);
+    // CAPTURE phase, and that is the whole fix. On the bubble phase this ran
+    // AFTER the button that opened the menu, saw a click outside the (brand new)
+    // menu, and closed it again — so the viewer's "More actions" button did
+    // nothing at all on the desktop, silently. The tree's own more-button had
+    // been papered over with `stopPropagation`, which fixes one button and
+    // leaves the trap set for the next one. On capture, this runs BEFORE any
+    // opener, when `menu` is still null, so it cannot close what has not opened.
+    doc.addEventListener("click", closeMenuFromOutside, true);
     win.addEventListener("resize", applyPresentation);
     rootEl.addEventListener("keydown", (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
@@ -1328,8 +1504,56 @@
     return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  /**
+   * Resolve a link written inside a Markdown file to a workspace-relative path,
+   * or null when it is not ours to open.
+   *
+   * A rendered `[auth](_shared/auth.ts)` is a plain `<a href>`, so the browser
+   * resolves it against the PAGE — which on a remote client is the relay, and
+   * the user lands on `https://<relay>/_shared/auth.ts` instead of the file.
+   * That is not a remote-only bug (a webview would resolve it against its own
+   * origin too), it is just most visible there.
+   *
+   * Returns null for anything that is not a workspace file — a scheme
+   * (`https:`, `mailto:`), a protocol-relative `//host`, a bare `#fragment` —
+   * so the browser keeps handling those normally. A `..` that would climb above
+   * the workspace root also returns null rather than a path outside it: the
+   * host re-checks containment anyway, but a link should not be the thing that
+   * asks.
+   */
+  function resolveMarkdownLink(fromRelPath, href) {
+    if (typeof href !== "string") return null;
+    const raw = href.trim();
+    if (!raw || raw.startsWith("#") || raw.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(raw)) {
+      return null;
+    }
+    const clean = raw.split(/[?#]/)[0];
+    if (!clean) return null;
+    let decoded = clean;
+    try {
+      decoded = decodeURIComponent(clean);
+    } catch (_) {
+      /* a malformed escape is still a path we can try verbatim */
+    }
+    // A leading slash means workspace root, not filesystem root.
+    const rooted = decoded.charAt(0) === "/" || decoded.charAt(0) === "\\";
+    const base = rooted ? [] : String(fromRelPath || "").split(/[\\/]/).slice(0, -1);
+    const out = [];
+    for (const part of base.concat(decoded.split(/[\\/]/))) {
+      if (!part || part === ".") continue;
+      if (part === "..") {
+        if (!out.length) return null;
+        out.pop();
+        continue;
+      }
+      out.push(part);
+    }
+    return out.length ? out.join("/") : null;
+  }
+
   const api = {
     createFilePanel,
+    resolveMarkdownLink,
     fileName,
     scopeKey,
     defaultFileIconId,

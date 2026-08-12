@@ -3326,7 +3326,7 @@ describe("editable file-tree writes", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("returns a stamp and preserves BOM, dominant CRLF, and trailing newline", () => {
+  it("returns a stamp and preserves BOM and dominant CRLF", () => {
     const file = path.join(root, "notes.md");
     fs.writeFileSync(file, Buffer.from("\xef\xbb\xbfone\r\ntwo\r\n", "binary"));
     const read = readTreeFile(root, "notes.md");
@@ -3337,11 +3337,142 @@ describe("editable file-tree writes", () => {
     expect(read.details.lineEnding).toBe("crlf");
     expect(read.details.trailingNewline).toBe(true);
 
-    const saved = writeTreeFile(root, "notes.md", "one changed\ntwo", read.details.stamp, {
+    // A textarea hands back LF for every CRLF it was given, so the submission
+    // says nothing about line endings — but it DOES still carry the file's
+    // final newline, because an untouched end of file round-trips it.
+    const saved = writeTreeFile(root, "notes.md", "one changed\ntwo\n", read.details.stamp, {
       isExecutableOpenTarget: () => false,
     });
     expect(saved.ok).toBe(true);
     expect(fs.readFileSync(file)).toEqual(Buffer.from("\xef\xbb\xbfone changed\r\ntwo\r\n", "binary"));
+  });
+
+  it("honours deleting the final newline instead of silently restoring it", () => {
+    const file = path.join(root, "notes.md");
+    fs.writeFileSync(file, Buffer.from("\xef\xbb\xbfone\r\ntwo\r\n", "binary"));
+    const read = readTreeFile(root, "notes.md");
+    if (!read.ok || !read.details) throw new Error("expected text details");
+
+    // The user removed the trailing newline. The writer used to put it back
+    // while the client recorded the submitted text as its clean baseline and
+    // said "Saved." — so the editor showed an edit the file did not have.
+    const saved = writeTreeFile(root, "notes.md", "one\ntwo", read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(saved.ok).toBe(true);
+    expect(fs.readFileSync(file)).toEqual(Buffer.from("\xef\xbb\xbfone\r\ntwo", "binary"));
+
+    // And the save is stable: reopening shows what was written, so the editor
+    // and the disk agree.
+    const reread = readTreeFile(root, "notes.md");
+    expect(reread.ok && reread.text).toBe("one\r\ntwo");
+  });
+
+  it("honours adding a final newline to a file that had none", () => {
+    const file = path.join(root, "notes.txt");
+    fs.writeFileSync(file, "one\ntwo", "utf8");
+    const read = readTreeFile(root, "notes.txt");
+    if (!read.ok || !read.details) throw new Error("expected text details");
+    expect(read.details.trailingNewline).toBe(false);
+
+    const saved = writeTreeFile(root, "notes.txt", "one\ntwo\n", read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(saved.ok).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toBe("one\ntwo\n");
+  });
+
+  // JSON is the one kind readTreeFile TRANSFORMS on the way out (pretty-print),
+  // and JSON.stringify emits no trailing newline. That makes it the one file
+  // type where "the submission lacks a newline" can mean OUR transform dropped
+  // it rather than the user deleting it — so honouring the submission blindly
+  // would strip the newline off every formatted JSON file that had one.
+  it("carries a JSON file's final newline across the pretty-print", () => {
+    const file = path.join(root, "conf.json");
+    fs.writeFileSync(file, '{"a":1}\n', "utf8");
+    const read = readTreeFile(root, "conf.json");
+    if (!read.ok || !read.details) throw new Error("expected text details");
+    expect(read.pretty).toBe(true);
+    // What the textarea is handed must end the way the file does, or the
+    // writer cannot tell a deletion from a formatting artefact.
+    expect(read.text).toBe('{\n  "a": 1\n}\n');
+  });
+
+  it("does not strip a JSON file's final newline when an interior value is edited", () => {
+    const file = path.join(root, "pkg.json");
+    fs.writeFileSync(file, '{\n  "name": "old"\n}\n', "utf8");
+    const read = readTreeFile(root, "pkg.json");
+    if (!read.ok || !read.details) throw new Error("expected text details");
+
+    // Edit what the CLIENT was handed, exactly as the textarea does — the
+    // submission's trailing newline has to come from `read.text`, not from the
+    // test, or this passes even when the pretty-printer has eaten it.
+    const submitted = read.text!.replace('"old"', '"new"');
+    const saved = writeTreeFile(root, "pkg.json", submitted, read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(saved.ok).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toBe('{\n  "name": "new"\n}\n');
+  });
+
+  it("leaves a newline-less JSON file newline-less", () => {
+    // The converse: adding one here would be just as much of an unasked edit.
+    const file = path.join(root, "tight.json");
+    fs.writeFileSync(file, '{"a":1}', "utf8");
+    const read = readTreeFile(root, "tight.json");
+    if (!read.ok || !read.details) throw new Error("expected text details");
+    expect(read.text).toBe('{\n  "a": 1\n}');
+
+    const saved = writeTreeFile(root, "tight.json", read.text!, read.details.stamp, {
+      isExecutableOpenTarget: () => false,
+    });
+    expect(saved.ok).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toBe('{\n  "a": 1\n}');
+  });
+
+  // The invariant the writer's whole rule rests on, stated once for EVERY
+  // editable kind rather than per-transform: the text handed to the client must
+  // end the way the file does. `writeTreeFile` reads a missing final newline as
+  // the user deleting it, so any read-path transform that drops one turns a
+  // save into an unasked edit — which is exactly what the JSON pretty-printer
+  // did. A future transform on a new kind fails here instead of in the wild.
+  it("hands the client text that ends the way the file does, for every editable kind", () => {
+    const cases: Array<[string, string]> = [
+      ["k.md", "# t\n"],
+      ["k.md", "# t"],
+      ["k.txt", "one\ntwo\n"],
+      ["k.txt", "one\ntwo"],
+      ["k.json", '{\n  "a": 1\n}\n'],
+      ["k.json", '{\n  "a": 1\n}'],
+      // Not valid JSON, so the pretty-print bails and the raw text shows.
+      ["k.json", "{oops\n"],
+    ];
+    for (const [name, body] of cases) {
+      const file = path.join(root, name);
+      fs.writeFileSync(file, body, "utf8");
+      const read = readTreeFile(root, name);
+      if (!read.ok) throw new Error(`expected a readable file for ${name}`);
+      expect(
+        /\n$/.test(read.text ?? ""),
+        `${name} ${JSON.stringify(body)} → ${JSON.stringify(read.text)}`,
+      ).toBe(/\n$/.test(body));
+    }
+  });
+
+  it("round-trips a JSON file saved without any edit at all", () => {
+    // The strongest form of the invariant: read then save unchanged must not
+    // alter the file's final byte, whatever the pretty-printer did in between.
+    for (const [name, body] of [["a.json", '{\n  "x": 1\n}\n'], ["b.json", '{\n  "x": 1\n}']]) {
+      const file = path.join(root, name);
+      fs.writeFileSync(file, body, "utf8");
+      const read = readTreeFile(root, name);
+      if (!read.ok || !read.details) throw new Error("expected text details");
+      const saved = writeTreeFile(root, name, read.text!, read.details.stamp, {
+        isExecutableOpenTarget: () => false,
+      });
+      expect(saved.ok, name).toBe(true);
+      expect(fs.readFileSync(file, "utf8"), name).toBe(body);
+    }
   });
 
   it("refuses a stale stamp and leaves the agent's newer bytes intact", () => {

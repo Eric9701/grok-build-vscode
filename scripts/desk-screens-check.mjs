@@ -173,8 +173,64 @@ try {
     `desk: the window must not scroll horizontally (${geometry.docWidth} > ${geometry.viewportWidth})`,
   );
 
+  // RENAME MUST NOT RESIZE THE BAR. Clicking the conversation name swaps a
+  // label for an input, and if the two boxes measure differently the whole row
+  // moves and the separator under it follows. This is measurable only with a
+  // layout engine, which is why it went unnoticed: happy-dom reports zeros for
+  // both boxes and agrees they match.
+  //
+  // Verified sensitive by mutation: giving `.session-name-input` 9px of vertical
+  // padding instead of 3px moves the bar 35→42 and the chip 30→38 and fails
+  // here. Note the fixture opens a conversation with no project line, so
+  // `repoTop` is 0 in both samples — it is carried for the day the chip's second
+  // row is populated (a height pinned on the wrong box would hold the bar steady
+  // while shoving that line around), and proves nothing on its own today.
+  const renameBoxes = () =>
+    page.evaluate(() => {
+      const bar = document.querySelector("#desk-ft-top-toggle")?.closest("header, .top-bar");
+      const chip = document.querySelector(".session-name-chip");
+      const repo = document.querySelector(".session-name-repo");
+      const px = (el) => (el ? Math.round(el.getBoundingClientRect().height) : null);
+      return { bar: px(bar), chip: px(chip), repoTop: repo ? Math.round(repo.getBoundingClientRect().top) : null };
+    });
+
+  const nameLabel = page.locator(".session-name-label").first();
+  assert.ok(
+    await nameLabel.isVisible().catch(() => false),
+    "desk: no conversation name to rename — the check cannot be skipped silently, so this is a failure",
+  );
+  const beforeRename = await renameBoxes();
+  // Every member of that object degrades to null when its selector misses, and
+  // `{bar:null, chip:null}` compares equal to itself — so a renamed selector
+  // would leave this gate printing ALL CHECKS PASSED while measuring nothing.
+  // Prove there are real heights before the comparison can mean anything.
+  for (const key of ["bar", "chip"]) {
+    assert.ok(
+      typeof beforeRename[key] === "number" && beforeRename[key] > 0,
+      `desk: rename gate measured nothing for '${key}' (selector renamed?) — ${JSON.stringify(beforeRename)}`,
+    );
+  }
+  await nameLabel.click();
+  await page.waitForSelector(".session-name-input", { timeout: 15000 });
+  await page.waitForTimeout(250);
+  const duringRename = await renameBoxes();
+  await shot("desk-5-rename");
+  await assertNoBlankIcons("desk renaming");
+  assert.deepEqual(
+    duringRename,
+    beforeRename,
+    `desk: renaming must not resize the top bar — before ${JSON.stringify(beforeRename)}, during ${JSON.stringify(duringRename)}`,
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(250);
+  assert.deepEqual(
+    await renameBoxes(),
+    beforeRename,
+    "desk: leaving rename must restore the bar's geometry",
+  );
+
   assert.deepEqual(errors, [], `desk: the renderer logged errors — ${JSON.stringify(errors)}`);
-  log(`ALL CHECKS PASSED — 4 frames in ${OUT}/`);
+  log(`ALL CHECKS PASSED — 5 frames in ${OUT}/`);
 } finally {
   await app.close().catch(() => {});
   qa.cleanup();

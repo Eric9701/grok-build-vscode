@@ -200,15 +200,13 @@ export class Session {
    */
   worktree?: { path: string; label: string; sourceGitRoot: string; id?: string };
 
-  /**
-   * Session-scoped `[Image #N]` counter — the highest index used so far.
-   * Incremented per attached image and NEVER reset on send, so every image in
-   * one conversation gets a distinct tag (per-composer numbering would restart
-   * at #1 each turn and make "image #1" ambiguous in the transcript). On
-   * restore it's re-seeded from the replayed prompts' tags (sidebar's
-   * userMessageChunk handler).
-   */
-  imageCounter = 0;
+  // NOTE: there is deliberately no `[Image #N]` counter here any more. Tags are
+  // numbered per MESSAGE, from the chip's position (chips.ts
+  // `withPerMessageImageIndices`), because that is what the CLI resolves an
+  // image reference against. The session-scoped counter this replaced was
+  // chosen so two screenshots in one conversation never shared a tag — a real
+  // benefit, but it bought unambiguous transcripts at the price of tags the
+  // agent could not resolve, which is the wrong trade.
 
   titleGenerated = false;
   firstUserMessageForTitle?: string;

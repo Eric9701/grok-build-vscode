@@ -14,6 +14,7 @@ import {
   removeChip,
   selectionLineRange,
   toggleChip,
+  withPerMessageImageIndices,
 } from "../src/chips";
 
 // VS Code positions are 0-based; the chip range is 1-based inclusive. Selection
@@ -188,5 +189,84 @@ describe("implicitChipStartsHidden (#67)", () => {
 
   it("defaults to visible for a first-run install with nothing remembered", () => {
     expect(implicitChipStartsHidden(undefined, false)).toBe(false);
+  });
+});
+
+// The `[Image #N]` tag is resolved by the CLI against the images attached to
+// the message it is reading, numbered from 1 — an index from an earlier message
+// matches nothing (measured: research/image-index-probe.cjs). These pin the
+// numbering to POSITION, which is the only thing that can keep our tag and the
+// CLI's count in step.
+describe("withPerMessageImageIndices", () => {
+  const img = (name: string, index: number, hidden = false) => ({
+    ...makeImageChip(`/staging/${name}.png`, index, "image/png"),
+    hidden,
+  });
+
+  it("numbers image chips 1..N by position", () => {
+    const out = withPerMessageImageIndices([img("a", 1), img("b", 2), img("c", 3)]);
+    expect(out.map((c) => c.imageIndex)).toEqual([1, 2, 3]);
+  });
+
+  it("renumbers a session-scoped index down to this message's numbering", () => {
+    // THE BUG: the second image of a conversation was staged as #2 while the
+    // CLI — seeing one image on that message — knew it as #1, so every
+    // image_edit against it was refused.
+    const out = withPerMessageImageIndices([img("second", 2)]);
+    expect(out[0].imageIndex).toBe(1);
+    expect(out[0].relPath).toBe("Image #1");
+  });
+
+  it("closes the gap a removal leaves, instead of sending 1 and 3", () => {
+    const chips = [img("a", 1), img("b", 2), img("c", 3)];
+    const afterRemoval = withPerMessageImageIndices(removeChip(chips, chips[0].id));
+    expect(afterRemoval.map((c) => c.imageIndex)).toEqual([1, 2]);
+    expect(afterRemoval.map((c) => c.relPath)).toEqual(["Image #1", "Image #2"]);
+  });
+
+  it("moves the composer label with the index, so the UI cannot state a stale number", () => {
+    // relPath is what the composer row renders; imageIndex is what the bubble
+    // renders and what the tag carries. They must never disagree.
+    const [only] = withPerMessageImageIndices([img("x", 7)]);
+    expect(only.relPath).toBe("Image #1");
+    expect(only.imageIndex).toBe(1);
+  });
+
+  it("leaves file chips untouched and lets them consume no numbers", () => {
+    const file = makeExplicitChip("/a.ts", "src/a.ts");
+    const implicit = makeImplicitChip("/w/open.ts", "open.ts");
+    const out = withPerMessageImageIndices([file, img("a", 9), implicit, img("b", 4)]);
+    expect(out[0]).toBe(file); // same object — untouched
+    expect(out[2]).toBe(implicit);
+    expect(out.filter((c) => c.imageIndex != null).map((c) => c.imageIndex)).toEqual([1, 2]);
+  });
+
+  it("keeps ids stable so a click already in flight still resolves", () => {
+    const chips = [img("a", 5), img("b", 6)];
+    const out = withPerMessageImageIndices(chips);
+    expect(out.map((c) => c.id)).toEqual(chips.map((c) => c.id));
+    // …and removal by the pre-renumber id still finds its chip.
+    expect(removeChip(out, chips[1].id)).toHaveLength(1);
+  });
+
+  it("is a no-op — same objects — when the numbering is already right", () => {
+    const chips = [img("a", 1), img("b", 2)];
+    const out = withPerMessageImageIndices(chips);
+    expect(out[0]).toBe(chips[0]);
+    expect(out[1]).toBe(chips[1]);
+  });
+
+  it("is idempotent", () => {
+    const once = withPerMessageImageIndices([img("a", 4), img("b", 9)]);
+    const twice = withPerMessageImageIndices(once);
+    expect(twice.map((c) => c.imageIndex)).toEqual(once.map((c) => c.imageIndex));
+  });
+
+  it("skips hidden image chips, matching what the send actually puts on the wire", () => {
+    // A hidden chip is dropped by the pre-read AND by the bubble's chip filter,
+    // so counting it would push every later tag one past the CLI's numbering.
+    const out = withPerMessageImageIndices([img("hidden", 1, true), img("shown", 2)]);
+    expect(out[1].imageIndex).toBe(1);
+    expect(out[0].imageIndex).toBe(1); // untouched — not on the wire, still an image chip
   });
 });

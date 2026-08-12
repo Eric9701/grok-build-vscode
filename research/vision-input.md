@@ -59,9 +59,30 @@ Run it: `node research/vision-probe.cjs` (env: `PROBE_PNG_SIZE=<px>`,
   (or none) — hint-less legacy tags and leading/inline legacy shapes from the
   first build are also stripped; a tag-looking string in the *middle* of the
   user's words is left alone.
-- **`[Image #N]` numbering is session-scoped** (`Session.imageCounter`,
-  re-seeded from replayed prompts on restore) so two screenshots in one
-  conversation never share a tag.
+- **`[Image #N]` numbering is PER-MESSAGE** — the tag is the image's position
+  among the visible image chips of the message it rides on, so it restarts at
+  #1 every turn (`withPerMessageImageIndices` in `src/chips.ts`; the composer
+  label, the bubble chip, and the tag all derive from it, so they cannot
+  disagree). This is not a style choice: the CLI resolves a reference against
+  the images attached to the message it is reading, numbered from 1, and an
+  index from an earlier message matches **nothing** — measured against grok
+  1.0.0 by `research/image-index-probe.cjs`, which asks for a deliberately
+  impossible `[Image #9]` and reads the refusal:
+
+  > image reference "[Image #9]" matches no image attached to THIS MESSAGE. If
+  > it was attached earlier in the conversation, ask the user to re-attach it
+  > here; otherwise pass an absolute filesystem path or a data: URL.
+
+  It was session-scoped until 2026-08-12 (`Session.imageCounter`, re-seeded
+  from replayed prompts on restore) so two screenshots in one conversation
+  never shared a tag. That reads better in a transcript, but it made the second
+  image of any conversation go out as `[Image #2]` against a message carrying
+  one image, so `image_edit` refused every reference to it — unambiguous
+  transcripts are not worth unresolvable tags. Consequence accepted with the
+  change: two different pictures in one conversation are both "Image #1", each
+  in its own bubble. Old transcripts still render correctly, because restore
+  matches previews to the tags found in the very same text, whatever numbers
+  that text happens to carry.
 - **Send is validated, never silent.** Every visible image chip is pre-read on
   the host before anything is cleared or sent; any failure blocks the send
   with the chips intact and an error in the chat. Formats are whitelisted to

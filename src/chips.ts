@@ -5,8 +5,10 @@ export interface FileChip {
   selectionStart?: number;
   selectionEnd?: number;
   hidden: boolean;
-  /** 1-based, session-scoped index for pasted/uploaded images — the `[Image #N]`
-   *  tag sent in the prompt text. Assigned from Session.imageCounter. */
+  /** 1-based, PER-MESSAGE index for pasted/uploaded images — the `[Image #N]`
+   *  tag sent in the prompt text. Its position among the visible image chips of
+   *  the message it rides on, so it restarts at #1 every turn; see
+   *  `withPerMessageImageIndices`. */
   imageIndex?: number;
   mimeType?: string;
   /** Workspace-relative path of the original file for images imported from disk
@@ -143,6 +145,41 @@ export function makeImageChip(
     originRelPath,
     ...(previewId ? { previewId } : {}),
   };
+}
+
+/**
+ * Renumber the image chips `[Image #1..N]` by their position in this list.
+ *
+ * The CLI resolves an `[Image #N]` reference against the images attached to the
+ * message it is reading, numbered from 1 — earlier images are not addressable
+ * by index at all (measured against grok 1.0.0, `research/image-index-probe.cjs`:
+ * a bad reference is refused with "matches no image attached to THIS MESSAGE …
+ * ask the user to re-attach it here"). We used to number session-scoped, from a
+ * counter that never reset, so the second image of a conversation went out
+ * tagged `[Image #2]` while the CLI knew it as `#1` and every `image_edit` on it
+ * failed. Position IS the contract, so the tag is now derived from position
+ * rather than remembered.
+ *
+ * Numbering counts only VISIBLE chips, matching the two things a send derives
+ * from the same list — the image blocks (`chip.hidden` skips the pre-read) and
+ * the bubble's chips (`chips.filter(c => !c.hidden)`) — so the tag, the block
+ * order, and the label the user sees cannot disagree. A hidden image chip keeps
+ * its previous number: it is not on the wire, and there is no way to hide one
+ * from the UI anyway (explicit chips render as removable rows, only the implicit
+ * editor chip has the eye), so this is a degenerate case kept merely total.
+ *
+ * `id` is deliberately NOT rewritten — it is the handle the webview holds for
+ * removeChip/toggleChip, and renumbering must not invalidate a click that is
+ * already in flight. Its embedded index is an opaque uniqueness component, not
+ * a claim about the current tag.
+ */
+export function withPerMessageImageIndices(chips: FileChip[]): FileChip[] {
+  let n = 0;
+  return chips.map((chip) => {
+    if (!isImageChip(chip) || chip.hidden) return chip;
+    n += 1;
+    return chip.imageIndex === n ? chip : { ...chip, imageIndex: n, relPath: `Image #${n}` };
+  });
 }
 
 /**
