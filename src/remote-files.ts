@@ -148,7 +148,6 @@ export function writeRemoteProjectFile(
   expectedStamp: TreeFileStamp,
   options: {
     expectedAbsPath: string;
-    isExecutableOpenTarget: (absPath: string) => boolean;
     platform?: NodeJS.Platform;
     pathFs?: TreePathFs;
     readFileSync?: (p: string) => Buffer;
@@ -178,7 +177,6 @@ export function writeRemoteProjectFile(
   }
   return writeTreeFile(root, relPath, text, expectedStamp, {
     expectedAbsPath: options.expectedAbsPath,
-    isExecutableOpenTarget: options.isExecutableOpenTarget,
     platform: options.platform,
     pathFs: options.pathFs,
     readFileSync: options.readFileSync,

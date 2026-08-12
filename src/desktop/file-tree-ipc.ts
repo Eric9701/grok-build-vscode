@@ -298,7 +298,6 @@ export function registerFileTreeIpc(opts: FileTreeIpcOptions): void {
       return { ok: false as const, reason: "invalid version stamp" };
     }
     const result = writeTreeFile(root, request.relPath, request.text, stamp as TreeFileStamp, {
-      isExecutableOpenTarget: (absPath) => isExecutableOpenTarget(absPath),
       expectedAbsPath: request.absPath,
     });
     if (!result.ok) {

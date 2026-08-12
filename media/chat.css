@@ -4049,3 +4049,24 @@ mjx-container[display="true"] {
   max-width: min(420px, 90vw);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
+
+/* ---- touch targets -----------------------------------------------------
+   A 36px floor for anything you tap with a finger. Applied only where the
+   pointer is coarse, so the desktop keeps its compact 26–28px controls: a
+   mouse is precise and the density is worth having there.
+
+   `min-width`/`min-height` rather than editing each rule, because they beat an
+   explicit `width`/`height` in the cascade — so this is a floor over the whole
+   set instead of six separate edits that the next new button would not inherit.
+
+   36 is the number the owner picked after comparing against real phone apps.
+   It clears the WCAG 2.5.8 AA floor (24px) with room; it is deliberately below
+   Apple's 44 and Material's 48, which measured as excessive for a dense
+   developer tool. `npm run e2e:screens` asserts it from a real browser. */
+@media (hover: none) and (pointer: coarse) {
+  .icon-btn,
+  .rail-action-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+}

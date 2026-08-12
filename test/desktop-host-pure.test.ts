@@ -3340,9 +3340,7 @@ describe("editable file-tree writes", () => {
     // A textarea hands back LF for every CRLF it was given, so the submission
     // says nothing about line endings — but it DOES still carry the file's
     // final newline, because an untouched end of file round-trips it.
-    const saved = writeTreeFile(root, "notes.md", "one changed\ntwo\n", read.details.stamp, {
-      isExecutableOpenTarget: () => false,
-    });
+    const saved = writeTreeFile(root, "notes.md", "one changed\ntwo\n", read.details.stamp, {});
     expect(saved.ok).toBe(true);
     expect(fs.readFileSync(file)).toEqual(Buffer.from("\xef\xbb\xbfone changed\r\ntwo\r\n", "binary"));
   });
@@ -3356,9 +3354,7 @@ describe("editable file-tree writes", () => {
     // The user removed the trailing newline. The writer used to put it back
     // while the client recorded the submitted text as its clean baseline and
     // said "Saved." — so the editor showed an edit the file did not have.
-    const saved = writeTreeFile(root, "notes.md", "one\ntwo", read.details.stamp, {
-      isExecutableOpenTarget: () => false,
-    });
+    const saved = writeTreeFile(root, "notes.md", "one\ntwo", read.details.stamp, {});
     expect(saved.ok).toBe(true);
     expect(fs.readFileSync(file)).toEqual(Buffer.from("\xef\xbb\xbfone\r\ntwo", "binary"));
 
@@ -3375,9 +3371,7 @@ describe("editable file-tree writes", () => {
     if (!read.ok || !read.details) throw new Error("expected text details");
     expect(read.details.trailingNewline).toBe(false);
 
-    const saved = writeTreeFile(root, "notes.txt", "one\ntwo\n", read.details.stamp, {
-      isExecutableOpenTarget: () => false,
-    });
+    const saved = writeTreeFile(root, "notes.txt", "one\ntwo\n", read.details.stamp, {});
     expect(saved.ok).toBe(true);
     expect(fs.readFileSync(file, "utf8")).toBe("one\ntwo\n");
   });
@@ -3408,9 +3402,7 @@ describe("editable file-tree writes", () => {
     // submission's trailing newline has to come from `read.text`, not from the
     // test, or this passes even when the pretty-printer has eaten it.
     const submitted = read.text!.replace('"old"', '"new"');
-    const saved = writeTreeFile(root, "pkg.json", submitted, read.details.stamp, {
-      isExecutableOpenTarget: () => false,
-    });
+    const saved = writeTreeFile(root, "pkg.json", submitted, read.details.stamp, {});
     expect(saved.ok).toBe(true);
     expect(fs.readFileSync(file, "utf8")).toBe('{\n  "name": "new"\n}\n');
   });
@@ -3423,9 +3415,7 @@ describe("editable file-tree writes", () => {
     if (!read.ok || !read.details) throw new Error("expected text details");
     expect(read.text).toBe('{\n  "a": 1\n}');
 
-    const saved = writeTreeFile(root, "tight.json", read.text!, read.details.stamp, {
-      isExecutableOpenTarget: () => false,
-    });
+    const saved = writeTreeFile(root, "tight.json", read.text!, read.details.stamp, {});
     expect(saved.ok).toBe(true);
     expect(fs.readFileSync(file, "utf8")).toBe('{\n  "a": 1\n}');
   });
@@ -3467,9 +3457,7 @@ describe("editable file-tree writes", () => {
       fs.writeFileSync(file, body, "utf8");
       const read = readTreeFile(root, name);
       if (!read.ok || !read.details) throw new Error("expected text details");
-      const saved = writeTreeFile(root, name, read.text!, read.details.stamp, {
-        isExecutableOpenTarget: () => false,
-      });
+      const saved = writeTreeFile(root, name, read.text!, read.details.stamp, {});
       expect(saved.ok, name).toBe(true);
       expect(fs.readFileSync(file, "utf8"), name).toBe(body);
     }
@@ -3481,9 +3469,7 @@ describe("editable file-tree writes", () => {
     const read = readTreeFile(root, "notes.md");
     expect(read.ok && read.details).toBeTruthy();
     fs.writeFileSync(file, "agent changed it\n", "utf8");
-    const result = writeTreeFile(root, "notes.md", "my edits\n", read.ok ? read.details!.stamp : { mtimeMs: 0, size: 0 }, {
-      isExecutableOpenTarget: () => false,
-    });
+    const result = writeTreeFile(root, "notes.md", "my edits\n", read.ok ? read.details!.stamp : { mtimeMs: 0, size: 0 }, {});
     expect(result).toEqual({ ok: false, reason: "changed" });
     expect(fs.readFileSync(file, "utf8")).toBe("agent changed it\n");
   });
@@ -3494,14 +3480,12 @@ describe("editable file-tree writes", () => {
     const read = readTreeFile(root, "notes.md");
     if (!read.ok || !read.details) throw new Error("expected stamp");
     fs.writeFileSync(file, "agent changed it\n", "utf8");
-    const result = writeTreeFile(root, "notes.md", "my edits\n", read.details.stamp, {
-      isExecutableOpenTarget: () => false,
-    });
+    const result = writeTreeFile(root, "notes.md", "my edits\n", read.details.stamp, {});
     expect(result.ok).toBe(false);
     expect(fs.readFileSync(file, "utf8")).toContain("agent changed it");
   });
 
-  it("refuses non-editable kinds, executable targets, and oversized bodies", () => {
+  it("refuses non-editable kinds and oversized bodies", () => {
     fs.writeFileSync(path.join(root, "image.png"), "png", "utf8");
     fs.writeFileSync(path.join(root, "script.sh"), "echo hi\n", "utf8");
     fs.writeFileSync(path.join(root, "notes.txt"), "ok\n", "utf8");
@@ -3511,18 +3495,10 @@ describe("editable file-tree writes", () => {
     expect(imageRead.ok).toBe(true);
     expect(scriptRead.ok).toBe(true);
     expect(textRead.ok && textRead.details).toBeTruthy();
-    const imageResult = writeTreeFile(root, "image.png", "x", textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {
-      isExecutableOpenTarget: () => false,
-    });
+    const imageResult = writeTreeFile(root, "image.png", "x", textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {});
     expect(imageResult).toEqual({ ok: false, reason: "file type is not editable" });
-    const executableResult = writeTreeFile(root, "script.sh", "x", textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {
-      isExecutableOpenTarget: (p) => p.endsWith("script.sh"),
-    });
-    expect(executableResult).toEqual({ ok: false, reason: "executable path refused" });
     const tooLarge = "x".repeat(FILE_PREVIEW_MAX_BYTES + 1);
-    const oversizedResult = writeTreeFile(root, "notes.txt", tooLarge, textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {
-      isExecutableOpenTarget: () => false,
-    });
+    const oversizedResult = writeTreeFile(root, "notes.txt", tooLarge, textRead.ok ? textRead.details!.stamp : { mtimeMs: 0, size: 0 }, {});
     expect(oversizedResult).toEqual({ ok: false, reason: "file too large" });
   });
 
@@ -4986,5 +4962,52 @@ describe("voice-key migration never deletes unencryptable credential (round 12)"
     expect(main).toContain("setSensitiveStore");
     expect(main).toContain("showErrorBox");
     expect(main).toMatch(/new ConfigStore\(configPath\)/);
+  });
+});
+
+// Saving a shell script used to be refused. The predicate doing the refusing —
+// `isExecutableOpenTarget` — answers "would handing this to shell.openPath risk
+// LAUNCHING code", which is the right question for Open in default app and
+// Reveal and the wrong one for a save. It also stopped only the human: the
+// agent rewrites `deploy.sh` on request, so the rule prevented nothing while
+// blocking an ordinary edit.
+describe("editing a script is an edit, not a launch", () => {
+  let root = "";
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-exec-write-"));
+  });
+  afterEach(() => {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
+  for (const name of ["deploy.sh", "task.ps1", "build.bash", "run.zsh", "make.bat"]) {
+    it(`saves ${name}`, () => {
+      const file = path.join(root, name);
+      fs.writeFileSync(file, "original\n", "utf8");
+      const read = readTreeFile(root, name);
+      if (!read.ok || !read.details) throw new Error(`expected ${name} to be readable`);
+
+      const saved = writeTreeFile(root, name, "edited\n", read.details.stamp, {});
+      expect(saved.ok, `${name}: ${JSON.stringify(saved)}`).toBe(true);
+      expect(fs.readFileSync(file, "utf8")).toBe("edited\n");
+    });
+  }
+
+  it("still refuses to LAUNCH one — the check moved, it did not vanish", () => {
+    // The question the predicate was written for, still asked where it belongs.
+    expect(isExecutableOpenTarget(path.join(root, "deploy.sh"))).toBe(true);
+    expect(isExecutableOpenTarget(path.join(root, "task.ps1"))).toBe(true);
+    expect(isExecutableOpenTarget(path.join(root, "notes.txt"))).toBe(false);
+  });
+
+  it("keeps refusing to write a kind that is not text at all", () => {
+    // The editable-kind gate is what stops a binary being saved as text, and it
+    // is untouched — dropping the executable check did not open that door.
+    fs.writeFileSync(path.join(root, "image.png"), "png", "utf8");
+    fs.writeFileSync(path.join(root, "notes.txt"), "ok\n", "utf8");
+    const text = readTreeFile(root, "notes.txt");
+    if (!text.ok || !text.details) throw new Error("expected a stamp");
+    expect(writeTreeFile(root, "image.png", "x", text.details.stamp, {}))
+      .toEqual({ ok: false, reason: "file type is not editable" });
   });
 });

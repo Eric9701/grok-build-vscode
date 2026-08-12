@@ -659,3 +659,15 @@ body.vscode-light {
   justify-content: center;
   padding: 4px 12px 12px;
 }
+
+/* The panel's own text buttons (Save / Cancel / mode toggles) were 26px tall,
+   which is thin for the two controls that commit or discard an edit. Same 36px
+   floor and the same coarse-pointer gate as the chat's icon buttons — see the
+   note at the end of chat.css for why the number is 36. */
+@media (hover: none) and (pointer: coarse) {
+  .gfp-action,
+  .gfp-tab {
+    min-height: 36px;
+  }
+  .gfp-action { min-width: 36px; }
+}

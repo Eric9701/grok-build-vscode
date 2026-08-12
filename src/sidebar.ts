@@ -6793,7 +6793,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             expectedAbsPath: msg.expectedAbsPath,
             // Same executable policy as desktop opens/saves — do not weaken it
             // for remote just because the phone never shell.opens the path.
-            isExecutableOpenTarget: (absPath) => isExecutableOpenTarget(absPath),
           },
         );
         if (written.ok) {

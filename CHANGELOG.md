@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Shell scripts can be saved from the file panel.** Editing `deploy.sh` or a `.ps1` was refused with "executable path refused" — a check written to stop the operating system *launching* a file, reused to decide whether you were allowed to *write* one. It stopped only the person: ask grok to edit the same file and it always could. The refusal stays exactly where it belongs, on Open in default app and Reveal. `.bat` and `.cmd` also open in the panel now, which `.sh` and `.ps1` already did.
+
+### Fixed
+
+- **Everything you tap on a phone is at least 36px.** The rename pencil was 22px — below the accessibility minimum — and the file-panel toggle, the one you use to reach files at all, was 28. Save and Cancel were 26 tall. Mouse-driven windows keep their compact controls; the larger targets appear only where the pointer is a finger.
+
 ## 3.6.0 — 2026-08-12
 
 ### Added

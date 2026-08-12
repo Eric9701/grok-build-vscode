@@ -103,8 +103,6 @@ export interface WriteTreeFileOptions {
   ) => void;
   renameSync?: (from: string, to: string) => void;
   unlinkSync?: (p: string) => void;
-  /** Supplied by the host so writes use the same executable policy as opens. */
-  isExecutableOpenTarget: (p: string) => boolean;
   /**
    * The absolute path this content was READ at. When given, the write refuses
    * unless `relPath` still resolves there under `root`.
@@ -390,6 +388,11 @@ const PREVIEW_TEXT_EXT = new Set([
   ".properties",
   ".bash",
   ".zsh",
+  // Windows' shell scripts, for the same reason their POSIX counterparts are
+  // here: they are text people read and edit. `.sh` and `.ps1` were previewable
+  // and these were not, which was inconsistency rather than policy.
+  ".bat",
+  ".cmd",
   ".rb",
   ".php",
   ".kt",
@@ -696,9 +699,18 @@ export function writeTreeFile(
   if (kind !== "markdown" && kind !== "json" && kind !== "text") {
     return { ok: false, reason: "file type is not editable" };
   }
-  if (options.isExecutableOpenTarget(resolved.absPath)) {
-    return { ok: false, reason: "executable path refused" };
-  }
+  // NO executable refusal here, deliberately. `isExecutableOpenTarget` answers
+  // "would handing this path to shell.openPath risk LAUNCHING code" — read its
+  // own doc comment — and that is the right question for Open in default app
+  // and Reveal, where it is still asked. Reusing it here answered a different
+  // question it was never designed for, and the answer it gave was wrong:
+  // saving `deploy.sh` from the panel was refused while the AGENT could rewrite
+  // the same file on request, so the rule stopped the human and not the
+  // machine. It also caught any file with the POSIX execute bit on macOS and
+  // Linux, so an extensionless `chmod +x` script could not be edited either.
+  // What actually protects this path is unchanged: the containment fence below,
+  // the realpath re-check before the rename, the version stamp, and the size
+  // cap.
 
   // Match readTreeFile's use-time containment check before reading the source
   // bytes whose encoding/EOL style will be preserved.
@@ -792,9 +804,9 @@ export function writeTreeFile(
     if (!finalCheck.ok || finalCheck.absPath !== checked.absPath) {
       return { ok: false, reason: finalCheck.ok ? "path changed since check" : finalCheck.reason };
     }
-    if (options.isExecutableOpenTarget(finalCheck.absPath)) {
-      return { ok: false, reason: "executable path refused" };
-    }
+    // The containment re-check above stays — a link swapped between the first
+    // check and the rename is a real attack and this is where it is caught.
+    // Only the executable question is gone; see the note at the top.
     let finalStat: fs.Stats;
     try {
       finalStat = pathFs.statSync(finalCheck.absPath);
