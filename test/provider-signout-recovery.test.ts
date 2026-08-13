@@ -37,10 +37,16 @@ function makeSidebar(options: {
   const cwd = options.cwd ?? "/repo";
   const memento: Memento = options.memento ?? {};
   const sidebar = Object.create(GrokSidebar.prototype) as any;
+  const connected = options.connected ?? ["grok"];
   sidebar.providerConnectionState = { grok: true, codex: false };
   sidebar.providerConnections = vi.fn(() => sidebar.providerConnectionState);
-  sidebar.connectedProviders = vi.fn(() => options.connected ?? ["grok"]);
-  sidebar.defaultProviderForProject = vi.fn(() => (options.connected ?? ["grok"])[0] ?? "grok");
+  sidebar.locateProvider = vi.fn((provider: "grok" | "codex") => provider);
+  sidebar.locatedProviders = vi.fn(() => ({
+    grok: connected.includes("grok"),
+    codex: connected.includes("codex"),
+  }));
+  sidebar.connectedProviders = vi.fn(() => connected);
+  sidebar.defaultProviderForProject = vi.fn(() => connected[0] ?? "grok");
   sidebar.remoteClients = new RemoteClientState<Session>(cwd);
   sidebar.pool = new Set<Session>();
   sidebar.sessionCache = new Map();

@@ -34,7 +34,16 @@ export function getSlashQuery(text: string, caret: number): string | null {
 export function filterCommands(commands: SlashCmd[], query: string): SlashCmd[] {
   const q = query.toLowerCase();
   if (!q) return commands;
-  return commands.filter((c) => c.name.toLowerCase().startsWith(q));
+  // Prefix first, then mid-name substring; both case-insensitive. Walk the
+  // advertised list once so each tier keeps its original order (#110).
+  const prefix: SlashCmd[] = [];
+  const substring: SlashCmd[] = [];
+  for (const c of commands) {
+    const name = c.name.toLowerCase();
+    if (name.startsWith(q)) prefix.push(c);
+    else if (name.includes(q)) substring.push(c);
+  }
+  return prefix.concat(substring);
 }
 
 /** Replace the partial `/q` token with `/<name> ` and return the new text + caret. */

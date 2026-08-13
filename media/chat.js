@@ -10684,7 +10684,19 @@
     const m = (input.value.slice(0, input.selectionStart || 0)).match(/(?:^|\n)\/(\S*)$/);
     if (!m) { slashPopover.hidden = true; state.slashFiltered = []; return; }
     const q = m[1].toLowerCase();
-    state.slashFiltered = state.commands.filter((c) => c.name.toLowerCase().startsWith(q));
+    // Prefix first, then mid-name substring; advertised order within each tier.
+    if (!q) {
+      state.slashFiltered = state.commands;
+    } else {
+      const prefix = [];
+      const substring = [];
+      for (const c of state.commands) {
+        const name = c.name.toLowerCase();
+        if (name.startsWith(q)) prefix.push(c);
+        else if (name.includes(q)) substring.push(c);
+      }
+      state.slashFiltered = prefix.concat(substring);
+    }
     if (!state.slashFiltered.length) { slashPopover.hidden = true; return; }
     state.slashActive = 0;
     renderSlash();

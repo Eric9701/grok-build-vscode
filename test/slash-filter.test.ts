@@ -50,10 +50,38 @@ describe("filterCommands", () => {
     ]);
   });
 
+  it("matches a mid-name substring (#110)", () => {
+    const skills = [
+      { name: "ux-ui-promax" },
+      { name: "web-design" },
+      { name: "compact" },
+    ];
+    expect(filterCommands(skills, "ui").map((c) => c.name)).toEqual(["ux-ui-promax"]);
+    expect(filterCommands(skills, "design").map((c) => c.name)).toEqual(["web-design"]);
+  });
+
+  it("ranks prefix matches above substring matches, stably within each tier", () => {
+    const skills = [
+      { name: "ux-ui-promax" },
+      { name: "ui-kit" },
+      { name: "fluid" },
+      { name: "uid" },
+    ];
+    expect(filterCommands(skills, "ui").map((c) => c.name)).toEqual([
+      "ui-kit",
+      "uid",
+      "ux-ui-promax",
+      "fluid",
+    ]);
+  });
+
   it("is case-insensitive", () => {
     expect(filterCommands(cmds, "CO").map((c) => c.name)).toEqual([
       "compact",
       "context",
+    ]);
+    expect(filterCommands([{ name: "ux-ui-promax" }], "UI").map((c) => c.name)).toEqual([
+      "ux-ui-promax",
     ]);
   });
 

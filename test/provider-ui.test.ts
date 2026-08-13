@@ -73,6 +73,12 @@ describe("provider UI pure policy", () => {
     expect(merged.map((entry) => entry.id)).toEqual(["grok-new", "codex-mid", "grok-old"]);
     expect(mergeProviderSessionEntries(merged, [], ["grok", "codex"], "codex").map((entry) => entry.id))
       .toEqual(["codex-mid"]);
+    expect(mergeProviderSessionEntries(
+      [row("grok-plan", 4)],
+      [row("codex-other", 5, "codex")],
+      ["codex"],
+      "plan",
+    ).map((entry) => entry.id)).toEqual(["grok-plan"]);
   });
 
   it("dedupes the final searchable provider merge by globally unique session id", () => {

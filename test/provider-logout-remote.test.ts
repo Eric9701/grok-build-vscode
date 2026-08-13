@@ -7,6 +7,8 @@ import type { HostMsg } from "../src/protocol";
 function makeSidebar(update: () => Promise<void> = async () => {}): any {
   const sidebar = Object.create(GrokSidebar.prototype) as any;
   sidebar.cliPath = "grok";
+  sidebar.locateProvider = vi.fn((provider: "grok" | "codex") => provider);
+  sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: true }));
   sidebar.providerConnectionState = { grok: true, codex: true };
   sidebar.providerConnections = vi.fn(() => sidebar.providerConnectionState);
   sidebar.remoteClients = new RemoteClientState<Session>("/repo");

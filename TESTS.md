@@ -76,14 +76,19 @@ The wire format is the highest-value test surface: ACP changes break everything 
 - Multiple chips concatenate cleanly
 - Files without extensions get an empty fence language
 
-### `test/slash-filter.test.ts` — slash autocomplete + dispatch gate (21 tests)
+### `test/slash-filter.test.ts` — slash autocomplete + dispatch gate
 
 - `getSlashQuery` only activates after `/` at line-start or newline (no false positives on `path/foo/bar`)
 - Empty query returns the full command list
-- Prefix filter is case-insensitive
+- Name filter is case-insensitive substring, prefix matches first then mid-name, stable within each tier (#110)
 - `applySlashPick` replaces only the slash token, preserves trailing text, returns the new caret position
 - `matchSlashCommand` recognizes an advertised command only at position 0 (rejects Unix paths / mid-line slashes)
 - `filterAdvertisedCommands` drops the config-mutating `/always-approve` from both the autocomplete list and the dispatch gate (#31)
+
+### `test/slash-popover.dom.test.ts` — "/" skill/command popover in a real DOM (#110)
+
+- Typing `ui` finds `ux-ui-promax`; `design` finds `web-design`
+- Prefix matches rank above substring matches; non-matches stay out; matching is case-insensitive; no-match hides the popover
 
 ### `test/mention.test.ts` — "@" file autocomplete, pure halves (24 tests)
 

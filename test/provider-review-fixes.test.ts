@@ -159,6 +159,8 @@ describe("multi-provider review regressions", () => {
     expect(disconnect).toBeGreaterThan(exec);
     expect(body.slice(exec, disconnect)).toContain("catch (error)");
     expect(body).toContain("The account remains connected");
+    expect(body).toContain('this.locateProvider("codex")');
+    expect(body).toContain('this.locateProvider("grok")');
     expect(body).toContain('await this.finishProviderLogout("codex")');
     expect(body).toContain('await this.finishProviderLogout("grok")');
   });

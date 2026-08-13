@@ -171,7 +171,9 @@ export function mergeProviderSessionEntries(
 ): SessionListEntry[] {
   const q = query.trim().toLowerCase();
   const entries = [
-    ...(providers.includes("grok") ? grokEntries : []),
+    // Grok rows are disk/buffer-truth (same contract as the unfiltered page).
+    // Codex rows come from the adapter RPC, so they stay connection-gated.
+    ...grokEntries,
     ...(providers.includes("codex") ? codexEntries : []),
   ];
   return dedupeSessionEntriesById(entries)

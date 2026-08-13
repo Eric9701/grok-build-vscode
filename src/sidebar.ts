@@ -4708,8 +4708,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           return !session || session.hasHistory;
         }))
       : undefined;
-    if (newest) await this.openRemoteSession(clientId, newest.id, newest.cwd, false);
-    else await this.newRemoteSession(clientId, false);
+    if (newest) {
+      const liveSession = live.get(newest.id);
+      const ownedByOther = !!liveSession && this.remoteClients.clients().some((ownerId) =>
+        ownerId !== clientId && this.remoteClients.active(ownerId)?.activeSessionId === newest.id
+      );
+      // Re-selecting a repo whose conversation is already live must replay its
+      // buffer. focusRemoteSession needs no CLI; openRemoteSession would mint
+      // onboarding over a clientless live member. Another tab's live session
+      // still goes through openRemoteSession, which refuses the steal.
+      if (liveSession && !ownedByOther) this.focusRemoteSession(clientId, liveSession, false);
+      else await this.openRemoteSession(clientId, newest.id, newest.cwd, false);
+    } else {
+      await this.newRemoteSession(clientId, false);
+    }
     this.sendRemoteRepoCatalog(clientId);
   }
 
@@ -5190,9 +5202,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       await this.finishProviderLogout("codex");
       return;
     }
-    const cliPath = this.cliPath || locateGrokCli(
-      this.host.getConfiguration("grok").get<string>("cliPath", ""),
-    );
+    const cliPath = this.locateProvider("grok");
     if (!cliPath) {
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform, provider: "grok" });
       return;
@@ -5997,6 +6007,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       return undefined;
     }
     if (!this.connectedProviders().includes(target.provider)) {
+      const testDelay = this.testSessionStartDelay;
+      if (testDelay && testDelay.resumeId === resumeId) {
+        this.testSessionStartDelay = undefined;
+        testDelay.started();
+        await testDelay.wait;
+      }
       target.priming = false;
       this.emit(target, { type: "setBusy", value: false });
       this.postProviderState();
@@ -7960,18 +7976,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     cwd = listCwd;
     const providers = this.connectedProviders();
     if (providers.includes("codex")) this.scheduleCodexHistoryRefresh(cwd);
-    if (providers.length === 1 && providers[0] === "grok") {
+    // Grok rows are files under GROK_HOME/sessions (plus live-pool synthesis) —
+    // listing is disk/buffer-truth and must not wait for a located grok binary.
+    // Codex rows come from the adapter's session/list RPC, so they legitimately
+    // require the Codex CLI.
+    if (!providers.includes("codex")) {
       return this.buildGrokSessionsList(cwd, opts, activeId, scope);
     }
 
     const query = opts?.query ?? "";
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const providerCursor = opts?.providerCursor ?? { grokOffset: offset };
-    const grok = providers.includes("grok")
-      ? this.buildGrokSessionsList(cwd, query
+    const grok = this.buildGrokSessionsList(cwd, query
           ? { offset: 0, limit: Number.MAX_SAFE_INTEGER, query }
-          : { offset: providerCursor.grokOffset, limit, query }, activeId, scope)
-      : undefined;
+          : { offset: providerCursor.grokOffset, limit, query }, activeId, scope);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const codex = providers.includes("codex")
       ? [...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? [])]
@@ -7986,7 +8004,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       ? mergeProviderSessionEntries(grok?.entries ?? [], codex, providers, query)
       : undefined;
     const combinedPage = query ? undefined : mergeProviderHistoryPage(
-      grok && providers.includes("grok") ? grok : undefined,
+      grok,
       providers.includes("codex") ? codex : [],
       providerCursor,
       limit,
