@@ -170,6 +170,27 @@ function log(line: string): void {
 }
 
 /**
+ * Chromium per-origin zoomFactor must stay 1. Chat scale is CSS `--chat-zoom`
+ * only; stacking the two is the boot-layout overflow. Re-pin on every
+ * app-document load (including reload) because a leftover origin zoom survives.
+ */
+function pinAppDocumentZoom(win: BrowserWindow | null): void {
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  const url = win.webContents.getURL();
+  if (url && url !== "about:blank" && !isAppDocumentUrl(url)) return;
+  try {
+    void win.webContents.setVisualZoomLevelLimits(1, 1);
+  } catch {
+    /* older Electron */
+  }
+  try {
+    win.webContents.setZoomFactor(1);
+  } catch {
+    /* zoomFactor unavailable */
+  }
+}
+
+/**
  * Application menu: no stock Electron Help links; public repo only.
  * File → Add/Close Project Folder drive multi-folder (rail + config store).
  * Developer Tools only when `!isPackaged` (default: `app.isPackaged`).
@@ -192,8 +213,25 @@ export function buildDesktopAppMenu(
 }
 
 let mainWindow: BrowserWindow | null = null;
+// Set on ready-to-show (or did-fail-load): gates every other show() path.
+let mainWindowReadyToShow = false;
 let sidebar: GrokSidebar | null = null;
 let webview: ElectronWebview | null = null;
+
+/** View-menu zoom → renderer `window.__grokFontScale` (CSS path). */
+function applyDesktopCssZoom(kind: "in" | "out" | "reset"): void {
+  const win = mainWindow;
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  const src =
+    kind === "reset"
+      ? `(function(){var a=window.__grokFontScale;if(a&&typeof a.set==="function")a.set(1);})()`
+      : kind === "in"
+        ? `(function(){var a=window.__grokFontScale;if(a&&typeof a.set==="function"&&typeof a.step==="function")a.set(a.step(a.get(),a.stepSize));})()`
+        : `(function(){var a=window.__grokFontScale;if(a&&typeof a.set==="function"&&typeof a.step==="function")a.set(a.step(a.get(),-a.stepSize));})()`;
+  void win.webContents.executeJavaScript(src, true).catch(() => {
+    /* renderer not ready */
+  });
+}
 
 // One process per profile: a second launch must focus the existing window, not
 // spawn another sidebar / ACP pool / remote uplink on the same device token.
@@ -214,7 +252,9 @@ if (!gotSingleInstanceLock) {
     const win = mainWindow;
     if (!win || win.isDestroyed()) return;
     if (win.isMinimized()) win.restore();
-    if (!win.isVisible()) win.show();
+    // Never surface a window that has not reached ready-to-show — a double
+    // launch during boot must not paint the unsettled frame show:false hides.
+    if (!win.isVisible() && mainWindowReadyToShow) win.show();
     win.focus();
     if (
       secondInstanceShouldOpenDevTools({
@@ -434,6 +474,9 @@ async function createApp(): Promise<void> {
         removeProjectFolder: () => {
           void sidebar?.removeProjectFolder();
         },
+        zoomIn: () => applyDesktopCssZoom("in"),
+        zoomOut: () => applyDesktopCssZoom("out"),
+        resetZoom: () => applyDesktopCssZoom("reset"),
       },
       { isPackaged },
     ),
@@ -464,6 +507,10 @@ async function createApp(): Promise<void> {
     // Windows draws a light system menu strip over a dark app otherwise. Hide
     // it by default; Alt reveals the File/Edit/View/Help menus when needed.
     autoHideMenuBar: true,
+    // Hold the first paint until Chromium has a settled frame. Showing on
+    // construct (NSIS --force-run relaunch is the sharp case) lays the
+    // document out against an unsettled viewport; boot focus then sticks it.
+    show: false,
     icon: iconOpt,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -475,6 +522,16 @@ async function createApp(): Promise<void> {
       spellcheck: false,
       devTools: allowDevTools,
     },
+  });
+
+  pinAppDocumentZoom(mainWindow);
+  mainWindow.once("ready-to-show", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // Re-pin right before first show: a leftover per-origin zoom applied
+    // between construct and first paint would resurrect the stacked-zoom bug.
+    pinAppDocumentZoom(mainWindow);
+    mainWindowReadyToShow = true;
+    mainWindow.show();
   });
 
   installWindowSecurityLocks(mainWindow, {
@@ -539,6 +596,7 @@ async function createApp(): Promise<void> {
   // remounts without touching getHtml() / chat.js. Chrome fades run after the
   // panel so #messages is in its final parent.
   mainWindow.webContents.on("did-finish-load", () => {
+    pinAppDocumentZoom(mainWindow);
     void (async () => {
       await injectFileTreePanelLogged(mainWindow, log);
       if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
@@ -635,6 +693,12 @@ async function createApp(): Promise<void> {
 
   mainWindow.webContents.on("did-fail-load", (_e, code, desc, url) => {
     log(`did-fail-load ${code} ${desc} url=${url}`);
+    // The app document failed: show the (blank) window rather than hanging
+    // invisibly behind ready-to-show that will never fire.
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindowReadyToShow = true;
+      mainWindow.show();
+    }
   });
 }
 

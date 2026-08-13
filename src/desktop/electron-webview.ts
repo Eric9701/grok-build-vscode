@@ -613,6 +613,7 @@ export function desktopChromeBootSource(): string {
     window.addEventListener("resize", schedule);
   }
   apply();
+  try { window.__grokResetDocumentScroll?.(); } catch (_) { /* chat.js hook */ }
   // Theme toggle is wired by the early head boot (grok-desktop-theme-boot) —
   // do not attach a second listener here or a single click double-flips.
   return { ok: true };

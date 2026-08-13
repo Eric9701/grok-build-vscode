@@ -31,8 +31,8 @@ export async function assertPinnedAfterZoomedExpandedTurn(page, opts = {}) {
   await page.waitForSelector("#scroll-bottom-btn", { timeout: 15000 });
 
   // VS Code sidebar geometry: hide desktop chrome that would steal the
-  // column, then shrink to a zoomed-sidebar size. Cmd+= is Chromium page
-  // zoom on top of --chat-zoom.
+  // column, then shrink to a zoomed-sidebar size. Cmd+= is CSS --chat-zoom
+  // (Chromium zoomFactor stays 1).
   await page.evaluate(() => {
     document.body.classList.add("desk-rail-collapsed");
     const tree = document.getElementById("desk-ft-panel");

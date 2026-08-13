@@ -70,7 +70,6 @@ body.desk .session-name-chip { padding-left: 0; }
 ::-webkit-scrollbar-corner { background: transparent; }
 
 html, body {
-  height: 100%;
   margin: 0;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
@@ -78,16 +77,30 @@ html, body {
   background: var(--vscode-sideBar-background);
 }
 
+html {
+  height: 100%;
+}
+
+/* Desktop + VS Code only (`body.desk` comes from getHtml; the phone client
+   never sets it): pin the document scroller so a taller-than-window first
+   frame cannot stick. The phone page keeps document overflow — URL-bar
+   hide-on-scroll and keyboard pans rely on it. */
+html:has(body.desk) {
+  overflow: hidden;
+}
+
 body {
   display: flex;
   flex-direction: column;
   /* grok.chatFontScale zooms the chat via --chat-zoom (set inline on <body>).
-     `zoom` scales layout but `vh` ignores it, so a 100vh body at zoom 0.7 would
-     render at 70vh and leave dead space below the composer ÔÇö divide the height
-     back out so the body always fills the viewport and the composer stays
-     pinned to the bottom at any scale. */
+     `zoom` scales layout but the containing block does not, so a 100% body at
+     zoom 0.7 would paint at 70% and leave dead space below the composer —
+     divide the html height back out so the body always fills the window and
+     the composer stays pinned to the bottom at any scale.
+     Use 100% of html, not 100vh: vh ignores CSS zoom and can read the
+     unsettled window/monitor size on first paint; html is the settled box. */
   zoom: var(--chat-zoom, 1);
-  height: calc(100vh / var(--chat-zoom, 1));
+  height: calc(100% / var(--chat-zoom, 1));
   overflow: hidden;
   /* Shared rail / file-tree row rhythm (desktop tree panel reuses these). */
   --rail-row-font-size: 13px;

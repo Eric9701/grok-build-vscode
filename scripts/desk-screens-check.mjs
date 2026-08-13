@@ -92,6 +92,21 @@ try {
   await page.waitForSelector("#input", { timeout: 45000 });
   await page.waitForSelector("#desk-ft-top-toggle", { timeout: 25000 });
   await page.waitForTimeout(500);
+
+  const zoomFactor = await app.evaluate(async ({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    return win ? win.webContents.getZoomFactor() : null;
+  });
+  assert.ok(
+    typeof zoomFactor === "number" && Math.abs(zoomFactor - 1) < 0.001,
+    `desk: Chromium zoomFactor must stay 1 (got ${zoomFactor})`,
+  );
+  const bootLayout = await page.evaluate(() => ({
+    top: document.documentElement.scrollTop,
+    left: document.documentElement.scrollLeft,
+  }));
+  assert.equal(bootLayout.top, 0, `desk: documentElement.scrollTop must stay 0 after boot (got ${bootLayout.top})`);
+  assert.equal(bootLayout.left, 0, `desk: documentElement.scrollLeft must stay 0 after boot (got ${bootLayout.left})`);
   await shot("desk-1-chat");
   await assertNoBlankIcons("desk chat");
   // Proves the host actually READ the fixture store. Without this the check

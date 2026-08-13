@@ -233,6 +233,7 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
     window.__grokDeskFilePanel = panel;
     window.__grokDeskFtBeforeClose = () => panel.confirmClose();
     window.__grokDeskFtOpen = (relPath) => panel.openPath(relPath);
+    try { window.__grokResetDocumentScroll?.(); } catch (_) { /* chat.js hook */ }
     return { ok: true };
   })()`;
 }

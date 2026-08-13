@@ -39,6 +39,10 @@ export function shouldOpenDevToolsAtStartup(opts: {
 export interface DesktopAppMenuActions {
   addProjectFolder?: () => void;
   removeProjectFolder?: () => void;
+  /** CSS `--chat-zoom` (same path as Cmd+= / the Text size slider). */
+  zoomIn?: () => void;
+  zoomOut?: () => void;
+  resetZoom?: () => void;
 }
 
 /** Accelerator for Toggle Developer Tools (works with autoHideMenuBar). */
@@ -123,9 +127,40 @@ export function desktopAppMenuTemplate(opts: {
         ]
       : []),
     { type: "separator" },
-    { role: "resetZoom" },
-    { role: "zoomIn" },
-    { role: "zoomOut" },
+    // Click-only: Chromium zoomIn/Out/resetZoom roles change webContents
+    // zoomFactor, which stacks on body `--chat-zoom` and is the boot-layout
+    // race. Keyboard Cmd+=/−/0 stay in chat.js (`setClientFontScale`) so a
+    // menu accelerator cannot double-step. No roles here.
+    {
+      label: "Actual Size",
+      click: () => {
+        try {
+          actions?.resetZoom?.();
+        } catch {
+          /* best-effort */
+        }
+      },
+    },
+    {
+      label: "Zoom In",
+      click: () => {
+        try {
+          actions?.zoomIn?.();
+        } catch {
+          /* best-effort */
+        }
+      },
+    },
+    {
+      label: "Zoom Out",
+      click: () => {
+        try {
+          actions?.zoomOut?.();
+        } catch {
+          /* best-effort */
+        }
+      },
+    },
     { type: "separator" },
     { role: "togglefullscreen" },
   ];

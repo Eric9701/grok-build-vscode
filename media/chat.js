@@ -9086,6 +9086,23 @@
     document.body.style.setProperty("--chat-zoom", String(zoom));
   }
 
+  // Desktop-only: a boot-time focus() into the composer can scroll html when
+  // the first frame is taller than the window. File-tree inject / chrome wrap
+  // call this hook (they must not live in this file); resize is the backstop.
+  function resetDocumentScroll() {
+    const root = document.documentElement;
+    if (!root) return;
+    root.scrollTop = 0;
+    root.scrollLeft = 0;
+  }
+  if (IS_DESKTOP_CLIENT) {
+    window.__grokResetDocumentScroll = resetDocumentScroll;
+    // Window resize only — deliberately NOT visualViewport resize: a touch
+    // keyboard shrinking the visual viewport relies on the UA pan that keeps
+    // the focused composer in view, and zeroing scrollTop would undo it.
+    window.addEventListener("resize", resetDocumentScroll);
+  }
+
   /** Set client-owned zoom, persist, report (remote), refresh gear if open. */
   function setClientFontScale(next) {
     if (!CLIENT_OWNS_FONT_SCALE) return state.remoteFontScale;
@@ -11766,8 +11783,8 @@
       case "fontScale":
         // Live chat-only zoom (grok.chatFontScale). Initial value is baked into
         // <body style="--chat-zoom:…"> by the host; this just applies later edits.
-        // The CSS derives both `zoom` and the viewport-height compensation from
-        // this one variable, so the composer stays pinned to the bottom.
+        // The CSS derives both `zoom` and the containing-block height
+        // compensation from this one variable, so the composer stays pinned.
         // Client-owned zoom (remote + desktop) ignores host updates so local
         // keyboard/wheel/slider choice is not clobbered.
         state.hostFontScale = Number(msg.value) || 1;
@@ -11776,8 +11793,9 @@
       case "focusInput":
         // Send Selection / Send File / @-mention (#43): the host revealed the
         // panel taking focus; land the caret in the composer so the user can
-        // type a prompt immediately.
-        input.focus();
+        // type a prompt immediately. preventScroll: the composer lives in the
+        // fixed chrome — html must never scroll to reveal it (boot-layout fix).
+        input.focus({ preventScroll: true });
         break;
       case "moveComposerCaret":
         moveComposerCaret(msg.direction);
@@ -13746,11 +13764,17 @@
   // clicking back into a panel that stayed alive. Only claim focus when it
   // landed on <body> (i.e. nowhere) — a click that focused a real control
   // (history button, popover row) keeps it.
+  // applyChatZoom first: a stored desktop/remote scale must be on the body
+  // before focus, or the first layout is at 1 and focus scrolls the overflow.
+  // preventScroll: a taller-than-window first frame must not stick html.
+  applyChatZoom();
+  wireClientFontScaleShortcuts();
   window.addEventListener("focus", () => {
     const el = document.activeElement;
-    if (!el || el === document.body) input.focus();
+    if (!el || el === document.body) input.focus({ preventScroll: true });
   });
-  input.focus();
+  input.focus({ preventScroll: true });
+  if (IS_DESKTOP_CLIENT) resetDocumentScroll();
 
   if (IS_REMOTE) {
     // Host-page TTS seam; changes also emit `grokRemoteTtsChange` with { available, enabled }.
@@ -13762,8 +13786,6 @@
     });
   }
   syncProviderVoice();
-  applyChatZoom();
-  wireClientFontScaleShortcuts();
   initMermaid();
   initMathJax();
   claimRemoteTabIdentity((finalToken) => {
