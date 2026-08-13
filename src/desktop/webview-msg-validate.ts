@@ -87,11 +87,10 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       if (type === "openSettings" && raw.section !== undefined && !isString(raw.section)) return null;
       break;
     case "runInstallCmd":
-    case "runGrokLogin":
-    case "logout":
+    case "installCodex":
+    case "cancelCodexInstall":
     case "checkGrokUpdate":
     case "updateGrok":
-    case "recheckConnection":
     case "pickFile":
     case "voiceStart":
     case "remoteVoiceStart":
@@ -102,6 +101,12 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "removeWorktree":
     case "remoteSignIn":
     case "remoteSignOut":
+      break;
+    case "runGrokLogin":
+    case "logout":
+    case "recheckConnection":
+    case "retryProviderSession":
+      if (raw.provider !== undefined && raw.provider !== "grok" && raw.provider !== "codex") return null;
       break;
     case "setMode":
       if (raw.modeId !== "agent" && raw.modeId !== "plan" && raw.modeId !== "yolo") {
@@ -131,6 +136,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "openText":
       if (!isString(raw.content)) return null;
       if (!opt(raw.language, isString)) return null;
+      if (!opt(raw.filename, isString)) return null;
       break;
     case "openDiff":
       if (!isString(raw.path) || !isString(raw.oldText) || !isString(raw.newText)) return null;
@@ -190,10 +196,20 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       break;
     case "setModel":
       if (!isString(raw.modelId)) return null;
+      if (raw.provider !== undefined && raw.provider !== "grok" && raw.provider !== "codex") return null;
       break;
     case "listSessions":
       if (!opt(raw.offset, isNumber) || !opt(raw.limit, isNumber) || !opt(raw.query, isString)) {
         return null;
+      }
+      if (raw.providerCursor !== undefined) {
+        if (!isObject(raw.providerCursor)) return null;
+        if (!isNumber(raw.providerCursor.grokOffset) || raw.providerCursor.grokOffset < 0) return null;
+        if (raw.providerCursor.codexHighWater !== undefined) {
+          if (!isObject(raw.providerCursor.codexHighWater)) return null;
+          if (!isNumber(raw.providerCursor.codexHighWater.updatedAt)) return null;
+          if (!isString(raw.providerCursor.codexHighWater.id)) return null;
+        }
       }
       break;
     case "listRepoSessions":

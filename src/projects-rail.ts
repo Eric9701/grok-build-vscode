@@ -91,8 +91,8 @@ export interface RailSessionRow {
  * that may not sit in those previews. Newest first; ids unique within the
  * result. Cap defaults to {@link RAIL_RECENT_CAP}.
  *
- * Overlap with PINNED / per-project lists is intentional — a shortcut, not a
- * partition.
+ * The renderer assigns each returned id to one visible group at a time; this
+ * helper only decides which ids qualify for RECENT and in what order.
  */
 export function collectRecentSessions(
   lists: readonly (readonly RailSessionRow[])[],

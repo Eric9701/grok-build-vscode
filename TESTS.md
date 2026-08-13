@@ -13,6 +13,23 @@ Separately, **grok-dependent probes** live as standalone scripts under `research
 
 The goal of layers (1)+(2) is to make the protocol surface and UI logic regression-proof. Layer 1 catches logic regressions on every commit; layer 2 catches CLI-contract drift (a new grok version changing a wire shape) before each release.
 
+## Standing test discipline
+
+- Every branch on `session.provider === …` has explicit coverage for both providers.
+- When a wrapper takes over a function with documented invariants, the wrapper carries the function's contract tests. Mixed history treats Grok consumed-slot pagination as opaque and property-tests exact-once/no-skip output against a full-list oracle across hidden rows, ties, mtime drift, and Codex age mixes.
+- Provider sign-out regressions drive the real `onMessage({type:"logout"})` command path and assert pre-persistence atomic disposal (slow + rejected stores), focused/remote/background draft recovery, detached-tab reconnect replacement, focused-cwd rooting while another project is browsed, and other-provider preservation. A background draft is asserted on both sides of a host restart: parked into globalState by the real logout, handed back by a real `resumeSession` on a **second sidebar sharing the same memento** (against the fake Codex adapter), and never handed back twice. Re-connection drives the real `recheckConnection` and asserts every stranded view is adopted, while a detached view keeps META untouched until its same-provider or other-provider logical tab reconnects and has a composer. History authorization drives the real remote `listSessions` ingress; pagination drives the real DOM message/request path without synthetic scroll events.
+- Draft lifecycle tests also drive New-session parking, remote detach/reconnect,
+  release, failed and successful provider retargeting, the empty-session sweep,
+  and the TTL/LRU selector. The invariant is that `needsProvider` or a draft makes
+  a session non-empty and non-reapable, while META is cleared only after startup.
+- An auth-shaped failure from a background probe is asserted through that probe's own entry point — a gear re-check for the model warm-up, a remote `listSessions` for the history listing — and must change the ACCOUNT's state rather than let a surface degrade silently; Codex uses only `isCodexCredentialError`, so an uncoded `Sign in required` matches while `unauthorized model for project` and billing failures leave it alone.
+- Provider-login tests use Codex's uncoded `Sign in required` shape and drive the
+  real Re-check and login actions, including a delayed successful probe. Remote
+  policy tests prove durable Re-check is refused while retrying an already-connected
+  session remains available.
+- Fixtures for external artifacts mirror the real artifact listing and layout, including multi-platform bundles and the Codex package structure; idealized fixture layouts are insufficient.
+- Every new filesystem or network stream has fault-injection coverage for its asynchronous error paths.
+
 ---
 
 ## What we test
@@ -104,7 +121,7 @@ The wire format is the highest-value test surface: ACP changes break everything 
 - Typing `@`/`@ch` posts `mentionQuery` per keystroke; a mid-word `@` (email) posts nothing
 - `mentionResults` renders name + dimmed-dir rows and shows the popover; stale replies (query moved on / popover closed) are dropped; an empty list hides the popover but keeps the token querying
 - ArrowDown + Enter picks the highlighted file (token rewritten, `addMentionFile` posted, popover hidden) without triggering send/queueSend; clicking a row picks too; Escape closes without touching the text
-- `agentStart` shows the Grokking indicator with the shimmer label span + "Waiting for response" title
+- `agentStart` shows the shared waiting indicator with provider copy (Grokking / Opening AI), and the composer placeholder switches live between Ask Grok and Ask GPT
 
 ### `test/grok-config.test.ts` — config.toml permission-mode reader (15 tests)
 
@@ -244,9 +261,10 @@ happy-dom test locking in the native-Windows regressions this build fixed (plus 
 - **Sound notifications (#59)** — the gear → Config & debug switch reflects the setting and posts `setSoundNotifications` on toggle
 - **Reasoning trace** — a thought chunk renders a collapsed thinking block whose header click toggles the body open/closed (chevron ▶/▼)
 - **Gear settings lock** — the model button shows the friendly name (not the raw id); model + effort controls are disabled while busy/priming and re-enable when busy clears
+- **Remote provider parity** — no `providerState` keeps legacy history rows dot-only; the minimal frame enables glyph+badge overlays only with two connected providers, groups the empty-session picker Grok-first, permits an empty cross-provider pick, scopes a non-empty Codex picker to Codex, never renders account management on the phone, and replaces signed-out login actions with desk guidance
 - **User-message dedup** — a `user_message_chunk` echoed live (grok ≥0.2.33) never doubles the optimistic bubble; only a `session/load` replay drives user bubbles
 - **Welcome version lifecycle** — flips to "Connected · v<version>" only when session start finishes, not at the bare ACP handshake; later busy toggles don't overwrite it
-- **Gear menu** — the Other group's About sub-view (extension + CLI versions, update check) and Config & debug sub-view render and route correctly
+- **Gear menu** — the Other group's About sub-view renders local Grok-only, Codex-only, combined, remote host-reported, and old-host fallback version states; Grok retains update actions while Codex separates binary/adapter versions and stays advise-only
 
 ### `test/projects-rail.dom.test.ts` — the browser's projects rail (56 tests)
 
@@ -274,6 +292,10 @@ posted.
   conversation lives in a worktree, whose cwd is not a catalog row
 - **Search** reaches into Archived and forces it open, rather than answering "No matches"
   while the project sits collapsed below
+- **Global row identity** — duplicate source rows with one session id render once across
+  Pinned/Recent/project groups, while two different ids both named `GPT` select and
+  highlight independently. The real-Electron provider journey repeats this through
+  Codex create/send/list/rename/re-list using adapter cwd casing drift.
 
 ### `test/file-ref.test.ts` — open-file refs + inline-read guard (8 tests)
 
@@ -304,6 +326,9 @@ posted.
 ### `test/media-subagent.dom.test.ts` — generated media + subagent card in a real DOM (10 tests)
 
 - `addGeneratedMedia` renders an image as `<img>` and a video as `<video controls>` from the host's `media` message, wires the Copy-path / Open-in-VS-Code hover actions, replaced by Show-in-folder for both media kinds on a host that advertises it, and falls back to an open-link button for a remote URL
+- The captured Codex image-generation tool sequence reaches that same DOM entry
+  point on VS Code, desktop, and remote. The desktop suite also drives the real
+  Electron window and asserts the app-resource image plus Copy/Show actions.
 - the (deferred) subagent classifier renders a *Subagent: \<type\>* card when fed a delegation shape
 
 ### `test/question-card.dom.test.ts` — `x.ai/ask_user_question` card (12 tests)

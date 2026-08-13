@@ -6,6 +6,7 @@ const hl = require("../media/syntax-highlight.js") as {
   escapeHtml(s: string): string;
   highlightCode(text: string, lang: string): string;
   languageForPath(p: string): string;
+  languageForId(id: string): string;
   MAX_HIGHLIGHT_BYTES: number;
   _rules: Record<string, Array<{ type: string; re: string; flags?: string }>>;
 };
@@ -346,5 +347,16 @@ describe("languageForPath", () => {
       const lang = hl.languageForPath(name);
       expect(hl._rules[lang], `${name} → ${lang}`).toBeTruthy();
     }
+  });
+});
+
+describe("languageForId", () => {
+  it("maps host language ids onto highlighter rulesets", () => {
+    expect(hl.languageForId("powershell")).toBe("ps1");
+    expect(hl.languageForId("shellscript")).toBe("sh");
+    expect(hl.languageForId("javascript")).toBe("js");
+    expect(hl.languageForId("ps1")).toBe("ps1");
+    expect(hl.languageForId("markdown")).toBe("");
+    expect(hl.languageForId("")).toBe("");
   });
 });

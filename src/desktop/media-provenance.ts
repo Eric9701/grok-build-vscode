@@ -5,6 +5,7 @@
 import * as path from "node:path";
 import {
   isGeneratedSessionMediaPath,
+  isTrustedCodexGeneratedImagePath,
   isTrustedGeneratedMediaPath as sharedTrustedMedia,
 } from "../media-serve";
 import {
@@ -75,7 +76,9 @@ export function mayRegisterResourcePath(
     if (policy === "full") return true;
     if (
       isTrustedGeneratedMediaPath(fsPath, root, platform, pathFs) ||
-      isTrustedGeneratedMediaPath(real, root, platform, pathFs)
+      isTrustedGeneratedMediaPath(real, root, platform, pathFs) ||
+      isTrustedCodexGeneratedImagePath(fsPath, root, (p) => pathFs ? canonicalPath(p, pathFs) : canonicalPath(p)) ||
+      isTrustedCodexGeneratedImagePath(real, root, (p) => pathFs ? canonicalPath(p, pathFs) : canonicalPath(p))
     ) {
       return true;
     }

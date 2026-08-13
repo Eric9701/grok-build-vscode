@@ -225,7 +225,75 @@ describe("command details (#41)", () => {
     expect(details.querySelector(".tool-cmd-output")!.textContent).toBe(output);
     expect(posted.filter((m: any) => m.type === "openText")).toEqual([
       { type: "openText", content: command },
-      { type: "openText", content: output, language: "plaintext" },
+      { type: "openText", content: output },
+    ]);
+  });
+
+  it("opens a command in the host shell language and output with no language", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, commandLanguage: "powershell",
+    });
+    const command = Array.from({ length: 8 }, (_, i) => `command ${i + 1}`).join("\n");
+    const output = Array.from({ length: 9 }, (_, i) => `output ${i + 1}`).join("\n");
+    dispatch(window, exec("lang", command));
+    close(window);
+    dispatch(window, out(command, output, 0));
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    click(window, doc.querySelector(".tool-flat.has-details") as HTMLElement);
+    const viewAll = [...details.querySelectorAll(".command-view-all")] as HTMLButtonElement[];
+    click(window, viewAll[0]);
+    click(window, viewAll[1]);
+    expect(posted.filter((m: any) => m.type === "openText")).toEqual([
+      { type: "openText", content: command, language: "powershell" },
+      { type: "openText", content: output },
+    ]);
+  });
+
+  it.each(["shellscript", "bat"] as const)(
+    "sends command language %s from the host and still omits it on output",
+    (commandLanguage) => {
+      const { window, doc, posted } = bootWebview();
+      dispatch(window, {
+        type: "initialState",
+        effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+        showThinking: false, commandLanguage,
+      });
+      const command = Array.from({ length: 8 }, (_, i) => `command ${i + 1}`).join("\n");
+      const output = Array.from({ length: 8 }, (_, i) => `output ${i + 1}`).join("\n");
+      dispatch(window, exec(`lang-${commandLanguage}`, command));
+      close(window);
+      dispatch(window, out(command, output, 0));
+
+      click(window, doc.querySelector(".tool-flat.has-details") as HTMLElement);
+      const viewAll = [...doc.querySelectorAll(".command-view-all")] as HTMLButtonElement[];
+      click(window, viewAll[0]);
+      click(window, viewAll[1]);
+      expect(posted.filter((m: any) => m.type === "openText")).toEqual([
+        { type: "openText", content: command, language: commandLanguage },
+        { type: "openText", content: output },
+      ]);
+    },
+  );
+
+  it("omits command language when the host never sent one", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false,
+    });
+    const command = Array.from({ length: 8 }, (_, i) => `command ${i + 1}`).join("\n");
+    dispatch(window, exec("old-host", command));
+    close(window);
+
+    click(window, doc.querySelector(".tool-flat.has-details") as HTMLElement);
+    click(window, doc.querySelector(".command-view-all") as HTMLButtonElement);
+    expect(posted.filter((m: any) => m.type === "openText")).toEqual([
+      { type: "openText", content: command },
     ]);
   });
 

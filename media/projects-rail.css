@@ -377,10 +377,12 @@ html, body {
   box-sizing: border-box;
 }
 
-.rail-session:hover { color: var(--vscode-foreground); background: var(--rail-hover-bg); }
+.rail-session { --provider-badge-ring: var(--rail-bg, var(--vscode-sideBar-background)); }
+.rail-session:hover { color: var(--vscode-foreground); background: var(--rail-hover-bg); --provider-badge-ring: var(--rail-hover-bg); }
 .rail-session.active {
   color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
   background: var(--vscode-list-activeSelectionBackground);
+  --provider-badge-ring: var(--vscode-list-activeSelectionBackground);
 }
 
 .rail-session .history-row-dot {
@@ -394,6 +396,33 @@ html, body {
 .rail-session .history-row-dot[data-dot="needs-you"] { background: var(--vscode-charts-yellow); }
 .rail-session .history-row-dot[data-dot="unread"] { background: var(--vscode-charts-green); }
 .rail-session .history-row-dot[data-dot="error"] { background: var(--vscode-errorForeground); }
+
+.provider-glyph {
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 14px;
+  position: relative;
+  box-sizing: border-box;
+  color: var(--vscode-descriptionForeground);
+}
+.provider-logo { display: block; width: 100%; height: 100%; }
+.provider-status-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 4px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  box-shadow: 0 0 0 1px var(--provider-badge-ring, var(--vscode-sideBar-background));
+}
+.provider-status-badge[data-dot="working"] { background: var(--vscode-charts-blue); }
+.provider-status-badge[data-dot="needs-you"] { background: var(--vscode-charts-yellow); }
+.provider-status-badge[data-dot="unread"] { background: var(--vscode-charts-green); }
+.provider-status-badge[data-dot="error"] { background: var(--vscode-errorForeground); }
 
 .rail-session-name {
   flex: 1 1 auto;

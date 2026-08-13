@@ -8,6 +8,8 @@
  *   --workspace=<path>     skip folder picker
  *   --user-data-dir=<path>  isolated prefs / memento
  *   --config-json=<path>    merge dotted config overrides from a JSON file
+ *   GROK_DESKTOP_TEST_ALLOW_MULTIPLE=1 lets isolated test profiles coexist
+ *   with a developer instance (honored only when NODE_ENV=test)
  */
 import {
   app,
@@ -197,7 +199,9 @@ let webview: ElectronWebview | null = null;
 // A leftover process makes a new launch quit here — looks exactly like
 // "nothing happened" (including --open-devtools). The first instance handles
 // second-instance: focus + open DevTools when the new argv asked for it.
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const allowMultipleTestInstances =
+  process.env.NODE_ENV === "test" && process.env.GROK_DESKTOP_TEST_ALLOW_MULTIPLE === "1";
+const gotSingleInstanceLock = allowMultipleTestInstances || app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   log(
     "another instance already holds this profile; quitting " +

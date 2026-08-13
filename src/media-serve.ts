@@ -8,13 +8,13 @@
  * starts inside the home and resolves outside must not be served or inlined
  * to remotes.
  *
- * Agent-reported paths outside that provenance may still be inlined as a
- * size-capped data: URI for the authenticated user (postGeneratedMedia) —
- * the agent already has full filesystem access. Renderer-named
- * `app-resource://` paths remain registry-contained.
+ * A path that fails provenance is refused before any file read. A trusted path
+ * may still be inlined as a size-capped data: URI when the current webview
+ * cannot serve its root. Renderer-named `app-resource://` paths remain
+ * registry-contained.
  */
 import * as path from "node:path";
-import { keepsCanonicalDirectChildIdentity } from "./sessions";
+import { isPathInside, keepsCanonicalDirectChildIdentity } from "./sessions";
 
 const GENERATED_MEDIA_EXT = new Set([
   ".jpg",
@@ -93,8 +93,7 @@ export function isGeneratedSessionMediaPath(fsPath: string): boolean {
  * `p` is strictly inside `root`, never `root` itself.
  */
 export function isLexicallyInside(root: string, p: string): boolean {
-  const rel = path.relative(path.resolve(root), path.resolve(p));
-  return !!rel && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
+  return isPathInside(root, p);
 }
 
 /**
@@ -131,6 +130,60 @@ export function isTrustedGeneratedMediaPath(
     return true;
   } catch {
     return false;
+  }
+}
+
+const UUID_SHAPE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const CODEX_IMAGE_SESSION_ID = new RegExp(`^${UUID_SHAPE}$`, "i");
+const CODEX_IMAGE_TOOL_CALL_ID = new RegExp(`^exec-${UUID_SHAPE}$`, "i");
+
+export function isCodexGeneratedImageSessionId(value: unknown): value is string {
+  return typeof value === "string" && CODEX_IMAGE_SESSION_ID.test(value);
+}
+
+export function isCodexGeneratedImageToolCallId(value: unknown): value is string {
+  return typeof value === "string" && CODEX_IMAGE_TOOL_CALL_ID.test(value);
+}
+
+/** Infer only the captured adapter layout, resolving and fencing it twice. */
+export function inferCodexGeneratedImagePath(
+  codexHome: string,
+  sessionId: unknown,
+  toolCallId: unknown,
+  resolve: (...segments: string[]) => string = path.resolve,
+): string | undefined {
+  // Validate both hostile adapter values before either is interpolated into a path.
+  if (!isCodexGeneratedImageSessionId(sessionId) || !isCodexGeneratedImageToolCallId(toolCallId)) {
+    return undefined;
+  }
+  const root = resolve(codexHome, "generated_images");
+  const candidate = resolve(root, sessionId, `${toolCallId}.png`);
+  return isPathInside(root, candidate) ? candidate : undefined;
+}
+
+/** Codex imagegen artifact under `<codexHome>/generated_images/<session>/<tool>.png`. */
+export function isTrustedCodexGeneratedImagePath(
+  fsPath: string,
+  codexHome: string,
+  realpath: RealpathFn = (p) => path.resolve(p),
+): boolean {
+  if (!fsPath || !codexHome || path.extname(fsPath).toLowerCase() !== ".png") return false;
+  const root = path.resolve(codexHome, "generated_images");
+  const resolvedPath = path.resolve(fsPath);
+  if (!isPathInside(root, resolvedPath)) return false;
+  const relative = path.relative(root, resolvedPath);
+  const parts = relative.split(path.sep);
+  if (
+    parts.length !== 2 ||
+    !isCodexGeneratedImageSessionId(parts[0]) ||
+    !isCodexGeneratedImageToolCallId(path.basename(parts[1], ".png"))
+  ) return false;
+  try {
+    const realRoot = realpath(root);
+    const realFile = realpath(resolvedPath);
+    return isPathInside(realRoot, realFile) && !isRefusedMediaPath(resolvedPath, realpath);
+  } catch {
+    return isPathInside(root, resolvedPath);
   }
 }
 

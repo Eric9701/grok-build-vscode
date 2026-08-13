@@ -2,6 +2,7 @@ import { AcpClient } from "./acp";
 import type { HostMsg } from "./protocol";
 import type { FileChip } from "./chips";
 import { permissionOptionsForPlan } from "./plan-gate";
+import type { AcpProvider } from "./acp-backend";
 
 /** Live state for the dashboard dot. `cold` (no live process) is represented by
  *  the absence of a Session, so it isn't in this union. */
@@ -73,6 +74,8 @@ export function preferredPermissionAllowOption(
  * singletons it replaces 1:1).
  */
 export class Session {
+  /** Provider is fixed once the first user turn enters history. */
+  provider: AcpProvider = "grok";
   /** Host-owned composer attachments for this session/view. */
   chips: FileChip[] = [];
   /** The live ACP client (one spawned `grok agent stdio` process), once started. */
@@ -88,10 +91,11 @@ export class Session {
   planModeAvailable = true;
   planModeUnavailableReason?: string;
   /**
-   * True once `grok --version` produced a parseable answer for this session.
-   * Unverified (false) stays fail-closed for Plan but is re-checkable when the
-   * user picks Plan — a transient slow probe must not latch for the session.
-   * A verified below-floor answer keeps this true so we never re-ask a known-old CLI.
+   * True only after a live `grok --version` produced a parseable answer.
+   * A cache substitute may keep Plan available but stays unverified so a later
+   * live probe can replace it. Unverified + unavailable stays fail-closed for
+   * Plan but is re-checkable when the user picks Plan. A live below-floor
+   * answer keeps this true so we never re-ask a known-old CLI.
    */
   planModeVersionVerified = true;
 
@@ -298,6 +302,29 @@ export class Session {
    * already-metered prefix from newly appended, unmetered text; conflating the
    * two risks duplicate delivery or work loss. */
   queuedSendRequiresRelay = false;
+
+  /**
+   * This view was re-homed onto a replacement while NO provider was connected,
+   * so it is bound to no agent yet. Binding it to the opposite (also
+   * disconnected) provider is what this replaces: that produced a session no
+   * amount of signing in could ever drive, because reconnecting retargeted only
+   * whichever session the recheck happened to arrive on. Reconnecting any
+   * provider adopts every session carrying this flag.
+   */
+  needsProvider = false;
+
+  /**
+   * The draft rescued from the conversation this replacement stands in for,
+   * held until there is a working composer to put it back into. Restoring it at
+   * sign-out time would post it into a view that is showing the onboarding
+   * overlay, where the user cannot see it and a reload discards it.
+   */
+  strandedDraft?: string;
+
+  /** Conversation whose META holds {@link strandedDraft}. A replacement gets a
+   * fresh provider session id after reconnect, so the durable draft must still
+   * be cleared from the conversation it was captured from. */
+  strandedDraftSessionId?: string;
 
 }
 

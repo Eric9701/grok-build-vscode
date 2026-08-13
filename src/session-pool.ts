@@ -27,6 +27,10 @@ export interface ReapCandidate {
   focused: boolean;
   /** Currently rendered by at least one remote client. */
   remoteVisible?: boolean;
+  /** Agent-less replacements and draft-bearing sessions are durable UI state,
+   * not spare idle processes. */
+  needsProvider?: boolean;
+  hasDraft?: boolean;
 }
 
 export interface ReapPolicy {
@@ -38,7 +42,11 @@ export interface ReapPolicy {
   now: number;
 }
 
-export function buildReapCandidates<T extends Pick<ReapCandidate, "status" | "lastActiveAt">>(
+export function buildReapCandidates<T extends Pick<ReapCandidate, "status" | "lastActiveAt"> & {
+  needsProvider?: boolean;
+  strandedDraft?: string;
+  queuedSends?: readonly string[];
+}>(
   sessions: Iterable<T>,
   focused: T,
   isRemoteVisible: (session: T) => boolean,
@@ -49,12 +57,15 @@ export function buildReapCandidates<T extends Pick<ReapCandidate, "status" | "la
     lastActiveAt: session.lastActiveAt,
     focused: session === focused,
     remoteVisible: isRemoteVisible(session),
+    needsProvider: session.needsProvider,
+    hasDraft: !!session.strandedDraft || !!session.queuedSends?.length,
   }));
 }
 
 /** A session is reap-eligible only if it isn't focused and isn't mid-work. */
 function isEligible(c: ReapCandidate): boolean {
-  return !c.focused && (c.status === "idle" || c.status === "done" || c.status === "error");
+  return !c.focused && !c.needsProvider && !c.hasDraft &&
+    (c.status === "idle" || c.status === "done" || c.status === "error");
 }
 
 /**

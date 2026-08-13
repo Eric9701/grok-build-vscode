@@ -148,10 +148,12 @@ are no longer paused, and `shouldReactivelyDowngrade` remains the observed-failu
 backstop at `initialize` or `session/new` when proactive recovery could not run.
 
 Version verification now has a second, independent safety role: a CLI below
-`GROK_REQUIRED_VERSION`, or one whose version cannot be read, may still run Agent and
-Auto accept but receives `planModeAvailable:false`. A parseable below-floor CLI latches
-that off for the session; an unreadable probe stays re-checkable on the next Plan pick
-(`probeVersionOutput` / `decidePlanModeAvailability` / `recheckPlanModeAvailability`).
+`GROK_REQUIRED_VERSION`, or one whose version cannot be read and has no matching
+cache, may still run Agent and Auto accept but receives `planModeAvailable:false`.
+A parseable below-floor CLI latches that off for the session; an unreadable probe
+retries once, then uses `grok.cliVersionCache` when the binary identity still matches,
+and otherwise stays re-checkable on the next Plan pick
+(`resolvePlanModeAvailability` / `recheckPlanModeAvailability`).
 Forged Plan requests against a verified-old CLI are rejected, restored/agent-initiated
 Plan is forced back to Agent, and a stray `exit_plan_mode` receives an error instead of
 an unsafe native verdict.

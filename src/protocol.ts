@@ -136,6 +136,13 @@ export type HostUiCapabilities = {
    */
   showInFolder?: boolean;
   /**
+   * Open View-all text and proposed diffs in the shared in-app preview
+   * overlay instead of a host editor or bare window. OPT-IN: absent/false
+   * keeps the current path (VS Code tabs, older desktop windows, remote
+   * inline expand). Desktop advertises this; remotes never receive it.
+   */
+  previewInApp?: boolean;
+  /**
    * The rail's "add project folder" control. OPT-IN, unlike the two above:
    * absent/false = hide. A host that never sent it cannot open a folder picker,
    * and VS Code deliberately does not — its workspace is VS Code's to manage.
@@ -145,6 +152,9 @@ export type HostUiCapabilities = {
 
 export type HostMsg =
   | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; /** Global "Use this app for" — absent on older hosts means Knowledge work. */ appPurpose?: "knowledge" | "coding";
+      /** VS Code language id for command View all, from the host shell dialect.
+       *  Absent on older hosts — View all then omits language. */
+      commandLanguage?: string;
       /** Which GUI is on the other end. A phone is looking at neither the
        *  extension nor the desktop app, so it cannot infer this, and its
        *  Version & about page has to name what it is connected to. Optional and
@@ -160,6 +170,14 @@ export type HostMsg =
    *  session swap, so without this the webview keeps a stale true and rebuilds
    *  the hint the user has already acted on. */
   | { type: "moveViewHint"; value: boolean }
+  /** Connected agents plus host-observed, view-only version facts. Version
+   * fields are additive so an older host/client keeps the connection UI.
+   * `needsLogin` is the account that is still configured but answered an
+   * auth-shaped failure: every affordance that would otherwise imply it works
+   * (a selectable model row, a silently empty history) becomes the same sign-in
+   * action the connect flow uses. */
+  | { type: "providerState"; providers: { id: "grok" | "codex"; connected: boolean; needsLogin?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean }[] }
+  | { type: "codexInstallProgress"; phase: "downloading" | "verifying" | "installing" | "idle"; receivedBytes?: number; totalBytes?: number; reason?: string }
   /** Plan picker gate. `recheckable` means the version probe failed (not a
    *  verified-old CLI) — the row stays clickable so a later pick re-probes. */
   | { type: "planModeAvailability"; available: boolean; reason?: string; recheckable?: boolean }
@@ -182,10 +200,10 @@ export type HostMsg =
   /** Desktop app update notice (check only — no auto-update). Host-local; VS Code
    *  never sends this. Capability = frame arrived; no host flag. */
   | { type: "updateAvailable"; version: string; url: string }
-  | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; init: { protocolVersion?: unknown } } }
+  | { type: "initialized"; info: { cliPath: string; cwd: string; version: string | null; provider?: "grok" | "codex"; init: { protocolVersion?: unknown } } }
   | { type: "cliUpdating" }
   // `worktree` gates the gear's Apply/Remove worktree items to worktree sessions.
-  | { type: "session"; sessionId: string; models: ModelInfo[]; currentModelId: string | undefined; worktree?: boolean }
+  | { type: "session"; sessionId: string; models: ModelInfo[]; currentModelId: string | undefined; worktree?: boolean; provider?: "grok" | "codex" }
   // The focused conversation's display name, using the same precedence as a
   // history row. It is separate from `sessions` because VS Code does not keep
   // that browser-only list populated while the history popover is closed.
@@ -327,7 +345,7 @@ export type HostMsg =
   | { type: "summarizing" }
   | { type: "sessionContext" }
   | { type: "clearMessages" }
-  | { type: "onboarding"; state: "missing-cli" | "auth-required"; platform?: string }
+  | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login"; platform?: string; reason?: string; provider?: "grok" | "codex" }
   | { type: "error"; text: string }
   | { type: "hostNotice"; level: "info" | "warning"; text: string }
   | { type: "xaiNotification"; update?: unknown }
@@ -369,7 +387,7 @@ export type HostMsg =
   // nextOffset = the index offset the next load-more should request — ids CONSUMED
   // from the on-disk index, not entries shown (hidden subagent sessions occupy
   // slots without producing rows).
-  | { type: "sessions"; entries: SessionListEntry[]; activeId?: string | null; dots: Record<string, Dot>; offset: number; total: number; hasMore: boolean; nextOffset: number; query: string }
+  | { type: "sessions"; entries: SessionListEntry[]; activeId?: string | null; dots: Record<string, Dot>; offset: number; total: number; hasMore: boolean; nextOffset: number; providerCursor?: { grokOffset: number; codexHighWater?: { updatedAt: number; id: string } }; query: string }
   // A preview page for ONE repo, answering `listRepoSessions`. Deliberately a
   // separate frame from `sessions`: that one is the focused history list and
   // owns paging/search/auto-open state, so a sibling repo's rows arriving on it
@@ -439,10 +457,17 @@ export type WebviewMsg =
   | { type: "openFile"; path: string }
   | { type: "showInFolder"; path: string }
   | { type: "openUrl"; url: string }
-  // `language` is optional on purpose: omitting it hands the untitled document
-  // to VS Code's own language detection, which is what a command should get —
-  // forcing `shellscript` mislabels a Python one-liner (#71).
-  | { type: "openText"; content: string; language?: string }
+  // `language` is optional. Command View all may send the host shell language
+  // (`initialState.commandLanguage`: powershell / shellscript / bat). Output
+  // omits it so the untitled editor can detect file-shaped content. An absent
+  // field must not be rewritten to plaintext.
+  //
+  // `filename` is an additive save-as hint (basename or a host-joined default
+  // path). Absent: untitled / viewer, as before. Present: each host chooses
+  // delivery — VS Code still opens an untitled tab; desktop opens the OS save
+  // dialog (session Markdown export and the preview overlay's Save As). An
+  // older host ignores the field and keeps the untitled/viewer path.
+  | { type: "openText"; content: string; language?: string; filename?: string }
   | {
       type: "openDiff";
       path: string;
@@ -499,14 +524,17 @@ export type WebviewMsg =
   | { type: "exitPlanAnswer"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected"; comment?: string }
   | { type: "questionAnswer"; requestId: number | string; answers?: Record<string, string>; annotations?: Record<string, { notes?: string; preview?: string }> }
   | { type: "questionCancel"; requestId: number | string }
-  | { type: "setModel"; modelId: string }
+  | { type: "setModel"; modelId: string; provider?: "grok" | "codex" }
+  | { type: "installCodex" }
+  | { type: "cancelCodexInstall" }
   | { type: "runInstallCmd" }
-  | { type: "runGrokLogin" }
-  | { type: "logout" }
+  | { type: "runGrokLogin"; provider?: "grok" | "codex" }
+  | { type: "logout"; provider?: "grok" | "codex" }
   | { type: "checkGrokUpdate" }
   | { type: "updateGrok" }
-  | { type: "recheckConnection" }
-  | { type: "listSessions"; offset?: number; limit?: number; query?: string }
+  | { type: "recheckConnection"; provider?: "grok" | "codex" }
+  | { type: "retryProviderSession"; provider?: "grok" | "codex" }
+  | { type: "listSessions"; offset?: number; limit?: number; providerCursor?: { grokOffset: number; codexHighWater?: { updatedAt: number; id: string } }; query?: string }
   // Preview rows for a repo the client is NOT currently in — the projects rail
   // shows a few sessions per repo without switching to it. `cwd` is matched
   // against the repo catalog and dropped when it isn't a row, so this never
@@ -637,7 +665,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, moveViewHint: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true,
+  initialState: true, moveViewHint: true, providerState: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -665,8 +693,8 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
-  questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
-  logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
+  questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runGrokLogin: true,
+  logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, retryProviderSession: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
   setRepoArchived: true, setRepoColor: true,
   resumeSession: true, renameSession: true, deleteSession: true,

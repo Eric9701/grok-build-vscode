@@ -13,6 +13,28 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
+import type { AcpProvider, BackendSessionListEntry } from "./acp-backend";
+import { CODEX_ACP_ADAPTER_VERSION, CodexBackend, isCodexCredentialError } from "./codex-backend";
+import { locateCodexCli, resolveCodexHome } from "./codex-cli-locator";
+import { CODEX_MANAGED_VERSION, installManagedCodex } from "./codex-managed-installer";
+import { warmCodexModelCache } from "./codex-model-cache";
+import {
+  codexListEntry,
+  connectedProviderIds,
+  findCachedCodexSession,
+  mergeProviderHistoryPage,
+  mergeProviderSessionEntries,
+  modelsForConnectedProviders,
+  parseCodexVersionOutput,
+  projectProviderKey,
+  providerLoginState,
+  versionIsOlder,
+  type ProjectProviderDefaults,
+  type ProviderConnections,
+  type ProviderModelCache,
+  type ProviderModelInfo,
+  type ProviderHistoryCursor,
+} from "./provider-ui";
 import { PersistedState } from "./persisted-state";
 import {
   Session,
@@ -66,14 +88,17 @@ import {
   grokUpdatePolicy,
   shouldReactivelyDowngrade,
   isLockedBinaryError,
-  decidePlanModeAvailability,
-  probeVersionOutput,
+  readCliBinaryIdentity,
+  resolvePlanModeAvailability,
+  CLI_VERSION_CACHE_KEY,
   GROK_REQUIRED_VERSION,
   GROK_STDIO_DOWNGRADE_TARGET,
+  type CliVersionCache,
 } from "./cli-locator";
 import { OpenClock } from "./open-timing";
 import {
   TerminalManager,
+  commandLanguageForDialect,
   grokShellEnvValue,
   resolvedTerminalShell,
   resolvedTerminalShellDialect,
@@ -193,7 +218,7 @@ import {
 } from "./sessions";
 import {
   base64DecodedByteLength,
-  isRefusedMediaPath,
+  isTrustedCodexGeneratedImagePath,
   isTrustedGeneratedMediaPath,
   MAX_INLINE_MEDIA_BYTES,
   resolveChatOpenFilePath,
@@ -269,6 +294,9 @@ import {
 // imported above. See that file for why.
 
 const SESSION_META_KEY = "grok.sessionMeta";
+const PROVIDER_CONNECTIONS_KEY = "grok.providerConnections";
+const PROVIDER_MODEL_CACHE_KEY = "grok.providerModelCache";
+const PROJECT_PROVIDER_DEFAULTS_KEY = "grok.projectProviderDefaults";
 const REPO_PINS_KEY = "grok.repoPins";
 /** Shared client-state key for the remote rail's Archived section. Stored under
  *  ~/.grok/client-state so the choice follows you to a phone and survives a
@@ -392,9 +420,21 @@ interface RemoteBrowserPreferences {
 interface CliCompatibilityResult {
   planModeAvailable: boolean;
   planModeUnavailableReason?: string;
-  /** False only when the probe got no parseable version (re-checkable). */
+  /** True only after a live parseable `--version`. A cache stand-in stays false. */
   planModeVersionVerified: boolean;
+  /** True when Plan availability came from `grok.cliVersionCache`, not a live `--version`. */
+  usedCache?: boolean;
 }
+
+interface SessionsListOptions {
+  offset?: number;
+  limit?: number;
+  query?: string;
+  providerCursor?: ProviderHistoryCursor;
+}
+
+type GrokSessionsListOptions = Omit<SessionsListOptions, "providerCursor">;
+type GrokSessionsListMessage = Extract<HostMsg, { type: "sessions" }>;
 
 // History pagination: rows fetched per "page" (initial open + each load-more / search page).
 const SESSION_PAGE_SIZE = 100;
@@ -501,6 +541,12 @@ export class GrokSidebar {
    * (it's just a read cache, never a source of truth).
    */
   private sessionCache = new Map<string, { mtimeMs: number; entry: SessionListEntry }>();
+  /** Codex owns its store, so these rows come from ACP rather than Grok's disk index. */
+  private codexSessionCache = new Map<string, SessionListEntry[]>();
+  private codexSessionCacheAt = new Map<string, number>();
+  private codexSessionRefresh = new Map<string, Promise<void>>();
+  private codexInstallAbort?: AbortController;
+  private providerConnectionState: ProviderConnections = {};
   /**
    * Bounds on the live-session pool (see session-pool.ts). A backgrounded session
    * idle past {@link IDLE_TTL_MS}, or beyond the {@link MAX_LIVE_SESSIONS} LRU cap,
@@ -589,9 +635,18 @@ export class GrokSidebar {
   private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
-    "onboarding", "expandCommandOutputs", "steerByDefault", "soundNotifications",
+    "onboarding", "providerState", "expandCommandOutputs", "steerByDefault", "soundNotifications",
   ]);
   private cliPath?: string;
+  private codexCliPath?: string;
+  private readonly providerCliVersions: Partial<Record<AcpProvider, string>> = {};
+  /** Accounts that are configured but answered an auth-shaped failure. Not the
+   *  same as disconnected: the CLI is installed and the user meant to use it,
+   *  so the answer is a sign-in action, not hiding the agent. */
+  private providerNeedsLogin: Partial<Record<AcpProvider, boolean>> = {};
+  private readonly loginReprobeTimers = new Map<AcpProvider, ReturnType<typeof setTimeout>>();
+  private grokVersionProbe?: Promise<string>;
+  private codexVersionProbe?: Promise<string>;
   /** History browsing scope. Deliberately independent of the live session cwd. */
   private selectedRepoCwd?: string;
   /**
@@ -645,6 +700,8 @@ export class GrokSidebar {
       fs,
       (line) => this.host.appendLine(line),
     );
+    this.providerConnectionState = this.migrateProviderConnections();
+    this.focused.provider = this.defaultProviderForProject(this.workspaceRoot());
     this.remoteClients = new RemoteClientState<Session, RemoteBrowserPreferences>(
       this.workspaceRoot(),
       normalizeRepoPath,
@@ -659,6 +716,303 @@ export class GrokSidebar {
     this.applyTerminalShellPref();
     void this.sweepImageStaging();
     void this.sweepFileStaging();
+  }
+
+  private providerConnections(): ProviderConnections {
+    return this.providerConnectionState;
+  }
+
+  private locateProvider(provider: AcpProvider): string | undefined {
+    const cached = provider === "grok" ? this.cliPath : this.codexCliPath;
+    if (cached && fs.existsSync(cached)) return cached;
+    const cfg = this.host.getConfiguration("grok");
+    const located = provider === "grok"
+      ? locateGrokCli(cfg.get<string>("cliPath", "")) || undefined
+      : locateCodexCli({
+          configuredPath: cfg.get<string>("codexCliPath", ""),
+          managedStorageRoot: this.context.globalStorageUri.fsPath,
+          arch: process.arch,
+        });
+    if (provider === "grok") this.cliPath = located;
+    else this.codexCliPath = located;
+    return located;
+  }
+
+  private locatedProviders(): Partial<Record<AcpProvider, boolean>> {
+    return {
+      grok: !!this.locateProvider("grok"),
+      codex: !!this.locateProvider("codex"),
+    };
+  }
+
+  private connectedProviders(): AcpProvider[] {
+    return connectedProviderIds(this.providerConnections(), this.locatedProviders());
+  }
+
+  private migrateProviderConnections(): ProviderConnections {
+    const existing = this.state.get<ProviderConnections>(PROVIDER_CONNECTIONS_KEY);
+    if (existing !== undefined) return existing;
+    const home = resolveGrokHome(process.env);
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const configured = !!this.host.getConfiguration("grok").get<string>("cliPath", "").trim();
+    const usedBefore = configured || Object.keys(overrides).length > 0 || [
+      path.join(home, "auth.json"),
+      path.join(home, "config.toml"),
+      path.join(home, "sessions"),
+    ].some((candidate) => fs.existsSync(candidate));
+    const migrated: ProviderConnections = {
+      grok: usedBefore && !!this.locateProvider("grok"),
+      codex: false,
+    };
+    void this.state.update(PROVIDER_CONNECTIONS_KEY, migrated);
+    return migrated;
+  }
+
+  private setProviderConnectedInMemory(provider: AcpProvider, connected: boolean): void {
+    const current = this.providerConnections();
+    this.providerConnectionState = { ...current, [provider]: connected };
+    if (!connected && provider === "codex") {
+      this.codexSessionCache.clear();
+      // A reconnect must re-list immediately. Keeping the old freshness stamp
+      // after dropping the rows creates a fresh-but-empty cache for ten seconds.
+      this.codexSessionCacheAt.clear();
+    }
+    this.postProviderState();
+    if (connected) void this.probeProviderVersion(provider);
+  }
+
+  private async persistProviderConnections(): Promise<void> {
+    await this.state.update(PROVIDER_CONNECTIONS_KEY, this.providerConnectionState);
+  }
+
+  private async setProviderConnected(provider: AcpProvider, connected: boolean): Promise<void> {
+    this.setProviderConnectedInMemory(provider, connected);
+    await this.persistProviderConnections();
+  }
+
+  /**
+   * An agent that is installed and configured but will not authenticate.
+   *
+   * Disconnecting it would be the wrong hammer — that hides every conversation
+   * it owns and tears down live sessions for a fault one sign-in fixes. This is
+   * a view-only flag: the account still counts as connected, and every surface
+   * that would otherwise degrade silently (a bare "<Agent> default" row in the
+   * model picker, a history list that just comes back empty) shows the same
+   * sign-in action the connect flow uses.
+   *
+   * Only the provider's credential classifier may raise it: Codex probes use
+   * `isCodexCredentialError` alone, while Grok uses `isCredentialError`. The
+   * billing/entitlement family must never route to a login screen (#58).
+   */
+  private setProviderNeedsLogin(provider: AcpProvider, needsLogin: boolean): void {
+    const current = this.providerNeedsLogin ?? {};
+    if (!!current[provider] === needsLogin) return;
+    this.providerNeedsLogin = { ...current, [provider]: needsLogin };
+    // A recovered account must be able to re-list at once; the freshness stamp
+    // would otherwise hold the empty catalog for its full back-off window.
+    if (!needsLogin && provider === "codex") this.codexSessionCacheAt.clear();
+    this.postProviderState();
+  }
+
+  private async warmConnectedCodexModels(): Promise<boolean> {
+    const cliPath = this.locateProvider("codex");
+    if (!cliPath) return false;
+    try {
+      await warmCodexModelCache({
+        cliPath,
+        onModels: (models, currentModelId) => this.cacheProviderModels("codex", models, currentModelId),
+        log: (message) => this.host.appendLine(message),
+      });
+      this.setProviderNeedsLogin("codex", false);
+      return true;
+    } catch (error) {
+      this.host.appendLine(`[codex] model-cache warm-up failed: ${(error as Error).message}`);
+      // The warm-up is the first thing that talks to the agent after a connect,
+      // so its failure is the earliest honest answer about the credentials.
+      if (isCodexCredentialError(error)) {
+        this.setProviderNeedsLogin("codex", true);
+      }
+      return false;
+    }
+  }
+
+  /** Explicit credential observation. Unlike history refresh this never obeys
+   * the listing freshness clock, so a completed sign-in is visible at once. */
+  private async reprobeProviderCredentials(provider: AcpProvider): Promise<boolean> {
+    if (provider === "codex") return this.warmConnectedCodexModels();
+    const cliPath = this.locateProvider("grok");
+    if (!cliPath) return false;
+    const client = new AcpClient({
+      cliPath,
+      cwd: this.workspaceRoot(),
+      env: this.buildEnv(this.workspaceRoot()),
+      log: (message) => this.host.appendLine(message),
+    });
+    try {
+      await client.start();
+      await client.newSession();
+      this.setProviderNeedsLogin("grok", false);
+      if (client.sessionId) {
+        try { await client.deleteSession(client.sessionId); } catch { /* probe cleanup is best-effort */ }
+      }
+      return true;
+    } catch (error) {
+      this.host.appendLine(`[grok] credential re-probe failed: ${errorDetail(error)}`);
+      if (client.isCredentialError(error) || isCredentialError(error)) {
+        this.setProviderNeedsLogin("grok", true);
+      }
+      return false;
+    } finally {
+      await client.dispose();
+    }
+  }
+
+  /** Observe an interactive terminal login without requiring a reload. Terminal
+   * APIs do not expose CLI completion portably, so retry on a short bounded
+   * cadence and stop at the first authenticated probe. */
+  private watchProviderLogin(provider: AcpProvider): void {
+    const previous = this.loginReprobeTimers.get(provider);
+    if (previous) clearTimeout(previous);
+    const delays = [0, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
+    const attempt = async (index: number): Promise<void> => {
+      this.loginReprobeTimers.delete(provider);
+      if (await this.reprobeProviderCredentials(provider)) return;
+      const delay = delays[index + 1];
+      if (delay === undefined) return;
+      const timer = setTimeout(() => void attempt(index + 1), delay);
+      this.loginReprobeTimers.set(provider, timer);
+    };
+    void attempt(0);
+  }
+
+  private async installManagedCodexCli(): Promise<void> {
+    if (this.codexInstallAbort) return;
+    const alreadyLocated = this.locateProvider("codex");
+    if (alreadyLocated) {
+      this.postLocal({ type: "onboarding", state: "codex-login", platform: process.platform });
+      return;
+    }
+
+    const controller = new AbortController();
+    this.codexInstallAbort = controller;
+    try {
+      const binary = await installManagedCodex({
+        storageRoot: this.context.globalStorageUri.fsPath,
+        signal: controller.signal,
+        onProgress: (phase, value) => this.postLocal({
+          type: "codexInstallProgress",
+          phase,
+          receivedBytes: value?.receivedBytes,
+          totalBytes: value?.totalBytes,
+        }),
+      });
+      this.codexCliPath = binary;
+      this.postProviderState();
+      this.postLocal({ type: "codexInstallProgress", phase: "idle" });
+      this.postLocal({ type: "onboarding", state: "codex-login", platform: process.platform });
+    } catch (error) {
+      const cancelled = controller.signal.aborted;
+      const reason = cancelled
+        ? "Codex installation was cancelled."
+        : `Codex installation failed: ${errorDetail(error)}`;
+      this.host.appendLine(`[codex] managed install failed: ${reason}`);
+      this.postLocal({ type: "codexInstallProgress", phase: "idle", reason });
+      this.postLocal({ type: "onboarding", state: "missing-codex", platform: process.platform, reason, provider: "codex" });
+    } finally {
+      if (this.codexInstallAbort === controller) this.codexInstallAbort = undefined;
+    }
+  }
+
+  private providerStateMessage(): Extract<HostMsg, { type: "providerState" }> {
+    const connected = this.providerConnections();
+    const located = this.locatedProviders();
+    const versions = this.providerCliVersions ?? {};
+    const needsLogin = this.providerNeedsLogin ?? {};
+    const grokConnected = connected.grok === true && located.grok === true;
+    const codexConnected = connected.codex === true && located.codex === true;
+    return {
+      type: "providerState",
+      providers: [
+        {
+          id: "grok",
+          connected: grokConnected,
+          ...(grokConnected && versions.grok ? { cliVersion: versions.grok } : {}),
+          ...(grokConnected && needsLogin.grok ? { needsLogin: true } : {}),
+        },
+        {
+          id: "codex",
+          connected: codexConnected,
+          ...(codexConnected && needsLogin.codex ? { needsLogin: true } : {}),
+          ...(codexConnected && versions.codex ? { cliVersion: versions.codex } : {}),
+          ...(codexConnected ? {
+            adapterVersion: CODEX_ACP_ADAPTER_VERSION,
+            latestCliVersion: CODEX_MANAGED_VERSION,
+            ...(versions.codex ? { updateAvailable: versionIsOlder(versions.codex, CODEX_MANAGED_VERSION) } : {}),
+          } : {}),
+        },
+      ],
+    };
+  }
+
+  private postProviderState(): void {
+    this.post(this.providerStateMessage());
+  }
+
+  private defaultProviderForProject(cwd: string): AcpProvider {
+    const connected = this.connectedProviders();
+    const saved = this.state.get<ProjectProviderDefaults>(PROJECT_PROVIDER_DEFAULTS_KEY, {})[
+      projectProviderKey(cwd)
+    ];
+    if (saved && connected.includes(saved.provider)) return saved.provider;
+    return connected[0] ?? "grok";
+  }
+
+  private providerDefaultForProject(cwd: string, provider: AcpProvider): string | undefined {
+    const saved = this.state.get<ProjectProviderDefaults>(PROJECT_PROVIDER_DEFAULTS_KEY, {})[
+      projectProviderKey(cwd)
+    ];
+    if (saved?.provider === provider) return saved.modelId || undefined;
+    return provider === "grok"
+      ? this.host.getConfiguration("grok").get<string>("defaultModel", "") || undefined
+      : undefined;
+  }
+
+  private async rememberProjectProvider(cwd: string, provider: AcpProvider, modelId?: string): Promise<void> {
+    const current = this.state.get<ProjectProviderDefaults>(PROJECT_PROVIDER_DEFAULTS_KEY, {});
+    await this.state.update(PROJECT_PROVIDER_DEFAULTS_KEY, {
+      ...current,
+      [projectProviderKey(cwd)]: { provider, ...(modelId ? { modelId } : {}) },
+    } satisfies ProjectProviderDefaults);
+  }
+
+  private cacheProviderModels(
+    provider: AcpProvider,
+    models: readonly ProviderModelInfo[] | readonly any[],
+    currentModelId?: string,
+  ): PromiseLike<void> {
+    const current = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
+    const clean = models.map(({ provider: _provider, defaultImplied: _default, ...model }: any) => model);
+    return this.state.update(PROVIDER_MODEL_CACHE_KEY, {
+      ...current,
+      [provider]: { models: clean, currentModelId, seenAt: Date.now() },
+    } satisfies ProviderModelCache);
+  }
+
+  private modelsForSession(session: Session, ownModels: readonly any[], currentModelId?: string, newSession = false): ProviderModelInfo[] {
+    if (!newSession) return ownModels.map((model) => ({ ...model, provider: session.provider }));
+    return modelsForConnectedProviders(
+      this.connectedProviders(),
+      this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {}),
+      { provider: session.provider, models: ownModels, currentModelId },
+    );
+  }
+
+  private providerForRequestedModel(modelId: string, fallback: AcpProvider): AcpProvider {
+    if (!modelId) return fallback;
+    const cache = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
+    const matches = (["grok", "codex"] as const).filter((provider) =>
+      cache[provider]?.models.some((model) => model.modelId === modelId));
+    return matches.length === 1 ? matches[0] : fallback;
   }
 
   resolveWebviewView(view: HostWebviewView): void {
@@ -681,6 +1035,7 @@ export class GrokSidebar {
         void this.host.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
       });
     });
+    this.restorePersistedDraft(this.focused);
     this.watchActiveEditor();
     // Periodic idle-TTL sweep over the live-session pool (the LRU cap is enforced
     // eagerly on each new start; this catches sessions that simply went stale).
@@ -703,6 +1058,10 @@ export class GrokSidebar {
       }
       if (e.affectsConfiguration("grok.showThinking")) {
         this.postShowThinking();
+      }
+      if (e.affectsConfiguration("grok.codexCliPath")) {
+        this.codexCliPath = undefined;
+        this.postProviderState();
       }
       if (e.affectsConfiguration("grok.expandCommandOutputs")) {
         this.post({
@@ -810,6 +1169,7 @@ export class GrokSidebar {
       // serving it via asWebviewUri (instead of a base64 data: URI) lets the
       // webview stream a multi-MB video from disk — see postGeneratedMedia.
       Uri.file(resolveGrokHome()),
+      Uri.file(resolveCodexHome()),
     ];
   }
 
@@ -845,6 +1205,7 @@ export class GrokSidebar {
   /** Catalog snapshot for a freshly-resolved rail (or its ready handshake). */
   private pushProjectsRailCatalog(): void {
     if (!this.projectsRail) return;
+    this.mirrorToProjectsRail(this.providerStateMessage());
     this.postRepoCatalog();
     this.postSessionsList();
   }
@@ -919,16 +1280,23 @@ export class GrokSidebar {
       this.host.showInformationMessage("Start a session first.");
       return;
     }
-    const items = this.focused.client.availableModels.map((m) => ({
-      label: m.name ?? m.modelId,
-      description: m.modelId === this.focused.client!.currentModelId ? "$(check) current" : "",
+    const models = this.modelsForSession(
+      this.focused,
+      this.focused.client.availableModels,
+      this.focused.client.currentModelId,
+      !this.focused.hasHistory,
+    );
+    const items = models.map((m) => ({
+      label: `${m.provider === "grok" ? "Grok" : "Codex"} · ${m.name ?? m.modelId}`,
+      description: m.provider === this.focused.provider && m.modelId === this.focused.client!.currentModelId ? "$(check) current" : "",
       detail: m.description,
       modelId: m.modelId,
+      provider: m.provider,
     }));
     const picked = await this.host.showQuickPick(items, {
-      placeHolder: "Pick a Grok model",
+      placeHolder: this.focused.hasHistory ? "Pick a model" : "Pick an agent and model",
     });
-    if (picked) await this.switchModel(picked.modelId);
+    if (picked) await this.switchModel(picked.modelId, this.focused, undefined, picked.provider);
   }
 
   /**
@@ -943,15 +1311,55 @@ export class GrokSidebar {
     modelId: string,
     session: Session = this.focused,
     requester?: RemoteRequester,
+    provider: AcpProvider = session.provider,
   ): Promise<void> {
     const client = session.client;
     // Ignore switches fired during session startup. The webview disables the
     // control while busy; this is the backstop for a click already in flight.
-    if (!client || session.priming || modelId === client.currentModelId) return;
+    if (!client || session.priming) return;
+    if (provider !== session.provider) {
+      if (session.hasHistory) {
+        const current = session.provider === "codex" ? "Codex" : "Grok";
+        const requested = provider === "codex" ? "Codex" : "Grok";
+        this.reportRequester(
+          requester,
+          "warning",
+          `This ${current} conversation can only use ${current} models. Start a new conversation to switch to ${requested}.`,
+        );
+        return;
+      }
+      if (!this.connectedProviders().includes(provider)) {
+        this.reportRequester(requester, "warning", `${provider === "codex" ? "Codex" : "Grok"} is not connected.`);
+        return;
+      }
+      const oldProvider = session.provider;
+      const discardId = session.activeSessionId;
+      if (oldProvider === "codex" && discardId) {
+        try { await client.deleteSession(discardId); }
+        catch (error) { this.host.appendLine(`[codex] could not discard empty session ${discardId}: ${(error as Error).message}`); }
+      }
+      session.provider = provider;
+      await this.rememberProjectProvider(this.sessionCwd(session), provider, modelId || undefined);
+      await this.startSession(undefined, session);
+      if (oldProvider === "grok") this.discardRestartedEmptySession(discardId, session);
+      return;
+    }
+    if (modelId === client.currentModelId) return;
     const cfg = this.host.getConfiguration("grok");
+    if (!modelId) {
+      if (session.hasHistory) return;
+      const discardId = session.activeSessionId;
+      await this.rememberProjectProvider(this.sessionCwd(session), provider, undefined);
+      if (provider === "grok") await cfg.update("defaultModel", "", "global");
+      else await this.discardCodexEmptySession(discardId, this.sessionCwd(session), client);
+      await this.startSession(undefined, session);
+      if (provider === "grok") this.discardRestartedEmptySession(discardId, session);
+      return;
+    }
     try {
       await client.setModel(modelId);
-      await cfg.update("defaultModel", modelId, "global");
+      await this.rememberProjectProvider(this.sessionCwd(session), provider, modelId);
+      if (provider === "grok") await cfg.update("defaultModel", modelId, "global");
     } catch (e) {
       if (!isIncompatibleAgentError(e)) {
         this.reportRequester(requester, "error", `Failed to set model: ${(e as Error).message}`);
@@ -1244,7 +1652,14 @@ Only continue if you trust this code.`,
       // not just future requests: clear any permission card already on screen.
       this.autoApprovePendingPermissions(session);
       if (session.client) {
-        try { await session.client.setMode(ACT_MODE_ID); } catch { /* CLI stays put; gate is what matters */ }
+        try {
+          if (session.provider === "codex") {
+            await session.client.setMode("default");
+            await session.client.setMode("agent-full-access");
+          } else {
+            await session.client.setMode(ACT_MODE_ID);
+          }
+        } catch { /* CLI stays put; gate is what matters */ }
       }
       return;
     }
@@ -1260,7 +1675,14 @@ Only continue if you trust this code.`,
     // agent
     this.setPlanActive(session, false); // posts displayMode → "agent"
     if (session.client) {
-      try { await session.client.setMode(ACT_MODE_ID); }
+      try {
+        if (session.provider === "codex") {
+          await session.client.setMode("default");
+          await session.client.setMode("agent");
+        } else {
+          await session.client.setMode(ACT_MODE_ID);
+        }
+      }
       catch (e) { this.reportRequester(requester, "error", `Couldn't switch mode: ${(e as Error).message}`); }
     }
   }
@@ -1624,11 +2046,16 @@ Only continue if you trust this code.`,
   private noteSessionActivity(session: Session): void {
     const sid = session.activeSessionId ?? session.client?.sessionId;
     if (!sid) return;
+    const activeAt = Date.now();
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     void this.state.update(SESSION_META_KEY, {
       ...overrides,
-      [sid]: { ...(overrides[sid] ?? {}), activeAt: Date.now() },
+      [sid]: { ...(overrides[sid] ?? {}), activeAt },
     });
+    for (const [key, entries] of this.codexSessionCache) {
+      this.codexSessionCache.set(key, entries.map((entry) =>
+        entry.id === sid ? { ...entry, updatedAt: activeAt } : entry));
+    }
     const cwd = this.sessionCwd(session);
     this.postSessionsList();
     if (cwd) this.sendLocalRepoSessionsPreview(cwd);
@@ -3478,7 +3905,10 @@ Only continue if you trust this code.`,
     // Both local and remote attached clients see the host's catalog: curated
     // open folders on desktop, full discovery on VS Code. Archive fields only
     // when canArchiveRepos (already applied inside localRepoCatalogEntries).
-    const localEntries = this.localRepoCatalogEntries();
+    const localEntries = this.localRepoCatalogEntries().map((entry) => ({
+      ...entry,
+      defaultProvider: this.defaultProviderForProject(entry.cwd),
+    }));
     const activeCwd = this.sessionCwd(this.focused);
     const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
     const selected = localEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
@@ -3537,7 +3967,10 @@ Only continue if you trust this code.`,
    */
   private buildRemoteReposMsg(
     clientId: string,
-    entries: RepoListEntry[] = this.localRepoCatalogEntries(),
+    entries: RepoListEntry[] = this.localRepoCatalogEntries().map((entry) => ({
+      ...entry,
+      defaultProvider: this.defaultProviderForProject(entry.cwd),
+    })),
   ): HostMsg {
     const authorized = this.remoteAuthorizedSessionCwds();
     const selectedCwd =
@@ -4339,7 +4772,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Resolve the home repo once, at pin time: the client sends the row's own
       // cwd (already gated against the catalog), and falling back to whatever
       // repo happens to be selected would file the pin under the wrong project.
-      const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd;
+      const cachedCodexCwd = [...this.codexSessionCache.values()]
+        .flat()
+        .find((entry) => entry.id === id)?.cwd;
+      const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd || cachedCodexCwd;
       if (!home) return null; // nothing to write (pin or unpin)
       // Authorization is not only "cwd was once in the catalog": a remote client
       // that knows a session id must not mutate pin state for a closed project.
@@ -4397,6 +4833,58 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return run;
   }
 
+  /** Park a composer draft on the conversation it was typed into, because that
+   *  conversation is the only place it can be handed back without guessing who
+   *  is watching what. */
+  private rememberQueuedDraft(id: string, text: string): Promise<void> {
+    if (!text) return Promise.resolve();
+    return this.updateSessionMeta((current) => ({
+      ...current,
+      [id]: { ...(current[id] ?? {}), queuedDraft: text },
+    }));
+  }
+
+  /** Hand a parked draft back to this session's live composer, exactly once.
+   *  Detached tabs keep META untouched until reattachment because
+   *  `restoreComposer` is transient and has no recipient while detached. */
+  private restorePersistedDraft(session: Session): void {
+    const hasComposer =
+      (session === this.focused && this.view !== undefined) ||
+      this.remoteClients.isActiveValueVisible(session);
+    if (!hasComposer || session.needsProvider) return;
+    const id = session.activeSessionId;
+    if (!id) return;
+    const draft = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]?.queuedDraft;
+    if (!draft) return;
+    void this.updateSessionMeta((current) => {
+      const meta = current[id];
+      if (!meta?.queuedDraft) return null;
+      const { queuedDraft: _restored, ...rest } = meta;
+      return { ...current, [id]: rest };
+    });
+    this.emit(session, { type: "restoreComposer", text: draft });
+  }
+
+  /** Restore a replacement's captured draft only after its provider start
+   * succeeded. The durable copy stays on the old conversation until then. */
+  private restoreStrandedDraft(session: Session): void {
+    if (!this.sessionHasLiveOwner(session) || session.needsProvider) return;
+    const draft = session.strandedDraft;
+    if (!draft) return;
+    const originId = session.strandedDraftSessionId;
+    session.strandedDraft = undefined;
+    session.strandedDraftSessionId = undefined;
+    if (originId) {
+      void this.updateSessionMeta((current) => {
+        const meta = current[originId];
+        if (!meta?.queuedDraft) return null;
+        const { queuedDraft: _restored, ...rest } = meta;
+        return { ...current, [originId]: rest };
+      });
+    }
+    this.emit(session, { type: "restoreComposer", text: draft });
+  }
+
   /** Every pinned conversation across every repo, newest pin first. Reads are
    *  grouped by the stored home cwd so this costs one index scan per repo that
    *  actually holds a pin — not one per repo in the catalog. */
@@ -4425,9 +4913,30 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       byCwd.set(key, bucket);
     }
     const entries: SessionListEntry[] = [];
+    const cachedCodexIds = new Set(
+      [...this.codexSessionCache.values()].flat().map((entry) => entry.id),
+    );
     for (const { cwd, ids } of byCwd.values()) {
+      const codexIds = new Set(ids.filter((id) => overrides[id]?.provider === "codex" || cachedCodexIds.has(id)));
+      if (codexIds.size) this.scheduleCodexHistoryRefresh(cwd);
+      for (const id of codexIds) {
+        const cached = findCachedCodexSession(
+          this.codexSessionCache.values(),
+          id,
+          [cwd],
+          (entryCwd, allowed) => sessionCwdBelongsToRepo(entryCwd, allowed, pathsEqual),
+        );
+        if (!cached) continue;
+        entries.push({
+          ...cached,
+          customName: overrides[id]?.customName,
+          displayName: overrides[id]?.customName?.trim() || cached.rawSummary || cached.displayName,
+          pinnedAt: overrides[id]?.pinnedAt,
+        });
+      }
+      const wanted = new Set(ids.filter((id) => !codexIds.has(id)));
+      if (!wanted.size) continue;
       const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
-      const wanted = new Set(ids);
       const present = index.filter((e) => wanted.has(e.id));
       if (!present.length) continue;
       const mtimeById = new Map(present.map((e) => [e.id, e.mtimeMs]));
@@ -4524,22 +5033,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.emit(session, { type: "media", media: m.media, url: m.uri });
         return;
       }
-      // Canonical refuse: symlink chart.png → auth.json must not inline secrets.
-      if (isRefusedMediaPath(m.path, (p) => fs.realpathSync(p))) {
-        this.host.appendLine(`[media] refused media path whose canonical target is a secret name`);
+      // Provenance is mandatory before either serving or reading. In particular,
+      // a failed Codex generated_images containment check must never fall through
+      // to the data-URI branch and deliver arbitrary bytes to a remote.
+      if (!this.isServableFromDisk(m.path, session.provider)) {
+        this.host.appendLine(`[media] refused generated media path outside its trusted root`);
         return;
       }
       const mime = m.mimeType || guessMediaMime(m.path);
       // Trusted session media: stream from disk when the webview can.
       const webview = this.view?.webview;
-      if (webview && this.isServableFromDisk(m.path)) {
+      if (webview) {
         const src = webview.asWebviewUri(Uri.file(m.path));
         this.emit(session, { type: "media", media: m.media, src, mimeType: mime, path: m.path });
         return;
       }
-      // Outside the served roots (or no asWebviewUri) — inline as base64 so a
-      // workspace chart the agent wrote still appears. Size-capped so a huge
-      // file cannot balloon the DOM / relay frame.
+      // The path passed canonical containment but this surface has no served
+      // webview root. Inline only that trusted file, with the ordinary size cap.
       const bytes = await this.host.fs.readFile(Uri.file(m.path));
       if (gen !== session.gen) return;
       if (bytes.byteLength > MAX_INLINE_MEDIA_BYTES) {
@@ -4560,8 +5070,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * stays inside `~/.grok` and the path matches sessions/…/images|videos/.
    * Lexical-only checks would let a symlink escape and still pass.
    */
-  private isServableFromDisk(p: string): boolean {
+  private isServableFromDisk(p: string, provider: AcpProvider = "grok"): boolean {
     try {
+      if (provider === "codex") {
+        return isTrustedCodexGeneratedImagePath(
+          p,
+          resolveCodexHome(process.env),
+          (candidate) => fs.realpathSync(candidate),
+        );
+      }
       const home = resolveGrokHome();
       return isTrustedGeneratedMediaPath(p, home, (candidate) => fs.realpathSync(candidate));
     } catch {
@@ -4643,12 +5160,41 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * CLI owns auth, so we shell out to it, tear down the live session, and drop
    * the webview back to the auth-required onboarding state. Resolves issue #13.
    */
-  async logout(): Promise<void> {
+  async logout(provider: AcpProvider = "grok"): Promise<void> {
+    if (provider === "codex") {
+      const cliPath = this.codexCliPath || this.locateProvider("codex");
+      if (!cliPath) {
+        await this.host.showErrorMessage("Codex sign-out could not run because the Codex CLI was not found. The account remains connected.");
+        return;
+      }
+      const choice = await this.host.showWarningMessage(
+        "Sign out of Codex? This clears the Codex CLI's cached credentials.",
+        { modal: true },
+        "Sign Out",
+      );
+      if (choice !== "Sign Out") return;
+      try {
+        await execGrokCli(cliPath, ["logout"], { timeout: 30_000, windowsHide: true });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "EACCES" || code === "EPERM") {
+          this.host.createTerminal({ name: "Codex Logout", shellPath: cliPath, shellArgs: ["logout"] }).show();
+          await this.host.showErrorMessage(
+            "Codex sign-out could not be observed, so it was opened in a terminal. The account remains connected until sign-out is confirmed.",
+          );
+        } else {
+          await this.host.showErrorMessage(`Codex sign-out failed: ${errorDetail(error)}. The account remains connected.`);
+        }
+        return;
+      }
+      await this.finishProviderLogout("codex");
+      return;
+    }
     const cliPath = this.cliPath || locateGrokCli(
       this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
-      this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
+      this.post({ type: "onboarding", state: "missing-cli", platform: process.platform, provider: "grok" });
       return;
     }
     const choice = await this.host.showWarningMessage(
@@ -4657,25 +5203,277 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       "Sign Out",
     );
     if (choice !== "Sign Out") return;
-    // Tear down every live session first so no client's `exit` (or in-flight
-    // turn) races the onboarding state we're about to show, then reset focus to a
-    // fresh, unstarted session.
-    await this.disposePool();
-    this.focused = this.newLocalSession();
     // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
     // is a parser error (see runMcpList).
     this.host.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
-    this.post({ type: "clearMessages" });
-    this.post({ type: "onboarding", state: "auth-required" });
+    await this.finishProviderLogout("grok");
+  }
+
+  private async finishProviderLogout(provider: AcpProvider): Promise<void> {
+    this.setProviderConnectedInMemory(provider, false);
+    const reset = this.resetProviderSessionsAfterLogout(provider);
+    try {
+      await this.persistProviderConnections();
+    } catch (error) {
+      const providerName = provider === "codex" ? "Codex" : "Grok";
+      const detail = errorDetail(error);
+      this.host.appendLine(`[providers] ${providerName} signed out, but saving connection state failed: ${detail}`);
+      await this.host.showErrorMessage(
+        `${providerName} signed out and its conversations were reset, but the disconnected state could not be saved: ${detail}`,
+      );
+    }
+    await reset;
+    this.postSessionsList();
+  }
+
+  private async resetProviderSessionsAfterLogout(provider: AcpProvider): Promise<void> {
+    const affectedClients = this.remoteClients.clients().filter(
+      (clientId) => this.remoteClients.active(clientId)?.provider === provider,
+    );
+    const queuedByClient = new Map(affectedClients.map((clientId) => {
+      const active = this.remoteClients.active(clientId);
+      return [clientId, {
+        id: active?.activeSessionId,
+        text: active?.queuedSends.join("\n\n") ?? "",
+      }] as const;
+    }));
+    const connected = this.connectedProviders();
+    // Never the opposite provider just because this one signed out: with nothing
+    // connected that mints a session bound to an account the user does not have,
+    // and `defaultProviderForProject` already declines to name a disconnected
+    // one. Replacements made with nothing connected carry `needsProvider`
+    // instead, and reconnecting any provider adopts them.
+    const needsProvider = connected.length === 0;
+    const replacementProvider = (cwd: string) => this.defaultProviderForProject(cwd);
+    const providerName = provider === "codex" ? "Codex" : "Grok";
+    const detachedReplacements: Session[] = [];
+    const detachedSessions = this.remoteClients.replaceDetachedActiveWhere(
+      (session) => session.provider === provider,
+      (cwd, session) => {
+        const replacement = new Session();
+        replacement.provider = replacementProvider(cwd);
+        replacement.needsProvider = needsProvider;
+        replacement.priming = connected.length > 0;
+        this.setSessionCwd(replacement, cwd, this.workspaceRoot());
+        replacement.lastActiveAt = Date.now();
+        const queuedText = session.queuedSends.join("\n\n");
+        // Nothing will start this tab until an account comes back, so the draft
+        // has to outlive the buffered notice below (a start clears the buffer).
+        if (queuedText) {
+          replacement.strandedDraft = queuedText;
+          replacement.strandedDraftSessionId = session.activeSessionId;
+        }
+        replacement.buffer.push({ type: "clearMessages" });
+        // A sign-out notice is momentary UI, never conversation history. A tab
+        // that was detached at the instant of sign-out misses the notice; its
+        // draft remains safe in META and is restored after a successful start.
+        detachedReplacements.push(replacement);
+        return replacement;
+      },
+    );
+    const affectedSessions = new Set<Session>([
+      ...[...this.pool].filter((session) => session.provider === provider),
+      ...affectedClients
+        .map((clientId) => this.remoteClients.active(clientId))
+        .filter((session): session is Session => !!session),
+      ...detachedSessions,
+    ]);
+    if (this.focused.provider === provider) affectedSessions.add(this.focused);
+    const replacingFocused = this.focused.provider === provider;
+    const focusedQueuedText = replacingFocused ? this.focused.queuedSends.join("\n\n") : "";
+    const focusedDraftId = replacingFocused ? this.focused.activeSessionId : undefined;
+    const focusedCwd = replacingFocused ? this.sessionCwd(this.focused) : "";
+    const backgroundQueued = [...affectedSessions]
+      .filter((session) =>
+        session !== this.focused &&
+        !this.remoteClients.isActiveValueVisible(session) &&
+        !detachedSessions.includes(session) &&
+        session.queuedSends.length > 0
+      )
+      .map((session) => ({
+        id: session.activeSessionId,
+        name: this.sessionDisplayName(session) || "a background conversation",
+        text: session.queuedSends.join("\n\n"),
+      }));
+
+    for (const affected of affectedSessions) {
+      const text = affected.queuedSends.join("\n\n");
+      if (text && affected.activeSessionId) {
+        await this.rememberQueuedDraft(affected.activeSessionId, text);
+      }
+    }
+
+    // Atomic boundary: detach every signed-out-provider client before any
+    // replacement startup can await. Membership is provider identity only;
+    // another provider's crashed/clientless session remains resumable.
+    for (const session of affectedSessions) this.disposeSession(session);
+
+    let localReplacement: Session | undefined;
+    if (replacingFocused) {
+      const cwd = authorizedListCwd(focusedCwd, this.authorizedSessionCwds(), pathsEqual)
+        ?? this.workspaceRoot();
+      const replacement = this.newLocalSession();
+      replacement.provider = replacementProvider(cwd);
+      replacement.needsProvider = needsProvider;
+      this.setSessionCwd(replacement, cwd, this.workspaceRoot());
+      replacement.priming = connected.length > 0;
+      replacement.lastActiveAt = Date.now();
+      this.focused = replacement;
+      this.pool.add(replacement);
+      localReplacement = replacement;
+      this.post({ type: "clearMessages" });
+      // With an account left, the draft goes straight back into the composer it
+      // was typed in. With none, that composer is behind the onboarding overlay,
+      // so hold it until reconnect gives it somewhere visible to land.
+      if (focusedQueuedText) {
+        replacement.strandedDraft = focusedQueuedText;
+        replacement.strandedDraftSessionId = focusedDraftId;
+      }
+      if (connected.length) this.emit(replacement, { type: "setBusy", value: true, locked: true });
+      else this.post({ type: "onboarding", state: "connect-agent", platform: process.platform });
+    }
+
+    const remoteReplacements = new Map<string, Session>();
+    for (const clientId of affectedClients) {
+      this.dropRemoteVoice(clientId);
+      this.remoteClients.deleteActive(clientId);
+      const cwd = this.remoteClients.cwd(clientId);
+      const replacement = new Session();
+      replacement.provider = replacementProvider(cwd);
+      replacement.needsProvider = needsProvider;
+      replacement.priming = connected.length > 0;
+      this.setSessionCwd(replacement, cwd, this.workspaceRoot());
+      replacement.lastActiveAt = Date.now();
+      this.remoteClients.setActive(clientId, replacement);
+      remoteReplacements.set(clientId, replacement);
+      this.emit(replacement, { type: "clearMessages" });
+      const queued = queuedByClient.get(clientId);
+      if (queued?.text) {
+        replacement.strandedDraft = queued.text;
+        replacement.strandedDraftSessionId = queued.id;
+      }
+      if (connected.length) {
+        this.emit(replacement, { type: "setBusy", value: true, locked: true });
+      } else {
+        this.sendRemoteClient(
+          clientId,
+          this.buildSessionsList(this.remoteClients.cwd(clientId), undefined, null),
+        );
+        this.sendRemoteClient(clientId, {
+          type: "onboarding",
+          state: "connect-agent",
+          platform: process.platform,
+        });
+      }
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: `${providerName} was signed out, so that conversation ended. This tab has been reset${connected.length ? " to a fresh session" : ""}.`,
+      });
+    }
+
+    // A background conversation's draft belongs to that conversation, not to
+    // whoever happens to be focused: `post` forwards to the remote clients
+    // attached to the focused session, so an unrelated phone tab received text
+    // typed into a different conversation — and being unbuffered, the only copy
+    // died on the next focus switch or reload. The draft is persisted to its own
+    // meta (restored by `restorePersistedDraft` when that conversation next
+    // starts) and the desk gets a transient, content-light pointer to it.
+    const draftNoticeTarget = localReplacement ?? this.focused;
+    for (const queued of backgroundQueued) {
+      if (!queued.id) {
+        this.emitLocalTransient(draftNoticeTarget, {
+          type: "error",
+          text: `${providerName} was signed out while ${queued.name} had an unsaved draft:\n\n${queued.text}`,
+        });
+        continue;
+      }
+      this.emitLocalTransient(draftNoticeTarget, {
+        type: "error",
+        text: `${providerName} was signed out while “${queued.name}” had a draft. It is saved — open that conversation to get it back.`,
+      });
+    }
+
+    // Startup begins only after the atomic disposal/re-home phase above. Sends
+    // during any stall now target an inert replacement and stay composer/queue
+    // owned; no signed-out client remains reachable locally or remotely.
+    if (localReplacement && connected.length) {
+      const started = await this.startSession(undefined, localReplacement);
+      if (started && !localReplacement.needsProvider) this.restoreStrandedDraft(localReplacement);
+    }
+    if (connected.length) {
+      for (const [clientId, replacement] of remoteReplacements) {
+        const started = await this.startSession(undefined, replacement);
+        if (started && !replacement.needsProvider) this.restoreStrandedDraft(replacement);
+        await this.persistWorktreeBinding(replacement);
+        this.sweepEmptySessions(this.sessionCwd(replacement));
+        this.sendRemoteSessionList(replacement, this.remoteClients.tabToken(clientId));
+      }
+    }
+    for (const replacement of detachedReplacements) this.pool.add(replacement);
+    if (affectedClients.length) this.postRepoCatalog();
+  }
+
+  /**
+   * Adopt every view left agent-less by a last-provider sign-out.
+   *
+   * Signing back in used to fix only whichever session the `recheckConnection`
+   * arrived on — the desk, in practice — while every phone tab kept a
+   * replacement bound to nothing, with no action available on it. Provider
+   * connection is machine-wide, so the recovery has to be too: local focused,
+   * every remote tab, and the detached replacements sitting in the pool waiting
+   * for their tab to come back.
+   */
+  private async retargetNeedsProviderSessions(provider: AcpProvider): Promise<Set<Session>> {
+    const targets = new Set<Session>();
+    const consider = (session: Session | undefined) => {
+      if (session?.needsProvider) targets.add(session);
+    };
+    consider(this.focused);
+    for (const session of this.pool) consider(session);
+    for (const session of this.remoteClients.detachedActiveValues()) consider(session);
+    const clientOf = new Map<Session, string>();
+    for (const clientId of this.remoteClients.clients()) {
+      const active = this.remoteClients.active(clientId);
+      consider(active);
+      if (active?.needsProvider) clientOf.set(active, clientId);
+    }
+    if (!targets.size) return targets;
+    // Bind and lock all of them before the first start can await, for the same
+    // reason the sign-out path detaches before it starts: a send arriving
+    // mid-adoption must queue against a priming session, not fall back through
+    // the refusal path it is being rescued from.
+    for (const session of targets) {
+      session.provider = provider;
+      session.priming = true;
+      this.emit(session, { type: "setBusy", value: true, locked: true });
+    }
+    // `needsProvider` is cleared by a start that actually succeeds, so a refused
+    // one (closed folder, missing CLI) stays adoptable by the next re-check
+    // rather than becoming permanently unreachable.
+    for (const session of targets) {
+      const started = await this.startSession(undefined, session);
+      const clientId = clientOf.get(session);
+      if (clientId) {
+        await this.persistWorktreeBinding(session);
+        this.sweepEmptySessions(this.sessionCwd(session));
+        this.sendRemoteSessionList(session, this.remoteClients.tabToken(clientId));
+      }
+      if (started && !session.needsProvider) this.restoreStrandedDraft(session);
+    }
+    return targets;
   }
 
   dispose(): void {
     void this.host.setContext("grok.composerFocus", false);
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
+    for (const timer of this.loginReprobeTimers.values()) clearTimeout(timer);
+    this.loginReprobeTimers.clear();
     for (const timer of this.turnOrderTimers) clearTimeout(timer);
     this.turnOrderTimers.clear();
     this.uplink?.dispose();
     this.uplink = undefined;
+    this.codexInstallAbort?.abort(new Error("Installation cancelled."));
+    this.codexInstallAbort = undefined;
     try { this.keepAwake.stop(); } catch { /* the pid watcher reaps it anyway */ }
     void this.disposePool();
     this.editorWatcher?.dispose();
@@ -4706,11 +5504,53 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private async readGrokVersion(cliPath: string, timeout = 30_000): Promise<string> {
     try {
       const { stdout } = await execGrokCli(cliPath, ["--version"], { timeout });
-      return stdout?.trim() ?? "";
+      const output = stdout?.trim() ?? "";
+      const parsed = parseGrokVersion(output);
+      if (parsed) this.providerCliVersions.grok = parsed.join(".");
+      return output;
     } catch (e) {
       this.host.appendLine(`grok --version failed: ${(e as Error).message}`);
       return "";
     }
+  }
+
+  private probeProviderVersion(provider: AcpProvider): Promise<string> {
+    if (provider === "codex") return this.probeCodexVersion();
+    if (this.grokVersionProbe) return this.grokVersionProbe;
+    this.grokVersionProbe = (async () => {
+      const cliPath = this.locateProvider("grok");
+      if (!cliPath) return "";
+      const output = await this.readGrokVersion(cliPath);
+      this.postProviderState();
+      return this.providerCliVersions.grok ?? output;
+    })();
+    return this.grokVersionProbe;
+  }
+
+  /** Read `codex --version` once per activation. The adapter handshake reports
+   * its own package version, not the binary it launches. */
+  private probeCodexVersion(): Promise<string> {
+    if (this.codexVersionProbe) return this.codexVersionProbe;
+    this.codexVersionProbe = (async () => {
+      const cliPath = this.locateProvider("codex");
+      if (!cliPath) return "";
+      try {
+        const { stdout } = await execGrokCli(cliPath, ["--version"], {
+          timeout: 30_000,
+          windowsHide: true,
+        });
+        const version = parseCodexVersionOutput(stdout ?? "");
+        if (!version) throw new Error("unrecognized version output");
+        this.providerCliVersions.codex = version;
+        this.postProviderState();
+        return version;
+      } catch (error) {
+        this.host.appendLine(`codex --version failed: ${(error as Error).message}`);
+        this.postProviderState();
+        return "";
+      }
+    })();
+    return this.codexVersionProbe;
   }
 
   /** Preserve the original silent-update contract: once per extension upgrade,
@@ -4761,22 +5601,31 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   /**
    * Probe the installed CLI and decide Plan availability. Fail-closed when the
-   * version cannot be read, but that outcome is *not* latched — only a parseable
-   * below-floor banner sticks for the session. Retries once on empty/unparseable
-   * output (slow first spawn). Performs no update or pool orchestration.
+   * version cannot be read, but that outcome is *not* latched — only a live
+   * parseable below-floor banner sticks for the session. Retries once on
+   * empty/unparseable output, then falls back to the last verified banner for
+   * this binary when the file identity still matches. A cache hit keeps that
+   * availability and is never treated as verified. Performs no update or pool
+   * orchestration.
    */
   private async planModeCompatibility(
     cliPath: string,
     opts: { notify?: boolean } = {},
   ): Promise<CliCompatibilityResult> {
     const notify = opts.notify !== false;
-    const versionOutput = await probeVersionOutput(
-      () => this.readGrokVersion(cliPath),
-      (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    );
-    const decision = decidePlanModeAvailability(versionOutput);
+    const cache = this.state.get<CliVersionCache>(CLI_VERSION_CACHE_KEY, {});
+    const { decision, nextCache, usedCache } = await resolvePlanModeAvailability({
+      readOnce: () => this.readGrokVersion(cliPath),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      identity: readCliBinaryIdentity(cliPath),
+      cache,
+    });
+    if (nextCache) void this.state.update(CLI_VERSION_CACHE_KEY, nextCache);
     if (decision.available) {
-      return { planModeAvailable: true, planModeVersionVerified: true };
+      if (usedCache) {
+        this.host.appendLine("grok --version failed; using last verified version for Plan mode.");
+      }
+      return { planModeAvailable: true, planModeVersionVerified: decision.verified, usedCache };
     }
     if (decision.verified) {
       const message =
@@ -4788,24 +5637,27 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         planModeAvailable: false,
         planModeVersionVerified: true,
         planModeUnavailableReason: decision.reason,
+        usedCache,
       };
     }
     // Unverified: log + optional toast once at session start; a later Plan pick
     // re-probes without forcing a restart (#105).
     const message =
-      `Could not verify the Grok CLI version; Plan mode is unavailable until it can be checked ` +
-      `(needs ${GROK_REQUIRED_VERSION}+). Continuing best-effort with the current binary.`;
+      `Could not verify the Grok CLI version (the check failed or timed out — a first run after install can be slow). ` +
+      `Plan mode is unavailable until it can be checked. Pick Plan again or reload the window to retry. ` +
+      `Continuing best-effort with the current binary.`;
     this.host.appendLine(message);
     if (notify) {
       void this.host.showWarningMessage(
-        `Could not verify the Grok CLI version; Plan mode is unavailable until it can be checked ` +
-          `(needs ${GROK_REQUIRED_VERSION}+).`,
+        `Could not verify the Grok CLI version (the check failed or timed out — a first run after install can be slow). ` +
+          `Pick Plan again or reload the window to retry.`,
       );
     }
     return {
       planModeAvailable: false,
       planModeVersionVerified: false,
       planModeUnavailableReason: decision.reason,
+      usedCache,
     };
   }
 
@@ -4895,6 +5747,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * safe while a session is live. Posts a grokUpdateStatus back to the webview.
    */
   private async checkGrokUpdate(): Promise<void> {
+    const connected = this.connectedProviders();
+    if (connected.includes("codex")) void this.probeCodexVersion();
+    if (!connected.includes("grok")) return;
     const cliPath = this.cliPath || locateGrokCli(
       this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
@@ -4938,7 +5793,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
-      this.post({ type: "onboarding", state: "missing-cli", platform: process.platform });
+      this.post({ type: "onboarding", state: "missing-cli", platform: process.platform, provider: "grok" });
       return;
     }
     // Enforce the update policy (issue #22) server-side too — the menu already
@@ -5135,23 +5990,34 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         `[sessions] refused startSession (cwd not authorized): ${target.cwd}` +
           (resumeId ? ` resumeId=${resumeId}` : ""),
       );
+      target.priming = false;
+      this.emit(target, { type: "setBusy", value: false });
       this.postRepoCatalog();
       this.postSessionsList();
+      return undefined;
+    }
+    if (!this.connectedProviders().includes(target.provider)) {
+      target.priming = false;
+      this.emit(target, { type: "setBusy", value: false });
+      this.postProviderState();
+      this.emit(target, {
+        type: "onboarding",
+        state: this.connectedProviders().length ? (target.provider === "codex" ? "missing-codex" : "missing-cli") : "connect-agent",
+        platform: process.platform,
+        provider: target.provider,
+      });
       return undefined;
     }
     // A repository that ships its own always-approve config gets consent first.
     // Deliberately here, before anything is mutated: nothing has been touched
     // yet, so declining is a clean no-op rather than a half-started session.
-    if (!(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
+    if (target.provider === "grok" && !(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
       return undefined;
     }
     // The session this start (re)builds. Today always the focused one (pool-of-1);
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
     const session = target;
-    // Timed from here, before anything is torn down — see src/open-timing.ts
-    // for why: four of the five costs in an open are invisible from outside,
-    // and "sometimes it takes ages" is not something anyone can act on.
     const clock = new OpenClock();
     const replacedClient = session.client;
     if (replacedClient) {
@@ -5183,11 +6049,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Detach and dispose as one structural operation. Nothing that can return
     // belongs between these lines: the old ACP callbacks remain live until the
     // process has actually exited.
+    const disposeAt = clock.now();
     if (replacedClient) {
       await replacedClient.dispose();
-      clock.mark("dispose");
       if (gen !== session.gen) return undefined;
     }
+    clock.record("dispose", replacedClient ? clock.elapsed(disposeAt) : 0);
     // A brand-new session starts in the remembered mode (#25) immediately, so the
     // toolbar shows the right one from the first paint — no Agent → Auto accept
     // flash while the session spins up and primes. Resumed sessions stay
@@ -5201,7 +6068,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // and is invisible over ACP — the CLI still reports plain agent mode. Detect
     // it so the button shows "Auto accept" instead of a misleading "Agent" (#31).
     // Applies to resumed sessions too (the config is global, not per-session).
-    const configAutoApprove = this.configForcesAutoApprove(this.sessionCwd(session));
+    const configAutoApprove = session.provider === "grok" && this.configForcesAutoApprove(this.sessionCwd(session));
     session.autoApprove = rememberedYolo || configAutoApprove;
     session.planActive = false;
     session.hasHistory = false;
@@ -5237,29 +6104,40 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.emit(session, { type: "setBusy", value: true, locked: true });
 
     const cfg = this.host.getConfiguration("grok");
-    const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
-    this.cliPath = cliPath || undefined;
+    const cliPath = this.locateProvider(session.provider);
     if (!cliPath) {
       if (gen !== session.gen) return undefined;
       this.pool.delete(session);
       session.priming = false;
       this.emit(session, { type: "setBusy", value: false });
-      this.emit(session, { type: "onboarding", state: "missing-cli", platform: process.platform });
+      this.emit(session, {
+        type: "onboarding",
+        state: session.provider === "codex" ? "missing-codex" : "missing-cli",
+        platform: process.platform,
+        provider: session.provider,
+      });
       return undefined;
     }
 
     // Keep the established once-per-extension-upgrade update trigger, then read
     // the resulting version solely to decide whether Plan is safe to expose.
-    await this.maybeUpdateCliOnUpgrade(cliPath);
-    if (gen !== session.gen) return undefined;
-    await this.maybePinBrokenCli(cliPath);
-    if (gen !== session.gen) return undefined;
-    const compatibility = await this.planModeCompatibility(cliPath);
-    if (gen !== session.gen) return undefined;
-    this.applyPlanModeCompatibility(session, compatibility);
-    // Every open spawns `grok --version` at least once (twice on the first open
-    // of a window, and the update check can be far more than that).
-    clock.mark("probe");
+    const versionAt = clock.now();
+    let versionNote: string | undefined;
+    if (session.provider === "grok") {
+      await this.maybeUpdateCliOnUpgrade(cliPath);
+      if (gen !== session.gen) return undefined;
+      await this.maybePinBrokenCli(cliPath);
+      if (gen !== session.gen) return undefined;
+      const compatibility = await this.planModeCompatibility(cliPath);
+      if (gen !== session.gen) return undefined;
+      if (compatibility.usedCache) versionNote = "cached";
+      this.applyPlanModeCompatibility(session, compatibility);
+    } else {
+      session.planModeAvailable = true;
+      session.planModeVersionVerified = true;
+      session.planModeUnavailableReason = undefined;
+    }
+    clock.record("version", clock.elapsed(versionAt), versionNote);
 
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
@@ -5279,7 +6157,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         };
       }
     }
-    const env = this.buildEnv(cwd);
+    const env = session.provider === "grok" ? this.buildEnv(cwd) : { ...process.env };
     const effortStr = cfg.get<string>("defaultEffort", "");
     const effort = effortStr ? (effortStr as EffortLevel) : undefined;
     const client = new AcpClient({
@@ -5288,6 +6166,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       env,
       effort,
       log: (msg) => this.host.appendLine(msg),
+      ...(session.provider === "codex" ? { backend: new CodexBackend() } : {}),
     });
     session.client = client;
 
@@ -5315,12 +6194,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("initialized", (init) => {
       if (gen !== session.gen) return;
       this.warnOAuthShadowOnce(init?._meta?.defaultAuthMethodId, env);
+      const handshakeVersion = init?.serverInfo?.version ?? init?.version ?? null;
+      if (session.provider === "grok" && typeof handshakeVersion === "string" && handshakeVersion.trim()) {
+        this.providerCliVersions.grok = handshakeVersion.trim().replace(/^v/i, "");
+        this.postProviderState();
+      }
       this.emit(session, {
         type: "initialized",
         info: {
           cliPath,
           cwd,
-          version: init?.serverInfo?.version ?? init?.version ?? null,
+          version: handshakeVersion,
+          provider: session.provider,
           init: { protocolVersion: init?.protocolVersion },
         },
       });
@@ -5328,12 +6213,38 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("session", (res) => {
       if (gen !== session.gen) return;
       if (res?.sessionId) session.activeSessionId = res.sessionId;
+      this.cacheProviderModels(session.provider, client.availableModels, client.currentModelId);
+      if (res?.sessionId) {
+        void this.updateSessionMeta((current) => ({
+          ...current,
+          [res.sessionId]: {
+            ...(current[res.sessionId] ?? {}),
+            provider: session.provider,
+            providerCwd: cwd,
+          },
+        }));
+      }
       this.emit(session, {
         type: "session",
         sessionId: res.sessionId,
-        models: client.availableModels,
+        models: this.modelsForSession(session, client.availableModels, client.currentModelId, !resumeId),
         currentModelId: client.currentModelId,
         worktree: !!session.worktree,
+        provider: session.provider,
+      });
+    });
+    client.on("sessionTitle", (title: string) => {
+      if (gen !== session.gen || !title.trim()) return;
+      const sid = client.sessionId ?? session.activeSessionId;
+      if (!sid) return;
+      void this.updateSessionMeta((current) => {
+        const entry = current[sid];
+        if (entry?.customName || entry?.autoName === title.trim()) return null;
+        return { ...current, [sid]: { ...(entry ?? {}), autoName: title.trim() } };
+      }).then(() => {
+        this.sessionCache.delete(sid);
+        this.postSessionName(session);
+        this.postSessionsList();
       });
     });
     client.on("modelChanged", (id) => {
@@ -5583,7 +6494,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // While planning, decline permissions for operations the same fs/terminal
       // policy would block. A read-only execute request falls through to the
       // ordinary permission prompt; Plan mode never grants permission itself.
-      if (session.planActive && shouldRejectPermission(req.toolCall, {
+      if (client.usesClientPlanGate && session.planActive && shouldRejectPermission(req.toolCall, {
         active: true,
         workspaceRoot: cwd,
         grokHome: resolveGrokHome(process.env),
@@ -5689,10 +6600,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("stderr", (text: string) => this.host.append(text));
 
     try {
+      const spawnAt = clock.now();
       await client.start();
-      clock.mark("spawn");
+      clock.record("spawn+init", clock.elapsed(spawnAt));
       if (gen !== session.gen) { client.dispose(); return undefined; }
-      const defaultModel = cfg.get<string>("defaultModel", "");
+      const defaultModel = this.providerDefaultForProject(cwd, session.provider) ?? "";
       if (resumeId) {
         // Queue any saved plans BEFORE replay starts so the webview can interleave
         // them inline with user messages as they replay (instead of dumping all
@@ -5711,41 +6623,45 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // plan.md — which rewind doesn't truncate — and resurrected the very
         // plan the user had just removed, labelled "Restored from the previous
         // session".
-        const saved = overrides[resumeId]?.plans;
-        const planSource = planRestoreSource(saved);
-        if (planSource === "saved") {
-          this.emit(session, { type: "planHistoryQueue", plans: await this.withPlanReviewPaths(saved!, resumeId) });
-          session.lastPlanText = saved![saved!.length - 1].text;
-        } else if (planSource === "disk") {
-          // Legacy session (no per-plan persistence): fall back to the on-disk
-          // latest plan, which we'll render at the bottom after replay.
-          const sessDir = sessionDirFor(resolveGrokHome(process.env), cwd, resumeId, { fs: defaultFs });
-          const planPath = sessDir ? path.join(sessDir, "plan.md") : "";
-          if (planPath && fs.existsSync(planPath)) {
-            try {
-              const planText = fs.readFileSync(planPath, "utf8");
-              let snapshot: { path: string; name: string } | undefined;
+        const saved = client.usesClientPlanGate ? overrides[resumeId]?.plans : undefined;
+        if (client.usesClientPlanGate) {
+          const planSource = planRestoreSource(saved);
+          if (planSource === "saved") {
+            this.emit(session, { type: "planHistoryQueue", plans: await this.withPlanReviewPaths(saved!, resumeId) });
+            session.lastPlanText = saved![saved!.length - 1].text;
+          } else if (planSource === "disk") {
+            // Legacy Grok session (no per-plan persistence): fall back to the
+            // on-disk latest plan, which we'll render at the bottom after replay.
+            const sessDir = sessionDirFor(resolveGrokHome(process.env), cwd, resumeId, { fs: defaultFs });
+            const planPath = sessDir ? path.join(sessDir, "plan.md") : "";
+            if (planPath && fs.existsSync(planPath)) {
               try {
-                snapshot = await this.createPlanReviewSnapshot(planText, resumeId);
+                const planText = fs.readFileSync(planPath, "utf8");
+                let snapshot: { path: string; name: string } | undefined;
+                try {
+                  snapshot = await this.createPlanReviewSnapshot(planText, resumeId);
+                } catch (e) {
+                  this.host.appendLine(`[plan-review] ${(e as Error).message}`);
+                }
+                this.emit(session, {
+                  type: "planHistoryQueue",
+                  plans: [{
+                    text: planText,
+                    verdict: undefined as any,
+                    planPath: snapshot?.path,
+                    planName: snapshot?.name,
+                  }],
+                });
+                session.lastPlanText = planText;
               } catch (e) {
-                this.host.appendLine(`[plan-review] ${(e as Error).message}`);
+                this.host.appendLine(`[plan-restore] ${(e as Error).message}`);
               }
-              this.emit(session, {
-                type: "planHistoryQueue",
-                plans: [{
-                  text: planText,
-                  verdict: undefined as any,
-                  planPath: snapshot?.path,
-                  planName: snapshot?.name,
-                }],
-              });
-              session.lastPlanText = planText;
-            } catch (e) {
-              this.host.appendLine(`[plan-restore] ${(e as Error).message}`);
             }
           }
         }
 
+        const loadAt = clock.now();
+        let replayAt = 0;
         await this.replayLoadedHistory(session, async () => {
           try {
             await client.loadSession(resumeId, defaultModel || undefined);
@@ -5761,12 +6677,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
               `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
             );
           }
+          // Events stream during session/load; replay(post) is the host wrap-up
+          // after the RPC settles (no webview-complete signal exists).
+          clock.record("load", clock.elapsed(loadAt));
+          replayAt = clock.now();
         });
-        // The CLI's own work — rereading the transcript and rebuilding the
-        // prompt context, which indexes the repository — plus replaying it all
-        // into the webview. Expected to dominate, and the reason a project you
-        // have not touched in weeks feels slower than the one you are in.
-        clock.mark("load+replay");
+        clock.record("replay(post)", clock.elapsed(replayAt));
         session.activeSessionId = resumeId;
         session.titleGenerated = true; // existing session, name already in storage
         session.hasHistory = true;
@@ -5776,17 +6692,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // raising the gate. Override that here with the actual verdict-driven
         // decision (see plan-restore.ts) so a Cancelled or Approved session
         // doesn't come back stuck in Plan mode.
-        const decision = decideRestoreState(saved);
-        const unavailablePlan = !session.planModeAvailable && (
-          decision.planActive || session.planActive || client.currentModeId === "plan"
-        );
-        if (unavailablePlan) {
-          this.recoverUnavailablePlanMode(session, client, gen);
-        } else {
-          const restorePlan = decision.planActive && session.planModeAvailable;
-          this.setPlanActive(session, restorePlan);
-          const targetMode = restorePlan ? "plan" : ACT_MODE_ID;
-          try { await client.setMode(targetMode); } catch { /* best-effort */ }
+        if (client.usesClientPlanGate) {
+          const decision = decideRestoreState(saved);
+          const unavailablePlan = !session.planModeAvailable && (
+            decision.planActive || session.planActive || client.currentModeId === "plan"
+          );
+          if (unavailablePlan) {
+            this.recoverUnavailablePlanMode(session, client, gen);
+          } else {
+            const restorePlan = decision.planActive && session.planModeAvailable;
+            this.setPlanActive(session, restorePlan);
+            const targetMode = restorePlan ? "plan" : ACT_MODE_ID;
+            try { await client.setMode(targetMode); } catch { /* best-effort */ }
+          }
         }
 
         // Seed the context donut from grok's persisted signals.json — no turn
@@ -5799,14 +6717,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.restoreUsage(session);
       } else {
         await client.newSession(defaultModel || undefined);
-        clock.mark("new-session");
+        clock.record("load", 0);
+        clock.record("replay(post)", 0);
         session.activeSessionId = client.sessionId;
       }
       if (gen !== session.gen) { client.dispose(); session.client = undefined; return undefined; }
-      this.host.appendLine(clock.summary(resumeId ? "resume" : "new", cwd));
+      this.host.appendLine(clock.summary(session.historyEventCount));
       this.postSessionName(session);
 
-      if (defaultModel && client.currentModelId && client.currentModelId !== defaultModel) {
+      if (session.provider === "grok" && defaultModel && client.currentModelId && client.currentModelId !== defaultModel) {
         const hasModel = client.availableModels.some((m) => m.modelId === defaultModel);
         if (!hasModel) {
           // The configured default isn't available — grok already fell back to an
@@ -5832,10 +6751,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Session is live — unlock the composer and flush anything typed during
       // the startup window (#37).
       session.priming = false;
+      session.needsProvider = false;
       this.pool.add(session);
       this.touch(session);
       this.reapPool(); // enforce the LRU cap now that the pool grew
+      this.setProviderNeedsLogin(session.provider, false);
       this.emit(session, { type: "setBusy", value: false });
+      // A draft this conversation lost to a provider sign-out comes back with
+      // it, before the queue flushes — the composer is where it was typed.
+      this.restorePersistedDraft(session);
       if (gen === session.gen) void this.maybeFlushQueuedSends(session);
     } catch (err) {
       if (gen !== session.gen) { client.dispose(); return undefined; }
@@ -5848,9 +6772,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // No `403`/`forbidden` here: the CLI deliberately does NOT map 403 to an
       // auth failure (entitlement/policy, which sign-in can't fix — #58); a
       // startup error carrying that wording surfaces as a plain error below.
-      if (/auth|unauthor|401|api[_\s-]?key|credential|sign.?in/i.test(msg)) {
-        this.emit(session, { type: "onboarding", state: "auth-required" });
-      } else if (process.platform === "win32" && /timed out: (initialize|session\/(new|load))|exited \(code null\)/i.test(msg)) {
+      if ((client.provider === "codex" && client.isCredentialError(err)) || /auth|unauthor|401|api[_\s-]?key|credential|sign.?in/i.test(msg)) {
+        // The onboarding overlay only reaches whoever is looking at THIS
+        // session. The account-level flag is what tells the gear and the model
+        // picker, on every view, that signing in is the action — strictly
+        // classified so an entitlement failure (which a sign-in cannot fix)
+        // does not label the account signed-out.
+        if (client.isCredentialError(err) || isCredentialError(err)) {
+          this.setProviderNeedsLogin(session.provider, true);
+        }
+        this.emit(session, { type: "onboarding", state: providerLoginState(session.provider) });
+      } else if (session.provider === "grok" && process.platform === "win32" && /timed out: (initialize|session\/(new|load))|exited \(code null\)/i.test(msg)) {
         // The signature of the Windows stdio regression (issue #22): a startup request
         // hangs because the agent won't read stdin until EOF. It spanned 0.2.61–0.2.70
         // (`initialize` on 0.2.61–0.2.64, `session/new` on 0.2.67/0.2.69/0.2.70) and was
@@ -5882,7 +6814,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             `\`grok update --version ${GROK_STDIO_DOWNGRADE_TARGET}\` in a terminal, then start a new session.`,
         });
       } else {
-        this.emit(session, { type: "error", text: `Failed to start Grok: ${msg}` });
+        this.emit(session, { type: "error", text: `Failed to start ${session.provider === "codex" ? "Codex" : "Grok"}: ${msg}` });
       }
       return undefined;
     }
@@ -5915,6 +6847,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     const session = new Session();
     session.cwd = cwd;
+    session.provider = this.defaultProviderForProject(cwd);
     this.remoteClients.setActive(clientId, session);
     return session;
   }
@@ -6228,7 +7161,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         void this.host.openExternal(msg.url);
         break;
       case "openText": {
-        await this.host.openUntitledText(msg.content, msg.language);
+        // Basename only — a renderer-supplied path must not choose the directory.
+        const name = typeof msg.filename === "string" ? path.basename(msg.filename.trim()) : "";
+        const suggested = name ? path.join(this.sessionCwd(session), name) : undefined;
+        await this.host.openUntitledText(msg.content, msg.language, suggested);
         break;
       }
       case "openDiff":
@@ -6305,7 +7241,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         break;
       case "setModel":
-        await this.switchModel(msg.modelId, session, requester);
+        await this.switchModel(
+          msg.modelId,
+          session,
+          requester,
+          msg.provider === "codex" || msg.provider === "grok"
+            ? msg.provider
+            : this.providerForRequestedModel(msg.modelId, session.provider),
+        );
+        break;
+      case "installCodex":
+        await this.installManagedCodexCli();
+        break;
+      case "cancelCodexInstall":
+        this.codexInstallAbort?.abort(new Error("Installation cancelled."));
         break;
       case "setEffort": {
         if (session.priming) break; // ignore changes fired mid-session-start (see switchModel)
@@ -6319,8 +7268,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           const wasEmpty = !session.hasHistory;
           const discardId = session.activeSessionId;
           await cfg2.update("defaultEffort", newLevel, "global");
+          if (wasEmpty && session.provider === "codex") {
+            await this.discardCodexEmptySession(discardId, this.sessionCwd(session), session.client);
+          }
           await this.startSession(undefined, session);
-          if (wasEmpty) this.discardRestartedEmptySession(discardId, session);
+          if (wasEmpty && session.provider === "grok") this.discardRestartedEmptySession(discardId, session);
           break;
         }
 
@@ -6470,24 +7422,94 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "runGrokLogin": {
-        const cliPath = this.cliPath || locateGrokCli(
-          this.host.getConfiguration("grok").get<string>("cliPath", ""),
-        );
+        const provider: AcpProvider = msg.provider === "codex" ? "codex" : "grok";
+        const cliPath = provider === "grok"
+          ? this.cliPath || this.locateProvider("grok")
+          : this.codexCliPath || this.locateProvider("codex");
         if (!cliPath) {
-          this.post({ type: "onboarding", state: "missing-cli" });
+          this.post({
+            type: "onboarding",
+            state: provider === "codex" ? "missing-codex" : "missing-cli",
+            platform: process.platform,
+            provider,
+          });
           break;
         }
         // shellPath/shellArgs, not sendText — a quoted path typed into
         // PowerShell is a parser error (see runMcpList).
-        const term = this.host.createTerminal({ name: "Grok Login", shellPath: cliPath, shellArgs: ["login"] });
+        const term = this.host.createTerminal({
+          name: provider === "codex" ? "Codex Login" : "Grok Login",
+          shellPath: cliPath,
+          shellArgs: ["login"],
+        });
         term.show();
+        // The terminal is outside the host protocol, so completion cannot be
+        // observed directly. Probe immediately as well: browser/desktop login
+        // helpers may already have completed, and the explicit Re-check below
+        // remains available for interactive terminals still in progress.
+        this.watchProviderLogin(provider);
+        if (this.providerConnections()[provider] !== true) {
+          this.post({
+            type: "onboarding",
+            state: providerLoginState(provider),
+            platform: process.platform,
+          });
+        }
         break;
       }
-      case "recheckConnection":
-        await this.startSession(session.activeSessionId, session);
+      case "recheckConnection": {
+        const provider: AcpProvider = msg.provider === "codex" ? "codex" : msg.provider === "grok" ? "grok" : session.provider;
+        const connectedBefore = this.connectedProviders();
+        if (!this.locateProvider(provider)) {
+          this.post({
+            type: "onboarding",
+            state: provider === "codex" ? "missing-codex" : "missing-cli",
+            platform: process.platform,
+            provider,
+          });
+          break;
+        }
+        const pendingLoginProbe = this.loginReprobeTimers.get(provider);
+        if (pendingLoginProbe) clearTimeout(pendingLoginProbe);
+        this.loginReprobeTimers.delete(provider);
+        await this.setProviderConnected(provider, true);
+        await this.reprobeProviderCredentials(provider);
+        // Every view stranded by a last-provider sign-out, not just this one.
+        const adopted = await this.retargetNeedsProviderSessions(provider);
+        const firstConnection = connectedBefore.length === 0;
+        if (adopted.has(session)) {
+          this.postSessionsList();
+        } else if (firstConnection && !session.hasHistory) {
+          session.provider = provider;
+          await this.rememberProjectProvider(this.sessionCwd(session), provider);
+          await this.startSession(undefined, session);
+        } else if (session.provider === provider && !session.client) {
+          // Retry a provider whose first real session exposed a credential error.
+          await this.startSession(session.hasHistory ? session.activeSessionId : undefined, session);
+        } else {
+          // Adding a second account must not restart or change the conversation
+          // currently on screen; it becomes available in New session instead.
+          if (provider === "codex") this.scheduleCodexHistoryRefresh(this.sessionCwd(session));
+          this.postSessionsList();
+        }
         break;
+      }
+      case "retryProviderSession": {
+        const provider: AcpProvider = msg.provider === "codex" ? "codex" : msg.provider === "grok" ? "grok" : session.provider;
+        if (!this.connectedProviders().includes(provider)) {
+          if (requester) this.sendRemoteRequester(requester, {
+            type: "error",
+            text: `${provider === "codex" ? "Codex" : "Grok"} must be connected at the desk before a remote session can be retried.`,
+          });
+          break;
+        }
+        if (session.provider === provider && !session.client) {
+          await this.startSession(session.hasHistory ? session.activeSessionId : undefined, session);
+        }
+        break;
+      }
       case "logout":
-        await this.logout();
+        await this.logout(msg.provider === "codex" ? "codex" : "grok");
         break;
       case "checkGrokUpdate":
         await this.checkGrokUpdate();
@@ -6503,10 +7525,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "listSessions":
         if (origin === "remote" && clientId) {
           this.sendRemoteClient(clientId, this.buildSessionsList(messageCwd, {
-            offset: msg.offset, limit: msg.limit, query: msg.query,
+          offset: msg.offset, limit: msg.limit, query: msg.query, providerCursor: msg.providerCursor,
           }, session.activeSessionId));
         } else {
-          this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query });
+        this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query, providerCursor: msg.providerCursor });
         }
         break;
       case "listRepoSessions":
@@ -6888,7 +7910,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Refresh local history plus each connected remote tab. */
-  private postSessionsList(opts?: { offset?: number; limit?: number; query?: string }): void {
+  private postSessionsList(opts?: SessionsListOptions): void {
     const localCwd = this.historyCwdFor("local");
     const local = this.buildSessionsList(localCwd, opts, undefined, "local");
     this.postLocal(local);
@@ -6914,13 +7936,171 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private buildSessionsList(
     cwd: string,
-    opts?: { offset?: number; limit?: number; query?: string },
+    opts?: SessionsListOptions,
+    activeId: string | null | undefined = this.focused.activeSessionId,
+    scope: "local" | "remote" = "remote",
+  ): Extract<HostMsg, { type: "sessions" }> {
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const authorized =
+      scope === "remote" ? this.remoteAuthorizedSessionCwds() : this.authorizedSessionCwds();
+    const listCwd = authorizedListCwd(cwd, authorized, pathsEqual);
+    if (!listCwd) {
+      return {
+        type: "sessions",
+        entries: [],
+        activeId: null,
+        dots: {},
+        offset,
+        total: 0,
+        hasMore: false,
+        nextOffset: offset,
+        query: opts?.query ?? "",
+      };
+    }
+    cwd = listCwd;
+    const providers = this.connectedProviders();
+    if (providers.includes("codex")) this.scheduleCodexHistoryRefresh(cwd);
+    if (providers.length === 1 && providers[0] === "grok") {
+      return this.buildGrokSessionsList(cwd, opts, activeId, scope);
+    }
+
+    const query = opts?.query ?? "";
+    const limit = opts?.limit ?? SESSION_PAGE_SIZE;
+    const providerCursor = opts?.providerCursor ?? { grokOffset: offset };
+    const grok = providers.includes("grok")
+      ? this.buildGrokSessionsList(cwd, query
+          ? { offset: 0, limit: Number.MAX_SAFE_INTEGER, query }
+          : { offset: providerCursor.grokOffset, limit, query }, activeId, scope)
+      : undefined;
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const codex = providers.includes("codex")
+      ? [...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? [])]
+      : [];
+    for (const session of this.pool) {
+      if (session.provider !== "codex" || !session.activeSessionId || !pathsEqual(this.sessionCwd(session), cwd)) continue;
+      if (codex.some((entry) => entry.id === session.activeSessionId)) continue;
+      codex.push(this.liveSessionEntry(session, session.activeSessionId, this.sessionCwd(session), overrides));
+    }
+    codex.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    const merged = query
+      ? mergeProviderSessionEntries(grok?.entries ?? [], codex, providers, query)
+      : undefined;
+    const combinedPage = query ? undefined : mergeProviderHistoryPage(
+      grok && providers.includes("grok") ? grok : undefined,
+      providers.includes("codex") ? codex : [],
+      providerCursor,
+      limit,
+    );
+    const entries = query
+      ? (merged ?? []).slice(offset, offset + limit)
+      : combinedPage?.entries ?? [];
+    const dots: Record<string, Dot> = {};
+    for (const entry of entries) dots[entry.id] = this.dotForId(entry.id);
+    const nextOffset = query
+      ? offset + entries.length
+      : Math.max(offset + entries.length, combinedPage?.providerCursor.grokOffset ?? 0);
+    const total = query ? (merged?.length ?? 0) : (grok?.total ?? 0) + codex.length;
+    return {
+      type: "sessions",
+      entries,
+      activeId,
+      dots,
+      offset,
+      total,
+      hasMore: query ? nextOffset < total : combinedPage?.hasMore ?? false,
+      nextOffset,
+      ...(!query && combinedPage ? { providerCursor: combinedPage.providerCursor } : {}),
+      query,
+    };
+  }
+
+  private scheduleCodexHistoryRefresh(cwd: string): void {
+    if (!this.connectedProviders().includes("codex")) return;
+    const key = projectProviderKey(cwd);
+    if (this.codexSessionRefresh.has(key)) return;
+    if (Date.now() - (this.codexSessionCacheAt.get(key) ?? 0) < 10_000) return;
+    const refresh = this.refreshCodexHistory(cwd, key)
+      .catch((error) => {
+        this.host.appendLine(`[codex] session listing failed: ${(error as Error).message}`);
+        // Swallowing this rendered a signed-out agent as a history list that is
+        // simply empty — indistinguishable from having no conversations.
+        if (!isCodexCredentialError(error)) return;
+        // Stamp the clock before flipping the flag: the list refresh is driven
+        // by rendering, so an un-backed-off credential failure would re-list on
+        // every repaint it causes.
+        this.codexSessionCacheAt.set(key, Date.now());
+        this.setProviderNeedsLogin("codex", true);
+      })
+      .finally(() => this.codexSessionRefresh.delete(key));
+    this.codexSessionRefresh.set(key, refresh);
+  }
+
+  private async refreshCodexHistory(cwd: string, key = projectProviderKey(cwd)): Promise<void> {
+    const cliPath = this.locateProvider("codex");
+    if (!cliPath || !this.connectedProviders().includes("codex")) return;
+    const client = new AcpClient({
+      cliPath,
+      cwd,
+      env: { ...process.env },
+      backend: new CodexBackend(),
+      log: (message) => this.host.appendLine(message),
+    });
+    try {
+      await client.start();
+      const result = await client.listSessions(cwd, process.platform);
+      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      const stableOverrides: SessionMetaOverrides = { ...overrides };
+      for (const entry of result.sessions) {
+        const previous = stableOverrides[entry.sessionId] ?? {};
+        if (typeof previous.activeAt === "number") continue;
+        stableOverrides[entry.sessionId] = {
+          ...previous,
+          activeAt: codexListEntry(entry, {}, Date.now()).updatedAt,
+        };
+      }
+      const entries = result.sessions.map((entry) => codexListEntry(entry, stableOverrides));
+      // Ahead of the stamp: clearing the flag also clears the back-off clock.
+      this.setProviderNeedsLogin("codex", false);
+      this.codexSessionCache.set(key, entries);
+      this.codexSessionCacheAt.set(key, Date.now());
+      await this.updateSessionMeta((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const entry of result.sessions) {
+          const previous = next[entry.sessionId] ?? {};
+          const title = typeof entry.title === "string" ? entry.title.trim() : "";
+          const updated = {
+            ...previous,
+            provider: "codex" as const,
+            providerCwd: entry.cwd,
+            activeAt: typeof previous.activeAt === "number"
+              ? previous.activeAt
+              : stableOverrides[entry.sessionId]?.activeAt,
+            ...(!previous.customName && title ? { autoName: title } : {}),
+          };
+          if (JSON.stringify(updated) !== JSON.stringify(previous)) {
+            next[entry.sessionId] = updated;
+            changed = true;
+          }
+        }
+        return changed ? next : null;
+      });
+    } finally {
+      await client.dispose();
+    }
+    this.postSessionsList();
+    this.sendLocalRepoSessionsPreview(cwd);
+  }
+
+  private buildGrokSessionsList(
+    cwd: string,
+    opts?: GrokSessionsListOptions,
     activeId: string | null | undefined = this.focused.activeSessionId,
     /** Whose list this is. Remote gets the narrower set — see
      *  {@link remoteAuthorizedSessionCwds}. Defaults to the stricter answer so a
      *  new caller that forgets to say is wrong in the safe direction. */
     scope: "local" | "remote" = "remote",
-  ): HostMsg {
+  ): GrokSessionsListMessage {
     const offset = Math.max(0, opts?.offset ?? 0);
     const limit = opts?.limit ?? SESSION_PAGE_SIZE;
     const query = (opts?.query ?? "").trim().toLowerCase();
@@ -6990,7 +8170,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       nextOffset = offset + pageEntries.length;
     } else {
       total = index.length;
-      const pageIds = index.slice(offset, offset + limit).map((e) => e.id);
+      const pageIndex = index.slice(offset, offset + limit);
+      const pageIds = pageIndex.map((e) => e.id);
       pageEntries = this.readEntriesCachedMulti(pageIds, mtimeById, cwdById, overrides, grokHome, log)
         .filter((e) => e.kind !== "subagent");
       // mtime is an approximate sort key; re-order the loaded page by exact updated_at.
@@ -7040,13 +8221,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // memory (hasHistory), so override the disk-derived name here. This is the single
     // untitled session the user starts from; abandoning it deletes it (parkFocused).
     const liveEmpty = new Set<string>();
+    const liveProvider = new Map<string, AcpProvider>();
     for (const s of this.pool) {
-      if (s.activeSessionId && !s.hasHistory) liveEmpty.add(s.activeSessionId);
+      if (!s.activeSessionId) continue;
+      liveProvider.set(s.activeSessionId, s.provider);
+      if (!s.hasHistory) liveEmpty.add(s.activeSessionId);
     }
-    if (liveEmpty.size) {
-      for (const e of pageEntries) {
-        if (!e.customName && liveEmpty.has(e.id)) e.displayName = "New session";
-      }
+    for (const e of pageEntries) {
+      const provider = liveProvider.get(e.id);
+      if (provider) e.provider = provider;
+      if (!e.customName && liveEmpty.has(e.id)) e.displayName = "New session";
     }
 
     // Dashboard dot per grok-session-id (live status + persisted unread badge) for the rows we send,
@@ -7109,7 +8293,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     // Same last resort the history list uses ("Untitled (<date>)"), so a fork of
     // a nameless session reads like a row rather than a bare "(Fork)".
-    const first = (session.firstUserMessageForTitle || "").trim() || (override?.autoName || "").trim();
+    const generated = (override?.autoName || "").trim();
+    const opening = (session.firstUserMessageForTitle || "").trim();
+    const first = session.client?.provider === "codex" ? generated || opening : opening || generated;
     return fallbackName(first, Date.now());
   }
 
@@ -7159,6 +8345,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       createdAt: ts,
       numMessages: session.userMessageCount,
       modelId: undefined,
+      provider: session.provider,
     };
   }
 
@@ -7280,6 +8467,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)) return { cwd };
     }
 
+    const cachedCodex = findCachedCodexSession(
+      this.codexSessionCache.values(),
+      id,
+      allowedCwds,
+      (cwd, allowed) => sessionCwdBelongsToRepo(cwd, allowed, pathsEqual),
+    );
+    const provider = live?.provider ?? overrides[id]?.provider ?? (cachedCodex ? "codex" : "grok");
+    if (provider === "codex") {
+      return cachedCodex ? { cwd: cachedCodex.cwd } : { reason: "gone", repoCwd: selectedCwd };
+    }
+
     const candidates = [...new Set([
       overrides[id]?.worktreePath,
       this.sessionCache.get(id)?.entry.cwd,
@@ -7352,6 +8550,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // A rename changes displayName but not summary.json's mtime, so the mtime-keyed cache would
     // otherwise keep serving the old name. Drop it so the next read rebuilds the entry.
     this.sessionCache.delete(id);
+    for (const [key, entries] of this.codexSessionCache) {
+      this.codexSessionCache.set(key, entries.map((entry) => {
+        if (entry.id !== id) return entry;
+        const customName = next[id]?.customName?.trim() || undefined;
+        return {
+          ...entry,
+          customName,
+          displayName: customName || entry.rawSummary || next[id]?.autoName || `Untitled (${new Date(entry.updatedAt).toLocaleDateString()})`,
+        };
+      }));
+    }
     const live = [...this.pool].find((session) => session.activeSessionId === id);
     this.postSessionsList();
     // Recompute rather than echoing `trimmed`: an empty rename DROPS the custom
@@ -7500,13 +8709,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             ? requestedCwd
             : undefined)
         : undefined;
+    const cachedCodex = [...this.codexSessionCache.values()].flat().find((entry) => entry.id === id);
     const cwd =
       authorizedRemoteCwd ||
       live?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
+      cachedCodex?.cwd ||
       localNamedCwd ||
       this.historyCwdFor(origin);
+    const provider = live?.provider ?? overridesNow[id]?.provider ?? cachedCodex?.provider ?? "grok";
     // Tear the CLI down BEFORE touching the disk, not after. The live process
     // owns this conversation and re-persists it: delete the directory first and
     // it simply comes back, which is why deleting the open conversation used to
@@ -7514,16 +8726,48 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // turn, drops the client and disposes it, so by the time the files go there
     // is nothing left that could write them again.
     const wasFocused = !!live && live === this.focused;
-    if (live) this.disposeSession(live);
-    try {
-      deleteSessionDir({
-        fs: defaultFs,
-        grokHome: resolveGrokHome(process.env),
-        cwd,
-        id,
-      });
-    } catch (e) {
-      this.host.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
+    if (provider === "codex") {
+      let temporary: AcpClient | undefined;
+      try {
+        const cliPath = this.locateProvider("codex");
+        if (!cliPath) throw new Error("Codex CLI is not available.");
+        const client = live?.client ?? (temporary = new AcpClient({
+          cliPath,
+          cwd,
+          env: { ...process.env },
+          backend: new CodexBackend(),
+          log: (message) => this.host.appendLine(message),
+        }));
+        if (temporary) await temporary.start();
+        await client.deleteSession(id);
+      } catch (error) {
+        const text = `Codex refused to delete this conversation: ${(error as Error).message}`;
+        this.host.appendLine(`[sessions] ${text}`);
+        if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
+        else {
+          this.post({ type: "error", text });
+          void this.host.showErrorMessage(text);
+        }
+        if (temporary) await temporary.dispose();
+        return;
+      }
+      if (temporary) await temporary.dispose();
+      if (live) this.disposeSession(live);
+      for (const [key, entries] of this.codexSessionCache) {
+        this.codexSessionCache.set(key, entries.filter((entry) => entry.id !== id));
+      }
+    } else {
+      if (live) this.disposeSession(live);
+      try {
+        deleteSessionDir({
+          fs: defaultFs,
+          grokHome: resolveGrokHome(process.env),
+          cwd,
+          id,
+        });
+      } catch (e) {
+        this.host.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
+      }
     }
     this.sessionCache.delete(id);
     this.removePlanReviews(id); // snapshots live outside grok's session dir
@@ -7546,6 +8790,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // exists to prevent, except now the user is typing into it. Same rule as
       // newFocusedSession: the local scope IS the selection.
       this.setSessionCwd(this.focused, this.historyCwdFor("local"), this.workspaceRoot());
+      this.focused.provider = this.defaultProviderForProject(this.historyCwdFor("local"));
       await this.startSession();
     }
     for (const watcher of watchers) await this.newRemoteSession(watcher, false);
@@ -7585,6 +8830,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
+    // Codex history is provider-owned, so make the cache authoritative before a
+    // destructive combined-history action. This branch is unreachable for a
+    // Grok-only install and therefore leaves the long-standing disk path alone.
+    let codexHistoryChecked = !this.connectedProviders().includes("codex");
+    if (this.connectedProviders().includes("codex")) {
+      try {
+        await this.refreshCodexHistory(cwd);
+        codexHistoryChecked = true;
+      } catch (error) {
+        const text = `Codex history could not be checked, so its conversations were not cleared: ${(error as Error).message}`;
+        this.host.appendLine(`[sessions] ${text}`);
+        if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
+        else void this.host.showErrorMessage(text);
+      }
+    }
     const protectedIds = new Set(
       [...this.pool]
         .filter((session) => this.sessionHasLiveOwner(session))
@@ -7603,10 +8863,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       cwd: sessionCwd,
       entries: indexSessions({ fs: defaultFs, grokHome, cwd: sessionCwd }),
     })));
-    const keptForAnotherOwner = repoEntries.some(
+    const codexEntries = codexHistoryChecked
+      ? (this.codexSessionCache.get(projectProviderKey(cwd)) ?? [])
+      : [];
+    const allEntries = [...repoEntries, ...codexEntries];
+    const keptForAnotherOwner = allEntries.some(
       (entry) => protectedIds.has(entry.id) && entry.id !== requesterId,
     );
-    const clearableCount = repoEntries.filter((entry) => !protectedIds.has(entry.id)).length;
+    const clearableCount = allEntries.filter((entry) => !protectedIds.has(entry.id)).length;
     // A notice is a line in the transcript, and a transcript belongs to ONE
     // project — so a remark about a project you are not talking in lands in the
     // wrong conversation. Where the rail is the thing that asked, the refreshed
@@ -7640,7 +8904,48 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         );
       }
     }
+    const clearableCodex = codexEntries.filter((entry) => !protectedIds.has(entry.id));
+    if (clearableCodex.length) {
+      let client: AcpClient | undefined;
+      try {
+        const cliPath = this.locateProvider("codex");
+        if (!cliPath) throw new Error("Codex CLI is not available.");
+        client = new AcpClient({
+          cliPath,
+          cwd,
+          env: { ...process.env },
+          backend: new CodexBackend(),
+          log: (message) => this.host.appendLine(message),
+        });
+        await client.start();
+        for (const entry of clearableCodex) {
+          try {
+            await client.deleteSession(entry.id);
+            removedIds.add(entry.id);
+          } catch (error) {
+            const text = `Codex refused to delete “${entry.displayName}”: ${(error as Error).message}`;
+            this.host.appendLine(`[sessions] ${text}`);
+            if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
+            else void this.host.showErrorMessage(text);
+          }
+        }
+      } catch (error) {
+        const text = `Codex conversations were not cleared: ${(error as Error).message}`;
+        this.host.appendLine(`[sessions] ${text}`);
+        if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
+        else void this.host.showErrorMessage(text);
+      } finally {
+        if (client) await client.dispose();
+      }
+    }
     const removed = [...removedIds];
+
+    if (removed.length) {
+      const gone = new Set(removed);
+      for (const [key, entries] of this.codexSessionCache) {
+        this.codexSessionCache.set(key, entries.filter((entry) => !gone.has(entry.id)));
+      }
+    }
 
     // Purge our meta overrides + read cache for every removed id.
     if (removed.length) {
@@ -9349,6 +10654,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const isFirstSend = !session.hasHistory;
     session.hasHistory = true;
     if (isFirstSend) {
+      void this.rememberProjectProvider(
+        this.sessionCwd(session),
+        session.provider,
+        session.client?.currentModelId,
+      );
+      if (session.client?.sessionId) {
+        this.emit(session, {
+          type: "session",
+          sessionId: session.client.sessionId,
+          models: this.modelsForSession(session, session.client.availableModels, session.client.currentModelId, false),
+          currentModelId: session.client.currentModelId,
+          worktree: !!session.worktree,
+          provider: session.provider,
+        });
+      }
       // Image-only first message: leave the title source empty so grok's own
       // generated summary shows through, instead of pinning a permanent
       // "[Image #1]" customName over every screenshot-first session.
@@ -9464,7 +10784,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     promptBlocks: Parameters<AcpClient["prompt"]>[0],
   ): Promise<boolean> {
     const errorText = errorDetail(err);
-    if (!isAuthErrorText(errorText) && !isCredentialError(err)) return false;
+    if (!isAuthErrorText(errorText) && !session.client?.isCredentialError(err) && !isCredentialError(err)) return false;
     const resumeId = beginAuthRecovery(session);
     if (!resumeId) return false;
     this.host.appendLine(`[auth] recoverable token error — reloading session + resending: ${errorText}`);
@@ -9504,7 +10824,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.setStatus(session, "error");
         return true;
       }
-      if (isCredentialError(e2)) {
+      if (client.isCredentialError(e2) || isCredentialError(e2)) {
         // A fresh process still can't authenticate → auth.json genuinely dead →
         // the honest ask is a re-login. The agentError FIRST: its webview
         // handler is what clears the busy/"Grokking" indicator and leaves a
@@ -9514,7 +10834,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // already re-authed.
         this.emit(session, { type: "agentError", text: errorDetail(e2) });
         this.setStatus(session, "error");
-        this.post({ type: "onboarding", state: "auth-required" });
+        this.post({ type: "onboarding", state: providerLoginState(session.provider) });
       } else {
         // Entitlement/billing wording (or anything else) on a fresh process is
         // not a sign-in problem — promptErrorText shows the entitlement notice
@@ -9592,6 +10912,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private buildInitialStateMsg(): Extract<HostMsg, { type: "initialState" }> {
     const cfg = this.host.getConfiguration("grok");
     const cwd = this.workspaceRoot();
+    // Additive: older webviews ignore an unknown field; older hosts omit it
+    // and command View all then leaves language unset.
+    const commandLanguage = commandLanguageForDialect(resolvedTerminalShellDialect());
     return {
       type: "initialState",
       effort: cfg.get("defaultEffort", ""),
@@ -9605,6 +10928,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
       appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
+      ...(commandLanguage ? { commandLanguage } : {}),
       // For a remote's Version & about page. A phone is looking at neither GUI,
       // so it has to be told which one is on the other end and what the machine
       // is called. `canSwitchWorkspaceFolder` is the desktop app's defining
@@ -9637,6 +10961,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // metadata preload; every other host keeps the lazy default.
         servesMediaRanges: this.host.canServeMediaRanges,
         showInFolder: this.host.canShowInFolder,
+        // OPT-IN: desktop only. View all / proposed diffs open the in-app
+        // overlay instead of a host editor or bare window. Remotes never
+        // receive this (DESK_ONLY_CAPABILITIES).
+        previewInApp: this.host.canPreviewInApp,
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.
@@ -9647,6 +10975,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private postInitialState(): void {
     this.post(this.buildInitialStateMsg());
+    this.postProviderState();
+    for (const provider of this.connectedProviders()) void this.probeProviderVersion(provider);
     this.post({
       type: "summarizeRepliesAloud",
       value: this.host.getConfiguration("grok").get<boolean>("summarizeRepliesAloud", true),
@@ -9656,6 +10986,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     void this.postRemoteStatus();
+    if (this.connectedProviders().length === 0) {
+      this.focused.priming = false;
+      this.post({ type: "setBusy", value: false });
+      this.post({ type: "onboarding", state: "connect-agent", platform: process.platform });
+      this.postSessionsList();
+      return;
+    }
     // Host-declared capability (not incidental focused.client): only Electron
     // sets webviewReloadsUnderLiveSession. VS Code is false by construction, so
     // a view move / "Reload Webviews" that recreates the webview under a live
@@ -9678,6 +11015,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // the delete replacement); the one that starts by itself did not.
     if (!this.focused.cwd) {
       this.setSessionCwd(this.focused, this.historyCwdFor("local"), this.workspaceRoot());
+    }
+    if (!this.focused.hasHistory && !this.focused.client) {
+      this.focused.provider = this.defaultProviderForProject(this.sessionCwd(this.focused));
     }
     void this.startSession().then(() => {
       this.postSessionsList();
@@ -9792,6 +11132,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     "sessionDot",
     "session",
     "sessionName",
+    "providerState",
   ]);
   /** Webview→host actions the rail may post. Closed set — never send/cancel/etc. */
   private static readonly PROJECTS_RAIL_WEBVIEW_TYPES = new Set<WebviewMsg["type"]>([
@@ -10273,6 +11614,37 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!session.replaying) this.sendRemoteSession(session, message);
   }
 
+  /**
+   * Session-scoped like {@link emit}, but the message never leaves this machine.
+   *
+   * The pairing exists because the two properties a desk-only notice needs pull
+   * in opposite directions: `post` reaches the desk but forwards to whichever
+   * remote clients hold the focused session (so a notice about conversation A
+   * lands in a tab reading B), while `emit`'s buffering is exactly what stops a
+   * notice dying on the next focus switch. Buffer like `emit`, deliver like
+   * `postLocal`.
+   */
+  private emitLocal(session: Session, message: HostMsg): void {
+    if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
+    if (message.type === "clearMessages") session.buffer = [];
+    else if (!GrokSidebar.TRANSIENT_TYPES.has(message.type)) session.buffer.push(message);
+    if (session !== this.focused) return;
+    this.postTap?.("local", message);
+    const webview = this.view?.webview;
+    if (webview) webview.postMessage(this.localizeHistoryMessage(message, webview));
+    this.mirrorToProjectsRail(message);
+  }
+
+  /** Desk-targeted, non-replayable delivery for one-shot notices. */
+  private emitLocalTransient(session: Session, message: HostMsg): void {
+    if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
+    if (session !== this.focused) return;
+    this.postTap?.("local", message);
+    const webview = this.view?.webview;
+    if (webview) webview.postMessage(this.localizeHistoryMessage(message, webview));
+    this.mirrorToProjectsRail(message);
+  }
+
   private async replayLoadedHistory(session: Session, load: () => Promise<void>): Promise<void> {
     session.replaying = true;
     this.emit(session, { type: "historyReplay", active: true });
@@ -10449,6 +11821,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private parkFocused(): void {
     const cur = this.focused;
     const busy = cur.status === "working" || cur.status === "needs-you";
+    if (cur.needsProvider || cur.strandedDraft || cur.queuedSends.length > 0) {
+      this.pool.add(cur);
+      return;
+    }
     // A worktree session backs a real git checkout the user explicitly created —
     // never auto-delete it as an empty session, even before the first
     // message (that's what made creating/leaving a worktree replace the current
@@ -10469,8 +11845,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // another): tear down its process AND delete its on-disk dir so it doesn't pile
     // up in history (#24). The next focused session becomes the single live "New
     // session"; abandoning this one removes it entirely.
+    const id = cur.activeSessionId;
+    const cwd = this.sessionCwd(cur);
+    const provider = cur.provider;
     this.disposeSession(cur);
-    this.removeSessionFromDisk(cur.activeSessionId, cur.cwd);
+    if (provider === "codex") void this.discardCodexEmptySession(id, cwd);
+    else this.removeSessionFromDisk(id, cwd);
     this.postSessionsList();
   }
 
@@ -10480,9 +11860,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const current = this.remoteClients.active(clientId);
     if (!current || current === next) return;
     const busy = current.status === "working" || current.status === "needs-you";
+    if (current.needsProvider || current.strandedDraft) {
+      this.pool.add(current);
+      return;
+    }
     if (
       current.hasHistory ||
       busy ||
+      current.needsProvider ||
+      !!current.strandedDraft ||
       current.priming ||
       current.queuedSends.length > 0 ||
       current.chips.length > 0 ||
@@ -10493,15 +11879,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (current === this.focused) return;
     if (this.remoteClients.clientsForActiveValue(current).some((ownerId) => ownerId !== clientId)) return;
     const id = current.activeSessionId;
-    const cwd = current.cwd;
+    const cwd = this.sessionCwd(current);
+    const provider = current.provider;
     this.disposeSession(current);
-    this.removeSessionFromDisk(id, cwd);
+    if (provider === "codex") void this.discardCodexEmptySession(id, cwd);
+    else this.removeSessionFromDisk(id, cwd);
   }
 
   /** The sole remote-client release path: abandon its session before deleting ownership. */
   private releaseRemoteClient(clientId: string): void {
     const current = this.remoteClients.active(clientId);
     const preserveLogicalTab = !!current && (
+      current.needsProvider ||
+      !!current.strandedDraft ||
       current.priming ||
       current.queuedSends.length > 0 ||
       current.chips.length > 0
@@ -10585,6 +11975,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const id = this.remoteClients.active(clientId)?.activeSessionId;
       if (id) liveIds.add(id);
     }
+    for (const detached of this.remoteClients.detachedActiveValues()) {
+      if (detached.activeSessionId) liveIds.add(detached.activeSessionId);
+    }
     for (const id of this.sessionLoadReservations.keys()) liveIds.add(id);
 
     const repoKey = normalizeRepoPath(cwd);
@@ -10628,6 +12021,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         customName: override?.customName,
         pinnedAt: override?.pinnedAt,
         worktreePath: override?.worktreePath,
+        queuedDraft: override?.queuedDraft,
         kind: typeof raw?.session_kind === "string" ? raw.session_kind : undefined,
         numMessages: typeof raw?.num_messages === "number" ? raw.num_messages : 0,
         summary: typeof raw?.session_summary === "string" ? raw.session_summary : "",
@@ -10847,6 +12241,43 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     void this.state.update(SESSION_META_KEY, next);
   }
 
+  /** Codex owns its persistence, so abandoning an empty conversation must use
+   *  the advertised ACP delete operation rather than touching Grok's store. */
+  private async discardCodexEmptySession(
+    id: string | undefined,
+    cwd: string,
+    liveClient?: AcpClient,
+  ): Promise<void> {
+    if (!id) return;
+    let temporary: AcpClient | undefined;
+    try {
+      const cliPath = this.locateProvider("codex");
+      if (!cliPath) throw new Error("Codex CLI is not available.");
+      const client = liveClient ?? (temporary = new AcpClient({
+        cliPath,
+        cwd,
+        env: { ...process.env },
+        backend: new CodexBackend(),
+        log: (message) => this.host.appendLine(message),
+      }));
+      if (temporary) await temporary.start();
+      await client.deleteSession(id);
+      for (const [key, entries] of this.codexSessionCache) {
+        this.codexSessionCache.set(key, entries.filter((entry) => entry.id !== id));
+      }
+      const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+      if (overrides[id]) {
+        const next = { ...overrides };
+        delete next[id];
+        await this.state.update(SESSION_META_KEY, next);
+      }
+    } catch (error) {
+      this.host.appendLine(`[codex] could not discard empty session ${id}: ${(error as Error).message}`);
+    } finally {
+      if (temporary) await temporary.dispose();
+    }
+  }
+
   /**
    * Fold a finished turn's billing into the session total and push both to the
    * webview (#53). Skips turns whose usage isn't a real measurement — a
@@ -10984,6 +12415,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.parkFocused();
     this.focused = this.newLocalSession();
     this.setSessionCwd(this.focused, targetCwd, this.workspaceRoot());
+    this.focused.provider = this.defaultProviderForProject(targetCwd);
     // The webview toolbar button clears its own DOM before posting newSession,
     // but the Command Palette command lands here directly — without this clear
     // the old transcript stayed onscreen under the fresh session. (The toolbar
@@ -11027,6 +12459,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.dropRemoteVoice(clientId);
     const session = new Session();
     this.setSessionCwd(session, cwd, this.workspaceRoot());
+    session.provider = this.defaultProviderForProject(cwd);
     this.remoteClients.setActive(clientId, session);
     this.emit(session, { type: "clearMessages" });
     await this.startSession(undefined, session);
@@ -11178,18 +12611,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const cachedCwd = this.sessionCache.get(id)?.entry.cwd;
     // Same property as local resume: message cwd is only a look-first among
     // already-authorized repo catalogs; process root comes from disk.
-    const actualCwd = findSessionCatalogCwd({
-      fs: defaultFs,
-      grokHome: resolveGrokHome(process.env),
-      id,
-      candidates: orderedResumeCwdCandidates({
+    const resumeCandidates = orderedResumeCwdCandidates({
         messageCwd: sessionCwd,
         trustedCwds: allowedCwds,
         metaWorktreePath: overrides[id]?.worktreePath,
-        cachedCwd,
+        cachedCwd: overrides[id]?.providerCwd ?? cachedCwd,
         sameCwd: pathsEqual,
-      }),
-    });
+      });
+    const provider = overrides[id]?.provider ?? "grok";
+    const actualCwd = provider === "codex"
+      ? resumeCandidates.find((candidate) => allowedCwds.some((allowed) => pathsEqual(candidate, allowed)))
+      : findSessionCatalogCwd({
+          fs: defaultFs,
+          grokHome: resolveGrokHome(process.env),
+          id,
+          candidates: resumeCandidates,
+        });
     if (!actualCwd) {
       this.host.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
       this.sendRemoteClient(clientId, {
@@ -11218,6 +12655,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         ? this.focused
         : [...this.pool].find((candidate) => candidate.activeSessionId === id && !candidate.client)
           ?? new Session();
+    session.provider = provider;
     const savedWorktree = overrides[id];
     if (savedWorktree?.worktreePath) {
       session.cwd = actualCwd;
@@ -11448,19 +12886,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // trusted); it never supplies the process root.
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const o = overrides[id];
+    this.focused.provider = o?.provider ?? "grok";
+    const trustedCwds = this.localTrustedSessionCwds(overrides);
     const candidates = orderedResumeCwdCandidates({
       messageCwd: sessionCwd,
-      trustedCwds: this.localTrustedSessionCwds(overrides),
+      trustedCwds,
       metaWorktreePath: o?.worktreePath,
-      cachedCwd: this.sessionCache.get(id)?.entry.cwd,
+      cachedCwd: o?.providerCwd ?? this.sessionCache.get(id)?.entry.cwd,
       sameCwd: pathsEqual,
     });
-    const cwd = findSessionCatalogCwd({
-      fs: defaultFs,
-      grokHome: resolveGrokHome(process.env),
-      id,
-      candidates,
-    });
+    const cwd = this.focused.provider === "codex"
+      ? candidates.find((candidate) => trustedCwds.some((trusted) => pathsEqual(candidate, trusted)))
+      : findSessionCatalogCwd({
+          fs: defaultFs,
+          grokHome: resolveGrokHome(process.env),
+          id,
+          candidates,
+        });
     if (!cwd) {
       this.host.appendLine(
         `[sessions] refused resumeSession (session ${id} not found under any trusted catalog cwd)`,
@@ -11916,6 +13358,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.dropRemoteVoice(clientId);
     this.remoteClients.ready(clientId);
     const session = this.remoteSessionFor(clientId);
+    if (session.client && !session.needsProvider) {
+      this.restorePersistedDraft(session);
+      this.restoreStrandedDraft(session);
+    }
     // A tab attached to a session with no live process would sit on "Starting"
     // forever — nothing ever emits `initialized`, and the first send would
     // quietly spawn a DIFFERENT conversation. Bring the process up (resuming
@@ -11930,6 +13376,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.startingForRemote.add(session);
         this.pool.add(session);
         void this.startSession(session.activeSessionId, session)
+          .then((started) => {
+            if (
+              started &&
+              this.remoteClients.active(clientId) === session &&
+              !session.needsProvider
+            ) this.restoreStrandedDraft(session);
+          })
           .finally(() => this.startingForRemote.delete(session));
       }, 0);
     }
@@ -12207,6 +13660,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     );
     const snap: HostMsg[] = [];
     snap.push(initial);
+    snap.push(this.providerStateMessage());
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
@@ -12394,6 +13848,7 @@ ${openMain}
     <button id="history-btn" class="icon-btn" title="Session history"></button>
     ${this.host.canSwitchWorkspaceFolder ? `<div id="session-head-actions"></div>` : ""}
     <button id="new-btn" class="icon-btn" title="New session"></button>
+    ${this.host.canSwitchWorkspaceFolder ? "" : `<div id="vscode-session-actions"></div>`}
     <div id="repo-popover" class="toolbar-popover repo-popover" hidden></div>
     <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
   </header>

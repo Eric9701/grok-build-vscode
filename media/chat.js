@@ -261,6 +261,12 @@
   // Canonical low→high ORDER for known effort ids, and the FALLBACK ladder when a
   // model advertises no menu (`max` is not a real grok level — see #3/#4).
   const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+  const GROK_ACTIVITY_VERB = "Grokking";
+  const CODEX_ACTIVITY_VERB = "Opening AI";
+  const COMPOSER_PLACEHOLDER = {
+    grok: "Ask Grok\u2026",
+    codex: "Ask GPT\u2026",
+  };
   const EFFORT_TOOLTIPS = {
     none: "None — no extra reasoning",
     minimal: "Minimal — least reasoning",
@@ -279,7 +285,7 @@
   // low/medium/high). The advertised list rides in state.availableModels, which
   // is our per-session cache; the picker is locked until that's loaded anyway.
   function effortLevelsForModel() {
-    const m = (state.availableModels || []).find((x) => x && x.modelId === state.currentModelId);
+    const m = (state.availableModels || []).find((x) => x && x.modelId === state.currentModelId && (!x.provider || x.provider === state.activeProvider));
     const adv = m && Array.isArray(m.reasoningEfforts)
       ? m.reasoningEfforts.filter((v) => typeof v === "string" && v)
       : [];
@@ -296,6 +302,12 @@
   const state = {
     welcomeVisible: true,
     currentModelId: null,
+    activeProvider: "grok",
+    providersKnown: false,
+    providers: [],
+    onboardingMode: null,
+    onboardingInfo: {},
+    codexInstall: { phase: "idle", receivedBytes: 0, totalBytes: 0, reason: "" },
     availableModels: [],
     currentModeId: "agent",
     effort: "",
@@ -443,6 +455,9 @@
     // until it says, so a control that needs one is withheld rather than offered
     // and then refused.
     hostCaps: {},
+    // Host shell language for command View all (initialState.commandLanguage).
+    // Empty on older hosts — View all then omits language.
+    commandLanguage: "",
     // Remote file browse (list + open + optional edit). Capability-gated; never
     // mounted in the local VS Code / desktop webview even if the host flag is
     // true — those hosts already have a real explorer. Phone UI stays collapsed
@@ -459,7 +474,7 @@
     railExpanded: {},
     // Collapsible group headers (PINNED is never collapsible). Defaults:
     // Recent + Projects open; Archived folded away. Persisted in saveRailShape.
-    railGroupCollapsed: { recent: false, projects: false, archived: true },
+    railGroupCollapsed: { recent: true, projects: false, archived: true },
     // Compatibility alias for older railShape writes — mirrored from
     // railGroupCollapsed.archived on load/save.
     railArchiveOpen: false,
@@ -515,8 +530,17 @@
     // Index offset for the next load-more (from the host's `nextOffset` — slots
     // consumed, not entries shown; hidden subagent sessions occupy slots).
     sessionNextOffset: null,
+    sessionLastAutoPageKey: "",
+    // Combined history keeps Grok's consumed-slot cursor opaque and remembers
+    // the last emitted Codex (timestamp,id) tuple. The scalar offset remains the
+    // append/legacy contract.
+    sessionProviderCursor: null,
     replaying: false,
     replayDepth: 0,
+    // Host events this client has actually rendered — the export source. A
+    // remote snapshot is only the recent window; exportWindowed labels that.
+    exportEvents: [],
+    exportWindowed: false,
     // Live ask_user_question tool calls (toolCallId → {questions, fromReplay}).
     // grok emits a tool_call alongside the live x.ai/ask_user_question request; we
     // stash it to suppress the generic tool chip (the interactive card from
@@ -589,15 +613,17 @@
     // While replaying an older session, suppress a legacy primer user turn and
     // grok's response until the next user message starts.
     suppressReplayTurn: false,
-    // While replaying, suppress just the user bubble for a marker-only verdict
-    // message ([Plan cancelled] with no comment) — grok's response to it still
-    // renders. Distinct from suppressReplayTurn (which hides the whole turn).
+    // Replay-scoped: hide a marker-only / <system-reminder> user event.
+    // Reset when the next user event begins, when thought/agent text arrives,
+    // and when the outer replay starts/ends. Distinct from suppressReplayTurn
+    // (which hides the whole turn).
     skipUserBubble: false,
-    // Whether the chat is "pinned" to the bottom. A scroll listener flips this
-    // off the moment the user scrolls up to read earlier messages; while it's
-    // off, streaming thought/agent chunks no longer yank the view back down
-    // (#16). Interactive activity (permission/question cards, the user's own
-    // sent message) re-pins via forceScrollToBottom().
+    // Whether the chat is "pinned" to the bottom. A user gesture (wheel /
+    // touch / scrollbar / keys) flips this off so they can read history
+    // while grok keeps thinking (#16). Programmatic and focus-induced
+    // scrolls must not clear it (#92). Interactive activity (permission/
+    // question cards, the user's own sent message) re-pins via
+    // forceScrollToBottom().
     stickToBottom: true,
     // grok.showThinking (#26). Thinking traces are hidden by default; when hidden
     // a lightweight "Thinking…" indicator stands in while grok reasons (and no
@@ -652,26 +678,9 @@
     toolExpandOverride: null,
   };
 
-  // Matches legacy primers persisted by older extension versions so their user
-  // bubble and grok acknowledgement stay hidden on replay.
-  const PRIMER_PATTERN = /^\s*\[grok-build-vscode primer v\d+\]/;
-
-  // The CLI feeds background-task notices (and similar plumbing) back to the
-  // agent as a user_message_chunk wrapped in <system-reminder>…</system-reminder>.
-  // It's agent-facing context the user never typed — keep it out of the chat
-  // on replay (the host surfaces task completion as a one-shot notification).
-  const SYSTEM_REMINDER_PATTERN = /^\s*<system-reminder>/;
-
-  // The host prepends a plan-verdict protocol marker ([Plan approved|rejected|
-  // cancelled]) to the wire-level prompt so grok can recognize the verdict. It's
-  // grok-only plumbing — never shown live. On replay grok echoes the raw prompt,
-  // so strip the marker here to keep the restored view consistent with live.
-  const PLAN_MARKER_PATTERN = /^\s*\[Plan (approved|rejected|cancelled)\]\s*/i;
-  function stripPlanMarker(text) {
-    const m = PLAN_MARKER_PATTERN.exec(text || "");
-    if (!m) return { matched: false, rest: text };
-    return { matched: true, rest: (text || "").slice(m[0].length) };
-  }
+  // Legacy primer / <system-reminder> / marker-only plan-verdict hide rules
+  // live in replayedUserBubbleVerdict (webview-helpers) so display + export
+  // cannot drift.
 
   // ---------- icons ----------
 
@@ -782,10 +791,18 @@
   // ---------- sound notifications (#59) ----------
   // Synth tones via Web Audio — no bundled assets, CSP-safe, offline. Completion
   // rises, errors fall, and the in-flight reminder is a single soft pulse. The
-  // AudioContext is created lazily and unlocked on the first user gesture (the
-  // autoplay policy starts it "suspended"); the send/keypress that starts a turn
-  // is that gesture, so a later completion beep is allowed.
+  // AudioContext is created only while a sound setting is on, unlocked on the
+  // first user gesture (autoplay starts it "suspended"), and suspended again
+  // once the last note ends — a running-but-silent context holds the OS audio
+  // session and blocks sleep. The send/keypress that starts a turn is the
+  // gesture, so a later completion beep can resume().
   let audioCtx = null;
+  let audioUnlocked = false;
+  let audioToneGen = 0;
+  let audioSuspendTimer = null;
+  function soundFeaturesOn() {
+    return !!(state.soundNotifications || state.processingSound);
+  }
   function ensureAudioCtx() {
     if (audioCtx) return audioCtx;
     try {
@@ -794,13 +811,52 @@
     } catch (_e) { audioCtx = null; }
     return audioCtx;
   }
+  function suspendAudioCtx(ctx) {
+    if (!ctx || ctx.state !== "running" || typeof ctx.suspend !== "function") return;
+    const pending = ctx.suspend();
+    if (pending && typeof pending.catch === "function") pending.catch(() => {});
+  }
+  function releaseAudioIfSilent() {
+    if (soundFeaturesOn()) return;
+    audioToneGen += 1;
+    if (audioSuspendTimer != null) {
+      clearTimeout(audioSuspendTimer);
+      audioSuspendTimer = null;
+    }
+    suspendAudioCtx(audioCtx);
+  }
   function unlockAudio() {
+    if (!soundFeaturesOn()) {
+      releaseAudioIfSilent();
+      return;
+    }
     const ctx = ensureAudioCtx();
-    if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+    if (!ctx || audioUnlocked) return;
+    audioUnlocked = true;
+    const gen = audioToneGen;
+    const afterUnlock = () => {
+      if (gen !== audioToneGen) return;
+      suspendAudioCtx(ctx);
+    };
+    if (ctx.state === "suspended") {
+      const pending = ctx.resume();
+      if (pending && typeof pending.then === "function") pending.then(afterUnlock).catch(() => {});
+      else afterUnlock();
+    } else {
+      afterUnlock();
+    }
   }
   function playNotificationTone(kind) {
+    if (!soundFeaturesOn()) return;
     const ctx = ensureAudioCtx();
     if (!ctx) return;
+    // Invalidate any pending suspend so a new tone isn't cut off mid-play.
+    audioToneGen += 1;
+    const gen = audioToneGen;
+    if (audioSuspendTimer != null) {
+      clearTimeout(audioSuspendTimer);
+      audioSuspendTimer = null;
+    }
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
     const t0 = ctx.currentTime;
     // { frequency Hz, start-offset s, duration s }
@@ -812,6 +868,7 @@
     const master = ctx.createGain();
     master.gain.value = kind === "processing" ? 0.035 : 0.08;
     master.connect(ctx.destination);
+    let lastStop = 0;
     for (const n of notes) {
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
@@ -825,7 +882,13 @@
       g.connect(master);
       osc.start(t0 + n.s);
       osc.stop(t0 + n.s + n.d + 0.03);
+      lastStop = Math.max(lastStop, n.s + n.d + 0.03);
     }
+    audioSuspendTimer = setTimeout(() => {
+      audioSuspendTimer = null;
+      if (gen !== audioToneGen) return;
+      suspendAudioCtx(ctx);
+    }, Math.ceil(lastStop * 1000) + 20);
   }
   // Play only when the user isn't looking at the Grok panel — the "notify me when
   // I've stepped away" case (#59). A focused, visible panel means they'll see the
@@ -946,7 +1009,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1986,6 +2049,192 @@
     return uiChoice({ ...opts, booleanResult: true });
   }
 
+  // In-app preview overlay. OPT-IN via capabilities.previewInApp (desktop).
+  // Absent / remote / VS Code keep the host editor or inline-expand path.
+  function hostPreviewsInApp() {
+    return !IS_REMOTE && state.hostCaps && state.hostCaps.previewInApp === true;
+  }
+
+  const PREVIEW_EXT_BY_LANG = {
+    powershell: ".ps1",
+    shellscript: ".sh",
+    bat: ".bat",
+    cmd: ".cmd",
+    javascript: ".js",
+    typescript: ".ts",
+    python: ".py",
+    json: ".json",
+    markdown: ".md",
+    diff: ".diff",
+    rust: ".rs",
+    go: ".go",
+    java: ".java",
+    css: ".css",
+    html: ".html",
+    xml: ".xml",
+  };
+
+  function previewBasename(pathStr) {
+    const raw = String(pathStr || "").replace(/\\/g, "/");
+    const slash = raw.lastIndexOf("/");
+    return slash >= 0 ? raw.slice(slash + 1) : raw;
+  }
+
+  function previewFilename(opts) {
+    if (opts.filename) return previewBasename(opts.filename);
+    if (opts.kind === "diff" && opts.path) {
+      const base = previewBasename(opts.path);
+      return /\.diff$/i.test(base) ? base : base + ".diff";
+    }
+    const ext = PREVIEW_EXT_BY_LANG[opts.language] || ".txt";
+    return "Untitled" + ext;
+  }
+
+  function previewTitle(opts) {
+    if (opts.kind === "diff" && opts.path) return previewBasename(opts.path);
+    if (opts.filename) return previewBasename(opts.filename);
+    return opts.language ? `Untitled (${opts.language})` : "Untitled";
+  }
+
+  function highlightPreviewHtml(text, language, pathStr) {
+    const api = globalThis.GrokSyntaxHighlight;
+    if (!api || typeof api.highlightCode !== "function") return escapeHtml(text);
+    const fromId = typeof api.languageForId === "function" ? api.languageForId(language || "") : "";
+    const fromPath = pathStr && typeof api.languageForPath === "function" ? api.languageForPath(pathStr) : "";
+    return api.highlightCode(text, fromId || fromPath || "");
+  }
+
+  function unifiedDiffText(diff) {
+    const sites = (diff.sites && diff.sites.length)
+      ? diff.sites
+      : [{ oldText: diff.oldText || "", newText: diff.newText || "" }];
+    const parts = [];
+    if (diff.path) {
+      parts.push("--- " + diff.path, "+++ " + diff.path);
+    }
+    for (const site of sites) {
+      const result = computeLineDiff(site.oldText, site.newText);
+      for (const ln of result.lines) {
+        const mark = ln.type === "add" ? "+" : ln.type === "del" ? "-" : " ";
+        parts.push(mark + ln.text);
+      }
+    }
+    return parts.join("\n");
+  }
+
+  function closePreviewOverlay() {
+    const existing = document.getElementById("preview-overlay");
+    if (!existing) return;
+    if (existing._onKey) document.removeEventListener("keydown", existing._onKey, true);
+    existing.remove();
+  }
+
+  function openPreviewOverlay(opts) {
+    closePreviewOverlay();
+    const copyText = opts.kind === "diff" ? unifiedDiffText(opts) : String(opts.content ?? "");
+    const filename = previewFilename(opts);
+    const language = opts.language || (opts.kind === "diff" ? "diff" : "");
+
+    const overlay = document.createElement("div");
+    overlay.id = "preview-overlay";
+    overlay.className = "preview-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+
+    const panel = document.createElement("div");
+    panel.className = "preview-panel";
+
+    const header = document.createElement("div");
+    header.className = "preview-header";
+    const title = document.createElement("div");
+    title.className = "preview-title";
+    title.id = "preview-overlay-title";
+    title.textContent = previewTitle(opts);
+    overlay.setAttribute("aria-labelledby", "preview-overlay-title");
+    header.appendChild(title);
+    if (language) {
+      const lang = document.createElement("div");
+      lang.className = "preview-lang";
+      lang.textContent = language;
+      header.appendChild(lang);
+    }
+    const actions = document.createElement("div");
+    actions.className = "preview-actions";
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "preview-action-btn";
+    copyBtn.textContent = "Copy";
+    copyBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      navigator.clipboard.writeText(copyText).then(() => {
+        copyBtn.textContent = "Copied";
+        setTimeout(() => { if (copyBtn.isConnected) copyBtn.textContent = "Copy"; }, 1200);
+      });
+    };
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "preview-action-btn";
+    saveBtn.textContent = "Save As";
+    saveBtn.onclick = (e) => {
+      e.stopPropagation();
+      const message = { type: "openText", content: copyText, filename };
+      if (language) message.language = language;
+      vscode.postMessage(message);
+    };
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "preview-action-btn preview-close-btn";
+    closeBtn.setAttribute("aria-label", "Close");
+    closeBtn.innerHTML = ICON.x;
+    closeBtn.onclick = (e) => { e.stopPropagation(); closePreviewOverlay(); };
+    actions.appendChild(copyBtn);
+    actions.appendChild(saveBtn);
+    actions.appendChild(closeBtn);
+    header.appendChild(actions);
+    panel.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "preview-body";
+    if (opts.kind === "diff") {
+      const sites = (opts.sites && opts.sites.length)
+        ? opts.sites
+        : [{ oldText: opts.oldText || "", newText: opts.newText || "" }];
+      const hunks = sites.map((site) => ({
+        site,
+        result: computeLineDiff(site.oldText, site.newText),
+      }));
+      body.appendChild(buildInlineDiffRegion(hunks, { full: true }));
+    } else {
+      const pre = document.createElement("pre");
+      pre.className = "preview-code";
+      const code = document.createElement("code");
+      code.innerHTML = highlightPreviewHtml(String(opts.content ?? ""), language, opts.path);
+      pre.appendChild(code);
+      body.appendChild(pre);
+    }
+    panel.appendChild(body);
+    overlay.appendChild(panel);
+
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        e.preventDefault();
+        closePreviewOverlay();
+      }
+    };
+    overlay._onKey = onKey;
+    document.addEventListener("keydown", onKey, true);
+    overlay.onclick = (e) => {
+      if (e.target === overlay) {
+        e.stopPropagation();
+        closePreviewOverlay();
+      }
+    };
+    document.body.appendChild(overlay);
+    closeBtn.focus();
+  }
+
   // Public UI service consumed by media/file-panel.js in both renderer hosts.
   window.__grokFilePanelConfirm = uiChoice;
 
@@ -2148,7 +2397,10 @@
     const showApp = !split || state.gearSurface === "rail";
 
     if (showConversation) renderGearConversation();
-    if (showApp) renderGearApp();
+    if (showApp) {
+      renderGearApp();
+      renderProviderAccounts();
+    }
   }
 
   /**
@@ -2172,7 +2424,7 @@
     gearPopover.appendChild(fontRow);
   }
 
-  /** Model + effort, and where this conversation continues. */
+  /** Model + effort, plus worktree controls that have no header-menu home. */
   function renderGearConversation() {
     // ── Model + effort header ─────────────────────────────────────────────
     const modelEffortSection = document.createElement("div");
@@ -2197,7 +2449,8 @@
 
     const nameBtn = document.createElement("button");
     nameBtn.className = "toolbar-btn model-name-btn" + (settingsLocked || !modelLoaded ? " disabled" : "");
-    const modelName = modelLoaded ? (modelDisplayName(state.currentModelId, state.availableModels) || "Grok Build") : "Loading…";
+    const ownModels = state.availableModels.filter((model) => !model.provider || model.provider === state.activeProvider);
+    const modelName = modelLoaded ? (modelDisplayName(state.currentModelId, ownModels) || "Grok Build") : "Loading…";
     nameBtn.innerHTML = `<span class="btn-label">${escapeHtml(truncate(modelName, 16))}</span>`;
     nameBtn.disabled = settingsLocked || !modelLoaded;
     nameBtn.title = !modelLoaded
@@ -2242,22 +2495,15 @@
     gearPopover.appendChild(row);
 
     // ── Session ───────────────────────────────────────────────────────────
-    // Only where there is nowhere better. Rail hosts put these in the session
-    // header's ⋯ menu, beside Rename / Pin / Delete — the things you do TO a
-    // conversation. That leaves this popover holding model and effort alone,
-    // which is what it is for: how the agent answers, not which conversation
-    // you are in. VS Code has no session header, so they stay here.
-    // Rewind lives on user bubbles either way.
+    // Conversation-wide actions live in the header's overflow on every
+    // surface. Worktree Apply/Remove remain here because the VS Code overflow
+    // contains exactly the two portable continuation/export actions.
     if (railGearLive()) return;
-    addSection("Session");
-    addGearItem(
-      `<span class="gear-lead">${ICON.gitFork}<span>Continue in a new chat</span></span>`,
-      () => { beginContinueInNewChat(); },
-    );
     // Worktree Apply/Remove only while already in a worktree (Coding or not —
     // you're already in one, so the controls must stay reachable). Never from a
     // remote: the host acts on its own focused session, not the requester's.
     if (state.isWorktree && !IS_REMOTE) {
+      addSection("Session");
       addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
         closePopovers();
         uiConfirm({
@@ -2278,7 +2524,7 @@
     }
   }
 
-  /** The app itself: account, what it is used for, settings, about. */
+  /** The app itself: what it is used for, settings, and about. */
   function renderGearApp() {
     // ── Remote Control ────────────────────────────────────────────────────
     // The hosted relay account, on the machine that links itself — above
@@ -2342,11 +2588,43 @@
       addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
     }
     addGearItem('<span>Version &amp; about</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
-    // Log out = Grok CLI credential. Not device unlink (portal only).
-    addGearItem("<span>Log out</span>", () => {
-      vscode.postMessage({ type: "logout" });
-      closePopovers();
-    });
+    // Older hosts have no provider account frame; retain their existing action.
+    if (!IS_REMOTE && !state.providersKnown) {
+      addGearItem("<span>Log out</span>", () => {
+        vscode.postMessage({ type: "logout" });
+        closePopovers();
+      });
+    }
+  }
+
+  function renderProviderAccounts() {
+    if (IS_REMOTE || !state.providersKnown) return;
+    addSection("Accounts");
+    for (const provider of state.providers) {
+      const connected = provider.connected === true;
+      // A connected account whose agent answered an auth failure: the useful
+      // action is the connect flow, not "Sign out" of credentials that are
+      // already refused.
+      const needsLogin = connected && provider.needsLogin === true;
+      const action = needsLogin ? "Sign in again" : connected ? "Sign out" : "Connect";
+      const name = provider.id === "codex" ? "Codex" : "Grok";
+      addGearItem(
+        `<span class="gear-lead"><span class="provider-glyph provider-${provider.id}">${providerLogoMarkup(provider.id)}</span><span>${name}</span></span><span class="popover-ver${needsLogin ? " popover-warn" : ""}">${action}</span>`,
+        () => {
+          vscode.postMessage(connected && !needsLogin
+            ? { type: "logout", provider: provider.id }
+            : { type: "runGrokLogin", provider: provider.id });
+          closePopovers();
+        },
+      );
+    }
+  }
+
+  /** Agents that answered an auth-shaped failure — their models are unknowable
+   *  until someone signs in, so the picker must not offer any. */
+  function providerNeedsLogin(id) {
+    return state.providers.some((provider) =>
+      provider.id === id && provider.connected && provider.needsLogin === true);
   }
 
   /**
@@ -2502,7 +2780,9 @@
     // phone can do nothing with — which is exactly what it used to do. The host
     // now refuses the message anyway (remote-policy: host-local); not sending it
     // is what stops the spinner existing in the first place.
-    if (check && !remoteAboutPanel()) {
+    const shouldCheckGrok = !state.providersKnown || state.providers.some((provider) =>
+      provider.id === "grok" && provider.connected);
+    if (check && !remoteAboutPanel() && shouldCheckGrok) {
       state.grokUpdate = { checking: true };
       vscode.postMessage({ type: "checkGrokUpdate" });
     }
@@ -2531,8 +2811,23 @@
     // The CLI version comes from the ACP `initialize` handshake, but the native
     // Windows build doesn't report one there — so fall back to the version the
     // update check returns (its `currentVersion`), which is always populated.
-    const cliVer = state.cliVersion || u.current || "";
-    addGearInfo(`<span>Grok Build CLI</span><span class="popover-ver">${cliVer ? "v" + escapeHtml(cliVer) : "—"}</span>`);
+    const grokProvider = state.providers.find((provider) => provider.id === "grok" && provider.connected);
+    const codexProvider = state.providers.find((provider) => provider.id === "codex" && provider.connected);
+    const legacyProviders = !state.providersKnown;
+    if (legacyProviders || grokProvider) {
+      const cliVer = grokProvider?.cliVersion || state.cliVersion || u.current || "";
+      addGearInfo(`<span>Grok Build CLI</span><span class="popover-ver">${cliVer ? "v" + escapeHtml(cliVer) : "—"}</span>`);
+    }
+    if (codexProvider) {
+      addGearInfo(`<span>Codex CLI</span><span class="popover-ver">${codexProvider.cliVersion ? "v" + escapeHtml(codexProvider.cliVersion) : "—"}</span>`);
+      addGearInfo(`<span>Codex ACP adapter</span><span class="popover-ver">${codexProvider.adapterVersion ? "v" + escapeHtml(codexProvider.adapterVersion) : "—"}</span>`);
+      if (codexProvider.updateAvailable) {
+        addGearInfo(`<span class="popover-update-avail">Codex update available${codexProvider.latestCliVersion ? ` · v${escapeHtml(codexProvider.latestCliVersion)}` : ""}</span>`);
+        addGearInfo('<span class="popover-ver">Update Codex at its install source.</span>');
+      } else {
+        addGearInfo('<span class="popover-ver">Codex updates are managed at its install source.</span>');
+      }
+    }
 
     let statusHtml, canUpdate = false;
     if (u.checking) {
@@ -2550,16 +2845,16 @@
     } else {
       statusHtml = '<span class="popover-ver">—</span>';
     }
-    addGearInfo(statusHtml);
+    if (legacyProviders || grokProvider) addGearInfo(statusHtml);
 
-    if (blocked) {
+    if ((legacyProviders || grokProvider) && blocked) {
       // Disabled action — the reason note is shown at the top.
       const btn = document.createElement("div");
       btn.className = "toolbar-popover-item popover-action disabled";
       btn.setAttribute("aria-disabled", "true");
       btn.innerHTML = "<span>Update Grok Build CLI</span>";
       gearPopover.appendChild(btn);
-    } else if (canUpdate) {
+    } else if ((legacyProviders || grokProvider) && canUpdate) {
       // The update action only appears when there's actually something to do —
       // when the CLI is up to date the grayed status line above says so on its own.
       const btn = document.createElement("div");
@@ -2618,8 +2913,25 @@
     row(state.hostKind === "desktop" ? "Grok Build Desktop" : "Grok Build extension",
       state.extVersion ? `v${state.extVersion}` : "—");
 
-    const cliVer = state.cliVersion || u.current || "";
-    row("Grok Build CLI", cliVer ? `v${cliVer}` : "—");
+    const connected = state.providers.filter((provider) => provider.connected);
+    const hasReportedVersions = connected.some((provider) => provider.cliVersion || provider.adapterVersion);
+    if (hasReportedVersions) {
+      for (const provider of connected) {
+        if (provider.id === "grok") {
+          row("Grok Build CLI", provider.cliVersion ? `v${provider.cliVersion}` : "—");
+        } else if (provider.id === "codex") {
+          row("Codex CLI", provider.cliVersion ? `v${provider.cliVersion}` : "—");
+          row("Codex ACP adapter", provider.adapterVersion ? `v${provider.adapterVersion}` : "—");
+          if (provider.updateAvailable) {
+            addGearInfo(`<span class="popover-update-avail">Codex update available${provider.latestCliVersion ? ` · v${escapeHtml(provider.latestCliVersion)}` : ""}</span>`);
+            addGearInfo('<span class="popover-ver">Update it at the desk — this device can’t.</span>');
+          }
+        }
+      }
+    } else {
+      const cliVer = state.cliVersion || u.current || "";
+      row("Grok Build CLI", cliVer ? `v${cliVer}` : "—");
+    }
 
     // The status still travels (`grokUpdateStatus` is mirrored to remotes), so a
     // phone can learn the CLI is behind — it just cannot do anything about it,
@@ -2727,7 +3039,7 @@
       () => {
         state.soundNotifications = !state.soundNotifications;
         vscode.postMessage({ type: "setSoundNotifications", value: state.soundNotifications });
-        if (state.soundNotifications) unlockAudio();
+        unlockAudio();
         paint();
       },
     );
@@ -2736,8 +3048,8 @@
       () => {
         state.processingSound = !state.processingSound;
         vscode.postMessage({ type: "setProcessingSound", value: state.processingSound });
+        unlockAudio();
         if (state.processingSound) {
-          unlockAudio();
           if (liveTurnInFlight) scheduleProcessingCue();
         } else {
           if (processingCueTimer != null) clearTimeout(processingCueTimer);
@@ -2885,22 +3197,78 @@
     state.gearView = "model";
     gearPopover.innerHTML = "";
     addGearItem('<span class="popover-back">← Model</span>', renderGearMain);
-    const models = state.availableModels.length
+    let models = state.availableModels.length
       ? state.availableModels
       : [{ modelId: state.currentModelId || "grok-build", name: state.currentModelId || "grok-build" }];
-    for (const m of models) {
+    const hasConversation = visibleUserBubbleCount() > 0;
+    if (state.providersKnown && hasConversation) {
+      models = models.filter((model) => !model.provider || model.provider === state.activeProvider);
+    }
+    const grouped = state.providersKnown && !hasConversation && showProviderGlyphs();
+    // A signed-out agent has no knowable model list, and the placeholder shown
+    // in its place ("Codex default") reads as something you can select — so its
+    // rows are replaced by the one action that can actually help.
+    const signInProviders = ["grok", "codex"].filter(providerNeedsLogin);
+    models = models.filter((model) => !signInProviders.includes(model.provider || state.activeProvider));
+    if (grouped) {
+      models = ["grok", "codex"].flatMap((provider) => models.filter((model) =>
+        (model.provider || state.activeProvider) === provider));
+    }
+    let group = "";
+    const addProviderHeading = (provider) => {
+      if (!grouped || provider === group) return;
+      group = provider;
+      const heading = document.createElement("div");
+      heading.className = "popover-section model-provider-heading";
+      heading.textContent = provider === "codex" ? "Codex" : "Grok";
+      gearPopover.appendChild(heading);
+    };
+    const addSignInRow = (provider) => {
+      addProviderHeading(provider);
       const el = document.createElement("div");
-      const active = m.modelId === state.currentModelId;
+      // Accounts are connected on the machine running the workspace, and the
+      // host refuses `runGrokLogin` from a remote — so a phone gets the fact,
+      // not a button that would do nothing.
+      el.className = "toolbar-popover-item model-signin" + (IS_REMOTE ? "" : " popover-action");
+      el.innerHTML = `<span class="popover-warn">${IS_REMOTE ? "Sign in at the desk to load models" : "Sign in to load models"}</span>`;
+      if (!IS_REMOTE) {
+        el.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: "runGrokLogin", provider });
+          closePopovers();
+        };
+      }
+      gearPopover.appendChild(el);
+    };
+    const renderModelRow = (m) => {
+      const modelProvider = m.provider || state.activeProvider;
+      addProviderHeading(modelProvider);
+      const el = document.createElement("div");
+      const active = m.modelId === state.currentModelId && (!m.provider || m.provider === state.activeProvider);
       el.className = "toolbar-popover-item" + (active ? " active" : "");
       el.innerHTML = `<span>${escapeHtml(truncate(m.name || m.modelId, 28))}</span>${active ? '<span class="popover-check">✓</span>' : ""}`;
       el.title = m.modelId;
       el.onclick = (e) => {
         e.stopPropagation();
-        vscode.postMessage({ type: "setModel", modelId: m.modelId });
+        const message = { type: "setModel", modelId: m.modelId };
+        if (state.providersKnown && m.provider) message.provider = m.provider;
+        vscode.postMessage(message);
         closePopovers();
       };
       gearPopover.appendChild(el);
+    };
+    if (grouped) {
+      for (const provider of ["grok", "codex"]) {
+        for (const m of models) {
+          if ((m.provider || state.activeProvider) === provider) renderModelRow(m);
+        }
+        if (signInProviders.includes(provider)) addSignInRow(provider);
+      }
+      return;
     }
+    for (const m of models) renderModelRow(m);
+    // Ungrouped means one agent is in play: only its own gap is worth an action.
+    if (signInProviders.includes(state.activeProvider)) addSignInRow(state.activeProvider);
   }
 
   /** The trigger for the surface currently being rendered. */
@@ -3332,6 +3700,10 @@
     if (!modePopover.hidden) { closePopovers(); return; }
     modePopover.innerHTML = "";
     for (const [id, meta] of Object.entries(MODE_META)) {
+      // Plan is Grok's extension-owned plan gate. Codex owns its own plan
+      // review permission flow, so showing this item there is both inert and
+      // misleading.
+      if (id === "plan" && state.activeProvider === "codex") continue;
       const el = document.createElement("div");
       const active = id === state.currentModeId;
       // Verified-old CLI: hard-disable Plan. Unverified probe: keep it clickable
@@ -3391,8 +3763,42 @@
 
   function applySessionDot(dot, value) {
     const v = DOT_LABEL[value] ? value : "none";
-    dot.className = "history-row-dot dot-" + v;
+    const base = dot.classList.contains("provider-status-badge") ? "provider-status-badge" : "history-row-dot";
+    dot.className = base + " dot-" + v;
+    dot.dataset.dot = v;
     dot.title = DOT_LABEL[value] || "";
+  }
+
+  function showProviderGlyphs() {
+    return state.providersKnown && state.providers.filter((provider) => provider.connected).length > 1;
+  }
+
+  // Provider marks from Lobe Icons (MIT), adapted to inherit currentColor.
+  const PROVIDER_LOGO_PATHS = {
+    grok: "M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815",
+    codex: "M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z",
+  };
+
+  function providerLogoMarkup(provider) {
+    const id = provider === "codex" ? "codex" : "grok";
+    return `<svg class="provider-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${PROVIDER_LOGO_PATHS[id]}"></path></svg>`;
+  }
+
+  function makeProviderGlyph(provider, dotValue, sessionId) {
+    const id = provider === "codex" ? "codex" : "grok";
+    const glyph = document.createElement("span");
+    glyph.className = "provider-glyph provider-" + id;
+    glyph.innerHTML = providerLogoMarkup(id);
+    glyph.title = id === "codex" ? "Codex" : "Grok";
+    glyph.setAttribute("aria-label", glyph.title);
+    if (sessionId) {
+      const badge = document.createElement("span");
+      badge.className = "provider-status-badge";
+      badge.setAttribute("data-session-dot", sessionId);
+      applySessionDot(badge, dotValue);
+      glyph.appendChild(badge);
+    }
+    return glyph;
   }
 
   // Cheap incremental update for a single dot when a `sessionDot` arrives while the
@@ -3428,6 +3834,14 @@
     return raw.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
   };
   const sameCwd = (a, b) => cwdKey(a) === cwdKey(b);
+  const uniqueSessionRows = (entries) => {
+    const byId = new Map();
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      if (!entry || !entry.id || byId.has(entry.id)) continue;
+      byId.set(entry.id, entry);
+    }
+    return [...byId.values()];
+  };
   const cwdLeaf = (cwd) => {
     const parts = String(cwd || "").replace(/[\\/]+$/, "").split(/[\\/]+/).filter(Boolean);
     return parts[parts.length - 1] || "Repository";
@@ -3558,7 +3972,27 @@
   // server-side across ALL sessions on disk, not just the page already loaded.
   function requestSessions(offset) {
     state.sessionLoading = true;
-    vscode.postMessage({ type: "listSessions", offset, query: state.sessionSearch });
+    const providerCursor = offset > 0 && state.sessionProviderCursor
+      ? { providerCursor: state.sessionProviderCursor }
+      : {};
+    vscode.postMessage({ type: "listSessions", offset, query: state.sessionSearch, ...providerCursor });
+  }
+
+  function requestNextSessionsPageIfUnderfilled() {
+    const list = historyListEl;
+    if (!list || !state.sessionHasMore || state.sessionLoading) return;
+    if (list.scrollHeight <= list.clientHeight) {
+      const offset = state.sessionNextOffset != null ? state.sessionNextOffset : state.sessions.length;
+      const pageKey = `${state.sessionSearch}\n${offset}`;
+      if (state.sessionLastAutoPageKey === pageKey) return;
+      state.sessionLastAutoPageKey = pageKey;
+      requestSessions(offset);
+      const more = list.querySelector(".history-more");
+      if (more) {
+        more.disabled = true;
+        more.textContent = "Loading…";
+      }
+    }
   }
 
   function renderHistoryList() {
@@ -3642,32 +4076,47 @@
     const list = historyListEl;
     if (!list) return;
     list.innerHTML = "";
-    if (state.sessions.length === 0) {
+    if (state.sessions.length === 0 && !state.sessionHasMore) {
       const empty = document.createElement("div");
       empty.className = "history-empty";
       empty.textContent = state.sessionSearch.trim() ? "No matches." : "No sessions yet.";
       list.appendChild(empty);
-    } else {
+    } else if (state.sessions.length > 0) {
       for (const s of state.sessions) list.appendChild(renderSessionRow(s));
-      if (state.sessionHasMore) {
-        const more = document.createElement("div");
-        more.className = "history-more";
-        more.textContent = state.sessionLoading ? "Loading…" : "Scroll for more";
-        list.appendChild(more);
-      }
+    }
+    if (state.sessionHasMore) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "history-more";
+      more.textContent = state.sessionLoading ? "Loading…" : "Load more";
+      more.disabled = state.sessionLoading;
+      more.onclick = (event) => {
+        event.stopPropagation();
+        if (!state.sessionLoading) {
+          requestSessions(state.sessionNextOffset != null ? state.sessionNextOffset : state.sessions.length);
+          renderSessionRows();
+        }
+      };
+      list.appendChild(more);
     }
     updateHistoryFooter();
+    requestNextSessionsPageIfUnderfilled();
   }
 
   function renderSessionRow(s) {
       const row = document.createElement("div");
       const active = s.id === state.activeSessionId;
       row.className = "history-row" + (active ? " active" : "");
+      row.dataset.sessionId = s.id || "";
 
-      const dot = document.createElement("span");
-      dot.setAttribute("data-session-dot", s.id);
-      applySessionDot(dot, state.dots[s.id]);
-      row.appendChild(dot);
+      if (showProviderGlyphs()) {
+        row.appendChild(makeProviderGlyph(s.provider, state.dots[s.id], s.id));
+      } else {
+        const dot = document.createElement("span");
+        dot.setAttribute("data-session-dot", s.id);
+        applySessionDot(dot, state.dots[s.id]);
+        row.appendChild(dot);
+      }
 
       const main = document.createElement("div");
       main.className = "history-row-main";
@@ -4207,7 +4656,7 @@
   }
 
   function defaultRailGroupCollapsed() {
-    return { recent: false, projects: false, archived: true };
+    return { recent: true, projects: false, archived: true };
   }
 
   function loadRailShape() {
@@ -4756,6 +5205,7 @@
       createdAt: Date.now(),
       numMessages: 0,
       rawSummary: "",
+      provider: repo.defaultProvider || state.activeProvider,
       _railPending: true,
     });
     return list;
@@ -4937,7 +5387,7 @@
     // PINNED is not collapsible — that is what pinning means.
     // PROJECT ARCHIVE only mounts when ≥1 project qualifies (put-away or age-quiet);
     // an empty section is deliberately omitted rather than an always-on empty state.
-    const pinned = state.pinnedSessions.filter(
+    const pinned = uniqueSessionRows(state.pinnedSessions).filter(
       (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
     );
     if (pinned.length) {
@@ -4952,7 +5402,9 @@
     }
 
     // RECENT: most recent across every loaded project, including pinned rows.
-    // Duplication with PROJECTS / PINNED is intentional — a shortcut, not a partition.
+    // Duplication with PINNED / PROJECTS is intentional — a shortcut, not a
+    // partition. Dedupe is PER GROUP only (owner, 2026-08-13): a cross-group
+    // claim made a session vanish from under its project while Recent held it.
     const recentAll = railRecentRows().filter(
       (s) => railMatches(s.displayName) || railMatches(railRepoLabelFor(s.cwd)),
     );
@@ -5151,8 +5603,7 @@
   /**
    * Most-recent conversations across every project whose preview (or selected
    * page) has loaded, plus pinned sessions that may not be in those previews.
-   * Newest first. Within RECENT, ids are unique; the same row may still appear
-   * again under PINNED and under its PROJECT — that duplication is intentional.
+   * Newest first. The final rail render assigns every id to one visible group.
    */
   function railRecentRows() {
     const byId = new Map();
@@ -5265,6 +5716,49 @@
     return name;
   }
 
+  function exportConversationTitle() {
+    return displayedSessionName(activeSessionRecord());
+  }
+
+  function shouldRecordExportEvent(msg) {
+    if (!isExportableSessionEvent(msg)) return false;
+    // The renderer already applied replayedUserBubbleVerdict: suppressReplayTurn
+    // hides a whole primer turn; skipUserBubble hides a replayed userMessageChunk
+    // that did not render. userMessage is a live send — including when the
+    // session buffer is re-wrapped in historyReplay — and is never hidden.
+    if (state.suppressReplayTurn) return false;
+    if (msg.type === "userMessageChunk" && state.skipUserBubble && state.replaying) return false;
+    // Live user_message_chunk echoes are not rendered.
+    if (msg.type === "userMessageChunk" && !state.replaying) return false;
+    return true;
+  }
+
+  function exportCurrentSession() {
+    const title = exportConversationTitle();
+    const markdown = exportSessionMarkdown(state.exportEvents, {
+      title,
+      windowed: !!state.exportWindowed,
+    });
+    const filename = exportSessionFilename(title);
+    if (IS_REMOTE) {
+      const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = filename;
+      a.rel = "noopener";
+      a.addEventListener("click", (e) => e.stopPropagation());
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 10000);
+      return;
+    }
+    // filename is a save-as hint. The host chooses delivery (untitled tab vs
+    // OS save dialog). An older host ignores the field and still opens text.
+    vscode.postMessage({ type: "openText", content: markdown, language: "markdown", filename });
+  }
+
   function sessionNameTarget() {
     const data = activeSessionName();
     if (!data) return null;
@@ -5361,13 +5855,40 @@
     vscode.postMessage({ type: "newSession" });
   }
 
+  /** VS Code's compact top-bar overflow. Desktop and remote keep the richer
+   *  session menu they already render through `#session-head-actions`. */
+  function fillVsCodeSessionActions() {
+    const menuSlot = document.getElementById("vscode-session-actions");
+    if (!menuSlot) return;
+    menuSlot.innerHTML = "";
+    if (!state.activeSessionId) return;
+    menuSlot.appendChild(railMenuButton(
+      "Session actions",
+      [
+        {
+          label: "Continue in a new chat",
+          icon: ICON.gitFork,
+          onSelect: () => beginContinueInNewChat(),
+        },
+        {
+          label: "Export conversation as Markdown",
+          icon: ICON.download,
+          onSelect: () => exportCurrentSession(),
+        },
+      ],
+      "vscode-session-head",
+    ));
+  }
+
   /**
    * Conversation overflow (⋯) in the top-right cluster (after Remote + History).
    * Present only when the host shipped `#session-head-actions` (desktop getHtml /
-   * AFK Pilot page) — VS Code has no session header, so its top-bar New and gear
-   * Session group stay. Capability = the slot exists, not a host flag.
+   * AFK Pilot page). VS Code's smaller two-item menu uses its own slot so this
+   * richer desktop/remote menu stays unchanged. Capability = the slot exists,
+   * not a host flag.
    */
   function fillSessionHeadActions() {
+    fillVsCodeSessionActions();
     const menuSlot = document.getElementById("session-head-actions");
     // Hide the top-bar New wherever the overflow menu exists so New is not three
     // similar icons in a row (top-bar + rail project + menu).
@@ -5875,7 +6396,7 @@
     // more" would hide the very rows the query asked for. Matching by project
     // name instead means the whole project matched, so its list stays as it was.
     // Placeholder injection is render-only (never into state.sessions).
-    const entries = railEntriesWithNewPlaceholder(repo, rows.entries);
+    const entries = uniqueSessionRows(railEntriesWithNewPlaceholder(repo, rows.entries));
     const q = railFilterText();
     const nameMatched = !q || railMatches(repo.label || cwdLeaf(repo.cwd));
     if (q && !nameMatched) {
@@ -5912,6 +6433,7 @@
     const active = !!(target && s.id === target.id && railRepoOwnsTarget(repo, s, target));
     const hostActive = railIdlessActionsAllowed() && active;
     row.className = "rail-session" + (active ? " active" : "");
+    row.dataset.sessionId = s.id || "";
     row.title = s.displayName || "";
     // The row is the primary control, so it has to behave like one: reachable by
     // Tab and openable with Enter/Space. The repo names and pin buttons around it
@@ -5931,12 +6453,16 @@
       row.click();
     };
 
-    const dot = document.createElement("span");
-    // Same attribute the history popover uses, so `sessionDot` patches both
-    // surfaces at once without the rail subscribing to anything of its own.
-    dot.setAttribute("data-session-dot", s.id);
-    applySessionDot(dot, state.dots[s.id]);
-    row.appendChild(dot);
+    if (showProviderGlyphs()) {
+      row.appendChild(makeProviderGlyph(s.provider, state.dots[s.id], s.id));
+    } else {
+      const dot = document.createElement("span");
+      // Same attribute the history popover uses, so `sessionDot` patches both
+      // surfaces at once without the rail subscribing to anything of its own.
+      dot.setAttribute("data-session-dot", s.id);
+      applySessionDot(dot, state.dots[s.id]);
+      row.appendChild(dot);
+    }
 
     const label = document.createElement("span");
     label.className = "rail-session-name";
@@ -6063,6 +6589,12 @@
         icon: ICON.gitFork,
         ...waiting,
         onSelect: () => beginContinueInNewChat(),
+      });
+      // The live transcript this client is showing — same scope as Continue.
+      items.push({
+        label: "Export as Markdown",
+        icon: ICON.download,
+        onSelect: () => exportCurrentSession(),
       });
       // Worktree upkeep rides along for the same reason, and only while you are
       // in one — you cannot apply a checkout you are not standing in.
@@ -6215,7 +6747,7 @@
    *  place `railSelectedRows` is written, so "the rail's list" can only ever be
    *  a whole, unsearched page for the repo currently selected. */
   function adoptRailRows(entries) {
-    state.railSelectedRows = Array.isArray(entries) ? entries : [];
+    state.railSelectedRows = uniqueSessionRows(entries);
     state.railSelectedRowsKnown = true;
     state.railSessionsStale = false;
     renderRail();
@@ -6422,6 +6954,8 @@
     state.activeToolGroupEl = null;
     state.replaying = false;
     state.replayDepth = 0;
+    state.exportEvents = [];
+    state.exportWindowed = false;
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
@@ -6457,23 +6991,55 @@
     state.pendingSubmissionChipIds = [];
     state.rejectedSubmissionText = "";
     updateSendButton();
-    // Body-attached lightbox outlives #messages — close it on every session
-    // swap so the previous conversation's image cannot cover the next one.
-    // (confirm-overlay / uiPrompt are action-scoped and remove themselves;
-    // only the image preview persists across a reset.)
+    // Body-attached lightbox / preview overlay outlive #messages — close them
+    // on every session swap so the previous conversation cannot cover the next.
+    // (confirm-overlay / uiPrompt are action-scoped and remove themselves.)
     closeImagePreview();
+    closePreviewOverlay();
   }
 
   function showOnboarding(mode, info) {
     info = info || {};
+    state.onboardingMode = mode;
+    state.onboardingInfo = info;
     const welcome = $("welcome");
     if (welcome) welcome.hidden = false;
     state.welcomeVisible = true;
     const onb = $("welcome-onboarding");
     const ver = $("welcome-version");
     if (!onb) return;
-    if (mode === "missing-cli") {
+    if (IS_REMOTE && (mode === "connect-agent" || mode === "codex-login" || mode === "auth-required")) {
+      if (ver) setWelcomeStatus("Sign in at the desk", false);
+      const providerName = mode === "codex-login" ? "Codex" : mode === "auth-required" ? "Grok" : "an agent";
+      onb.innerHTML =
+        `<div class="onb">` +
+          `<p class="onb-heading">Sign in at the desk</p>` +
+          `<p class="onb-desc">${providerName} accounts can only be connected on the computer running this workspace. Sign in there, then refresh this remote view.</p>` +
+        `</div>`;
+      return;
+    }
+    if (mode === "connect-agent") {
+      if (ver) setWelcomeStatus("Connect an agent", false);
+      onb.innerHTML =
+        `<div class="onb onb-connect">` +
+          `<p class="onb-heading">Connect an agent</p>` +
+          `<p class="onb-desc">Choose the command-line agent that will own this conversation.</p>` +
+          `<div class="onb-agent-grid">` +
+            `<button class="onb-agent-tile primary onb-action" type="button" data-act="connectProvider" data-provider="grok">` +
+              `<span class="onb-agent-mark">${providerLogoMarkup("grok")}</span><span><strong>Grok</strong><small>Recommended default</small></span>` +
+            `</button>` +
+            `<button class="onb-agent-tile onb-action" type="button" data-act="connectProvider" data-provider="codex">` +
+              `<span class="onb-agent-mark">${providerLogoMarkup("codex")}</span><span><strong>Codex</strong><small>OpenAI Codex CLI</small></span>` +
+            `</button>` +
+          `</div>` +
+        `</div>`;
+    } else if (mode === "missing-cli") {
       if (ver) setWelcomeStatus("CLI not installed", false);
+      if (IS_REMOTE) {
+        onb.innerHTML = `<div class="onb"><p class="onb-heading">Grok CLI is missing at the desk</p>` +
+          `<p class="onb-desc">Install it on the computer running this workspace, then refresh this remote view.</p></div>`;
+        return;
+      }
       const installCmd = info.platform === "win32"
         ? "irm https://x.ai/cli/install.ps1 | iex"
         : "curl -fsSL https://x.ai/cli/install.sh | bash";
@@ -6485,7 +7051,48 @@
             `<button class="onb-copy" type="button" title="Copy" data-cmd="${installCmd}">${ICON.copy}</button>` +
           `</div>` +
           `<button class="onb-action" type="button" data-act="runInstall">Open terminal &amp; run</button>` +
-          `<button class="onb-action onb-secondary" type="button" data-act="recheck">Re-check connection</button>` +
+          `<button class="onb-action onb-secondary" type="button" data-act="recheckProvider" data-provider="${info.provider || "grok"}">Re-check connection</button>` +
+        `</div>`;
+    } else if (mode === "missing-codex") {
+      if (ver) setWelcomeStatus("Codex CLI not found", false);
+      if (IS_REMOTE) {
+        onb.innerHTML = `<div class="onb"><p class="onb-heading">Codex CLI is missing at the desk</p>` +
+          `<p class="onb-desc">Install or configure Codex on the computer running this workspace, then refresh this remote view.</p></div>`;
+        return;
+      }
+      const installCmd = "npm i -g @openai/codex";
+      const install = state.codexInstall;
+      const installing = install.phase !== "idle";
+      const percent = install.totalBytes > 0
+        ? Math.min(100, Math.round((install.receivedBytes / install.totalBytes) * 100))
+        : null;
+      const progressLabel = install.phase === "downloading"
+        ? `Downloading Codex${percent == null ? "" : ` (${percent}%)`}...`
+        : install.phase === "verifying" ? "Verifying downloaded package..."
+        : install.phase === "installing" ? "Installing Codex..." : "";
+      const reason = info.reason || install.reason;
+      onb.innerHTML =
+        `<div class="onb">` +
+          `<p class="onb-heading">Install the Codex CLI</p>` +
+          `<p class="onb-desc">Install the pinned official Codex release into this app's storage, or use your own installation.</p>` +
+          (reason ? `<p class="onb-install-error" role="alert">${escapeHtml(reason)}</p>` : "") +
+          (installing
+            ? `<div class="onb-install-progress" role="status"><span>${escapeHtml(progressLabel)}</span>` +
+                (percent == null ? "" : `<progress max="100" value="${percent}">${percent}%</progress>`) +
+                `<button class="onb-action onb-secondary" type="button" data-act="cancelCodexInstall">Cancel</button></div>`
+            : `<button class="onb-action" type="button" data-act="installCodex">Install Codex</button>`) +
+          `<p class="onb-desc onb-manual-label">Or install it yourself, or install the OpenAI ChatGPT extension for VS Code:</p>` +
+          `<div class="onb-cmd"><code>${installCmd}</code><button class="onb-copy" type="button" title="Copy" data-cmd="${installCmd}">${ICON.copy}</button></div>` +
+          `<button class="onb-action onb-secondary" type="button" data-act="recheckProvider" data-provider="codex">Re-check</button>` +
+        `</div>`;
+    } else if (mode === "codex-login") {
+      if (ver) setWelcomeStatus("Finish signing in", false);
+      onb.innerHTML =
+        `<div class="onb">` +
+          `<p class="onb-heading">Complete <code>codex login</code></p>` +
+          `<p class="onb-desc">Finish the sign-in flow in the terminal, then continue here.</p>` +
+          `<button class="onb-action onb-secondary" type="button" data-act="connectProvider" data-provider="codex">Open terminal &amp; run <code>codex login</code></button>` +
+          `<button class="onb-action" type="button" data-act="recheckProvider" data-provider="codex">Done - connect Codex</button>` +
         `</div>`;
     } else if (mode === "auth-required") {
       if (ver) setWelcomeStatus("Authentication required", false);
@@ -6501,7 +7108,7 @@
             `<button class="onb-copy" type="button" title="Copy" data-cmd="XAI_API_KEY=">${ICON.copy}</button>` +
           `</div>` +
           `<p class="onb-desc">A cached sign-in takes precedence over the API key &mdash; run <code>grok logout</code> first to use the key. If signing in succeeds but prompts still fail, check the error in the chat: your account may lack the Grok Build entitlement.</p>` +
-          `<button class="onb-action onb-secondary" type="button" data-act="recheck">Re-check connection</button>` +
+          `<button class="onb-action onb-secondary" type="button" data-act="recheckProvider" data-provider="grok">Re-check connection</button>` +
         `</div>`;
     } else {
       onb.innerHTML = "";
@@ -7257,8 +7864,18 @@
         viewAll.textContent = previewLabel;
         viewAll.onclick = (e) => {
           e.stopPropagation();
+          const openLanguage = language
+            || (className === "tool-cmd" ? state.commandLanguage : "");
+          if (hostPreviewsInApp()) {
+            openPreviewOverlay({
+              kind: "text",
+              content: fullText,
+              language: openLanguage,
+            });
+            return;
+          }
           const message = { type: "openText", content: fullText };
-          if (language) message.language = language;
+          if (openLanguage) message.language = openLanguage;
           vscode.postMessage(message);
         };
       }
@@ -7321,8 +7938,9 @@
     inRow.appendChild(inTag);
     const body = document.createElement("div");
     body.className = "cmd-in-body";
-    // Leave the language unset so VS Code can run its untitled-editor language
-    // detection (a Python command should not be forced into shellscript).
+    // Command View all uses the host-supplied shell language (click time, from
+    // state.commandLanguage). Output below omits language so the untitled
+    // editor can detect file-shaped content.
     appendCommandPreview(body, command, "tool-cmd");
     inRow.appendChild(body);
     block.appendChild(inRow);
@@ -7384,7 +8002,7 @@
     // Only render the output <pre> when there's actually output — a marker alone
     // carries the empty cases (success/error/cancel).
     if (hasOutput) {
-      appendCommandPreview(body, output, "tool-cmd-output", "plaintext");
+      appendCommandPreview(body, output, "tool-cmd-output");
     }
     if (msg.truncated) {
       const note = document.createElement("div");
@@ -7457,7 +8075,9 @@
   // the counters seed from it. Falls back to 1 when absent (older builds, the
   // whole-file-Write echo, hand-built fixtures) -- the region-relative numbering we
   // used to always emit.
-  function buildInlineDiffRegion(hunks) {
+  function buildInlineDiffRegion(hunks, opts) {
+    const previewCap = opts && opts.full ? Infinity : DIFF_PREVIEW_LINES;
+    const lineCap = opts && opts.full ? 20000 : MAX_INLINE_DIFF_LINES;
     const wrap = document.createElement("div");
     wrap.className = "tool-diff-region";
     let widest = 0;
@@ -7473,20 +8093,20 @@
     // understates the change.
     let prevNewEnd = null;
     for (const { site, result } of hunks) {
-      if (rendered >= MAX_INLINE_DIFF_LINES) break;
+      if (rendered >= lineCap) break;
       const rows = result.lines;
       let oldNo = fileLineOr1(site && site.oldLine);
       let newNo = fileLineOr1(site && site.newLine);
       // Only between hunks, and only when the new side actually skipped lines.
       if (prevNewEnd !== null && newNo !== prevNewEnd) {
         const sep = makeHunkSeparator();
-        if (rendered >= DIFF_PREVIEW_LINES) {
+        if (rendered >= previewCap) {
           sep.hidden = true;
           previewOverflow.push(sep);
         }
         wrap.appendChild(sep);
       }
-      const shown = Math.min(rows.length, MAX_INLINE_DIFF_LINES - rendered);
+      const shown = Math.min(rows.length, lineCap - rendered);
       for (let i = 0; i < shown; i++) {
         const ln = rows[i];
         const isAdd = ln.type === "add";
@@ -7510,7 +8130,7 @@
         row.appendChild(sign);
         row.appendChild(num);
         row.appendChild(code);
-        if (rendered + i >= DIFF_PREVIEW_LINES) {
+        if (rendered + i >= previewCap) {
           row.hidden = true;
           previewOverflow.push(row);
         }
@@ -7533,7 +8153,7 @@
       previewOverflow.push(more);
       wrap.appendChild(more);
     }
-    if (rendered > DIFF_PREVIEW_LINES) {
+    if (rendered > previewCap) {
       const toggle = makeInlineExpandToggle(
         "Show more",
         "msg-collapse-btn tool-diff-toggle",
@@ -7624,7 +8244,7 @@
       preview.textContent = "open diff →";
       preview.onclick = (e) => {
         e.stopPropagation(); // don't toggle the row/group expand
-        vscode.postMessage(openDiffMessage(diff));
+        requestDiffPreview(diff);
       };
       details.appendChild(preview);
     }
@@ -7754,6 +8374,21 @@
       return [{ oldText, newText, oldLine: first.old_line, newLine: first.new_line }];
     }
     return [{ oldText, newText, oldLine: meta && meta.old_line, newLine: meta && meta.new_line }];
+  }
+
+  function requestDiffPreview(diff, requestId) {
+    if (hostPreviewsInApp()) {
+      openPreviewOverlay({
+        kind: "diff",
+        path: diff.path,
+        oldText: diff.oldText,
+        newText: diff.newText,
+        sites: diff.sites,
+        replaceAll: diff.replaceAll,
+      });
+      return;
+    }
+    vscode.postMessage(openDiffMessage(diff, requestId));
   }
 
   function openDiffMessage(diff, requestId) {
@@ -8646,12 +9281,15 @@
     // No clearWelcome() here: the primer / system-reminder checks below may
     // suppress this entire message, and a primer-only restore must KEEP the
     // welcome screen. addMessage() clears it when a real bubble renders.
-    if (!state.activeUserEl && !state.skipUserBubble) {
-      // A new user message is starting. If we're replaying and this message is
-      // the extension's primer, suppress it AND grok's response to it — both
-      // are extension plumbing the user never typed, and we don't want them
-      // surfacing as fake user bubbles on every session restore.
-      if (state.replaying && PRIMER_PATTERN.test(text)) {
+    // skipUserBubble is per user event: a new event re-evaluates hide rules,
+    // so a marker-only chunk followed by another user chunk cannot latch.
+    if (!state.activeUserEl) {
+      state.skipUserBubble = false;
+      // A new user message is starting. Hide rules (legacy primer, CLI
+      // <system-reminder>, marker-only plan verdict) come from one verdict so
+      // the export recorder can consume the same decision.
+      const verdict = replayedUserBubbleVerdict(text);
+      if (verdict.hide === "turn") {
         state.suppressReplayTurn = true;
         return;
       }
@@ -8659,7 +9297,7 @@
       // are agent plumbing, not user content — never bubble them on restore.
       // Grok's reply to them still renders. (Live ones are already dropped by
       // the !replaying guard above; this covers the replayed copy.)
-      if (SYSTEM_REMINDER_PATTERN.test(text)) {
+      if (verdict.hide === "reminder") {
         state.skipUserBubble = true;
         return;
       }
@@ -8669,22 +9307,17 @@
       // for a marker-only verdict that itself renders no bubble.
       drainPlanHistory(state.userMsgCount);
       drainPermissionHistory(state.userMsgCount);
-      if (state.replaying) {
-        const mk = stripPlanMarker(text);
-        if (mk.matched) {
-          // A plan-verdict protocol message. Live never counted or showed a
-          // marker-only verdict (e.g. plain "[Plan cancelled]"), so skip it here
-          // too — both to hide the grok-only marker and to keep userMsgCount
-          // aligned with the afterUserMessage positions the host persisted.
-          if (!mk.rest.trim()) {
-            state.skipUserBubble = true;
-            return;
-          }
-          // Marker + comment: drop the marker, keep the user's words. Live
-          // counted this (the comment), so we count it here too.
-          text = mk.rest;
-        }
+      if (verdict.hide === "marker") {
+        // A plan-verdict protocol message. Live never counted or showed a
+        // marker-only verdict (e.g. plain "[Plan cancelled]"), so skip it here
+        // too — both to hide the grok-only marker and to keep userMsgCount
+        // aligned with the afterUserMessage positions the host persisted.
+        state.skipUserBubble = true;
+        return;
       }
+      // Marker + comment: drop the marker, keep the user's words. Live
+      // counted this (the comment), so we count it here too.
+      text = verdict.text;
       state.userMsgCount += 1;
       state.activeUserEl = addMessage("user", "", undefined, { timestampMs });
       state.activeUserRaw = "";
@@ -8861,8 +9494,9 @@
     el.className = "grokking";
     // No blink-dots here — the spinning orbit icon is Grokking's "waiting" motion
     // (Thinking / tools use the dots for discrete progress instead).
-    el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">Grokking</span>`;
-    el.setAttribute("aria-label", "Grok is working");
+    const verb = state.activeProvider === "codex" ? CODEX_ACTIVITY_VERB : GROK_ACTIVITY_VERB;
+    el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">${verb}</span>`;
+    el.setAttribute("aria-label", state.activeProvider === "codex" ? "OpenAI is working" : "Grok is working");
     el.title = "Waiting for response";
     messagesEl.appendChild(el);
     state.grokkingEl = el;
@@ -8874,6 +9508,14 @@
       state.grokkingEl.parentElement.removeChild(state.grokkingEl);
     }
     state.grokkingEl = null;
+  }
+
+  function syncProviderVoice() {
+    input.placeholder = COMPOSER_PLACEHOLDER[state.activeProvider] || COMPOSER_PLACEHOLDER.grok;
+    if (!state.grokkingEl) return;
+    const label = state.grokkingEl.querySelector(".grokking-label");
+    if (label) label.textContent = state.activeProvider === "codex" ? CODEX_ACTIVITY_VERB : GROK_ACTIVITY_VERB;
+    state.grokkingEl.setAttribute("aria-label", state.activeProvider === "codex" ? "OpenAI is working" : "Grok is working");
   }
 
   // "Thinking…" — the stand-in shown while thinking traces are hidden (#26, the
@@ -8939,8 +9581,8 @@
   }
 
   // Follow streaming output only while the user is pinned to the bottom. Once
-  // they scroll up (the listener below clears state.stickToBottom) this becomes
-  // a no-op, so they can read history while grok keeps thinking (#16).
+  // they gesture away (the listener below clears state.stickToBottom) this
+  // becomes a no-op, so they can read history while grok keeps thinking (#16).
   function scrollToBottom() {
     if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -9008,6 +9650,47 @@
     attributeFilter: ["hidden", "class", "style"],
   });
 
+  // Pin state is a user-intent bit, not a distance-from-bottom measurement.
+  // Content growth, focus(), programmatic scrollTop, and UA scroll-into-view
+  // all fire `scroll` with dist well above one line — at zoom that used to
+  // look like the reader had scrolled away (#92). Only wheel / touch /
+  // scrollbar / keyboard movement may clear the pin. #16 still holds: a
+  // reader who gestured away stays unyanked; permission cards still
+  // force-scroll; resize (mobile keyboard) is not a gesture.
+  // Latch, not a one-shot: a trackpad flick emits one wheel then many
+  // inertial `scroll`s. Clearing on the first event would land at the
+  // bottom still unpinned.
+  let userScrollIntentUntil = 0;
+  const USER_SCROLL_INTENT_MS = 750;
+  const noteUserScrollIntent = () => {
+    userScrollIntentUntil = (typeof performance !== "undefined" && performance.now)
+      ? performance.now() + USER_SCROLL_INTENT_MS
+      : Date.now() + USER_SCROLL_INTENT_MS;
+  };
+  const hasUserScrollIntent = () => {
+    const now = (typeof performance !== "undefined" && performance.now)
+      ? performance.now() : Date.now();
+    return now < userScrollIntentUntil;
+  };
+  messagesEl.addEventListener("wheel", noteUserScrollIntent, { passive: true });
+  messagesEl.addEventListener("touchstart", noteUserScrollIntent, { passive: true });
+  messagesEl.addEventListener("pointerdown", (e) => {
+    // Chromium targets the scrollport itself for the scrollbar thumb/track.
+    if (e.target === messagesEl) noteUserScrollIntent();
+  });
+  messagesEl.addEventListener("keydown", (e) => {
+    if (e.target !== messagesEl) return;
+    if (e.key === "PageUp" || e.key === "PageDown" || e.key === "Home" || e.key === "End" ||
+        e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === " ") {
+      noteUserScrollIntent();
+    }
+  });
+
+  function currentStickThreshold() {
+    const lh = parseFloat(getComputedStyle(messagesEl).lineHeight);
+    return typeof stickThresholdPx === "function" ? stickThresholdPx(lh) : 40;
+  }
+
   // While a click-triggered smooth scroll is animating, the intermediate scroll
   // events would briefly re-show the button; suppress recompute until we land.
   let autoScrolling = false;
@@ -9019,8 +9702,10 @@
         return;
       }
     }
+    if (!hasUserScrollIntent()) return;
     setStickToBottom(shouldStickToBottom(
       messagesEl.scrollTop, messagesEl.scrollHeight, messagesEl.clientHeight,
+      currentStickThreshold(),
     ));
     updateScrollBtn();
   });
@@ -9173,7 +9858,7 @@
 
       const openDiff = () => {
         if (IS_REMOTE) revealToolDiff(req.toolCall?.toolCallId);
-        else vscode.postMessage(openDiffMessage(diff, req.id));
+        else requestDiffPreview(diff, req.id);
       };
       const preview = document.createElement("button");
       preview.className = "preview-link";
@@ -9182,9 +9867,11 @@
       preview.textContent = "open diff →";
       preview.onclick = openDiff;
       el.appendChild(preview);
-      // Auto-open only where a native editor exists. Moving a remote transcript
-      // on card arrival is disorienting; its explicit tap expands inline.
-      if (!IS_REMOTE) openDiff();
+      // Auto-open only where a native editor exists. The in-app overlay would
+      // cover the permission buttons, so previewInApp waits for the tap.
+      // Moving a remote transcript on card arrival is disorienting; its
+      // explicit tap expands inline.
+      if (!IS_REMOTE && !hostPreviewsInApp()) openDiff();
     }
 
     const { buttons, defaultIndex } =
@@ -9266,7 +9953,11 @@
       b.tabIndex = on ? 0 : -1;
       b.classList.toggle("chosen", on);
     });
-    buttons[index].focus();
+    // preventScroll: forceScrollToBottom already placed the card. A UA
+    // scroll-into-view here (zoom + a card taller than the port) is not a
+    // user scroll-away, but it fires `scroll` with dist > one line and used
+    // to unpin the reader (#92).
+    buttons[index].focus({ preventScroll: true });
   }
 
   // ---------- question card (ask_user_question) ----------
@@ -10878,6 +11569,9 @@
         // any control is drawn — and a host that says nothing is a host that
         // cannot, which is the safe way round.
         state.hostCaps = (msg.capabilities && typeof msg.capabilities === "object") ? msg.capabilities : {};
+        // Field presence: an older host never sends this, and command View all
+        // then omits language rather than inventing a dialect.
+        state.commandLanguage = typeof msg.commandLanguage === "string" ? msg.commandLanguage : "";
         restoreRememberedRemoteSession();
         // Capability field presence — never a version check. Local hosts ignore.
         ensureRemoteFilesBrowser();
@@ -10886,6 +11580,7 @@
         if (typeof msg.steerByDefault === "boolean") state.steerByDefault = msg.steerByDefault;
         if (typeof msg.soundNotifications === "boolean") state.soundNotifications = msg.soundNotifications;
         if (typeof msg.processingSound === "boolean") state.processingSound = msg.processingSound;
+        releaseAudioIfSilent();
         // Absent appPurpose (older host) → Knowledge work — smaller surface.
         state.appPurpose = msg.appPurpose === "coding" ? "coding" : "knowledge";
         if (typeof msg.readRepliesAloud === "boolean") {
@@ -10907,6 +11602,39 @@
         // rebuild that would refresh it.
         if (state.hostCaps) state.hostCaps.moveViewHint = msg.value === true;
         renderWelcomeTip();
+        break;
+      case "providerState":
+        state.providersKnown = true;
+        state.providers = Array.isArray(msg.providers) ? msg.providers.filter((provider) =>
+          provider && (provider.id === "grok" || provider.id === "codex")) : [];
+        // Connecting an additional account happens from the gear while the
+        // current transcript stays mounted. The login/recovery view temporarily
+        // borrows the welcome overlay; dismiss it when the provider it was
+        // waiting for is now connected, without clearing or replaying messages.
+        {
+          const pendingProvider = $("welcome-onboarding")?.querySelector(
+            '[data-act="recheckProvider"][data-provider], [data-act="recheck"][data-provider]',
+          )?.dataset?.provider;
+          if (pendingProvider && state.providers.some((provider) =>
+            provider.id === pendingProvider && provider.connected)) {
+            clearWelcome();
+          }
+        }
+        if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
+        else if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
+        if (!historyPopover.hidden) renderSessionRows();
+        renderRail();
+        break;
+      case "codexInstallProgress":
+        state.codexInstall = {
+          phase: msg.phase || "idle",
+          receivedBytes: Number.isFinite(msg.receivedBytes) ? msg.receivedBytes : 0,
+          totalBytes: Number.isFinite(msg.totalBytes) ? msg.totalBytes : 0,
+          reason: typeof msg.reason === "string" ? msg.reason : "",
+        };
+        if (state.onboardingMode === "missing-codex") {
+          showOnboarding("missing-codex", { ...state.onboardingInfo, reason: state.codexInstall.reason });
+        }
         break;
       case "planModeAvailability":
         state.planModeAvailable = msg.available !== false;
@@ -10937,6 +11665,7 @@
         // Live toggle (grok.soundNotifications). Only affects future turn-end/
         // error beeps; keep the gear switch in sync if it's open.
         state.soundNotifications = !!msg.value;
+        releaseAudioIfSilent();
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
       case "processingSound":
@@ -10947,6 +11676,7 @@
           clearTimeout(processingCueTimer);
           processingCueTimer = null;
         }
+        releaseAudioIfSilent();
         if (state.gearView === "config") renderConfigDebugPanel();
         break;
       case "readRepliesAloud": {
@@ -11053,6 +11783,9 @@
           }
           if (messagesEl.lastElementChild === firstGone) messagesEl.removeChild(firstGone);
         }
+        // Same surviving-user-turn count as the DOM filter above. Steer
+        // interjections and hidden replayed user events do not consume a slot.
+        state.exportEvents = truncateExportEvents(state.exportEvents, msg.surviving);
         // Nothing streaming survives a truncation — drop the per-turn handles so
         // the next turn starts clean rather than appending into a removed node.
         state.userMsgCount = msg.surviving;
@@ -11124,7 +11857,7 @@
       case "initialized": {
         // The ACP handshake is done, but session/new or session/load may still be
         // running. Keep showing Starting until the startup lock clears.
-        state.cliVersion = msg.info.version || "";
+        if (msg.info.provider !== "codex") state.cliVersion = msg.info.version || "";
         state.startingPhase = true;
         setWelcomeStatus("Starting", true);
         const onb = $("welcome-onboarding");
@@ -11140,9 +11873,12 @@
       }
       case "session": {
         state.currentModelId = msg.currentModelId;
+        state.activeProvider = msg.provider === "codex" ? "codex" : "grok";
+        syncProviderVoice();
+        if (state.railTransition?.kind === "new") renderRail();
         state.isWorktree = !!msg.worktree; // gates the gear Apply/Remove worktree items
         state.availableModels = msg.models || [];
-        const m = state.availableModels.find((x) => x.modelId === msg.currentModelId);
+        const m = state.availableModels.find((x) => x.modelId === msg.currentModelId && (!x.provider || x.provider === state.activeProvider));
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
         updateDonut(0);
         reportRemotePreferences();
@@ -11175,7 +11911,7 @@
         // The initial `session` event carries grok's *default* model, so when we
         // switch (e.g. to the configured default) recompute the max — otherwise the
         // donut keeps showing the wrong ceiling and an inflated percentage.
-        const m = state.availableModels.find((x) => x.modelId === msg.modelId);
+        const m = state.availableModels.find((x) => x.modelId === msg.modelId && (!x.provider || x.provider === state.activeProvider));
         if (m && m.totalContextTokens) { state.contextWindow = m.totalContextTokens; updateDonut(); }
         break;
       }
@@ -11297,6 +12033,9 @@
         break;
       }
       case "userMessage":
+        // Live send, including a buffer rebuild inside historyReplay. A prior
+        // hidden turn's skip ends here — this event is never hidden.
+        state.skipUserBubble = false;
         // A co-attached view also receives sends from the other view. Prefer our
         // submission id; old hosts omit it, so fall back to exact text + chip
         // identity. agentStart has no ownership signal and must not clear the
@@ -11376,6 +12115,7 @@
         if (msg.active) {
           if (state.replayDepth === 0) {
             state.suppressReplayTurn = false; // fresh outer replay starts unsuppressed
+            state.skipUserBubble = false;
             state.repoSwitchPending = true;
             setConversationLoading(true);
             renderRepoChip();
@@ -11402,6 +12142,7 @@
           // remain empty and can never be re-spoken on reconnect.
           state.ttsTurnText = inFlightSpeech;
           state.suppressReplayTurn = false; // replay over → no longer suppressing
+          state.skipUserBubble = false;
           // Anything left in the queue is either legacy (no afterUserMessage)
           // or was resolved after the final user message of the session. Render
           // it now at the bottom so we don't silently drop those plans.
@@ -11418,6 +12159,9 @@
           // Older CLIs may not replay turn_completed; finalize that last footer
           // here too. Without agentTimestampMs it deliberately stays blank.
           revealTurnFooter();
+          // Remote reconnect/cold-load delivers only a recent window. Label
+          // the export so it cannot be read as the whole transcript.
+          if (IS_REMOTE) state.exportWindowed = true;
         }
         break;
       case "historyBatch":
@@ -11464,7 +12208,7 @@
         // a flattened text blob) — fold its result into the matching subagent
         // card and drop the redundant "[subagent:…]" poller row.
         if (maybeFinishSubagentFromTaskOutput(msg.call) || maybeFinishSubagentFromTaskText(msg.call)) break;
-        if (isMediaGenToolCall(msg.call) && msg.call.toolCallId) {
+      if (isMediaGenToolCall(msg.call, state.activeProvider) && msg.call.toolCallId) {
           state.mediaGenCallIds.add(msg.call.toolCallId);
         }
         addToToolGroup(msg.call);
@@ -11476,7 +12220,7 @@
         {
           const failure = toolFailureText(msg.call);
           if (failure) {
-            const hint = isMediaGenToolCall(msg.call)
+      const hint = isMediaGenToolCall(msg.call, state.activeProvider)
               ? mediaGenZeroRetentionHint(failure)
               : null;
             markToolFailed(msg.call.toolCallId, hint ? failure + "\n" + hint : failure);
@@ -11546,7 +12290,7 @@
         if (failure) {
           const id = msg.call?.toolCallId;
           const isMedia =
-            (id && state.mediaGenCallIds.has(id)) || isMediaGenToolCall(msg.call);
+        (id && state.mediaGenCallIds.has(id)) || isMediaGenToolCall(msg.call, state.activeProvider);
           const hint = isMedia ? mediaGenZeroRetentionHint(failure) : null;
           markToolFailed(id, hint ? failure + "\n" + hint : failure);
           break;
@@ -11955,7 +12699,7 @@
         resetForNewSession();
         break;
       case "onboarding":
-        showOnboarding(msg.state, { platform: msg.platform });
+          showOnboarding(msg.state, { platform: msg.platform, reason: msg.reason, provider: msg.provider });
         break;
       case "error":
         if (state.repoSwitchPending) {
@@ -12002,7 +12746,7 @@
       case "xaiNotification":
         break;
       case "sessions": {
-        const entries = msg.entries || [];
+        const entries = uniqueSessionRows(msg.entries);
         const offset = msg.offset || 0;
         const open = !historyPopover.hidden;
         // Sticky search: a host-driven refresh (rename/delete/new session) posts an
@@ -12034,11 +12778,16 @@
             break;
           }
           const seen = new Set(state.sessions.map((s) => s.id));
-          for (const e of entries) if (!seen.has(e.id)) state.sessions.push(e);
+          for (const e of entries) {
+            if (seen.has(e.id)) continue;
+            seen.add(e.id);
+            state.sessions.push(e);
+          }
         } else {
           // Fresh list or new search result: replace.
           state.sessions = entries;
           state.sessionQuery = msg.query || "";
+          state.sessionLastAutoPageKey = "";
         }
         if (msg.activeId !== undefined) {
           // Host-confirmed only — never an optimistic rail-transition id.
@@ -12088,6 +12837,17 @@
         // (hidden subagent sessions occupy slots without producing rows), so a
         // filtered page never makes us re-request the same slice.
         state.sessionNextOffset = typeof msg.nextOffset === "number" ? msg.nextOffset : null;
+        state.sessionProviderCursor = msg.providerCursor &&
+          typeof msg.providerCursor.grokOffset === "number"
+          ? {
+              grokOffset: msg.providerCursor.grokOffset,
+              ...(msg.providerCursor.codexHighWater &&
+                typeof msg.providerCursor.codexHighWater.updatedAt === "number" &&
+                typeof msg.providerCursor.codexHighWater.id === "string"
+                ? { codexHighWater: { ...msg.providerCursor.codexHighWater } }
+                : {}),
+            }
+          : null;
         state.sessionLoading = false;
         if (open) renderSessionRows();
         renderSessionName();
@@ -12113,7 +12873,7 @@
       }
       case "pinnedSessions": {
         state.pinnedSessionsKnown = true;
-        state.pinnedSessions = Array.isArray(msg.entries) ? msg.entries : [];
+        state.pinnedSessions = uniqueSessionRows(msg.entries);
         state.dots = Object.assign({}, state.dots, msg.dots || {});
         renderRail();
         break;
@@ -12126,7 +12886,7 @@
         state.repoPreviewsUnsupported = false;
         if (railProbeTimer) { clearTimeout(railProbeTimer); railProbeTimer = null; }
         state.repoPreviews[cwdKey(msg.cwd)] = {
-          entries: Array.isArray(msg.entries) ? msg.entries : [],
+          entries: uniqueSessionRows(msg.entries),
           total: typeof msg.total === "number" ? msg.total : (msg.entries || []).length,
         };
         state.dots = Object.assign({}, state.dots, msg.dots || {});
@@ -12259,6 +13019,9 @@
       // freshly streamed content.
       if (state.sendQueue.length && state.queuedWrapEl) messagesEl.appendChild(state.queuedWrapEl);
     }
+    if (shouldRecordExportEvent(msg)) {
+      state.exportEvents.push(msg);
+    }
   }
 
   window.addEventListener("message", (e) => handleHostMessage(e.data));
@@ -12274,7 +13037,7 @@
   newBtn.onclick = () => beginNewSession();
   // Hide top-bar New immediately when the overflow slot is in the DOM (rail
   // hosts). fillSessionHeadActions re-asserts this whenever the menu refreshes.
-  if (document.getElementById("session-head-actions") && newBtn) newBtn.hidden = true;
+  fillSessionHeadActions();
   modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busyLocked) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
 
@@ -12585,8 +13348,13 @@
       e.stopPropagation();
       const act = onbAction.dataset.act;
       if (act === "runInstall") vscode.postMessage({ type: "runInstallCmd" });
+      else if (act === "installCodex") vscode.postMessage({ type: "installCodex" });
+      else if (act === "cancelCodexInstall") vscode.postMessage({ type: "cancelCodexInstall" });
       else if (act === "runLogin") vscode.postMessage({ type: "runGrokLogin" });
-      else if (act === "recheck") vscode.postMessage({ type: "recheckConnection" });
+      else if (act === "recheck") vscode.postMessage({ type: "recheckConnection", provider: onbAction.dataset.provider });
+      else if (act === "connectProvider") vscode.postMessage({ type: "runGrokLogin", provider: onbAction.dataset.provider });
+      else if (act === "recheckProvider") vscode.postMessage({ type: "recheckConnection", provider: onbAction.dataset.provider });
+      else if (act === "retryProvider") vscode.postMessage({ type: "retryProviderSession", provider: onbAction.dataset.provider });
       return;
     }
     const onbCopy = e.target.closest(".onb-copy");
@@ -12692,6 +13460,72 @@
     } else if (/^[a-zA-Z]:[\\/]/.test(href) || href.startsWith("\\\\") || !/^[a-z][a-z0-9+.-]*:/i.test(href)) {
       vscode.postMessage({ type: "openFile", path: href });
     }
+  });
+
+  /** Href a user would paste elsewhere, or "" when the link has no external
+   *  form (chrome `data-native-link`, empty, javascript:, in-page hash). */
+  function copyableLinkHref(anchor) {
+    if (!anchor || typeof anchor.getAttribute !== "function") return "";
+    if (anchor.closest && anchor.closest("[data-native-link]")) return "";
+    const href = String(anchor.getAttribute("href") || "").trim();
+    if (!href || href.charAt(0) === "#" || /^javascript:/i.test(href)) return "";
+    return href;
+  }
+
+  function elementFromNode(node) {
+    if (!node) return null;
+    return node.nodeType === 1 ? node : node.parentElement;
+  }
+
+  function linkFromContextEvent(e) {
+    const el = elementFromNode(e && e.target);
+    if (el && el.closest) {
+      const hit = el.closest("a[href]");
+      if (hit) return hit;
+    }
+    const sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed) return null;
+    const a = elementFromNode(sel.anchorNode);
+    const f = elementFromNode(sel.focusNode);
+    const aLink = a && a.closest ? a.closest("a[href]") : null;
+    const fLink = f && f.closest ? f.closest("a[href]") : null;
+    if (aLink && aLink === fLink) return aLink;
+    if (aLink && (!f || aLink.contains(sel.focusNode))) return aLink;
+    if (fLink && fLink.contains(sel.anchorNode)) return fLink;
+    return null;
+  }
+
+  function writeClipboardText(text) {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+    navigator.clipboard.writeText(text || "");
+  }
+
+  // Cut/Copy/Paste stay on the host/browser menu. Copy Link is ours, and only
+  // when a real target is under the pointer — a disabled row would be a lie.
+  document.addEventListener("contextmenu", (e) => {
+    if (e.defaultPrevented) return;
+    const a = linkFromContextEvent(e);
+    const href = copyableLinkHref(a);
+    if (!href) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closePopovers();
+    closeRailMenu();
+    const selected = String((window.getSelection && window.getSelection().toString()) || "");
+    const items = [];
+    if (selected) {
+      items.push({
+        label: "Copy",
+        icon: ICON.copy,
+        onSelect: () => writeClipboardText(selected),
+      });
+    }
+    items.push({
+      label: "Copy Link",
+      icon: ICON.copy,
+      onSelect: () => writeClipboardText(href),
+    });
+    openRailMenu(a, items, "chat-copy-link", { x: e.clientX, y: e.clientY });
   });
 
   input.addEventListener("paste", (e) => {
@@ -12887,6 +13721,7 @@
       toggle: () => setRemoteTtsEnabled(!state.remoteTts),
     });
   }
+  syncProviderVoice();
   applyChatZoom();
   wireClientFontScaleShortcuts();
   initMermaid();

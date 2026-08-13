@@ -148,6 +148,21 @@ describe("VSIX excludes desktop app", () => {
     expect(pkg.scripts.dist).toMatch(/electron-builder/);
     expect(pkg.scripts.package).toMatch(/\bvsce package\b/);
   });
+
+  it("packages the pinned Codex ACP runtime in the desktop artifact", () => {
+    const builder = read("electron-builder.yml");
+    const full = JSON.parse(read("package.json")) as { dependencies?: Record<string, string> };
+    expect(full.dependencies?.["@agentclientprotocol/codex-acp"]).toBe("1.1.14");
+    expect(builder).toMatch(/node_modules\/@agentclientprotocol\/codex-acp\/\*\*\/\*/);
+    expect(fs.existsSync(path.join(
+      root,
+      "node_modules",
+      "@agentclientprotocol",
+      "codex-acp",
+      "dist",
+      "index.js",
+    ))).toBe(true);
+  });
 });
 
 describe("desktop artifact naming (electron-builder.yml)", () => {

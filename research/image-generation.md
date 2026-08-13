@@ -26,7 +26,29 @@ The tools (from the bundled `~/.grok/skills/imagine/SKILL.md`):
   default; there is **no text-to-video** — video always starts from an image).
 - **`reference_to_video`** — video from reference image(s).
 
-## Wire sequence
+## Codex captured wire sequence
+
+Codex ACP 0.147 emits an initial `tool_call` with `kind: "other"`, title
+`"Image generation"`, and `rawInput.id` equal to the `toolCallId`. Completion is
+a `tool_call_update` with `status: "completed"` and a text content block beginning
+`Revised prompt:`. Before that completion arrives, the adapter writes the PNG to:
+
+```
+<codexHome>/generated_images/<sessionId>/<toolCallId>.png
+```
+
+`codexHome` follows the normal override pattern: `CODEX_HOME`, otherwise
+`USERPROFILE/.codex` on Windows or `HOME/.codex` elsewhere. Detection is scoped
+to a Codex provider plus that exact kind/title pair. The host infers the path only
+on completion, after requiring a UUID session id, an `exec-UUID` tool-call id,
+and resolved containment under `generated_images`. The media forwarder repeats
+canonical containment before any file read, so a separator/traversal id or an
+escaped target is log-only and cannot be inlined or relayed. It then sends the
+trusted path through the same generated-media pipeline as Grok.
+The fake adapter's `SCENARIO_IMAGE_GENERATION` reproduces this exact ordering and
+wire shape.
+
+## Grok wire sequence
 
 For prompt `"/imagine a small red cube on white background"`:
 

@@ -1063,6 +1063,18 @@ describe("sumUsage (session total is derived, not patched)", () => {
     expect(out).toEqual({ inputTokens: 350, outputTokens: 50, modelCalls: 4, costUsdTicks: 35_000_000 });
   });
 
+  it("recognizes Codex image generation only in a Codex provider session", () => {
+    const captured = {
+      toolCallId: "exec-imagegen-1",
+      kind: "other",
+      title: "Image generation",
+      rawInput: { id: "exec-imagegen-1" },
+    };
+    expect(isMediaGenToolCall(captured, "codex")).toBe(true);
+    expect(isMediaGenToolCall(captured, "grok")).toBe(false);
+    expect(isMediaGenToolCall({ ...captured, kind: "execute" }, "codex")).toBe(false);
+  });
+
   it("makePermissionCancelledResponse declines without inventing an option id", () => {
     expect(makePermissionCancelledResponse(8)).toEqual({
       jsonrpc: "2.0",

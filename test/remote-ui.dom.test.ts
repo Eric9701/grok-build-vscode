@@ -181,6 +181,7 @@ describe("AFK Pilot shared webview controls", () => {
     let node: any;
     let stopped = false;
     let resumeCalls = 0;
+    let closeCalls = 0;
     const { window, posted, doc } = bootWebview({
       remote: true,
       beforeScripts: (w) => {
@@ -217,7 +218,7 @@ describe("AFK Pilot shared webview controls", () => {
           }
           createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
           createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
-          close() { return Promise.resolve(); }
+          close() { closeCalls++; return Promise.resolve(); }
         }
         (w as any).AudioWorkletNode = FakeNode;
         (w as any).AudioContext = FakeAudioContext;
@@ -245,6 +246,7 @@ describe("AFK Pilot shared webview controls", () => {
     expect(posted.findIndex((message) => message.type === "remoteVoiceChunk" && message.data === "AwA="))
       .toBeLessThan(posted.findIndex((message) => message.type === "remoteVoiceStop"));
     expect(stopped).toBe(true);
+    expect(closeCalls).toBe(1);
   });
 
   it("retains more than 16 PCM chunks while delayed STT setup becomes ready", async () => {

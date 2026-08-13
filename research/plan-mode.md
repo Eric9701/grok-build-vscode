@@ -9,10 +9,13 @@
 > client-side gate remains because the CLI still passes `terminal/create` while
 > planning. Legacy primer/marker readers remain for sessions already on disk.
 > Plan is unavailable fail-closed below `GROK_REQUIRED_VERSION`. When the CLI
-> version cannot be read the gate is still fail-closed, but that outcome is
-> re-checkable on the next Plan pick (`decidePlanModeAvailability` /
-> `recheckPlanModeAvailability`) rather than latched for the session. The 0.2.3
-> analysis below is preserved as history.
+> version cannot be read, `resolvePlanModeAvailability` retries once and then
+> uses the last verified banner for that binary (`grok.cliVersionCache`) if
+> mtime/size still match. A cache substitute keeps that availability but is
+> never `verified` — a stale below-floor banner stays re-checkable on the next
+> Plan pick (`recheckPlanModeAvailability`), and a later live probe replaces
+> the stand-in. Only a live parseable below-floor answer latches Plan off for
+> the session. The 0.2.3 analysis below is preserved as history.
 
 Research notes. Status as of `grok` 0.2.3 (native Windows), extension v1.1.0, 2026-05-27.
 

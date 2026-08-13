@@ -20,6 +20,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildQaFixture } from "./qa-fixture.mjs";
+import { assertPinnedAfterZoomedExpandedTurn, hostMsg } from "./desk-stick-to-bottom.mjs";
 
 const root = process.cwd();
 const OUT = process.env.SCREENS_DIR || ".screens";
@@ -230,7 +231,104 @@ try {
   );
 
   assert.deepEqual(errors, [], `desk: the renderer logged errors — ${JSON.stringify(errors)}`);
-  log(`ALL CHECKS PASSED — 5 frames in ${OUT}/`);
+
+  // View-all overlay: a long command must open INSIDE the main window with
+  // highlighted tokens (not a second BrowserWindow of bare monospace).
+  {
+    const windowsBefore = app.windows().length;
+    const longCmd = [
+      "function Get-Status {",
+      '  Write-Output "probe"',
+      "  Get-ChildItem -Path C:\\work",
+      "  if ($true) { return }",
+      "}",
+      'Write-Output "line 6"',
+      'Write-Output "line 7"',
+      'Write-Output "line 8"',
+    ].join("\n");
+    await hostMsg(page, { type: "appPurpose", value: "coding" });
+    await hostMsg(page, { type: "expandCommandOutputs", value: true });
+    await hostMsg(page, {
+      type: "toolCall",
+      call: {
+        toolCallId: "desk-preview-cmd",
+        kind: "execute",
+        title: "Run Get-Status",
+        rawInput: { variant: "Bash", command: longCmd, is_background: false },
+      },
+    });
+    await hostMsg(page, { type: "messageChunk", text: "done" });
+    await hostMsg(page, {
+      type: "commandOutput",
+      command: longCmd,
+      output: "ok\n".repeat(8),
+      exitCode: 0,
+      truncated: false,
+    });
+    await page.waitForSelector(".command-view-all", { timeout: 15000 });
+    await page.locator(".command-view-all").first().click();
+    await page.waitForSelector("#preview-overlay", { timeout: 15000 });
+    await page.waitForTimeout(300);
+    await shot("desk-6-preview-overlay");
+    assert.equal(
+      app.windows().length,
+      windowsBefore,
+      "desk: View all must not open a new BrowserWindow",
+    );
+    const overlay = await page.evaluate(() => {
+      const el = document.getElementById("preview-overlay");
+      const token = el?.querySelector(".hl-kw, .hl-str, .hl-fn");
+      const r = el?.getBoundingClientRect();
+      const tr = token?.getBoundingClientRect();
+      const cs = token ? getComputedStyle(token) : null;
+      return {
+        inside: !!el && el.getRootNode() === document,
+        title: el?.querySelector(".preview-title")?.textContent || "",
+        tokenTag: token?.tagName || "",
+        tokenClass: token?.className || "",
+        tokenColor: cs?.color || "",
+        tokenW: tr ? Math.round(tr.width) : 0,
+        tokenH: tr ? Math.round(tr.height) : 0,
+        left: r ? Math.round(r.left) : null,
+        right: r ? Math.round(r.right) : null,
+        viewport: window.innerWidth,
+        pageWidth: document.documentElement.scrollWidth,
+      };
+    });
+    assert.equal(overlay.inside, true, "desk: overlay must live in the main document");
+    assert.ok(overlay.tokenTag, `desk: overlay has no highlighted token — ${JSON.stringify(overlay)}`);
+    assert.ok(
+      overlay.tokenW >= 4 && overlay.tokenH >= 6,
+      `desk: highlighted token is unstyled/0x0 — ${JSON.stringify(overlay)}`,
+    );
+    assert.ok(
+      overlay.tokenColor && overlay.tokenColor !== "rgba(0, 0, 0, 0)",
+      `desk: highlighted token has no color — ${JSON.stringify(overlay)}`,
+    );
+    assert.ok(
+      overlay.left >= 0 && overlay.right <= overlay.viewport + 1,
+      `desk: overlay must stay inside the main window (${overlay.left}–${overlay.right} vs ${overlay.viewport})`,
+    );
+    assert.ok(
+      overlay.pageWidth <= overlay.viewport + 1,
+      `desk: View all must not make the page scroll horizontally (${overlay.pageWidth} > ${overlay.viewport})`,
+    );
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.getElementById("preview-overlay"), { timeout: 5000 });
+    log("preview overlay opened inside the main window with highlighted tokens");
+  }
+
+  // #92 — zoomed sidebar + expanded tool details + permission resolve.
+  // After the visual frames so a rail collapse / resize cannot invalidate them.
+  await assertPinnedAfterZoomedExpandedTurn(page, {
+    log: (m) => log(m),
+    shot: async (name) => {
+      await page.screenshot({ path: path.join(OUT, `${name}.png`) });
+      log(`captured ${name}.png`);
+    },
+  });
+
+  log(`ALL CHECKS PASSED — frames in ${OUT}/`);
 } finally {
   await app.close().catch(() => {});
   qa.cleanup();

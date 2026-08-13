@@ -396,6 +396,30 @@
     RULES[lang] = hashRules(lang);
   }
 
+  // Host / VS Code language ids → highlighter ids. Unknown stays "" so the
+  // caller paints escaped text rather than guessing a ruleset.
+  const LANG_BY_ID = {
+    powershell: "ps1", shellscript: "sh", bat: "sh", cmd: "sh",
+    javascript: "js", javascriptreact: "js",
+    typescript: "ts", typescriptreact: "ts",
+    python: "py", ruby: "rb", rust: "rust", go: "go", java: "java",
+    csharp: "cs", php: "php", dart: "dart", scala: "scala", groovy: "groovy",
+    swift: "swift", kotlin: "kotlin",
+    json: "json", jsonc: "json", yaml: "yaml", yml: "yaml",
+    toml: "toml", ini: "ini", css: "css",
+    html: "markup", xml: "markup", svg: "markup",
+    sql: "sql", diff: "diff",
+    markdown: "", plaintext: "",
+  };
+
+  /** Highlighter id for a host language id, or "" when we have no ruleset. */
+  function languageForId(id) {
+    if (typeof id !== "string" || !id) return "";
+    const key = id.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(LANG_BY_ID, key)) return LANG_BY_ID[key];
+    return Object.prototype.hasOwnProperty.call(RULES, key) ? key : "";
+  }
+
   // ---------- the scanner ----------
 
   const compiled = new Map();
@@ -491,6 +515,7 @@
     escapeHtml,
     highlightCode,
     languageForPath,
+    languageForId,
     MAX_HIGHLIGHT_BYTES,
     // Exposed for the rule-hygiene test, which walks every ruleset.
     _rules: RULES,

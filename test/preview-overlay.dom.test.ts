@@ -1,0 +1,209 @@
+// DOM regression for the in-app preview overlay (desktop previewInApp).
+// Drives the real media/chat.js View-all / proposed-diff entry points.
+import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { bootWebview, click, dispatch } from "./webview-harness";
+
+const highlightSrc = readFileSync(
+  fileURLToPath(new URL("../media/syntax-highlight.js", import.meta.url)),
+  "utf8",
+);
+
+const LONG_CMD = Array.from({ length: 8 }, (_, i) =>
+  i === 0 ? 'function Get-Status { Write-Output "probe" }' : `Write-Output "line ${i + 1}"`,
+).join("\n");
+const LONG_OUT = Array.from({ length: 9 }, (_, i) => `output ${i + 1}`).join("\n");
+const DIFF = { type: "diff", path: "src/foo.ts", oldText: "a\nb", newText: "a\nB\nc" };
+
+function exec(id: string, command: string) {
+  return {
+    type: "toolCall",
+    call: {
+      toolCallId: id,
+      kind: "execute",
+      title: `Run ${command.slice(0, 20)}…`,
+      rawInput: { variant: "Bash", command, is_background: false },
+    },
+  };
+}
+
+function out(command: string, output: string) {
+  return { type: "commandOutput", command, output, exitCode: 0, truncated: false };
+}
+
+function bootPreview(opts: { preview?: boolean; commandLanguage?: string } = {}) {
+  const h = bootWebview({
+    beforeScripts: (window) => {
+      (window as unknown as { eval: (src: string) => void }).eval(highlightSrc);
+    },
+  });
+  dispatch(h.window, {
+    type: "initialState",
+    effort: "",
+    cwd: "/w",
+    useCtrlEnter: false,
+    extVersion: "0",
+    showThinking: false,
+    expandCommandOutputs: true,
+    commandLanguage: opts.commandLanguage || "powershell",
+    capabilities: opts.preview === false ? {} : { previewInApp: true },
+  });
+  return h;
+}
+
+function mockClipboard(window: Window): { value: string } {
+  const box = { value: "" };
+  Object.defineProperty((window as unknown as { navigator: Navigator }).navigator, "clipboard", {
+    value: { writeText: (t: string) => { box.value = t; return Promise.resolve(); } },
+    configurable: true,
+  });
+  return box;
+}
+
+function openLongCommand(window: Window) {
+  dispatch(window, exec("preview-cmd", LONG_CMD));
+  dispatch(window, { type: "messageChunk", text: "done" });
+  dispatch(window, out(LONG_CMD, LONG_OUT));
+}
+
+function viewAllButtons(doc: Document): HTMLButtonElement[] {
+  return [...doc.querySelectorAll(".command-view-all")] as HTMLButtonElement[];
+}
+
+describe("preview overlay — View all", () => {
+  it("posts openText when the host does not advertise previewInApp", () => {
+    const { window, doc, posted } = bootPreview({ preview: false });
+    openLongCommand(window);
+    const buttons = viewAllButtons(doc);
+    expect(buttons.length).toBeGreaterThan(0);
+    click(window, buttons[0]);
+    expect(doc.getElementById("preview-overlay")).toBeNull();
+    expect(posted.filter((m) => m.type === "openText")).toEqual([
+      { type: "openText", content: LONG_CMD, language: "powershell" },
+    ]);
+  });
+
+  it("opens a highlighted overlay and does not post openText when previewInApp is set", () => {
+    const { window, doc, posted } = bootPreview();
+    openLongCommand(window);
+    click(window, viewAllButtons(doc)[0]);
+    const overlay = doc.getElementById("preview-overlay");
+    expect(overlay).toBeTruthy();
+    expect(overlay!.querySelector(".preview-title")!.textContent).toBe("Untitled (powershell)");
+    expect(overlay!.querySelector(".preview-lang")!.textContent).toBe("powershell");
+    expect(overlay!.querySelectorAll(".hl-kw").length).toBeGreaterThan(0);
+    expect(overlay!.textContent).toContain("Get-Status");
+    expect(posted.filter((m) => m.type === "openText")).toHaveLength(0);
+  });
+
+  it("closes on Escape", () => {
+    const { window, doc } = bootPreview();
+    openLongCommand(window);
+    click(window, viewAllButtons(doc)[0]);
+    expect(doc.getElementById("preview-overlay")).toBeTruthy();
+    doc.dispatchEvent(new (window as unknown as { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+    }));
+    expect(doc.getElementById("preview-overlay")).toBeNull();
+  });
+
+  it("Copy writes the raw text and Save As posts filename-bearing openText", async () => {
+    const { window, doc, posted } = bootPreview();
+    const clip = mockClipboard(window);
+    openLongCommand(window);
+    click(window, viewAllButtons(doc)[0]);
+    const overlay = doc.getElementById("preview-overlay")!;
+    const copy = [...overlay.querySelectorAll(".preview-action-btn")]
+      .find((el) => el.textContent === "Copy") as HTMLButtonElement;
+    const save = [...overlay.querySelectorAll(".preview-action-btn")]
+      .find((el) => el.textContent === "Save As") as HTMLButtonElement;
+    click(window, copy);
+    await Promise.resolve();
+    expect(clip.value).toBe(LONG_CMD);
+    click(window, save);
+    expect(posted.filter((m) => m.type === "openText")).toEqual([
+      { type: "openText", content: LONG_CMD, filename: "Untitled.ps1", language: "powershell" },
+    ]);
+  });
+});
+
+describe("preview overlay — proposed diffs", () => {
+  function seedEdit(window: Window) {
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "tc1", kind: "edit", title: "Edit src/foo.ts" },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: { toolCallId: "tc1", kind: "edit", content: [DIFF] },
+    });
+    dispatch(window, { type: "messageChunk", text: "done" });
+  }
+
+  it("posts openDiff when the host does not advertise previewInApp", () => {
+    const { window, doc, posted } = bootPreview({ preview: false });
+    seedEdit(window);
+    const link = doc.querySelector(".tool-item-diff .preview-link") as HTMLButtonElement;
+    expect(link).toBeTruthy();
+    click(window, link);
+    expect(doc.getElementById("preview-overlay")).toBeNull();
+    expect(posted.filter((m) => m.type === "openDiff")).toHaveLength(1);
+    expect(posted.find((m) => m.type === "openDiff")).toMatchObject({
+      type: "openDiff",
+      path: "src/foo.ts",
+      oldText: "a\nb",
+      newText: "a\nB\nc",
+    });
+  });
+
+  it("opens a full-size overlay and does not post openDiff when previewInApp is set", () => {
+    const { window, doc, posted } = bootPreview();
+    seedEdit(window);
+    click(window, doc.querySelector(".tool-item-diff .preview-link") as HTMLButtonElement);
+    const overlay = doc.getElementById("preview-overlay");
+    expect(overlay).toBeTruthy();
+    expect(overlay!.querySelector(".preview-title")!.textContent).toBe("foo.ts");
+    expect(overlay!.querySelector(".tool-diff-region")).toBeTruthy();
+    expect(overlay!.querySelectorAll(".tdl").length).toBeGreaterThan(0);
+    expect(overlay!.querySelector(".tool-diff-toggle")).toBeNull();
+    expect(posted.filter((m) => m.type === "openDiff")).toHaveLength(0);
+  });
+
+  it("does not auto-open the overlay on a permission card", () => {
+    const { window, doc, posted } = bootPreview();
+    dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "tc1", content: [DIFF] } });
+    dispatch(window, {
+      type: "permissionRequest",
+      req: {
+        id: 7,
+        toolCall: { toolCallId: "tc1", kind: "edit", title: "Edit src/foo.ts" },
+        options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+      },
+    });
+    expect(doc.getElementById("preview-overlay")).toBeNull();
+    expect(posted.filter((m) => m.type === "openDiff")).toHaveLength(0);
+    click(window, doc.querySelector(".card.permission .preview-link") as HTMLButtonElement);
+    expect(doc.getElementById("preview-overlay")).toBeTruthy();
+    expect(posted.filter((m) => m.type === "openDiff")).toHaveLength(0);
+  });
+
+  it("Save As posts a unified diff through the existing openText filename path", () => {
+    const { window, doc, posted } = bootPreview();
+    seedEdit(window);
+    click(window, doc.querySelector(".tool-item-diff .preview-link") as HTMLButtonElement);
+    const save = [...doc.querySelectorAll("#preview-overlay .preview-action-btn")]
+      .find((el) => el.textContent === "Save As") as HTMLButtonElement;
+    click(window, save);
+    const sent = posted.filter((m) => m.type === "openText");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "openText",
+      filename: "foo.ts.diff",
+      language: "diff",
+    });
+    expect(String(sent[0].content)).toContain("--- src/foo.ts");
+    expect(String(sent[0].content)).toContain("+B");
+  });
+});

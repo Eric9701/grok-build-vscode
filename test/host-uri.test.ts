@@ -12,6 +12,7 @@ import {
   isFsPathInWorkspace,
   isHostUri,
   normalizeWorkspaceFsPath,
+  untitledTextOpenOptions,
 } from "../src/host";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -438,5 +439,42 @@ describe("isFsPathInWorkspace (platform-aware path containment)", () => {
     expect(body).toMatch(/f\.uri\.fsPath/);
     // The P2 regression: unconditional lower-casing in the adapter.
     expect(body).not.toMatch(/toLowerCase\s*\(/);
+  });
+});
+
+describe("untitledTextOpenOptions (View all language passthrough)", () => {
+  it("omits language when absent so the editor can detect", () => {
+    expect(untitledTextOpenOptions("hello")).toEqual({ content: "hello" });
+    expect(untitledTextOpenOptions("hello", undefined)).toEqual({ content: "hello" });
+    expect(untitledTextOpenOptions("hello", "")).toEqual({ content: "hello" });
+    expect(Object.prototype.hasOwnProperty.call(untitledTextOpenOptions("hello"), "language")).toBe(false);
+  });
+
+  it("passes a provided language through", () => {
+    expect(untitledTextOpenOptions("Get-Date", "powershell")).toEqual({
+      content: "Get-Date",
+      language: "powershell",
+    });
+  });
+
+  it("vscode-host openUntitledText uses untitledTextOpenOptions and does not default to plaintext", () => {
+    const src = readFileSync(path.join(root, "src", "vscode-host.ts"), "utf8");
+    const start = src.indexOf("async openUntitledText");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, start + 400);
+    expect(body).toMatch(/untitledTextOpenOptions\(\s*content\s*,\s*language\s*\)/);
+    expect(body).not.toMatch(/language:\s*["']plaintext["']/);
+    expect(body).not.toMatch(/openTextDocument\(\s*\{\s*content\s*,\s*language\s*\}/);
+  });
+
+  it("sidebar initialState supplies commandLanguage from the host shell dialect", () => {
+    const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    expect(src).toMatch(/commandLanguageForDialect\(\s*resolvedTerminalShellDialect\(\)\s*\)/);
+    expect(src).toMatch(/commandLanguage\s*\?\s*\{\s*commandLanguage\s*\}/);
+  });
+
+  it("sidebar initialState forwards previewInApp from the host capability", () => {
+    const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    expect(src).toMatch(/previewInApp:\s*this\.host\.canPreviewInApp/);
   });
 });

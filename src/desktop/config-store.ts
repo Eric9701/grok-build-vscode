@@ -22,6 +22,7 @@ import { writeFileAtomic } from "./safe-secrets";
 /** Defaults for keys the sidebar actually reads (mirrors package.json contributes). */
 export const CONFIG_DEFAULTS: Readonly<Record<string, unknown>> = {
   "grok.cliPath": "",
+  "grok.codexCliPath": "",
   "grok.defaultModel": "",
   "grok.defaultMode": "",
   "grok.includeActiveFileByDefault": true,

@@ -65,4 +65,12 @@ describe("isMediaGenToolCall — host and webview copies agree", () => {
     expect(verdicts).toContain(true);
     expect(verdicts).toContain(false);
   });
+
+  it("agrees on the provider-scoped Codex capture without globally matching its title", () => {
+    const payload = { kind: "other", title: "Image generation", rawInput: { id: "exec-1" } };
+    expect(webviewImpl(payload, "codex")).toBe(true);
+    expect(hostImpl(payload, "codex")).toBe(true);
+    expect(webviewImpl(payload, "grok")).toBe(false);
+    expect(hostImpl(payload, "grok")).toBe(false);
+  });
 });

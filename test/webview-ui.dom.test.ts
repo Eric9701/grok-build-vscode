@@ -252,8 +252,8 @@ describe("session rows (regression: only the label was clickable)", () => {
     { id: "s2", displayName: "Refactor parser", numMessages: 9, updatedAt: Date.now() - 3600000 },
   ];
 
-  function openWithSessions() {
-    const h = bootWebview();
+  function openWithSessions(remote = false) {
+    const h = bootWebview({ remote });
     dispatch(h.window, {
       type: "repos",
       entries: [{ cwd: "/work/project", label: "project", available: true, pinned: false, updatedAt: 0 }],
@@ -272,6 +272,52 @@ describe("session rows (regression: only the label was clickable)", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].querySelector(".history-row-name")!.textContent).toBe("Add subtract fn");
     expect(rows[0].querySelector(".history-row-meta")!.textContent).toContain("4 msg");
+  });
+
+  it("keeps a legacy remote dot-only, then shows provider glyphs for two connected agents", () => {
+    const h = openWithSessions(true);
+    expect(h.doc.querySelectorAll(".history-row .provider-glyph")).toHaveLength(0);
+    expect(h.doc.querySelectorAll(".history-row > .history-row-dot")).toHaveLength(2);
+    expect(h.doc.querySelectorAll(".history-row .provider-status-badge")).toHaveLength(0);
+
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [
+        { ...entries[0], provider: "grok" },
+        { ...entries[1], provider: "codex" },
+      ],
+      activeId: null,
+      dots: { s1: "working", s2: "error" },
+    });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: false },
+      ],
+    });
+    expect(h.doc.querySelectorAll(".history-row .provider-glyph")).toHaveLength(0);
+    expect(h.doc.querySelectorAll(".history-row > .history-row-dot")).toHaveLength(2);
+
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: true },
+      ],
+    });
+    const glyphs = [...h.doc.querySelectorAll(".history-row .provider-glyph")];
+    expect(glyphs).toHaveLength(2);
+    expect(glyphs.map((el) => el.querySelector("svg.provider-logo path")?.getAttribute("d")?.length > 100))
+      .toEqual([true, true]);
+    expect(h.doc.querySelectorAll(".history-row > .history-row-dot")).toHaveLength(0);
+    const badges = [...h.doc.querySelectorAll(".history-row .provider-status-badge")];
+    expect(badges.map((el) => el.className)).toEqual([
+      "provider-status-badge dot-working",
+      "provider-status-badge dot-error",
+    ]);
+    dispatch(h.window, { type: "sessionDot", id: "s1", dot: "unread" });
+    expect(h.doc.querySelector('[data-session-dot="s1"]')!.className).toBe("provider-status-badge dot-unread");
   });
 
   it("resumes the session when the row's META area (not the label) is clicked", () => {
@@ -499,6 +545,91 @@ describe("session history pagination", () => {
     });
     expect((h.doc.querySelector(".history-footer") as any).hidden).toBe(false);
   });
+
+  it("returns the Grok offset plus Codex high-water cursor on load-more", () => {
+    const h = openPopover();
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [{ ...page1[0], provider: "codex" }],
+      activeId: null,
+      offset: 0,
+      total: 103,
+      hasMore: true,
+      nextOffset: 101,
+      providerCursor: { grokOffset: 100, codexHighWater: { updatedAt: 50, id: "codex-1" } },
+    });
+    const list = h.doc.querySelector(".history-list") as HTMLElement;
+    Object.defineProperty(list, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 300, configurable: true });
+    Object.defineProperty(list, "scrollTop", { value: 700, configurable: true });
+    list.dispatchEvent(new h.window.Event("scroll"));
+
+    expect(h.posted).toContainEqual({
+      type: "listSessions",
+      offset: 101,
+      query: "",
+      providerCursor: { grokOffset: 100, codexHighWater: { updatedAt: 50, id: "codex-1" } },
+    });
+  });
+
+  it("auto-loads hidden-only and underfilled pages without a scroll event", () => {
+    const h = openPopover();
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [],
+      activeId: null,
+      offset: 0,
+      total: 202,
+      hasMore: true,
+      nextOffset: 100,
+      providerCursor: { grokOffset: 100 },
+      query: "",
+    });
+
+    expect(h.doc.querySelector(".history-empty")).toBeNull();
+    expect(h.doc.querySelector(".history-more")).not.toBeNull();
+    expect(h.doc.body.textContent).not.toContain("No sessions yet");
+    expect(h.posted).toContainEqual({
+      type: "listSessions",
+      offset: 100,
+      query: "",
+      providerCursor: { grokOffset: 100 },
+    });
+
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [{ ...page2[0], provider: "codex" }],
+      activeId: null,
+      offset: 100,
+      total: 202,
+      hasMore: true,
+      nextOffset: 200,
+      providerCursor: { grokOffset: 200 },
+      query: "",
+    });
+
+    expect(h.posted).toContainEqual({
+      type: "listSessions",
+      offset: 200,
+      query: "",
+      providerCursor: { grokOffset: 200 },
+    });
+    expect(h.doc.body.textContent).not.toContain("No sessions yet");
+
+    dispatch(h.window, {
+      type: "sessions",
+      entries: [{ ...page2[1], provider: "grok" }],
+      activeId: null,
+      offset: 200,
+      total: 202,
+      hasMore: false,
+      nextOffset: 202,
+      query: "",
+    });
+
+    expect(h.doc.querySelectorAll(".history-row")).toHaveLength(2);
+    expect(h.doc.querySelector(".history-more")).toBeNull();
+  });
 });
 
 describe("session status dots (Agent Dashboard)", () => {
@@ -594,6 +725,22 @@ describe("mode picker (the plan-gate entry path)", () => {
     expect((pop as any).hidden).toBe(true); // selecting a mode closes the popover
   });
 
+  it("does not offer Grok's plan gate in a Codex conversation", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "session",
+      sessionId: "codex-1",
+      provider: "codex",
+      currentModelId: "gpt-5.6-sol",
+      models: [{ modelId: "gpt-5.6-sol", name: "GPT 5.6 Sol", provider: "codex" }],
+    });
+
+    click(window, $(doc, "mode-btn"));
+    const labels = [...$(doc, "mode-popover").querySelectorAll(".mode-item-label")]
+      .map((label) => label.textContent);
+    expect(labels).toEqual(["Agent mode", "Auto accept"]);
+  });
+
   it("disables only Plan with the host's version reason, then re-enables it", () => {
     const { window, posted, doc } = bootWebview();
     const reason = "Plan mode requires Grok CLI 0.2.117 or newer; installed version is 0.2.100.";
@@ -627,6 +774,8 @@ describe("mode picker (the plan-gate entry path)", () => {
     const { window, posted, doc } = bootWebview();
     const reason =
       "Could not verify the installed Grok CLI version, so Plan mode is unavailable. " +
+      "The version check failed or timed out — a first run after install can be slow. " +
+      "Pick Plan again or reload the window to retry. " +
       "Once verified, Plan requires 0.2.117 or newer.";
     dispatch(window, {
       type: "planModeAvailability",
@@ -791,6 +940,106 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
     expect(posted).toContainEqual({ type: "setModel", modelId: "grok-composer-2.5-fast" });
   });
 
+  it("groups remote empty-session models deterministically and switches providers additively", () => {
+    const h = bootWebview({ remote: true });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: true },
+      ],
+    });
+    dispatch(h.window, {
+      type: "session",
+      sessionId: "fresh",
+      provider: "grok",
+      currentModelId: "grok-build",
+      models: [
+        { provider: "codex", modelId: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+        { provider: "grok", modelId: "grok-build", name: "Grok Build" },
+      ],
+    });
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, modelBtn(h.doc));
+
+    expect([...h.doc.querySelectorAll(".model-provider-heading")].map((el) => el.textContent))
+      .toEqual(["Grok", "Codex"]);
+    const codexModel = [...h.doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .find((el) => el.textContent?.includes("GPT-5.6 Sol")) as HTMLElement;
+    click(h.window, codexModel);
+    expect(h.posted).toContainEqual({ type: "setModel", modelId: "gpt-5.6-sol", provider: "codex" });
+  });
+
+  it("scopes a remote non-empty Codex conversation to Codex models", () => {
+    const h = bootWebview({ remote: true });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: true },
+      ],
+    });
+    dispatch(h.window, {
+      type: "session",
+      sessionId: "codex-live",
+      provider: "codex",
+      currentModelId: "gpt-5.6-sol",
+      models: [
+        { provider: "grok", modelId: "grok-build", name: "Grok Build" },
+        { provider: "codex", modelId: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+        { provider: "codex", modelId: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
+      ],
+    });
+    dispatch(h.window, { type: "userMessage", text: "continue this conversation", chips: [] });
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, modelBtn(h.doc));
+
+    const text = h.doc.getElementById("gear-popover")!.textContent || "";
+    expect(text).toContain("GPT-5.6 Sol");
+    expect(text).toContain("GPT-5.6 Terra");
+    expect(text).not.toContain("Grok Build");
+    expect(h.doc.querySelectorAll(".model-provider-heading")).toHaveLength(0);
+  });
+
+  it("renders the Accounts cluster only after the provider capability frame", () => {
+    const h = bootWithModels();
+    click(h.window, $(h.doc, "gear-btn"));
+    expect(h.doc.querySelector("#gear-popover")!.textContent).not.toContain("Accounts");
+
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: false },
+      ],
+    });
+    expect(h.doc.querySelector("#gear-popover")!.textContent).toContain("Accounts");
+    const sections = [...h.doc.querySelectorAll("#gear-popover .popover-section")];
+    expect(sections.at(-1)?.textContent).toBe("Accounts");
+    const codex = [...h.doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .find((el) => el.textContent?.includes("Codex")) as HTMLElement;
+    click(h.window, codex);
+    expect(h.posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
+  });
+
+  it("never renders provider management or posts account actions remotely", () => {
+    const h = bootWebview({ remote: true });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: false },
+      ],
+    });
+    click(h.window, $(h.doc, "gear-btn"));
+    const text = h.doc.getElementById("gear-popover")!.textContent || "";
+    expect(text).not.toContain("Accounts");
+    expect(text).not.toContain("Sign out");
+    expect(text).not.toContain("Connect");
+    expect(types(h.posted)).not.toContain("logout");
+    expect(types(h.posted)).not.toContain("runGrokLogin");
+  });
+
   it("while priming, the model button is disabled and clicking it neither opens the picker nor posts", () => {
     const { window, posted, doc } = bootWithModels({ value: true, locked: true });
     click(window, $(doc, "gear-btn"));
@@ -823,6 +1072,109 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
 
     expect(($(doc, "gear-popover") as any).hidden).toBe(false); // popover stays open
     expect(modelBtn(doc).disabled).toBe(false); // now unlocked
+  });
+});
+
+describe("provider onboarding", () => {
+  it("shows desk sign-in guidance remotely and posts no provider-management action", () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+
+    for (const state of ["connect-agent", "auth-required", "codex-login"] as const) {
+      dispatch(window, { type: "onboarding", state });
+      const onboarding = doc.getElementById("welcome-onboarding")!;
+      expect(onboarding.textContent).toContain("Sign in at the desk");
+      expect(onboarding.textContent).toContain("computer running this workspace");
+      expect(onboarding.querySelectorAll("button")).toHaveLength(0);
+    }
+
+    expect(types(posted)).not.toContain("runGrokLogin");
+    expect(types(posted)).not.toContain("logout");
+  });
+
+  it("offers both agents when none is connected and keeps Grok visually primary", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "onboarding", state: "connect-agent" });
+
+    const tiles = [...doc.querySelectorAll(".onb-agent-tile")] as HTMLButtonElement[];
+    expect(tiles).toHaveLength(2);
+    expect(tiles[0].textContent).toContain("Grok");
+    expect(tiles[0].classList.contains("primary")).toBe(true);
+    expect(tiles[1].textContent).toContain("Codex");
+    expect(tiles.every((tile) => !!tile.querySelector("svg.provider-logo path"))).toBe(true);
+
+    click(window, tiles[1]);
+    expect(posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
+  });
+
+  it("shows Codex install guidance and provider-specific re-check", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "onboarding", state: "missing-codex" });
+    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("npm i -g @openai/codex");
+    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("ChatGPT extension");
+
+    const install = [...doc.querySelectorAll("#welcome-onboarding button")]
+      .find((el) => el.textContent?.includes("Install Codex")) as HTMLElement;
+    click(window, install);
+    expect(posted).toContainEqual({ type: "installCodex" });
+
+    dispatch(window, { type: "codexInstallProgress", phase: "downloading", receivedBytes: 25, totalBytes: 100 });
+    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("Downloading Codex (25%)");
+    const progress = doc.querySelector("#welcome-onboarding progress") as HTMLProgressElement;
+    expect(progress.value).toBe(25);
+    const cancel = [...doc.querySelectorAll("#welcome-onboarding button")]
+      .find((el) => el.textContent?.includes("Cancel")) as HTMLElement;
+    click(window, cancel);
+    expect(posted).toContainEqual({ type: "cancelCodexInstall" });
+
+    dispatch(window, { type: "codexInstallProgress", phase: "idle", reason: "Codex installation failed: disk full" });
+    expect(doc.querySelector("#welcome-onboarding [role=alert]")?.textContent).toContain("disk full");
+
+    const recheck = [...doc.querySelectorAll("#welcome-onboarding button")]
+      .find((el) => el.textContent?.includes("Re-check")) as HTMLElement;
+    click(window, recheck);
+    expect(posted).toContainEqual({ type: "recheckConnection", provider: "codex" });
+  });
+
+  it("dismisses a matching provider login overlay after the account connects", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "onboarding", state: "codex-login" });
+    expect((doc.getElementById("welcome") as HTMLElement).hidden).toBe(false);
+
+    dispatch(window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: true },
+      ],
+    });
+
+    expect((doc.getElementById("welcome") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("rechecks and dismisses the provider carried by the older missing-CLI screen", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "providerState",
+      providers: [
+        { id: "codex", connected: true },
+        { id: "grok", connected: false },
+      ],
+    });
+    dispatch(window, { type: "onboarding", state: "missing-cli", provider: "grok" });
+    const recheck = [...doc.querySelectorAll("#welcome-onboarding button")]
+      .find((el) => el.textContent?.includes("Re-check")) as HTMLElement;
+
+    click(window, recheck);
+    expect(posted).toContainEqual({ type: "recheckConnection", provider: "grok" });
+
+    dispatch(window, {
+      type: "providerState",
+      providers: [
+        { id: "codex", connected: true },
+        { id: "grok", connected: true },
+      ],
+    });
+    expect((doc.getElementById("welcome") as HTMLElement).hidden).toBe(true);
   });
 });
 
@@ -1029,6 +1381,34 @@ describe("reasoning trace (regression: thinking traces no longer expandable)", (
 
 describe("Grokking… indicator (waiting placeholder)", () => {
   const grokking = (doc: Document) => doc.querySelector(".grokking") as HTMLElement | null;
+
+  it("uses the active provider's composer placeholder and updates it live on an empty session", () => {
+    const h = bootWebview();
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    expect(input.placeholder).toBe("Ask Grok…");
+
+    dispatch(h.window, {
+      type: "session", sessionId: "c1", models: [], currentModelId: "gpt-5.6-sol", provider: "codex",
+    });
+    expect(input.placeholder).toBe("Ask GPT…");
+
+    dispatch(h.window, {
+      type: "session", sessionId: "g1", models: [], currentModelId: "grok-build", provider: "grok",
+    });
+    expect(input.placeholder).toBe("Ask Grok…");
+  });
+
+  it("uses Opening AI for Codex while keeping the shared live-turn indicator", () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "session", sessionId: "c1", models: [], currentModelId: "gpt-5.6-sol", provider: "codex",
+    });
+    dispatch(h.window, { type: "agentStart" });
+    const el = grokking(h.doc)!;
+    expect(el.querySelector(".grokking-label")?.textContent).toBe("Opening AI");
+    expect(el.getAttribute("aria-label")).toBe("OpenAI is working");
+    expect(el.querySelector(".grokking-icon svg")).not.toBeNull();
+  });
 
   it("mounts on agentStart with a spinning orbit icon, a label, and no dots or chevron", () => {
     const { window, doc } = bootWebview();
@@ -1421,6 +1801,51 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     expect(types(h.posted)).toContain("checkGrokUpdate");
   });
 
+  it("About shows connected Grok and Codex versions without relabelling the adapter as the CLI", () => {
+    const h = boot();
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true, cliVersion: "0.2.117" },
+        { id: "codex", connected: true, cliVersion: "0.146.0", adapterVersion: "1.1.14", latestCliVersion: "0.147.0", updateAvailable: true },
+      ],
+    });
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "Version & about"));
+
+    const text = gear(h.doc).textContent || "";
+    expect(text).toContain("Grok Build CLI");
+    expect(text).toContain("v0.2.117");
+    expect(text).toContain("Codex CLI");
+    expect(text).toContain("v0.146.0");
+    expect(text).toContain("Codex ACP adapter");
+    expect(text).toContain("v1.1.14");
+    expect(text).toContain("at its install source");
+    expect(text).toContain("Codex update available");
+    expect(itemByText(h.doc, "Update Codex")).toBeUndefined();
+  });
+
+  it("Codex-only About has no Grok update action or adapter-as-CLI label", () => {
+    const h = boot();
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: false },
+        { id: "codex", connected: true, cliVersion: "0.147.0", adapterVersion: "1.1.14" },
+      ],
+    });
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "Version & about"));
+
+    const text = gear(h.doc).textContent || "";
+    expect(text).toContain("Codex CLI");
+    expect(text).toContain("Codex ACP adapter");
+    expect([...gear(h.doc).querySelectorAll(".popover-info")].some((row) =>
+      row.firstElementChild?.textContent === "Grok Build CLI")).toBe(false);
+    expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+    expect(types(h.posted)).not.toContain("checkGrokUpdate");
+  });
+
   describe("on a remote, About describes the desk machine and offers nothing", () => {
     function bootRemoteAbout(extra?: Record<string, unknown>) {
       const h = bootWebview({ remote: true });
@@ -1477,6 +1902,25 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
       const text = gear(h.doc).textContent || "";
       expect(text).toContain("CLI update available");
       expect(text).toContain("at the desk");
+      expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+    });
+
+    it("renders host-reported provider versions view-only", () => {
+      const h = bootRemoteAbout();
+      dispatch(h.window, {
+        type: "providerState",
+        providers: [
+          { id: "grok", connected: true, cliVersion: "0.2.117" },
+          { id: "codex", connected: true, cliVersion: "0.146.0", adapterVersion: "1.1.14", latestCliVersion: "0.147.0", updateAvailable: true },
+        ],
+      });
+      const text = gear(h.doc).textContent || "";
+      expect(text).toContain("Grok Build CLI");
+      expect(text).toContain("Codex CLI");
+      expect(text).toContain("Codex ACP adapter");
+      expect(text).toContain("Codex update available");
+      expect(text).toContain("at the desk");
+      expect(types(h.posted)).not.toContain("checkGrokUpdate");
       expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
     });
 
@@ -1851,45 +2295,60 @@ describe("thinking traces toggle (#26)", () => {
   });
 });
 
-describe("gear menu — session continue + worktree gating", () => {
+describe("VS Code session overflow + gear worktree gating", () => {
   const gearItems = (doc: Document) =>
     [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].map((el) => el.textContent || "");
   const has = (doc: Document, label: string) => gearItems(doc).some((t) => t.includes(label));
+  const openOverflow = (window: Window, doc: Document) => {
+    click(window, doc.querySelector("#vscode-session-actions .rail-menu-btn")!);
+    return [...doc.querySelectorAll(".rail-menu-item")].map((el) => el.textContent || "");
+  };
 
-  it("shows Continue in a new chat; worktree sessions also show Apply/Remove", () => {
-    const { window, doc } = bootWebview();
+  it("moves Continue to the overflow; worktree sessions keep Apply/Remove in gear", () => {
+    const { window, doc } = bootWebview({ vscode: true });
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Session one", cwd: "/work/repo" });
     click(window, $(doc, "gear-btn"));
-    expect(has(doc, "Continue in a new chat")).toBe(true);
+    expect(has(doc, "Continue in a new chat")).toBe(false);
     // Old three-entry menu is gone.
     expect(has(doc, "Fork conversation")).toBe(false);
     expect(has(doc, "New worktree session")).toBe(false);
     expect(has(doc, "Apply worktree")).toBe(false);
     expect(has(doc, "Remove worktree")).toBe(false);
-    click(window, $(doc, "gear-btn")); // close
+    click(window, $(doc, "gear-btn")); // close before opening the separate overflow
+    expect(openOverflow(window, doc).some((text) => text.includes("Continue in a new chat"))).toBe(true);
 
     dispatch(window, { type: "session", sessionId: "s2", models: [], currentModelId: "grok-build", worktree: true });
+    dispatch(window, { type: "sessionName", sessionId: "s2", name: "Worktree", cwd: "/work/repo" });
     click(window, $(doc, "gear-btn")); // re-open
-    expect(has(doc, "Continue in a new chat")).toBe(true);
+    expect(has(doc, "Continue in a new chat")).toBe(false);
     expect(has(doc, "Apply worktree")).toBe(true);
     expect(has(doc, "Remove worktree")).toBe(true);
   });
 
   it("never shows gear Rewind — rewind is per-message only", () => {
-    const { window, doc } = bootWebview();
+    const { window, doc } = bootWebview({ vscode: true });
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Session one", cwd: "/work/repo" });
     dispatch(window, { type: "userMessage", text: "hello", chips: [] });
     click(window, $(doc, "gear-btn"));
     expect(has(doc, "Rewind conversation")).toBe(false);
-    expect(has(doc, "Continue in a new chat")).toBe(true);
+    expect(has(doc, "Continue in a new chat")).toBe(false);
+    expect(openOverflow(window, doc).some((text) => text.includes("Continue in a new chat"))).toBe(true);
   });
 });
 
 describe("scroll-to-bottom button (#28)", () => {
-  const setMetrics = (window: any, list: HTMLElement, top: number, height: number, client: number) => {
+  // #92: the pin recomputes only after a real user gesture (wheel / touch /
+  // scrollbar / paging keys) within the 750ms intent latch. A bare
+  // programmatic scrollTop + scroll is the phantom-scroll case the latch
+  // exists to ignore, so tests that mean "the user scrolled" must fire a
+  // wheel first — same contract as test/stick-to-bottom.dom.test.ts.
+  const userScrollTo = (window: any, list: HTMLElement, top: number, height: number, client: number) => {
     Object.defineProperty(list, "scrollHeight", { value: height, configurable: true });
     Object.defineProperty(list, "clientHeight", { value: client, configurable: true });
     Object.defineProperty(list, "scrollTop", { value: top, configurable: true, writable: true });
+    list.dispatchEvent(new window.WheelEvent("wheel", { deltaY: top === 0 ? -80 : 80, bubbles: true }));
     list.dispatchEvent(new window.Event("scroll"));
   };
 
@@ -1897,9 +2356,9 @@ describe("scroll-to-bottom button (#28)", () => {
     const { window, doc } = bootWebview();
     const btn = $(doc, "scroll-bottom-btn");
     const list = $(doc, "messages");
-    setMetrics(window, list, 0, 1000, 300); // 700px from bottom → visible
+    userScrollTo(window, list, 0, 1000, 300); // 700px from bottom → visible
     expect(btn.classList.contains("visible")).toBe(true);
-    setMetrics(window, list, 680, 1000, 300); // 20px from bottom (≤40) → hidden
+    userScrollTo(window, list, 680, 1000, 300); // 20px from bottom (≤40) → hidden
     expect(btn.classList.contains("visible")).toBe(false);
   });
 
@@ -1908,7 +2367,7 @@ describe("scroll-to-bottom button (#28)", () => {
     const btn = $(doc, "scroll-bottom-btn");
     const list = $(doc, "messages") as any;
     list.scrollTo = () => {}; // happy-dom has no smooth-scroll impl
-    setMetrics(window, list, 0, 1000, 300);
+    userScrollTo(window, list, 0, 1000, 300);
     expect(btn.classList.contains("visible")).toBe(true);
     click(window, btn);
     expect(btn.classList.contains("visible")).toBe(false);

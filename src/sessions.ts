@@ -28,9 +28,15 @@ export interface SessionListEntry {
   /** When the user pinned this conversation, from `SessionMetaOverride`. Drives
    *  the projects rail's Pinned group; absent means unpinned. */
   pinnedAt?: number;
+  /** Agent that owns this immutable session. Absent means Grok for compatibility. */
+  provider?: "grok" | "codex";
 }
 
 export interface SessionMetaOverride {
+  /** Agent that owns the session. Existing records omit it and therefore mean Grok. */
+  provider?: "grok" | "codex";
+  /** Provider-reported cwd for stores that are not laid out under the Grok home. */
+  providerCwd?: string;
   /**
    * "This conversation was used just now", asserted by the host rather than
    * read off disk.
@@ -108,6 +114,13 @@ export interface SessionMetaOverride {
   /** Documents uploaded from a remote browser and staged in extension storage.
    *  Retained until the last session/fork referencing each path is deleted. */
   uploadedFiles?: string[];
+  /** A composer draft the host rescued when this conversation was disposed out
+   *  from under it (provider sign-out). The conversation is the draft's durable
+   *  home: broadcasting the text instead is both lossable and audience-wrong,
+   *  because the notice goes to whoever is focused rather than to the person who
+   *  typed it. Restored into the composer the next time the conversation starts,
+   *  and cleared in the same write so a reopen cannot append it twice. */
+  queuedDraft?: string;
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
 
@@ -294,6 +307,9 @@ export interface RepoListEntry {
   pinned: boolean;
   pinnedAt?: number;
   updatedAt: number;
+  /** Provider a fresh conversation in this project will use. Optional so older
+   * hosts keep rendering their existing provider-neutral New-session row. */
+  defaultProvider?: "grok" | "codex";
   worktreeLabel?: string;
   /**
    * Archive choice flattened for the wire. **Present when the host supports
@@ -874,7 +890,20 @@ function buildEntry(
   const displayName = customName || fallbackName(cliSessionTitle(rawSummary, generatedTitle) || autoName, updatedAt);
   const kind = raw?.session_kind === "subagent" ? ("subagent" as const) : undefined;
   const pinnedAt = typeof override?.pinnedAt === "number" ? override.pinnedAt : undefined;
-  return { id, cwd: sessCwd, displayName, rawSummary, customName, updatedAt, createdAt, numMessages, modelId, kind, pinnedAt };
+  return {
+    id,
+    cwd: sessCwd,
+    displayName,
+    rawSummary,
+    customName,
+    updatedAt,
+    createdAt,
+    numMessages,
+    modelId,
+    kind,
+    pinnedAt,
+    ...(override?.provider ? { provider: override.provider } : {}),
+  };
 }
 
 export interface SessionIndexEntry {
@@ -1319,6 +1348,9 @@ export interface EmptySessionInput {
   /** A session bound to an isolated worktree backs a checkout the user asked for.
    *  `parkFocused` already refuses to auto-delete one; so does this. */
   worktreePath?: string;
+  /** A queued composer draft makes the conversation user-owned even when its
+   *  transcript has no real prompt yet. */
+  queuedDraft?: string;
   /** grok's `session_kind`. A `subagent` directory is a delegation's own
    *  transcript — never a conversation the user started, and not ours to remove. */
   kind?: string;
@@ -1364,6 +1396,7 @@ export function isEmptySession(
   if (inp.customName?.trim()) return false;
   if (typeof inp.pinnedAt === "number") return false;
   if (inp.worktreePath?.trim()) return false;
+  if (inp.queuedDraft) return false;
   if (inp.kind === "subagent") return false;
   if (inp.historyUnreadable) return false;
   if ((inp.chatHistory ?? "").trim()) {

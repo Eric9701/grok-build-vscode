@@ -247,6 +247,19 @@ describe("queued blocks — host-owned per session (#37)", () => {
     seedQueue(window, ["mine, session A"]);
     expect(queuedBlocks(doc)).toEqual(["mine, session A"]);
   });
+
+  it("provider sign-out returns the doomed queue to the replacement composer without losing text typed during reset", () => {
+    const { window, doc } = bootWebview();
+    const input = $(doc, "input") as HTMLTextAreaElement;
+    seedQueue(window, ["queued before sign-out"]);
+
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "restoreComposer", text: "queued before sign-out" });
+    input.value += "\n\ntyped during remote resets";
+
+    expect(queuedBlocks(doc)).toEqual([]);
+    expect(input.value).toBe("queued before sign-out\n\ntyped during remote resets");
+  });
 });
 
 describe("busy state does not leak across session swaps (#37)", () => {

@@ -227,6 +227,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setMode: "propose",
   setEffort: "propose",
   setModel: "propose",
+  installCodex: "host-local",
+  cancelCodexInstall: "host-local",
   questionAnswer: "propose",
   questionCancel: "propose",
   queueSend: "propose",
@@ -278,16 +280,20 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // lexical + canonical workspace containment — same composer-state class
   // as removeChip/toggleChip
   addMentionFile: "propose",
-  // recheckConnection restarts the CLI session on the host — turn control, not handshake
-  recheckConnection: "propose",
+  // Durable connection mutation is desk-only. Remote clients may only retry an
+  // already-connected provider's session through retryProviderSession.
+  recheckConnection: "host-local",
+  retryProviderSession: "propose",
   // approvals + destructive + host-CLI mutations (full only)
   permissionAnswer: "full",
   exitPlanAnswer: "full",
-  logout: "full",
+  // Provider accounts belong to the desk. A remote may observe providerState,
+  // but it must never clear credentials or open a login terminal on the host.
+  logout: "host-local",
   deleteSession: "full",
   clearAllSessions: "full",
   runInstallCmd: "full",
-  runGrokLogin: "full",
+  runGrokLogin: "host-local",
   // host-local: native pickers/editors/config/mic on the dev box
   // Replacing the CLI binary belongs here, not in "full" (2026-08-11). The
   // binaries live on the desk machine and only the desk can replace them, so a
@@ -477,6 +483,7 @@ export function repoScopeFor(
 export const DESK_ONLY_CAPABILITIES = [
   "servesMediaRanges",
   "showInFolder",
+  "previewInApp",
 ] as const satisfies ReadonlyArray<keyof HostUiCapabilities>;
 
 /** `capabilities` as a remote may see them. Pure; see DESK_ONLY_CAPABILITIES. */
@@ -505,6 +512,8 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   voiceTranscript: "mirror",
   voiceError: "mirror",
   initialState: "mirror",
+  providerState: "mirror",
+  codexInstallProgress: "host-local",
   // Placement is a property of the machine running the extension, and `moveView`
   // is host-local anyway — a remote could neither act on the hint nor need it.
   moveViewHint: "host-local",
@@ -633,6 +642,8 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   updateAvailable: "none",
   cliUpdating: "none",
   onboarding: "none",
+  providerState: "none",
+  codexInstallProgress: "none",
   expandCommandOutputs: "none",
   steerByDefault: "none",
   soundNotifications: "none",

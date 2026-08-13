@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, grokShellEnvValue } from "../src/terminal-manager";
+import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, grokShellEnvValue, commandLanguageForDialect } from "../src/terminal-manager";
 
 // Use `node -e` everywhere so tests are deterministic on Windows, macOS, and Linux.
 // Quoting strategy: single-quote the outer node script, escape inner single quotes if any.
@@ -322,6 +322,20 @@ describe("grokShellEnvValue (GROK_SHELL derived from the shell we run)", () => {
   });
   it("returns undefined for an unrecognized Windows shell path", () => {
     expect(grokShellEnvValue("C:\\weird\\thing.exe", "win32")).toBeUndefined();
+  });
+});
+
+describe("commandLanguageForDialect (View all command language)", () => {
+  it("maps each known dialect to a VS Code language id", () => {
+    expect(commandLanguageForDialect("powershell")).toBe("powershell");
+    expect(commandLanguageForDialect("posix")).toBe("shellscript");
+    expect(commandLanguageForDialect("cmd")).toBe("bat");
+  });
+
+  it("returns undefined for an unknown dialect", () => {
+    expect(commandLanguageForDialect("unknown")).toBeUndefined();
+    expect(commandLanguageForDialect(undefined)).toBeUndefined();
+    expect(commandLanguageForDialect("")).toBeUndefined();
   });
 });
 

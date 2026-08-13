@@ -174,9 +174,12 @@ export function collectToolImages(payload: any): MediaRef[] {
 /** MIRRORED in media/webview-helpers.js so the webview can gate a failure hint
  *  without a host rewrite. KEEP THE TWO IN STEP: test/media-gen-mirror.test.ts
  *  drives one fixture set through both and fails if either changes alone. */
-export function isMediaGenToolCall(payload: any): boolean {
+export function isMediaGenToolCall(payload: any, provider: "grok" | "codex" = "grok"): boolean {
   if (!payload || typeof payload !== "object") return false;
   const title = String(payload.title ?? "");
+  if (provider === "codex") {
+    return payload.kind === "other" && title === "Image generation";
+  }
   if (/^imagine(-video|-edit)?:/i.test(title)) return true;                   // relabeled titles
   if (/^(image_gen|image_edit|video_gen|image_to_video|reference_to_video)\b/i.test(title)) return true; // raw tool names
   if (/^(image-to-video:|reference-to-video:)/i.test(title)) return true;     // legacy relabels

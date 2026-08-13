@@ -50,7 +50,10 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.writeProjectFile).toBe("propose");
     expect(INBOUND_DISPOSITION.permissionAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.exitPlanAnswer).toBe("full");
-    expect(INBOUND_DISPOSITION.logout).toBe("full");
+    expect(INBOUND_DISPOSITION.logout).toBe("host-local");
+    expect(INBOUND_DISPOSITION.runGrokLogin).toBe("host-local");
+    expect(INBOUND_DISPOSITION.recheckConnection).toBe("host-local");
+    expect(INBOUND_DISPOSITION.retryProviderSession).toBe("propose");
     expect(INBOUND_DISPOSITION.clearAllSessions).toBe("full");
     expect(INBOUND_DISPOSITION.remotePreferences).toBe("view");
     expect(INBOUND_DISPOSITION.listSessions).toBe("view");
@@ -92,6 +95,8 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.readRepliesAloud).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.summarizeRepliesAloud).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.speechSummary).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.providerState).toBe("mirror");
+    expect(INBOUND_DISPOSITION.installCodex).toBe("host-local");
     // Local call sites stay local-only; the same output shapes carry remote STT.
     expect(OUTBOUND_DISPOSITION.voiceState).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.voiceConfigured).toBe("mirror");
@@ -514,10 +519,19 @@ describe("allowFromRemote tier gating", () => {
     expect(allowFromRemote("summarizeSpeech", "propose")).toBe(true);
   });
 
-  it("approvals and destructive ops need full", () => {
-    for (const t of ["permissionAnswer", "exitPlanAnswer", "logout", "deleteSession", "clearAllSessions"] as const) {
+  it("approvals and destructive session ops need full", () => {
+    for (const t of ["permissionAnswer", "exitPlanAnswer", "deleteSession", "clearAllSessions"] as const) {
       expect(allowFromRemote(t, "propose")).toBe(false);
       expect(allowFromRemote(t, "full")).toBe(true);
+    }
+  });
+
+  it("refuses remote-origin provider logout and login-terminal actions at every tier", () => {
+    for (const type of ["logout", "runGrokLogin"] as const) {
+      expect(INBOUND_DISPOSITION[type]).toBe("host-local");
+      for (const tier of ["read-only", "propose", "full"] as const) {
+        expect(allowFromRemote(type, tier)).toBe(false);
+      }
     }
   });
 
@@ -964,6 +978,7 @@ describe("capabilities a remote may see", () => {
       secondarySideBar: true,
       showOutput: true,
       toggleDevTools: true,
+      previewInApp: true,
     } as unknown as Parameters<typeof capabilitiesForRemote>[0];
 
     const seen = capabilitiesForRemote(all) as Record<string, unknown>;

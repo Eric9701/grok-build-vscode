@@ -138,6 +138,14 @@ describe("isEmptySession", () => {
     expect(isEmptySession({ numMessages: 0, kind: "subagent", chatHistory: neverTypedInto })).toBe(false);
   });
 
+  it("never flags a session whose composer draft is persisted for recovery", () => {
+    expect(isEmptySession({
+      numMessages: 0,
+      chatHistory: neverTypedInto,
+      queuedDraft: "recover me after sign-in",
+    })).toBe(false);
+  });
+
   it("never flags a session whose history exists but could not be read", () => {
     // A locked or unreadable file proves nothing; claiming emptiness there would
     // delete real work on a transient error.

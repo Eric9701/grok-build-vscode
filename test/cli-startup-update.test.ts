@@ -1,5 +1,15 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GrokSidebar } from "../src/sidebar";
+import { Session } from "../src/session";
+import {
+  CLI_VERSION_CACHE_KEY,
+  PLAN_MODE_UNVERIFIED_REASON,
+  readCliBinaryIdentity,
+  type CliVersionCache,
+} from "../src/cli-locator";
 
 const sidebar = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
 const updateStart = sidebar.indexOf("  private async maybeUpdateCliOnUpgrade(");
@@ -48,9 +58,10 @@ describe("CLI startup compatibility", () => {
   });
 
   it("keeps version gating separate from all update orchestration", () => {
-    expect(compatibility).toContain("probeVersionOutput");
-    expect(compatibility).toContain("decidePlanModeAvailability(versionOutput)");
+    expect(compatibility).toContain("resolvePlanModeAvailability");
+    expect(compatibility).toContain("readCliBinaryIdentity(cliPath)");
     expect(compatibility).toContain("this.readGrokVersion(cliPath)");
+    expect(compatibility).toContain("CLI_VERSION_CACHE_KEY");
     expect(compatibility).not.toContain("runGrokUpdate");
     expect(compatibility).not.toContain("execGrokCli");
     expect(compatibility).not.toContain("this.pool");
@@ -87,6 +98,8 @@ describe("CLI startup compatibility", () => {
     expect(compatibility).toContain("planModeAvailable: false");
     // Unverified copy must not lead with the "requires X or newer" floor line alone.
     expect(compatibility).toMatch(/Could not verify the Grok CLI version/);
+    expect(compatibility).toMatch(/failed or timed out/);
+    expect(compatibility).toMatch(/reload the window to retry/);
     // A later Plan pick re-probes instead of forcing a session restart (#105).
     expect(setMode).toContain("!session.planModeVersionVerified");
     expect(setMode).toContain("this.recheckPlanModeAvailability(session)");
@@ -94,8 +107,15 @@ describe("CLI startup compatibility", () => {
   });
 
   it("re-enables Plan for a later session that meets the floor", () => {
-    expect(compatibility).toContain("return { planModeAvailable: true, planModeVersionVerified: true }");
+    expect(compatibility).toContain("planModeVersionVerified: decision.verified");
     expect(sessionStart).toContain("this.applyPlanModeCompatibility(session, compatibility)");
+  });
+
+  it("does not treat a cache substitute as a verified Plan decision", () => {
+    expect(compatibility).toContain("using last verified version for Plan mode");
+    expect(compatibility).toContain("planModeVersionVerified: decision.verified");
+    expect(setMode).toContain("!session.planModeVersionVerified");
+    expect(setMode).toContain("this.recheckPlanModeAvailability(session)");
   });
 
   it("awaits the replaced process before the upgrade trigger can replace the binary", () => {
@@ -114,9 +134,176 @@ describe("CLI startup compatibility", () => {
     const capture = fullSessionStart.indexOf("const replacedClient = session.client");
     const clear = fullSessionStart.indexOf("session.client = undefined", capture);
     const dispose = fullSessionStart.indexOf("await replacedClient.dispose()", clear);
-    const lookup = fullSessionStart.indexOf("const cliPath = locateGrokCli", dispose);
+    const lookup = fullSessionStart.indexOf("const cliPath = this.locateProvider(session.provider)", dispose);
     expect(dispose).toBeGreaterThan(clear);
     expect(lookup).toBeGreaterThan(dispose);
     expect(fullSessionStart.slice(clear, dispose)).not.toMatch(/\breturn(?:\s+undefined)?;/);
+  });
+});
+
+describe("planModeCompatibility cache substitute", () => {
+  let cliPath: string;
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(tmpdir(), "plan-cache-"));
+    cliPath = path.join(tmp, "grok");
+    writeFileSync(cliPath, "x");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function matchingCache(versionOutput: string): CliVersionCache {
+    const identity = readCliBinaryIdentity(cliPath);
+    if (!identity) throw new Error("expected identity for temp CLI");
+    return {
+      [identity.path]: {
+        mtimeMs: identity.mtimeMs,
+        size: identity.size,
+        versionOutput,
+      },
+    };
+  }
+
+  function makeSidebar(versionOutput: string, cache?: CliVersionCache) {
+    const instance = Object.create(GrokSidebar.prototype) as any;
+    const store: Record<string, unknown> = {
+      [CLI_VERSION_CACHE_KEY]: cache ?? {},
+    };
+    instance.state = {
+      get: (key: string, fallback: unknown) => (key in store ? store[key] : fallback),
+      update: async (key: string, value: unknown) => { store[key] = value; },
+    };
+    instance.host = {
+      appendLine: vi.fn(),
+      showWarningMessage: vi.fn(),
+    };
+    instance.readGrokVersion = vi.fn(async () => versionOutput);
+    instance.emit = vi.fn();
+    instance.store = store;
+    return instance;
+  }
+
+  type Compat = {
+    planModeAvailable: boolean;
+    planModeVersionVerified: boolean;
+    usedCache?: boolean;
+    planModeUnavailableReason?: string;
+  };
+
+  async function runCompatibility(sidebar: { planModeCompatibility: (cliPath: string) => Promise<Compat> }): Promise<Compat> {
+    vi.useFakeTimers();
+    try {
+      const pending = sidebar.planModeCompatibility(cliPath);
+      await vi.runAllTimersAsync();
+      return await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("timeout + cached-good keeps Plan available and unverified", async () => {
+    const sidebar = makeSidebar("", matchingCache("grok 0.2.117 (x) [stable]"));
+    const result = await runCompatibility(sidebar);
+    expect(result).toMatchObject({
+      planModeAvailable: true,
+      planModeVersionVerified: false,
+      usedCache: true,
+    });
+    expect(sidebar.host.appendLine).toHaveBeenCalledWith(
+      "grok --version failed; using last verified version for Plan mode.",
+    );
+    expect(sidebar.host.showWarningMessage).not.toHaveBeenCalled();
+
+    const session = new Session();
+    sidebar.applyPlanModeCompatibility(session, result);
+    expect(session.planModeAvailable).toBe(true);
+    expect(session.planModeVersionVerified).toBe(false);
+    expect(sidebar.emit).toHaveBeenCalledWith(session, {
+      type: "planModeAvailability",
+      available: true,
+      reason: undefined,
+      recheckable: false,
+    });
+  });
+
+  it("timeout + cached-old stays unavailable, recheckable, and retryable", async () => {
+    const sidebar = makeSidebar("", matchingCache("grok 0.2.100 (x) [stable]"));
+    const result = await runCompatibility(sidebar);
+    expect(result).toMatchObject({
+      planModeAvailable: false,
+      planModeVersionVerified: false,
+      usedCache: true,
+      planModeUnavailableReason: PLAN_MODE_UNVERIFIED_REASON,
+    });
+    expect(result.planModeUnavailableReason).not.toContain("installed version is");
+
+    const session = new Session();
+    sidebar.applyPlanModeCompatibility(session, result);
+    expect(session.planModeVersionVerified).toBe(false);
+    expect(sidebar.emit).toHaveBeenCalledWith(session, {
+      type: "planModeAvailability",
+      available: false,
+      reason: PLAN_MODE_UNVERIFIED_REASON,
+      recheckable: true,
+    });
+  });
+
+  it("a live probe stays verified, is not recheckable, and writes the cache", async () => {
+    const sidebar = makeSidebar("grok 0.2.117 (x) [stable]");
+    const result = await runCompatibility(sidebar);
+    expect(result).toMatchObject({
+      planModeAvailable: true,
+      planModeVersionVerified: true,
+      usedCache: false,
+    });
+    const identity = readCliBinaryIdentity(cliPath);
+    if (!identity) throw new Error("expected identity for temp CLI");
+    const cache = sidebar.store[CLI_VERSION_CACHE_KEY] as CliVersionCache;
+    expect(cache[identity.path]?.versionOutput).toBe("grok 0.2.117 (x) [stable]");
+
+    const session = new Session();
+    sidebar.applyPlanModeCompatibility(session, result);
+    expect(sidebar.emit).toHaveBeenCalledWith(session, {
+      type: "planModeAvailability",
+      available: true,
+      reason: undefined,
+      recheckable: false,
+    });
+  });
+
+  it("a later live probe replaces a cache-derived verdict in both directions", async () => {
+    const sidebar = makeSidebar("", matchingCache("grok 0.2.117 (x) [stable]"));
+    const cachedGood = await runCompatibility(sidebar);
+    expect(cachedGood.planModeAvailable).toBe(true);
+    expect(cachedGood.planModeVersionVerified).toBe(false);
+
+    sidebar.readGrokVersion = vi.fn(async () => "grok 0.2.100 (x) [stable]");
+    const liveOld = await runCompatibility(sidebar);
+    expect(liveOld).toMatchObject({
+      planModeAvailable: false,
+      planModeVersionVerified: true,
+      usedCache: false,
+    });
+    expect(liveOld.planModeUnavailableReason).toContain("installed version is 0.2.100");
+
+    sidebar.readGrokVersion = vi.fn(async () => "");
+    const cachedOld = await runCompatibility(sidebar);
+    expect(cachedOld).toMatchObject({
+      planModeAvailable: false,
+      planModeVersionVerified: false,
+      planModeUnavailableReason: PLAN_MODE_UNVERIFIED_REASON,
+    });
+
+    sidebar.readGrokVersion = vi.fn(async () => "grok 0.2.117 (x) [stable]");
+    const liveNew = await runCompatibility(sidebar);
+    expect(liveNew).toMatchObject({
+      planModeAvailable: true,
+      planModeVersionVerified: true,
+      usedCache: false,
+    });
   });
 });

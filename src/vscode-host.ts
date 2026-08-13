@@ -38,7 +38,7 @@ import type {
   HostWebview,
   HostWebviewView,
 } from "./host";
-import { Uri, isFsPathInWorkspace } from "./host";
+import { Uri, isFsPathInWorkspace, untitledTextOpenOptions } from "./host";
 import {
   GROK_CHAT_VIEW_ID,
   hostAcceptedSecondarySideBar,
@@ -479,7 +479,7 @@ export function createVsCodeHost(
       await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(fsPath));
     },
     async openUntitledText(content: string, language?: string) {
-      const doc = await vscode.workspace.openTextDocument({ content, language });
+      const doc = await vscode.workspace.openTextDocument(untitledTextOpenOptions(content, language));
       await vscode.window.showTextDocument(doc);
     },
     async openDiff(left: Uri, right: Uri, title: string, options?: HostTextShowOptions) {
@@ -605,6 +605,8 @@ export function createVsCodeHost(
     // Deliberately off for now; enable this one capability when VS Code's
     // generated-video action should use revealFileInOS too.
     canShowInFolder: false,
+    // Real editor tabs — View all / proposed diffs stay native.
+    canPreviewInApp: false,
   };
 }
 

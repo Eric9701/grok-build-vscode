@@ -24,7 +24,7 @@
   // copy and test/protocol.test.ts asserts the two are set-equal in both
   // directions (and that chat.js actually handles every host type).
   const HOST_MESSAGE_TYPES = [
-    "initialState", "moveViewHint", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "initialized",
+    "initialState", "moveViewHint", "providerState", "codexInstallProgress", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "initialized",
     "cliUpdating", "session", "sessionName", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "projectDirListing", "projectFileContent", "projectFileWriteResult", "userMessage", "agentStart", "thoughtChunk",
@@ -43,8 +43,8 @@
     "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "toggleDevTools", "openSettings", "moveView",
     "setShowThinking", "setAppPurpose", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
-    "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
-    "recheckConnection", "listSessions", "listRepoSessions", "selectRepo", "toggleRepoPin", "setRepoArchived", "setRepoColor", "toggleSessionPin", "resumeSession", "renameSession", "deleteSession",
+    "setModel", "installCodex", "cancelCodexInstall", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
+    "recheckConnection", "retryProviderSession", "listSessions", "listRepoSessions", "selectRepo", "toggleRepoPin", "setRepoArchived", "setRepoColor", "toggleSessionPin", "resumeSession", "renameSession", "deleteSession",
       "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "listProjectDir", "readProjectFile", "writeProjectFile", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
       "remoteVoiceStart", "remoteVoiceChunk", "remoteVoiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
@@ -358,11 +358,23 @@
   // bottom. Drives the chat's "stick to bottom" auto-scroll: while the user is
   // pinned we follow streaming output, but once they scroll up to read history
   // we leave the view alone (#16). The threshold absorbs sub-pixel rounding and
-  // lets a near-bottom position still count as pinned.
+  // lets a near-bottom position still count as pinned. Callers that have a
+  // live line height should pass stickThresholdPx() so the slack is one-to-two
+  // lines at the current zoom, not a fixed CSS-px constant.
   function shouldStickToBottom(scrollTop, scrollHeight, clientHeight, threshold) {
     const t = typeof threshold === "number" ? threshold : 40;
     const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
     return distanceFromBottom <= t;
+  }
+
+  // Slack for "still at the bottom" after a USER scroll. Scales with the
+  // current line height so Cmd+= / --chat-zoom cannot turn one line of slack
+  // into an unpin. Programmatic, focus-induced, and content-growth scrolls
+  // must not consult this — they are not user intent.
+  function stickThresholdPx(lineHeightPx) {
+    const line = Number(lineHeightPx);
+    const base = Number.isFinite(line) && line > 0 ? line : 20;
+    return Math.max(24, base * 2);
   }
 
   // Split a string into text/math segments so the markdown renderer can pull
@@ -440,9 +452,10 @@
   // hints without a host rewrite or a new message type.
   // KEEP THE TWO IN STEP: test/media-gen-mirror.test.ts drives one fixture set
   // through both and fails if either is changed alone.
-  function isMediaGenToolCall(payload) {
+  function isMediaGenToolCall(payload, provider) {
     if (!payload || typeof payload !== "object") return false;
     const title = String(payload.title ?? "");
+    if (provider === "codex") return payload.kind === "other" && title === "Image generation";
     if (/^imagine(-video|-edit)?:/i.test(title)) return true;
     if (/^(image_gen|image_edit|video_gen|image_to_video|reference_to_video)\b/i.test(title)) return true;
     if (/^(image-to-video:|reference-to-video:)/i.test(title)) return true;
@@ -732,6 +745,30 @@
     return (wrapped ? wrapped[1] : body).trim();
   }
 
+  // Replayed user-turn hide rules. appendUserChunk applies this verdict; the
+  // export recorder reads the flags it sets, and truncateExportEvents uses it
+  // directly, so a turn the transcript hid cannot appear in the markdown or
+  // consume a surviving-turn slot.
+  const SYSTEM_REMINDER_RE = /^\s*<system-reminder>/;
+  const PLAN_MARKER_RE = /^\s*\[Plan (approved|rejected|cancelled)\]\s*/i;
+  const LEGACY_PRIMER_RE = /^\s*\[grok-build-vscode primer v\d+\]/;
+
+  function stripPlanMarker(text) {
+    const raw = String(text || "");
+    const m = PLAN_MARKER_RE.exec(raw);
+    if (!m) return { matched: false, rest: raw };
+    return { matched: true, rest: raw.slice(m[0].length) };
+  }
+
+  function replayedUserBubbleVerdict(text) {
+    const raw = String(text || "");
+    if (LEGACY_PRIMER_RE.test(raw)) return { hide: "turn", text: raw };
+    if (SYSTEM_REMINDER_RE.test(raw)) return { hide: "reminder", text: raw };
+    const mk = stripPlanMarker(raw);
+    if (mk.matched && !mk.rest.trim()) return { hide: "marker", text: raw };
+    return { hide: null, text: mk.matched ? mk.rest : raw };
+  }
+
   // Permission-card option order (#68). The CLI sends `options` in its own
   // order, so the approve action isn't reliably first and the keyboard default
   // could land on a reject. Sort to a fixed, predictable order — approve first,
@@ -989,7 +1026,335 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx };
+  // Session → Markdown. Consumes the same host→webview event shapes the
+  // renderer already sees (userMessage / messageChunk / toolCall / …), so an
+  // export is exactly what this client holds — including a remote snapshot's
+  // recent window. Thinking traces stay out; images are named, not embedded.
+  const EXPORT_TOOL_OUTPUT_LINES = 8;
+  const EXPORT_EVENT_TYPES = new Set([
+    "userMessage", "userMessageChunk", "messageChunk",
+    "toolCall", "toolCallUpdate", "commandOutput", "media",
+    "agentStart", "agentEnd", "agentError",
+  ]);
+
+  function exportSessionFilename(title) {
+    const base = String(title || "conversation")
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\.md$/i, "")
+      .slice(0, 80) || "conversation";
+    return base + ".md";
+  }
+
+  function isExportableSessionEvent(msg) {
+    return !!(msg && EXPORT_EVENT_TYPES.has(msg.type));
+  }
+
+  function exportBasename(pathStr) {
+    const s = String(pathStr || "");
+    if (!s) return "";
+    return s.split(/[\\/]/).pop() || s;
+  }
+
+  function exportFence(text) {
+    const body = String(text || "").replace(/\r\n/g, "\n").replace(/\s+$/, "");
+    let ticks = "```";
+    while (body.indexOf(ticks) !== -1) ticks += "`";
+    return ticks + "\n" + body + "\n" + ticks;
+  }
+
+  function exportTrimmed(text) {
+    const preview = commandTextPreview(text, EXPORT_TOOL_OUTPUT_LINES);
+    return preview.truncated ? preview.text.replace(/\s+$/, "") + "\n…" : preview.text;
+  }
+
+  function exportImageRef(index, pathStr) {
+    const name = exportBasename(pathStr);
+    if (name && !/^Image #\d+$/i.test(name)) {
+      return typeof index === "number" ? `[Image #${index}] (${name})` : `[Image: ${name}]`;
+    }
+    return typeof index === "number" ? `[Image #${index}]` : "[Image]";
+  }
+
+  function exportUserParts(text, chips, extraImages) {
+    const stripped = stripInterjectionEnvelope(text || "");
+    const ctx = parseAttachmentContext(stripped);
+    const sel = parseSelectionBlocks(ctx.body);
+    const img = parseImageTags(sel.body);
+    const files = ctx.files.slice();
+    for (const s of sel.selections) {
+      const label = s.start === s.end ? `${s.path}:${s.start}` : `${s.path}:${s.start}-${s.end}`;
+      if (files.indexOf(label) === -1) files.push(label);
+    }
+    const images = img.images.slice();
+    const pushImage = (index, pathStr) => {
+      if (images.some((im) => im.index === index && (im.path || "") === (pathStr || ""))) return;
+      if (typeof index === "number" && images.some((im) => im.index === index)) return;
+      images.push({ index, path: pathStr || undefined });
+    };
+    for (const chip of chips || []) {
+      if (!chip) continue;
+      if (chip.imageIndex != null) {
+        const p = chip.originRelPath || chip.relPath || chip.path;
+        pushImage(chip.imageIndex, typeof p === "string" ? p : undefined);
+      } else {
+        const p = chip.relPath || chip.path;
+        if (p && files.indexOf(p) === -1) files.push(p);
+      }
+    }
+    for (const im of extraImages || []) {
+      if (!im) continue;
+      pushImage(im.imageIndex != null ? im.imageIndex : im.index, im.path || im.originRelPath);
+    }
+    return { text: img.body, files, images };
+  }
+
+  function flattenExportEvents(events) {
+    const out = [];
+    const walk = (list) => {
+      if (!Array.isArray(list)) return;
+      for (const ev of list) {
+        if (!ev || typeof ev !== "object") continue;
+        if (ev.type === "historyBatch") walk(ev.messages);
+        else out.push(ev);
+      }
+    };
+    walk(events);
+    return out;
+  }
+
+  // Same counted-user-turn notion as `.msg.user:not(.queued)` with
+  // `dataset.steer !== "1"`: live `userMessage` counts unless posted as a
+  // steer; replayed chunks use replayedUserBubbleVerdict + isInterjectionText.
+  function exportUserGroupCountsAsTurn(group) {
+    if (!group.length) return false;
+    if (group.some((ev) => ev && ev.steer)) return false;
+    const text = group.map((ev) => (ev && ev.text) || "").join("");
+    if (group[0].type === "userMessage") return true;
+    if (isInterjectionText(text)) return false;
+    return !replayedUserBubbleVerdict(text).hide;
+  }
+
+  function truncateExportEvents(events, surviving) {
+    const keep = Math.max(0, Number(surviving) || 0);
+    const list = flattenExportEvents(events);
+    const out = [];
+    let counted = 0;
+    for (let i = 0; i < list.length; ) {
+      const ev = list[i];
+      if (ev && (ev.type === "userMessage" || ev.type === "userMessageChunk")) {
+        const group = [ev];
+        if (ev.type === "userMessageChunk") {
+          while (
+            i + group.length < list.length &&
+            list[i + group.length] &&
+            list[i + group.length].type === "userMessageChunk"
+          ) {
+            group.push(list[i + group.length]);
+          }
+        }
+        if (exportUserGroupCountsAsTurn(group)) {
+          if (counted >= keep) return out;
+          counted += 1;
+        }
+        for (const item of group) out.push(item);
+        i += group.length;
+        continue;
+      }
+      out.push(ev);
+      i += 1;
+    }
+    return out;
+  }
+
+  function exportToolLine(rec) {
+    const lines = [];
+    const call = rec.call || {};
+    if (rec.subagent) {
+      const label = (typeof call.rawInput?.description === "string" && call.rawInput.description.trim())
+        || (typeof call.title === "string" && call.title.trim() && !/^(spawn_subagent|task)$/i.test(call.title) ? call.title.trim() : "")
+        || subagentLabel(call)
+        || "subagent";
+      lines.push(`- Subagent · ${label}`);
+      const rawOut = call.rawOutput || {};
+      const nested = rawOut.SubagentCompleted && typeof rawOut.SubagentCompleted.output === "string"
+        ? rawOut.SubagentCompleted.output
+        : (typeof rawOut.output === "string" ? rawOut.output : rec.output);
+      const cleaned = cleanSubagentOutput(nested || "");
+      if (cleaned) {
+        lines.push("", exportFence(exportTrimmed(cleaned)));
+      }
+      return lines;
+    }
+    if (rec.command) {
+      const label = commandProgramLabel(rec.command);
+      lines.push(`- Run \`${label}\``);
+      const body = rec.output
+        ? `$ ${rec.command}\n${rec.output}`
+        : rec.command;
+      lines.push("", exportFence(exportTrimmed(body)));
+      return lines;
+    }
+    const title = (typeof call.title === "string" && call.title.trim())
+      || (typeof rec.kind === "string" && rec.kind)
+      || "tool";
+    lines.push(`- ${title}`);
+    if (rec.output) {
+      lines.push("", exportFence(exportTrimmed(rec.output)));
+    }
+    return lines;
+  }
+
+  function exportSessionMarkdown(events, opts) {
+    const options = opts || {};
+    const title = String(options.title || "Conversation").trim() || "Conversation";
+    const windowed = !!options.windowed;
+    const sections = [];
+    let userText = "";
+    let userChips = [];
+    let userImages = [];
+    let agentText = "";
+    let tools = new Map();
+    let toolOrder = [];
+    let mediaItems = [];
+
+    const newToolRec = (id) => ({ id, call: {}, command: "", output: "", kind: "", subagent: false });
+
+    const mergeTool = (call) => {
+      if (!call || typeof call !== "object") return;
+      const id = call.toolCallId || `anon-${toolOrder.length}`;
+      let rec = tools.get(id);
+      if (!rec) {
+        rec = newToolRec(id);
+        tools.set(id, rec);
+        toolOrder.push(id);
+      }
+      rec.call = Object.assign({}, rec.call, call);
+      if (call.kind) rec.kind = call.kind;
+      if (isSubagentToolCall(call) || isSubagentToolCall(rec.call)) rec.subagent = true;
+      const ri = call.rawInput || {};
+      if (typeof ri.command === "string") rec.command = ri.command;
+      const extracted = extractToolResultOutput(call);
+      if (extracted && extracted.output) rec.output = extracted.output;
+    };
+
+    const attachCommand = (msg) => {
+      const command = typeof msg.command === "string" ? msg.command : "";
+      for (let i = toolOrder.length - 1; i >= 0; i--) {
+        const rec = tools.get(toolOrder[i]);
+        if (rec && rec.command === command) {
+          if (typeof msg.output === "string") rec.output = msg.output;
+          return;
+        }
+      }
+      const id = `cmd-${toolOrder.length}`;
+      const rec = newToolRec(id);
+      rec.command = command;
+      rec.output = typeof msg.output === "string" ? msg.output : "";
+      rec.kind = "execute";
+      tools.set(id, rec);
+      toolOrder.push(id);
+    };
+
+    const flushUser = () => {
+      if (!userText && !userChips.length && !userImages.length) return;
+      const parts = exportUserParts(userText, userChips, userImages);
+      const lines = ["## User", ""];
+      if (parts.text) lines.push(parts.text);
+      for (const file of parts.files) lines.push(`Attached: ${file}`);
+      for (const im of parts.images) lines.push(exportImageRef(im.index, im.path));
+      while (lines.length && lines[lines.length - 1] === "") lines.pop();
+      sections.push(lines.join("\n"));
+      userText = "";
+      userChips = [];
+      userImages = [];
+    };
+
+    const flushAgent = () => {
+      if (!agentText && !toolOrder.length && !mediaItems.length) return;
+      const lines = ["## Assistant"];
+      if (agentText.trim()) {
+        lines.push("", agentText.trim());
+      }
+      if (toolOrder.length) {
+        lines.push("");
+        for (const id of toolOrder) {
+          const rec = tools.get(id);
+          if (!rec) continue;
+          const chunk = exportToolLine(rec);
+          if (chunk.length) lines.push(chunk.join("\n"));
+        }
+      }
+      for (const item of mediaItems) {
+        const kind = item.media === "video" ? "Video" : "Image";
+        const name = exportBasename(item.path) || (item.media === "video" ? "generated-video" : "generated-image");
+        lines.push(`[${kind}: ${name}]`);
+      }
+      sections.push(lines.join("\n"));
+      agentText = "";
+      tools = new Map();
+      toolOrder = [];
+      mediaItems = [];
+    };
+
+    for (const ev of flattenExportEvents(events)) {
+      switch (ev.type) {
+        case "userMessage":
+          flushAgent();
+          userText = ev.text || "";
+          userChips = Array.isArray(ev.chips) ? ev.chips : [];
+          flushUser();
+          break;
+        case "userMessageChunk":
+          flushAgent();
+          userText += ev.text || "";
+          if (Array.isArray(ev.images)) userImages = userImages.concat(ev.images);
+          break;
+        case "messageChunk":
+          flushUser();
+          agentText += ev.text || "";
+          break;
+        case "agentStart":
+          flushUser();
+          flushAgent();
+          break;
+        case "toolCall":
+        case "toolCallUpdate":
+          flushUser();
+          mergeTool(ev.call);
+          break;
+        case "commandOutput":
+          flushUser();
+          attachCommand(ev);
+          break;
+        case "media":
+          flushUser();
+          mediaItems.push(ev);
+          break;
+        case "agentEnd":
+        case "agentError":
+          flushUser();
+          if (ev.type === "agentError" && ev.text) agentText += (agentText ? "\n\n" : "") + ev.text;
+          flushAgent();
+          break;
+        default:
+          break;
+      }
+    }
+    flushUser();
+    flushAgent();
+
+    const userTurns = sections.reduce((n, block) => n + (block.indexOf("## User") === 0 ? 1 : 0), 0);
+    const header = ["# " + title, ""];
+    if (windowed) {
+      header.push(userTurns === 1 ? "Last 1 turn." : `Last ${userTurns} turns.`, "");
+    }
+    const body = sections.join("\n\n");
+    return header.join("\n") + (body ? body + "\n" : "");
+  }
+
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

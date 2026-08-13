@@ -6,7 +6,8 @@
 > sent. The client-side gate remains because the CLI's plan gate still lets
 > `terminal/create` through. `isPrimerText` / `isPrimerSummary` and their readers
 > deliberately remain for old sessions already on disk. Plan is disabled
-> fail-closed below `GROK_REQUIRED_VERSION` or when the version cannot be read.
+> fail-closed below `GROK_REQUIRED_VERSION`, or when the version cannot be
+> read and no matching `grok.cliVersionCache` entry remains.
 
 > **Goal of this course**: After completing this material you will have a correct mental model of the native-verdict + client-side-gate architecture and what happens on every user action (Approve / Keep planning / Cancel). You will be able to predict behavior, debug surprising states, and explain the design to others.
 

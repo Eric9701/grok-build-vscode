@@ -1,7 +1,7 @@
 /**
  * DOM coverage for the simplification plan:
  *  - "Use this app for" (Knowledge work / Coding)
- *  - Session → single "Continue in a new chat"
+ *  - VS Code session overflow → single "Continue in a new chat"
  *  - Knowledge work hides worktree destination + coding controls
  *  - Rail gear present when #projects-rail mounts; composer gear when not
  *  - Rewind confirm cancel answers ok:false (host must not revert)
@@ -45,9 +45,27 @@ function findGearItem(h: Harness, re: RegExp): HTMLElement | undefined {
   ) as HTMLElement | undefined;
 }
 
+function openSessionMenu(h: Harness) {
+  let btn = h.doc.querySelector(
+    "#vscode-session-actions .rail-menu-btn, #session-head-actions .rail-menu-btn",
+  );
+  if (!btn) {
+    dispatch(h.window, { type: "sessionName", sessionId: "active", name: "Active", cwd: "/w" });
+    btn = h.doc.querySelector(
+      "#vscode-session-actions .rail-menu-btn, #session-head-actions .rail-menu-btn",
+    );
+  }
+  click(h.window, btn);
+  return [...h.doc.querySelectorAll(".rail-menu-item")] as HTMLElement[];
+}
+
+function findSessionMenuItem(h: Harness, re: RegExp): HTMLElement | undefined {
+  return openSessionMenu(h).find((el) => re.test(el.textContent || ""));
+}
+
 describe("app purpose + session menu (DOM)", () => {
   it("defaults to Knowledge work when initialState omits appPurpose", () => {
-    const h = bootWebview({ ready: true });
+    const h = bootWebview({ ready: true, vscode: true });
     dispatch(h.window, {
       type: "initialState",
       effort: "",
@@ -67,7 +85,8 @@ describe("app purpose + session menu (DOM)", () => {
     openGear(h);
     expect(gearText(h)).toContain("Use this app for");
     expect(gearText(h)).toContain("Knowledge work");
-    expect(gearText(h)).toContain("Continue in a new chat");
+    expect(gearText(h)).not.toContain("Continue in a new chat");
+    expect(openSessionMenu(h).some((el) => (el.textContent || "").includes("Continue in a new chat"))).toBe(true);
     // Old three-way Session menu is gone.
     expect(gearText(h)).not.toContain("Fork conversation");
     expect(gearText(h)).not.toContain("New worktree session");
@@ -75,7 +94,7 @@ describe("app purpose + session menu (DOM)", () => {
   });
 
   it("Knowledge work continues straight to fork with no destination popup", async () => {
-    const h = bootWebview({ ready: true });
+    const h = bootWebview({ ready: true, vscode: true });
     dispatch(h.window, {
       type: "initialState",
       effort: "",
@@ -91,8 +110,7 @@ describe("app purpose + session menu (DOM)", () => {
       appPurpose: "knowledge",
       capabilities: {},
     });
-    openGear(h);
-    const cont = findGearItem(h, /Continue in a new chat/);
+    const cont = findSessionMenuItem(h, /Continue in a new chat/);
     expect(cont).toBeTruthy();
     click(h.window, cont!);
     await Promise.resolve();
@@ -102,7 +120,7 @@ describe("app purpose + session menu (DOM)", () => {
   });
 
   it("Coding offers worktree destination; workspace is default", async () => {
-    const h = bootWebview({ ready: true });
+    const h = bootWebview({ ready: true, vscode: true });
     dispatch(h.window, {
       type: "initialState",
       effort: "",
@@ -118,8 +136,7 @@ describe("app purpose + session menu (DOM)", () => {
       appPurpose: "coding",
       capabilities: {},
     });
-    openGear(h);
-    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    click(h.window, findSessionMenuItem(h, /Continue in a new chat/)!);
     await Promise.resolve();
     // Popup appears with both destinations.
     expect(gearText(h)).toContain("Use this workspace");
@@ -131,7 +148,7 @@ describe("app purpose + session menu (DOM)", () => {
   });
 
   it("Coding → worktree destination posts newWorktreeSession", async () => {
-    const h = bootWebview({ ready: true });
+    const h = bootWebview({ ready: true, vscode: true });
     dispatch(h.window, {
       type: "initialState",
       effort: "",
@@ -147,8 +164,7 @@ describe("app purpose + session menu (DOM)", () => {
       appPurpose: "coding",
       capabilities: {},
     });
-    openGear(h);
-    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    click(h.window, findSessionMenuItem(h, /Continue in a new chat/)!);
     await Promise.resolve();
     click(h.window, findGearItem(h, /Use a new worktree/)!);
     await Promise.resolve();
@@ -181,8 +197,8 @@ describe("app purpose + session menu (DOM)", () => {
       capabilities: {},
     });
     dispatch(h.window, { type: "worktreeSupported", value: true } as never);
-    openGear(h);
-    click(h.window, findGearItem(h, /Continue in a new chat/)!);
+    dispatch(h.window, { type: "sessionName", sessionId: "active", name: "Active", cwd: "/w" });
+    click(h.window, findSessionMenuItem(h, /Continue in a new chat/)!);
     await Promise.resolve();
     // With only one destination the picker is skipped entirely and the fork
     // goes straight through — which is the desired remote behaviour.
@@ -221,7 +237,7 @@ describe("app purpose + session menu (DOM)", () => {
   });
 
   it("setAppPurpose posts the choice and Coding reveals thinking control", async () => {
-    const h = bootWebview({ ready: true });
+    const h = bootWebview({ ready: true, vscode: true });
     dispatch(h.window, {
       type: "initialState",
       effort: "",
@@ -406,6 +422,36 @@ describe("rail gear placement (DOM)", () => {
     expect(railMenu).not.toContain("Continue in a new chat");
   });
 
+  it("shows desktop provider accounts and sends provider-specific actions", () => {
+    const h = liveRail();
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: false },
+      ],
+    });
+    click(h.window, h.doc.getElementById("rail-gear-btn"));
+    expect(gearText(h)).toContain("Accounts");
+    expect(gearText(h)).toContain("GrokSign out");
+    expect(gearText(h)).toContain("CodexConnect");
+    const sections = [...h.doc.querySelectorAll("#gear-popover .popover-section")];
+    expect(sections.at(-1)?.textContent).toBe("Accounts");
+
+    click(h.window, findGearItem(h, /Codex.*Connect/)!);
+    expect(h.posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
+  });
+
+  it("omits the deferred Codex CLI path row from desktop Advanced settings", () => {
+    const h = liveRail();
+    click(h.window, h.doc.getElementById("rail-gear-btn"));
+    click(h.window, findGearItem(h, /Advanced settings/)!);
+
+    expect(h.doc.getElementById("codex-cli-path")).toBeNull();
+    expect(gearText(h)).not.toContain("Codex CLI path");
+    expect(h.posted.map((message) => message.type)).not.toContain("setCodexCliPath");
+  });
+
   it("puts the rail gear leftmost in the footer, not stranded mid-row", () => {
     const h = liveRail();
     const foot = h.doc.querySelector("#projects-rail .rail-foot")!;
@@ -465,14 +511,17 @@ describe("rail gear placement (DOM)", () => {
       readRepliesAloud: false,
       capabilities: {},
     });
+    dispatch(h.window, { type: "sessionName", sessionId: "active", name: "Active", cwd: "/w" });
     const composerGear = h.doc.getElementById("gear-btn")!;
     expect(composerGear.innerHTML).toContain("M12.22 2h-.44");
     openGear(h);
     // Nothing is split without a rail to split into.
     expect(gearText(h)).toContain("Model and Effort");
-    expect(gearText(h)).toContain("Continue in a new chat");
+    expect(gearText(h)).not.toContain("Continue in a new chat");
     expect(gearText(h)).toContain("Use this app for");
     expect(gearText(h)).toContain("Version & about");
+    click(h.window, composerGear);
+    expect(openSessionMenu(h).some((el) => (el.textContent || "").includes("Continue in a new chat"))).toBe(true);
   });
 
   it("keeps composer gear and never mounts a rail gear without #projects-rail (VS Code)", () => {

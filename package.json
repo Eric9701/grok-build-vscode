@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build for VS Code (Community)",
   "description": "GUI for Grok Build CLI (incl. Grok 4.5). Voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT). Not affiliated with or endorsed by SpaceXAI (formerly xAI).",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -246,6 +246,11 @@
           "default": "",
           "description": "Path to the grok binary. Empty = auto-discover (~/.grok/bin/grok, then PATH)."
         },
+        "grok.codexCliPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the OpenAI Codex binary. Empty = auto-discover on PATH, then in the newest OpenAI ChatGPT bundle installed by VS Code, Cursor, or remote VS Code."
+        },
         "grok.defaultModel": {
           "type": "string",
           "default": "",
@@ -453,6 +458,7 @@
     "vitest": "^1.6.0"
   },
   "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.1.14",
     "jpeg-js": "^0.4.4",
     "ws": "^8.21.0"
   }

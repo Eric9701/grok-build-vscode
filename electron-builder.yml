@@ -21,7 +21,7 @@ extraMetadata:
   description: Grok Build Desktop (Community)
 
 # Layout inside app.asar (or app/ when --dir):
-#   package.json, out/**, media/**, resources/**, LICENSE, node_modules/{ws,jpeg-js}
+#   package.json, out/**, media/**, resources/**, LICENSE, node_modules/{ws,jpeg-js,@agentclientprotocol/codex-acp}
 # resolveExtensionRoot() expects media/chat.js at the package root (see src/desktop/paths.ts).
 files:
   - package.json
@@ -31,6 +31,7 @@ files:
   - resources/**/*
   - node_modules/ws/**/*
   - node_modules/jpeg-js/**/*
+  - node_modules/@agentclientprotocol/codex-acp/**/*
   - "!out/**/*.map"
   - "!**/*.{ts,tsx,md}"
 

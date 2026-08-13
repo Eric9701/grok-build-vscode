@@ -169,6 +169,19 @@ export function resolvedTerminalShellDialect(): "posix" | "powershell" | "cmd" {
   return base.includes("pwsh") || base.includes("powershell") ? "powershell" : "cmd";
 }
 
+/**
+ * VS Code language id for a command opened via View all. Unknown dialects
+ * return undefined so the untitled editor can detect instead of guessing.
+ */
+export function commandLanguageForDialect(
+  dialect: "posix" | "powershell" | "cmd" | string | undefined,
+): string | undefined {
+  if (dialect === "powershell") return "powershell";
+  if (dialect === "posix") return "shellscript";
+  if (dialect === "cmd") return "bat";
+  return undefined;
+}
+
 // Shell resolution runs a `where` subprocess, so cache it for the process
 // lifetime instead of paying that cost on every `terminal/create`.
 let shellPreference: ShellPreference = "auto";

@@ -180,11 +180,13 @@ describe("VS Code projects rail section parity", () => {
     const saved = first.getStored();
     expect(saved.railShape?.expanded?.["/work/zeta"]).toBe(true);
     expect(saved.railShape?.collapsed?.["/work/alpha"]).toBe(true);
-    expect(saved.railShape?.groupCollapsed?.recent).toBe(true);
+    expect(saved.railShape?.groupCollapsed?.recent).toBe(false);
 
     const restored = bootRail(saved);
     loadCatalog(restored);
     loadSessions(restored, 7);
+    expect(restored.doc.querySelector(".rail-recent")).not.toBeNull();
+    groupButton(restored.doc, "Recent").click();
     expect(restored.doc.querySelector(".rail-recent")).toBeNull();
     expect(restored.doc.querySelector('.rail-repo[data-cwd="/work/alpha"]')?.classList)
       .toContain("collapsed");

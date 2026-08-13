@@ -622,8 +622,15 @@ export interface Host {
    * webview. Desktop skips workspace-root containment; VS Code opens normally.
    */
   openHostResolvedPath(fsPath: string): Thenable<void>;
-  /** Open an untitled document with the given content and language id. */
-  openUntitledText(content: string, language?: string): Thenable<void>;
+  /**
+   * Open an untitled document. Pass a language id to pin highlighting; omit it
+   * so the editor can detect (never default the caller to plaintext).
+   *
+   * `suggestedFilename` is a save-as hint from an additive `openText.filename`.
+   * Desktop honors it with the OS save dialog (cancel writes nothing). VS Code
+   * ignores it and still opens an untitled tab. Omit it for command View all.
+   */
+  openUntitledText(content: string, language?: string, suggestedFilename?: string): Thenable<void>;
   /**
    * Open a side-by-side diff of two portable URIs (content-provider or file).
    */
@@ -773,6 +780,13 @@ export interface Host {
   readonly canServeMediaRanges: boolean;
   /** Whether the host can reveal a filesystem path in its file manager. */
   readonly canShowInFolder: boolean;
+  /**
+   * Whether View-all text and proposed diffs should open the in-app preview
+   * overlay. Wired into `initialState.capabilities.previewInApp`. OPT-IN:
+   * absent/false = host editor or window (VS Code tabs; older desktop
+   * viewers). True only for the desktop app.
+   */
+  readonly canPreviewInApp: boolean;
 }
 
 /**
@@ -794,4 +808,16 @@ export function shouldRehydrateOnWebviewReady(
 export function formatRemoteInstallId(baseId: string, suffix: string): string {
   if (!suffix) return baseId;
   return baseId.endsWith(suffix) ? baseId : baseId + suffix;
+}
+
+/**
+ * Options for an untitled document. Omits `language` when unset so the editor
+ * can detect — passing `language: undefined` (or defaulting to plaintext)
+ * pins Plain Text and blocks detection.
+ */
+export function untitledTextOpenOptions(
+  content: string,
+  language?: string,
+): { content: string; language?: string } {
+  return language ? { content, language } : { content };
 }

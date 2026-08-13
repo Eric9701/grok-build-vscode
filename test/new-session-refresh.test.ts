@@ -61,6 +61,31 @@ describe("a new local session refreshes the rail", () => {
  * whatever order it was built with until something unrelated redrew it.
  */
 describe("turn end refreshes the project preview", () => {
+  it("never stamps send-time ordering merely by opening or focusing a session", () => {
+    for (const signature of [
+      "private focusSession(",
+      "private focusRemoteSession(",
+      "private async openSession(",
+      "private async openRemoteSession(",
+    ]) {
+      const start = src.indexOf(signature);
+      expect(start, `${signature} exists`).toBeGreaterThan(-1);
+      const end = src.indexOf("\n  private ", start + signature.length);
+      expect(src.slice(start, end)).not.toContain("noteSessionActivity");
+    }
+  });
+
+  it("stamps ordering optimistically before prompt and reasserts it at turn end", () => {
+    const start = src.indexOf("private async handleSend(");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("\n  private ", start + 1));
+    const prompt = body.indexOf("await client.prompt(");
+    const stamps = [...body.matchAll(/this\.noteSessionActivity\(session\)/g)].map((match) => match.index!);
+    expect(stamps.length).toBeGreaterThanOrEqual(2);
+    expect(stamps[0]).toBeLessThan(prompt);
+    expect(stamps.some((index) => index > prompt)).toBe(true);
+  });
+
   it("hangs off the one place every turn ends, not off the success path", () => {
     // done AND error AND cancel — a cancelled turn still wrote a user message,
     // so the row still moved. `setStatus` is where all three meet.

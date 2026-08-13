@@ -3,7 +3,7 @@
 // histories must keep it invisible and excluded from replay position/title logic.
 
 /** Matches the marker prefix of any primer version (v1, v2, …) at the start of
- *  a message. Mirrors the webview's legacy PRIMER_PATTERN. Version-agnostic so
+ *  a message. Mirrors webview-helpers `replayedUserBubbleVerdict`. Version-agnostic so
  *  every previously persisted primer remains hidden. */
 export const PRIMER_PATTERN = /^\s*\[grok-build-vscode primer v\d+\]/;
 

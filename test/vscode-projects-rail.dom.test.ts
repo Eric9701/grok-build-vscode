@@ -422,6 +422,26 @@ describe("VS Code projects rail renderer", () => {
   });
 
   describe("Recent", () => {
+    it("does not reorder project or Recent rows when a conversation is only opened", () => {
+      const { window, doc } = h;
+      const api = railApi(window);
+      loadCatalog(api, "/work/alpha");
+      const entries = [
+        row("newer", "/work/alpha", "newer", 100),
+        row("older", "/work/alpha", "older", 10),
+      ];
+      loadSessions(api, entries, "newer");
+      const names = () => api.recentRows().map((entry) => entry.displayName);
+      expect(names()).toEqual(["newer", "older"]);
+
+      (doc.querySelector('[data-session-id="older"]') as HTMLElement).click();
+      loadSessions(api, entries, "older");
+      expect(names()).toEqual(["newer", "older"]);
+
+      loadSessions(api, [{ ...entries[1], updatedAt: 200 }, entries[0]], "older");
+      expect(names()).toEqual(["older", "newer"]);
+    });
+
     it("merges sessions across projects, newest first, each labelled with its project", () => {
       const { window, doc } = h;
       const api = railApi(window);
@@ -441,6 +461,9 @@ describe("VS Code projects rail renderer", () => {
         dots: {},
         total: 1,
       });
+
+      ([...doc.querySelectorAll(".rail-head-btn")]
+        .find((button) => (button.textContent || "").includes("Recent")) as HTMLElement).click();
 
       expect(sectionTitles(doc)[0]).toBe("Recent");
       const names = [...doc.querySelectorAll(".rail-recent .rail-session-name")].map(
@@ -462,6 +485,8 @@ describe("VS Code projects rail renderer", () => {
         row(`s${i}`, "/work/alpha", `chat ${i}`, 100 - i),
       );
       loadSessions(api, many);
+      ([...doc.querySelectorAll(".rail-head-btn")]
+        .find((button) => (button.textContent || "").includes("Recent")) as HTMLElement).click();
       const showMore = doc.querySelector(".rail-recent .rail-more") as HTMLElement;
       expect(showMore.textContent).toBe("Show more");
       showMore.click();

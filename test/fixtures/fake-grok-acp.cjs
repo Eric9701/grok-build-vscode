@@ -65,7 +65,9 @@ function callClient(method, params) {
   });
 }
 
-const SESSION_ID = "fake-session-1";
+const SESSION_ID = process.env.FAKE_SESSION_ID_FROM_PID === "1"
+  ? `fake-session-${process.pid}`
+  : "fake-session-1";
 const PLAN_PATH = process.env.FAKE_PLAN_PATH || "/tmp/fake-grok-home/.grok/sessions/cwd-x/sess-y/plan.md";
 const WORKSPACE_FILE = (process.env.FAKE_WORKSPACE_ROOT || "/tmp/fake-workspace") + "/file.ts";
 const RELATIVE_WORKSPACE_FILE = "relative-file.ts";

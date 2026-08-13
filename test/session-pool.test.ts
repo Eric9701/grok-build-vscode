@@ -48,6 +48,17 @@ describe("selectReapable — TTL", () => {
     expect(selectReapable(pool, { maxLive: 8, idleTtlMs: HOUR, now })).toEqual([]);
   });
 
+  it("never reaps agent-less or draft-bearing lifecycle sessions", () => {
+    const now = 100 * HOUR;
+    const needsProvider = { ...c("needs-provider", "idle", 0), needsProvider: true };
+    const stranded = { ...c("stranded", "idle", 0), hasDraft: true };
+    expect(selectReapable([needsProvider, stranded], {
+      maxLive: 0,
+      idleTtlMs: HOUR,
+      now,
+    })).toEqual([]);
+  });
+
   it("never TTL-reaps an idle session currently visible to a remote client", () => {
     const now = 100 * HOUR;
     const visible = { ...c("remote", "idle", 0), remoteVisible: true };

@@ -669,8 +669,9 @@ body.rail-resizing * {
   width: 100%;
   font: inherit;
 }
-.rail-session:hover { color: var(--vscode-foreground); background: var(--rail-hover-bg); }
-.rail-session.active { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); background: var(--vscode-list-activeSelectionBackground); }
+.rail-session { --provider-badge-ring: var(--rail-bg, var(--vscode-sideBar-background)); }
+.rail-session:hover { color: var(--vscode-foreground); background: var(--rail-hover-bg); --provider-badge-ring: var(--rail-hover-bg); }
+.rail-session.active { color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground)); background: var(--vscode-list-activeSelectionBackground); --provider-badge-ring: var(--vscode-list-activeSelectionBackground); }
 .rail-session .history-row-dot { flex: 0 0 auto; width: 7px; height: 7px; }
 .rail-session-name {
   flex: 1 1 auto;
@@ -916,6 +917,9 @@ a:hover {
   min-width: 0;
   max-width: min(52%, 280px);
   flex: 0 1 auto;
+  /* Owns leftover flex so History / ⋯ stay right-aligned (the export button
+     used to do this). Hidden chips are display:none, so they drop out and
+     justify-content:flex-end keeps the remaining icons on the right. */
   margin-right: auto;
   display: grid;
   grid-template-columns: minmax(0, auto) auto;
@@ -1274,7 +1278,79 @@ a:hover {
 .onb-action.onb-secondary:hover {
   background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground));
 }
+.onb-install-error {
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+  border-radius: 4px;
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-inputValidation-errorBackground, transparent);
+}
+.onb-install-progress { display: grid; gap: 7px; }
+.onb-install-progress progress { width: 100%; accent-color: var(--vscode-progressBar-background); }
+.onb-manual-label { margin-top: 3px; font-size: 11px; }
 .onb-link { color: var(--vscode-textLink-foreground); text-decoration: underline; }
+.onb-agent-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.onb-agent-tile {
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  text-align: left;
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-editorWidget-border);
+}
+.onb-agent-tile.primary {
+  border-color: var(--vscode-focusBorder);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
+}
+.onb-agent-tile:hover { background: var(--vscode-list-hoverBackground); }
+.onb-agent-tile > span:last-child { display: flex; flex-direction: column; min-width: 0; }
+.onb-agent-tile small { color: var(--vscode-descriptionForeground); font-size: 10px; }
+.onb-agent-mark {
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+.onb-agent-mark .provider-logo { width: 22px; height: 22px; }
+
+.provider-glyph {
+  width: 15px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 15px;
+  position: relative;
+  color: var(--vscode-descriptionForeground);
+  box-sizing: border-box;
+}
+.provider-logo { display: block; width: 100%; height: 100%; }
+.provider-status-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 4px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  box-shadow: 0 0 0 1px var(--provider-badge-ring, var(--vscode-sideBar-background));
+}
+.provider-status-badge.dot-none { background: var(--vscode-descriptionForeground); }
+.provider-status-badge.dot-working { background: var(--vscode-charts-blue); }
+.provider-status-badge.dot-needs-you { background: var(--vscode-charts-yellow); }
+.provider-status-badge.dot-unread { background: var(--vscode-charts-green); }
+.provider-status-badge.dot-error { background: var(--vscode-errorForeground); }
+.gear-lead .provider-glyph { margin-right: 1px; }
+.model-provider-heading { margin-top: 4px; }
 
 .msg {
   display: flex;
@@ -1397,7 +1473,7 @@ body.turn-busy .queued-steer:hover {
   margin-top: 4px;
   font-size: 11px;
   color: var(--vscode-descriptionForeground);
-  opacity: 0;
+  opacity: 0.4;
   transition: opacity 0.12s;
 }
 .msg.user .msg-actions {
@@ -1406,7 +1482,14 @@ body.turn-busy .queued-steer:hover {
 }
 .msg.user:hover .msg-actions,
 .msg.agent:hover .msg-actions,
-.msg-actions:focus-within { opacity: 1; }
+.msg-actions:focus-within,
+.msg-actions:focus-visible { opacity: 1; }
+/* Touch has no hover. The dimmed row is the resting, tappable state — same
+   as the rename pencil, which must exist without a gesture first. */
+@media (hover: none) {
+  .msg.user .msg-actions,
+  .msg.agent .msg-actions { opacity: 0.4; }
+}
 /* Codex-style ghost action: 16px glyph centered in a 28px rounded-square hit
    target (glyph size and hit area are deliberately separate ÔÇö a 28px glyph
    would look heavy). Same recipe as .icon-btn / .code-copy-btn. */
@@ -3601,12 +3684,19 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   text-align: center;
 }
 .history-more {
+  display: block;
+  width: 100%;
   padding: 8px;
+  border: 0;
+  background: transparent;
   color: var(--vscode-descriptionForeground);
+  font-family: inherit;
   font-size: 11px;
   text-align: center;
   opacity: 0.7;
+  cursor: pointer;
 }
+.history-more:disabled { cursor: default; }
 .history-footer {
   padding: 4px;
   border-top: 1px solid var(--vscode-editorWidget-border, rgba(255,255,255,0.08));
@@ -3637,9 +3727,10 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   padding: 6px 8px;
   border-radius: 4px;
   cursor: pointer;
+  --provider-badge-ring: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
 }
-.history-row:hover { background: var(--vscode-list-hoverBackground); }
-.history-row.active { background: var(--vscode-list-activeSelectionBackground); }
+.history-row:hover { background: var(--vscode-list-hoverBackground); --provider-badge-ring: var(--vscode-list-hoverBackground); }
+.history-row.active { background: var(--vscode-list-activeSelectionBackground); --provider-badge-ring: var(--vscode-list-activeSelectionBackground); }
 .history-row-dot {
   flex: 0 0 auto;
   width: 8px;
@@ -3910,6 +4001,143 @@ mjx-container[display="true"] {
 }
 .confirm-btn.confirm-danger:hover {
   filter: brightness(1.12);
+}
+
+/* In-app preview overlay (desktop previewInApp). Theme variables only. */
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.45);
+  --hl-com: #6a9955;
+  --hl-str: #ce9178;
+  --hl-num: #b5cea8;
+  --hl-kw: #569cd6;
+  --hl-typ: #4ec9b0;
+  --hl-fn: #dcdcaa;
+  --hl-prop: #9cdcfe;
+  --hl-tag: #808080;
+  --hl-tagname: #569cd6;
+  --hl-atr: #9cdcfe;
+  --hl-add: #40c977;
+  --hl-del: #fa423e;
+}
+body.vscode-light .preview-overlay {
+  --hl-com: #008000;
+  --hl-str: #a31515;
+  --hl-num: #098658;
+  --hl-kw: #0000ff;
+  --hl-typ: #267f99;
+  --hl-fn: #795e26;
+  --hl-prop: #0451a5;
+  --hl-tag: #800000;
+  --hl-tagname: #800000;
+  --hl-atr: #e50000;
+  --hl-add: #00a240;
+  --hl-del: #ba2623;
+}
+.preview-overlay .hl-com { color: var(--hl-com); font-style: italic; }
+.preview-overlay .hl-str { color: var(--hl-str); }
+.preview-overlay .hl-num { color: var(--hl-num); }
+.preview-overlay .hl-kw { color: var(--hl-kw); }
+.preview-overlay .hl-typ { color: var(--hl-typ); }
+.preview-overlay .hl-fn { color: var(--hl-fn); }
+.preview-overlay .hl-prop { color: var(--hl-prop); }
+.preview-overlay .hl-tag { color: var(--hl-tag); }
+.preview-overlay .hl-tagname { color: var(--hl-tagname); }
+.preview-overlay .hl-atr { color: var(--hl-atr); }
+.preview-overlay .hl-add { color: var(--hl-add); }
+.preview-overlay .hl-del { color: var(--hl-del); }
+.preview-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, calc(100vw - 48px));
+  height: min(80vh, 800px);
+  max-width: 100%;
+  background: var(--vscode-editor-background, var(--vscode-editorWidget-background));
+  color: var(--vscode-editor-foreground, var(--vscode-foreground));
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+}
+.preview-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13px;
+}
+.preview-lang {
+  flex: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.preview-action-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 4px;
+  cursor: pointer;
+  background: var(--vscode-input-background);
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-widget-border, transparent);
+}
+.preview-action-btn:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.preview-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+.preview-close-btn svg {
+  width: 12px;
+  height: 12px;
+}
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+.preview-body .preview-code {
+  margin: 0;
+  white-space: pre;
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
+}
+.preview-body .tool-diff-region {
+  margin: 0;
 }
 .remote-explainer-panel {
   position: relative;

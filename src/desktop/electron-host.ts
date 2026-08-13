@@ -6,7 +6,12 @@
  * type is previewable (md/json/image/text) and falls back to the OS default
  * handler (`shell.openPath`) only for non-renderable types. Missing files show
  * an in-app message — never a Windows shell "cannot find" dialog.
- * Diff / untitled text: read-only internal BrowserWindows (not full editors).
+ * Diff / untitled text without a suggested filename: read-only internal
+ * BrowserWindows (older clients, virtual-URI `openResource`, direct tests).
+ * A suggested filename (session export / overlay Save As) opens the OS save
+ * dialog; cancel writes nothing. The current desktop renderer routes View all
+ * and proposed diffs to the in-app overlay (`previewInApp`) and does not
+ * reach these windows.
  * AFK Pilot link/unlink: delegates to sidebar handlers wired after construction.
  * Device credentials: never stored by this module (see main.ts + safe-secrets).
  */
@@ -45,6 +50,11 @@ import type {
   Uri,
 } from "../host";
 import { isFsPathInWorkspace } from "../host";
+import {
+  deliverSuggestedFileSave,
+  saveDialogTitleForFilename,
+  saveFiltersForFilename,
+} from "./suggested-save";
 import type { PanelPosition } from "../view-move";
 import {
   canonicalizeSeedProjectPath,
@@ -1071,7 +1081,46 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     async openHostResolvedPath(fsPath: string) {
       await openHostPath(fsPath);
     },
-    async openUntitledText(content: string, language?: string) {
+    async openUntitledText(content: string, language?: string, suggestedFilename?: string) {
+      try {
+        const outcome = await deliverSuggestedFileSave({
+          suggestedFilename,
+          content,
+          filters: suggestedFilename ? saveFiltersForFilename(suggestedFilename) : undefined,
+          title: suggestedFilename ? saveDialogTitleForFilename(suggestedFilename) : undefined,
+          showSaveDialog: async (options) => {
+            const filters = options.filters
+              ? Object.entries(options.filters).map(([name, exts]) => ({
+                  name,
+                  extensions: exts.map((e) => e.replace(/^\./, "")),
+                }))
+              : undefined;
+            const win = parentWindow(getWindow);
+            const result = win
+              ? await dialog.showSaveDialog(win, {
+                  defaultPath: options.defaultPath,
+                  buttonLabel: options.saveLabel,
+                  title: options.title,
+                  filters,
+                })
+              : await dialog.showSaveDialog({
+                  defaultPath: options.defaultPath,
+                  buttonLabel: options.saveLabel,
+                  title: options.title,
+                  filters,
+                });
+            if (result.canceled || !result.filePath) return undefined;
+            return result.filePath;
+          },
+          writeFile: (filePath, data) => {
+            fs.writeFileSync(filePath, data, "utf8");
+          },
+        });
+        if (outcome !== "fallback") return;
+      } catch (e) {
+        await messageBox(getWindow, "error", `Export failed: ${(e as Error).message}`, ["OK"]);
+        return;
+      }
       const title = language ? `Untitled (${language})` : "Untitled";
       openHtmlDocumentWindow(
         getWindow,
@@ -1192,6 +1241,8 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     // byte ranges — see app-resource-handler.ts. No other host may claim this.
     canServeMediaRanges: true,
     canShowInFolder: true,
+    // No editor tabs — View all / proposed diffs use the in-app overlay.
+    canPreviewInApp: true,
   };
 }
 

@@ -172,6 +172,26 @@ export class RemoteClientState<T, C = never> {
     }
   }
 
+  replaceDetachedActiveWhere(
+    predicate: (value: T) => boolean,
+    replace: (cwd: string, value: T) => T,
+  ): T[] {
+    const removed: T[] = [];
+    for (const detached of this.detachedByTabToken.values()) {
+      if (detached.active === undefined || !predicate(detached.active)) continue;
+      const previous = detached.active;
+      detached.active = replace(detached.cwd, previous);
+      removed.push(previous);
+    }
+    return removed;
+  }
+
+  /** Snapshot detached logical-tab values without exposing the backing map. */
+  detachedActiveValues(): T[] {
+    return [...this.detachedByTabToken.values()]
+      .flatMap((detached) => detached.active === undefined ? [] : [detached.active]);
+  }
+
   clientsForActiveValue(value: T): string[] {
     return [...this.activeByClient]
       .filter(([, active]) => active === value)

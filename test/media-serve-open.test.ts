@@ -6,6 +6,8 @@
 import { describe, it, expect } from "vitest";
 import * as path from "node:path";
 import {
+  inferCodexGeneratedImagePath,
+  isTrustedCodexGeneratedImagePath,
   isSafeRelativeGeneratedMediaLink,
   isTrustedGeneratedMediaPath,
   resolveChatOpenFilePath,
@@ -27,6 +29,42 @@ function sessionLayout(grokHome: string, sessionId = "sess-1") {
     video: path.join(videosDir, "1.mp4"),
   };
 }
+
+describe("Codex generated-image path inference", () => {
+  const codexHome = path.resolve("fake-codex-home");
+  const sessionId = "0198f0d1-2b3c-7d4e-8f50-123456789abc";
+  const toolCallId = "exec-550e8400-e29b-41d4-a716-446655440000";
+
+  it("accepts only UUID session ids and exec-UUID tool-call ids", () => {
+    expect(inferCodexGeneratedImagePath(codexHome, sessionId, toolCallId)).toBe(
+      path.resolve(codexHome, "generated_images", sessionId, `${toolCallId}.png`),
+    );
+    for (const hostile of ["..\\..", "../escape", "uuid.with.dots", "not-a-uuid"]) {
+      expect(inferCodexGeneratedImagePath(codexHome, hostile, toolCallId)).toBeUndefined();
+      expect(inferCodexGeneratedImagePath(codexHome, sessionId, hostile)).toBeUndefined();
+    }
+  });
+
+  it("refuses when the resolved candidate leaves generated_images", () => {
+    const outside = path.resolve(codexHome, "outside.png");
+    expect(inferCodexGeneratedImagePath(
+      codexHome,
+      sessionId,
+      toolCallId,
+      (...segments) => segments.length === 2
+        ? path.resolve(...segments)
+        : outside,
+    )).toBeUndefined();
+  });
+
+  it("refuses a canonical target outside generated_images", () => {
+    const candidate = path.resolve(codexHome, "generated_images", sessionId, `${toolCallId}.png`);
+    const outside = path.resolve(codexHome, "outside.png");
+    expect(isTrustedCodexGeneratedImagePath(candidate, codexHome, (value) =>
+      path.resolve(value) === candidate ? outside : path.resolve(value),
+    )).toBe(false);
+  });
+});
 
 describe("isSafeRelativeGeneratedMediaLink", () => {
   it("accepts images|videos/<file> with media extensions", () => {

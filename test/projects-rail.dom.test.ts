@@ -60,6 +60,9 @@ const sessionNames = (doc: Document, repoIndex: number) =>
 // Row actions live behind a ⋯ menu now, parented to <body> (the rail scrolls, so
 // a menu inside it would be clipped) — hence the document-level lookup.
 const openMenu = (window: any, host: Element) => {
+  if (window.document.querySelector(".rail-menu")) {
+    window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  }
   click(window, host.querySelector(".rail-menu-btn") as HTMLElement);
   return window.document.querySelector(".rail-menu") as HTMLElement;
 };
@@ -171,6 +174,63 @@ describe("projects rail", () => {
 
     dispatch(window, sessionsFrame([row("a1", "/work/alpha", "real history", 9)]));
     expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toEqual(["real history"]);
+  });
+
+  it("adds monochrome provider glyphs to session rows only when two agents are connected", () => {
+    const h = boot("/work/alpha");
+    dispatch(h.window, { ...sessionsFrame([
+      { ...row("g1", "/work/alpha", "Grok session", 9), provider: "grok" },
+      { ...row("c1", "/work/alpha", "Codex session", 8), provider: "codex" },
+    ]), dots: { g1: "working", c1: "needs-you" } });
+    expect(h.doc.querySelectorAll(".rail-session .provider-glyph")).toHaveLength(0);
+    expect(h.doc.querySelectorAll(".rail-session > .history-row-dot")).toHaveLength(2);
+    expect(h.doc.querySelectorAll(".rail-session .provider-status-badge")).toHaveLength(0);
+
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: true },
+      ],
+    });
+    const glyphs = [...h.doc.querySelectorAll(".rail-session .provider-glyph")];
+    expect(glyphs).toHaveLength(2); // One rendered row per globally unique session id.
+    expect(glyphs.every((el) => !!el.querySelector("svg.provider-logo path"))).toBe(true);
+    expect(h.doc.querySelectorAll(".rail-session > .history-row-dot")).toHaveLength(0);
+    expect([...h.doc.querySelectorAll(".rail-session .provider-status-badge")].map((el) => (el as HTMLElement).dataset.dot))
+      .toEqual(["working", "needs-you"]);
+
+    dispatch(h.window, { type: "sessionDot", id: "g1", dot: "error" });
+    expect((h.doc.querySelector('[data-session-dot="g1"]') as HTMLElement).dataset.dot).toBe("error");
+  });
+
+  it("renders duplicate ids once and selects equal GPT names by id", () => {
+    const { doc, window, posted } = boot();
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "GPT", 9),
+        row("a1", "/work/ALPHA", "GPT", 8),
+        row("a2", "/work/alpha", "GPT", 7),
+      ]),
+      activeId: "a1",
+    });
+
+    expect(doc.querySelectorAll('[data-session-id="a1"]')).toHaveLength(1);
+    expect(doc.querySelectorAll('[data-session-id="a2"]')).toHaveLength(1);
+    expect([...doc.querySelectorAll(".rail-session-name")].map((el) => el.textContent))
+      .toEqual(["GPT", "GPT"]);
+    expect(doc.querySelectorAll(".rail-session.active")).toHaveLength(1);
+    expect((doc.querySelector(".rail-session.active") as HTMLElement).dataset.sessionId).toBe("a1");
+
+    click(window, doc.getElementById("history-btn") as HTMLElement);
+    expect(doc.querySelectorAll('#history-popover [data-session-id="a1"]')).toHaveLength(1);
+    expect(doc.querySelectorAll('#history-popover [data-session-id="a2"]')).toHaveLength(1);
+    window.document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    click(window, doc.querySelector('#projects-rail [data-session-id="a2"]') as HTMLElement);
+    expect(posted.filter((message) => message.type === "resumeSession").at(-1)).toMatchObject({ id: "a2" });
+    expect(doc.querySelectorAll(".rail-session.active")).toHaveLength(1);
+    expect((doc.querySelector(".rail-session.active") as HTMLElement).dataset.sessionId).toBe("a2");
   });
 
   // Two empty projects tie on activity, and the tie used to break on the
@@ -551,9 +611,10 @@ describe("projects rail", () => {
         pinned("a1", "/work/alpha", "alpha thing", 10),
       ]));
       const heads = [...doc.querySelectorAll(".rail-head-title")].map((e) => e.textContent);
-      // RECENT also lists pinned rows (duplication intentional).
       expect(heads[0]).toBe("Pinned");
       expect(heads).toContain("Projects");
+      // Pinned rows ALSO count as recent — Recent duplicates them on purpose
+      // (a shortcut, not a partition; dedupe is per group only).
       expect(heads).toContain("Recent");
       expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
         .toEqual(["beta thing", "alpha thing"]);
@@ -1281,10 +1342,14 @@ describe("projects rail", () => {
     it("collapses and remembers RECENT / PROJECTS", () => {
       const { doc, window } = boot();
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-      expect(doc.querySelector(".rail-list.rail-recent")).toBeTruthy();
+      expect(doc.querySelector(".rail-list.rail-recent")).toBe(null);
       expect(doc.querySelector(".rail-list.rail-projects")).toBeTruthy();
 
-      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+      let recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      click(window, recentBtn);
+      expect(doc.querySelector(".rail-list.rail-recent")).toBeTruthy();
+      recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
         .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
       click(window, recentBtn);
       expect(doc.querySelector(".rail-list.rail-recent")).toBe(null);
@@ -1300,7 +1365,11 @@ describe("projects rail", () => {
       expect(saved.groupCollapsed.projects).toBe(true);
     });
 
-    it("RECENT merges sessions across projects, including pinned, newest first", () => {
+    // Cross-group duplication is deliberate: RECENT is a shortcut, and a
+    // session must NEVER leave its project because another group shows it —
+    // that exact vanish shipped once (one-visual-home claiming) and the owner
+    // caught it in the field (2026-08-13). Dedupe is per group only.
+    it("RECENT duplicates pinned and project rows on purpose; a project never loses its session", () => {
       const { doc, window } = boot();
       dispatch(window, sessionsFrame([row("a1", "/work/alpha", "alpha recent", 100)]));
       dispatch(window, {
@@ -1312,14 +1381,52 @@ describe("projects rail", () => {
       });
       dispatch(window, pinnedFrame([pinned("b1", "/work/beta", "beta older", 9, 50)]));
 
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      click(window, recentBtn);
+
       const recentNames = [...doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")]
         .map((e) => e.textContent);
       expect(recentNames).toEqual(["alpha recent", "beta older"]);
-      // Pinned still has its own copy.
       expect([...doc.querySelectorAll(".rail-pinned .rail-session-name")].map((e) => e.textContent))
         .toEqual(["beta older"]);
-      // And PROJECTS still lists alpha's row under the project.
+      // The owner's regression: Recent holding a1 must not evict it from alpha.
       expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))).toContain("alpha recent");
+      // Within one group each id renders once; across groups it repeats.
+      expect(doc.querySelectorAll('.rail-list.rail-recent [data-session-id="a1"]')).toHaveLength(1);
+      expect(doc.querySelectorAll('[data-session-id="a1"]')).toHaveLength(2);
+      expect(doc.querySelectorAll('[data-session-id="b1"]')).toHaveLength(3);
+    });
+
+    it("keeps project and RECENT order on open-only, then accepts the optimistic send order", () => {
+      const { doc, window } = boot();
+      const newer = row("newer", "/work/alpha", "newer", 100);
+      const older = row("older", "/work/alpha", "older", 10);
+      dispatch(window, { ...sessionsFrame([newer, older]), activeId: "newer" });
+      const alphaIndex = repoNames(doc).indexOf("alpha");
+      expect(sessionNames(doc, alphaIndex)).toEqual(["newer", "older"]);
+
+      // Opening changes identity/highlight only. The host confirms the same
+      // persisted timestamps, so the project list must stay put.
+      const alpha = doc.querySelectorAll(".rail-repo")[alphaIndex];
+      click(window, alpha.querySelector('[data-session-id="older"]') as HTMLElement);
+      dispatch(window, { ...sessionsFrame([newer, older]), activeId: "older" });
+      expect(sessionNames(doc, alphaIndex)).toEqual(["newer", "older"]);
+
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((button) => (button.textContent || "").includes("Recent")) as HTMLElement;
+      click(window, recentBtn);
+      const recentNames = () => [...doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")]
+        .map((entry) => entry.textContent);
+      expect(recentNames()).toEqual(["newer", "older"]);
+
+      // Send-time host activity is optimistic: the next frame promotes the
+      // target before the provider has persisted its final transcript stamp.
+      dispatch(window, {
+        ...sessionsFrame([{ ...older, updatedAt: 200 }, newer]),
+        activeId: "older",
+      });
+      expect(recentNames()).toEqual(["older", "newer"]);
     });
 
     it("RECENT stops at ten expanded rows and keeps its unnumbered affordance", () => {
@@ -1328,6 +1435,9 @@ describe("projects rail", () => {
         row(`a${i}`, "/work/alpha", `s${i}`, 100 - i),
       );
       dispatch(window, sessionsFrame(many));
+      const recentBtn = [...doc.querySelectorAll(".rail-head-btn")]
+        .find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+      click(window, recentBtn);
       const more = doc.querySelector(".rail-list.rail-recent .rail-more") as HTMLElement;
       expect(more.textContent).toBe("Show more");
       expect(more.textContent).not.toMatch(/\d/);
@@ -1855,6 +1965,36 @@ describe("rail transition (optimistic highlight)", () => {
     expect(namesAfter).toEqual(["Fresh chat", "alpha one"]);
     expect(activeName(doc, "alpha")).toBe("Fresh chat");
     expect(namesAfter.filter((n) => n === "New session")).toHaveLength(0);
+  });
+
+  it("gives a pending New-session row the project's remembered provider glyph immediately", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: true },
+      ],
+    });
+    dispatch(window, {
+      type: "repos",
+      entries: repos.map((repo) => ({
+        ...repo,
+        defaultProvider: repo.cwd === "/work/alpha" ? "codex" : "grok",
+      })),
+      selectedCwd: "/work/alpha",
+      activeCwd: "/work/alpha",
+    });
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+
+    let alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    click(window, alpha.querySelector(".rail-repo-actions .rail-action-btn") as HTMLElement);
+    alpha = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const fresh = alpha.querySelector('.rail-session[data-session-id^="pending-new:"]') as HTMLElement;
+    expect(fresh.querySelector(".provider-glyph")?.getAttribute("aria-label")).toBe("Codex");
   });
 
   it("highlights a cross-repo row before activeRepoCwd has moved", () => {

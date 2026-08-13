@@ -368,6 +368,48 @@ describe("addGeneratedMedia hover actions (copy path / open)", () => {
   });
 });
 
+describe("captured Codex image-generation parity by surface", () => {
+  const captured = {
+    toolCallId: "exec-imagegen-1",
+    kind: "other",
+    title: "Image generation",
+    rawInput: { id: "exec-imagegen-1" },
+  };
+  const render = (h: Harness) => {
+    dispatch(h.window, { type: "session", sessionId: "codex-live-1", provider: "codex", models: [] });
+    dispatch(h.window, { type: "toolCall", call: captured });
+    dispatch(h.window, { type: "toolCallUpdate", call: {
+      toolCallId: captured.toolCallId,
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "Revised prompt: cat" } }],
+    } });
+    postGeneratedImage(h, { path: "/home/me/.codex/generated_images/codex-live-1/exec-imagegen-1.png" });
+    return messages(h.doc).querySelector(".generated-image")!;
+  };
+
+  it("VS Code renders Copy path plus Open in VS Code", () => {
+    const h = bootWithCaps({ openInEditor: true });
+    const wrap = render(h);
+    expect(wrap.querySelector('[title="Copy path"]')).toBeTruthy();
+    expect(wrap.querySelector('[title="Open in VS Code"]')).toBeTruthy();
+  });
+
+  it("desktop renders Copy path plus Show in folder", () => {
+    const h = bootWithCaps({ openInEditor: false, showInFolder: true });
+    const wrap = render(h);
+    expect(wrap.querySelector('[title="Copy path"]')).toBeTruthy();
+    expect(wrap.querySelector('[title="Show in folder"]')).toBeTruthy();
+  });
+
+  it("remote renders only the served-image download action", () => {
+    const h = bootWithCaps({}, { remote: true });
+    const wrap = render(h);
+    expect(wrap.querySelector('[title="Download image"]')).toBeTruthy();
+    expect(wrap.querySelector('[title="Copy path"]')).toBeNull();
+    expect(wrap.querySelector('[title="Open in VS Code"]')).toBeNull();
+  });
+});
+
 describe("addGeneratedMedia (remote link fallback)", () => {
   it("renders an open-link button (not an <img>) when only a url is supplied", () => {
     const { window, posted, doc } = bootWebview();

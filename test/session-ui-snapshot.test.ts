@@ -34,6 +34,19 @@ describe("sessionUiSnapshot", () => {
     });
   });
 
+  it("does not mark an available-but-unverified cache substitute as a disabled recheck row", () => {
+    const session = new Session();
+    session.planModeAvailable = true;
+    session.planModeVersionVerified = false;
+
+    expect(sessionUiSnapshot(session, "agent")).toContainEqual({
+      type: "planModeAvailability",
+      available: true,
+      reason: undefined,
+      recheckable: false,
+    });
+  });
+
   it("marks an unverified Plan probe recheckable so a focus replay keeps the row clickable", () => {
     const session = new Session();
     session.planModeAvailable = false;

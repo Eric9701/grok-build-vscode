@@ -12,6 +12,7 @@ import {
   SENSITIVE_CONFIG_KEYS,
   normalizeWorkspaceRoots,
 } from "../src/desktop/config-store";
+import { createFileMemento } from "../src/desktop/memento";
 import {
   buildDiffViewerHtml,
   buildTextViewerHtml,
@@ -91,6 +92,13 @@ import {
 } from "../src/desktop/resource-registry";
 import { parseWebviewMsg } from "../src/desktop/webview-msg-validate";
 import {
+  deliverSuggestedFileSave,
+  planSuggestedSaveDialog,
+  saveDialogTitleForFilename,
+  saveFiltersForFilename,
+  writeSuggestedFileOrCancel,
+} from "../src/desktop/suggested-save";
+import {
   base64DecodedByteLength,
   isRefusedMediaBasename,
   isRefusedMediaPath,
@@ -157,6 +165,14 @@ describe("desktop ConfigStore", () => {
 
     const again = new ConfigStore(file);
     expect(again.getConfiguration("grok").get("cliPath")).toBe("/bin/fake-grok");
+  });
+
+  it("persists the Codex CLI override through the desktop config store", async () => {
+    const store = new ConfigStore(file);
+    expect(store.getConfiguration("grok").get("codexCliPath")).toBe("");
+    await store.getConfiguration("grok").update("codexCliPath", "/opt/codex/bin/codex");
+    expect(new ConfigStore(file).getConfiguration("grok").get("codexCliPath"))
+      .toBe("/opt/codex/bin/codex");
   });
 
   it("fires onDidChange for dotted keys", async () => {
@@ -328,6 +344,14 @@ describe("document-view helpers", () => {
     expect(html).toContain("&lt;b&gt;hi&lt;/b&gt;");
     expect(html).not.toContain("<b>hi</b>");
     expect(html).toContain("read-only");
+    expect(html).toContain(" · markdown");
+  });
+
+  it("buildTextViewerHtml omits a language label when language is unset", () => {
+    const html = buildTextViewerHtml("Untitled", "echo hi");
+    expect(html).toContain("Untitled · read-only");
+    expect(html).not.toContain(" · powershell");
+    expect(html).not.toContain(" · shellscript");
   });
 
   it("buildDiffViewerHtml marks differing lines and focuses a line", () => {
@@ -1142,6 +1166,10 @@ describe("webview message schema validation", () => {
     });
     expect(parseWebviewMsg({ type: "openFile", path: "a.ts" })?.type).toBe("openFile");
     expect(parseWebviewMsg({ type: "setMode", modeId: "plan" })?.type).toBe("setMode");
+    expect(parseWebviewMsg({ type: "runGrokLogin", provider: "codex" })?.type)
+      .toBe("runGrokLogin");
+    expect(parseWebviewMsg({ type: "installCodex" })?.type).toBe("installCodex");
+    expect(parseWebviewMsg({ type: "cancelCodexInstall" })?.type).toBe("cancelCodexInstall");
   });
 
   it("drops unknown types and malformed payloads", () => {
@@ -1152,9 +1180,43 @@ describe("webview message schema validation", () => {
     expect(parseWebviewMsg({ type: "openFile" })).toBeNull();
     expect(parseWebviewMsg({ type: "openFile", path: 12 })).toBeNull();
     expect(parseWebviewMsg({ type: "setMode", modeId: "yolo-extra" })).toBeNull();
+    expect(parseWebviewMsg({ type: "setCodexCliPath", value: "/opt/codex" })).toBeNull();
+    expect(parseWebviewMsg({
+      type: "listSessions",
+      providerCursor: { grokOffset: 100, codexHighWater: { updatedAt: 50, id: "codex-1" } },
+    })?.type).toBe("listSessions");
+    expect(parseWebviewMsg({
+      type: "listSessions",
+      providerCursor: { grokOffset: 100, codexHighWater: { updatedAt: 50 } },
+    })).toBeNull();
+    expect(parseWebviewMsg({ type: "logout", provider: "unknown" })).toBeNull();
     expect(parseWebviewMsg({ type: "logout", evil: true })?.type).toBe("logout");
     // logout has no required fields beyond type — but inventing a type fails:
     expect(parseWebviewMsg({ type: "deleteEverything" })).toBeNull();
+  });
+
+  it("accepts openText with an optional save-as filename", () => {
+    expect(parseWebviewMsg({ type: "openText", content: "# hi", language: "markdown" })).toEqual({
+      type: "openText",
+      content: "# hi",
+      language: "markdown",
+    });
+    expect(parseWebviewMsg({
+      type: "openText",
+      content: "# hi",
+      language: "markdown",
+      filename: "Rewind map.md",
+    })).toEqual({
+      type: "openText",
+      content: "# hi",
+      language: "markdown",
+      filename: "Rewind map.md",
+    });
+    expect(parseWebviewMsg({
+      type: "openText",
+      content: "# hi",
+      filename: 12,
+    })).toBeNull();
   });
 
   it("source gate: ElectronWebview.dispatchMessage validates before listeners", () => {
@@ -1170,6 +1232,100 @@ describe("webview message schema validation", () => {
     );
     expect(src).toContain("parseWebviewMsg");
     expect(src).toMatch(/dispatchMessage[\s\S]*parseWebviewMsg/);
+  });
+});
+
+describe("session export save dialog", () => {
+  it("plans a save dialog that defaults to the suggested filename", () => {
+    expect(planSuggestedSaveDialog("/work/repo/Rewind map.md", {
+      filters: { Markdown: ["md"] },
+      title: "Export conversation",
+    })).toEqual({
+      defaultPath: "/work/repo/Rewind map.md",
+      filters: { Markdown: ["md"] },
+      title: "Export conversation",
+    });
+  });
+
+  it("cancel writes nothing; a chosen path writes the markdown", () => {
+    const writes: { path: string; data: string }[] = [];
+    const write = (filePath: string, data: string) => {
+      writes.push({ path: filePath, data });
+    };
+    expect(writeSuggestedFileOrCancel("# hi", undefined, write)).toBe(false);
+    expect(writes).toEqual([]);
+    expect(writeSuggestedFileOrCancel("# hi", "/tmp/Rewind map.md", write)).toBe(true);
+    expect(writes).toEqual([{ path: "/tmp/Rewind map.md", data: "# hi" }]);
+  });
+
+  it("openText with a filename takes the save-dialog path; cancel writes nothing", async () => {
+    const writes: { path: string; data: string }[] = [];
+    const cancel = await deliverSuggestedFileSave({
+      suggestedFilename: "/work/repo/Rewind map.md",
+      content: "# Rewind map\n",
+      filters: { Markdown: ["md"] },
+      title: "Export conversation",
+      showSaveDialog: async (options) => {
+        expect(options.defaultPath).toBe("/work/repo/Rewind map.md");
+        expect(options.filters).toEqual({ Markdown: ["md"] });
+        return undefined;
+      },
+      writeFile: (filePath, data) => {
+        writes.push({ path: filePath, data });
+      },
+    });
+    expect(cancel).toBe("cancelled");
+    expect(writes).toEqual([]);
+
+    const saved = await deliverSuggestedFileSave({
+      suggestedFilename: "/work/repo/Rewind map.md",
+      content: "# Rewind map\n",
+      showSaveDialog: async () => "/tmp/out.md",
+      writeFile: (filePath, data) => {
+        writes.push({ path: filePath, data });
+      },
+    });
+    expect(saved).toBe("saved");
+    expect(writes).toEqual([{ path: "/tmp/out.md", data: "# Rewind map\n" }]);
+  });
+
+  it("derives save-dialog filters and title from the suggested filename", () => {
+    expect(saveFiltersForFilename("/work/repo/Rewind map.md")).toEqual({ Markdown: ["md"] });
+    expect(saveDialogTitleForFilename("/work/repo/Rewind map.md")).toBe("Export conversation");
+    expect(saveFiltersForFilename("Untitled.ps1")).toEqual({ PowerShell: ["ps1"] });
+    expect(saveDialogTitleForFilename("Untitled.ps1")).toBe("Save as");
+    expect(saveFiltersForFilename("src/foo.ts.diff")).toEqual({ Diff: ["diff"] });
+    expect(saveDialogTitleForFilename("src/foo.ts.diff")).toBe("Save as");
+    expect(saveFiltersForFilename("notes")).toEqual({ "All files": ["*"] });
+  });
+
+  it("openText without a filename falls back to the untitled/viewer path", async () => {
+    const writes: string[] = [];
+    expect(await deliverSuggestedFileSave({
+      content: "command output",
+      showSaveDialog: async () => {
+        throw new Error("save dialog must not open for View all");
+      },
+      writeFile: (filePath) => {
+        writes.push(filePath);
+      },
+    })).toBe("fallback");
+    expect(writes).toEqual([]);
+  });
+
+  it("desktop openUntitledText honors a suggested filename via the save helper", () => {
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "electron-host.ts"),
+      "utf8",
+    );
+    const start = src.indexOf("async openUntitledText");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, start + 1800);
+    expect(body).toContain("deliverSuggestedFileSave");
+    expect(body).toContain("suggestedFilename");
+    expect(body).toContain("saveFiltersForFilename");
+    expect(body).toContain("saveDialogTitleForFilename");
+    expect(body).toMatch(/outcome !== "fallback"/);
   });
 });
 
@@ -4976,6 +5132,7 @@ describe("editing a script is an edit, not a launch", () => {
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-exec-write-"));
   });
+
   afterEach(() => {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
   });
@@ -5009,5 +5166,26 @@ describe("editing a script is an edit, not a launch", () => {
     if (!text.ok || !text.details) throw new Error("expected a stamp");
     expect(writeTreeFile(root, "image.png", "x", text.details.stamp, {}))
       .toEqual({ ok: false, reason: "file type is not editable" });
+  });
+});
+
+describe("desktop provider global state", () => {
+  it("preserves the shared provider keys without desktop-specific translation", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-provider-state-"));
+    const file = path.join(dir, "globalState.json");
+    try {
+      const state = createFileMemento(file);
+      await state.update("grok.providerConnections", { grok: true, codex: true });
+      await state.update("grok.providerModelCache", { codex: { models: [{ modelId: "" }], seenAt: 1 } });
+      await state.update("grok.projectProviderDefaults", { "/work": { provider: "codex", modelId: "" } });
+
+      const reloaded = createFileMemento(file);
+      expect(reloaded.get("grok.providerConnections")).toEqual({ grok: true, codex: true });
+      expect(reloaded.get<any>("grok.providerModelCache").codex.models[0].modelId).toBe("");
+      expect(reloaded.get<any>("grok.projectProviderDefaults")["/work"])
+        .toEqual({ provider: "codex", modelId: "" });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

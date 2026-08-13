@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import * as path from "node:path";
@@ -105,12 +105,105 @@ export async function probeVersionOutput(
 }
 
 /**
+ * Last successfully parsed `grok --version` banner for one resolved CLI path.
+ * `mtimeMs` + `size` are the binary's identity: a replaced file must not inherit
+ * the previous verdict. Persisted under {@link CLI_VERSION_CACHE_KEY}.
+ */
+export type CachedCliVersion = {
+  mtimeMs: number;
+  size: number;
+  versionOutput: string;
+};
+
+/** Resolved-path → last verified banner. Path keys are {@link cliVersionCacheKey}. */
+export type CliVersionCache = Record<string, CachedCliVersion>;
+
+export type CliBinaryIdentity = {
+  path: string;
+  mtimeMs: number;
+  size: number;
+};
+
+/** globalState key for {@link CliVersionCache}. Not in DISK_KEYS — this is a local binary. */
+export const CLI_VERSION_CACHE_KEY = "grok.cliVersionCache";
+
+/**
+ * Unverified-probe copy. Names the likely cause (failed/timed-out check) and the
+ * fix (pick Plan again / reload) so it does not read as a permanent "too old".
+ */
+export const PLAN_MODE_UNVERIFIED_REASON =
+  `Could not verify the installed Grok CLI version, so Plan mode is unavailable. ` +
+  `The version check failed or timed out — a first run after install can be slow. ` +
+  `Pick Plan again or reload the window to retry. ` +
+  `Once verified, Plan requires ${GROK_REQUIRED_VERSION} or newer.`;
+
+/** Stable cache key for a resolved CLI path (Windows is case-insensitive). */
+export function cliVersionCacheKey(cliPath: string): string {
+  const normalized = path.normalize(cliPath);
+  return IS_WIN ? normalized.toLowerCase() : normalized;
+}
+
+function defaultCliStat(cliPath: string): { mtimeMs: number; size: number } {
+  const st = statSync(cliPath);
+  return { mtimeMs: st.mtimeMs, size: st.size };
+}
+
+/** Identity of the file at `cliPath`, or undefined when it cannot be measured. */
+export function readCliBinaryIdentity(
+  cliPath: string,
+  stat: (p: string) => { mtimeMs: number; size: number } = defaultCliStat,
+): CliBinaryIdentity | undefined {
+  if (!cliPath) return undefined;
+  try {
+    const st = stat(cliPath);
+    if (!Number.isFinite(st.mtimeMs) || !Number.isFinite(st.size) || st.size < 0) return undefined;
+    return { path: cliVersionCacheKey(cliPath), mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Cached banner only when the on-disk file is still the one we measured.
+ * Missing identity or a mtime/size mismatch is a miss — never a guess.
+ */
+export function lookupCachedCliVersion(
+  cache: CliVersionCache | undefined,
+  identity: CliBinaryIdentity | undefined,
+): string | undefined {
+  if (!cache || !identity) return undefined;
+  const entry = cache[identity.path];
+  if (!entry || typeof entry !== "object") return undefined;
+  if (entry.mtimeMs !== identity.mtimeMs || entry.size !== identity.size) return undefined;
+  if (typeof entry.versionOutput !== "string" || !parseGrokVersion(entry.versionOutput)) return undefined;
+  return entry.versionOutput;
+}
+
+/** Merge a freshly parsed banner into the store. Undefined when there is nothing to persist. */
+export function storeCachedCliVersion(
+  cache: CliVersionCache | undefined,
+  identity: CliBinaryIdentity | undefined,
+  versionOutput: string,
+): CliVersionCache | undefined {
+  if (!identity || !parseGrokVersion(versionOutput)) return undefined;
+  return {
+    ...(cache ?? {}),
+    [identity.path]: {
+      mtimeMs: identity.mtimeMs,
+      size: identity.size,
+      versionOutput,
+    },
+  };
+}
+
+/**
  * Plan-mode gate from a `grok --version` banner. Fail-closed when the banner
  * cannot be parsed (`verified:false` — re-checkable later) or when the install
- * is below the floor (`verified:true` — latched for that process). Pure.
+ * is below the floor (`verified:true` — latched for that process). A cache
+ * substitute may keep `available` but is never `verified`. Pure.
  */
 export type PlanModeAvailabilityDecision =
-  | { available: true; verified: true }
+  | { available: true; verified: boolean }
   | { available: false; verified: true; installed: string; reason: string }
   | { available: false; verified: false; reason: string };
 
@@ -122,9 +215,7 @@ export function decidePlanModeAvailability(versionOutput: string): PlanModeAvail
     return {
       available: false,
       verified: false,
-      reason:
-        `Could not verify the installed Grok CLI version, so Plan mode is unavailable. ` +
-        `Once verified, Plan requires ${GROK_REQUIRED_VERSION} or newer.`,
+      reason: PLAN_MODE_UNVERIFIED_REASON,
     };
   }
   const installed = parsed.join(".");
@@ -139,6 +230,47 @@ export function decidePlanModeAvailability(versionOutput: string): PlanModeAvail
     };
   }
   return { available: true, verified: true };
+}
+
+export type PlanModeAvailabilityResolution = {
+  decision: PlanModeAvailabilityDecision;
+  /** Present only after a parseable live probe, so the host can persist it. */
+  nextCache?: CliVersionCache;
+  usedCache: boolean;
+};
+
+/**
+ * Probe (one retry on empty/unparseable) then decide Plan availability.
+ * A failed probe may use {@link lookupCachedCliVersion}; a successful probe
+ * always wins and is what gets written back. A cache hit keeps that
+ * availability but is never `verified` — the host must not latch Plan from a
+ * stand-in banner. Injected I/O keeps this process-free.
+ */
+export async function resolvePlanModeAvailability(opts: {
+  readOnce: () => Promise<string>;
+  sleep: (ms: number) => Promise<void>;
+  identity?: CliBinaryIdentity;
+  cache?: CliVersionCache;
+  backoffMs?: number;
+}): Promise<PlanModeAvailabilityResolution> {
+  const versionOutput = await probeVersionOutput(opts.readOnce, opts.sleep, opts.backoffMs);
+  if (parseGrokVersion(versionOutput)) {
+    return {
+      decision: decidePlanModeAvailability(versionOutput),
+      nextCache: storeCachedCliVersion(opts.cache, opts.identity, versionOutput),
+      usedCache: false,
+    };
+  }
+  const cached = lookupCachedCliVersion(opts.cache, opts.identity);
+  if (cached) {
+    const fromBanner = decidePlanModeAvailability(cached);
+    // Cache is a substitute, not a live reading — keep availability, drop latch.
+    const decision: PlanModeAvailabilityDecision = fromBanner.available
+      ? { available: true, verified: false }
+      : { available: false, verified: false, reason: PLAN_MODE_UNVERIFIED_REASON };
+    return { decision, usedCache: true };
+  }
+  return { decision: decidePlanModeAvailability(versionOutput), usedCache: false };
 }
 
 /**
