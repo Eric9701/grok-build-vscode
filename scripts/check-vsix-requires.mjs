@@ -20,7 +20,9 @@
  *
  * Both are the same bug — packed code requiring unpacked files — so this checks
  * both directions: relative requires must resolve to a packed file, and bare
- * requires must resolve to a packed dependency.
+ * requires must resolve to a packed dependency. It also refuses unexpected
+ * packed deps: the Codex adapter's declared tree (especially @openai/codex
+ * platform binaries) must install for `npm list` but must not enter the vsix.
  *
  * Runs from `prepackage`, so it gates `npm run package` and therefore CI, which
  * already packages on every push and PR.
@@ -59,6 +61,27 @@ for (const f of packed) {
 
 const builtins = new Set(builtinModules);
 const problems = [];
+
+// Production install of @agentclientprotocol/codex-acp also pulls its
+// declared tree, including optional @openai/codex platform binaries.
+// Those must stay out of the vsix — the adapter bundle does not need
+// them when the host sets CODEX_PATH, and packing them balloons the file.
+const ALLOWED_PACKED_DEPS = new Set(["ws", "jpeg-js", "@agentclientprotocol/codex-acp"]);
+for (const name of packedDeps) {
+  if (!ALLOWED_PACKED_DEPS.has(name)) {
+    problems.push(
+      `node_modules/${name}/ is packed, but only ws, jpeg-js, and the Codex adapter belong in the vsix.\n` +
+        `    Narrow .vscodeignore; do not re-include adapter nested node_modules or @openai/codex.`,
+    );
+  }
+}
+for (const file of packed) {
+  if (file.startsWith("node_modules/@agentclientprotocol/codex-acp/node_modules/")) {
+    problems.push(
+      `${file}\n    nested adapter dependency packed — re-include only package.json / dist / LICENSE.`,
+    );
+  }
+}
 
 for (const file of packed) {
   // Only our own compiled output. Dependency internals are the dependency's

@@ -18,7 +18,15 @@ tsconfig.json
 node_modules/**
 !node_modules/ws/**
 !node_modules/jpeg-js/**
-!node_modules/@agentclientprotocol/codex-acp/**
+# Adapter files only. `!…/codex-acp/**` would also pack its nested
+# node_modules (diff@9, open@11 — vsce: a later exclude cannot undo a negate).
+# @openai/codex's platform binaries hoist to node_modules/@openai and are kept
+# out by the top-level node_modules/** exclude plus check-vsix-requires.mjs's
+# packed-deps allowlist. dist/index.js is a bundle; the host always sets
+# CODEX_PATH, so the declared deps are install-only, not vsix payload.
+!node_modules/@agentclientprotocol/codex-acp/package.json
+!node_modules/@agentclientprotocol/codex-acp/dist/**
+!node_modules/@agentclientprotocol/codex-acp/LICENSE
 .git/**
 **/*.map
 **/*.ts

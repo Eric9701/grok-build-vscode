@@ -31,7 +31,19 @@ files:
   - resources/**/*
   - node_modules/ws/**/*
   - node_modules/jpeg-js/**/*
-  - node_modules/@agentclientprotocol/codex-acp/**/*
+  - node_modules/@agentclientprotocol/codex-acp/package.json
+  - node_modules/@agentclientprotocol/codex-acp/dist/**/*
+  - node_modules/@agentclientprotocol/codex-acp/LICENSE
+  # LOAD-BEARING. The honest lockfile installs the adapter's declared tree,
+  # and electron-builder packs the full hoisted production tree of every
+  # direct dep — verified in the built asar, which carries zod, vscode-jsonrpc
+  # and open's helpers. Without these lines @openai/codex's ~350 MB platform
+  # binary (hoisted to node_modules/@openai) and the adapter's nested
+  # conflict copies (diff@9, open@11) land in app.asar. Only NEGATIVE
+  # patterns reach the node_modules matcher, so a blocklist is the one tool
+  # here; the small hoisted helpers that still ride along are harmless.
+  - "!node_modules/@openai/**"
+  - "!node_modules/@agentclientprotocol/codex-acp/node_modules/**"
   - "!out/**/*.map"
   - "!**/*.{ts,tsx,md}"
 

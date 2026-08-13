@@ -169,6 +169,13 @@ resources/**          # icon
 LICENSE
 node_modules/ws
 node_modules/jpeg-js
+node_modules/@agentclientprotocol/codex-acp   # package.json + dist + LICENSE only
+node_modules/<hoisted adapter transitives>    # zod, vscode-jsonrpc, open's helpers, … —
+                                              # small and unused (dist is a bundle).
+                                              # @openai/codex's ~350 MB platform binary
+                                              # and the adapter's nested node_modules are
+                                              # kept OUT by explicit excludes in
+                                              # electron-builder.yml (load-bearing)
 ```
 
 `resolveExtensionRoot()` / `resolveExtensionRootFrom()` look for
