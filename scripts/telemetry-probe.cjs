@@ -29,9 +29,9 @@ const sys = {
 // Two distinct installs (one of them repeated) → 3 events, 2 unique installIds,
 // so you can verify the export → distinct-`installId` = unique-users flow.
 const samples = [
-  { installId: "dev-probe-A", mode: "agent", model: "grok-build", effort: "high", showThinking: false, expandToolDetails: false, steerByDefault: false, chatFontScale: 100, readRepliesAloud: false, soundNotifications: false, sessionOrigin: "local", clientDevice: "desktop" },
-  { installId: "dev-probe-A", mode: "yolo", model: "grok-build", effort: "high", showThinking: true, expandToolDetails: true, steerByDefault: true, chatFontScale: 125, readRepliesAloud: true, soundNotifications: true, remoteFontScale: 140, remoteReadRepliesAloud: false, sessionOrigin: "remote", clientDevice: "mobile" },
-  { installId: "dev-probe-B", mode: "plan", model: "grok-code", effort: "low", showThinking: false, expandToolDetails: false, steerByDefault: false, chatFontScale: 90, readRepliesAloud: false, soundNotifications: false, sessionOrigin: "remote", clientDevice: "desktop" },
+  { installId: "dev-probe-A", mode: "agent", model: "grok-build", effort: "high", showThinking: false, expandToolDetails: false, steerByDefault: false, chatFontScale: 100, readRepliesAloud: false, soundNotifications: false, sessionOrigin: "local", clientDevice: "desktop", hostKind: "vscode", appPurpose: "knowledge", voiceConfigured: false, voiceStreaming: true, voiceLanguageSet: false, grokConnected: true, codexConnected: false },
+  { installId: "dev-probe-A", mode: "yolo", model: "grok-build", effort: "high", showThinking: true, expandToolDetails: true, steerByDefault: true, chatFontScale: 125, readRepliesAloud: true, soundNotifications: true, remoteFontScale: 140, remoteReadRepliesAloud: false, sessionOrigin: "remote", clientDevice: "mobile", hostKind: "desktop", appPurpose: "coding", voiceConfigured: true, voiceStreaming: true, voiceLanguageSet: true, grokConnected: true, codexConnected: true },
+  { installId: "dev-probe-B", mode: "plan", model: "grok-code", effort: "low", showThinking: false, expandToolDetails: false, steerByDefault: false, chatFontScale: 90, readRepliesAloud: false, soundNotifications: false, sessionOrigin: "remote", clientDevice: "desktop", hostKind: "vscode", appPurpose: "knowledge", voiceConfigured: false, voiceStreaming: false, voiceLanguageSet: false, grokConnected: false, codexConnected: true },
 ];
 
 function send(event) {

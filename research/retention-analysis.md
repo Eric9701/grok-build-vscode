@@ -93,7 +93,7 @@ flowchart TB
 - Probe that fires real events (to the dev project): [scripts/telemetry-probe.cjs](../scripts/telemetry-probe.cjs)
 - Install ID generation & first-send gate: `src/sidebar.ts` (search `INSTALL_ID_KEY` and `isFirstSend`)
 
-The extension's telemetry is intentionally minimal: one fire-and-forget `session_start` carrying only `installId` + `mode`/`model`/`effort` (plus standard system fields). Richer cohort or funnel analysis is performed offline on Aptabase exports.
+The extension's telemetry is intentionally minimal: one fire-and-forget `session_start` carrying an anonymous `installId` plus a low-cardinality settings snapshot (see [privacy.md](../docs/privacy.md)). Richer cohort or funnel analysis is performed offline on Aptabase exports.
 
 ---
 
