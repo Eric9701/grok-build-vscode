@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.8.0 — 2026-08-14
+
+### Added
+
+- **The desktop app updates itself.** Windows and macOS builds check quietly in the background, download the new version while you keep working, and the rail button becomes **Restart to update** when it's staged — one click installs silently and brings the app right back. A normal quit installs it too. No wizard, no SmartScreen detour, no download page: that whole trip now exists only as the fallback when the feed is unreachable. An in-flight reply is never interrupted — the update waits for your click or your next quit.
+- **Typing part of a command's name finds it.** `/rev` matches `/code-review` now, not just commands that start with those letters — commands beginning with what you typed still list first (#110).
+- **Anonymous usage telemetry knows the app from the editor.** The one existing session-start event now says whether it came from the desktop app or VS Code, and which settings shape the session (mode, model, effort, thinking traces, voice on/off, which agents are connected). Strictly enums and booleans — a new test proves no path, filename, or free text can enter the payload, and any value the app hasn't actually measured is omitted rather than guessed. The full field list is in docs/privacy.md.
+
+### Fixed
+
+- **The projects rail no longer vanishes on desktop startup.** Opening the app with a restored conversation could boot into a chat with no left rail at all — every time, on some machines — until a hard reload brought it back. The startup handshake was mistaking its own just-started session for a window reload and skipping the project list on the strength of it.
+- **The desktop window can no longer open scrambled.** An occasional first paint had the content shifted and cropped at both edges, panels pushed off-screen, zoom applied twice. The window now shows only once the page can measure it, the app's zoom is the only zoom, and a boot-time focus can no longer scroll the layout into a stuck state.
+- **Your history is there before the agent is.** With the CLI still starting — or not installed at all — conversations on disk now list and open read-only instead of showing an empty rail behind a blank onboarding screen.
+- **Grok 4.6** replaces Grok 4.5 across the listing and manifest, and packaging keeps the Codex adapter's dependencies out of the shipped artifacts (5.2 MB vsix, 17 MB desktop asar — with the ~350 MB Codex platform binary provably excluded from both).
+
 ## 3.7.0 — 2026-08-13
 
 ### Added
