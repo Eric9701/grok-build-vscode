@@ -98,8 +98,12 @@ the phase-1 notice. Do not serve HTML error pages with status 200.
 ### Feed service
 
 The relay fetches the GitHub Releases API on demand and caches the rewritten
-yml in memory (~10–15 min TTL), serving the last good copy if a refresh
-fails. Each platform feed is selected independently: the newest non-draft
+yml in memory (~10–15 min TTL, positive and negative). There is deliberately
+no stale-serve: past the TTL a failed refresh is a real error status (with a
+short backoff), so deleting the yml assets from a release — the operator
+kill-switch for a bad unsigned update — takes effect within one TTL, and no
+copy older than that is ever served. Each platform feed is
+selected independently: the newest non-draft
 release that carries that platform's yml asset plus its required artifacts.
 A half-failed release matrix therefore leaves one platform on the older
 version — correct, not an error. A release with installers but no yml
