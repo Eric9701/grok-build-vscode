@@ -209,6 +209,8 @@ export interface ElectronHostOptions {
   onWorkspaceRootChanged?: (root: string) => void;
   /** Called when the open-folder list changes (add / remove / first open). */
   onWorkspaceFoldersChanged?: (roots: string[], active: string | undefined) => void;
+  /** Packaged desktop: quit and install a downloaded app update. */
+  installAppUpdate?: () => void;
 }
 
 function openHtmlDocumentWindow(
@@ -549,6 +551,7 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     getAuthContext,
     onWorkspaceRootChanged,
     onWorkspaceFoldersChanged,
+    installAppUpdate,
   } = opts;
   const configListeners = config; // store owns change events
   let activeEditor: HostTextEditor | undefined;
@@ -954,6 +957,9 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
       const win = getWindow();
       if (!win || win.isDestroyed()) return;
       win.webContents.toggleDevTools();
+    },
+    installAppUpdate() {
+      installAppUpdate?.();
     },
 
     fs: hostFs,

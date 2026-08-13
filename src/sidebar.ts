@@ -7176,6 +7176,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "openUpdateRelease":
         void this.host.openExternal(msg.url);
         break;
+      case "restartToUpdate":
+        this.host.installAppUpdate?.();
+        break;
       case "openText": {
         // Basename only — a renderer-supplied path must not choose the directory.
         const name = typeof msg.filename === "string" ? path.basename(msg.filename.trim()) : "";

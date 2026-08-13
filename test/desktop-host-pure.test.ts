@@ -566,6 +566,19 @@ describe("createSafeStorageSecrets", () => {
 });
 
 describe("desktop main wiring (source gates)", () => {
+  it("re-delivers the live pendingUpdate after the reload delay, not a pre-timeout snapshot", () => {
+    const main = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
+      "utf8",
+    );
+    // A snapshot taken before setTimeout re-posts a stale notice over a
+    // notice→ready transition that lands in the 500 ms window.
+    expect(main).not.toMatch(/const n = pendingUpdate;\s*setTimeout/);
+    expect(main).toMatch(
+      /setTimeout\(\(\) => \{\s*const live = pendingUpdate;[\s\S]*?live\.kind === "ready"[\s\S]*?\}, 500\)/,
+    );
+  });
+
   it("stores device credentials via safeStorage, not plaintext createFileSecrets", () => {
     const main = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
@@ -1170,6 +1183,9 @@ describe("webview message schema validation", () => {
       .toBe("runGrokLogin");
     expect(parseWebviewMsg({ type: "installCodex" })?.type).toBe("installCodex");
     expect(parseWebviewMsg({ type: "cancelCodexInstall" })?.type).toBe("cancelCodexInstall");
+    expect(parseWebviewMsg({ type: "restartToUpdate" })).toEqual({ type: "restartToUpdate" });
+    expect(parseWebviewMsg({ type: "openUpdateRelease", url: "https://afkpilot.com/desktop-update" })?.type)
+      .toBe("openUpdateRelease");
   });
 
   it("drops unknown types and malformed payloads", () => {

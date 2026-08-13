@@ -4,15 +4,30 @@
  * exercised here.
  */
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  attachDesktopAutoUpdate,
   compareSemver,
+  desktopAutoUpdateEnabled,
+  desktopUpdateFeedBase,
+  desktopUpdateFeedConfig,
+  desktopUpdatePageUrl,
+  initialAppUpdateState,
   isDesktopInstallerAsset,
   isNewerVersion,
+  latestMacYmlHasBothArches,
+  latestWinYmlHasInstaller,
   noticeIfUpdateAvailable,
   parseSemver,
   pickLatestDesktopRelease,
+  railUpdateKind,
+  reduceAppUpdate,
+  shouldRunNoticeFallback,
+  shouldSkipUpdateCheck,
+  type DesktopAutoUpdater,
   type GithubReleaseLike,
-  desktopUpdatePageUrl,
 } from "../src/desktop/app-update";
 import {
   INBOUND_DISPOSITION,
@@ -58,12 +73,16 @@ describe("isDesktopInstallerAsset", () => {
   it("matches anchored installer suffixes", () => {
     expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-arm64.dmg")).toBe(true);
     expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-x64.dmg")).toBe(true);
+    expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-arm64.zip")).toBe(true);
+    expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-x64.zip")).toBe(true);
     expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-win-x64.exe")).toBe(true);
   });
 
   it("excludes .blockmap and other companions", () => {
     expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-win-x64.exe.blockmap")).toBe(false);
     expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-arm64.dmg.blockmap")).toBe(false);
+    expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-arm64.zip.blockmap")).toBe(false);
+    expect(isDesktopInstallerAsset("Grok-Build-Desktop-3.2.0-mac-x64.zip.blockmap")).toBe(false);
     expect(isDesktopInstallerAsset("grok-vscode-phuryn-3.2.0.vsix")).toBe(false);
     expect(isDesktopInstallerAsset("Source code (zip)")).toBe(false);
     expect(isDesktopInstallerAsset("")).toBe(false);
@@ -118,6 +137,21 @@ describe("pickLatestDesktopRelease / noticeIfUpdateAvailable", () => {
     });
   });
 
+  it("treats a zip-only mac release as a desktop release", () => {
+    expect(
+      pickLatestDesktopRelease([
+        {
+          tag_name: "v3.4.0",
+          html_url: "https://github.com/phuryn/grok-build-vscode/releases/tag/v3.4.0",
+          assets: [{ name: "Grok-Build-Desktop-3.4.0-mac-arm64.zip" }],
+        },
+      ]),
+    ).toEqual({
+      version: "3.4.0",
+      url: "https://github.com/phuryn/grok-build-vscode/releases/tag/v3.4.0",
+    });
+  });
+
   it("notifies only when the release is newer than the running app", () => {
     expect(noticeIfUpdateAvailable("3.1.0", releases)).toEqual({
       version: "3.2.0",
@@ -140,8 +174,16 @@ describe("updateAvailable remote policy (host-local both ways)", () => {
     expect(OUTBOUND_DISPOSITION.updateAvailable).toBe("host-local");
   });
 
+  it("keeps updateReady outbound host-local so remotes never see Restart", () => {
+    expect(OUTBOUND_DISPOSITION.updateReady).toBe("host-local");
+  });
+
   it("keeps openUpdateRelease inbound host-local so a phone cannot open desk updates", () => {
     expect(INBOUND_DISPOSITION.openUpdateRelease).toBe("host-local");
+  });
+
+  it("keeps restartToUpdate inbound host-local so a phone cannot quit the desk", () => {
+    expect(INBOUND_DISPOSITION.restartToUpdate).toBe("host-local");
   });
 });
 
@@ -186,5 +228,390 @@ describe("where the update button sends people", () => {
     expect(desktopUpdatePageUrl("")).toBe("https://afkpilot.com/desktop-update");
     expect(desktopUpdatePageUrl(null)).toBe("https://afkpilot.com/desktop-update");
     expect(desktopUpdatePageUrl("3.2.4 &x=1")).toContain("from=3.2.4%20%26x%3D1");
+  });
+});
+
+describe("generic feed URL selection", () => {
+  it("points Windows at /update/win/ so electron-updater fetches latest.yml", () => {
+    expect(desktopUpdateFeedBase("win32")).toBe("https://afkpilot.com/update/win/");
+    expect(desktopUpdateFeedConfig("win32")).toEqual({
+      provider: "generic",
+      url: "https://afkpilot.com/update/win/",
+    });
+  });
+
+  it("points macOS at /update/mac/ so electron-updater fetches latest-mac.yml", () => {
+    expect(desktopUpdateFeedBase("darwin")).toBe("https://afkpilot.com/update/mac/");
+    expect(desktopUpdateFeedConfig("darwin")).toEqual({
+      provider: "generic",
+      url: "https://afkpilot.com/update/mac/",
+    });
+  });
+
+  it("has no in-app feed on Linux", () => {
+    expect(desktopUpdateFeedBase("linux")).toBeNull();
+    expect(desktopUpdateFeedConfig("linux")).toBeNull();
+    expect(desktopAutoUpdateEnabled({ platform: "linux", packaged: true })).toBe(false);
+  });
+
+  it("enables the updater only when packaged or forceDev", () => {
+    expect(desktopAutoUpdateEnabled({ platform: "win32", packaged: true })).toBe(true);
+    expect(desktopAutoUpdateEnabled({ platform: "darwin", packaged: false })).toBe(false);
+    expect(desktopAutoUpdateEnabled({ platform: "darwin", packaged: false, forceDev: true })).toBe(true);
+  });
+});
+
+describe("latest.yml dual-arch / installer checks", () => {
+  it("requires both mac zip arches", () => {
+    expect(
+      latestMacYmlHasBothArches(
+        "files:\n  - url: Grok-Build-Desktop-3.7.0-mac-arm64.zip\n  - url: Grok-Build-Desktop-3.7.0-mac-x64.zip\n",
+      ),
+    ).toBe(true);
+    expect(latestMacYmlHasBothArches("files:\n  - url: Grok-Build-Desktop-3.7.0-mac-arm64.zip\n")).toBe(false);
+    expect(latestMacYmlHasBothArches("")).toBe(false);
+    // Blockmap-only lines must not satisfy either arch — same class as the
+    // Windows check below.
+    expect(
+      latestMacYmlHasBothArches(
+        "files:\n  - url: Grok-Build-Desktop-3.7.0-mac-arm64.zip.blockmap\n  - url: Grok-Build-Desktop-3.7.0-mac-x64.zip.blockmap\n",
+      ),
+    ).toBe(false);
+    expect(
+      latestMacYmlHasBothArches(
+        "files:\r\n  - url: Grok-Build-Desktop-3.7.0-mac-arm64.zip\r\n  - url: Grok-Build-Desktop-3.7.0-mac-x64.zip\r\n",
+      ),
+    ).toBe(true);
+  });
+
+  it("requires the Windows NSIS installer name", () => {
+    expect(latestWinYmlHasInstaller("path: Grok-Build-Desktop-3.7.0-win-x64.exe")).toBe(true);
+    expect(latestWinYmlHasInstaller("url: Grok-Build-Desktop-3.7.0-win-x64.exe\r")).toBe(true);
+    expect(latestWinYmlHasInstaller("path: Grok-Build-Desktop-3.7.0-win-x64.exe.blockmap")).toBe(false);
+    expect(latestWinYmlHasInstaller("url: Grok-Build-Desktop-3.7.0-win-x64.exe.blockmap\n")).toBe(false);
+    expect(latestWinYmlHasInstaller("path: something.vsix")).toBe(false);
+  });
+});
+
+describe("update state machine", () => {
+  it("walks check → available → downloading → ready", () => {
+    let s = initialAppUpdateState();
+    expect(railUpdateKind(s)).toBe("hidden");
+    s = reduceAppUpdate(s, { type: "check-started" });
+    expect(s.phase).toBe("checking");
+    s = reduceAppUpdate(s, { type: "update-available", version: "3.8.0" });
+    expect(s).toEqual({ phase: "available", version: "3.8.0" });
+    s = reduceAppUpdate(s, { type: "download-started" });
+    expect(s.phase).toBe("downloading");
+    expect(shouldSkipUpdateCheck(s)).toBe(true);
+    s = reduceAppUpdate(s, { type: "update-downloaded", version: "3.8.0" });
+    expect(s.phase).toBe("ready");
+    expect(railUpdateKind(s)).toBe("restart");
+    expect(shouldSkipUpdateCheck(s)).toBe(true);
+  });
+
+  it("falls back to notice on check or download error", () => {
+    let s = reduceAppUpdate(initialAppUpdateState(), { type: "check-started" });
+    s = reduceAppUpdate(s, { type: "error" });
+    expect(s.phase).toBe("failed");
+    expect(shouldRunNoticeFallback(s)).toBe(true);
+    expect(railUpdateKind(s)).toBe("notice");
+
+    s = reduceAppUpdate(initialAppUpdateState(), { type: "update-available", version: "3.8.0" });
+    s = reduceAppUpdate(s, { type: "download-started" });
+    s = reduceAppUpdate(s, { type: "error" });
+    expect(s.phase).toBe("failed");
+    expect(shouldRunNoticeFallback(s)).toBe(true);
+  });
+
+  it("does not leave ready after a later check or error", () => {
+    let s = reduceAppUpdate(initialAppUpdateState(), {
+      type: "update-downloaded",
+      version: "3.8.0",
+    });
+    s = reduceAppUpdate(s, { type: "check-started" });
+    s = reduceAppUpdate(s, { type: "error" });
+    s = reduceAppUpdate(s, { type: "update-not-available" });
+    expect(s).toEqual({ phase: "ready", version: "3.8.0" });
+  });
+
+  it("returns to idle when already current", () => {
+    let s = reduceAppUpdate(initialAppUpdateState(), { type: "check-started" });
+    s = reduceAppUpdate(s, { type: "update-not-available" });
+    expect(s).toEqual({ phase: "idle", version: null });
+    expect(railUpdateKind(s)).toBe("hidden");
+  });
+});
+
+function fakeUpdater(script?: {
+  check?: () => Promise<void>;
+  quit?: () => void;
+}): DesktopAutoUpdater & {
+  feed: { provider: "generic"; url: string } | null;
+  setFeedCalls: number;
+  quitCalls: { isSilent?: boolean; isForceRunAfter?: boolean }[];
+  listeners: Record<string, ((...args: unknown[]) => void)[]>;
+  emit(event: string, ...args: unknown[]): void;
+} {
+  const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
+  return {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    allowPrerelease: true,
+    logger: null,
+    feed: null,
+    setFeedCalls: 0,
+    quitCalls: [],
+    listeners,
+    setFeedURL(opts) {
+      this.setFeedCalls += 1;
+      this.feed = opts;
+    },
+    on(event, listener) {
+      (listeners[event] ||= []).push(listener);
+    },
+    emit(event, ...args) {
+      for (const l of listeners[event] || []) l(...args);
+    },
+    async checkForUpdates() {
+      if (script?.check) return script.check();
+    },
+    quitAndInstall(isSilent, isForceRunAfter) {
+      this.quitCalls.push({ isSilent, isForceRunAfter });
+      script?.quit?.();
+    },
+  };
+}
+
+describe("attachDesktopAutoUpdate", () => {
+  it("configures the Windows generic feed and posts ready after download", async () => {
+    const updater = fakeUpdater({
+      async check() {
+        updater.emit("checking-for-update");
+        updater.emit("update-available", { version: "3.8.0" });
+        updater.emit("update-downloaded", { version: "3.8.0" });
+      },
+    });
+    const notices: string[] = [];
+    const ready: string[] = [];
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: true,
+      ui: {
+        postNotice: (v) => notices.push(v),
+        postReady: (v) => ready.push(v),
+        log: () => {},
+        fetchNotice: async () => ({ version: "9.9.9", url: "https://x" }),
+      },
+    });
+    await session.check();
+    expect(updater.feed).toEqual({ provider: "generic", url: "https://afkpilot.com/update/win/" });
+    expect(updater.setFeedCalls).toBe(1);
+    expect(updater.autoDownload).toBe(true);
+    expect(updater.autoInstallOnAppQuit).toBe(true);
+    expect(updater.forceDevUpdateConfig).toBeUndefined();
+    expect(ready).toEqual(["3.8.0"]);
+    expect(notices).toEqual([]);
+    expect(session.getState().phase).toBe("ready");
+  });
+
+  it("falls back to the GitHub notice when check throws", async () => {
+    const updater = fakeUpdater({
+      async check() {
+        throw new Error("offline");
+      },
+    });
+    const notices: { version: string; url: string }[] = [];
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "darwin",
+      currentVersion: "3.7.0",
+      packaged: true,
+      ui: {
+        postNotice: (version, url) => notices.push({ version, url }),
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => ({ version: "3.8.0", url: "https://github.com/x" }),
+      },
+    });
+    await session.check();
+    expect(updater.feed).toEqual({ provider: "generic", url: "https://afkpilot.com/update/mac/" });
+    expect(notices).toEqual([
+      { version: "3.8.0", url: "https://afkpilot.com/desktop-update?from=3.7.0" },
+    ]);
+    expect(session.getState().phase).toBe("failed");
+  });
+
+  it("falls back to the notice when the updater emits error mid-download", async () => {
+    const updater = fakeUpdater({
+      async check() {
+        updater.emit("update-available", { version: "3.8.0" });
+        updater.emit("error", new Error("hash"));
+      },
+    });
+    const notices: string[] = [];
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: true,
+      ui: {
+        postNotice: (v) => notices.push(v),
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => ({ version: "3.8.0", url: "https://x" }),
+      },
+    });
+    await session.check();
+    // error handler kicks fallbackNotice without awaiting it.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(notices).toEqual(["3.8.0"]);
+    expect(session.getState().phase).toBe("failed");
+  });
+
+  it("skips the updater when unpackaged and uses the notice path", async () => {
+    const updater = fakeUpdater();
+    const notices: string[] = [];
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: false,
+      ui: {
+        postNotice: (v) => notices.push(v),
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => ({ version: "3.8.0", url: "https://x" }),
+      },
+    });
+    await session.check();
+    expect(updater.setFeedCalls).toBe(0);
+    expect(notices).toEqual(["3.8.0"]);
+  });
+
+  it("does not call setFeedURL in unpackaged forceDev so electron-updater reads dev-app-update.yml", async () => {
+    const updater = fakeUpdater({
+      async check() {
+        updater.emit("update-not-available");
+      },
+    });
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: false,
+      forceDev: true,
+      ui: {
+        postNotice: () => {},
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => null,
+      },
+    });
+    await session.check();
+    expect(updater.setFeedCalls).toBe(0);
+    expect(updater.feed).toBeNull();
+    expect(updater.forceDevUpdateConfig).toBe(true);
+  });
+
+  it("calls setFeedURL when packaged, even if forceDev is set", async () => {
+    const updater = fakeUpdater({
+      async check() {
+        updater.emit("update-not-available");
+      },
+    });
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "darwin",
+      currentVersion: "3.7.0",
+      packaged: true,
+      forceDev: true,
+      ui: {
+        postNotice: () => {},
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => null,
+      },
+    });
+    await session.check();
+    expect(updater.setFeedCalls).toBe(1);
+    expect(updater.feed).toEqual({ provider: "generic", url: "https://afkpilot.com/update/mac/" });
+    expect(updater.forceDevUpdateConfig).toBeUndefined();
+  });
+
+  it("install() calls quitAndInstall(true, true)", async () => {
+    const updater = fakeUpdater({
+      async check() {
+        updater.emit("update-downloaded", { version: "3.8.0" });
+      },
+    });
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: true,
+      ui: {
+        postNotice: () => {},
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => null,
+      },
+    });
+    await session.check();
+    session.install();
+    expect(updater.quitCalls).toEqual([{ isSilent: true, isForceRunAfter: true }]);
+  });
+
+  it("does not quitAndInstall until ready", () => {
+    let quits = 0;
+    const updater = fakeUpdater({ quit: () => { quits += 1; } });
+    const session = attachDesktopAutoUpdate({
+      updater,
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: true,
+      ui: {
+        postNotice: () => {},
+        postReady: () => {},
+        log: () => {},
+        fetchNotice: async () => null,
+      },
+    });
+    session.install();
+    expect(quits).toBe(0);
+    expect(updater.quitCalls).toEqual([]);
+  });
+});
+
+describe("app-update source gates", () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+  it("does not assign the no-op runtime verifyUpdateCodeSignature", () => {
+    const src = fs.readFileSync(path.join(root, "src", "desktop", "app-update.ts"), "utf8");
+    expect(src).not.toMatch(/verifyUpdateCodeSignature/);
+    expect(src).toMatch(/quitAndInstall\(true, true\)/);
+  });
+
+  it("documents the relay feed service and unpackaged-only dev yml", () => {
+    const spec = fs.readFileSync(path.join(root, "docs", "desktop-update-spec.md"), "utf8");
+    expect(spec).toMatch(/### Feed service/);
+    expect(spec).toMatch(/selected independently/i);
+    expect(spec).toMatch(/10–15 min TTL|10-15 min TTL/);
+    expect(spec).toMatch(/installers but no yml/);
+    expect(spec).toMatch(/last three installer-bearing/);
+    expect(spec).toMatch(/objects\.githubusercontent\.com/);
+    expect(spec).toMatch(/trust boundary/);
+    expect(spec).toMatch(/unpackaged only/i);
+    expect(spec).toMatch(/packaged build never reads `dev-app-update\.yml`/i);
+    expect(spec).toMatch(/win\.verifyUpdateCodeSignature: false/);
+    expect(spec).toMatch(/NsisUpdater's setter ignores falsy/);
+    expect(spec).toMatch(/-mac-arm64\.zip/);
+    expect(spec).toMatch(/-mac-x64\.zip/);
+    const desktop = fs.readFileSync(path.join(root, "docs", "desktop.md"), "utf8");
+    expect(desktop).toMatch(/node_modules\/electron-updater/);
+    expect(desktop).toMatch(/hoisted tree/);
   });
 });

@@ -536,6 +536,11 @@ export interface Host {
    * discoverability does not depend on an auto-hidden application menu.
    */
   toggleDevTools(): void;
+  /**
+   * Quit and install a downloaded desktop update. Optional: VS Code has no
+   * updater; desktop wires this to electron-updater's quitAndInstall.
+   */
+  installAppUpdate?(): void;
 
   // ── Filesystem ─────────────────────────────────────────────────────────
   readonly fs: HostFileSystem;

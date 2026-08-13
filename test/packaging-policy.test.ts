@@ -110,6 +110,7 @@ describe("VSIX excludes desktop app", () => {
     expect(vscodeignore).toMatch(/^\s*scripts\/run-desktop\.cjs\s*$/m);
     expect(vscodeignore).toMatch(/^\s*vitest\.desktop\.config\.ts\s*$/m);
     expect(vscodeignore).toMatch(/^\s*electron-builder\.yml\s*$/m);
+    expect(vscodeignore).toMatch(/^\s*docs\/desktop-update-spec\.md\s*$/m);
     expect(vscodeignore).toMatch(/^\s*dist-desktop\/\*\*/m);
     // Both readmes excluded as files; vsce embeds marketplace content only.
     expect(vscodeignore).toMatch(/^\s*README\.marketplace\.md\s*$/m);
@@ -147,6 +148,39 @@ describe("VSIX excludes desktop app", () => {
     expect(pkg.scripts["dist:mac"]).toMatch(/electron-builder/);
     expect(pkg.scripts.dist).toMatch(/electron-builder/);
     expect(pkg.scripts.package).toMatch(/\bvsce package\b/);
+  });
+
+  it("generates updater yml without publishing from electron-builder", () => {
+    const builder = read("electron-builder.yml");
+    const workflow = read(".github/workflows/desktop-release.yml");
+    const full = JSON.parse(read("package.json")) as {
+      dependencies?: Record<string, string>;
+      scripts: Record<string, string>;
+    };
+    // Publish config is required so latest.yml / latest-mac.yml exist; upload
+    // stays in the workflow. A GitHub provider would stall on vsix-only tags.
+    expect(builder).not.toMatch(/^publish:\s*null\s*$/m);
+    expect(builder).toMatch(/provider:\s*generic/);
+    expect(builder).toMatch(/afkpilot\.com\/update\/win/);
+    expect(builder).toMatch(/afkpilot\.com\/update\/mac/);
+    expect(builder).toMatch(/verifyUpdateCodeSignature:\s*false/);
+    expect(builder).not.toMatch(/publisherName:/);
+    for (const s of ["dist", "dist:mac", "dist:win"]) {
+      expect(full.scripts[s]).toMatch(/--publish never/);
+    }
+    expect(full.dependencies?.["electron-updater"]).toBeTruthy();
+    // Must not enter the vsix — desktop main is excluded; do not allowlist it.
+    expect(read(".vscodeignore")).not.toMatch(/!node_modules\/electron-updater/);
+    expect(workflow).toMatch(/dist-desktop\/latest\.yml/);
+    expect(workflow).toMatch(/dist-desktop\/latest-mac\.yml/);
+    expect(workflow).toMatch(/mac-arm64\.zip/);
+    expect(workflow).toMatch(/mac-x64\.zip/);
+    // Line-end so a yml that only lists the .exe.blockmap fails the gate.
+    expect(workflow).toMatch(/grep -Eq 'win-x64\\.exe\\r\?\$'/);
+    // One mac invocation, both arches — splitting jobs races latest-mac.yml.
+    expect(full.scripts["dist:mac"]).toMatch(/electron-builder --mac/);
+    expect(full.scripts["dist:mac"]).not.toMatch(/--arm64/);
+    expect(full.scripts["dist:mac"]).not.toMatch(/--x64/);
   });
 
   it("packages the pinned Codex ACP runtime in the desktop artifact", () => {

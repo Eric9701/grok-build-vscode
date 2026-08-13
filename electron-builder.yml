@@ -59,8 +59,14 @@ afterPack: scripts/adhoc-sign-mac.cjs
 # ${os} is electron-builder's short name: mac | win | linux
 artifactName: Grok-Build-Desktop-${version}-${os}-${arch}.${ext}
 
-# No auto-update publish channel yet (see docs/desktop.md).
-publish: null
+# Generate latest.yml / latest-mac.yml only. Upload stays in
+# desktop-release.yml — every dist* script passes `--publish never`.
+# Client feed is the relay (setFeedURL), not this URL; per-platform
+# blocks bake a matching app-update.yml so a missed setFeedURL still
+# hits the right directory.
+publish:
+  provider: generic
+  url: https://afkpilot.com/update/win
 
 # App icon. Round, with transparency outside the disc: the square version sat on
 # an opaque white tile, which reads as a sticker on a dark Windows taskbar and
@@ -110,6 +116,11 @@ mac:
     # crash rather than as a permissions problem.
     NSMicrophoneUsageDescription: >-
       Grok Build Desktop uses the microphone for voice input in chat.
+  # Both arches in ONE electron-builder invocation so latest-mac.yml lists
+  # both zips. A second arch job would overwrite the first (#5592).
+  publish:
+    provider: generic
+    url: https://afkpilot.com/update/mac
   target:
     - target: dmg
       arch:
@@ -139,6 +150,11 @@ win:
   # own icons separately. It was never needed: with no certificate configured
   # electron-builder already logs "no signing info identified, signing is
   # skipped" and moves on.
+  # Unsigned until an Authenticode cert lands — do not embed publisherName.
+  verifyUpdateCodeSignature: false
+  publish:
+    provider: generic
+    url: https://afkpilot.com/update/win
   target:
     - target: nsis
       arch:

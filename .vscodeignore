@@ -61,6 +61,7 @@ dist-desktop/**
 README.md
 README.marketplace.md
 docs/desktop.md
+docs/desktop-update-spec.md
 scripts/gen-marketplace-readme.cjs
 grok-session-preview.html
 # Private/untracked working docs (git-excluded via .gitignore / .git/info/exclude)

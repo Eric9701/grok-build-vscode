@@ -83,6 +83,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "runMcpList":
     case "showLogs":
     case "toggleDevTools":
+    case "restartToUpdate":
     case "openSettings":
       if (type === "openSettings" && raw.section !== undefined && !isString(raw.section)) return null;
       break;

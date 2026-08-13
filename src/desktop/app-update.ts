@@ -1,16 +1,18 @@
 /**
- * Desktop update *notice* helpers — pure, no network, no Electron.
+ * Desktop update helpers — pure, no network, no Electron.
  *
- * Silent auto-update cannot ship: electron-updater uses Squirrel.Mac on macOS,
- * which refuses to replace an unsigned bundle. These builds are unsigned, so
- * the main process only checks GitHub Releases and (when newer) posts an
- * in-app notice; the user downloads and runs the installer themselves.
+ * Packaged win32/darwin run electron-updater against the relay generic feed
+ * (`desktopUpdateFeedConfig`). Check/download failure falls back to the GitHub
+ * Releases notice. The updater itself is injected; this module never imports it.
+ * Contract: docs/desktop-update-spec.md.
  */
 
-/** Anchored installer asset suffixes. `.exe.blockmap` must never match. */
+/** Anchored installer asset suffixes. `.exe.blockmap` / `.zip.blockmap` must never match. */
 export const DESKTOP_INSTALLER_SUFFIXES = [
   "-mac-arm64.dmg",
   "-mac-x64.dmg",
+  "-mac-arm64.zip",
+  "-mac-x64.zip",
   "-win-x64.exe",
 ] as const;
 
@@ -149,3 +151,270 @@ export const DESKTOP_RELEASES_API_URL =
 
 /** How often a long-running desk re-checks (12 hours). */
 export const DESKTOP_UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+/** Relay origin for generic-provider channel files. Trailing path is per-platform. */
+export const DESKTOP_UPDATE_FEED_ORIGIN = "https://afkpilot.com/update";
+
+/**
+ * Generic-provider directory for this platform (trailing slash). electron-updater
+ * appends `latest.yml` (win32) or `latest-mac.yml` (darwin). Null on Linux.
+ */
+export function desktopUpdateFeedBase(
+  platform: NodeJS.Platform | string | null | undefined,
+): string | null {
+  if (platform === "win32") return `${DESKTOP_UPDATE_FEED_ORIGIN}/win/`;
+  if (platform === "darwin") return `${DESKTOP_UPDATE_FEED_ORIGIN}/mac/`;
+  return null;
+}
+
+/** `setFeedURL` payload, or null when this platform has no in-app updater. */
+export function desktopUpdateFeedConfig(
+  platform: NodeJS.Platform | string | null | undefined,
+): { provider: "generic"; url: string } | null {
+  const url = desktopUpdateFeedBase(platform);
+  if (!url) return null;
+  return { provider: "generic", url };
+}
+
+export type AppUpdatePhase =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "failed";
+
+export type AppUpdateEvent =
+  | { type: "check-started" }
+  | { type: "update-available"; version: string }
+  | { type: "update-not-available" }
+  | { type: "download-started" }
+  | { type: "update-downloaded"; version: string }
+  | { type: "error" };
+
+export interface AppUpdateState {
+  phase: AppUpdatePhase;
+  version: string | null;
+}
+
+export function initialAppUpdateState(): AppUpdateState {
+  return { phase: "idle", version: null };
+}
+
+/** Event → next phase. `ready` is sticky: a later check/error must not hide a downloaded update. */
+export function reduceAppUpdate(state: AppUpdateState, event: AppUpdateEvent): AppUpdateState {
+  if (state.phase === "ready" && event.type !== "update-downloaded") {
+    return state;
+  }
+  switch (event.type) {
+    case "check-started":
+      return { phase: "checking", version: state.version };
+    case "update-available":
+      return { phase: "available", version: event.version || state.version };
+    case "update-not-available":
+      return { phase: "idle", version: null };
+    case "download-started":
+      return { phase: "downloading", version: state.version };
+    case "update-downloaded":
+      return { phase: "ready", version: event.version || state.version };
+    case "error":
+      return { phase: "failed", version: state.version };
+  }
+}
+
+export type RailUpdateKind = "hidden" | "notice" | "restart";
+
+/** What the rail should show for this updater state. Notice still needs a GitHub hit. */
+export function railUpdateKind(state: AppUpdateState): RailUpdateKind {
+  if (state.phase === "ready") return "restart";
+  if (state.phase === "failed") return "notice";
+  return "hidden";
+}
+
+export function shouldRunNoticeFallback(state: AppUpdateState): boolean {
+  return state.phase === "failed";
+}
+
+/** Skip a scheduled check while a download is in flight or already staged. */
+export function shouldSkipUpdateCheck(state: AppUpdateState): boolean {
+  return state.phase === "ready" || state.phase === "downloading";
+}
+
+/** True when this host should talk to electron-updater (not the notice-only path). */
+export function desktopAutoUpdateEnabled(opts: {
+  platform: NodeJS.Platform | string | null | undefined;
+  packaged: boolean;
+  forceDev?: boolean;
+}): boolean {
+  if (!desktopUpdateFeedConfig(opts.platform)) return false;
+  return !!opts.packaged || !!opts.forceDev;
+}
+
+/** latest-mac.yml from one dual-arch `electron-builder --mac` must list both zips. */
+export function latestMacYmlHasBothArches(yml: string | null | undefined): boolean {
+  // Same line-end anchor as the Windows check: a bare `/mac-arm64\.zip/`
+  // also matches `mac-arm64.zip.blockmap`.
+  const s = String(yml || "");
+  return /mac-arm64\.zip\s*$/m.test(s) && /mac-x64\.zip\s*$/m.test(s);
+}
+
+export function latestWinYmlHasInstaller(yml: string | null | undefined): boolean {
+  // Line-end anchor: `url:` / `path:` lines end with the name. A bare
+  // `/win-x64\.exe/` also matches `win-x64.exe.blockmap`.
+  return /win-x64\.exe\s*$/m.test(String(yml || ""));
+}
+
+/**
+ * Injectable updater. Shape is the subset of electron-updater's AppUpdater this
+ * host uses — tests supply a fake; main.ts passes the real singleton.
+ */
+export interface DesktopAutoUpdater {
+  autoDownload: boolean;
+  autoInstallOnAppQuit: boolean;
+  allowPrerelease: boolean;
+  forceDevUpdateConfig?: boolean;
+  logger: unknown;
+  setFeedURL(opts: { provider: "generic"; url: string }): void;
+  checkForUpdates(): Promise<unknown>;
+  quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
+  on(event: string, listener: (...args: unknown[]) => void): void;
+}
+
+export interface DesktopUpdateUi {
+  postNotice(version: string, url: string): void;
+  postReady(version: string): void;
+  log(line: string): void;
+  fetchNotice(): Promise<DesktopReleaseNotice | null>;
+}
+
+export interface DesktopUpdateSession {
+  check(): Promise<void>;
+  install(): void;
+  getState(): AppUpdateState;
+}
+
+function versionFromUpdaterInfo(info: unknown): string {
+  if (info && typeof info === "object" && "version" in info) {
+    const v = (info as { version?: unknown }).version;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
+function updaterLogLine(message: unknown): string {
+  if (message == null) return "";
+  if (typeof message === "string") return message;
+  if (message instanceof Error) return message.stack || message.message;
+  try {
+    return String(message);
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Wire an injected updater (or the notice-only path) to the rail. */
+export function attachDesktopAutoUpdate(opts: {
+  updater: DesktopAutoUpdater;
+  platform: NodeJS.Platform | string;
+  currentVersion: string;
+  packaged: boolean;
+  forceDev?: boolean;
+  ui: DesktopUpdateUi;
+}): DesktopUpdateSession {
+  let state = initialAppUpdateState();
+  let configured = false;
+  const enabled = desktopAutoUpdateEnabled(opts);
+
+  const apply = (event: AppUpdateEvent): AppUpdateState => {
+    state = reduceAppUpdate(state, event);
+    return state;
+  };
+
+  const fallbackNotice = async (): Promise<void> => {
+    const isReady = () => state.phase === "ready";
+    if (isReady()) return;
+    try {
+      const notice = await opts.ui.fetchNotice();
+      if (isReady()) return;
+      if (notice) opts.ui.postNotice(notice.version, desktopUpdatePageUrl(opts.currentVersion));
+    } catch (e) {
+      opts.ui.log(`[update] notice fallback failed: ${updaterLogLine(e)}`);
+    }
+  };
+
+  const configure = (): boolean => {
+    if (configured) return true;
+    const feed = desktopUpdateFeedConfig(opts.platform);
+    if (!feed) return false;
+    opts.updater.autoDownload = true;
+    opts.updater.autoInstallOnAppQuit = true;
+    opts.updater.allowPrerelease = false;
+    // Unpackaged forceDev: leave the production URL unset so electron-updater
+    // reads dev-app-update.yml from the app path. setFeedURL always wins over
+    // that file, including when forceDevUpdateConfig is set. Packaged builds
+    // never read the yml — they always take the relay feed.
+    const forceDevUnpackaged = !!opts.forceDev && !opts.packaged;
+    if (forceDevUnpackaged) opts.updater.forceDevUpdateConfig = true;
+    opts.updater.logger = {
+      info: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
+      warn: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
+      error: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
+      debug: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
+    };
+    if (!forceDevUnpackaged) opts.updater.setFeedURL(feed);
+    opts.updater.on("checking-for-update", () => {
+      apply({ type: "check-started" });
+    });
+    opts.updater.on("update-available", (info: unknown) => {
+      apply({ type: "update-available", version: versionFromUpdaterInfo(info) });
+      apply({ type: "download-started" });
+    });
+    opts.updater.on("update-not-available", () => {
+      apply({ type: "update-not-available" });
+    });
+    opts.updater.on("update-downloaded", (info: unknown) => {
+      const next = apply({ type: "update-downloaded", version: versionFromUpdaterInfo(info) });
+      if (next.phase === "ready" && next.version) opts.ui.postReady(next.version);
+    });
+    opts.updater.on("error", (err: unknown) => {
+      opts.ui.log(`[update] ${updaterLogLine(err)}`);
+      apply({ type: "error" });
+      void fallbackNotice();
+    });
+    configured = true;
+    return true;
+  };
+
+  return {
+    getState: () => state,
+    install() {
+      if (state.phase !== "ready") return;
+      try {
+        // Silent + force-run: a non-silent NSIS install (oneClick:false) runs
+        // the full wizard and ignores isForceRunAfter. Squirrel.Mac ignores both.
+        opts.updater.quitAndInstall(true, true);
+      } catch (e) {
+        opts.ui.log(`[update] quitAndInstall failed: ${updaterLogLine(e)}`);
+        void fallbackNotice();
+      }
+    },
+    async check() {
+      if (shouldSkipUpdateCheck(state)) return;
+      if (!enabled) {
+        await fallbackNotice();
+        return;
+      }
+      if (!configure()) {
+        await fallbackNotice();
+        return;
+      }
+      try {
+        await opts.updater.checkForUpdates();
+      } catch (e) {
+        opts.ui.log(`[update] check failed: ${updaterLogLine(e)}`);
+        apply({ type: "error" });
+        await fallbackNotice();
+      }
+    },
+  };
+}

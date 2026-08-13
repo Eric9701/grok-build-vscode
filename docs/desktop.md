@@ -142,20 +142,21 @@ cert is available.
 
 ## Auto-update
 
-**Not wired.** There is no `electron-updater` integration and `publish` is
-disabled in `electron-builder.yml`.
+Packaged Windows and macOS builds check a relay-served generic feed
+(`https://afkpilot.com/update/win/latest.yml` and
+`…/mac/latest-mac.yml`) on start and every 12 hours, download in the
+background, and install on quit or when the rail button says **Restart to
+update**. Check or download failure is silent and falls back to the
+**Update available** notice (opens `https://afkpilot.com/desktop-update`).
+No GitHub provider — a vsix-only release would stall that feed.
 
-To add it later:
+`electron-builder.yml` has a generic `publish` block so `latest.yml` /
+`latest-mac.yml` are generated; `dist*` still uses `--publish never` and
+the workflow attaches those yml files to the GitHub Release. Windows
+signature verification is off until an Authenticode cert lands.
 
-1. Depend on `electron-updater` in the desktop main process.
-2. Point electron-builder `publish` at the GitHub Releases provider (or another
-   feed).
-3. Prefer **signed** builds — update channels that ship unsigned binaries still
-   hit Gatekeeper/SmartScreen on every upgrade on some systems.
-4. Call `autoUpdater.checkForUpdatesAndNotify()` (or equivalent) after app ready,
-   with a user-visible changelog and a manual “Check for updates” escape hatch.
-
-Until then, users install newer builds from GitHub Releases manually.
+Full contract (relay rewrite rules, dual-arch `latest-mac.yml`, local
+`dev-app-update.yml` test): [desktop-update-spec.md](desktop-update-spec.md).
 
 ## Packaged layout and `paths.ts`
 
@@ -169,6 +170,8 @@ resources/**          # icon
 LICENSE
 node_modules/ws
 node_modules/jpeg-js
+node_modules/electron-updater                 # + its hoisted tree; production
+                                              # dep, packed automatically
 node_modules/@agentclientprotocol/codex-acp   # package.json + dist + LICENSE only
 node_modules/<hoisted adapter transitives>    # zod, vscode-jsonrpc, open's helpers, … —
                                               # small and unused (dist is a bundle).

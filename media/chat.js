@@ -443,7 +443,7 @@
     // that drops `toggleSessionPin`, which is a control that looks broken
     // rather than absent (the same trap the repo chip avoids).
     pinnedSessionsKnown: false,
-    /** Desktop update notice — set only when host posts `updateAvailable`. */
+    /** Desktop update rail — `updateAvailable` (notice) or `updateReady` (restart). */
     appUpdate: null,
     repoPreviews: {},
     repoPreviewsAsked: {},
@@ -2906,10 +2906,10 @@
 
     addGearSep();
 
-    // No update state on this line, deliberately: nothing in the extension
-    // probes for a GUI update — VS Code updates the extension itself and never
-    // tells us, and the desktop app has no updater at all. A "(up to date)"
-    // here would be a claim the code cannot back.
+    // No update state on this line, deliberately: VS Code updates the extension
+    // itself and never tells us. Desktop update status lives on the rail
+    // (`updateAvailable` / `updateReady`), not in About. A "(up to date)" here
+    // would be a claim this row cannot back.
     row(state.hostKind === "desktop" ? "Grok Build Desktop" : "Grok Build extension",
       state.extVersion ? `v${state.extVersion}` : "—");
 
@@ -3383,9 +3383,9 @@
   }
 
   /**
-   * "Update available" in the rail footer. Renders only because the host sent
-   * `updateAvailable` — same capability pattern as pin control + `pinnedSessions`.
-   * VS Code never posts it; no IS_DESKTOP gate.
+   * Update rail footer. Renders because the host sent `updateAvailable` or
+   * `updateReady` — same capability pattern as pin control + `pinnedSessions`.
+   * VS Code never posts either; no IS_DESKTOP gate.
    */
   function renderAppUpdateAffordance() {
     const foot = document.querySelector("#projects-rail .rail-foot");
@@ -3418,10 +3418,16 @@
     }
     const ver = state.appUpdate.version;
     const url = state.appUpdate.url;
+    const ready = !!state.appUpdate.ready;
     btn.hidden = false;
-    btn.textContent = "Update available";
-    btn.title = `Version ${ver} is available`;
-    btn.setAttribute("aria-label", `Update available: version ${ver}`);
+    btn.textContent = ready ? "Restart to update" : "Update available";
+    btn.title = ready
+      ? `Version ${ver} is downloaded — restart to install`
+      : `Version ${ver} is available`;
+    btn.setAttribute(
+      "aria-label",
+      ready ? `Restart to update to version ${ver}` : `Update available: version ${ver}`,
+    );
     btn.setAttribute("aria-expanded", panel.hidden ? "false" : "true");
     if (!btn.dataset.wired) {
       btn.dataset.wired = "1";
@@ -3436,21 +3442,32 @@
     panel.innerHTML = "";
     const title = document.createElement("div");
     title.className = "rail-update-title";
-    title.textContent = `Version ${ver} is available`;
+    title.textContent = ready
+      ? `Version ${ver} is ready to install`
+      : `Version ${ver} is available`;
     const body = document.createElement("p");
     body.className = "rail-update-body";
-    body.textContent =
-      "Download the new installer and run it over the top of this app. Your settings and conversations are kept.";
+    body.textContent = ready
+      ? "Finish any in-flight agent turn first — a restart does not keep it. The update also installs on the next normal quit, even if you choose Not now."
+      : "Download the new installer and run it over the top of this app. Your settings and conversations are kept.";
     const actions = document.createElement("div");
     actions.className = "rail-update-actions";
-    const openBtn = document.createElement("button");
-    openBtn.type = "button";
-    openBtn.className = "rail-update-open";
-    openBtn.textContent = "Open release page";
-    openBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      vscode.postMessage({ type: "openUpdateRelease", url });
-    });
+    const primary = document.createElement("button");
+    primary.type = "button";
+    primary.className = "rail-update-open";
+    if (ready) {
+      primary.textContent = "Restart now";
+      primary.addEventListener("click", (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "restartToUpdate" });
+      });
+    } else {
+      primary.textContent = "Open release page";
+      primary.addEventListener("click", (e) => {
+        e.stopPropagation();
+        vscode.postMessage({ type: "openUpdateRelease", url });
+      });
+    }
     const dismiss = document.createElement("button");
     dismiss.type = "button";
     dismiss.className = "rail-update-dismiss";
@@ -3460,7 +3477,7 @@
       panel.hidden = true;
       btn.setAttribute("aria-expanded", "false");
     });
-    actions.appendChild(openBtn);
+    actions.appendChild(primary);
     actions.appendChild(dismiss);
     panel.appendChild(title);
     panel.appendChild(body);
@@ -11860,7 +11877,18 @@
         const version = typeof msg.version === "string" ? msg.version.trim() : "";
         const url = typeof msg.url === "string" ? msg.url.trim() : "";
         if (version && url) {
-          state.appUpdate = { version, url };
+          state.appUpdate = { version, url, ready: false };
+          ensureRailGear();
+          renderAppUpdateAffordance();
+        }
+        break;
+      }
+      case "updateReady": {
+        const version = typeof msg.version === "string" ? msg.version.trim() : "";
+        if (version) {
+          const prevUrl = state.appUpdate && typeof state.appUpdate.url === "string"
+            ? state.appUpdate.url : "";
+          state.appUpdate = { version, url: prevUrl, ready: true };
           ensureRailGear();
           renderAppUpdateAffordance();
         }

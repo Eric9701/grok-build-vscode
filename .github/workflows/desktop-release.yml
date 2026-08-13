@@ -119,8 +119,9 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: L6TFKRX6QQ
 
-      # The installers only. dist-desktop/ also holds unpacked app trees and
-      # electron-builder's own metadata, which nobody downloads.
+      # Installers plus the updater channel files (latest.yml / latest-mac.yml).
+      # dist-desktop/ also holds unpacked app trees and electron-builder's
+      # other metadata, which nobody downloads.
       - uses: actions/upload-artifact@v4
         with:
           name: grok-build-desktop-${{ matrix.name }}
@@ -131,6 +132,23 @@ jobs:
             dist-desktop/*.zip
             dist-desktop/*.exe
             dist-desktop/*.blockmap
+            dist-desktop/latest.yml
+            dist-desktop/latest-mac.yml
+
+      - name: Verify updater metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            f=dist-desktop/latest-mac.yml
+            test -f "$f" || { echo "missing $f" >&2; exit 1; }
+            grep -Eq 'mac-arm64\.zip\r?$' "$f" || { echo "$f missing mac-arm64.zip" >&2; exit 1; }
+            grep -Eq 'mac-x64\.zip\r?$' "$f" || { echo "$f missing mac-x64.zip" >&2; exit 1; }
+          else
+            f=dist-desktop/latest.yml
+            test -f "$f" || { echo "missing $f" >&2; exit 1; }
+            grep -Eq 'win-x64\.exe\r?$' "$f" || { echo "$f missing win-x64.exe" >&2; exit 1; }
+          fi
 
       - name: Attach to release
         if: inputs.release_tag != ''
@@ -142,6 +160,9 @@ jobs:
           # asset instead of erroring on the name already being taken.
           shopt -s nullglob
           files=(dist-desktop/*.dmg dist-desktop/*.zip dist-desktop/*.exe dist-desktop/*.blockmap)
+          # Per-platform yml: Windows emits latest.yml, macOS latest-mac.yml.
+          if [ -f dist-desktop/latest.yml ]; then files+=(dist-desktop/latest.yml); fi
+          if [ -f dist-desktop/latest-mac.yml ]; then files+=(dist-desktop/latest-mac.yml); fi
           if [ ${#files[@]} -eq 0 ]; then
             echo "no installers produced" >&2
             exit 1
@@ -190,7 +211,7 @@ jobs:
             echo "pruning installers from $tag"
             mapfile -t assets < <(
               gh api "repos/$REPO/releases/tags/$tag" \
-                --jq '.assets[].name | select(test("[.](dmg|zip|exe)([.]blockmap)?$"))'
+                --jq '.assets[].name | select(test("[.](dmg|zip|exe)([.]blockmap)?$") or test("^latest(-mac)?[.]yml$"))'
             )
             for a in "${assets[@]:-}"; do
               [ -n "$a" ] || continue
