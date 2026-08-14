@@ -3242,7 +3242,11 @@ textarea#input {
   position: absolute;
   bottom: calc(100% + 4px);
   left: var(--pad);
-  right: var(--pad);
+  /* Hug the widest row instead of spanning the composer — on a wide desktop
+     window an edge-to-edge box over three short rows read as broken. Narrow
+     composers (phone) still get the full width via the min() cap. */
+  width: max-content;
+  max-width: min(480px, calc(100% - var(--pad) * 2));
   max-height: 200px;
   overflow-y: auto;
   background: var(--vscode-editorWidget-background);
@@ -3264,12 +3268,14 @@ textarea#input {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
 }
-.slash-name { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 600; }
-.slash-desc { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.slash-name { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.slash-desc { font-size: 11px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
 
 /* ---- "@" file-mention popover ---- */
 /* Container reuses .slash-popover (same anchor/box); rows are one-line
-   filename + dimmed directory, ellipsized at the row edge. */
+   filename + dimmed directory, ellipsized at the row edge. Unlike the slash
+   list it keeps the full composer width — long paths are its whole job. */
+.mention-popover { width: auto; max-width: none; right: var(--pad); }
 
 .mention-item {
   padding: 5px 10px;
