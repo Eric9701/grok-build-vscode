@@ -192,39 +192,61 @@ try {
   const measureStrip = () =>
     page.evaluate(() => {
       const strip = document.querySelector(".gfp-header");
-      const icons = [...(strip?.querySelectorAll(
-        ".gfp-title-icon img, .gfp-title-icon .gfp-file-icon-mono, .gfp-title-icon svg, .gfp-tab-icon img, .gfp-tab-icon .gfp-file-icon-mono, .gfp-tab-icon svg",
-      ) || [])].map((el) => {
+      const tabs = document.querySelector(".gfp-tabs");
+      const panel = document.querySelector(".gfp-panel");
+      const sr = strip?.getBoundingClientRect();
+      const visibleTabs = [...(tabs?.querySelectorAll(".gfp-tab:not([hidden])") || [])];
+      const iconOf = (root, sel) => [...(root?.querySelectorAll(sel) || [])].map((el) => {
         const r = el.getBoundingClientRect();
-        return {
-          tag: el.tagName.toLowerCase(),
-          cls: String(el.className || ""),
-          w: Math.round(r.width),
-          h: Math.round(r.height),
-        };
+        return { tag: el.tagName.toLowerCase(), w: Math.round(r.width), h: Math.round(r.height) };
       });
+      const close = document.querySelector(".gfp-tab-active:not([hidden]) .gfp-tab-close");
+      const cr = close?.getBoundingClientRect();
+      const cs = close ? getComputedStyle(close) : null;
       return {
-        icons,
+        state: panel?.dataset.stripState || "",
+        titleIcons: iconOf(strip, ".gfp-title-icon img, .gfp-title-icon .gfp-file-icon-mono, .gfp-title-icon svg"),
+        tabIcons: visibleTabs.flatMap((tab) => iconOf(tab, ".gfp-tab-icon img, .gfp-tab-icon .gfp-file-icon-mono, .gfp-tab-icon svg")),
+        tabCount: visibleTabs.length,
         overflow: strip ? strip.scrollWidth > strip.clientWidth + 1 : true,
         scrollW: strip ? strip.scrollWidth : 0,
         clientW: strip ? strip.clientWidth : 0,
-        tabsOverflowX: (() => {
-          const tabs = document.querySelector(".gfp-tabs");
-          return tabs ? getComputedStyle(tabs).overflowX : "";
-        })(),
-        viewport: window.innerWidth,
+        tabsScroll: tabs ? tabs.scrollWidth > tabs.clientWidth + 1 : true,
+        tabsOverflowX: tabs ? getComputedStyle(tabs).overflowX : "",
+        closeVisible: !!close && !!cs && cs.display !== "none" && cs.visibility !== "hidden",
+        closeLeft: cr ? cr.left : null,
+        closeRight: cr ? cr.right : null,
+        stripLeft: sr ? sr.left : null,
+        stripRight: sr ? sr.right : null,
+        chip: !!document.querySelector(".gfp-overflow-chip"),
       };
     });
 
-  const assertStripGeometry = async (where) => {
+  const assertStripGeometry = async (where, opts = {}) => {
     const strip = await measureStrip();
-    assert.ok(strip.icons.length >= 2, `${where}: title strip must paint a folder icon and a tab icon — ${JSON.stringify(strip)}`);
-    const blank = strip.icons.filter((icon) => icon.w < 6 || icon.h < 6);
+    assert.ok(strip.titleIcons.length >= 1, `${where}: title strip must paint a folder icon — ${JSON.stringify(strip)}`);
+    if (strip.tabCount > 0) {
+      assert.equal(strip.tabIcons.length, strip.tabCount, `${where}: every rendered tab must have an icon — ${JSON.stringify(strip)}`);
+    }
+    const blank = [...strip.titleIcons, ...strip.tabIcons].filter((icon) => icon.w < 6 || icon.h < 6);
     assert.deepEqual(blank, [], `${where}: title-strip icons rendered with no size — ${JSON.stringify(strip)}`);
     assert.equal(strip.overflow, false, `${where}: title strip overflowed horizontally (${strip.scrollW} > ${strip.clientW})`);
-    // Crowded strips must SCROLL internally, never clip: overflow:hidden here
-    // once made the third-and-later tabs unreachable (review find, 2026-08-14).
-    assert.equal(strip.tabsOverflowX, "auto", `${where}: .gfp-tabs must scroll internally (overflow-x auto), got "${strip.tabsOverflowX}"`);
+    assert.ok(strip.scrollW <= strip.clientW + 1, `${where}: strip scrollWidth ${strip.scrollW} > clientWidth ${strip.clientW}`);
+    assert.equal(strip.tabsScroll, false, `${where}: tab row scrolled (${strip.tabsOverflowX})`);
+    assert.ok(
+      strip.tabsOverflowX !== "auto" && strip.tabsOverflowX !== "scroll",
+      `${where}: .gfp-tabs must not scroll (overflow-x ${strip.tabsOverflowX})`,
+    );
+    if (strip.closeVisible) {
+      assert.ok(
+        strip.closeLeft >= strip.stripLeft - 1 && strip.closeRight <= strip.stripRight + 1,
+        `${where}: active tab X is clipped by the strip — ${JSON.stringify(strip)}`,
+      );
+    }
+    if (opts.expectChip) {
+      assert.equal(strip.chip, true, `${where}: expected the overflow chip — ${JSON.stringify(strip)}`);
+    }
+    return strip;
   };
 
   await page.waitForFunction(() => {
@@ -293,6 +315,90 @@ try {
     `desk: restore must return the prior split width (was ${beforeMax.panelW}, now ${restored.panelW})`,
   );
   await shot("desk-3c-restored");
+
+  // Three-state strip: open several files, then walk widths until A/B/C each
+  // appear. The old scroll model hid later tabs; this is the replacement.
+  const showTree = async () => {
+    if (await page.locator(".gfp-viewer:not([hidden])").isVisible().catch(() => false)) {
+      await page.locator("#desk-ft-title").click();
+      await page.waitForSelector(".gfp-tree:not([hidden])", { timeout: 10000 });
+      await page.waitForTimeout(150);
+    }
+  };
+  const openTreeRow = async (label) => {
+    await showTree();
+    await page.locator(".gfp-row", { hasText: label }).first().click();
+    await page.waitForTimeout(200);
+  };
+  const setPanelWidth = async (px) => {
+    await page.evaluate((w) => {
+      const panel = document.querySelector(".gfp-panel");
+      if (panel) panel.style.setProperty("--gfp-width", `${w}px`);
+    }, px);
+    await page.waitForTimeout(280);
+  };
+  await openTreeRow("package.json");
+  await openTreeRow("src");
+  await openTreeRow("index.ts");
+  await openTreeRow("util.ts");
+  await openTreeRow("docs");
+  await openTreeRow("notes.md");
+  const openTabCount = await page.evaluate(() => document.querySelectorAll(".gfp-tab").length);
+  assert.ok(openTabCount >= 3, `desk: need 3+ open files to reach B/C (got ${openTabCount})`);
+
+  const seenStates = new Set();
+  const recordState = async (name) => {
+    const strip = await assertStripGeometry(name);
+    seenStates.add(strip.state);
+    await shot(name);
+    return strip;
+  };
+
+  await maximizeBtn.click();
+  await page.waitForFunction(() => document.body.classList.contains("desk-ft-maximized"), { timeout: 5000 });
+  await page.waitForTimeout(250);
+  await recordState("desk-strip-a");
+  await maximizeBtn.click();
+  await page.waitForFunction(() => !document.body.classList.contains("desk-ft-maximized"), { timeout: 5000 });
+  await page.waitForTimeout(250);
+
+  let stateC = null;
+  for (const width of [400, 320, 280, 240, 220, 200]) {
+    await setPanelWidth(width);
+    const strip = await assertStripGeometry(`desk strip @${width}`);
+    if (strip.state && !seenStates.has(strip.state)) {
+      seenStates.add(strip.state);
+      await shot(`desk-strip-${strip.state}`);
+    }
+    if (strip.state === "c") stateC = strip;
+    if (seenStates.has("b") && seenStates.has("c")) break;
+  }
+  assert.ok(seenStates.has("a"), `desk: never reached strip state A — saw ${[...seenStates]}`);
+  assert.ok(seenStates.has("b"), `desk: never reached strip state B — saw ${[...seenStates]}`);
+  assert.ok(seenStates.has("c"), `desk: never reached strip state C — saw ${[...seenStates]}`);
+  assert.equal(stateC?.chip, true, `desk: state C must show the overflow chip — ${JSON.stringify(stateC)}`);
+
+  await page.locator(".gfp-overflow-chip").click();
+  await page.waitForSelector(".gfp-overflow-menu", { timeout: 5000 });
+  const overflowMenu = await page.evaluate(() => {
+    const menu = document.querySelector(".gfp-overflow-menu");
+    const rows = [...(menu?.querySelectorAll(".gfp-overflow-item") || [])].map((row) => ({
+      name: row.querySelector(".gfp-overflow-name")?.textContent || "",
+      icon: !!row.querySelector(".gfp-tab-icon img, .gfp-tab-icon .gfp-file-icon-mono, .gfp-tab-icon svg"),
+      dirty: !!row.querySelector(".gfp-overflow-dirty"),
+    }));
+    return { open: !!menu, rows };
+  });
+  assert.equal(overflowMenu.open, true, "desk: overflow chip must open a dropdown");
+  assert.ok(overflowMenu.rows.length >= 2, `desk: overflow menu should list the other files — ${JSON.stringify(overflowMenu)}`);
+  assert.ok(
+    overflowMenu.rows.every((row) => row.icon && row.name),
+    `desk: every overflow row needs an icon and a name — ${JSON.stringify(overflowMenu)}`,
+  );
+  await shot("desk-strip-c-menu");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".gfp-overflow-menu"), { timeout: 5000 });
+  await setPanelWidth(280);
 
   await page.setViewportSize({ width: 1024, height: 900 });
   await page.waitForTimeout(300);

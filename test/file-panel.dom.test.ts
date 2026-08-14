@@ -9,6 +9,7 @@ import {
   resolveMarkdownLink,
   makeTab,
   stripShrinkState,
+  planStrip,
   STRIP_COMPACT_MAX,
   STRIP_EXTREME_MAX,
 } from "../media/file-panel.js";
@@ -49,6 +50,8 @@ function harness(options?: {
     "scope-a": {
       "notes.md": { text: "one", stamp: { mtimeMs: 1, size: 3 }, absPath: "/work/app/notes.md" },
       "src/a.ts": { text: "a", stamp: { mtimeMs: 1, size: 1 }, absPath: "/work/app/src/a.ts" },
+      "src/b.ts": { text: "b", stamp: { mtimeMs: 1, size: 1 }, absPath: "/work/app/src/b.ts" },
+      "readme.md": { text: "hi", stamp: { mtimeMs: 1, size: 2 }, absPath: "/work/app/readme.md" },
     },
     "scope-b": {
       "notes.md": { text: "other", stamp: { mtimeMs: 1, size: 5 }, absPath: "/work/relay/notes.md" },
@@ -1119,6 +1122,7 @@ describe("title strip is a folder label plus file-type tabs", () => {
     expect(title!.querySelector(".gfp-title-icon svg, .gfp-title-icon img, .gfp-title-icon .gfp-file-icon-mono")).toBeTruthy();
     expect(title!.querySelector(".gfp-title-label")?.textContent).toBe("app");
     expect(title!.classList.contains("gfp-tab-active")).toBe(false);
+    expect(title!.classList.contains("gfp-title-selected")).toBe(true);
   });
 
   it("puts a file-type icon on every tab via the shared fileIcons path", async () => {
@@ -1213,5 +1217,198 @@ describe("desktop maximize is opt-in on the mount", () => {
     h.panel.setOpen(true);
     expect(h.panel.isMaximized()).toBe(false);
     expect(h.panel.element.classList.contains("gfp-maximized")).toBe(false);
+  });
+});
+
+describe("planStrip three-state layout", () => {
+  const widths = (n: number, full: number, icon: number) => ({
+    tabFullWidths: Array.from({ length: n }, () => full),
+    tabIconWidths: Array.from({ length: n }, () => icon),
+  });
+
+  it("picks A when named tabs plus the title fit", () => {
+    const plan = planStrip({
+      stripWidth: 500,
+      titleWidth: 80,
+      titleIconWidth: 24,
+      trailingWidth: 32,
+      tabCount: 2,
+      activeIndex: 0,
+      ...widths(2, 120, 32),
+      chipWidth: 36,
+    });
+    expect(plan.state).toBe("a");
+    expect(plan.title).toBe("full");
+    expect(plan.visible).toEqual([0, 1]);
+    expect(plan.overflow).toEqual([]);
+    expect(plan.tabModes).toEqual(["full", "full"]);
+  });
+
+  it("demotes inactive tabs to icon-only (B) before overflowing (C)", () => {
+    const base = {
+      titleWidth: 80,
+      titleIconWidth: 24,
+      trailingWidth: 32,
+      tabCount: 3,
+      activeIndex: 1,
+      ...widths(3, 120, 32),
+      chipWidth: 36,
+    };
+    // 80 + 3*120 = 440 > 400-32=368 → not A
+    // 80 + 32 + 120 + 32 = 264 <= 368 → B, title kept
+    const tight = planStrip({ ...base, stripWidth: 400 });
+    expect(tight.state).toBe("b");
+    expect(tight.title).toBe("full");
+    expect(tight.visible).toEqual([0, 1, 2]);
+    expect(tight.overflow).toEqual([]);
+    expect(tight.tabModes).toEqual(["icon", "full", "icon"]);
+
+    // Title name no longer fits: 80 + 264-80 wait, bTabs=184, title 80 → 264
+    // avail = 220-32 = 188. 80+184=264 > 188; 24+184=208 > 188 → C
+    const squeezed = planStrip({ ...base, stripWidth: 220 });
+    expect(squeezed.state).toBe("c");
+    expect(squeezed.title).toBe("icon");
+    expect(squeezed.visible).toEqual([1]);
+    expect(squeezed.overflow).toEqual([0, 2]);
+    expect(squeezed.tabModes).toEqual(["icon", "full", "icon"]);
+  });
+
+  it("keeps the active tab visible when overflowing and updates membership as it changes", () => {
+    const input = {
+      stripWidth: 160,
+      titleWidth: 80,
+      titleIconWidth: 24,
+      trailingWidth: 32,
+      tabCount: 4,
+      ...widths(4, 130, 36),
+      chipWidth: 36,
+    };
+    const first = planStrip({ ...input, activeIndex: 0 });
+    expect(first.state).toBe("c");
+    expect(first.visible).toEqual([0]);
+    expect(first.overflow).toEqual([1, 2, 3]);
+
+    const last = planStrip({ ...input, activeIndex: 3 });
+    expect(last.state).toBe("c");
+    expect(last.visible).toEqual([3]);
+    expect(last.overflow).toEqual([0, 1, 2]);
+
+    const tree = planStrip({ ...input, activeIndex: -1 });
+    expect(tree.state).toBe("c");
+    expect(tree.visible).toEqual([]);
+    expect(tree.overflow).toEqual([0, 1, 2, 3]);
+  });
+
+  it("honors slack so a barely-fitting A becomes B", () => {
+    const input = {
+      stripWidth: 300,
+      titleWidth: 80,
+      titleIconWidth: 24,
+      trailingWidth: 20,
+      tabCount: 1,
+      activeIndex: 0,
+      tabFullWidths: [200],
+      tabIconWidths: [32],
+      chipWidth: 36,
+    };
+    expect(planStrip(input).state).toBe("a");
+    expect(planStrip({ ...input, slack: 1 }).state).toBe("b");
+  });
+
+  it("stays on A when there is no layout (happy-dom zeros) so DOM tests still see names", () => {
+    const plan = planStrip({
+      stripWidth: 0,
+      titleWidth: 0,
+      titleIconWidth: 0,
+      trailingWidth: 0,
+      tabCount: 5,
+      activeIndex: 2,
+      ...widths(5, 0, 0),
+      chipWidth: 36,
+    });
+    expect(plan.state).toBe("a");
+    expect(plan.visible).toEqual([0, 1, 2, 3, 4]);
+    expect(plan.overflow).toEqual([]);
+  });
+});
+
+describe("tab strip structure follows the overflow design", () => {
+  it("renders a close button only on the active tab", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    await h.panel.openPath("notes.md");
+    const tabs = [...h.document.querySelectorAll(".gfp-tab")];
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0].classList.contains("gfp-tab-active")).toBe(false);
+    expect(tabs[0].querySelector(".gfp-tab-close")).toBeNull();
+    expect(tabs[1].classList.contains("gfp-tab-active")).toBe(true);
+    expect(tabs[1].querySelector(".gfp-tab-close")).toBeTruthy();
+    expect(tabs.every((tab) => tab.querySelector(".gfp-tab-icon"))).toBe(true);
+  });
+
+  it("a forced C plan paints the chip, lists the other tabs, and activates on click", async () => {
+    const h = harness({ fileIcons: { baseUrl: "https://icons.test/file-icons/" } });
+    await settle();
+    await openAndEdit(h, "notes.md", "draft");
+    await h.panel.openPath("src/a.ts");
+    await h.panel.openPath("src/b.ts");
+    const tabs = [...h.document.querySelectorAll(".gfp-tab")];
+    expect(tabs).toHaveLength(3);
+    const activeIndex = tabs.findIndex((tab) => tab.classList.contains("gfp-tab-active"));
+    expect(activeIndex).toBe(2);
+
+    h.panel._forceStripPlan(planStrip({
+      stripWidth: 80,
+      titleWidth: 80,
+      titleIconWidth: 24,
+      trailingWidth: 0,
+      tabCount: 3,
+      activeIndex,
+      tabFullWidths: [120, 120, 120],
+      tabIconWidths: [32, 32, 32],
+      chipWidth: 36,
+    }));
+
+    const chip = h.document.querySelector(".gfp-overflow-chip") as HTMLButtonElement | null;
+    expect(chip).toBeTruthy();
+    expect(chip!.textContent).toBe("…");
+    expect(chip!.title).toContain("notes.md");
+    expect(chip!.title).toContain("a.ts");
+    expect(chip!.title).not.toContain("b.ts");
+
+    const visible = [...h.document.querySelectorAll(".gfp-tab")].filter((tab) => !(tab as HTMLElement).hidden);
+    expect(visible).toHaveLength(1);
+    expect(visible[0].querySelector(".gfp-tab-icon")).toBeTruthy();
+    expect(visible[0].querySelector(".gfp-tab-close")).toBeTruthy();
+    const hiddenTabs = [...h.document.querySelectorAll(".gfp-tab")].filter((tab) => (tab as HTMLElement).hidden);
+    expect(hiddenTabs).toHaveLength(2);
+
+    click(h.window, chip);
+    await settle();
+    const menu = h.document.querySelector(".gfp-overflow-menu");
+    expect(menu).toBeTruthy();
+    const rows = [...menu!.querySelectorAll(".gfp-overflow-item")];
+    expect(rows.map((row) => row.querySelector(".gfp-overflow-name")?.textContent)).toEqual(["notes.md", "a.ts"]);
+    expect(rows.every((row) => row.querySelector(".gfp-tab-icon"))).toBe(true);
+    expect(rows[0].querySelector(".gfp-overflow-dirty")?.textContent).toBe("•");
+    expect(rows[1].querySelector(".gfp-overflow-dirty")).toBeNull();
+
+    click(h.window, rows[0]);
+    await settle();
+    expect(h.document.querySelector(".gfp-tab-active .gfp-tab-name")?.textContent).toBe("notes.md");
+    expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement).value).toBe("draft");
+  });
+
+  it("marks the title as selected in treeMode and not while a file is showing", async () => {
+    const h = harness();
+    await settle();
+    const title = h.document.querySelector(".gfp-title")!;
+    expect(title.classList.contains("gfp-title-selected")).toBe(true);
+    await h.panel.openPath("notes.md");
+    expect(title.classList.contains("gfp-title-selected")).toBe(false);
+    title.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(title.classList.contains("gfp-title-selected")).toBe(true);
   });
 });

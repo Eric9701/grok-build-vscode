@@ -193,14 +193,12 @@
   }
 
   // Title-strip shrink. Named states (not raw widths) so CSS and tests share
-  // one decision. Compact: tabs collapse to icon + a few characters + ellipsis
-  // instead of fighting the project name. Extreme: the title itself yields to
-  // folder-icon + ellipsised name. Breakpoints are against the panel's own
-  // width — 360 is where a preferred ~150px tab plus a project label plus the
-  // header chrome no longer fit; 240 is just above MIN_WIDTH, where even the
-  // compact tab budget needs the title to shrink. No tabs → neither class.
+  // one decision. Compact / extreme only shrink the PROJECT TITLE now — tabs
+  // are planned by `planStrip` (A named / B icon-only inactive / C chip).
+  // Breakpoints are against the panel's own width. No tabs → neither class.
   const STRIP_COMPACT_MAX = 360;
   const STRIP_EXTREME_MAX = 240;
+  const STRIP_CHIP_WIDTH = 36;
 
   function stripShrinkState(panelWidth, tabCount) {
     const width = Number(panelWidth) || 0;
@@ -212,15 +210,88 @@
     };
   }
 
+  function stripRange(n) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(i);
+    return out;
+  }
+
+  function stripSum(values) {
+    let total = 0;
+    for (const value of values) total += Number(value) || 0;
+    return total;
+  }
+
+  /**
+   * Pure layout planner for the file-panel tab strip.
+   *
+   * State A (fits): folder+name title, every tab is icon+name, X only on active.
+   * State B (tight): inactive tabs demote to icon-only (dirty dot kept) BEFORE
+   *   any tab is hidden; active keeps icon+name+X; title may drop to icon-only.
+   * State C (minimal): folder icon + the active tab + one "…" chip of the rest.
+   *
+   * No layout: stripWidth<=0 (happy-dom) always returns A so DOM tests see every
+   * tab. The renderer measures real widths and applies this plan in at most two
+   * passes — it never scrolls the strip.
+   */
+  function planStrip(input) {
+    const src = input || {};
+    const stripWidth = Number(src.stripWidth) || 0;
+    const titleWidth = Math.max(0, Number(src.titleWidth) || 0);
+    const titleIconWidth = Math.max(0, Number(src.titleIconWidth) || 0);
+    const trailingWidth = Math.max(0, Number(src.trailingWidth) || 0);
+    const tabCount = Math.max(0, Math.floor(Number(src.tabCount) || 0));
+    const activeIndex = Number.isInteger(src.activeIndex) ? src.activeIndex : -1;
+    const tabFullWidths = Array.isArray(src.tabFullWidths) ? src.tabFullWidths : [];
+    const tabIconWidths = Array.isArray(src.tabIconWidths) ? src.tabIconWidths : [];
+    const chipWidth = Math.max(0, Number(src.chipWidth) || STRIP_CHIP_WIDTH);
+    const slack = Math.max(0, Number(src.slack) || 0);
+    const all = stripRange(tabCount);
+    const fullModes = all.map(() => "full");
+
+    function result(state, title, visible, overflow, tabModes) {
+      return { state: state, title: title, visible: visible, overflow: overflow, tabModes: tabModes };
+    }
+
+    if (tabCount <= 0 || stripWidth <= 0) {
+      return result("a", "full", all, [], fullModes);
+    }
+
+    const avail = Math.max(0, stripWidth - trailingWidth - slack);
+    const fullAt = (i) => Number(tabFullWidths[i]) || 0;
+    const iconAt = (i) => Number(tabIconWidths[i]) || 0;
+    const allFull = stripSum(all.map(fullAt));
+
+    if (titleWidth + allFull <= avail) {
+      return result("a", "full", all, [], fullModes);
+    }
+
+    const bModes = all.map((i) => (i === activeIndex ? "full" : "icon"));
+    const bTabs = stripSum(all.map((i) => (i === activeIndex ? fullAt(i) : iconAt(i))));
+    if (titleWidth + bTabs <= avail) {
+      return result("b", "full", all, [], bModes);
+    }
+    if (titleIconWidth + bTabs <= avail) {
+      return result("b", "icon", all, [], bModes);
+    }
+
+    const visible = activeIndex >= 0 && activeIndex < tabCount ? [activeIndex] : [];
+    const overflow = all.filter((i) => i !== activeIndex);
+    const cModes = all.map((i) => (i === activeIndex ? "full" : "icon"));
+    return result("c", "icon", visible, overflow, cModes);
+  }
+
   const ICON = {
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
     chevronRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
     chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
     file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
     folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
-    // Maximize2 / Minimize2 — expand the panel over chat, then restore the split.
-    maximize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>',
-    restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/></svg>',
+    // lucide maximize-2 / minimize-2 — expand the panel over chat, then restore.
+    // lucide `maximize` / `minimize` (corner brackets) — the owner's explicit
+    // pick over the -2 diagonal-arrow variants.
+    maximize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+    restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
     // book-open-text / code — the two Markdown modes, kept as the icon pair the
     // desktop panel has always used rather than a worded toggle. A worded
@@ -258,6 +329,11 @@
     let renderedTreeState = null;
     let unsubscribeScope = null;
     let menu = null;
+    let overflowRelPaths = [];
+    let lastStripPlan = null;
+    let forcedStripPlan = null;
+    let stripBusy = false;
+    let cachedTitleWidth = 0;
 
     const rootEl = doc.createElement("aside");
     rootEl.id = mount.id || "grok-file-panel";
@@ -448,20 +524,179 @@
     }
 
     function applyStripShrink() {
-      const width = rootEl.getBoundingClientRect().width || 0;
-      const state = stripShrinkState(width, tabsEl.childElementCount);
-      rootEl.classList.toggle("gfp-strip-compact", state.compact);
-      rootEl.classList.toggle("gfp-strip-extreme", state.extreme);
-      // Every geometry transition lands here (render, resize drag, maximize/
-      // restore, dock/overlay swap) — the active tab must stay revealed after
-      // all of them, not just after a re-render.
-      revealActiveTab();
+      applyStripPlan();
     }
 
-    function revealActiveTab() {
-      const active = tabsEl.querySelector(".gfp-tab-active");
-      if (active && typeof active.scrollIntoView === "function") {
-        active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    function collectStripMeasurements() {
+      const stripWidth = header.getBoundingClientRect().width || 0;
+      const titleIconEl = title.querySelector(".gfp-title-icon");
+      const titleCs = typeof win.getComputedStyle === "function" ? win.getComputedStyle(title) : null;
+      const titlePad = titleCs
+        ? (parseFloat(titleCs.paddingLeft) || 0) + (parseFloat(titleCs.paddingRight) || 0)
+        : 20;
+      const titleIconWidth = (titleIconEl ? titleIconEl.getBoundingClientRect().width : 16) + titlePad;
+      if (!title.classList.contains("gfp-title-icon-only")) {
+        const live = title.getBoundingClientRect().width || title.scrollWidth || 0;
+        if (live > 0) cachedTitleWidth = live;
+      }
+      const titleWidth = cachedTitleWidth || titleIconWidth;
+
+      let trailingWidth = 0;
+      function addTrailing(el) {
+        if (!el || el.hidden) return;
+        const box = el.getBoundingClientRect();
+        const cs = typeof win.getComputedStyle === "function" ? win.getComputedStyle(el) : null;
+        trailingWidth += box.width
+          + (cs ? (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0) : 0);
+      }
+      addTrailing(maximizeBtn);
+      addTrailing(closePanel);
+
+      const tabs = [...tabsEl.querySelectorAll(".gfp-tab")];
+      const tabFullWidths = [];
+      const tabIconWidths = [];
+      let activeIndex = -1;
+      tabs.forEach((el, i) => {
+        if (el.classList.contains("gfp-tab-active")) activeIndex = i;
+        const cachedFull = Number(el.dataset.fullW) || 0;
+        const cachedIcon = Number(el.dataset.iconW) || 0;
+        if (el.hidden) {
+          tabFullWidths.push(cachedFull);
+          tabIconWidths.push(cachedIcon);
+          return;
+        }
+        const cs = typeof win.getComputedStyle === "function" ? win.getComputedStyle(el) : null;
+        const pad = cs ? (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) : 11;
+        const gap = cs ? parseFloat(cs.columnGap || cs.gap) || 0 : 5;
+        const iconEl = el.querySelector(".gfp-tab-icon");
+        const dirtyEl = el.querySelector(".gfp-tab-dirty");
+        const iconW = iconEl ? iconEl.getBoundingClientRect().width : 16;
+        const dirtyOn = dirtyEl && dirtyEl.textContent;
+        const dirtyW = dirtyOn ? dirtyEl.getBoundingClientRect().width : 0;
+        // Floor so an unloaded img (0×0) cannot convince the planner that
+        // icon-only tabs are free. 28px is pad+icon in the icon-only rule.
+        const iconOnly = Math.max(28, pad + Math.max(iconW, 16) + (dirtyW ? gap + dirtyW : 0));
+        const wasIconOnly = el.classList.contains("gfp-tab-icon-only");
+        const box = el.getBoundingClientRect().width || 0;
+        const content = el.scrollWidth || 0;
+        const liveFull = Math.max(box, content);
+        const full = wasIconOnly ? (cachedFull || liveFull) : (liveFull || cachedFull);
+        el.dataset.fullW = String(full);
+        el.dataset.iconW = String(iconOnly);
+        tabFullWidths.push(full);
+        tabIconWidths.push(iconOnly);
+      });
+
+      let chipWidth = STRIP_CHIP_WIDTH;
+      const chip = tabsEl.querySelector(".gfp-overflow-chip");
+      if (chip && !chip.hidden) {
+        const w = chip.getBoundingClientRect().width;
+        if (w > 0) chipWidth = w;
+      }
+
+      return {
+        stripWidth,
+        titleWidth,
+        titleIconWidth,
+        trailingWidth,
+        tabCount: tabs.length,
+        activeIndex,
+        tabFullWidths,
+        tabIconWidths,
+        chipWidth,
+      };
+    }
+
+    function applyPlanToDom(plan) {
+      lastStripPlan = plan;
+      rootEl.dataset.stripState = plan.state;
+      rootEl.classList.toggle("gfp-strip-a", plan.state === "a");
+      rootEl.classList.toggle("gfp-strip-b", plan.state === "b");
+      rootEl.classList.toggle("gfp-strip-c", plan.state === "c");
+      title.classList.toggle("gfp-title-icon-only", plan.title === "icon");
+      title.classList.toggle("gfp-title-selected", !!treeMode);
+
+      const tabs = [...tabsEl.querySelectorAll(".gfp-tab")];
+      overflowRelPaths = [];
+      tabs.forEach((el, i) => {
+        const hidden = plan.overflow.indexOf(i) !== -1;
+        el.hidden = hidden;
+        el.classList.toggle("gfp-tab-icon-only", plan.tabModes[i] === "icon");
+        if (hidden && el.dataset.rel) overflowRelPaths.push(el.dataset.rel);
+      });
+
+      let chip = tabsEl.querySelector(".gfp-overflow-chip");
+      if (plan.state === "c" && overflowRelPaths.length) {
+        if (!chip) {
+          chip = doc.createElement("button");
+          chip.type = "button";
+          chip.className = "gfp-overflow-chip";
+          chip.setAttribute("aria-haspopup", "menu");
+          chip.setAttribute("aria-label", "More open files");
+          chip.textContent = "…";
+          chip.addEventListener("click", () => openOverflowMenu(chip));
+          tabsEl.appendChild(chip);
+        }
+        chip.title = overflowRelPaths.map((rel) => fileName(rel)).join(", ");
+        chip.setAttribute("aria-expanded", menu && menu.classList.contains("gfp-overflow-menu") ? "true" : "false");
+        chip.hidden = false;
+      } else if (chip) {
+        chip.remove();
+        if (menu && menu.classList.contains("gfp-overflow-menu")) closeMenu();
+      }
+    }
+
+    function tabsRowOverflows() {
+      const client = tabsEl.clientWidth;
+      const scroll = tabsEl.scrollWidth;
+      if (client <= 0 || scroll <= 0) return false;
+      return scroll > client + 1;
+    }
+
+    function forceTighterPlan(plan) {
+      const tabs = [...tabsEl.querySelectorAll(".gfp-tab")];
+      const n = tabs.length;
+      const activeIndex = tabs.findIndex((el) => el.classList.contains("gfp-tab-active"));
+      const all = stripRange(n);
+      const bModes = all.map((i) => (i === activeIndex ? "full" : "icon"));
+      if (plan.state === "a") {
+        return { state: "b", title: plan.title, visible: all, overflow: [], tabModes: bModes };
+      }
+      return {
+        state: "c",
+        title: "icon",
+        visible: activeIndex >= 0 ? [activeIndex] : [],
+        overflow: all.filter((i) => i !== activeIndex),
+        tabModes: bModes,
+      };
+    }
+
+    function applyStripPlan() {
+      // Bound the measure→plan→apply cycle: ResizeObserver can fire when we
+      // hide tabs / add the chip, and a nested pass would thrash. At most two
+      // applies — the second only if the first still overflows the row.
+      if (stripBusy) return;
+      stripBusy = true;
+      try {
+        const width = rootEl.getBoundingClientRect().width || 0;
+        const tabCount = currentState ? currentState.order.length : 0;
+        const shrink = stripShrinkState(width, tabCount);
+        rootEl.classList.toggle("gfp-strip-compact", shrink.compact);
+        rootEl.classList.toggle("gfp-strip-extreme", shrink.extreme);
+        let plan = forcedStripPlan || planStrip({
+          ...collectStripMeasurements(),
+          slack: 12,
+        });
+        applyPlanToDom(plan);
+        if (!forcedStripPlan && tabsRowOverflows() && plan.state !== "c") {
+          plan = forceTighterPlan(plan);
+          applyPlanToDom(plan);
+          if (tabsRowOverflows() && plan.state !== "c") {
+            applyPlanToDom(forceTighterPlan(plan));
+          }
+        }
+      } finally {
+        stripBusy = false;
       }
     }
 
@@ -864,12 +1099,17 @@
 
     function renderTabs() {
       tabsEl.textContent = "";
-      if (!currentState) return;
+      overflowRelPaths = [];
+      if (!currentState) {
+        applyStripPlan();
+        return;
+      }
       for (const relPath of currentState.order) {
         const tab = currentState.tabs.get(relPath);
         if (!tab) continue;
+        const isActive = !treeMode && currentState.activeRelPath === relPath;
         const item = doc.createElement("div");
-        item.className = "gfp-tab desk-ft-tab" + (!treeMode && currentState.activeRelPath === relPath ? " gfp-tab-active desk-ft-tab-active" : "");
+        item.className = "gfp-tab desk-ft-tab" + (isActive ? " gfp-tab-active desk-ft-tab-active" : "");
         item.setAttribute("role", "tab");
         item.dataset.rel = relPath;
         item.title = relPath;
@@ -883,24 +1123,26 @@
         const dirty = doc.createElement("span");
         dirty.className = "gfp-tab-dirty desk-ft-tab-dirty";
         dirty.textContent = tab.dirty ? "•" : "";
-        const close = doc.createElement("button");
-        close.type = "button";
-        close.className = "gfp-tab-close desk-ft-tab-close";
-        close.innerHTML = ICON.close;
-        close.title = "Close";
-        close.setAttribute("aria-label", "Close " + fileName(relPath));
-        close.addEventListener("click", (event) => {
-          event.stopPropagation();
-          void closeTab(relPath);
-        });
-        item.append(icon, name, dirty, close);
+        item.append(icon, name, dirty);
+        // Inactive tabs never render an X. The active tab's close is structural
+        // (not CSS-hidden) so it cannot be clipped away by a shrink rule.
+        if (isActive) {
+          const close = doc.createElement("button");
+          close.type = "button";
+          close.className = "gfp-tab-close desk-ft-tab-close";
+          close.innerHTML = ICON.close;
+          close.title = "Close";
+          close.setAttribute("aria-label", "Close " + fileName(relPath));
+          close.addEventListener("click", (event) => {
+            event.stopPropagation();
+            void closeTab(relPath);
+          });
+          item.appendChild(close);
+        }
         item.addEventListener("click", () => activateTab(relPath));
         tabsEl.appendChild(item);
       }
-      // applyStripShrink also reveals the active tab — the strip scrolls
-      // internally (scrollbar hidden), so a tab past the fold must be brought
-      // into view or pointer users can never reach it again.
-      applyStripShrink();
+      applyStripPlan();
     }
 
     function currentTab() {
@@ -1240,6 +1482,7 @@
       if (save) save.disabled = tab.saving || !tab.dirty;
       const item = tabsEl.querySelector('[data-rel="' + cssEscape(tab.relPath) + '"] .gfp-tab-dirty');
       if (item) item.textContent = tab.dirty ? "•" : "";
+      applyStripPlan();
     }
 
     async function cancelChanges(tab) {
@@ -1421,20 +1664,7 @@
       return button;
     }
 
-    function openRowMenu(anchor, entry, pointerEvent) {
-      closeMenu();
-      menu = doc.createElement("div");
-      menu.className = "gfp-menu desk-ft-overflow-menu desk-ft-open";
-      menu.setAttribute("role", "menu");
-      if (entry.kind !== "dir" && access.openExternal) {
-        menu.appendChild(menuItem("Open in default app", () => access.openExternal(currentScope.id, entry.relPath)));
-      }
-      if (access.reveal) {
-        menu.appendChild(menuItem(ui.revealLabel || "Reveal in file manager", () => access.reveal(currentScope.id, entry.relPath)));
-      }
-      if (!menu.childNodes.length) return closeMenu();
-      doc.body.appendChild(menu);
-
+    function positionMenu(anchor, pointerEvent) {
       // Zoom-corrected and clamped to the viewport.
       //
       // The chat scales with `--chat-zoom`, and body zoom scales VISUAL rects
@@ -1476,6 +1706,65 @@
       menu.style.right = "auto";
     }
 
+    function openRowMenu(anchor, entry, pointerEvent) {
+      closeMenu();
+      menu = doc.createElement("div");
+      menu.className = "gfp-menu desk-ft-overflow-menu desk-ft-open";
+      menu.setAttribute("role", "menu");
+      if (entry.kind !== "dir" && access.openExternal) {
+        menu.appendChild(menuItem("Open in default app", () => access.openExternal(currentScope.id, entry.relPath)));
+      }
+      if (access.reveal) {
+        menu.appendChild(menuItem(ui.revealLabel || "Reveal in file manager", () => access.reveal(currentScope.id, entry.relPath)));
+      }
+      if (!menu.childNodes.length) return closeMenu();
+      doc.body.appendChild(menu);
+      positionMenu(anchor, pointerEvent);
+    }
+
+    function openOverflowMenu(anchor) {
+      if (!overflowRelPaths.length || !currentState) return;
+      closeMenu();
+      menu = doc.createElement("div");
+      menu.className = "gfp-menu gfp-overflow-menu desk-ft-overflow-menu desk-ft-open";
+      menu.setAttribute("role", "menu");
+      for (const relPath of overflowRelPaths) {
+        const tab = currentState.tabs.get(relPath);
+        if (!tab) continue;
+        menu.appendChild(overflowMenuItem(relPath, tab));
+      }
+      if (!menu.childNodes.length) return closeMenu();
+      doc.body.appendChild(menu);
+      const chip = tabsEl.querySelector(".gfp-overflow-chip");
+      if (chip) chip.setAttribute("aria-expanded", "true");
+      positionMenu(anchor);
+    }
+
+    function overflowMenuItem(relPath, tab) {
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.className = "gfp-menu-item gfp-overflow-item desk-ft-overflow-item";
+      button.setAttribute("role", "menuitem");
+      const icon = doc.createElement("span");
+      icon.className = "gfp-tab-icon";
+      renderFileIcon(icon, fileName(relPath), tab.kind === "dir" ? "dir" : "file");
+      const name = doc.createElement("span");
+      name.className = "gfp-overflow-name";
+      name.textContent = fileName(relPath);
+      button.append(icon, name);
+      if (tab.dirty) {
+        const dirty = doc.createElement("span");
+        dirty.className = "gfp-overflow-dirty";
+        dirty.textContent = "•";
+        button.appendChild(dirty);
+      }
+      button.addEventListener("click", () => {
+        closeMenu();
+        activateTab(relPath);
+      });
+      return button;
+    }
+
     function menuItem(label, listener) {
       const button = doc.createElement("button");
       button.type = "button";
@@ -1491,6 +1780,8 @@
     function closeMenu() {
       if (menu) menu.remove();
       menu = null;
+      const chip = tabsEl.querySelector(".gfp-overflow-chip");
+      if (chip) chip.setAttribute("aria-expanded", "false");
     }
 
     function appendStatus(host, message, error) {
@@ -1533,7 +1824,7 @@
       if (typeof unsubscribeScope === "function") unsubscribeScope();
       win.removeEventListener("beforeunload", beforeUnload);
       win.removeEventListener("resize", applyPresentation);
-      win.removeEventListener("keydown", onMaximizeKey);
+      win.removeEventListener("keydown", onChromeKey);
       // The `true` must match the registration, or this removes nothing and the
       // listener outlives the panel.
       doc.removeEventListener("click", closeMenuFromOutside, true);
@@ -1554,19 +1845,19 @@
     // opener, when `menu` is still null, so it cannot close what has not opened.
     doc.addEventListener("click", closeMenuFromOutside, true);
     win.addEventListener("resize", applyPresentation);
-    function onMaximizeKey(event) {
+    function onChromeKey(event) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (menu) {
         closeMenu();
         event.preventDefault();
         return;
       }
-      if (!maximized || !open) return;
+      if (!canMaximize || !maximized || !open) return;
       if (doc.getElementById("preview-overlay")) return;
       setMaximized(false);
       event.preventDefault();
     }
-    if (canMaximize) win.addEventListener("keydown", onMaximizeKey);
+    win.addEventListener("keydown", onChromeKey);
     let stripObserver = typeof win.ResizeObserver === "function"
       ? new win.ResizeObserver(() => applyStripShrink())
       : null;
@@ -1619,7 +1910,12 @@
       clearMemory,
       destroy,
       _scopes: scopes,
-      _applyStripShrink: applyStripShrink,
+      _applyStripShrink: applyStripPlan,
+      _forceStripPlan: (plan) => {
+        forcedStripPlan = plan || null;
+        applyStripPlan();
+      },
+      _lastStripPlan: () => lastStripPlan,
     };
   }
 
@@ -1697,8 +1993,10 @@
     scopeKey,
     defaultFileIconId,
     stripShrinkState,
+    planStrip,
     STRIP_COMPACT_MAX,
     STRIP_EXTREME_MAX,
+    STRIP_CHIP_WIDTH,
     makeTab,
     applyDraft,
     applySaveSuccess,

@@ -213,60 +213,64 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 /* Only share the strip when there is something to share it WITH. The cap was
    unconditional, so a project name was truncated to 42% of the panel even with
    no tabs open and the whole width free — `grok-build-vsc…` beside an empty
-   strip. Compact/extreme (stamped by stripShrinkState) then yield further so
-   tabs shrink to icon + a few characters instead of fighting the title. */
+   strip. Compact/extreme (stamped by stripShrinkState) then yield the TITLE
+   further; tab demotion is planStrip's job, not a min-width floor. */
 .gfp-header:has(.gfp-tabs > *) .gfp-title { max-width: 46%; }
 .gfp-panel.gfp-strip-compact .gfp-title { max-width: 36%; }
 .gfp-panel.gfp-strip-extreme .gfp-title { max-width: 28%; min-width: 24px; }
+.gfp-title.gfp-title-icon-only {
+  flex: 0 0 auto;
+  max-width: none;
+  min-width: 24px;
+  padding-inline: 8px;
+}
+.gfp-title.gfp-title-icon-only .gfp-title-label { display: none; }
+/* Tree showing: the folder is the selected "tab" — content background, no
+   blue top accent. A file tab takes that treatment (with the accent) instead. */
+.gfp-title.gfp-title-selected {
+  background: var(--vscode-tab-activeBackground,
+    var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e)));
+}
 
 .gfp-tabs {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  /* Scrolls INSIDE the strip (scrollbar hidden) — never clips: with 3+ tabs
-     at the default split, overflow:hidden made later tabs unreachable
-     (review find, 2026-08-14). renderTabs scrolls the active tab into view. */
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
+  /* Never scrolls. Overflowed files live in the … chip menu, not past a fold. */
+  overflow: hidden;
 }
 .gfp-tabs:empty { display: none; }
-.gfp-tabs::-webkit-scrollbar { display: none; }
+/* Class `display:flex` beats the UA `[hidden] { display:none }` (same
+   specificity, later wins) — without this, overflowed tabs stay in the row
+   and State C paints icons AND the chip. */
+.gfp-tab[hidden],
+.gfp-overflow-chip[hidden] { display: none !important; }
+/* Close the run: tabs draw a left edge, so the last item also needs a right
+   one or the last tab dissolves into the empty strip. */
+.gfp-tabs > :last-child { border-right: 1px solid var(--gfp-border); }
 
 .gfp-tab {
   position: relative;
   display: flex;
-  flex: 0 1 150px;
+  flex: 0 1 auto;
   align-items: center;
   gap: 5px;
-  /* Floor above the fixed chrome (16px icon + 10px dirty slot + 28px close +
-     gaps + padding ≈ 81px): tabs stop shrinking here and the strip SCROLLS
-     instead of letting controls overlap. */
-  min-width: 96px;
+  /* min-width stays `auto` (min-content = icon + X/dot + padding). A numeric
+     floor was the old scroll model's way to stop shrinking — it forced the
+     strip to overflow. Icon and close are flex-none so they survive first. */
   max-width: 170px;
   padding: 0 3px 0 8px;
   border-left: 1px solid var(--gfp-border);
   color: var(--vscode-descriptionForeground, #999);
   cursor: pointer;
 }
-.gfp-panel.gfp-strip-compact .gfp-tab {
-  flex: 1 1 0;
-  /* Same chrome, tighter cap: the floor still clears the ~81px of fixed
-     controls so a crowded compact strip scrolls rather than overlapping. */
-  min-width: 88px;
-  max-width: 120px;
-}
 .gfp-tab:hover { background: var(--gfp-hover); color: inherit; }
-/* The ACTIVE tab always shows a readable name — ~10 characters past its
-   fixed chrome — while idle tabs give way first (smaller floor, then the
-   strip scrolls). ch tracks the font, so the guarantee survives zoom. */
-.gfp-tab-active,
-.gfp-panel.gfp-strip-compact .gfp-tab-active {
-  flex-shrink: 0;
-  min-width: calc(81px + 10ch);
-  max-width: min(240px, 80cqw);
-}
 .gfp-tab-active {
+  flex: 0 1 auto;
+  /* Icon + X + padding/gaps. The name may ellipsize to nothing; these two
+     must survive. Not the old 96px scroll-model floor. */
+  min-width: calc(16px + 22px + 16px);
+  max-width: min(240px, 80cqw);
   color: inherit;
   /* Selection reads as CONTINUITY with the content, not as a fill: the active
      tab wears the panel content's own background (owner, 2026-08-14 — the old
@@ -279,6 +283,10 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
     var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e)));
   box-shadow: inset 0 1px 0 var(--vscode-focusBorder, #007acc);
 }
+.gfp-panel.gfp-strip-b .gfp-tab-active .gfp-tab-name,
+.gfp-panel.gfp-strip-c .gfp-tab-active .gfp-tab-name { max-width: 10ch; }
+.gfp-tab-icon,
+.gfp-tab-close { flex-shrink: 0; }
 .gfp-tab-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -287,6 +295,45 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   white-space: nowrap;
 }
 .gfp-tab-dirty { flex: 0 0 10px; text-align: center; }
+.gfp-tab-icon-only {
+  flex: 0 0 auto;
+  max-width: none;
+  padding: 0 6px;
+}
+.gfp-tab-icon-only .gfp-tab-name { display: none; }
+.gfp-tab-icon-only .gfp-tab-dirty:empty { display: none; }
+
+.gfp-overflow-chip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 1px solid var(--gfp-border);
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #999);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.gfp-overflow-chip:hover { background: var(--gfp-hover); color: inherit; }
+.gfp-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gfp-overflow-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gfp-overflow-dirty { flex: 0 0 auto; }
 .gfp-tab-close,
 .gfp-close,
 .gfp-icon-button,

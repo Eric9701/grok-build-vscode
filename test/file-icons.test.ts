@@ -80,6 +80,8 @@ describe("Seti icon assets", () => {
     expect(filePanelCss).toMatch(/\.gfp-tab-icon[\s\S]*?width:\s*16px/);
     expect(filePanelCss).not.toMatch(/\.gfp-title\s*\{[^}]*text-transform:\s*uppercase/s);
     expect(filePanelCss).not.toMatch(/\.gfp-title\s*\{[^}]*font-weight:\s*700/s);
+    expect(filePanelCss).toMatch(/\.gfp-tab\[hidden\][\s\S]*?display:\s*none\s*!important/);
+    expect(filePanelCss).not.toMatch(/\.gfp-tabs\s*\{[^}]*overflow-x:\s*auto/s);
   });
 
   it("directory rows use a disclosure chevron and no folder Seti glyph", () => {
