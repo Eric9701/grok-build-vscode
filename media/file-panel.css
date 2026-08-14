@@ -747,7 +747,11 @@ body.vscode-light {
 
 .gfp-menu {
   position: fixed;
-  z-index: 1000;
+  /* Above the phone's full-screen panel overlay (1200) and the rail (1100):
+     these menus mount on document.body, and at 1000 the chip's dropdown and
+     the viewer's More-actions opened UNDERNEATH the overlay — tapping "…"
+     on mobile presented nothing (owner-caught, 2026-08-15). */
+  z-index: 1300;
   display: flex;
   min-width: 190px;
   flex-direction: column;
