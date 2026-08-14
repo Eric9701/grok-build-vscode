@@ -296,6 +296,49 @@ describe("app purpose + session menu (DOM)", () => {
     });
   });
 
+  it("gear Apply/Remove bind the conversation at dialog-open time, not confirm time", async () => {
+    // Confirmation overlays deliberately outlive a session swap. If the id is
+    // read when the confirm RESOLVES, switching conversations while the dialog
+    // sits open removes the NEW conversation's worktree — the dialog promised
+    // A and acted on B (work loss). The open-time id turns that into a host
+    // refusal instead. (Codex round-1 finding, 2026-08-14.)
+    const h = bootWebview({ ready: true, vscode: true });
+    dispatch(h.window, {
+      type: "initialState",
+      effort: "",
+      cwd: "/w",
+      useCtrlEnter: false,
+      extVersion: "9.9.9",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      appPurpose: "knowledge",
+      capabilities: {},
+    });
+    dispatch(h.window, {
+      type: "session",
+      sessionId: "live-1",
+      models: [],
+      currentModelId: "grok-build",
+      worktree: { label: "feature", path: "/w/.worktrees/feature" },
+    } as never);
+    dispatch(h.window, { type: "sessionName", sessionId: "live-1", name: "Live", cwd: "/w" });
+
+    openGear(h);
+    click(h.window, findGearItem(h, /Remove worktree/)!);
+    // The swap arrives while the dialog is open.
+    dispatch(h.window, { type: "sessionName", sessionId: "live-2", name: "Other", cwd: "/w" });
+    click(h.window, h.doc.querySelector(".confirm-overlay .confirm-danger")!);
+    await Promise.resolve();
+    expect(h.posted.find((m) => m.type === "removeWorktree")).toEqual({
+      type: "removeWorktree",
+      sessionId: "live-1",
+    });
+  });
+
   it("setAppPurpose posts the choice and Coding reveals thinking control", async () => {
     const h = bootWebview({ ready: true, vscode: true });
     dispatch(h.window, {

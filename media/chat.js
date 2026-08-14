@@ -2647,20 +2647,28 @@
       addSection("Session");
       addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Apply worktree</span></span>`, () => {
         closePopovers();
+        // Bind the conversation at dialog-OPEN time. Confirmation overlays
+        // outlive a session swap, so reading state.activeSessionId after the
+        // await would apply whichever conversation the user switched to; with
+        // the open-time id a stale dialog gets a host refusal instead.
+        const sessionId = state.activeSessionId;
         uiConfirm({
           title: "Apply worktree?",
           body: "Merges this worktree's edits back into the main checkout.",
           confirmLabel: "Apply",
-        }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree", sessionId: state.activeSessionId }); });
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "applyWorktree", sessionId }); });
       });
       addGearItem(`<span class="gear-lead">${ICON.gitBranch}<span>Remove worktree</span></span>`, () => {
         closePopovers();
+        // Same open-time binding as Apply — this one discards edits on the
+        // wrong target, which is exactly the class the refusal exists for.
+        const sessionId = state.activeSessionId;
         uiConfirm({
           title: "Remove worktree?",
           body: "This deletes the isolated checkout. Unapplied edits are lost.",
           confirmLabel: "Remove",
           danger: true,
-        }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree", sessionId: state.activeSessionId }); });
+        }).then((ok) => { if (ok) vscode.postMessage({ type: "removeWorktree", sessionId }); });
       });
     }
   }
