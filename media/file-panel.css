@@ -820,15 +820,19 @@ body.vscode-light {
     /* Above the rail (1100), so whichever was opened last is the one you see. */
     z-index: 1200;
   }
-  /* Closing a FILE is not a thing you do here — you leave the panel. Every tab
-     carrying its own X put a 20px target next to a 20px target and made the
-     project tab look closable, which it is not. */
-  .gfp-tab-close { display: none; }
+  /* The per-tab X used to be hidden here ("you leave the panel, you don't
+     close files") — that rationale died with the overflow strip: only the
+     ACTIVE tab carries an X now, so there is exactly one, and the owner's
+     invariant is that the active tab's X is always visible, phone included.
+     The header's own ✕ still closes the PANEL. */
 }
 
 @media (hover: none) and (pointer: coarse) {
   .gfp-close { width: 40px; height: 40px; }
   .gfp-close svg { width: 20px; height: 20px; }
+  /* Finger-sized close on the active tab (the relay's tap floor is 36px). */
+  .gfp-tab-close { width: 36px; height: 36px; }
+  .gfp-tab-close svg { width: 15px; height: 15px; }
   .gfp-row-actions { display: flex; }
 }
 
