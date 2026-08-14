@@ -154,7 +154,11 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   background: var(--vscode-editorGroupHeader-tabsBackground,
     var(--vscode-editorWidget-background,
       color-mix(in oklab, var(--vscode-foreground) 4%, var(--vscode-sideBar-background, #1e1e1e))));
-  border-bottom: 1px solid var(--gfp-border);
+  /* The divider is an INSET line, not a border: children stretch over it, so
+     the opaque active tab covers its own segment and joins the content below
+     seamlessly — a border (or an escaping shadow) would be clipped by this
+     element's overflow:hidden and always show through. */
+  box-shadow: inset 0 -1px 0 var(--gfp-border);
 }
 
 /* Project root: a folder glyph + the repo name at the same weight the rail
@@ -235,7 +239,10 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   flex: 0 1 150px;
   align-items: center;
   gap: 5px;
-  min-width: 0;
+  /* Floor above the fixed chrome (16px icon + 10px dirty slot + 28px close +
+     gaps + padding ≈ 81px): tabs stop shrinking here and the strip SCROLLS
+     instead of letting controls overlap. */
+  min-width: 96px;
   max-width: 170px;
   padding: 0 3px 0 8px;
   border-left: 1px solid var(--gfp-border);
@@ -244,9 +251,9 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 }
 .gfp-panel.gfp-strip-compact .gfp-tab {
   flex: 1 1 0;
-  /* The floor keeps a crowded compact strip scrolling instead of crushing
-     tabs below a clickable size — icon + close alone need ~56px. */
-  min-width: 64px;
+  /* Same chrome, tighter cap: the floor still clears the ~81px of fixed
+     controls so a crowded compact strip scrolls rather than overlapping. */
+  min-width: 88px;
   max-width: 120px;
 }
 .gfp-tab:hover { background: var(--gfp-hover); color: inherit; }
@@ -261,10 +268,7 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
      pattern, polarity-correct in both themes by construction. */
   background: var(--vscode-tab-activeBackground,
     var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e)));
-  box-shadow:
-    inset 0 1px 0 var(--vscode-focusBorder, #007acc),
-    0 1px 0 var(--vscode-tab-activeBackground,
-      var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e)));
+  box-shadow: inset 0 1px 0 var(--vscode-focusBorder, #007acc);
 }
 .gfp-tab-name {
   flex: 1 1 auto;

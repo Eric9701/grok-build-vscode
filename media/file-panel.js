@@ -452,6 +452,17 @@
       const state = stripShrinkState(width, tabsEl.childElementCount);
       rootEl.classList.toggle("gfp-strip-compact", state.compact);
       rootEl.classList.toggle("gfp-strip-extreme", state.extreme);
+      // Every geometry transition lands here (render, resize drag, maximize/
+      // restore, dock/overlay swap) — the active tab must stay revealed after
+      // all of them, not just after a re-render.
+      revealActiveTab();
+    }
+
+    function revealActiveTab() {
+      const active = tabsEl.querySelector(".gfp-tab-active");
+      if (active && typeof active.scrollIntoView === "function") {
+        active.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
     }
 
     function setPanelWidth(px, persist) {
@@ -886,14 +897,10 @@
         item.addEventListener("click", () => activateTab(relPath));
         tabsEl.appendChild(item);
       }
+      // applyStripShrink also reveals the active tab — the strip scrolls
+      // internally (scrollbar hidden), so a tab past the fold must be brought
+      // into view or pointer users can never reach it again.
       applyStripShrink();
-      // The strip scrolls internally (scrollbar hidden), so a freshly
-      // activated tab past the fold must be brought into view or pointer
-      // users can never reach it again.
-      const active = tabsEl.querySelector(".gfp-tab-active");
-      if (active && typeof active.scrollIntoView === "function") {
-        active.scrollIntoView({ block: "nearest", inline: "nearest" });
-      }
     }
 
     function currentTab() {
