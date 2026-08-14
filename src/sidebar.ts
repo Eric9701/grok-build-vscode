@@ -3255,10 +3255,9 @@ Only continue if you trust this code.`,
     return { client, disposeAfter: true };
   }
 
-  /** Merge the focused worktree's changes back into the main checkout.
+  /** Merge the given session's worktree back into the main checkout.
    *  `skipConfirm` = the webview's custom confirm dialog already ran. */
-  async applyFocusedWorktree(skipConfirm = false): Promise<void> {
-    const session = this.focused;
+  async applyFocusedWorktree(session: Session = this.focused, skipConfirm = false): Promise<void> {
     const wt = session.worktree;
     if (!wt) {
       return void this.host.showInformationMessage(
@@ -3293,10 +3292,9 @@ Only continue if you trust this code.`,
     }
   }
 
-  /** Remove the focused session's worktree (after disposing processes that use it).
+  /** Remove the given session's worktree (after disposing processes that use it).
    *  `skipConfirm` = the webview's custom confirm dialog already ran. */
-  async removeFocusedWorktree(skipConfirm = false): Promise<void> {
-    const session = this.focused;
+  async removeFocusedWorktree(session: Session = this.focused, skipConfirm = false): Promise<void> {
     const wt = session.worktree;
     if (!wt) {
       return void this.host.showInformationMessage("This session is not in a worktree.");
@@ -3324,11 +3322,11 @@ Only continue if you trust this code.`,
           // live token and a matching generation and would respawn the session
           // against a checkout that no longer exists.
           this.detachClient(s)?.dispose();
-          if (s !== this.focused) this.pool.delete(s);
+          if (s !== session) this.pool.delete(s);
         }
       }
-      // Need a live client for the remove RPC — use focused if still up, else temp.
-      let client = this.focused.client;
+      // Need a live client for the remove RPC — use the target if still up, else temp.
+      let client = session.client;
       let disposeAfter = false;
       if (!client) {
         const tmp = await this.clientForWorktreeCreate(this.workspaceRoot());
@@ -3400,7 +3398,7 @@ Only continue if you trust this code.`,
         }
       }
       if (changed) await this.state.update(SESSION_META_KEY, next);
-      this.focused.worktree = undefined;
+      session.worktree = undefined;
       // Leave the chat; start a normal session so the user isn't stuck — in the
       // repository this worktree was cut FROM, which is where the work goes back
       // to. The open folder was right only while conversations were pinned to
@@ -7115,6 +7113,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.steerSend(msg.text, session, requester);
         break;
       case "forkSession":
+        if (this.refuseMismatchedSessionId(msg.sessionId, session, requester)) break;
         await this.forkFocusedSession(session, requester);
         break;
       case "newWorktreeSession":
@@ -7130,10 +7129,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "applyWorktree":
         // The webview's custom confirm already ran (native modals stay only on
         // the Command-Palette path).
-        await this.applyFocusedWorktree(true);
+        if (this.refuseMismatchedSessionId(msg.sessionId, session, requester)) break;
+        await this.applyFocusedWorktree(session, true);
         break;
       case "removeWorktree":
-        await this.removeFocusedWorktree(true);
+        if (this.refuseMismatchedSessionId(msg.sessionId, session, requester)) break;
+        await this.removeFocusedWorktree(session, true);
         break;
       case "remoteSignIn":
         await this.linkRemoteDevice();
@@ -8769,6 +8770,27 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private sendRemoteRequester(requester: RemoteRequester, message: HostMsg): void {
     const clientId = this.resolveRemoteRequester(requester);
     if (clientId) this.sendRemoteClient(clientId, message);
+  }
+
+  /**
+   * Explicit session identity on fork/apply/remove. A present id that is not
+   * the dispatch-resolved session is refused here, before any await — this
+   * codebase has been bitten three times by an identifier captured before an
+   * await going stale after it.
+   */
+  private refuseMismatchedSessionId(
+    requestedId: string | undefined,
+    session: Session,
+    requester: RemoteRequester | undefined,
+  ): boolean {
+    if (requestedId === undefined || requestedId === session.activeSessionId) return false;
+    const text = "That conversation is no longer focused — nothing was changed.";
+    if (requester) {
+      this.reportRequester(requester, "info", text);
+    } else {
+      this.postLocal({ type: "hostNotice", level: "info", text });
+    }
+    return true;
   }
 
   private reportRequester(
@@ -11476,6 +11498,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   installTestHooks(): {
     onPost(fn: (dest: MsgOrigin, message: HostMsg, clientIds?: string[]) => void): void;
     fromRemote(message: WebviewMsg, clientId?: string): void;
+    fromLocal(message: WebviewMsg): void;
     fromRelayFrame(raw: string): void;
     emitRemote(clientId: string, message: HostMsg): void;
     replayRemote(clientId: string, messages: HostMsg[], during?: () => void, fail?: boolean): Promise<void>;
@@ -11533,6 +11556,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     activeRemoteSessionId(clientId: string): string | undefined;
     activeRemoteWorktree(clientId: string): Session["worktree"];
     focusedSessionId(): string | undefined;
+    seedFocusedWorktreeSession(
+      id: string,
+      worktree: NonNullable<Session["worktree"]>,
+    ): {
+      applyCount(): number;
+      removeCount(): number;
+      lastApplyPath(): string | undefined;
+      lastRemovePath(): string | undefined;
+      restore(): void;
+    };
     hasLiveSession(id: string): boolean;
     remoteClientLeft(clientId: string): void;
     remoteClientRoster(clientIds: string[]): void;
@@ -11544,6 +11577,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.postTap = fn;
       },
       fromRemote: (message, clientId = "test-client") => this.handleRemoteMessage(clientId, message),
+      fromLocal: (message) => { void this.onMessage(message, "local"); },
       fromRelayFrame: (raw) => {
         const frame = parseRelayFrame(raw);
         if (frame?.t !== "client-ready") return;
@@ -11751,6 +11785,47 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       activeRemoteSessionId: (clientId) => this.remoteActiveSessionId(clientId) ?? undefined,
       activeRemoteWorktree: (clientId) => this.remoteClients.active(clientId)?.worktree,
       focusedSessionId: () => this.focused.activeSessionId,
+      seedFocusedWorktreeSession: (id, worktree) => {
+        const prev = {
+          id: this.focused.activeSessionId,
+          cwd: this.focused.cwd,
+          worktree: this.focused.worktree,
+          client: this.focused.client,
+        };
+        this.focused.activeSessionId = id;
+        this.focused.cwd = worktree.sourceGitRoot;
+        this.focused.worktree = worktree;
+        let applyCount = 0;
+        let removeCount = 0;
+        let lastApplyPath: string | undefined;
+        let lastRemovePath: string | undefined;
+        this.focused.client = {
+          dispose() {},
+          sessionId: id,
+          applyWorktree: async (worktreePath: string) => {
+            applyCount += 1;
+            lastApplyPath = worktreePath;
+            return { status: "ok", files: [], gitRoot: worktree.sourceGitRoot };
+          },
+          removeWorktree: async (worktreePath: string) => {
+            removeCount += 1;
+            lastRemovePath = worktreePath;
+            throw new Error("test-probe-stop");
+          },
+        } as unknown as AcpClient;
+        return {
+          applyCount: () => applyCount,
+          removeCount: () => removeCount,
+          lastApplyPath: () => lastApplyPath,
+          lastRemovePath: () => lastRemovePath,
+          restore: () => {
+            this.focused.activeSessionId = prev.id;
+            this.focused.cwd = prev.cwd;
+            this.focused.worktree = prev.worktree;
+            this.focused.client = prev.client;
+          },
+        };
+      },
       hasLiveSession: (id) => [...this.pool].some((session) =>
         session.activeSessionId === id && !!session.client
       ),

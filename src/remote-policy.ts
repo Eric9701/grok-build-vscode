@@ -239,21 +239,18 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // Worktree create/apply/remove: REVERTED to host-local 2026-08-07, hours
   // after being widened to "propose" the same day. The widening was safe in
   // itself — the authorization underneath (git-list, path containment) never
-  // changed. What made it wrong is that the handlers do not act on the session
-  // that asked: `applyWorktree`/`removeWorktree` run against `this.focused`,
-  // and `newWorktreeSession` against `workspaceRoot()`, while `session` sits
-  // unused in scope right beside them (contrast `forkSession`, two cases up,
-  // which threads it correctly). So a phone driving repo B could remove the
-  // worktree the desk was focused on in repo A, discarding unapplied edits —
-  // work loss, triggered by a control that looked like it applied to what you
-  // were looking at.
+  // changed. What made it wrong is that the handlers did not act on the
+  // session that asked: `applyWorktree`/`removeWorktree` ran against
+  // `this.focused`, and `newWorktreeSession` against `workspaceRoot()`.
   //
-  // The real fix is to give these three an explicit target session, the way
-  // fork has one. That is a session-ownership change through worktree DELETION,
-  // and this codebase has been bitten three times by an identifier captured
-  // before an await going stale after it — so it is not a change to make in a
-  // hurry. Until then the capability goes back where it was safe. The rail's
-  // ⋯ menu hides both entries on remote clients, so nothing offers a control
+  // The session-identity fix has landed for applyWorktree/removeWorktree:
+  // the webview may send an optional `sessionId`, the host refuses a mismatch
+  // against the dispatch-resolved session before any await, and the handlers
+  // act on that session object (not a later re-lookup). newWorktreeSession
+  // remains untargeted — it creates a NEW session; its open question is repo
+  // targeting, not session identity. Widening these three back to "propose"
+  // is a deliberate separate product decision. Until then the rail's ⋯ menu
+  // still hides apply/remove on remote clients, so nothing offers a control
   // the host will drop.
   newWorktreeSession: "host-local",
   applyWorktree: "host-local",

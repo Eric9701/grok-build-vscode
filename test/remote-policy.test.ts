@@ -81,12 +81,9 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.telemetryEnabled).toBe("mirror");
     expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
     expect(INBOUND_DISPOSITION.requestImageFull).toBe("propose");
-    // Worktree create/apply/remove are host-local, and this is load-bearing:
-    // the handlers act on the HOST's focused session, not the session that
-    // asked. A remote apply/remove would hit whatever the desk happened to be
-    // looking at, and Remove discards unapplied edits. Do not widen these to
-    // "propose" again without first giving the handlers an explicit target
-    // session — see the comment in remote-policy.ts.
+    // Worktree create/apply/remove stay host-local. apply/remove now refuse a
+    // mismatched sessionId and act on the dispatch session, but widening back
+    // to "propose" is a separate product decision — see remote-policy.ts.
     expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
     expect(INBOUND_DISPOSITION.applyWorktree).toBe("host-local");
     expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");

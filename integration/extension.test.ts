@@ -1806,6 +1806,114 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.ok(!provoked.some((p) => p.dest === "local"));
   });
 
+  test("forkSession with a matching sessionId proceeds for that tab", async () => {
+    hooks.seedRemoteSession("fork-match", "fork-match-session", repoB);
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+
+    hooks.fromRemote({ type: "forkSession", sessionId: "fork-match-session" }, "fork-match");
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.ok(posts.some((p) =>
+      p.msg?.type === "hostNotice" &&
+      /Nothing to fork/.test(p.msg.text) &&
+      p.clientIds?.length === 1 &&
+      p.clientIds[0] === "fork-match"
+    ));
+    assert.ok(!posts.some((p) =>
+      p.msg?.type === "hostNotice" && /no longer focused/.test(p.msg.text)
+    ));
+  });
+
+  test("forkSession with a different sessionId is refused for that tab only", async () => {
+    hooks.seedRemoteSession("fork-stale", "fork-stale-session", repoB);
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+
+    hooks.fromRemote({ type: "forkSession", sessionId: "some-other-session" }, "fork-stale");
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.ok(posts.some((p) =>
+      p.msg?.type === "hostNotice" &&
+      p.msg.text === "That conversation is no longer focused — nothing was changed." &&
+      p.clientIds?.length === 1 &&
+      p.clientIds[0] === "fork-stale"
+    ));
+    assert.ok(!posts.some((p) =>
+      p.msg?.type === "hostNotice" && /Nothing to fork/.test(p.msg.text)
+    ));
+    assert.ok(!posts.some((p) => p.dest === "local"));
+  });
+
+  test("forkSession without a sessionId still proceeds (old client)", async () => {
+    hooks.seedRemoteSession("fork-legacy", "fork-legacy-session", repoB);
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+
+    hooks.fromRemote({ type: "forkSession" }, "fork-legacy");
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.ok(posts.some((p) =>
+      p.msg?.type === "hostNotice" &&
+      /Nothing to fork/.test(p.msg.text) &&
+      p.clientIds?.length === 1 &&
+      p.clientIds[0] === "fork-legacy"
+    ));
+    assert.ok(!posts.some((p) =>
+      p.msg?.type === "hostNotice" && /no longer focused/.test(p.msg.text)
+    ));
+  });
+
+  test("local applyWorktree/removeWorktree with a stale sessionId are refused", async () => {
+    const worktree = path.join(hooks.workspaceRoot(), ".int-stale-wt");
+    const probe = hooks.seedFocusedWorktreeSession("focused-wt", {
+      path: worktree,
+      label: "Stale fixture",
+      sourceGitRoot: hooks.workspaceRoot(),
+    });
+    const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
+
+    hooks.fromLocal({ type: "applyWorktree", sessionId: "not-the-focused-session" });
+    hooks.fromLocal({ type: "removeWorktree", sessionId: "not-the-focused-session" });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const refusals = posts.filter((p) =>
+      p.dest === "local" &&
+      p.msg?.type === "hostNotice" &&
+      p.msg.text === "That conversation is no longer focused — nothing was changed."
+    );
+    assert.strictEqual(refusals.length, 2);
+    assert.ok(!posts.some((p) => p.dest === "remote"));
+    assert.strictEqual(probe.applyCount(), 0);
+    assert.strictEqual(probe.removeCount(), 0);
+    probe.restore();
+  });
+
+  test("local applyWorktree/removeWorktree with a matching sessionId run on the focused session", async () => {
+    const worktree = path.join(hooks.workspaceRoot(), ".int-match-wt");
+    const probe = hooks.seedFocusedWorktreeSession("focused-wt-match", {
+      path: worktree,
+      label: "Match fixture",
+      sourceGitRoot: hooks.workspaceRoot(),
+    });
+    const posts: Array<{ dest: string; msg: any }> = [];
+    hooks.onPost((dest: string, msg: any) => posts.push({ dest, msg }));
+
+    hooks.fromLocal({ type: "applyWorktree", sessionId: "focused-wt-match" });
+    hooks.fromLocal({ type: "removeWorktree", sessionId: "focused-wt-match" });
+    await new Promise((r) => setTimeout(r, 100));
+
+    assert.ok(!posts.some((p) =>
+      p.msg?.type === "hostNotice" && /no longer focused/.test(p.msg.text)
+    ));
+    assert.strictEqual(probe.applyCount(), 1);
+    assert.strictEqual(probe.lastApplyPath(), worktree);
+    assert.strictEqual(probe.removeCount(), 1);
+    assert.strictEqual(probe.lastRemovePath(), worktree);
+    probe.restore();
+  });
+
   test("a remote New session immediately carries its selected worktree binding", async () => {
     const worktree = path.join(hooks.workspaceRoot(), ".int-worktree");
     fs.mkdirSync(worktree, { recursive: true });

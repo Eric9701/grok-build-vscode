@@ -1848,6 +1848,68 @@ describe("continue-in-a-new-chat lives in the session ⋯ menu", () => {
     expect(menuItem(openMenu(window, railRows()[2] as HTMLElement), "Continue in a new chat"))
       .toBeTruthy();
   });
+
+  it("posts forkSession with the confirmed-active session id", () => {
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    const menu = openMenu(window, section.querySelector(".rail-session") as HTMLElement);
+    click(window, menuItem(menu, "Continue in a new chat")!);
+    expect(posted.find((p) => p.type === "forkSession")).toEqual({
+      type: "forkSession",
+      sessionId: "a1",
+    });
+  });
+
+  it("posts applyWorktree/removeWorktree with the confirmed-active session id", async () => {
+    const { doc, window, posted } = bootWebview({
+      beforeScripts: withRail,
+    });
+    dispatch(window, {
+      type: "repos",
+      entries: repos,
+      selectedCwd: "/work/alpha",
+      activeCwd: "/work/alpha",
+    });
+    dispatch(window, pinnedFrame([]));
+    dispatch(window, {
+      type: "session",
+      sessionId: "a1",
+      models: [],
+      currentModelId: "grok-build",
+      worktree: { label: "feature", path: "/work/alpha/.worktrees/feature" },
+    } as never);
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+    dispatch(window, { type: "sessionName", sessionId: "a1", name: "alpha one", cwd: "/work/alpha" });
+    const openRowMenu = () => {
+      const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+      return openMenu(window, section.querySelector(".rail-session") as HTMLElement);
+    };
+
+    click(window, menuItem(openRowMenu(), "Apply worktree")!);
+    click(window, doc.querySelector(".confirm-overlay .confirm-primary") as HTMLElement);
+    await Promise.resolve();
+    expect(posted.find((p) => p.type === "applyWorktree")).toEqual({
+      type: "applyWorktree",
+      sessionId: "a1",
+    });
+
+    posted.length = 0;
+    click(window, menuItem(openRowMenu(), "Remove worktree")!);
+    click(window, doc.querySelector(".confirm-overlay .confirm-danger") as HTMLElement);
+    await Promise.resolve();
+    expect(posted.find((p) => p.type === "removeWorktree")).toEqual({
+      type: "removeWorktree",
+      sessionId: "a1",
+    });
+  });
 });
 
 // Optimistic rail transition: a click must paint the highlight (and the loading
