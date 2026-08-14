@@ -302,6 +302,13 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 }
 .gfp-tab-icon-only .gfp-tab-name { display: none; }
 .gfp-tab-icon-only .gfp-tab-dirty:empty { display: none; }
+/* Fingers need a wider target than a 16px glyph + padding gives (the relay's
+   touch gate floors tappables at 36px). The planner measures the DOM, so the
+   wider tabs feed straight back into the A/B/C decision on touch. */
+@media (pointer: coarse) {
+  .gfp-tab-icon-only { justify-content: center; min-width: 40px; }
+  .gfp-overflow-chip { min-width: 40px; }
+}
 
 .gfp-overflow-chip {
   display: flex;
