@@ -1,0 +1,34 @@
+# Auto-close for issues we've answered as fixed and labeled done-please-confirm.
+#
+# The label is applied BY A PERSON (or their agent) when replying that a fix
+# shipped; this workflow never applies it. From then on: any comment removes
+# the label (the reporter responded — a human takes it from there); 3 quiet
+# days close the issue with a friendly note. Reopening or commenting after
+# close is always possible and welcome.
+name: Close confirmed-done issues
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  issues: write
+jobs:
+  close-quiet-confirmations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          # Never mark anything stale ourselves — the label is manual-only.
+          days-before-stale: -1
+          days-before-close: 3
+          stale-issue-label: done-please-confirm
+          remove-stale-when-updated: true
+          close-issue-message: >-
+            Closing this automatically: a fix for it shipped, we asked for
+            confirmation (that's what the `done-please-confirm` label means),
+            and 3 days passed without a reply — so we're assuming it's
+            resolved. If it still misbehaves for you, just comment here and
+            we'll reopen and take another look. Thank you for the report!
+          # PRs are out of scope for this flow.
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
