@@ -2115,6 +2115,11 @@ describe("file-tree panel assets", () => {
     expect(boot).toContain("shared.createFilePanel");
     expect(boot).toContain("grokDesktopFileTree");
     expect(boot).toContain('presentation: "dock"');
+    expect(boot).toContain("maximize: true");
+    expect(boot).toContain("desk-ft-maximize");
+    expect(boot).toContain("desk-ft-maximized");
+    expect(filePanelCss).toContain("body.desk-ft-maximized .desk-ft-chat");
+    expect(filePanelJs).toContain("mount.maximize");
     expect(boot).toContain("absPath: request.expectedAbsPath");
     expect(boot).toContain("__grokDeskFtOpen");
     expect(filePanelJs).toContain("gfp-tabs");

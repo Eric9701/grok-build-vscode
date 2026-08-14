@@ -57,7 +57,7 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
 
     try { window.__grokDeskFilePanel?.destroy?.(); } catch (_) { /* reload */ }
     document.getElementById("desk-ft-top-sep")?.remove();
-    document.body.classList.remove("desk-ft-closed", "desk-ft-resizing");
+    document.body.classList.remove("desk-ft-closed", "desk-ft-resizing", "desk-ft-maximized");
 
     const layoutHost = document.querySelector(".app-main") || document.body;
     let shell = document.getElementById("desk-ft-shell");
@@ -148,6 +148,9 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
           presentation: "dock",
           id: "desk-ft-panel",
           viewingBodyClass: "desk-ft-viewing",
+          // Desktop content-area maximize. Not persisted; phone/remote omit
+          // this so their overlay-fullscreen layout is unchanged.
+          maximize: true,
           elementIds: {
             resizer: "desk-ft-resizer",
             title: "desk-ft-title",
@@ -155,8 +158,12 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
             tree: "desk-ft-body",
             viewer: "desk-ft-viewer",
             viewerBody: "desk-ft-viewer-body",
+            maximize: "desk-ft-maximize",
           },
         },
+      onMaximizedChanged: (max) => {
+        document.body.classList.toggle("desk-ft-maximized", !!max);
+      },
       ui: {
         confirm: typeof window.__grokFilePanelConfirm === "function"
           ? window.__grokFilePanelConfirm

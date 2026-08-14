@@ -192,11 +192,35 @@
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M' + x + ' 3v18"/></svg>';
   }
 
+  // Title-strip shrink. Named states (not raw widths) so CSS and tests share
+  // one decision. Compact: tabs collapse to icon + a few characters + ellipsis
+  // instead of fighting the project name. Extreme: the title itself yields to
+  // folder-icon + ellipsised name. Breakpoints are against the panel's own
+  // width — 360 is where a preferred ~150px tab plus a project label plus the
+  // header chrome no longer fit; 240 is just above MIN_WIDTH, where even the
+  // compact tab budget needs the title to shrink. No tabs → neither class.
+  const STRIP_COMPACT_MAX = 360;
+  const STRIP_EXTREME_MAX = 240;
+
+  function stripShrinkState(panelWidth, tabCount) {
+    const width = Number(panelWidth) || 0;
+    const tabs = Number(tabCount) || 0;
+    if (tabs <= 0 || width <= 0) return { compact: false, extreme: false };
+    return {
+      compact: width <= STRIP_COMPACT_MAX,
+      extreme: width <= STRIP_EXTREME_MAX,
+    };
+  }
+
   const ICON = {
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
     chevronRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>',
     chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
     file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+    // Maximize2 / Minimize2 — expand the panel over chat, then restore the split.
+    maximize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>',
+    restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
     // book-open-text / code — the two Markdown modes, kept as the icon pair the
     // desktop panel has always used rather than a worded toggle. A worded
@@ -253,7 +277,6 @@
     const title = doc.createElement("button");
     title.type = "button";
     title.className = "gfp-title desk-ft-title";
-    title.textContent = "Files";
     title.title = "Show file tree";
     const tabsEl = doc.createElement("div");
     tabsEl.className = "gfp-tabs desk-ft-tabs";
@@ -265,7 +288,20 @@
     closePanel.title = "Close";
     closePanel.setAttribute("aria-label", "Close file panel");
     closePanel.innerHTML = ICON.close;
-    header.append(title, tabsEl, closePanel);
+    // Desktop-only: the phone overlay already goes full-viewport at the 899
+    // dock breakpoint, so a second maximize would fight that layout. The
+    // mount opts in; remote/phone leave this unset.
+    const canMaximize = !!mount.maximize;
+    let maximized = false;
+    const maximizeBtn = canMaximize ? doc.createElement("button") : null;
+    if (maximizeBtn) {
+      maximizeBtn.type = "button";
+      maximizeBtn.className = "gfp-icon-button gfp-maximize desk-ft-maximize";
+      maximizeBtn.setAttribute("aria-pressed", "false");
+      header.append(title, tabsEl, maximizeBtn, closePanel);
+    } else {
+      header.append(title, tabsEl, closePanel);
+    }
 
     const filter = doc.createElement("input");
     filter.type = "search";
@@ -285,6 +321,7 @@
     if (elementIds.tabs) tabsEl.id = elementIds.tabs;
     if (elementIds.tree) tree.id = elementIds.tree;
     if (elementIds.viewer) viewer.id = elementIds.viewer;
+    if (maximizeBtn && elementIds.maximize) maximizeBtn.id = elementIds.maximize;
 
     rootEl.append(header, filter, tree, viewer);
     panelHost.appendChild(resizer);
@@ -298,6 +335,7 @@
     toggle.addEventListener("click", () => setOpen(!open));
     closePanel.addEventListener("click", () => setOpen(false));
     title.addEventListener("click", showTree);
+    if (maximizeBtn) maximizeBtn.addEventListener("click", () => setMaximized(!maximized));
     filter.addEventListener("input", () => {
       if (!currentState) return;
       currentState.filter = filter.value;
@@ -350,7 +388,7 @@
       const bar = overlay && (from || toggle.parentElement);
       const top = bar ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom)) : 0;
       rootEl.style.setProperty("--gfp-overlay-top", top + "px");
-      resizer.hidden = !open || overlay;
+      resizer.hidden = !open || overlay || maximized;
       closePanel.hidden = !overlay;
       if (!overlay && mount.dockHost && rootEl.parentElement !== mount.dockHost) {
         mount.dockHost.appendChild(resizer);
@@ -359,6 +397,7 @@
         panelHost.appendChild(resizer);
         panelHost.appendChild(rootEl);
       }
+      applyStripShrink();
     }
 
     function setOpen(next) {
@@ -366,9 +405,53 @@
       rootEl.hidden = !open;
       toggle.setAttribute("aria-expanded", String(open));
       toggle.title = open ? "Hide file panel" : "Show file panel";
+      if (!open) setMaximized(false);
       applyPresentation();
       if (open && currentState && !currentState.tree) void loadRootTree();
       if (typeof options.onOpenChanged === "function") options.onOpenChanged(open);
+    }
+
+    function paintMaximize() {
+      if (!maximizeBtn) return;
+      maximizeBtn.innerHTML = maximized ? ICON.restore : ICON.maximize;
+      maximizeBtn.title = maximized ? "Restore" : "Maximize";
+      maximizeBtn.setAttribute("aria-label", maximized ? "Restore file panel" : "Maximize file panel");
+      maximizeBtn.setAttribute("aria-pressed", String(maximized));
+    }
+
+    function setMaximized(next) {
+      if (!canMaximize) return false;
+      const value = !!next && open;
+      if (maximized === value) {
+        paintMaximize();
+        return maximized;
+      }
+      maximized = value;
+      rootEl.classList.toggle("gfp-maximized", maximized);
+      paintMaximize();
+      applyPresentation();
+      applyStripShrink();
+      if (typeof options.onMaximizedChanged === "function") options.onMaximizedChanged(maximized);
+      return maximized;
+    }
+
+    function paintTitle() {
+      const label = currentScope ? currentScope.label : "Files";
+      title.textContent = "";
+      const icon = doc.createElement("span");
+      icon.className = "gfp-title-icon";
+      renderFileIcon(icon, label, "dir");
+      const name = doc.createElement("span");
+      name.className = "gfp-title-label";
+      name.textContent = label;
+      title.append(icon, name);
+    }
+
+    function applyStripShrink() {
+      const width = rootEl.getBoundingClientRect().width || 0;
+      const state = stripShrinkState(width, tabsEl.childElementCount);
+      rootEl.classList.toggle("gfp-strip-compact", state.compact);
+      rootEl.classList.toggle("gfp-strip-extreme", state.extreme);
     }
 
     function setPanelWidth(px, persist) {
@@ -405,6 +488,7 @@
       if (persist !== false && options.preferences && options.preferences.setWidth) {
         options.preferences.setWidth(value);
       }
+      applyStripShrink();
       return value;
     }
 
@@ -468,8 +552,8 @@
       if (currentState !== nextState) abortPending();
       currentState = nextState;
       currentScope = nextState ? nextState.scope : null;
-      title.textContent = scope ? scope.label : "Files";
       title.title = scope && (scope.title || scope.label) || "Show file tree";
+      paintTitle();
       filter.value = currentState ? currentState.filter : "";
       treeMode = !(currentState && currentState.activeRelPath);
       renderTabs();
@@ -635,7 +719,7 @@
     function renderFileIcon(host, name, kind) {
       const icons = ui.fileIcons;
       if (!icons || !icons.baseUrl) {
-        host.innerHTML = ICON.file;
+        host.innerHTML = kind === "dir" ? ICON.folder : ICON.file;
         return;
       }
       const id = typeof icons.idFor === "function"
@@ -770,6 +854,9 @@
         item.dataset.rel = relPath;
         item.title = relPath;
         item.tabIndex = 0;
+        const icon = doc.createElement("span");
+        icon.className = "gfp-tab-icon";
+        renderFileIcon(icon, fileName(relPath), tab.kind === "dir" ? "dir" : "file");
         const name = doc.createElement("span");
         name.className = "gfp-tab-name desk-ft-tab-name";
         name.textContent = fileName(relPath);
@@ -786,10 +873,11 @@
           event.stopPropagation();
           void closeTab(relPath);
         });
-        item.append(name, dirty, close);
+        item.append(icon, name, dirty, close);
         item.addEventListener("click", () => activateTab(relPath));
         tabsEl.appendChild(item);
       }
+      applyStripShrink();
     }
 
     function currentTab() {
@@ -1414,9 +1502,15 @@
       destroyed = true;
       abortPending();
       closeMenu();
+      setMaximized(false);
+      if (stripObserver) {
+        try { stripObserver.disconnect(); } catch (_) { /* noop */ }
+        stripObserver = null;
+      }
       if (typeof unsubscribeScope === "function") unsubscribeScope();
       win.removeEventListener("beforeunload", beforeUnload);
       win.removeEventListener("resize", applyPresentation);
+      win.removeEventListener("keydown", onMaximizeKey);
       // The `true` must match the registration, or this removes nothing and the
       // listener outlives the panel.
       doc.removeEventListener("click", closeMenuFromOutside, true);
@@ -1437,6 +1531,23 @@
     // opener, when `menu` is still null, so it cannot close what has not opened.
     doc.addEventListener("click", closeMenuFromOutside, true);
     win.addEventListener("resize", applyPresentation);
+    function onMaximizeKey(event) {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (menu) {
+        closeMenu();
+        event.preventDefault();
+        return;
+      }
+      if (!maximized || !open) return;
+      if (doc.getElementById("preview-overlay")) return;
+      setMaximized(false);
+      event.preventDefault();
+    }
+    if (canMaximize) win.addEventListener("keydown", onMaximizeKey);
+    let stripObserver = typeof win.ResizeObserver === "function"
+      ? new win.ResizeObserver(() => applyStripShrink())
+      : null;
+    if (stripObserver) stripObserver.observe(rootEl);
     rootEl.addEventListener("keydown", (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         const tab = currentTab();
@@ -1454,6 +1565,8 @@
     }
     win.addEventListener("beforeunload", beforeUnload);
 
+    paintTitle();
+    paintMaximize();
     setPanelWidth(options.preferences && options.preferences.getWidth
       ? options.preferences.getWidth() : DEFAULT_WIDTH, true);
     if (typeof access.onScopeChanged === "function") {
@@ -1475,12 +1588,15 @@
       isOpen: () => open,
       setScope,
       setWidth: setPanelWidth,
+      setMaximized,
+      isMaximized: () => maximized,
       openPath: openFile,
       hasDirty: () => anyDirty(scopes),
       confirmClose,
       clearMemory,
       destroy,
       _scopes: scopes,
+      _applyStripShrink: applyStripShrink,
     };
   }
 
@@ -1557,6 +1673,9 @@
     fileName,
     scopeKey,
     defaultFileIconId,
+    stripShrinkState,
+    STRIP_COMPACT_MAX,
+    STRIP_EXTREME_MAX,
     makeTab,
     applyDraft,
     applySaveSuccess,

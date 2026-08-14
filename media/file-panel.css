@@ -144,61 +144,102 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   display: flex;
   flex: 0 0 auto;
   align-items: stretch;
+  min-width: 0;
   min-height: 38px;
+  overflow: hidden;
   border-bottom: 1px solid var(--gfp-border);
 }
 
+/* Project root: a folder glyph + the repo name at the same weight the rail
+   uses for project rows. Not a heading — no uppercase, no 700, no letter-
+   spacing shout. Idle tabs mix toward descriptionForeground; the title and
+   the active tab keep the inherited foreground token. Theme tokens only. */
 .gfp-title {
+  display: flex;
   flex: 0 1 auto;
-  min-width: 68px;
+  align-items: center;
+  gap: 6px;
+  min-width: 24px;
   overflow: hidden;
   padding: 0 10px;
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
-  font-weight: 600;
+  font-weight: var(--rail-repo-font-weight, 600);
   text-align: start;
-  text-overflow: ellipsis;
+  text-transform: none;
+  letter-spacing: normal;
   white-space: nowrap;
   cursor: pointer;
+}
+.gfp-title-icon,
+.gfp-tab-icon {
+  display: inline-flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.gfp-title-icon img,
+.gfp-title-icon svg,
+.gfp-title-icon .gfp-file-icon-mono,
+.gfp-tab-icon img,
+.gfp-tab-icon svg,
+.gfp-tab-icon .gfp-file-icon-mono {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+.gfp-title-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Only share the strip when there is something to share it WITH. The cap was
    unconditional, so a project name was truncated to 42% of the panel even with
    no tabs open and the whole width free — `grok-build-vsc…` beside an empty
-   strip. */
-.gfp-header:has(.gfp-tabs > *) .gfp-title { max-width: 42%; }
+   strip. Compact/extreme (stamped by stripShrinkState) then yield further so
+   tabs shrink to icon + a few characters instead of fighting the title. */
+.gfp-header:has(.gfp-tabs > *) .gfp-title { max-width: 46%; }
+.gfp-panel.gfp-strip-compact .gfp-title { max-width: 36%; }
+.gfp-panel.gfp-strip-extreme .gfp-title { max-width: 28%; min-width: 24px; }
 
 .gfp-tabs {
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
 }
 .gfp-tabs:empty { display: none; }
-.gfp-tabs::-webkit-scrollbar { display: none; }
 
 .gfp-tab {
   position: relative;
   display: flex;
   flex: 0 1 150px;
   align-items: center;
-  min-width: 72px;
+  gap: 5px;
+  min-width: 0;
   max-width: 170px;
-  padding: 0 3px 0 9px;
+  padding: 0 3px 0 8px;
   border-left: 1px solid var(--gfp-border);
   color: var(--vscode-descriptionForeground, #999);
   cursor: pointer;
 }
+.gfp-panel.gfp-strip-compact .gfp-tab {
+  flex: 1 1 0;
+  max-width: 120px;
+}
 .gfp-tab:hover { background: var(--gfp-hover); color: inherit; }
-.gfp-tab-active { color: inherit; background: var(--vscode-tab-activeBackground, rgba(128, 128, 128, 0.08)); }
-.gfp-tab-active::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  height: 1px;
-  background: var(--vscode-focusBorder, #007acc);
+.gfp-tab-active {
+  color: inherit;
+  background: var(--vscode-tab-activeBackground, color-mix(in oklab, var(--vscode-foreground) 8%, transparent));
+  /* Inset underline — a border-bottom would shift the row; a ::after rule
+     fought the header's own border. The root title is not a tab and gets none. */
+  box-shadow: inset 0 -1px 0 var(--vscode-focusBorder, #007acc);
 }
 .gfp-tab-name {
   flex: 1 1 auto;
@@ -237,6 +278,35 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 
 .gfp-close { align-self: center; margin: 0 6px 0 2px; color: inherit; }
 .gfp-close[hidden] { display: none !important; }
+
+/* Same recipe as .desk-ft-top-toggle / chat.css .icon-btn: muted foreground,
+   no border, centred 16px glyph in a 28px 8px-radius hit target. Desktop mount
+   opts in via mount.maximize; the control is absent on remote/phone. */
+.gfp-maximize {
+  align-self: center;
+  margin: 0 4px 0 2px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--vscode-descriptionForeground, #999);
+}
+.gfp-maximize[hidden] { display: none !important; }
+.gfp-maximize svg { width: 16px; height: 16px; }
+
+/* Maximized is a layout class, never a persisted width. --gfp-width stays the
+   restore size; this just lets the panel eat the content row. */
+.gfp-panel.gfp-maximized {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+body.desk-ft-maximized .desk-ft-chat { display: none !important; }
+body.desk-ft-maximized .gfp-resizer,
+body.desk-ft-maximized #desk-ft-resizer { display: none !important; }
+body.desk-ft-maximized .gfp-panel {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
 
 .gfp-filter {
   flex: 0 0 auto;

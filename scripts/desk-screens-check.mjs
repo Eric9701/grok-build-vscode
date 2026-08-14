@@ -189,6 +189,110 @@ try {
     `desk: the window must not scroll horizontally (${geometry.docWidth} > ${geometry.viewportWidth})`,
   );
 
+  const measureStrip = () =>
+    page.evaluate(() => {
+      const strip = document.querySelector(".gfp-header");
+      const icons = [...(strip?.querySelectorAll(
+        ".gfp-title-icon img, .gfp-title-icon .gfp-file-icon-mono, .gfp-title-icon svg, .gfp-tab-icon img, .gfp-tab-icon .gfp-file-icon-mono, .gfp-tab-icon svg",
+      ) || [])].map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          tag: el.tagName.toLowerCase(),
+          cls: String(el.className || ""),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+        };
+      });
+      return {
+        icons,
+        overflow: strip ? strip.scrollWidth > strip.clientWidth + 1 : true,
+        scrollW: strip ? strip.scrollWidth : 0,
+        clientW: strip ? strip.clientWidth : 0,
+        viewport: window.innerWidth,
+      };
+    });
+
+  const assertStripGeometry = async (where) => {
+    const strip = await measureStrip();
+    assert.ok(strip.icons.length >= 2, `${where}: title strip must paint a folder icon and a tab icon — ${JSON.stringify(strip)}`);
+    const blank = strip.icons.filter((icon) => icon.w < 6 || icon.h < 6);
+    assert.deepEqual(blank, [], `${where}: title-strip icons rendered with no size — ${JSON.stringify(strip)}`);
+    assert.equal(strip.overflow, false, `${where}: title strip overflowed horizontally (${strip.scrollW} > ${strip.clientW})`);
+  };
+
+  await page.waitForFunction(() => {
+    const imgs = [...document.querySelectorAll(".gfp-header img")];
+    return imgs.length > 0 && imgs.every((img) => img.complete);
+  }, { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(200);
+  await assertStripGeometry("desk 1440 title strip");
+
+  const beforeMax = await page.evaluate(() => {
+    const panel = document.querySelector(".gfp-panel");
+    const chat = document.querySelector(".desk-ft-chat");
+    return {
+      panelW: panel ? Math.round(panel.getBoundingClientRect().width) : 0,
+      chatVisible: !!chat && getComputedStyle(chat).display !== "none",
+      stored: localStorage.getItem("desk-ft-width"),
+    };
+  });
+  assert.ok(beforeMax.panelW >= 200, `desk: panel has no width before maximize (${beforeMax.panelW})`);
+  const maximizeBtn = page.locator("#desk-ft-maximize");
+  assert.ok(await maximizeBtn.isVisible().catch(() => false), "desk: maximize control must be visible on the desktop panel");
+  await maximizeBtn.click();
+  await page.waitForFunction(() => document.body.classList.contains("desk-ft-maximized"), { timeout: 5000 });
+  await page.waitForTimeout(250);
+  await shot("desk-3b-maximized");
+  await assertNoBlankIcons("desk maximized");
+  const maximized = await page.evaluate(() => {
+    const panel = document.querySelector(".gfp-panel");
+    const chat = document.querySelector(".desk-ft-chat");
+    const shell = document.getElementById("desk-ft-shell");
+    const pr = panel?.getBoundingClientRect();
+    const sr = shell?.getBoundingClientRect();
+    const chatCs = chat ? getComputedStyle(chat) : null;
+    return {
+      panelW: pr ? Math.round(pr.width) : 0,
+      shellW: sr ? Math.round(sr.width) : 0,
+      chatDisplay: chatCs?.display || "missing",
+      stored: localStorage.getItem("desk-ft-width"),
+    };
+  });
+  assert.equal(maximized.chatDisplay, "none", `desk: chat must hide while the panel is maximized — ${JSON.stringify(maximized)}`);
+  assert.ok(
+    maximized.panelW >= maximized.shellW - 20 && maximized.panelW <= maximized.shellW + 4,
+    `desk: maximized panel must fill the content area (panel ${maximized.panelW} vs shell ${maximized.shellW})`,
+  );
+  assert.equal(
+    maximized.stored,
+    beforeMax.stored,
+    `desk: maximize must not persist a width (stored ${maximized.stored}, was ${beforeMax.stored})`,
+  );
+  await assertStripGeometry("desk maximized title strip");
+  await maximizeBtn.click();
+  await page.waitForFunction(() => !document.body.classList.contains("desk-ft-maximized"), { timeout: 5000 });
+  await page.waitForTimeout(250);
+  const restored = await page.evaluate(() => {
+    const panel = document.querySelector(".gfp-panel");
+    const chat = document.querySelector(".desk-ft-chat");
+    return {
+      panelW: panel ? Math.round(panel.getBoundingClientRect().width) : 0,
+      chatVisible: !!chat && getComputedStyle(chat).display !== "none",
+    };
+  });
+  assert.equal(restored.chatVisible, true, "desk: chat must return after restore");
+  assert.ok(
+    Math.abs(restored.panelW - beforeMax.panelW) <= 8,
+    `desk: restore must return the prior split width (was ${beforeMax.panelW}, now ${restored.panelW})`,
+  );
+  await shot("desk-3c-restored");
+
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await page.waitForTimeout(300);
+  await assertStripGeometry("desk 1024 title strip");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(300);
+
   // RENAME MUST NOT RESIZE THE BAR. Clicking the conversation name swaps a
   // label for an input, and if the two boxes measure differently the whole row
   // moves and the separator under it follows. This is measurable only with a

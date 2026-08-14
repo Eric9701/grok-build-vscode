@@ -8,6 +8,9 @@ import {
   createFilePanel,
   resolveMarkdownLink,
   makeTab,
+  stripShrinkState,
+  STRIP_COMPACT_MAX,
+  STRIP_EXTREME_MAX,
 } from "../media/file-panel.js";
 
 type Scope = { id: string; label: string; title?: string };
@@ -28,6 +31,9 @@ function harness(options?: {
   read?: (scopeId: string, relPath: string) => Promise<unknown>;
   list?: (scopeId: string, relPath: string) => Promise<unknown>;
   confirm?: (request: { title: string }) => Promise<string>;
+  mount?: Record<string, unknown>;
+  fileIcons?: { baseUrl: string };
+  onMaximizedChanged?: (max: boolean) => void;
 }) {
   const window = new Window({ url: "https://example.test/" });
   const document = window.document;
@@ -91,11 +97,13 @@ function harness(options?: {
     access,
     document,
     window,
-    mount: { panelHost: document.body, toggleHost: document.body, presentation: "overlay" },
+    mount: { panelHost: document.body, toggleHost: document.body, presentation: "overlay", ...options?.mount },
     ui: {
       confirm: options?.confirm || (async () => "discard"),
       renderMarkdown: (source: string) => `<p>${source}</p>`,
+      fileIcons: options?.fileIcons,
     },
+    onMaximizedChanged: options?.onMaximizedChanged,
   });
   return {
     window,
@@ -1063,5 +1071,112 @@ describe("the error tab's action row appears only when it has actions", () => {
     await h.panel.openPath("app.bin");
     expect(h.document.querySelector(".gfp-viewer-head")).toBeTruthy();
     expect(h.document.querySelector(".gfp-more")).toBeTruthy();
+  });
+});
+
+describe("title strip is a folder label plus file-type tabs", () => {
+  it("renders the project root as a folder icon and a normal-weight name", async () => {
+    const h = harness();
+    await settle();
+    const title = h.document.querySelector(".gfp-title");
+    expect(title).toBeTruthy();
+    expect(title!.querySelector(".gfp-title-icon")).toBeTruthy();
+    expect(title!.querySelector(".gfp-title-icon svg, .gfp-title-icon img, .gfp-title-icon .gfp-file-icon-mono")).toBeTruthy();
+    expect(title!.querySelector(".gfp-title-label")?.textContent).toBe("app");
+    expect(title!.classList.contains("gfp-tab-active")).toBe(false);
+  });
+
+  it("puts a file-type icon on every tab via the shared fileIcons path", async () => {
+    const h = harness({ fileIcons: { baseUrl: "https://icons.test/file-icons/" } });
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    await h.panel.openPath("notes.md");
+    const tabs = [...h.document.querySelectorAll(".gfp-tab")];
+    expect(tabs).toHaveLength(2);
+    const srcs = tabs.map((tab) => {
+      const img = tab.querySelector(".gfp-tab-icon img") as HTMLImageElement | null;
+      const mono = tab.querySelector(".gfp-tab-icon .gfp-file-icon-mono") as HTMLElement | null;
+      return img?.src || mono?.style.getPropertyValue("--gfp-icon-url") || "";
+    });
+    expect(srcs[0]).toMatch(/typescript\.svg/);
+    expect(srcs[1]).toMatch(/markdown\.svg/);
+    expect(h.document.querySelector(".gfp-title-icon img, .gfp-title-icon .gfp-file-icon-mono")).toBeTruthy();
+  });
+
+  it("stripShrinkState is compact at the default split and extreme near min width", () => {
+    expect(STRIP_COMPACT_MAX).toBe(360);
+    expect(STRIP_EXTREME_MAX).toBe(240);
+    expect(stripShrinkState(280, 0)).toEqual({ compact: false, extreme: false });
+    expect(stripShrinkState(280, 1)).toEqual({ compact: true, extreme: false });
+    expect(stripShrinkState(361, 2)).toEqual({ compact: false, extreme: false });
+    expect(stripShrinkState(360, 2)).toEqual({ compact: true, extreme: false });
+    expect(stripShrinkState(240, 1)).toEqual({ compact: true, extreme: true });
+    expect(stripShrinkState(0, 3)).toEqual({ compact: false, extreme: false });
+  });
+
+  it("stamps gfp-strip-compact and gfp-strip-extreme from the panel width", async () => {
+    const h = harness();
+    await settle();
+    await h.panel.openPath("notes.md");
+    const el = h.panel.element as HTMLElement & { getBoundingClientRect: () => DOMRect };
+    el.getBoundingClientRect = () => ({ width: 280, height: 40, top: 0, left: 0, right: 280, bottom: 40, x: 0, y: 0, toJSON() { return {}; } }) as DOMRect;
+    h.panel._applyStripShrink();
+    expect(el.classList.contains("gfp-strip-compact")).toBe(true);
+    expect(el.classList.contains("gfp-strip-extreme")).toBe(false);
+    el.getBoundingClientRect = () => ({ width: 220, height: 40, top: 0, left: 0, right: 220, bottom: 40, x: 0, y: 0, toJSON() { return {}; } }) as DOMRect;
+    h.panel._applyStripShrink();
+    expect(el.classList.contains("gfp-strip-compact")).toBe(true);
+    expect(el.classList.contains("gfp-strip-extreme")).toBe(true);
+    el.getBoundingClientRect = () => ({ width: 480, height: 40, top: 0, left: 0, right: 480, bottom: 40, x: 0, y: 0, toJSON() { return {}; } }) as DOMRect;
+    h.panel._applyStripShrink();
+    expect(el.classList.contains("gfp-strip-compact")).toBe(false);
+    expect(el.classList.contains("gfp-strip-extreme")).toBe(false);
+  });
+});
+
+describe("desktop maximize is opt-in on the mount", () => {
+  it("does not render the control unless the mount asks for it", async () => {
+    const h = harness();
+    await settle();
+    expect(h.document.querySelector(".gfp-maximize")).toBeNull();
+    expect(h.panel.isMaximized()).toBe(false);
+    expect(h.panel.setMaximized(true)).toBe(false);
+  });
+
+  it("toggles the maximized class and restores on Escape", async () => {
+    const seen: boolean[] = [];
+    const h = harness({
+      mount: { maximize: true },
+      onMaximizedChanged: (max) => { seen.push(max); },
+    });
+    await settle();
+    h.panel.setOpen(true);
+    const btn = h.document.querySelector(".gfp-maximize") as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+    expect(btn!.getAttribute("aria-label")).toBe("Maximize file panel");
+    click(h.window, btn);
+    expect(h.panel.isMaximized()).toBe(true);
+    expect(h.panel.element.classList.contains("gfp-maximized")).toBe(true);
+    expect(btn!.getAttribute("aria-pressed")).toBe("true");
+    expect(btn!.getAttribute("aria-label")).toBe("Restore file panel");
+    expect(seen).toEqual([true]);
+
+    h.window.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(h.panel.isMaximized()).toBe(false);
+    expect(h.panel.element.classList.contains("gfp-maximized")).toBe(false);
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("closing the panel drops maximize so the next open is the split", async () => {
+    const h = harness({ mount: { maximize: true } });
+    await settle();
+    h.panel.setOpen(true);
+    h.panel.setMaximized(true);
+    expect(h.panel.isMaximized()).toBe(true);
+    h.panel.setOpen(false);
+    expect(h.panel.isMaximized()).toBe(false);
+    h.panel.setOpen(true);
+    expect(h.panel.isMaximized()).toBe(false);
+    expect(h.panel.element.classList.contains("gfp-maximized")).toBe(false);
   });
 });
