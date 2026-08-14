@@ -257,6 +257,15 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   max-width: 120px;
 }
 .gfp-tab:hover { background: var(--gfp-hover); color: inherit; }
+/* The ACTIVE tab always shows a readable name — ~10 characters past its
+   fixed chrome — while idle tabs give way first (smaller floor, then the
+   strip scrolls). ch tracks the font, so the guarantee survives zoom. */
+.gfp-tab-active,
+.gfp-panel.gfp-strip-compact .gfp-tab-active {
+  flex-shrink: 0;
+  min-width: calc(81px + 10ch);
+  max-width: min(240px, 80cqw);
+}
 .gfp-tab-active {
   color: inherit;
   /* Selection reads as CONTINUITY with the content, not as a fill: the active
