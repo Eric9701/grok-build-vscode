@@ -112,7 +112,7 @@ The history popover loads sessions **one page at a time** (`SESSION_PAGE_SIZE = 
 
 ```bash
 npm install
-npm test         # 3302 tests, a few seconds, vitest — all grok-free (incl. happy-dom DOM tests + fake-CLI ACP integration tests)
+npm test         # 3303 tests, a few seconds, vitest — all grok-free (incl. happy-dom DOM tests + fake-CLI ACP integration tests)
 npm run test:perf # opt-in session-history perf simulation (NOT in npm test/CI; see § History pagination)
 npm run test:integration # real VS Code Extension Host (~6s warm). NOT part of `npm test`;
                  # CI runs it as a second required job and `release.*` now gates on it too.

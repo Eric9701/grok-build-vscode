@@ -219,9 +219,15 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
+  /* Scrolls INSIDE the strip (scrollbar hidden) — never clips: with 3+ tabs
+     at the default split, overflow:hidden made later tabs unreachable
+     (review find, 2026-08-14). renderTabs scrolls the active tab into view. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
 .gfp-tabs:empty { display: none; }
+.gfp-tabs::-webkit-scrollbar { display: none; }
 
 .gfp-tab {
   position: relative;
@@ -238,6 +244,9 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 }
 .gfp-panel.gfp-strip-compact .gfp-tab {
   flex: 1 1 0;
+  /* The floor keeps a crowded compact strip scrolling instead of crushing
+     tabs below a clickable size — icon + close alone need ~56px. */
+  min-width: 64px;
   max-width: 120px;
 }
 .gfp-tab:hover { background: var(--gfp-hover); color: inherit; }

@@ -819,7 +819,13 @@
 
     async function closeTab(relPath) {
       if (!currentState) return false;
-      const tab = currentState.tabs.get(relPath);
+      // Capture the scope before the await: switching projects while
+      // "Discard changes?" is open swaps currentState, and the same relPath
+      // can exist in both scopes — mutating the module variable afterwards
+      // would discard the OTHER scope's draft. (The identifier-stale-after-
+      // await class; review find, 2026-08-14.)
+      const state = currentState;
+      const tab = state.tabs.get(relPath);
       if (!tab) return false;
       if (tab.dirty) {
         const answer = await confirmChoice({
@@ -829,15 +835,18 @@
         });
         if (answer !== "discard") return false;
       }
-      currentState.tabs.delete(relPath);
-      currentState.order = currentState.order.filter((item) => item !== relPath);
-      if (currentState.activeRelPath === relPath) {
-        currentState.activeRelPath = currentState.order.length
-          ? currentState.order[currentState.order.length - 1]
+      state.tabs.delete(relPath);
+      state.order = state.order.filter((item) => item !== relPath);
+      if (state.activeRelPath === relPath) {
+        state.activeRelPath = state.order.length
+          ? state.order[state.order.length - 1]
           : null;
       }
+      // Repaint only if this scope is still the one on screen — the close
+      // took effect in its own scope either way.
+      if (state !== currentState) return true;
       renderTabs();
-      if (currentState.activeRelPath) renderViewer();
+      if (state.activeRelPath) renderViewer();
       else showTree();
       return true;
     }
@@ -878,6 +887,13 @@
         tabsEl.appendChild(item);
       }
       applyStripShrink();
+      // The strip scrolls internally (scrollbar hidden), so a freshly
+      // activated tab past the fold must be brought into view or pointer
+      // users can never reach it again.
+      const active = tabsEl.querySelector(".gfp-tab-active");
+      if (active && typeof active.scrollIntoView === "function") {
+        active.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
     }
 
     function currentTab() {

@@ -208,6 +208,10 @@ try {
         overflow: strip ? strip.scrollWidth > strip.clientWidth + 1 : true,
         scrollW: strip ? strip.scrollWidth : 0,
         clientW: strip ? strip.clientWidth : 0,
+        tabsOverflowX: (() => {
+          const tabs = document.querySelector(".gfp-tabs");
+          return tabs ? getComputedStyle(tabs).overflowX : "";
+        })(),
         viewport: window.innerWidth,
       };
     });
@@ -218,6 +222,9 @@ try {
     const blank = strip.icons.filter((icon) => icon.w < 6 || icon.h < 6);
     assert.deepEqual(blank, [], `${where}: title-strip icons rendered with no size — ${JSON.stringify(strip)}`);
     assert.equal(strip.overflow, false, `${where}: title strip overflowed horizontally (${strip.scrollW} > ${strip.clientW})`);
+    // Crowded strips must SCROLL internally, never clip: overflow:hidden here
+    // once made the third-and-later tabs unreachable (review find, 2026-08-14).
+    assert.equal(strip.tabsOverflowX, "auto", `${where}: .gfp-tabs must scroll internally (overflow-x auto), got "${strip.tabsOverflowX}"`);
   };
 
   await page.waitForFunction(() => {

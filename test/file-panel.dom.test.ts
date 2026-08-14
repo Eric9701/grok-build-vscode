@@ -205,6 +205,41 @@ describe("shared file-panel component", () => {
     expect(h.panel.hasDirty()).toBe(true);
   });
 
+  it("a Discard dialog left open across a scope switch closes its OWN scope's tab", async () => {
+    // closeTab awaits the confirm; switching projects meanwhile swaps
+    // currentState, and the same relPath exists in both scopes. Confirming
+    // must discard scope A's draft, never scope B's. (Review find 2026-08-14 —
+    // the identifier-stale-after-await class.)
+    let resolveConfirm: ((answer: string) => void) | null = null;
+    const h = harness({
+      confirm: () => new Promise<string>((resolve) => { resolveConfirm = resolve; }),
+    });
+    await settle();
+    await openAndEdit(h, "notes.md", "draft from app");
+
+    // Close A's dirty tab — the Discard dialog is now pending.
+    click(h.window, h.document.querySelector(".gfp-tab-close"));
+    await settle();
+    expect(resolveConfirm).toBeTruthy();
+
+    // Swap to scope B and give it its own dirty notes.md.
+    await h.switchScope(h.scopes.b);
+    await h.panel.openPath("notes.md", true);
+    click(h.window, h.document.querySelector(".gfp-edit"));
+    type(h.window, h.document, "draft from relay");
+
+    resolveConfirm!("discard");
+    await settle();
+
+    // B's tab and draft survive untouched.
+    expect([...h.document.querySelectorAll(".gfp-tab-name")].map((n) => n.textContent)).toEqual(["notes.md"]);
+    expect((h.document.querySelector(".gfp-editor") as HTMLTextAreaElement).value).toBe("draft from relay");
+
+    // A's tab is the one that closed.
+    await h.switchScope(h.scopes.a);
+    expect([...h.document.querySelectorAll(".gfp-tab-name")]).toEqual([]);
+  });
+
   it("hides without confirming or discarding", async () => {
     let confirms = 0;
     const h = harness({ confirm: async () => { confirms++; return "discard"; } });
