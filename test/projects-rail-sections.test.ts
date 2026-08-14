@@ -281,7 +281,7 @@ describe("VS Code projects rail section parity", () => {
 
   it("matches desktop row rhythm and uses an opaque layered action scrim", () => {
     expect(railCss).toMatch(/--rail-row-font-size:\s*13px/);
-    expect(railCss).toMatch(/--rail-row-min-height:\s*30px/);
+    expect(railCss).toMatch(/--rail-row-min-height:\s*24px/);
     expect(railCss).toMatch(/--rail-repo-font-size:\s*14px/);
     expect(railCss).toMatch(/\.rail-repo\.collapsed\s+\.rail-sessions\s*{\s*display:\s*none/);
     expect(railCss).toMatch(

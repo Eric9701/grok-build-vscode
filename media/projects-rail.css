@@ -3,7 +3,7 @@
    deliberately self-contained so the chat webview never loads it. */
 
 :root {
-  --rail-row-min-height: 30px;
+  --rail-row-min-height: 24px;
   --rail-repo-min-height: 34px;
   --rail-indent: 16px;
   --rail-icon-size: 14px;

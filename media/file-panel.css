@@ -248,6 +248,10 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 /* Close the run: tabs draw a left edge, so the last item also needs a right
    one or the last tab dissolves into the empty strip. */
 .gfp-tabs > :last-child { border-right: 1px solid var(--gfp-border); }
+/* No files open: the folder "tab" closes its own right edge — with tabs
+   present the first tab's left border draws that line instead (owner:
+   a borderless folder-only strip read as inconsistent). */
+.gfp-header:not(:has(.gfp-tabs > *)) .gfp-title { border-right: 1px solid var(--gfp-border); }
 
 .gfp-tab {
   position: relative;
@@ -255,6 +259,12 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   flex: 0 1 auto;
   align-items: center;
   gap: 5px;
+  /* max-content, NOT auto: Chromium computes a nested-flex tab's intrinsic
+     width using the name's breakable min-content ("CLAUDE." for "CLAUDE.md"),
+     which shaved names beside free space — the owner's CLAUDE…/TESTS… report.
+     max-content sizes the tab to the FULL name; flex-shrink still yields
+     under real pressure, and planStrip decides when that pressure exists. */
+  width: max-content;
   /* min-width stays `auto` (min-content = icon + X/dot + padding). A numeric
      floor was the old scroll model's way to stop shrinking — it forced the
      strip to overflow. Icon and close are flex-none so they survive first. */
@@ -270,7 +280,11 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   /* Icon + X + padding/gaps. The name may ellipsize to nothing; these two
      must survive. Not the old 96px scroll-model floor. */
   min-width: calc(16px + 22px + 16px);
-  max-width: min(240px, 80cqw);
+  /* No fixed ceiling: with space free the FULL name (extension included)
+     shows — the planner and the strip's real width are the only bounds, and
+     ellipsis appears only when flex genuinely has nothing left to give.
+     Icon and X survive regardless (min-width floor + flex-none children). */
+  max-width: none;
   color: inherit;
   /* Selection reads as CONTINUITY with the content, not as a fill: the active
      tab wears the panel content's own background (owner, 2026-08-14 — the old
@@ -283,8 +297,10 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
     var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e)));
   box-shadow: inset 0 1px 0 var(--vscode-focusBorder, #007acc);
 }
-.gfp-panel.gfp-strip-b .gfp-tab-active .gfp-tab-name,
-.gfp-panel.gfp-strip-c .gfp-tab-active .gfp-tab-name { max-width: 10ch; }
+/* No name cap in B/C: ~10ch is the planner's MINIMUM guarantee, never a
+   ceiling — planStrip budgets the active tab at its full width, and capping
+   here truncated CLAUDE.md beside free space (uppercase runs wider than ch).
+   The active max-width above is the only bound; ellipsis is the last resort. */
 .gfp-tab-icon,
 .gfp-tab-close { flex-shrink: 0; }
 .gfp-tab-name {
@@ -376,7 +392,9 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
    opts in via mount.maximize; the control is absent on remote/phone. */
 .gfp-maximize {
   align-self: center;
-  margin: 0 4px 0 2px;
+  /* Pinned to the strip's RIGHT edge (owner): margin-left auto keeps it there
+     even when the tabs container is empty/display:none and nothing grows. */
+  margin: 0 4px 0 auto;
   border: 0;
   border-radius: 8px;
   color: var(--vscode-descriptionForeground, #999);
@@ -435,7 +453,7 @@ body.desk-ft-maximized .gfp-panel {
   gap: 6px;
   box-sizing: border-box;
   width: 100%;
-  min-height: var(--rail-row-min-height, 30px);
+  min-height: var(--rail-row-min-height, 24px);
   padding: 3px 6px 3px calc(6px + var(--gfp-depth, 0) * 12px);
   border-radius: var(--rail-row-radius, 5px);
   cursor: pointer;

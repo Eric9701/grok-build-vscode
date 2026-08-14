@@ -1254,14 +1254,22 @@ describe("planStrip three-state layout", () => {
       ...widths(3, 120, 32),
       chipWidth: 36,
     };
-    // 80 + 3*120 = 440 > 400-32=368 → not A
-    // 80 + 32 + 120 + 32 = 264 <= 368 → B, title kept
-    const tight = planStrip({ ...base, stripWidth: 400 });
+    // 80 + 3*120 = 440 > 330-32=298 → not A
+    // 80 + 32 + 120 + 32 = 264 <= 298 → B, title kept; leftover 34 < gain 88
+    // so no idle earns its name back — all-icon B.
+    const tight = planStrip({ ...base, stripWidth: 330 });
     expect(tight.state).toBe("b");
     expect(tight.title).toBe("full");
     expect(tight.visible).toEqual([0, 1, 2]);
     expect(tight.overflow).toEqual([]);
     expect(tight.tabModes).toEqual(["icon", "full", "icon"]);
+
+    // At 400 the leftover (368-264=104) covers one idle's gain (120-32=88):
+    // the MOST RECENT idle gets its name back first (owner: with room, show
+    // 2-3 names including the current one; icons for the rest).
+    const roomy = planStrip({ ...base, stripWidth: 400 });
+    expect(roomy.state).toBe("b");
+    expect(roomy.tabModes).toEqual(["icon", "full", "full"]);
 
     // Title name no longer fits: 80 + 264-80 wait, bTabs=184, title 80 → 264
     // avail = 220-32 = 188. 80+184=264 > 188; 24+184=208 > 188 → C

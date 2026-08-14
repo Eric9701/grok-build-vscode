@@ -105,7 +105,7 @@ body {
   /* Shared rail / file-tree row rhythm (desktop tree panel reuses these). */
   --rail-row-font-size: 13px;
   --rail-row-line-height: 1.5;
-  --rail-row-min-height: 30px;
+  --rail-row-min-height: 24px;
   --rail-row-gap: 6px;
   --rail-repo-font-size: 14px;
   --rail-repo-font-weight: 600;

@@ -100,7 +100,7 @@ describe("Seti icon assets", () => {
     expect(filePanelJs).toContain('lead.className = "gfp-lead desk-ft-lead files-browse-row-icon"');
     expect(filePanelCss).toContain("calc(6px + var(--gfp-depth, 0) * 12px)");
     expect(filePanelCss).toMatch(/\.gfp-lead\s*\{[^}]*width:\s*16px/s);
-    expect(filePanelCss).toMatch(/\.gfp-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*30px\)/s);
+    expect(filePanelCss).toMatch(/\.gfp-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*24px\)/s);
   });
 });
 

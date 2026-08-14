@@ -268,11 +268,26 @@
 
     const bModes = all.map((i) => (i === activeIndex ? "full" : "icon"));
     const bTabs = stripSum(all.map((i) => (i === activeIndex ? fullAt(i) : iconAt(i))));
+    // Leftover space names MORE tabs, most-recently-opened first (owner: with
+    // room, show 2-3 names including the current one; icons for the rest).
+    const promoteIdles = (modes, budget) => {
+      let leftover = budget;
+      const out = modes.slice();
+      for (let k = all.length - 1; k >= 0; k--) {
+        if (k === activeIndex || out[k] !== "icon") continue;
+        const gain = fullAt(k) - iconAt(k);
+        if (gain <= leftover) {
+          out[k] = "full";
+          leftover -= Math.max(0, gain);
+        }
+      }
+      return out;
+    };
     if (titleWidth + bTabs <= avail) {
-      return result("b", "full", all, [], bModes);
+      return result("b", "full", all, [], promoteIdles(bModes, avail - titleWidth - bTabs));
     }
     if (titleIconWidth + bTabs <= avail) {
-      return result("b", "icon", all, [], bModes);
+      return result("b", "icon", all, [], promoteIdles(bModes, avail - titleIconWidth - bTabs));
     }
 
     const visible = activeIndex >= 0 && activeIndex < tabCount ? [activeIndex] : [];
@@ -529,6 +544,12 @@
 
     function collectStripMeasurements() {
       const stripWidth = header.getBoundingClientRect().width || 0;
+      // No layout engine (happy-dom) or hidden panel: the plan is A by
+      // definition, so skip the per-tab getComputedStyle sweep — it is the
+      // expensive part, and a test opening N files pays it N times.
+      if (stripWidth <= 0) {
+        return { stripWidth: 0, titleWidth: 0, titleIconWidth: 0, trailingWidth: 0, tabCount: 0, activeIndex: -1, tabFullWidths: [], tabIconWidths: [] };
+      }
       const titleIconEl = title.querySelector(".gfp-title-icon");
       const titleCs = typeof win.getComputedStyle === "function" ? win.getComputedStyle(title) : null;
       const titlePad = titleCs
@@ -571,15 +592,35 @@
         const iconEl = el.querySelector(".gfp-tab-icon");
         const dirtyEl = el.querySelector(".gfp-tab-dirty");
         const iconW = iconEl ? iconEl.getBoundingClientRect().width : 16;
+        // Two dirty numbers: the SLOT is always rendered on a full tab
+        // (flex-basis 10px, empty or not) — counting it only when dirty
+        // under-budgeted clean tabs by slot+gap and the shortfall came out of
+        // the name. Icon-only mode display:nones the EMPTY slot, so there the
+        // dot counts only when actually dirty.
         const dirtyOn = dirtyEl && dirtyEl.textContent;
-        const dirtyW = dirtyOn ? dirtyEl.getBoundingClientRect().width : 0;
+        const dirtySlotW = dirtyEl ? Math.max(dirtyEl.getBoundingClientRect().width, 10) : 0;
+        const dirtyDotW = dirtyOn ? Math.max(dirtyEl.getBoundingClientRect().width, 10) : 0;
         // Floor so an unloaded img (0×0) cannot convince the planner that
         // icon-only tabs are free. 28px is pad+icon in the icon-only rule.
-        const iconOnly = Math.max(28, pad + Math.max(iconW, 16) + (dirtyW ? gap + dirtyW : 0));
+        const iconOnly = Math.max(28, pad + Math.max(iconW, 16) + (dirtyDotW ? gap + dirtyDotW : 0));
         const wasIconOnly = el.classList.contains("gfp-tab-icon-only");
         const box = el.getBoundingClientRect().width || 0;
-        const content = el.scrollWidth || 0;
-        const liveFull = Math.max(box, content);
+        // A tab's own scrollWidth cannot see through the NAME's ellipsis (the
+        // span hides its own overflow), so a tab that ever rendered squeezed
+        // would measure its squeezed width as "full" and the plan would
+        // believe it forever. Sum the parts with the name's scrollWidth — the
+        // one number that still knows the untruncated text.
+        const nameEl = el.querySelector(".gfp-tab-name");
+        const nameW = nameEl
+          ? Math.max(nameEl.scrollWidth || 0, nameEl.getBoundingClientRect().width || 0)
+          : 0;
+        const closeEl = el.querySelector(".gfp-tab-close");
+        const closeW = closeEl && !closeEl.hidden ? Math.max(closeEl.getBoundingClientRect().width, 22) : 0;
+        const parts = pad + 1 + Math.max(iconW, 16)
+          + (nameW ? gap + nameW : 0)
+          + (dirtySlotW ? gap + dirtySlotW : 0)
+          + (closeW ? gap + closeW : 0);
+        const liveFull = Math.max(box, parts);
         const full = wasIconOnly ? (cachedFull || liveFull) : (liveFull || cachedFull);
         el.dataset.fullW = String(full);
         el.dataset.iconW = String(iconOnly);
@@ -621,7 +662,17 @@
       tabs.forEach((el, i) => {
         const hidden = plan.overflow.indexOf(i) !== -1;
         el.hidden = hidden;
-        el.classList.toggle("gfp-tab-icon-only", plan.tabModes[i] === "icon");
+        const mode = plan.tabModes[i];
+        el.classList.toggle("gfp-tab-icon-only", mode === "icon");
+        // Named tabs get their measured full width as an explicit basis:
+        // Chromium's intrinsic sizing contributes the name below its real
+        // max-content (the CLAUDE…-beside-free-space bug), so "auto" cannot
+        // be trusted to show the full name. The planner already budgeted
+        // exactly this number; flex-shrink still yields under true pressure.
+        const fullW = Number(el.dataset.fullW) || 0;
+        el.style.flexBasis = !hidden && mode === "full" && fullW > 0
+          ? Math.ceil(fullW) + "px"
+          : "";
         if (hidden && el.dataset.rel) overflowRelPaths.push(el.dataset.rel);
       });
 
@@ -651,6 +702,31 @@
       const scroll = tabsEl.scrollWidth;
       if (client <= 0 || scroll <= 0) return false;
       return scroll > client + 1;
+    }
+
+    /**
+     * The truth the plan math cannot see: flex-shrink absorbs an over-packed
+     * row silently (no scroll overflow), ellipsizing names the plan promised.
+     * Post-apply, ask the DOM whether any visible NAMED tab actually shows
+     * its whole name — measurement drift then demotes instead of truncating.
+     */
+    function namesTruncated() {
+      for (const el of tabsEl.querySelectorAll(".gfp-tab:not([hidden]):not(.gfp-tab-icon-only)")) {
+        const name = el.querySelector(".gfp-tab-name");
+        if (name && name.clientWidth > 0 && name.scrollWidth > name.clientWidth + 1) return true;
+      }
+      return false;
+    }
+
+    /** Strip B-state promotions back to the base plan (icons for every idle). */
+    function withoutPromotions(plan) {
+      if (plan.state !== "b") return plan;
+      const tabs = [...tabsEl.querySelectorAll(".gfp-tab")];
+      const activeIndex = tabs.findIndex((el) => el.classList.contains("gfp-tab-active"));
+      return {
+        ...plan,
+        tabModes: plan.tabModes.map((m, i) => (i === activeIndex ? "full" : "icon")),
+      };
     }
 
     function forceTighterPlan(plan) {
@@ -688,10 +764,16 @@
           slack: 12,
         });
         applyPlanToDom(plan);
-        if (!forcedStripPlan && tabsRowOverflows() && plan.state !== "c") {
+        // Promotions are speculative: verify against the RENDERED truth and
+        // back them out before ever letting a promised name ellipsize.
+        if (!forcedStripPlan && plan.state === "b" && namesTruncated()) {
+          plan = withoutPromotions(plan);
+          applyPlanToDom(plan);
+        }
+        if (!forcedStripPlan && (tabsRowOverflows() || namesTruncated()) && plan.state !== "c") {
           plan = forceTighterPlan(plan);
           applyPlanToDom(plan);
-          if (tabsRowOverflows() && plan.state !== "c") {
+          if ((tabsRowOverflows() || namesTruncated()) && plan.state !== "c") {
             applyPlanToDom(forceTighterPlan(plan));
           }
         }
