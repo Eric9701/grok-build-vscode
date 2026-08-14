@@ -32,3 +32,16 @@ jobs:
           # PRs are out of scope for this flow.
           days-before-pr-stale: -1
           days-before-pr-close: -1
+      # The label means "awaiting confirmation" — meaningless on a closed
+      # issue. Strip it from EVERY closed issue (auto-closed above or closed
+      # by a person), so the label list always reads as the live queue.
+      - name: Strip the label from closed issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue list --repo "${{ github.repository }}" --state closed \
+            --label done-please-confirm --json number -q '.[].number' |
+          while read -r n; do
+            gh issue edit "$n" --repo "${{ github.repository }}" \
+              --remove-label done-please-confirm
+          done
