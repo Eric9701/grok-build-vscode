@@ -338,6 +338,8 @@
     voiceDiscarded: false,
     // The configured send phrase (for highlighting it in the composer).
     voiceSendPhrase: "grok send",
+    voiceKeyterms: [],
+    telemetryEnabled: undefined,
     // Client-owned zoom (remote + desktop). VS Code uses hostFontScale only.
     remoteFontScale: CLIENT_OWNS_FONT_SCALE
       ? clampClientFontScale(storedNumber(CLIENT_FONT_SCALE_KEY, 1))
@@ -593,21 +595,20 @@
     planModeUnavailableReason: "",
     // Unverified version probe: Plan row stays clickable so a pick re-probes.
     planModeRecheckable: false,
-    // Extension version (from initialState) — shown in the gear → About panel.
+    // Extension version (from initialState) — shown in Settings → About.
     extVersion: "",
     // Which GUI is on the other end and what the desk machine is called. Only a
     // remote needs these; a local webview is already looking at the thing.
     hostKind: "",
     hostName: "",
-    // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
-    // async grokUpdateStatus only re-renders About when it's the visible view.
+    // Which gear-popover view is showing ("main"|"model"|"config").
     gearView: "main",
     // Which button opened the popover: "composer" (this conversation — model,
     // effort, where it continues) or "rail" (the app — account, purpose,
     // settings, about). Only meaningful once a rail gear exists; in VS Code the
     // one composer button owns both and this stays inert.
     gearSurface: "composer",
-    // Latest `grok update --check` result for the About panel: { checking } while
+    // Latest `grok update --check` result for Settings → About: { checking } while
     // in flight, then { current, latest, updateAvailable, error }.
     grokUpdate: null,
     // While replaying an older session, suppress a legacy primer user turn and
@@ -1941,15 +1942,7 @@
     vscode.postMessage({ type: "setAppPurpose", value: next });
     applyThinkingVisibility();
     applyExpandCommandOutputs();
-    // Re-render open gear panels so hidden items appear/disappear live.
-    if (!gearPopover.hidden) {
-      if (state.gearView === "main") renderGearMain();
-      else if (state.gearView === "config" || state.gearView === "basic" || state.gearView === "advanced") {
-        if (state.gearView === "basic") renderBasicSettingsPanel();
-        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
-        else renderConfigDebugPanel();
-      }
-    }
+    if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
     syncGearPlacement();
   }
 
@@ -1965,21 +1958,6 @@
     el.className = "toolbar-popover-item";
     el.innerHTML = labelHtml;
     el.onclick = (e) => { e.stopPropagation(); onclick(); };
-    gearPopover.appendChild(el);
-  }
-
-  // A non-clickable, muted info row (e.g. version lines in the About panel).
-  function addGearInfo(labelHtml) {
-    const el = document.createElement("div");
-    el.className = "popover-info";
-    el.innerHTML = labelHtml;
-    gearPopover.appendChild(el);
-  }
-
-  // A thin horizontal divider between sections of a popover panel.
-  function addGearSep() {
-    const el = document.createElement("div");
-    el.className = "popover-sep";
     gearPopover.appendChild(el);
   }
 
@@ -2235,6 +2213,188 @@
     closeBtn.focus();
   }
 
+  // Shared settings surface (media/settings.js). Desktop + remote open it as a
+  // full-window overlay; VS Code posts openSettingsSurface for an editor tab.
+  let settingsSurface = null;
+
+  function hostOpensSettingsEditor() {
+    return !IS_REMOTE && state.hostCaps && state.hostCaps.settingsEditor === true;
+  }
+
+  function settingsEnv() {
+    return {
+      isRemote: IS_REMOTE,
+      isDesktop: isDesktopHostCaps(),
+      clientOwnsFontScale: CLIENT_OWNS_FONT_SCALE,
+      ttsAvailable,
+      steerSupported: state.steerSupported !== false,
+      providersKnown: !!state.providersKnown,
+      remoteLinked: state.remoteLinked,
+      hostCaps: state.hostCaps || {},
+    };
+  }
+
+  function settingsSnapshot() {
+    return {
+      appPurpose: state.appPurpose === "coding" ? "coding" : "knowledge",
+      showThinking: !!state.showThinking,
+      expandCommandOutputs: !!state.expandCommandOutputs,
+      steerByDefault: !!state.steerByDefault,
+      fontScale: CLIENT_OWNS_FONT_SCALE ? state.remoteFontScale : state.hostFontScale,
+      soundNotifications: !!state.soundNotifications,
+      processingSound: !!state.processingSound,
+      readRepliesAloud: IS_REMOTE ? !!state.remoteTts : !!state.readRepliesAloud,
+      summarizeRepliesAloud: IS_REMOTE ? !!state.remoteSummarizeRepliesAloud : !!state.summarizeRepliesAloud,
+      voiceConfigured: !!state.voiceConfigured,
+      voiceSendPhrase: typeof state.voiceSendPhrase === "string" ? state.voiceSendPhrase : "grok send",
+      voiceKeyterms: Array.isArray(state.voiceKeyterms) ? state.voiceKeyterms : [],
+      telemetryEnabled: state.telemetryEnabled,
+      providers: state.providers || [],
+      extVersion: state.extVersion,
+      cliVersion: state.cliVersion,
+      hostKind: state.hostKind,
+      hostName: state.hostName,
+      grokUpdate: state.grokUpdate,
+    };
+  }
+
+  function applySettingsChange(id, value, message) {
+    switch (id) {
+      case "appPurpose":
+        state.appPurpose = value === "coding" ? "coding" : "knowledge";
+        applyThinkingVisibility();
+        applyExpandCommandOutputs();
+        break;
+      case "showThinking":
+        state.showThinking = !!value;
+        applyThinkingVisibility();
+        break;
+      case "expandCommandOutputs":
+        state.expandCommandOutputs = !!value;
+        state.toolExpandOverride = null;
+        applyExpandCommandOutputs();
+        break;
+      case "steerByDefault":
+        state.steerByDefault = !!value;
+        break;
+      case "chatFontScale":
+        if (CLIENT_OWNS_FONT_SCALE) setClientFontScale(Number(value) / 100);
+        return;
+      case "readRepliesAloud":
+        if (IS_REMOTE) {
+          setRemoteTtsEnabled(!!value);
+          return;
+        }
+        state.readRepliesAloud = !!value;
+        if (!state.readRepliesAloud) {
+          cancelPendingSpeech();
+          if (state.summarizeRepliesAloud) {
+            state.summarizeRepliesAloud = false;
+            vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
+          }
+        }
+        break;
+      case "summarizeRepliesAloud":
+        if (IS_REMOTE) {
+          setRemoteTtsSummaryEnabled(!!value);
+          return;
+        }
+        state.summarizeRepliesAloud = !!value;
+        invalidatePendingSpeechSummary();
+        break;
+      case "soundNotifications":
+        state.soundNotifications = !!value;
+        unlockAudio();
+        break;
+      case "processingSound":
+        state.processingSound = !!value;
+        unlockAudio();
+        if (state.processingSound) {
+          if (liveTurnInFlight) scheduleProcessingCue();
+        } else if (processingCueTimer != null) {
+          clearTimeout(processingCueTimer);
+          processingCueTimer = null;
+        }
+        break;
+      case "voiceSendPhrase":
+        state.voiceSendPhrase = String(value ?? "");
+        renderInputHighlight();
+        break;
+      case "voiceKeyterms":
+        state.voiceKeyterms = Array.isArray(value) ? value.slice() : [];
+        break;
+      case "telemetryDesktop":
+        state.telemetryEnabled = !!value;
+        break;
+      default:
+        break;
+    }
+    if (message) vscode.postMessage(message);
+  }
+
+  let settingsOpener = null;
+
+  function closeSettingsOverlay() {
+    if (settingsSurface && settingsSurface.dispose) settingsSurface.dispose();
+    settingsSurface = null;
+    const existing = document.getElementById("settings-overlay");
+    if (existing) existing.remove();
+    const opener = settingsOpener;
+    settingsOpener = null;
+    if (opener && typeof opener.focus === "function" && document.contains(opener)) {
+      try { opener.focus(); } catch { /* */ }
+    }
+  }
+
+  function refreshSettingsOverlay() {
+    if (!settingsSurface || !settingsSurface.update) return;
+    settingsSurface.update(settingsSnapshot(), settingsEnv());
+  }
+
+  function resolveSettingsOpener(el) {
+    if (el && typeof el.closest === "function" && el.closest("#gear-popover")) {
+      return document.getElementById("gear-btn");
+    }
+    if (el && el !== document.body && document.contains(el)) return el;
+    return document.getElementById("gear-btn");
+  }
+
+  function openSettingsOverlay(opener, opts) {
+    const api = window.GrokSettings;
+    if (!api || typeof api.mount !== "function") return;
+    closeSettingsOverlay();
+    closePopovers();
+    settingsOpener = resolveSettingsOpener(opener || document.activeElement);
+    const overlay = document.createElement("div");
+    overlay.id = "settings-overlay";
+    overlay.className = "settings-overlay";
+    document.body.appendChild(overlay);
+    settingsSurface = api.mount(overlay, {
+      snapshot: settingsSnapshot(),
+      env: settingsEnv(),
+      category: opts && opts.category,
+      post: (msg) => vscode.postMessage(msg),
+      apply: applySettingsChange,
+      onLocal: (name) => {
+        if (name === "explainRemote") showRemoteExplainer();
+        if (name === "openDeviceManager") window.open("/", "_blank", "noopener");
+      },
+      closeOnAction: true,
+      onClose: closeSettingsOverlay,
+    });
+    settingsSurface.focusSearch();
+  }
+
+  function openAllSettings() {
+    const opener = document.getElementById("gear-btn") || document.activeElement;
+    closePopovers();
+    if (hostOpensSettingsEditor()) {
+      vscode.postMessage({ type: "openSettingsSurface" });
+      return;
+    }
+    openSettingsOverlay(opener);
+  }
+
   // Public UI service consumed by media/file-panel.js in both renderer hosts.
   window.__grokFilePanelConfirm = uiChoice;
 
@@ -2319,7 +2479,9 @@
     const step1 = document.createElement("li");
     step1.textContent = "Link this device. Sign in with your account.";
     const step2 = document.createElement("li");
-    step2.textContent = "Keep VS Code, Cursor, or Antigravity open.";
+    step2.textContent = isDesktopHostCaps()
+      ? "Keep this app open."
+      : "Keep VS Code, Cursor, or Antigravity open.";
     const step3 = document.createElement("li");
     step3.append("Open ");
     const urlBtn = document.createElement("button");
@@ -2401,27 +2563,6 @@
       renderGearApp();
       renderProviderAccounts();
     }
-  }
-
-  /**
-   * Client-owned text size slider (AFK Pilot + desktop). VS Code keeps host
-   * `chatFontScale` and never sets CLIENT_OWNS_FONT_SCALE. Leads Basic
-   * settings under the rail gear — not the composer's conversation surface, and
-   * not the gear root. Ctrl/Cmd +/−/0 stay in sync via setClientFontScale.
-   */
-  function appendClientFontScaleRow() {
-    if (!CLIENT_OWNS_FONT_SCALE) return;
-    const fontRow = document.createElement("div");
-    fontRow.className = "toolbar-popover-item remote-font-row";
-    fontRow.innerHTML =
-      `<label for="remote-font-scale" title="Chat text size on this client only. Independent of the VS Code extension setting. Ctrl/Cmd +/−/0 stay in sync with this slider.">Text size</label>` +
-      `<input id="remote-font-scale" type="range" min="80" max="160" step="10" value="${Math.round(state.remoteFontScale * 100)}" aria-label="Text size">` +
-      `<output>${Math.round(state.remoteFontScale * 100)}%</output>`;
-    const slider = fontRow.querySelector("input");
-    const output = fontRow.querySelector("output");
-    slider.oninput = () => { output.textContent = `${slider.value}%`; };
-    slider.onchange = () => { setClientFontScale(Number(slider.value) / 100); };
-    gearPopover.appendChild(fontRow);
   }
 
   /** Model + effort, plus worktree controls that have no header-menu home. */
@@ -2526,13 +2667,23 @@
 
   /** The app itself: what it is used for, settings, and about. */
   function renderGearApp() {
+    // ── Use this app for ──────────────────────────────────────────────────
+    // Progressive disclosure: Knowledge work (default) hides worktrees,
+    // thinking traces and tool details; Coding unlocks them (still default off).
+    addSection("Use this app for");
+    addGearItem(
+      `<span title="Hides worktrees, thinking traces, and tool details. The default for knowledge work.">Knowledge work</span>${state.appPurpose !== "coding" ? '<span class="popover-check">✓</span>' : ""}`,
+      () => { setAppPurpose("knowledge"); renderGearMain(); gearPopover.hidden = false; },
+    );
+    addGearItem(
+      `<span title="Adds worktrees, thinking traces, and tool details (still off by default).">Coding</span>${state.appPurpose === "coding" ? '<span class="popover-check">✓</span>' : ""}`,
+      () => { setAppPurpose("coding"); renderGearMain(); gearPopover.hidden = false; },
+    );
+
     // ── Remote Control ────────────────────────────────────────────────────
-    // The hosted relay account, on the machine that links itself — above
-    // Session on purpose (it's about reaching this machine at all). Hidden in
-    // the browser client: a remote can't (un)link the desktop it's driving.
+    // Hidden in the browser client: a remote can't (un)link the desk.
     // `remoteLinked === null` = the host hasn't answered yet: show NOTHING
-    // rather than guessing. Guessing "not linked" is the harmful direction —
-    // it offers to link a machine that may already be linked and working.
+    // rather than guessing. Unlink lives only in Settings → Account.
     if (!IS_REMOTE && state.remoteLinked !== null) {
       addSection("Remote Control");
       if (state.remoteLinked) {
@@ -2540,12 +2691,6 @@
           vscode.postMessage({ type: "openRemotePortal", withHint: true });
           closePopovers();
         });
-        // Deliberately NOT a one-tap unlink any more: signing out from a menu
-        // item next to "Continue remotely" made an irreversible action (every
-        // other device loses this machine) a slip away. The portal owns
-        // account + device management — it can show what's linked before
-        // anything is removed. `AFK Pilot: Unlink this device` still exists in
-        // the Command Palette for the deliberate case.
         addGearItem(`<span class="gear-lead">${ICON.user}<span>Your account</span></span>`, () => {
           vscode.postMessage({ type: "openRemotePortal" });
           closePopovers();
@@ -2562,32 +2707,8 @@
       }
     }
 
-    // ── Use this app for ──────────────────────────────────────────────────
-    // Progressive disclosure: Knowledge work (default) hides worktrees,
-    // thinking traces and tool details; Coding unlocks them (still default off).
-    addSection("Use this app for");
-    addGearItem(
-      `<span title="Hides worktrees, thinking traces, and tool details. The default for knowledge work.">Knowledge work</span>${state.appPurpose !== "coding" ? '<span class="popover-check">✓</span>' : ""}`,
-      () => { setAppPurpose("knowledge"); renderGearMain(); gearPopover.hidden = false; },
-    );
-    addGearItem(
-      `<span title="Adds worktrees, thinking traces, and tool details (still off by default).">Coding</span>${state.appPurpose === "coding" ? '<span class="popover-check">✓</span>' : ""}`,
-      () => { setAppPurpose("coding"); renderGearMain(); gearPopover.hidden = false; },
-    );
-
-    // ── Settings entry points ─────────────────────────────────────────────
-    // Desktop (rail) uses Basic / Advanced; VS Code keeps Config & debug and
-    // defers most prefs to VS Code settings. Gated on capabilities / rail, not
-    // an IS_DESKTOP flag.
-    if (railMount()) {
-      addSection("Settings");
-      addGearItem('<span>Basic settings</span><span class="popover-chevron">›</span>', () => renderBasicSettingsPanel());
-      addGearItem('<span>Advanced settings</span><span class="popover-chevron">›</span>', () => renderAdvancedSettingsPanel());
-    } else {
-      addSection("Other");
-      addGearItem('<span>Config &amp; debug</span><span class="popover-chevron">›</span>', () => renderConfigDebugPanel());
-    }
-    addGearItem('<span>Version &amp; about</span><span class="popover-chevron">›</span>', () => renderAboutPanel(true));
+    addSection("Settings");
+    addGearItem(`<span class="gear-lead">${ICON.gear}<span>Settings</span></span>`, () => openAllSettings());
     // Older hosts have no provider account frame; retain their existing action.
     if (!IS_REMOTE && !state.providersKnown) {
       addGearItem("<span>Log out</span>", () => {
@@ -2597,8 +2718,18 @@
     }
   }
 
+  /** Gear account rows: only when nothing is connected, or a connected
+   *  account needs sign-in. Healthy connected accounts live in Settings. */
+  function gearShowsProviderAccounts() {
+    if (IS_REMOTE || !state.providersKnown) return false;
+    const list = state.providers || [];
+    const anyConnected = list.some((p) => p.connected);
+    const needsAttention = list.some((p) => p.connected && p.needsLogin === true);
+    return !anyConnected || needsAttention;
+  }
+
   function renderProviderAccounts() {
-    if (IS_REMOTE || !state.providersKnown) return;
+    if (!gearShowsProviderAccounts()) return;
     addSection("Accounts");
     for (const provider of state.providers) {
       const connected = provider.connected === true;
@@ -2709,488 +2840,6 @@
         requestAnimationFrame(() => { try { el.focus(); } catch { /* */ } });
       }
     });
-  }
-
-  /** Basic prefs for rail hosts (desktop / web): sounds + TTS. */
-  function renderBasicSettingsPanel() {
-    state.gearView = "basic";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Basic settings</span>', renderGearMain);
-    // Leads Basic settings. It is a per-device display preference, which is
-    // exactly what this panel is for — on the gear root it sat above the
-    // account and purpose entries, which are not settings at all.
-    appendClientFontScaleRow();
-    appendSharedPreferenceSwitches();
-  }
-
-  /** Advanced prefs for rail hosts: display toggles, then config files / MCP / Logs. */
-  function renderAdvancedSettingsPanel() {
-    state.gearView = "advanced";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Advanced settings</span>', renderGearMain);
-    // Per-client display prefs first — visible on remote too (not host config).
-    appendAdvancedDisplaySwitches(() => renderAdvancedSettingsPanel());
-    // Host-local config openers — hide on remote (policy-dropped). Under a
-    // heading, because the two halves of this panel behave differently: the
-    // switches above change something here and now, while everything below
-    // leaves the app and opens a file or a log. Running them together read as
-    // one list where flipping and departing looked like the same kind of act.
-    addSection("Files & logs");
-    if (!IS_REMOTE) {
-      addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "openGlobalConfig" });
-        closePopovers();
-      });
-      addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "openProjectConfig" });
-        closePopovers();
-      });
-      addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "runMcpList" });
-        closePopovers();
-      });
-      // Desktop capability-hid this as "Show extension logs"; un-hide as "Logs".
-      const logsLabel = (state.hostCaps && state.hostCaps.showOutput === false)
-        ? "Logs"
-        : "Show extension logs";
-      addGearItem(`<span>${logsLabel}</span>`, () => {
-        vscode.postMessage({ type: "showLogs" });
-        closePopovers();
-      });
-      // Unpackaged desktop: gear is the discoverable DevTools door when the
-      // Windows menu bar is auto-hidden (F12 / Ctrl+Shift+I also work).
-      if (state.hostCaps && state.hostCaps.toggleDevTools === true) {
-        addGearItem("<span>Toggle Developer Tools</span>", () => {
-          vscode.postMessage({ type: "toggleDevTools" });
-          closePopovers();
-        });
-      }
-    } else {
-      addGearInfo("<span>Host config is managed on the desk</span>");
-    }
-  }
-
-  // About: extension + Grok Build versions, update availability, and an action to
-  // update the CLI on demand. `check` triggers a fresh `grok update --check`; the
-  // async grokUpdateStatus reply re-renders this view (check=false) to fill it in.
-  function renderAboutPanel(check) {
-    state.gearView = "about";
-    // A remote never checks. The binaries live on the desk machine and only the
-    // desk can replace them, so asking would spin a "Checking for updates…" the
-    // phone can do nothing with — which is exactly what it used to do. The host
-    // now refuses the message anyway (remote-policy: host-local); not sending it
-    // is what stops the spinner existing in the first place.
-    const shouldCheckGrok = !state.providersKnown || state.providers.some((provider) =>
-      provider.id === "grok" && provider.connected);
-    if (check && !remoteAboutPanel() && shouldCheckGrok) {
-      state.grokUpdate = { checking: true };
-      vscode.postMessage({ type: "checkGrokUpdate" });
-    }
-    const u = state.grokUpdate || {};
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Version &amp; about</span>', renderGearMain);
-
-    if (remoteAboutPanel()) {
-      renderRemoteAboutBody(u);
-      renderAboutFinePrint();
-      return;
-    }
-
-    // Updates can be paused for compatibility (issue #22): the host blocks moving
-    // the CLI onto an unsupported build on Windows.
-    const blocked = u.policy && u.policy.allow === false;
-
-    // ── Compatibility note (top) ─────────────────────────────────────────
-    if (blocked) {
-      addGearInfo(`<span class="popover-warn">${escapeHtml(u.policy.note || "Updates are paused for compatibility.")}</span>`);
-      addGearSep();
-    }
-
-    // ── Versions + update status ─────────────────────────────────────────
-    addGearInfo(`<span>This extension</span><span class="popover-ver">v${escapeHtml(state.extVersion || "?")}</span>`);
-    // The CLI version comes from the ACP `initialize` handshake, but the native
-    // Windows build doesn't report one there — so fall back to the version the
-    // update check returns (its `currentVersion`), which is always populated.
-    const grokProvider = state.providers.find((provider) => provider.id === "grok" && provider.connected);
-    const codexProvider = state.providers.find((provider) => provider.id === "codex" && provider.connected);
-    const legacyProviders = !state.providersKnown;
-    if (legacyProviders || grokProvider) {
-      const cliVer = grokProvider?.cliVersion || state.cliVersion || u.current || "";
-      addGearInfo(`<span>Grok Build CLI</span><span class="popover-ver">${cliVer ? "v" + escapeHtml(cliVer) : "—"}</span>`);
-    }
-    if (codexProvider) {
-      addGearInfo(`<span>Codex CLI</span><span class="popover-ver">${codexProvider.cliVersion ? "v" + escapeHtml(codexProvider.cliVersion) : "—"}</span>`);
-      addGearInfo(`<span>Codex ACP adapter</span><span class="popover-ver">${codexProvider.adapterVersion ? "v" + escapeHtml(codexProvider.adapterVersion) : "—"}</span>`);
-      if (codexProvider.updateAvailable) {
-        addGearInfo(`<span class="popover-update-avail">Codex update available${codexProvider.latestCliVersion ? ` · v${escapeHtml(codexProvider.latestCliVersion)}` : ""}</span>`);
-        addGearInfo('<span class="popover-ver">Update Codex at its install source.</span>');
-      } else {
-        addGearInfo('<span class="popover-ver">Codex updates are managed at its install source.</span>');
-      }
-    }
-
-    let statusHtml, canUpdate = false;
-    if (u.checking) {
-      statusHtml = `<span>Checking for updates</span>${BLINK_DOTS}`;
-    } else if (blocked) {
-      statusHtml = '<span class="popover-ver">On the supported version</span>';
-    } else if (u.error) {
-      statusHtml = '<span class="popover-warn">Couldn’t check — try updating anyway</span>';
-      canUpdate = true;
-    } else if (u.updateAvailable) {
-      statusHtml = `<span class="popover-update-avail">Update available · v${escapeHtml(u.latest || "")}</span>`;
-      canUpdate = true;
-    } else if (u.current || u.latest) {
-      statusHtml = '<span class="popover-ver">CLI is up to date</span>';
-    } else {
-      statusHtml = '<span class="popover-ver">—</span>';
-    }
-    if (legacyProviders || grokProvider) addGearInfo(statusHtml);
-
-    if ((legacyProviders || grokProvider) && blocked) {
-      // Disabled action — the reason note is shown at the top.
-      const btn = document.createElement("div");
-      btn.className = "toolbar-popover-item popover-action disabled";
-      btn.setAttribute("aria-disabled", "true");
-      btn.innerHTML = "<span>Update Grok Build CLI</span>";
-      gearPopover.appendChild(btn);
-    } else if ((legacyProviders || grokProvider) && canUpdate) {
-      // The update action only appears when there's actually something to do —
-      // when the CLI is up to date the grayed status line above says so on its own.
-      const btn = document.createElement("div");
-      btn.className = "toolbar-popover-item popover-action";
-      btn.innerHTML = "<span>Update Grok Build CLI</span>";
-      btn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "updateGrok" }); closePopovers(); };
-      gearPopover.appendChild(btn);
-    }
-
-    renderAboutFinePrint();
-  }
-
-  /**
-   * Whether this About panel is describing a machine somewhere else.
-   *
-   * Capability by field presence, as everywhere: a host too old to send
-   * `hostKind` cannot be described, so the phone keeps the local panel rather
-   * than rendering a page with blanks where the answers should be.
-   */
-  function remoteAboutPanel() {
-    return IS_REMOTE && !!state.hostKind;
-  }
-
-  /** The web client's own build, stamped into the page by the relay. */
-  function webAppVersion() {
-    const meta = document.querySelector('meta[name="grok-web-version"]');
-    return (meta && meta.getAttribute("content")) || "";
-  }
-
-  /**
-   * The remote reading of this page. Four facts and no actions.
-   *
-   * The old panel said "This extension" over a spinner that never resolved,
-   * which was wrong twice: the phone is not the extension, and the update check
-   * is a host-local probe a remote can neither answer nor act on. What a person
-   * on a phone actually wants to know is what they are holding, what it is
-   * talking to, and what is installed over there.
-   */
-  function renderRemoteAboutBody(u) {
-    const row = (label, value) =>
-      addGearInfo(`<span>${escapeHtml(label)}</span><span class="popover-ver">${escapeHtml(value)}</span>`);
-
-    const web = webAppVersion();
-    row("Web app", web ? `v${web}` : "—");
-
-    const gui = state.hostKind === "desktop" ? "Desktop app" : "Extension";
-    const machine = state.hostName ? `${state.hostName} · ${gui}` : gui;
-    row("Connected to", machine);
-
-    addGearSep();
-
-    // No update state on this line, deliberately: VS Code updates the extension
-    // itself and never tells us. Desktop update status lives on the rail
-    // (`updateAvailable` / `updateReady`), not in About. A "(up to date)" here
-    // would be a claim this row cannot back.
-    row(state.hostKind === "desktop" ? "Grok Build Desktop" : "Grok Build extension",
-      state.extVersion ? `v${state.extVersion}` : "—");
-
-    const connected = state.providers.filter((provider) => provider.connected);
-    const hasReportedVersions = connected.some((provider) => provider.cliVersion || provider.adapterVersion);
-    if (hasReportedVersions) {
-      for (const provider of connected) {
-        if (provider.id === "grok") {
-          row("Grok Build CLI", provider.cliVersion ? `v${provider.cliVersion}` : "—");
-        } else if (provider.id === "codex") {
-          row("Codex CLI", provider.cliVersion ? `v${provider.cliVersion}` : "—");
-          row("Codex ACP adapter", provider.adapterVersion ? `v${provider.adapterVersion}` : "—");
-          if (provider.updateAvailable) {
-            addGearInfo(`<span class="popover-update-avail">Codex update available${provider.latestCliVersion ? ` · v${escapeHtml(provider.latestCliVersion)}` : ""}</span>`);
-            addGearInfo('<span class="popover-ver">Update it at the desk — this device can’t.</span>');
-          }
-        }
-      }
-    } else {
-      const cliVer = state.cliVersion || u.current || "";
-      row("Grok Build CLI", cliVer ? `v${cliVer}` : "—");
-    }
-
-    // The status still travels (`grokUpdateStatus` is mirrored to remotes), so a
-    // phone can learn the CLI is behind — it just cannot do anything about it,
-    // and is told so rather than being offered a button that would not work.
-    if (u.updateAvailable) {
-      addGearInfo(
-        `<span class="popover-update-avail">CLI update available${u.latest ? ` · v${escapeHtml(u.latest)}` : ""}</span>`,
-      );
-      addGearInfo('<span class="popover-ver">Update it at the desk — this device can’t.</span>');
-    }
-  }
-
-  /** Shared tail: the non-affiliation note and the repository link. */
-  function renderAboutFinePrint() {
-    addGearSep();
-    const fine = document.createElement("div");
-    fine.className = "popover-fineprint";
-    fine.textContent =
-      "Unofficial · community-built · MIT | " +
-      "A VS Code UI for SpaceXAI’s Grok Build CLI - not affiliated with or endorsed by SpaceXAI (formerly xAI). " +
-      "Grok, Grok Build, and xAI are trademarks of xAI; this project uses those names only to describe what it’s compatible with.";
-    gearPopover.appendChild(fine);
-
-    addGearSep();
-    const ghIcon = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="vertical-align:-2px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>';
-    addGearItem(
-      `<span class="popover-gh">${ghIcon} phuryn/grok-build-vscode</span><span class="popover-external">↗</span>`,
-      () => {
-        const repoUrl = "https://github.com/phuryn/grok-build-vscode";
-        // openUrl is host-local (dropped on remotes) — open it in the browser
-        // directly there; the VS Code webview keeps routing through the host.
-        if (IS_REMOTE) window.open(repoUrl, "_blank", "noopener");
-        else vscode.postMessage({ type: "openUrl", url: repoUrl });
-        closePopovers();
-      },
-    );
-  }
-
-  /**
-   * Advanced display toggles: thinking traces, tool details, steer-by-default.
-   * Used by Advanced settings (rail hosts) and Config & debug (VS Code / no-rail).
-   * Not host config — must stay visible on remote. Coding-only where noted.
-   */
-  function appendAdvancedDisplaySwitches(rerender) {
-    const paint = typeof rerender === "function"
-      ? rerender
-      : () => {
-          if (state.gearView === "advanced") renderAdvancedSettingsPanel();
-          else renderConfigDebugPanel();
-        };
-
-    // Thinking + tool details only in Coding — Knowledge work hides the controls
-    // and forces traces/details off (see effectiveShowThinking).
-    if (isCodingPurpose()) {
-      addGearItem(
-        `<span title="Show Grok's reasoning (thinking) traces in chat, including on already-loaded sessions. Off by default — a lightweight &quot;Thinking…&quot; indicator stands in while Grok reasons.">Show thinking traces</span><span class="popover-switch${state.showThinking ? " on" : ""}" role="switch" aria-checked="${state.showThinking}"><span class="popover-switch-knob"></span></span>`,
-        () => {
-          state.showThinking = !state.showThinking;
-          applyThinkingVisibility();
-          vscode.postMessage({ type: "setShowThinking", value: state.showThinking });
-          paint();
-        },
-      );
-      addGearItem(
-        `<span title="Pre-open each command's IN/OUT block and each edit's inline diff by default, instead of clicking a row (›) to expand it. Edit rows always show a +N −M change count either way.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
-        () => {
-          state.expandCommandOutputs = !state.expandCommandOutputs;
-          state.toolExpandOverride = null;
-          applyExpandCommandOutputs();
-          vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
-          paint();
-        },
-      );
-    }
-
-    if (state.steerSupported) {
-      addGearItem(
-        `<span title="Send straight into Grok's running turn instead of queueing until it finishes. Steering does not cancel the turn or discard work in progress. Plain text only — no attached files, editor context, or /commands.">Steer by default</span><span class="popover-switch${state.steerByDefault ? " on" : ""}" role="switch" aria-checked="${state.steerByDefault}"><span class="popover-switch-knob"></span></span>`,
-        () => {
-          state.steerByDefault = !state.steerByDefault;
-          vscode.postMessage({ type: "setSteerByDefault", value: state.steerByDefault });
-          paint();
-        },
-      );
-    }
-  }
-
-  /**
-   * Shared preference switches used by Config & debug (VS Code) and Basic
-   * settings (rail hosts): sounds + TTS. Display toggles live in Advanced /
-   * Config & debug via appendAdvancedDisplaySwitches. Text size leads the main
-   * gear conversation panel when CLIENT_OWNS_FONT_SCALE.
-   */
-  function appendSharedPreferenceSwitches(rerender) {
-    const paint = typeof rerender === "function"
-      ? rerender
-      : () => {
-          if (state.gearView === "basic") renderBasicSettingsPanel();
-          else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
-          else renderConfigDebugPanel();
-        };
-
-    addGearItem(
-      `<span title="Play a short sound when Grok finishes or errors — only when the Grok panel isn't focused. A rising chime for done, a lower tone for errors.">Sound notifications</span><span class="popover-switch${state.soundNotifications ? " on" : ""}" role="switch" aria-checked="${state.soundNotifications}"><span class="popover-switch-knob"></span></span>`,
-      () => {
-        state.soundNotifications = !state.soundNotifications;
-        vscode.postMessage({ type: "setSoundNotifications", value: state.soundNotifications });
-        unlockAudio();
-        paint();
-      },
-    );
-    addGearItem(
-      `<span title="Play a quiet reminder while Grok is still working. Starts after seven seconds and repeats every eight seconds until the turn ends.">Still-processing sound</span><span class="popover-switch${state.processingSound ? " on" : ""}" role="switch" aria-checked="${state.processingSound}"><span class="popover-switch-knob"></span></span>`,
-      () => {
-        state.processingSound = !state.processingSound;
-        vscode.postMessage({ type: "setProcessingSound", value: state.processingSound });
-        unlockAudio();
-        if (state.processingSound) {
-          if (liveTurnInFlight) scheduleProcessingCue();
-        } else {
-          if (processingCueTimer != null) clearTimeout(processingCueTimer);
-          processingCueTimer = null;
-        }
-        paint();
-      },
-    );
-    if (ttsAvailable) {
-      const enabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
-      addGearItem(
-        `<span title="Read completed Grok replies aloud. Code blocks are skipped.">Read replies aloud</span><span class="popover-switch${enabled ? " on" : ""}" role="switch" aria-checked="${enabled}"><span class="popover-switch-knob"></span></span>`,
-        () => {
-          if (IS_REMOTE) {
-            setRemoteTtsEnabled(!state.remoteTts);
-          } else {
-            state.readRepliesAloud = !state.readRepliesAloud;
-            vscode.postMessage({ type: "setReadRepliesAloud", value: state.readRepliesAloud });
-            if (!state.readRepliesAloud) {
-              cancelPendingSpeech();
-              if (state.summarizeRepliesAloud) {
-                state.summarizeRepliesAloud = false;
-                vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
-              }
-            }
-          }
-          paint();
-        },
-      );
-      const summarizeEnabled = IS_REMOTE ? state.remoteTts : state.readRepliesAloud;
-      const summarizeOn = IS_REMOTE
-        ? state.remoteSummarizeRepliesAloud
-        : state.summarizeRepliesAloud;
-      const summarizeRow = document.createElement("div");
-      summarizeRow.className = "toolbar-popover-item" +
-        (summarizeEnabled ? "" : " popover-action disabled");
-      summarizeRow.innerHTML =
-        `<span title="Use xAI to read a brief, speech-friendly summary of each spoken message. Costs an extra xAI call per spoken reply and adds network delay; falls back to the full text on any failure.">Read simplified summaries</span><span class="popover-switch${summarizeOn ? " on" : ""}" role="switch" aria-checked="${summarizeOn}"><span class="popover-switch-knob"></span></span>`;
-      if (summarizeEnabled) {
-        summarizeRow.onclick = (e) => {
-          e.stopPropagation();
-          if (IS_REMOTE) {
-            setRemoteTtsSummaryEnabled(!state.remoteSummarizeRepliesAloud);
-          } else {
-            state.summarizeRepliesAloud = !state.summarizeRepliesAloud;
-            invalidatePendingSpeechSummary();
-            vscode.postMessage({
-              type: "setSummarizeRepliesAloud",
-              value: state.summarizeRepliesAloud,
-            });
-          }
-          paint();
-        };
-      } else {
-        summarizeRow.setAttribute("aria-disabled", "true");
-        summarizeRow.title = "Turn on Read replies aloud to summarize spoken replies";
-      }
-      gearPopover.appendChild(summarizeRow);
-    } else {
-      addGearInfo("<span>Read replies aloud</span><span class=\"popover-ver\">Not supported</span>");
-    }
-  }
-
-  // Config & debug: VS Code composer-gear path (no rail). Display toggles +
-  // sounds/TTS + host config + Move view. (Rail hosts split Basic / Advanced.)
-  function renderConfigDebugPanel() {
-    state.gearView = "config";
-    gearPopover.innerHTML = "";
-    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderGearMain);
-    // Same advanced display toggles as Advanced settings — no-rail hosts have
-    // only this panel, so the three must stay reachable here too.
-    appendAdvancedDisplaySwitches(() => renderConfigDebugPanel());
-    appendSharedPreferenceSwitches(() => renderConfigDebugPanel());
-    // Opening host config files, the MCP list, and the extension log channel are
-    // all host-local (the messages are policy-dropped on remotes) — hide the whole
-    // section in the browser client rather than show dead links.
-    if (!IS_REMOTE) {
-      addGearSep();
-      addGearItem('<span>Open global config</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "openGlobalConfig" });
-        closePopovers();
-      });
-      addGearItem('<span>Open project config</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "openProjectConfig" });
-        closePopovers();
-      });
-      addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "runMcpList" });
-        closePopovers();
-      });
-      // showOutput false = desktop (logs to stdout); still offer "Logs" there.
-      // Absent / true = VS Code output channel ("Show extension logs").
-      const logsLabel = (state.hostCaps && state.hostCaps.showOutput === false)
-        ? "Logs"
-        : "Show extension logs";
-      addGearItem(`<span>${logsLabel}</span>`, () => {
-        vscode.postMessage({ type: "showLogs" });
-        closePopovers();
-      });
-      if (state.hostCaps && state.hostCaps.toggleDevTools === true) {
-        addGearItem("<span>Toggle Developer Tools</span>", () => {
-          vscode.postMessage({ type: "toggleDevTools" });
-          closePopovers();
-        });
-      }
-      // Link into VS Code settings (owner of extension settings). Desktop's
-      // openSettings is a stub — hide when relocateView is already false AND
-      // showOutput is false (desktop host signature via capabilities).
-      const isDeskCaps = state.hostCaps &&
-        state.hostCaps.relocateView === false &&
-        state.hostCaps.showOutput === false;
-      if (!isDeskCaps) {
-        addGearItem('<span>Open VS Code settings</span><span class="popover-external">↗</span>', () => {
-          vscode.postMessage({ type: "openSettings", section: "grok" });
-          closePopovers();
-        });
-      }
-    }
-    // Move view: shown ONLY where the editor refused our secondary-side-bar
-    // container, and then as a single item.
-    //
-    // Everywhere else the section is gone. It existed to work around Cursor
-    // hiding the built-in "Move To" from a view's context menu — but an editor
-    // that gives us the secondary side bar also has that menu, so we were
-    // duplicating a control the editor already provides, in a worse form: our
-    // items name CONTAINERS, and a container cannot reach a dock the editor
-    // draws for itself.
-    //
-    // Where it does show, it opens the editor's OWN picker, which moves by
-    // location and can therefore reach the secondary side bar that editor would
-    // not give us directly. Hidden in the browser client regardless — `moveView`
-    // is host-local, so the relay drops it.
-    const noSecondarySideBar = !!(state.hostCaps && state.hostCaps.secondarySideBar === false);
-    const canRelocate = !(state.hostCaps && state.hostCaps.relocateView === false);
-    if (!IS_REMOTE && noSecondarySideBar && canRelocate) {
-      addSection("Move view");
-      addGearItem(`<span class="popover-icon-label">${ICON.panelRight} Move view…</span>`, () => {
-        vscode.postMessage({ type: "moveView", location: "pick" });
-        closePopovers();
-      });
-    }
   }
 
   function renderModelPicker() {
@@ -3334,17 +2983,15 @@
     gearPopover.hidden = false;
   }
 
-  // Open the gear popover straight to the Version & about panel (used by the
-  // welcome screen's "about" link). No-op if it's already showing About.
+  // Welcome "about" link → Settings → About. VS Code opens the editor tab;
+  // overlay clients land on the About category.
   function openAboutPanel() {
-    if (!gearPopover.hidden && state.gearView === "about") return;
     closePopovers();
-    // About is app-level, so it belongs to whichever button owns app settings.
-    const anchor = appSettingsButton();
-    state.gearSurface = anchor.id === "rail-gear-btn" ? "rail" : "composer";
-    renderAboutPanel(true);
-    positionGearPopover(anchor);
-    gearPopover.hidden = false;
+    if (hostOpensSettingsEditor()) {
+      vscode.postMessage({ type: "openSettingsSurface", category: "about" });
+      return;
+    }
+    openSettingsOverlay(appSettingsButton(), { category: "about" });
   }
 
   /**
@@ -3788,6 +3435,14 @@
 
   function showProviderGlyphs() {
     return state.providersKnown && state.providers.filter((provider) => provider.connected).length > 1;
+  }
+
+  /** Desktop host signature via capabilities — not IS_REMOTE, not body.desk
+   *  (VS Code also sets body.desk). relocateView + showOutput both false. */
+  function isDesktopHostCaps() {
+    return !!(state.hostCaps &&
+      state.hostCaps.relocateView === false &&
+      state.hostCaps.showOutput === false);
   }
 
   // Provider marks from Lobe Icons (MIT), adapted to inherit currentColor.
@@ -4296,6 +3951,10 @@
   //      single-column even when a `repos` frame arrives for clear-all naming.
   //   2. The host has sent a `repos` frame (`state.reposKnown`). An older host
   //      that never sends one gets the plain chat, not an empty sidebar.
+  // Desktop is the exception: renderer and host ship together, so there is no
+  // version skew. `body.desk` + the rail mount paints the layout chrome from
+  // the first frame; catalog data fills in when it arrives. Remotes keep the
+  // wait. VS Code never mounts the rail.
   //
   // Rows for a repo the client is NOT currently in arrive on `repoSessions`, a
   // frame older hosts never send. When it never arrives the rail still works:
@@ -4338,11 +3997,20 @@
   }
 
   /**
-   * Rail is live when the mount exists AND the host has proven it feeds a
-   * multi-repo catalog (`repos` frame). Never gated on IS_REMOTE.
+   * Desktop large layout: the host baked `body.desk` and shipped the rail
+   * mount. VS Code also uses body.desk but never mounts the rail. Remote
+   * mounts the rail without body.desk and still waits for `repos`.
+   */
+  function desktopLargeLayout() {
+    return document.body.classList.contains("desk") && !!railMount();
+  }
+
+  /**
+   * Rail is live when the mount exists AND (desktop first-frame chrome, or the
+   * host has proven it feeds a multi-repo catalog). Never gated on IS_REMOTE.
    */
   function railAvailable() {
-    return !!railMount() && state.reposKnown;
+    return !!railMount() && (desktopLargeLayout() || state.reposKnown);
   }
 
   /** The list body. The browser page wraps the rail in fixed chrome (brand,
@@ -4441,12 +4109,22 @@
    *  picker so they never disagree about zoom/viewport edges). */
   function placeRailPopover(el, anchor, at) {
     const z = chatZoomFactor();
+    const vh = unzoomClientPx(window.innerHeight, z);
+    const vw = unzoomClientPx(window.innerWidth, z);
+    // CSS is max-width: min(280px, 100vw - 16px). An inline max-width
+    // overrides that, so the zoom-corrected calc must keep the 280px ceiling
+    // and never let the 160px floor exceed the viewport (below 176px).
+    const viewportCap = Math.max(0, vw - 16);
+    const maxW = Math.min(280, Math.max(Math.min(160, viewportCap), viewportCap));
+    el.style.maxWidth = `${Math.round(maxW)}px`;
+    // CSS also declares min-width: 190px, and a CSS minimum BEATS an inline
+    // maximum — on a tiny zoomed viewport the menu would still overflow. Drop
+    // the floor with the cap when the cap falls under it.
+    if (maxW < 190) el.style.minWidth = `${Math.round(maxW)}px`;
     const size = el.getBoundingClientRect();
     const gap = 4;
     const menuH = unzoomClientPx(size.height, z);
     const menuW = unzoomClientPx(size.width, z);
-    const vh = unzoomClientPx(window.innerHeight, z);
-    const vw = unzoomClientPx(window.innerWidth, z);
     // `at` is a pointer position (right-click); otherwise hang off the control.
     // Both arrive as VISUAL px — body `zoom` scales client rects and pointer
     // coordinates alike, while fixed top/left are layout px.
@@ -5362,12 +5040,14 @@
     // Mount + `repos` frame (+ non-empty catalog). A host that never sends
     // `repos` keeps the plain single-column chat; no mount (VS Code) never
     // lights the rail even when repos arrives for clear-all.
+    // Desktop paints the rail chrome from the first frame (no catalog wait).
     // An empty catalog normally means "this host has nothing to show" — but on a
     // host that can ADD a project, an empty rail is the one screen where the
     // user most needs the rail, because it is where the only useful control
     // lives. Hiding it made the empty-state action unreachable and left the
     // File menu — which the desktop hides — as the sole route in.
-    const on = railAvailable() && (state.repos.length > 0 || canAddProjectFolder());
+    const on = desktopLargeLayout() ||
+      (railAvailable() && (state.repos.length > 0 || canAddProjectFolder()));
     const panel = railPanel();
     if (panel) panel.hidden = !on;
     root.hidden = !on;
@@ -5502,7 +5182,9 @@
     }
 
     if (!shownAnything) {
-      if (!q && canAddProjectFolder()) {
+      if (!state.reposKnown && desktopLargeLayout()) {
+        root.appendChild(railNote("Loading…"));
+      } else if (!q && canAddProjectFolder()) {
         // An empty rail that only says "No projects yet" is a dead end on the
         // one screen where the user has nothing else to click.
         const empty = railNote("No projects yet");
@@ -8709,6 +8391,7 @@
       }
       return;
     }
+    flushChildStream(el);
     el.classList.add("subagent-done");
     if (failed) el.classList.add("subagent-failed");
     else if (cancelled) el.classList.add("subagent-cancelled");
@@ -8720,16 +8403,175 @@
     // lead-ins, one wrapping <response> pair, the trailing Agent ID hint) so
     // only the child's actual words render — as markdown, since subagent
     // answers routinely carry fences/bold/lists.
+    const liveStatus = el.querySelector(".subagent-status");
+    if (liveStatus) liveStatus.textContent = "";
     const result = cleanSubagentOutput(info.output || "");
     if (result) {
       const body = el.querySelector(".subagent-result");
       body.innerHTML = `<div class="subagent-result-label">Output of the subagent:</div>` + renderMarkdown(result);
       applyAutoDir(body);
-      const row = el.querySelector(".subagent-row");
-      row.classList.add("expandable");
-      row.title = "Show the subagent's result";
-      row.onclick = () => { body.hidden = !body.hidden; };
+      wireSubagentExpand(el, "Show the subagent's result");
     }
+  }
+
+  function hasChildStreamContent(el) {
+    const stream = el.querySelector(".subagent-stream");
+    return !!(stream && stream.childNodes.length);
+  }
+
+  function toggleSubagentDetails(el) {
+    const stream = el.querySelector(".subagent-stream");
+    const result = el.querySelector(".subagent-result");
+    const anyOpen = (stream && !stream.hidden) || (result && !result.hidden);
+    const hide = anyOpen;
+    if (stream && hasChildStreamContent(el)) stream.hidden = hide;
+    if (result && result.innerHTML) result.hidden = hide;
+  }
+
+  function wireSubagentExpand(el, title) {
+    const row = el.querySelector(".subagent-row");
+    if (!row) return;
+    row.classList.add("expandable");
+    if (title) row.title = title;
+    if (row._expandWired) return;
+    row._expandWired = true;
+    row.onclick = () => toggleSubagentDetails(el);
+  }
+
+  function findSubagentCardByChildSession(id) {
+    if (!id) return null;
+    const sid = String(id);
+    return [...state.subagentCards.values()].find(
+      (c) => c.dataset.childSessionId === sid || c.dataset.subagentId === sid,
+    ) || null;
+  }
+
+  function tagSubagentChildSession(el, update) {
+    if (!el || !update) return;
+    if (update.subagent_id && !el.dataset.subagentId) {
+      el.dataset.subagentId = String(update.subagent_id);
+    }
+    const childId = update.child_session_id || update.subagent_id;
+    if (childId && !el.dataset.childSessionId) el.dataset.childSessionId = String(childId);
+  }
+
+  function setSubagentLiveStatus(el, text) {
+    if (el.classList.contains("subagent-done")) return;
+    const status = el.querySelector(".subagent-status");
+    if (!status) return;
+    const t = String(text || "").replace(/\s+/g, " ").trim();
+    status.textContent = t.length > 72 ? t.slice(0, 71) + "…" : t;
+  }
+
+  // Child chunks arrive word-level. Paint once per frame per card — same
+  // coalescing as appendAgent/flushAgent — so a storm does not reparse the
+  // open prose segment (or rewrite thoughts) on every token.
+  function scheduleChildStreamFlush(el) {
+    if (el._childRenderScheduled) return;
+    el._childRenderScheduled = true;
+    // Generation-stamped: a synchronous boundary flush (tool row, finish)
+    // supersedes the queued frame, which would otherwise reparse the same
+    // segment a second time inside one frame.
+    const gen = (el._childRenderGen = (el._childRenderGen || 0) + 1);
+    requestAnimationFrame(() => {
+      if (el._childRenderGen !== gen || !el._childRenderScheduled) return;
+      flushChildStream(el);
+    });
+  }
+
+  function flushChildStream(el) {
+    el._childRenderScheduled = false;
+    el._childRenderGen = (el._childRenderGen || 0) + 1;
+    if (el._childProseEl) {
+      el._childProseEl.innerHTML = renderMarkdown(el._childProse || "");
+      applyAutoDir(el._childProseEl);
+    }
+    if (el._childThoughtEl) el._childThoughtEl.textContent = el._childThought || "";
+  }
+
+  // A tool row is a hard close, like addToToolGroup nulling activeAgentEl:
+  // flush the open segment, then drop the pointer so the next prose chunk
+  // appends a NEW .subagent-prose after the tool instead of concatenating
+  // into the block above it.
+  function closeChildProseSegment(el) {
+    flushChildStream(el);
+    el._childProse = "";
+    el._childProseEl = null;
+  }
+
+  function appendChildProse(el, stream, text) {
+    if (!el._childProseEl) {
+      const body = document.createElement("div");
+      body.className = "subagent-prose";
+      stream.appendChild(body);
+      el._childProseEl = body;
+      el._childProse = "";
+    }
+    el._childProse = (el._childProse || "") + (text || "");
+    setSubagentLiveStatus(el, el._childProse);
+    scheduleChildStreamFlush(el);
+  }
+
+  function appendChildThought(el, stream, text) {
+    el._childThought = (el._childThought || "") + (text || "");
+    if (!el._childThoughtEl) {
+      const wrap = document.createElement("div");
+      wrap.className = "subagent-thoughts";
+      wrap.innerHTML =
+        `<button type="button" class="subagent-thoughts-toggle">Thinking</button>` +
+        `<div class="subagent-thoughts-body" hidden></div>`;
+      wrap.querySelector(".subagent-thoughts-toggle").onclick = (e) => {
+        e.stopPropagation();
+        const body = wrap.querySelector(".subagent-thoughts-body");
+        body.hidden = !body.hidden;
+        wrap.classList.toggle("expanded", !body.hidden);
+      };
+      stream.insertBefore(wrap, stream.firstChild);
+      el._childThoughtEl = wrap.querySelector(".subagent-thoughts-body");
+    }
+    scheduleChildStreamFlush(el);
+  }
+
+  function addChildToolRow(el, stream, call) {
+    if (!el._childTools) el._childTools = new Map();
+    const id = call && call.toolCallId;
+    if (id && el._childTools.has(id)) {
+      updateChildToolRow(el, stream, call);
+      return;
+    }
+    closeChildProseSegment(el);
+    const row = document.createElement("div");
+    row.className = "subagent-tool";
+    if (id) row.dataset.toolCallId = id;
+    row.textContent = toolLabel(call);
+    stream.appendChild(row);
+    if (id) el._childTools.set(id, row);
+    setSubagentLiveStatus(el, toolLabel(call));
+  }
+
+  function updateChildToolRow(el, stream, call) {
+    const id = call && call.toolCallId;
+    const row = id && el._childTools && el._childTools.get(id);
+    if (!row) {
+      addChildToolRow(el, stream, call);
+      return;
+    }
+    const label = toolLabel(call);
+    if (label && label !== "tool") row.textContent = label;
+    const status = String(call && call.status || "").toLowerCase();
+    if (status === "failed") row.classList.add("subagent-tool-failed");
+  }
+
+  function applyChildStream(msg) {
+    const el = findSubagentCardByChildSession(msg && msg.childSessionId);
+    if (!el) return;
+    const stream = el.querySelector(".subagent-stream");
+    if (!stream) return;
+    if (msg.event === "messageChunk") appendChildProse(el, stream, msg.text);
+    else if (msg.event === "thoughtChunk") appendChildThought(el, stream, msg.text);
+    else if (msg.event === "toolCall") addChildToolRow(el, stream, msg.call);
+    else if (msg.event === "toolCallUpdate") updateChildToolRow(el, stream, msg.call);
+    if (hasChildStreamContent(el)) wireSubagentExpand(el, "Show the subagent's activity");
   }
 
   function addSubagentCard(call) {
@@ -8744,9 +8586,11 @@
         `<span class="subagent-label">Subagent</span>` +
         `<span class="subagent-sep">·</span>` +
         `<span class="subagent-title"></span>` +
+        `<span class="subagent-status"></span>` +
         BLINK_DOTS +
         `<span class="subagent-time"></span>` +
       `</div>` +
+      `<div class="subagent-stream" hidden></div>` +
       `<div class="subagent-result" hidden></div>`;
     setSubagentTitle(el, call);
     // Cards rebuilt by a cold restore never receive their own subagent_spawned
@@ -11595,7 +11439,14 @@
     // agentEnd on an ordinary turn, so asserting an indicator there painted a
     // Grokking row after the final message and scrolled the view, for the one
     // frame before agentEnd removed it again.
-    "subagentUpdate",
+    "subagentUpdate", "childStream",
+  ]);
+
+  const SETTINGS_LIVE_MSGS = new Set([
+    "initialState", "showThinking", "appPurpose", "expandCommandOutputs",
+    "steerByDefault", "steerUnavailable", "soundNotifications", "processingSound",
+    "readRepliesAloud", "summarizeRepliesAloud", "fontScale", "voiceConfigured",
+    "providerState", "remoteStatus", "telemetryEnabled", "grokUpdateStatus", "initialized",
   ]);
 
   function handleHostMessage(msg) {
@@ -11636,6 +11487,7 @@
             reportRemotePreferences();
           }
         }
+        if (typeof msg.telemetryEnabled === "boolean") state.telemetryEnabled = msg.telemetryEnabled;
         applyThinkingVisibility();
         applyExpandCommandOutputs();
         syncGearPlacement();
@@ -11667,7 +11519,6 @@
           }
         }
         if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
-        else if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
         if (!historyPopover.hidden) renderSessionRows();
         renderRail();
         break;
@@ -11702,17 +11553,14 @@
         break;
       case "steerByDefault":
         // Live toggle (grok.steerByDefault). Pure policy for the next send —
-        // the queued block's Steer button is unaffected; refresh open gear.
+        // the queued block's Steer button is unaffected.
         state.steerByDefault = !!msg.value;
-        if (state.gearView === "config") renderConfigDebugPanel();
-        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         break;
       case "soundNotifications":
         // Live toggle (grok.soundNotifications). Only affects future turn-end/
-        // error beeps; keep the gear switch in sync if it's open.
+        // error beeps.
         state.soundNotifications = !!msg.value;
         releaseAudioIfSilent();
-        if (state.gearView === "config") renderConfigDebugPanel();
         break;
       case "processingSound":
         state.processingSound = !!msg.value;
@@ -11723,7 +11571,6 @@
           processingCueTimer = null;
         }
         releaseAudioIfSilent();
-        if (state.gearView === "config") renderConfigDebugPanel();
         break;
       case "readRepliesAloud": {
         const wasEnabled = state.readRepliesAloud;
@@ -11735,7 +11582,6 @@
             vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
           }
         }
-        if (state.gearView === "config") renderConfigDebugPanel();
         break;
       }
       case "summarizeRepliesAloud":
@@ -11744,7 +11590,9 @@
           vscode.postMessage({ type: "setSummarizeRepliesAloud", value: false });
         }
         invalidatePendingSpeechSummary();
-        if (state.gearView === "config") renderConfigDebugPanel();
+        break;
+      case "telemetryEnabled":
+        state.telemetryEnabled = !!msg.value;
         break;
       case "speechSummary": {
         const pending = pendingSpeechSummary;
@@ -11766,8 +11614,6 @@
         // initialState + is baked into the <body class> by the host to avoid a flash.
         state.showThinking = !!msg.value;
         applyThinkingVisibility();
-        if (state.gearView === "config") renderConfigDebugPanel();
-        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         break;
       case "appPurpose":
         // Live global disclosure preference (Knowledge work / Coding).
@@ -11775,9 +11621,6 @@
         applyThinkingVisibility();
         applyExpandCommandOutputs();
         if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
-        else if (state.gearView === "config") renderConfigDebugPanel();
-        else if (state.gearView === "basic") renderBasicSettingsPanel();
-        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         syncGearPlacement();
         break;
       case "fontScale":
@@ -11877,7 +11720,7 @@
         break;
       }
       case "grokUpdateStatus":
-        // Reply to the About panel's checkGrokUpdate. The check also reports the
+        // Reply to Settings → About's checkGrokUpdate. The check also reports the
         // CLI's current version — adopt it, since the ACP handshake doesn't always
         // give us one (native Windows build) and otherwise the panel would show a
         // bare "—" right next to a confident "CLI is up to date".
@@ -11887,7 +11730,6 @@
           policy: msg.policy || null,
         };
         if (msg.current) state.cliVersion = msg.current;
-        if (!gearPopover.hidden && state.gearView === "about") renderAboutPanel(false);
         break;
       case "updateAvailable": {
         // Capability: the frame arrived. No host flag / IS_DESKTOP check.
@@ -12006,6 +11848,7 @@
       case "voiceConfigured":
         state.voiceConfigured = !!msg.value;
         if (typeof msg.sendPhrase === "string") state.voiceSendPhrase = msg.sendPhrase;
+        if (Array.isArray(msg.keyterms)) state.voiceKeyterms = msg.keyterms.filter((t) => typeof t === "string");
         renderMic();
         renderInputHighlight();
         break;
@@ -12379,15 +12222,18 @@
           (c) => state.replaying || !c.dataset.subagentReplayed,
         );
         if (u.sessionUpdate === "subagent_spawned") {
-          // Strict FIFO: spawn events arrive in tool-call order. Done-ness is
-          // deliberately IGNORED — a tool-channel completion routinely races
-          // ahead of the lifecycle spawn for the SAME card, so a done-but-untagged
-          // card must still be taggable by its own spawn. Only tag when there's a
-          // real id — an empty id would leave the card falsy-untagged and let the
+          // Exact id first: a started-ack can tag card A before this event,
+          // and FIFO-first would then stamp B as A (B's stream + finish drop).
+          // Untagged FIFO is only the fallback. Done-ness is deliberately
+          // IGNORED — a tool-channel completion routinely races ahead of the
+          // lifecycle spawn for the SAME card. Only tag when there's a real
+          // id — an empty id would leave the card falsy-untagged and let the
           // NEXT spawn steal it.
           if (u.subagent_id) {
-            const el = cards.find((c) => !c.dataset.subagentId);
-            if (el) el.dataset.subagentId = String(u.subagent_id);
+            const id = String(u.subagent_id);
+            const el = cards.find((c) => c.dataset.subagentId === id)
+              || cards.find((c) => !c.dataset.subagentId);
+            if (el) tagSubagentChildSession(el, u);
           }
         } else if (u.sessionUpdate === "subagent_finished") {
           let el;
@@ -12424,6 +12270,9 @@
         }
         break;
       }
+      case "childStream":
+        applyChildStream(msg);
+        break;
       case "runProgress":
         applyRunProgress(msg.update);
         break;
@@ -12525,9 +12374,6 @@
         state.expandCommandOutputs = !!msg.value;
         state.toolExpandOverride = null;
         applyExpandCommandOutputs();
-        // Keep the switch in sync wherever it lives (Config or Advanced).
-        if (state.gearView === "config") renderConfigDebugPanel();
-        else if (state.gearView === "advanced") renderAdvancedSettingsPanel();
         break;
       case "setAllToolDetails":
         // Command Palette: Grok: Expand/Collapse All Tool Details — one-shot,
@@ -13067,6 +12913,7 @@
         );
         break;
     }
+    if (SETTINGS_LIVE_MSGS.has(msg.type)) refreshSettingsOverlay();
     // After any step grok takes mid-turn, make sure the chat still shows it's
     // working — never a dead frame while a turn is unfinished (esp. with thinking
     // traces hidden). The turn-end boundary (promptComplete) is excluded so the
@@ -13096,6 +12943,9 @@
   // Hide top-bar New immediately when the overflow slot is in the DOM (rail
   // hosts). fillSessionHeadActions re-asserts this whenever the menu refreshes.
   fillSessionHeadActions();
+  // Desktop ships the rail mount in the first HTML frame. Paint the skeleton
+  // before catalog frames arrive so the window never starts panel-less.
+  if (desktopLargeLayout()) renderRail();
   modeBtn.onclick = (e) => { e.stopPropagation(); if (state.busyLocked) return; openModePopover(); };
   gearBtn.onclick = (e) => { e.stopPropagation(); openGearPopover(); };
 
@@ -13342,7 +13192,7 @@
   function handleProjectFileWriteResult(msg) {
     settleRemoteFileRequest("write", msg);
   }
-  // Welcome screen's "about" link → open the gear popover's Version & about panel.
+  // Welcome screen's "about" link → Settings → About.
   const welcomeAboutLink = $("welcome-about-link");
   if (welcomeAboutLink) welcomeAboutLink.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openAboutPanel(); };
   addBtn.onclick = (e) => { e.stopPropagation(); openAddPopover(); };

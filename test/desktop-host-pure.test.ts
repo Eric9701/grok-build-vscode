@@ -601,6 +601,25 @@ describe("desktop main wiring (source gates)", () => {
     expect(main).toContain("remoteActions");
   });
 
+  it("desktop remoteSignOut uses the same native confirm as unlinkRemoteDevice", () => {
+    const sidebar = fs.readFileSync(path.join(testRepoRoot, "src", "sidebar.ts"), "utf8");
+    const start = sidebar.indexOf('case "remoteSignOut"');
+    const end = sidebar.indexOf('case "openRemotePortal"', start);
+    const body = sidebar.slice(start, end);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    expect(body).toContain("canSwitchWorkspaceFolder");
+    expect(body).toContain("confirmHostExecute");
+    expect(body).toContain("unlinkRemoteDevice");
+
+    // VS Code palette still calls the method directly — no confirm there.
+    const ext = fs.readFileSync(path.join(testRepoRoot, "src", "extension.ts"), "utf8");
+    expect(ext).toMatch(/registerCommand\("grok.unlinkRemote", \(\) => sidebar\.unlinkRemoteDevice\(\)\)/);
+    const unlinkStart = sidebar.indexOf("async unlinkRemoteDevice()");
+    const unlinkEnd = sidebar.indexOf("private async postRemoteStatus", unlinkStart);
+    expect(sidebar.slice(unlinkStart, unlinkEnd)).not.toContain("confirmHostExecute");
+  });
+
   it("registers file-tree IPC while getHtml loads the component only for desktop", () => {
     const main = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),
@@ -637,6 +656,14 @@ describe("desktop main wiring (source gates)", () => {
     // An empty branch means the VS Code webview receives neither tag; absence
     // of a mount call is not the thing enforcing the product decision.
     expect(assetGate.match(/:\s*"";/g)).toHaveLength(2);
+
+    // First-frame desktop chrome: rail visible + files shell in getHtml so the
+    // window never paints the panel-less layout and then upgrades.
+    expect(sidebar).toContain('class="desk${deskLayoutClass}');
+    expect(sidebar).toContain('id="projects-rail" class="projects-rail" aria-label="Projects"');
+    expect(sidebar).not.toContain('class="projects-rail" hidden aria-label="Projects"');
+    expect(sidebar).toContain('id="desk-ft-shell"');
+    expect(sidebar).toContain("desk-with-ft");
   });
 
   it("does not expose a process-global lastOpen path (cross-project leak)", () => {
@@ -1186,6 +1213,22 @@ describe("webview message schema validation", () => {
     expect(parseWebviewMsg({ type: "restartToUpdate" })).toEqual({ type: "restartToUpdate" });
     expect(parseWebviewMsg({ type: "openUpdateRelease", url: "https://afkpilot.com/desktop-update" })?.type)
       .toBe("openUpdateRelease");
+    expect(parseWebviewMsg({ type: "unlinkRemoteDevice" })).toEqual({ type: "unlinkRemoteDevice" });
+    expect(parseWebviewMsg({ type: "setVoiceSendPhrase", value: "ok send" })).toEqual({
+      type: "setVoiceSendPhrase",
+      value: "ok send",
+    });
+    expect(parseWebviewMsg({ type: "setVoiceKeyterms", value: ["useEffect"] })).toEqual({
+      type: "setVoiceKeyterms",
+      value: ["useEffect"],
+    });
+    expect(parseWebviewMsg({ type: "setTelemetryEnabled", value: false })).toEqual({
+      type: "setTelemetryEnabled",
+      value: false,
+    });
+    expect(parseWebviewMsg({ type: "setVoiceSendPhrase" })).toBeNull();
+    expect(parseWebviewMsg({ type: "setVoiceKeyterms", value: ["ok", 1] })).toBeNull();
+    expect(parseWebviewMsg({ type: "setTelemetryEnabled", value: "no" })).toBeNull();
   });
 
   it("drops unknown types and malformed payloads", () => {
@@ -1365,6 +1408,7 @@ describe("window navigation and open locks", () => {
     expect(shouldOpenExternally("https://github.com/phuryn/grok-build-vscode")).toBe(
       true,
     );
+    expect(shouldOpenExternally("mailto:support@productcompass.pm")).toBe(true);
     expect(shouldOpenExternally("javascript:alert(1)")).toBe(false);
     const d = windowOpenDecision({ url: "https://example.com" });
     expect(d.action).toBe("deny");
@@ -1749,12 +1793,12 @@ describe("desktop DevTools gate (non-production only)", () => {
     expect(host).not.toContain("openDevTools");
     expect(host).toMatch(/canToggleDevTools/);
     expect(host).toContain("toggleDevTools()");
-    const chatJs = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.js"),
+    const settingsJs = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "settings.js"),
       "utf8",
     );
-    expect(chatJs).toContain("Toggle Developer Tools");
-    expect(chatJs).toMatch(/type:\s*["']toggleDevTools["']/);
+    expect(settingsJs).toContain("Toggle Developer Tools");
+    expect(settingsJs).toMatch(/type:\s*["']toggleDevTools["']/);
     // Launcher: explicit flag → env; not keyed off GROK_RELAY_URL.
     const launcher = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run-desktop.cjs"),
@@ -2243,9 +2287,10 @@ describe("desktop openFile / openUrl policy (A1)", () => {
     expect(isExecutableOpenTarget(link, { platform: "win32", pathFs: linkFs })).toBe(true);
   });
 
-  it("refuses openUrl schemes other than http(s)", () => {
+  it("refuses openUrl schemes other than http(s) and mailto", () => {
     expect(authorizeOpenUrl("https://example.com/x").ok).toBe(true);
     expect(authorizeOpenUrl("http://localhost:3000").ok).toBe(true);
+    expect(authorizeOpenUrl("mailto:support@productcompass.pm").ok).toBe(true);
     expect(authorizeOpenUrl("file:///etc/passwd").ok).toBe(false);
     expect(authorizeOpenUrl("javascript:alert(1)").ok).toBe(false);
     expect(authorizeOpenUrl("vscode://file/x").ok).toBe(false);

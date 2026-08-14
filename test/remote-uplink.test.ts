@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostMsg } from "../src/protocol";
 import { pathsEqual } from "../src/worktree";
+import { REMOTE_PROTO_VERSION } from "../src/remote-frames";
 
 const wsMock = vi.hoisted(() => {
   const sockets: any[] = [];
@@ -58,6 +59,43 @@ function makeUplink(overrides: Partial<ConstructorParameters<typeof RemoteUplink
 
 describe("RemoteUplink client identity and targeted sends", () => {
   beforeEach(() => { wsMock.sockets.length = 0; });
+
+  it("hello is legacy-shaped without client metadata and includes mapped client when supplied", () => {
+    const uplink = makeUplink({ deviceName: "Dell (Windows 11)" });
+    uplink.start();
+    const socket = wsMock.sockets[0];
+    socket.emit("open");
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      t: "hello",
+      proto: REMOTE_PROTO_VERSION,
+      device: { name: "Dell (Windows 11)" },
+    });
+    uplink.dispose();
+
+    const withClient = makeUplink({
+      deviceName: "Dell (Windows 11)",
+      client: {
+        platform: "win32",
+        release: "10.0.26200",
+        appName: "Visual Studio Code",
+        isDesktop: false,
+      },
+    });
+    withClient.start();
+    const socket2 = wsMock.sockets[1];
+    socket2.emit("open");
+    expect(JSON.parse(socket2.sent[0])).toEqual({
+      t: "hello",
+      proto: REMOTE_PROTO_VERSION,
+      device: { name: "Dell (Windows 11)" },
+      client: {
+        clientLabel: "VS Code extension",
+        platform: "win",
+        osLabel: "Windows 11",
+      },
+    });
+    withClient.dispose();
+  });
 
   it("threads clientId inbound and emits host-to for a cwd group", () => {
     const received: unknown[] = [];

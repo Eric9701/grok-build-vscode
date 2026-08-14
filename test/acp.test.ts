@@ -78,6 +78,72 @@ describe("AcpClient notification metadata", () => {
   });
 });
 
+describe("AcpClient child-stream demux", () => {
+  const parentId = "sess-parent";
+  const childId = "sess-child";
+
+  function feed(client: AcpClient, sessionId: string | undefined, update: object, meta?: object) {
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        ...(sessionId ? { sessionId } : {}),
+        update,
+        ...(meta ? { _meta: meta } : {}),
+      },
+    }));
+  }
+
+  it("emits a child stream — never the parent message path — when sessionId differs", () => {
+    const { client } = clientWithFakeProc();
+    (client as any).sessionId = parentId;
+    const parentChunks: string[] = [];
+    const child: unknown[] = [];
+    client.on("messageChunk", (text: string) => parentChunks.push(text));
+    client.on("thoughtChunk", (text: string) => parentChunks.push("T:" + text));
+    client.on("toolCall", (payload: unknown) => parentChunks.push("tool"));
+    client.on("childStream", (ev: unknown) => child.push(ev));
+
+    feed(client, childId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "child-prose" } });
+    feed(client, childId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "child-think" } });
+    feed(client, childId, { sessionUpdate: "tool_call", toolCallId: "t-child", title: "list_dir" });
+    feed(client, parentId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "parent-prose" } });
+
+    expect(parentChunks).toEqual(["parent-prose"]);
+    expect(child).toEqual([
+      { childSessionId: childId, route: { event: "messageChunk", text: "child-prose" }, meta: undefined },
+      { childSessionId: childId, route: { event: "thoughtChunk", text: "child-think" }, meta: undefined },
+      { childSessionId: childId, route: { event: "toolCall", payload: { sessionUpdate: "tool_call", toolCallId: "t-child", title: "list_dir" } }, meta: undefined },
+    ]);
+  });
+
+  it("treats a missing sessionId as the parent conversation (legacy CLI)", () => {
+    const { client } = clientWithFakeProc();
+    (client as any).sessionId = parentId;
+    const parentChunks: string[] = [];
+    const child: unknown[] = [];
+    client.on("messageChunk", (text: string) => parentChunks.push(text));
+    client.on("childStream", (ev: unknown) => child.push(ev));
+    feed(client, undefined, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "legacy" } });
+    expect(parentChunks).toEqual(["legacy"]);
+    expect(child).toEqual([]);
+  });
+
+  it("does not emit a hidden user_message_chunk", () => {
+    const { client } = clientWithFakeProc();
+    (client as any).sessionId = parentId;
+    const seen: unknown[] = [];
+    client.on("userMessageChunk", (text: string) => seen.push(text));
+    client.on("childStream", (ev: unknown) => seen.push(ev));
+    feed(client, parentId, {
+      sessionUpdate: "user_message_chunk",
+      content: { type: "text", text: "<system-reminder>wake</system-reminder>" },
+      _meta: { hideFromScrollback: true },
+    });
+    expect(seen).toEqual([]);
+  });
+});
+
 describe("AcpClient permission responses", () => {
   it("can decline a request when no safe option was offered", () => {
     const { client, written } = clientWithFakeProc();

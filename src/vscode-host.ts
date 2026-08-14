@@ -37,6 +37,7 @@ import type {
   HostTextShowOptions,
   HostWebview,
   HostWebviewView,
+  HostEditorWebview,
 } from "./host";
 import { Uri, isFsPathInWorkspace, untitledTextOpenOptions } from "./host";
 import {
@@ -287,6 +288,30 @@ export function createVsCodeHost(
     },
     async openSettings(section?: string) {
       await vscode.commands.executeCommand("workbench.action.openSettings", section);
+    },
+    openEditorWebview(opts): HostEditorWebview {
+      const panel = vscode.window.createWebviewPanel(
+        opts.viewType,
+        opts.title,
+        { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+        {
+          enableScripts: true,
+          retainContextWhenHidden: true,
+          localResourceRoots: opts.localResourceRoots.map(toVsCodeUri),
+        },
+      );
+      return {
+        webview: wrapWebview(panel.webview),
+        reveal() {
+          panel.reveal(vscode.ViewColumn.Active);
+        },
+        onDidDispose(listener) {
+          return panel.onDidDispose(listener);
+        },
+        dispose() {
+          panel.dispose();
+        },
+      };
     },
     async linkRemote() {
       await vscode.commands.executeCommand("grok.linkRemote");
@@ -607,6 +632,8 @@ export function createVsCodeHost(
     canShowInFolder: false,
     // Real editor tabs — View all / proposed diffs stay native.
     canPreviewInApp: false,
+    // Editor-area settings tab. Desktop/remotes keep the in-page overlay.
+    canOpenSettingsEditor: true,
   };
 }
 

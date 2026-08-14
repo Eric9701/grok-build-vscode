@@ -11,6 +11,10 @@
  * web/chat.html, and `npm run e2e:touch` in the relay repo is its gate.
  */
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { Window } from "happy-dom";
 import { bootWebview, dispatch, type Harness } from "./webview-harness";
 
 const withRail = (window: any) => {
@@ -220,5 +224,46 @@ describe("rail resize handle (DOM)", () => {
     stubRailWidth(h, 320);
     h.doc.dispatchEvent(new h.window.Event("fullscreenchange"));
     expect(parseInt(railWidthVar(h), 10)).toBe(240);
+  });
+});
+
+describe("desktop boot rail width (computed layout)", () => {
+  function firstFrameLayoutCss(): string {
+    const sidebar = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const start = sidebar.indexOf("const firstFrameLayout");
+    const block = sidebar.slice(start, sidebar.indexOf("const filePanelStyle", start));
+    const m = block.match(/`([\s\S]*?)`/);
+    if (!m) throw new Error("firstFrameLayout CSS missing");
+    return m[1];
+  }
+
+  it("lets --rail-width change the computed rail width after boot", () => {
+    // The first-frame rule is more specific than chat.css's #projects-rail
+    // width. A hardcoded 260px there pins the column forever — drag, restore,
+    // and the side-panel coordinator all write --rail-width and lose.
+    const chatCss = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.css"),
+      "utf8",
+    );
+    const win = new Window({ url: "https://localhost/" });
+    const doc = win.document;
+    const boot = doc.createElement("style");
+    boot.textContent = firstFrameLayoutCss();
+    doc.head.appendChild(boot);
+    const sheet = doc.createElement("style");
+    sheet.textContent = chatCss;
+    doc.head.appendChild(sheet);
+    doc.body.className = "desk has-rail";
+    const rail = doc.createElement("aside");
+    rail.id = "projects-rail";
+    rail.className = "projects-rail";
+    doc.body.appendChild(rail);
+
+    expect(win.getComputedStyle(rail).width).toBe("260px");
+    doc.documentElement.style.setProperty("--rail-width", "180px");
+    expect(win.getComputedStyle(rail).width).toBe("180px");
   });
 });

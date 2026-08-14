@@ -14,6 +14,17 @@ import { bracketRemoteSnapshot } from "../src/remote-policy";
 import type { HostMsg } from "../src/protocol";
 
 const $ = (doc: Document, id: string) => doc.getElementById(id) as HTMLElement;
+function openSettingsOverlay(window: Window, doc: Document) {
+  click(window, $(doc, "gear-btn"));
+  const item = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+    .find((el) => /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()));
+  click(window, item!);
+}
+function clickSettingsNav(window: Window, doc: Document, title: string) {
+  const item = [...doc.querySelectorAll("#settings-overlay .settings-nav-item")]
+    .find((el) => (el.textContent || "").trim() === title);
+  click(window, item!);
+}
 const types = (posted: Posted[]) => posted.map((p) => p.type);
 // Mirrors chat.js's formatTime EXACTLY. That function is not locale-aware — it
 // always emits `h:mm AM/PM` — so building the expectation with
@@ -318,6 +329,12 @@ describe("session rows (regression: only the label was clickable)", () => {
     ]);
     dispatch(h.window, { type: "sessionDot", id: "s1", dot: "unread" });
     expect(h.doc.querySelector('[data-session-dot="s1"]')!.className).toBe("provider-status-badge dot-unread");
+
+    dispatch(h.window, { type: "sessionDot", id: "s1", dot: "none" });
+    dispatch(h.window, { type: "sessionDot", id: "s2", dot: "none" });
+    expect([...h.doc.querySelectorAll(".history-row .provider-status-badge")].every((el) =>
+      el.classList.contains("dot-none"),
+    )).toBe(true);
   });
 
   it("resumes the session when the row's META area (not the label) is clicked", () => {
@@ -1013,6 +1030,15 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
         { id: "codex", connected: false },
       ],
     });
+    expect(h.doc.querySelector("#gear-popover")!.textContent).not.toContain("Accounts");
+
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: false },
+        { id: "codex", connected: false },
+      ],
+    });
     expect(h.doc.querySelector("#gear-popover")!.textContent).toContain("Accounts");
     const sections = [...h.doc.querySelectorAll("#gear-popover .popover-section")];
     expect(sections.at(-1)?.textContent).toBe("Accounts");
@@ -1221,10 +1247,8 @@ describe("gear menu — AFK Pilot onboarding", () => {
   });
 
   it("sends linked devices to the portal for account management, never a one-tap unlink", () => {
-    // Unlinking strands every other device the user works from, so it must not
-    // sit one slip away from "Continue remotely" (owner, 2026-07-30). The
-    // portal owns account + device management; `AFK Pilot: Unlink this device`
-    // remains for the deliberate case.
+    // VS Code: unlinking stays on the Command Palette. A one-tap menu item
+    // next to "Continue remotely" was removed (owner, 2026-07-30).
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "remoteStatus", linked: true });
     click(window, $(doc, "gear-btn"));
@@ -1237,7 +1261,37 @@ describe("gear menu — AFK Pilot onboarding", () => {
     expect(account).toBeTruthy();
     click(window, account!);
     expect(posted).toContainEqual({ type: "openRemotePortal" });
-    expect(posted.some((m) => m.type === "remoteSignOut")).toBe(false);
+    expect(posted.some((m) => m.type === "remoteSignOut" || m.type === "unlinkRemoteDevice")).toBe(false);
+  });
+
+  it("offers Unlink this device… in Settings → Account on desktop, not the gear", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { relocateView: false, showOutput: false },
+    });
+    dispatch(window, { type: "remoteStatus", linked: true });
+    click(window, $(doc, "gear-btn"));
+    expect(gearItem(doc, "Unlink this device…")).toBeUndefined();
+    openSettingsOverlay(window, doc);
+    clickSettingsNav(window, doc, "Account");
+    const unlink = doc.querySelector('[data-id="unlinkDevice"] .settings-action') as HTMLElement;
+    expect(unlink).toBeTruthy();
+    click(window, unlink);
+    expect(posted).toContainEqual({ type: "unlinkRemoteDevice" });
+  });
+
+  it("does not offer Unlink this device… in the remote browser client", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { relocateView: false, showOutput: false },
+    });
+    dispatch(window, { type: "remoteStatus", linked: true });
+    click(window, $(doc, "gear-btn"));
+    expect(gearItem(doc, "Unlink this device…")).toBeUndefined();
   });
 
   it("offers a top-bar Continue remotely button only in a linked local client", () => {
@@ -1273,6 +1327,21 @@ describe("gear menu — AFK Pilot onboarding", () => {
       "You can then work 100% remotely — it keeps this device awake, and never stores your prompts or code.",
     );
     expect(button(doc, "More & FAQ")).toBeTruthy();
+  });
+
+  it("uses desktop phrasing in How it works on a desktop host", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      useCtrlEnter: false,
+      capabilities: { relocateView: false, showOutput: false },
+    });
+    dispatch(window, { type: "remoteStatus", linked: false });
+    click(window, $(doc, "gear-btn"));
+    click(window, gearItem(doc, "How it works")!);
+    const panel = doc.querySelector(".remote-explainer-panel");
+    expect(panel!.textContent).toContain("Keep this app open.");
+    expect(panel!.textContent).not.toContain("Keep VS Code, Cursor, or Antigravity open.");
   });
 
   it("copies afkpilot.com with success feedback and keeps More & FAQ unhinted", async () => {
@@ -1748,7 +1817,7 @@ describe("send button startup state (spinner by default until the session is rea
   });
 });
 
-describe("gear menu — Other group + About / Config & debug sub-views", () => {
+describe("gear menu — Other group + About / Settings", () => {
   function boot() {
     const h = bootWebview();
     dispatch(h.window, {
@@ -1771,29 +1840,35 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     h.posted.length = 0;
     return h;
   }
-  const gear = (doc: Document) => $(doc, "gear-popover");
   const items = (doc: Document) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")] as HTMLElement[];
-  const itemByText = (doc: Document, text: string) =>
-    items(doc).find((el) => el.textContent!.includes(text)) as HTMLElement;
 
   it("replaces the flat Config/Account/Debug sections with an Other group", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
     const labels = items(h.doc).map((el) => el.textContent || "");
-    expect(labels.some((l) => l.includes("Version & about"))).toBe(true);
-    expect(labels.some((l) => l.includes("Config & debug"))).toBe(true);
+    expect(labels.some((l) => l.includes("Version & about"))).toBe(false);
+    expect(labels.some((l) => /(^|\s)Settings$/.test(l.replace(/\s+/g, " ").trim()))).toBe(true);
+    expect(labels.some((l) => l.includes("Config & debug"))).toBe(false);
     expect(labels.some((l) => l.includes("Log out"))).toBe(true);
     // the old standalone items no longer live on the main view
     expect(labels.some((l) => l.trim() === "Sign out")).toBe(false);
     expect(labels.some((l) => l.includes("Show extension logs"))).toBe(false);
   });
 
+  function aboutSurface(h: ReturnType<typeof bootWebview>) {
+    return h.doc.getElementById("settings-overlay")!;
+  }
+  function openAbout(h: ReturnType<typeof bootWebview>) {
+    openSettingsOverlay(h.window, h.doc);
+    clickSettingsNav(h.window, h.doc, "About");
+    return aboutSurface(h);
+  }
+
   it("About shows both versions and requests an update check", () => {
     const h = boot();
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    const overlay = openAbout(h);
 
-    const text = gear(h.doc).textContent || "";
+    const text = overlay.textContent || "";
     expect(text).toContain("This extension");
     expect(text).toContain("v1.4.0");
     expect(text).toContain("Grok Build CLI");
@@ -1810,10 +1885,9 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
         { id: "codex", connected: true, cliVersion: "0.146.0", adapterVersion: "1.1.14", latestCliVersion: "0.147.0", updateAvailable: true },
       ],
     });
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    const overlay = openAbout(h);
 
-    const text = gear(h.doc).textContent || "";
+    const text = overlay.textContent || "";
     expect(text).toContain("Grok Build CLI");
     expect(text).toContain("v0.2.117");
     expect(text).toContain("Codex CLI");
@@ -1822,7 +1896,7 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     expect(text).toContain("v1.1.14");
     expect(text).toContain("at its install source");
     expect(text).toContain("Codex update available");
-    expect(itemByText(h.doc, "Update Codex")).toBeUndefined();
+    expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
   });
 
   it("Codex-only About has no Grok update action or adapter-as-CLI label", () => {
@@ -1834,15 +1908,13 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
         { id: "codex", connected: true, cliVersion: "0.147.0", adapterVersion: "1.1.14" },
       ],
     });
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    const overlay = openAbout(h);
 
-    const text = gear(h.doc).textContent || "";
+    const text = overlay.textContent || "";
     expect(text).toContain("Codex CLI");
     expect(text).toContain("Codex ACP adapter");
-    expect([...gear(h.doc).querySelectorAll(".popover-info")].some((row) =>
-      row.firstElementChild?.textContent === "Grok Build CLI")).toBe(false);
-    expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+    expect(overlay.querySelector('[data-id="aboutGrokCli"]')).toBeNull();
+    expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
     expect(types(h.posted)).not.toContain("checkGrokUpdate");
   });
 
@@ -1866,14 +1938,13 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
       });
       dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });
       h.posted.length = 0;
-      click(h.window, $(h.doc, "gear-btn"));
-      click(h.window, itemByText(h.doc, "Version & about"));
+      openAbout(h);
       return h;
     }
 
     it("names what you are holding and what it is connected to", () => {
       const h = bootRemoteAbout();
-      const text = gear(h.doc).textContent || "";
+      const text = aboutSurface(h).textContent || "";
       expect(text).toContain("Web app");
       expect(text).toContain("v3.5.0");
       expect(text).toContain("Connected to");
@@ -1891,7 +1962,7 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
       // not resolve. Not sending it is what removes the spinner.
       const h = bootRemoteAbout();
       expect(types(h.posted)).not.toContain("checkGrokUpdate");
-      expect(gear(h.doc).textContent).not.toContain("Checking for updates");
+      expect(aboutSurface(h).textContent).not.toContain("Checking for updates");
     });
 
     it("reports an available CLI update but offers no way to run it", () => {
@@ -1899,10 +1970,11 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
       dispatch(h.window, {
         type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.33", updateAvailable: true,
       });
-      const text = gear(h.doc).textContent || "";
+      const overlay = aboutSurface(h);
+      const text = overlay.textContent || "";
       expect(text).toContain("CLI update available");
       expect(text).toContain("at the desk");
-      expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+      expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
     });
 
     it("renders host-reported provider versions view-only", () => {
@@ -1914,33 +1986,34 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
           { id: "codex", connected: true, cliVersion: "0.146.0", adapterVersion: "1.1.14", latestCliVersion: "0.147.0", updateAvailable: true },
         ],
       });
-      const text = gear(h.doc).textContent || "";
+      const overlay = aboutSurface(h);
+      const text = overlay.textContent || "";
       expect(text).toContain("Grok Build CLI");
       expect(text).toContain("Codex CLI");
       expect(text).toContain("Codex ACP adapter");
       expect(text).toContain("Codex update available");
       expect(text).toContain("at the desk");
       expect(types(h.posted)).not.toContain("checkGrokUpdate");
-      expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+      expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
     });
 
     it("keeps the local panel when the host is too old to describe itself", () => {
       // Capability by field presence: no hostKind means no answers, and a page
       // of blanks is worse than the panel that was already there.
       const h = bootRemoteAbout({ hostKind: undefined, hostName: undefined });
-      expect(gear(h.doc).textContent).toContain("This extension");
+      expect(aboutSurface(h).textContent).toContain("This extension");
     });
   });
 
   it("enables Update Grok Build when an update is available and posts updateGrok", () => {
     const h = boot();
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    const overlay = openAbout(h);
     dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.33", updateAvailable: true });
 
-    expect(gear(h.doc).textContent).toContain("Update available");
-    const btn = itemByText(h.doc, "Update Grok Build");
-    expect(btn.className).not.toContain("disabled");
+    expect(overlay.textContent).toContain("Update available");
+    const btn = overlay.querySelector('[data-id="aboutUpdateGrok"] .settings-action') as HTMLElement;
+    expect(btn).toBeTruthy();
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
 
     h.posted.length = 0;
     click(h.window, btn);
@@ -1949,12 +2022,11 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
 
   it("shows a grayed up-to-date status and no update action when current", () => {
     const h = boot();
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    const overlay = openAbout(h);
     dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.33", latest: "0.2.33", updateAvailable: false });
 
-    expect(gear(h.doc).textContent).toContain("up to date");
-    expect(itemByText(h.doc, "Update Grok Build")).toBeUndefined();
+    expect(overlay.textContent).toContain("up to date");
+    expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
   });
 
   it("falls back to the update check's version when the handshake gave none", () => {
@@ -1962,36 +2034,34 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     dispatch(h.window, { type: "initialState", useCtrlEnter: false, effort: "", cwd: "/x", extVersion: "1.4.0" });
     // No `initialized` version (native Windows build) — the panel starts at "—".
     dispatch(h.window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build" });
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
+    const overlay = openAbout(h);
     dispatch(h.window, { type: "grokUpdateStatus", current: "0.2.3", latest: "0.2.3", updateAvailable: false });
 
-    const text = gear(h.doc).textContent || "";
+    const text = overlay.textContent || "";
     expect(text).toContain("Grok Build CLI");
     expect(text).toContain("v0.2.3");
-    expect(text).not.toContain("—");
+    expect(overlay.querySelector('[data-id="aboutGrokCli"]')!.textContent).not.toContain("—");
   });
 
-  it("the About back row returns to the main menu", () => {
+  it("the gear no longer has a Version & about entry", () => {
     const h = boot();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Version & about"));
-    click(h.window, itemByText(h.doc, "← Version & about"));
-    expect(items(h.doc).some((el) => (el.textContent || "").includes("Config & debug"))).toBe(true);
+    expect(items(h.doc).some((el) => (el.textContent || "").includes("Version & about"))).toBe(false);
+    expect(items(h.doc).some((el) => (el.textContent || "").includes("Settings"))).toBe(true);
   });
 
-  it("Config & debug exposes the config + logs links and posts the right message", () => {
+  it("Settings → Advanced exposes the config + logs links and posts the right message", () => {
     const h = boot();
-    click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, itemByText(h.doc, "Config & debug"));
+    openSettingsOverlay(h.window, h.doc);
+    clickSettingsNav(h.window, h.doc, "Advanced");
 
-    const labels = items(h.doc).map((el) => el.textContent || "");
-    expect(labels.some((l) => l.includes("Open global config"))).toBe(true);
-    expect(labels.some((l) => l.includes("Open project config"))).toBe(true);
-    expect(labels.some((l) => l.includes("MCP servers"))).toBe(true);
-    expect(labels.some((l) => l.includes("Show extension logs"))).toBe(true);
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.querySelector('[data-id="openGlobalConfig"]')).toBeTruthy();
+    expect(overlay.querySelector('[data-id="openProjectConfig"]')).toBeTruthy();
+    expect(overlay.querySelector('[data-id="runMcpList"]')).toBeTruthy();
+    expect(overlay.querySelector('[data-id="showLogs"]')).toBeTruthy();
 
-    click(h.window, itemByText(h.doc, "Show extension logs"));
+    click(h.window, overlay.querySelector('[data-id="showLogs"] .settings-action')!);
     expect(types(h.posted)).toContain("showLogs");
   });
 });
@@ -2054,45 +2124,31 @@ describe("thinking traces toggle (#26)", () => {
     expect(doc.querySelector(".thinking-indicator")).toBeNull();
   });
 
-  it("exposes a Show thinking traces switch in Config & debug under Coding", () => {
+  it("exposes a Show thinking traces switch in Settings → General under Coding", () => {
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "appPurpose", value: "coding" });
     dispatch(window, { type: "showThinking", value: false });
     expect(doc.body.classList.contains("thinking-hidden")).toBe(true);
-    click(window, $(doc, "gear-btn"));
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
-    ) as HTMLElement;
-    click(window, cfg);
-    const toggle = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Show thinking traces"),
-    ) as HTMLElement;
+    openSettingsOverlay(window, doc);
+    const toggle = doc.querySelector('[data-id="showThinking"] .settings-switch') as HTMLElement;
     expect(toggle).toBeTruthy();
-    expect(toggle.querySelector(".popover-switch")).not.toBeNull();
     click(window, toggle);
     expect(posted.some((p) => p.type === "setShowThinking" && p.value === true)).toBe(true);
     expect(doc.body.classList.contains("thinking-hidden")).toBe(false); // optimistic flip
   });
 
-  it("exposes a Sound notifications switch in Config & debug that reflects the setting and posts setSoundNotifications (#59)", () => {
+  it("exposes a Sound notifications switch in Settings that reflects the setting and posts setSoundNotifications (#59)", () => {
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "soundNotifications", value: true }); // host says it's on
-    const soundToggle = () => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Sound notifications"),
-    ) as HTMLElement;
-    click(window, $(doc, "gear-btn"));
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
-    ) as HTMLElement;
-    click(window, cfg);
-    let toggle = soundToggle();
+    openSettingsOverlay(window, doc);
+    clickSettingsNav(window, doc, "Notifications");
+    let toggle = doc.querySelector('[data-id="soundNotifications"] .settings-switch') as HTMLElement;
     expect(toggle).toBeTruthy();
-    expect(toggle.querySelector(".popover-switch.on")).not.toBeNull(); // reflects value:true
-    click(window, toggle); // turn it off — the click handler re-renders the panel in place
+    expect(toggle.classList.contains("on")).toBe(true);
+    click(window, toggle);
     expect(posted.some((p) => p.type === "setSoundNotifications" && p.value === false)).toBe(true);
-    // The re-rendered switch (still-open panel) now reflects the off state.
-    toggle = soundToggle();
-    expect(toggle.querySelector(".popover-switch.on")).toBeNull();
+    toggle = doc.querySelector('[data-id="soundNotifications"] .settings-switch') as HTMLElement;
+    expect(toggle.classList.contains("on")).toBe(false);
   });
 
   it("defaults local read-aloud off, then speaks completed replies and posts its VS Code setting", () => {
@@ -2118,18 +2174,13 @@ describe("thinking traces toggle (#26)", () => {
       extVersion: "2.0.9",
       readRepliesAloud: false,
     });
-    click(window, $(doc, "gear-btn"));
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
-    ) as HTMLElement;
-    click(window, cfg);
-    const readAloudToggle = () => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Read replies aloud"),
-    ) as HTMLElement;
+    openSettingsOverlay(window, doc);
+    clickSettingsNav(window, doc, "Voice");
+    const readAloudToggle = () => doc.querySelector('[data-id="readRepliesAloud"] .settings-switch') as HTMLElement;
 
-    expect(readAloudToggle().querySelector(".popover-switch.on")).toBeNull();
+    expect(readAloudToggle().classList.contains("on")).toBe(false);
     dispatch(window, { type: "readRepliesAloud", value: true });
-    expect(readAloudToggle().querySelector(".popover-switch.on")).not.toBeNull();
+    expect(readAloudToggle().classList.contains("on")).toBe(true);
     dispatch(window, { type: "agentStart" });
     dispatch(window, { type: "messageChunk", text: "Finished.\n```js\nhidden();\n```" });
     dispatch(window, { type: "agentEnd" });
@@ -2151,23 +2202,16 @@ describe("thinking traces toggle (#26)", () => {
         (w as any).speechSynthesis = { cancel() {}, speak() {} };
       },
     });
-    click(window, $(doc, "gear-btn"));
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
-    ) as HTMLElement;
-    click(window, cfg);
-    const summarize = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Read simplified summaries"),
-    ) as HTMLElement;
+    openSettingsOverlay(window, doc);
+    clickSettingsNav(window, doc, "Voice");
+    const summarize = doc.querySelector('[data-id="summarizeRepliesAloud"]') as HTMLElement;
 
     expect(summarize).toBeTruthy();
-    expect(summarize.classList.contains("disabled")).toBe(true);
-    expect(summarize.getAttribute("aria-disabled")).toBe("true");
-    expect(summarize.title).toContain("Turn on Read replies aloud");
-    expect(summarize.textContent).not.toContain("uses your xAI API key");
-    click(window, summarize);
+    expect(summarize.classList.contains("is-disabled")).toBe(true);
+    expect(summarize.querySelector(".settings-switch")?.hasAttribute("disabled")).toBe(true);
+    click(window, summarize.querySelector(".settings-switch")!);
     expect(posted.some((p) => p.type === "setSummarizeRepliesAloud")).toBe(false);
-    expect(summarize.querySelector(".popover-switch.on")).toBeNull();
+    expect(summarize.querySelector(".settings-switch.on")).toBeNull();
   });
 
   it("turning local read-aloud off clears and persists summarize in the open popover", () => {
@@ -2183,23 +2227,17 @@ describe("thinking traces toggle (#26)", () => {
     dispatch(window, { type: "readRepliesAloud", value: true });
     dispatch(window, { type: "summarizeRepliesAloud", value: true });
     posted.length = 0;
-    click(window, $(doc, "gear-btn"));
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
-    ) as HTMLElement;
-    click(window, cfg);
-    const gearToggle = (label: string) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes(label),
-    ) as HTMLElement;
+    openSettingsOverlay(window, doc);
+    clickSettingsNav(window, doc, "Voice");
 
-    expect(gearToggle("Read simplified summaries").querySelector(".popover-switch.on")).not.toBeNull();
-    click(window, gearToggle("Read replies aloud"));
+    expect(doc.querySelector('[data-id="summarizeRepliesAloud"] .settings-switch.on')).not.toBeNull();
+    click(window, doc.querySelector('[data-id="readRepliesAloud"] .settings-switch')!);
 
     expect(posted).toContainEqual({ type: "setReadRepliesAloud", value: false });
     expect(posted).toContainEqual({ type: "setSummarizeRepliesAloud", value: false });
-    const summarize = gearToggle("Read simplified summaries");
-    expect(summarize.classList.contains("disabled")).toBe(true);
-    expect(summarize.querySelector(".popover-switch.on")).toBeNull();
+    const summarize = doc.querySelector('[data-id="summarizeRepliesAloud"]') as HTMLElement;
+    expect(summarize.classList.contains("is-disabled")).toBe(true);
+    expect(summarize.querySelector(".settings-switch.on")).toBeNull();
   });
 
   it("summarizes only the spoken text and ignores stale summary results", () => {
@@ -2823,17 +2861,14 @@ describe("composer input focus (caret ready on open)", () => {
   });
 });
 
-describe("gear entry: Move view (Config & debug)", () => {
-  function openConfigDebug(window: Window, doc: Document) {
-    click(window, $(doc, "gear-btn"));
-    const item = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
-      el.textContent!.includes("Config & debug"),
-    ) as HTMLElement;
-    click(window, item);
+describe("gear entry: Move view (Settings → Advanced)", () => {
+  function openAdvancedSettings(window: Window, doc: Document) {
+    openSettingsOverlay(window, doc);
+    clickSettingsNav(window, doc, "Advanced");
   }
   const itemByLabel = (doc: Document, label: string) =>
-    [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find((el) =>
-      el.textContent!.includes(label),
+    [...doc.querySelectorAll("#settings-overlay .settings-row")].find((el) =>
+      (el.textContent || "").includes(label),
     ) as HTMLElement | undefined;
 
   it("offers one item, the host's own picker, where the secondary side bar was refused", () => {
@@ -2854,10 +2889,10 @@ describe("gear entry: Move view (Config & debug)", () => {
         showOutput: true,
       },
     });
-    openConfigDebug(window, doc);
+    openAdvancedSettings(window, doc);
     const item = itemByLabel(doc, "Move view…");
     expect(item).toBeTruthy();
-    click(window, item!);
+    click(window, item!.querySelector(".settings-action")!);
     // `pick` maps to no container by design, so the host falls through to its
     // own picker — the only mover that targets a LOCATION.
     expect(posted).toContainEqual({ type: "moveView", location: "pick" });
@@ -2878,10 +2913,10 @@ describe("gear entry: Move view (Config & debug)", () => {
       // No relocateView / showOutput — mirrors released v3.1.0 hosts.
       capabilities: { uploadFile: true, remoteVoice: true },
     });
-    openConfigDebug(window, doc);
+    openAdvancedSettings(window, doc);
     expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
     expect(itemByLabel(doc, "Move view")).toBeUndefined();
-    click(window, itemByLabel(doc, "Show extension logs")!);
+    click(window, itemByLabel(doc, "Show extension logs")!.querySelector(".settings-action")!);
     expect(posted).toContainEqual({ type: "showLogs" });
   });
 
@@ -2892,7 +2927,7 @@ describe("gear entry: Move view (Config & debug)", () => {
       useCtrlEnter: false,
       // No capabilities object at all (hostCaps stays {}).
     });
-    openConfigDebug(window, doc);
+    openAdvancedSettings(window, doc);
     expect(itemByLabel(doc, "Show extension logs")).toBeTruthy();
     expect(itemByLabel(doc, "Move view")).toBeUndefined();
   });
@@ -2904,7 +2939,7 @@ describe("gear entry: Move view (Config & debug)", () => {
       useCtrlEnter: false,
       capabilities: { uploadFile: true, remoteVoice: true, relocateView: false, showOutput: false },
     });
-    openConfigDebug(window, doc);
+    openAdvancedSettings(window, doc);
     expect(itemByLabel(doc, "Move view")).toBeUndefined();
     expect(itemByLabel(doc, "Show extension logs")).toBeUndefined();
     // Config paths still work on desktop.

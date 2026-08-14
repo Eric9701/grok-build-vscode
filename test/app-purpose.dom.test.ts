@@ -260,14 +260,14 @@ describe("app purpose + session menu (DOM)", () => {
       type: "setAppPurpose",
       value: "coding",
     });
-    // Config & debug is VS Code path (no rail in harness BODY).
-    click(h.window, findGearItem(h, /Config/)!);
+    click(h.window, findGearItem(h, /^Settings$|Settings$/)!);
     await Promise.resolve();
-    expect(gearText(h)).toContain("Show thinking traces");
-    expect(gearText(h)).toContain("Expand tool details");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Show thinking traces");
+    expect(overlay.textContent).toContain("Expand tool details");
   });
 
-  it("Knowledge work Config panel hides thinking and tool-detail switches", async () => {
+  it("Knowledge work General page hides thinking and tool-detail switches", async () => {
     const h = bootWebview({ ready: true });
     dispatch(h.window, {
       type: "initialState",
@@ -285,13 +285,14 @@ describe("app purpose + session menu (DOM)", () => {
       capabilities: { relocateView: true, showOutput: true },
     });
     openGear(h);
-    click(h.window, findGearItem(h, /Config/)!);
+    click(h.window, findGearItem(h, /^Settings$|Settings$/)!);
     await Promise.resolve();
-    expect(gearText(h)).not.toContain("Show thinking traces");
-    expect(gearText(h)).not.toContain("Expand tool details");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).not.toContain("Show thinking traces");
+    expect(overlay.textContent).not.toContain("Expand tool details");
   });
 
-  it("Advanced settings exposes the three display toggles on a remote client", async () => {
+  it("Settings General exposes the three display toggles on a remote client", async () => {
     // Rail mount → Basic/Advanced (not Config & debug). Toggles are per-client
     // display prefs, so they must appear on remote before the host-config note.
     const withRail = (window: any) => {
@@ -322,31 +323,20 @@ describe("app purpose + session menu (DOM)", () => {
       appPurpose: "coding",
       capabilities: {},
     });
-    openGear(h);
-    expect(gearText(h)).toContain("Advanced settings");
-    click(h.window, findGearItem(h, /Advanced settings/)!);
+    click(h.window, h.doc.getElementById("rail-gear-btn") || h.doc.getElementById("gear-btn"));
+    expect(gearText(h)).toMatch(/Settings/);
+    expect(gearText(h)).not.toContain("Advanced settings");
+    click(h.window, findGearItem(h, /Settings/)!);
     await Promise.resolve();
-    expect(gearText(h)).toContain("Show thinking traces");
-    expect(gearText(h)).toContain("Expand tool details");
-    expect(gearText(h)).toContain("Steer by default");
-    expect(gearText(h)).toContain("Host config is managed on the desk");
-    // Display toggles must precede the host-config note (not inside its branch).
-    // Host note is popover-info; toggles are toolbar-popover-item.
-    const advancedChildren = [...h.doc.querySelectorAll(
-      "#gear-popover .toolbar-popover-item, #gear-popover .popover-info",
-    )].map((el) => (el.textContent || "").replace(/\s+/g, " ").trim());
-    const thinkingIdx = advancedChildren.findIndex((t) => /Show thinking traces/.test(t));
-    const hostIdx = advancedChildren.findIndex((t) => /Host config is managed/.test(t));
-    expect(thinkingIdx).toBeGreaterThanOrEqual(0);
-    expect(hostIdx).toBeGreaterThan(thinkingIdx);
-    // Basic settings must not still host these three.
-    click(h.window, findGearItem(h, /← Advanced settings/)!);
-    await Promise.resolve();
-    click(h.window, findGearItem(h, /Basic settings/)!);
-    await Promise.resolve();
-    expect(gearText(h)).not.toContain("Show thinking traces");
-    expect(gearText(h)).not.toContain("Expand tool details");
-    expect(gearText(h)).not.toContain("Steer by default");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Show thinking traces");
+    expect(overlay.textContent).toContain("Expand tool details");
+    expect(overlay.textContent).toContain("Steer by default");
+    const advancedNav = [...overlay.querySelectorAll(".settings-nav-item")]
+      .find((el) => (el.textContent || "").trim() === "Advanced")!;
+    click(h.window, advancedNav);
+    expect(overlay.textContent).toContain("Host config is managed on the desk");
+    expect(overlay.querySelector('[data-id="showThinking"]')).toBeNull();
   });
 });
 
@@ -408,21 +398,22 @@ describe("rail gear placement (DOM)", () => {
     expect(composerMenu).not.toContain("Continue in a new chat");
     // App-level settings moved out — that is the whole point of the split.
     expect(composerMenu).not.toContain("Use this app for");
-    expect(composerMenu).not.toContain("Basic settings");
+    expect(composerMenu).not.toContain("Settings");
     expect(composerMenu).not.toContain("Version & about");
 
     click(h.window, h.doc.getElementById("gear-btn")); // close
     click(h.window, h.doc.getElementById("rail-gear-btn"));
     const railMenu = gearText(h);
     expect(railMenu).toContain("Use this app for");
-    expect(railMenu).toContain("Basic settings");
-    expect(railMenu).toContain("Advanced settings");
-    expect(railMenu).toContain("Version & about");
+    expect(railMenu).toMatch(/Settings/);
+    expect(railMenu).not.toContain("Basic settings");
+    expect(railMenu).not.toContain("Advanced settings");
+    expect(railMenu).not.toContain("Version & about");
     expect(railMenu).not.toContain("Model and Effort");
     expect(railMenu).not.toContain("Continue in a new chat");
   });
 
-  it("shows desktop provider accounts and sends provider-specific actions", () => {
+  it("hides healthy mixed provider accounts and shows them when none are connected", () => {
     const h = liveRail();
     dispatch(h.window, {
       type: "providerState",
@@ -432,23 +423,28 @@ describe("rail gear placement (DOM)", () => {
       ],
     });
     click(h.window, h.doc.getElementById("rail-gear-btn"));
-    expect(gearText(h)).toContain("Accounts");
-    expect(gearText(h)).toContain("GrokSign out");
-    expect(gearText(h)).toContain("CodexConnect");
-    const sections = [...h.doc.querySelectorAll("#gear-popover .popover-section")];
-    expect(sections.at(-1)?.textContent).toBe("Accounts");
+    expect(gearText(h)).not.toContain("Accounts");
 
-    click(h.window, findGearItem(h, /Codex.*Connect/)!);
-    expect(h.posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: false },
+        { id: "codex", connected: false },
+      ],
+    });
+    expect(gearText(h)).toContain("Accounts");
+    expect(gearText(h)).toContain("GrokConnect");
+    click(h.window, findGearItem(h, /Grok.*Connect/)!);
+    expect(h.posted).toContainEqual({ type: "runGrokLogin", provider: "grok" });
   });
 
-  it("omits the deferred Codex CLI path row from desktop Advanced settings", () => {
+  it("omits the deferred Codex CLI path row from desktop Settings", () => {
     const h = liveRail();
     click(h.window, h.doc.getElementById("rail-gear-btn"));
-    click(h.window, findGearItem(h, /Advanced settings/)!);
+    click(h.window, findGearItem(h, /Settings/)!);
 
     expect(h.doc.getElementById("codex-cli-path")).toBeNull();
-    expect(gearText(h)).not.toContain("Codex CLI path");
+    expect(h.doc.getElementById("settings-overlay")!.textContent).not.toContain("Codex CLI path");
     expect(h.posted.map((message) => message.type)).not.toContain("setCodexCliPath");
   });
 
@@ -519,7 +515,7 @@ describe("rail gear placement (DOM)", () => {
     expect(gearText(h)).toContain("Model and Effort");
     expect(gearText(h)).not.toContain("Continue in a new chat");
     expect(gearText(h)).toContain("Use this app for");
-    expect(gearText(h)).toContain("Version & about");
+    expect(gearText(h)).not.toContain("Version & about");
     click(h.window, composerGear);
     expect(openSessionMenu(h).some((el) => (el.textContent || "").includes("Continue in a new chat"))).toBe(true);
   });

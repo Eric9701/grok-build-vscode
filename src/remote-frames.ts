@@ -14,9 +14,24 @@ import { WEBVIEW_MESSAGE_TYPES, type HostMsg, type WebviewMsg } from "./protocol
  *  hello rather than mis-parsing — clients and extensions update independently. */
 export const REMOTE_PROTO_VERSION = 1;
 
+/** Optional richer-device fields on hello / link/start. */
+export type RelayClientMeta = {
+  clientLabel?: string;
+  platform?: "win" | "mac" | "linux";
+  osLabel?: string;
+};
+
+/** Inputs shared by `buildLinkStartBody` and `helloFrame` for client metadata. */
+export type RelayClientSource = {
+  platform: string;
+  release: string;
+  appName: string;
+  isDesktop: boolean;
+};
+
 /** extension -> relay */
 export type UplinkFrame =
-  | { t: "hello"; proto: number; device?: { name?: string } }
+  | { t: "hello"; proto: number; device?: { name?: string }; client?: RelayClientMeta }
   | { t: "host"; msg: HostMsg }
   | { t: "host-to"; clientIds: string[]; msg: HostMsg }
   | { t: "snapshot"; clientId: string; msgs: HostMsg[] };
@@ -28,8 +43,15 @@ export type RelayFrame =
   | { t: "msg"; clientId: string; msg: WebviewMsg }
   | { t: "clients"; count: number };
 
-export function helloFrame(deviceName?: string): UplinkFrame {
-  return { t: "hello", proto: REMOTE_PROTO_VERSION, ...(deviceName ? { device: { name: deviceName } } : {}) };
+export function helloFrame(deviceName?: string, clientSource?: RelayClientSource): UplinkFrame {
+  const client = clientSource ? relayClientMeta(clientSource) : undefined;
+  const hasClient = !!client && !!(client.clientLabel || client.platform || client.osLabel);
+  return {
+    t: "hello",
+    proto: REMOTE_PROTO_VERSION,
+    ...(deviceName ? { device: { name: deviceName } } : {}),
+    ...(hasClient ? { client } : {}),
+  };
 }
 
 export function hostFrame(msg: HostMsg): UplinkFrame {
@@ -401,23 +423,85 @@ export function httpBaseFromRelayUrl(relayUrl: string): string {
   return relayUrl.replace(/^ws:/i, "http:").replace(/^wss:/i, "https:").replace(/\/+$/, "");
 }
 
+/** OS string embedded in the legacy device name ("Windows 11", "macOS", …). */
+export function deviceOsLabel(platform: string, release: string): string {
+  if (platform === "win32") {
+    // Windows 11 reports kernel 10.0.22000+; Windows 10 stays below.
+    const build = Number(release.split(".")[2] ?? "0");
+    return build >= 22000 ? "Windows 11" : "Windows 10";
+  }
+  if (platform === "darwin") return "macOS";
+  if (platform === "linux") return "Linux";
+  return platform;
+}
+
 /** "Dell (Windows 11)" — how this machine introduces itself to the relay
  *  (shown on the link-approval page and the portal's device list). Hostname +
  *  a human OS label; the workspace path deliberately stays out of it. */
 export function deviceDisplayName(hostname: string, platform: string, release: string): string {
-  let os: string;
-  if (platform === "win32") {
-    // Windows 11 reports kernel 10.0.22000+; Windows 10 stays below.
-    const build = Number(release.split(".")[2] ?? "0");
-    os = build >= 22000 ? "Windows 11" : "Windows 10";
-  } else if (platform === "darwin") {
-    os = "macOS";
-  } else if (platform === "linux") {
-    os = "Linux";
-  } else {
-    os = platform;
-  }
+  const os = deviceOsLabel(platform, release);
   return hostname ? `${hostname} (${os})` : os;
+}
+
+/** Coarse platform token the relay's richer device rows accept. */
+export function devicePlatformCode(platform: string): "win" | "mac" | "linux" | undefined {
+  if (platform === "win32") return "win";
+  if (platform === "darwin") return "mac";
+  if (platform === "linux") return "linux";
+  return undefined;
+}
+
+/** Client product label for richer device rows. Desktop is never derived
+ *  from `appName` — the desktop host's name would otherwise become
+ *  "Grok Build Desktop extension". */
+export function deviceClientLabel(appName: string, isDesktop: boolean): string {
+  if (isDesktop) return "Desktop app";
+  if (appName === "Visual Studio Code") return "VS Code extension";
+  if (appName === "Cursor") return "Cursor extension";
+  if (appName === "Antigravity") return "Antigravity extension";
+  const name = String(appName || "").trim();
+  return name ? `${name} extension` : "extension";
+}
+
+const RELAY_DEVICE_FIELD_MAX = 64;
+
+/** Relay `/api/link/start` optional fields: trim, drop control chars, max 64. */
+export function sanitizeRelayDeviceField(value: string): string {
+  return String(value).replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, RELAY_DEVICE_FIELD_MAX);
+}
+
+export type LinkStartBody = {
+  name: string;
+  installId: string;
+} & RelayClientMeta;
+
+/** Same mapped `clientLabel` / `platform` / `osLabel` as link/start — omit empty. */
+export function relayClientMeta(input: RelayClientSource): RelayClientMeta {
+  const clientLabel = sanitizeRelayDeviceField(deviceClientLabel(input.appName, input.isDesktop));
+  const platform = devicePlatformCode(input.platform);
+  const osLabel = sanitizeRelayDeviceField(deviceOsLabel(input.platform, input.release));
+  return {
+    ...(clientLabel ? { clientLabel } : {}),
+    ...(platform ? { platform } : {}),
+    ...(osLabel ? { osLabel } : {}),
+  };
+}
+
+/** POST `/api/link/start` body. `name` stays the legacy "HOST (Windows 11)"
+ *  form so older relays keep working; the three extra fields are optional. */
+export function buildLinkStartBody(input: {
+  hostname: string;
+  platform: string;
+  release: string;
+  installId: string;
+  appName: string;
+  isDesktop: boolean;
+}): LinkStartBody {
+  return {
+    name: deviceDisplayName(input.hostname, input.platform, input.release),
+    installId: input.installId,
+    ...relayClientMeta(input),
+  };
 }
 
 export const INITIAL_BACKOFF_MS = 1000;

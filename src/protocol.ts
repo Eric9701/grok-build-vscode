@@ -143,6 +143,12 @@ export type HostUiCapabilities = {
    */
   previewInApp?: boolean;
   /**
+   * Gear → Settings opens a VS Code editor-area tab instead of the
+   * in-page overlay. OPT-IN: absent/false = overlay (desktop, remote, older
+   * hosts). Remotes never receive it — a phone cannot open a desk editor tab.
+   */
+  settingsEditor?: boolean;
+  /**
    * The rail's "add project folder" control. OPT-IN, unlike the two above:
    * absent/false = hide. A host that never sent it cannot open a folder picker,
    * and VS Code deliberately does not — its workspace is VS Code's to manage.
@@ -157,13 +163,16 @@ export type HostMsg =
       commandLanguage?: string;
       /** Which GUI is on the other end. A phone is looking at neither the
        *  extension nor the desktop app, so it cannot infer this, and its
-       *  Version & about page has to name what it is connected to. Optional and
+       *  About page has to name what it is connected to. Optional and
        *  additive: absent means an older host, and the page keeps the local
        *  panel rather than inventing an answer. */
       hostKind?: "extension" | "desktop";
       /** The desk machine's display name — the same string the device list
        *  shows, so "Connected to" names something the user recognises. */
       hostName?: string;
+      /** Product telemetry opt-out. Absent on older hosts; remotes treat that
+       *  as unknown and show the explanation without an on/off claim. */
+      telemetryEnabled?: boolean;
       capabilities: HostUiCapabilities }
   /** Live retraction of `capabilities.moveViewHint`, sent the moment the user
    *  opens the host's move-view picker. `initialState` is not re-sent on a
@@ -221,7 +230,9 @@ export type HostMsg =
   | { type: "modeChanged"; modeId: string }
   | { type: "openModePopover" }
   | { type: "voiceState"; status: "listening" | "transcribing" | "idle" }
-  | { type: "voiceConfigured"; value: boolean; sendPhrase?: string }
+  | { type: "voiceConfigured"; value: boolean; sendPhrase?: string; keyterms?: string[] }
+  /** Live `grok.telemetry.enabled` so the settings surface stays in sync. */
+  | { type: "telemetryEnabled"; value: boolean }
   | { type: "voicePartial"; text: string }
   | { type: "voiceSubmit"; text: string }
   | { type: "voiceTranscript"; text: string; send?: boolean }
@@ -355,6 +366,16 @@ export type HostMsg =
   // Persisted xAI lifecycle (method _x.ai/session/update): subagent spawn/finish
   // plus replayed turn_completed, whose timestamp finalizes the agent footer.
   | { type: "subagentUpdate"; update?: unknown; timestampMs?: number }
+  /**
+   * Live child-session stream demuxed off the parent ACP stdout (#62).
+   * Additive: an older webview that ignores this type loses nothing it has today.
+   * Child transcripts are not replayed on cold session/load.
+   */
+  | { type: "childStream"; childSessionId: string; event: "messageChunk"; text: string }
+  | { type: "childStream"; childSessionId: string; event: "thoughtChunk"; text: string }
+  | { type: "childStream"; childSessionId: string; event: "userMessageChunk"; text: string }
+  | { type: "childStream"; childSessionId: string; event: "toolCall"; call: ToolCallPayload }
+  | { type: "childStream"; childSessionId: string; event: "toolCallUpdate"; call: ToolCallPayload }
   // Deep Research / Workflow / Goal progress (P2-10) — normalized from the
   // live `_x.ai/session_notification` rail (`workflow_updated` / `goal_updated`).
   // Cards update in place by `id`; terminal phases stop the live dots.
@@ -493,6 +514,10 @@ export type WebviewMsg =
   | { type: "toggleDevTools" }
   /** Open the host settings UI (VS Code: workbench settings focused on grok). */
   | { type: "openSettings"; section?: string }
+  /** Open the shared Grok settings surface as a VS Code editor tab. */
+  | { type: "openSettingsSurface"; category?: string }
+  /** Close the Grok settings editor tab (Escape / Close on that page). */
+  | { type: "closeSettingsSurface" }
   // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;
   // plain `panel` leaves the layout alone (view-move.ts § panelPositionFor).
   //
@@ -517,6 +542,12 @@ export type WebviewMsg =
   | { type: "composerFocus"; focused: boolean }
   | { type: "setExpandCommandOutputs"; value: boolean }
   | { type: "setSteerByDefault"; value: boolean }
+  /** Persist `grok.voiceSendPhrase`. Empty disables hands-free send. */
+  | { type: "setVoiceSendPhrase"; value: string }
+  /** Persist `grok.voiceKeyterms` (user dictionary terms only). */
+  | { type: "setVoiceKeyterms"; value: string[] }
+  /** Persist `grok.telemetry.enabled`. Desktop toggle; remotes do not send this. */
+  | { type: "setTelemetryEnabled"; value: boolean }
   /**
    * Attach a user-selected file. VS Code posts a `path` (file URI or absolute)
    * from the webview drag-drop surface. Desktop posts only a host-minted
@@ -658,6 +689,8 @@ export type WebviewMsg =
   // device-link flow / drop the device token / open the relay web portal.
   | { type: "remoteSignIn" }
   | { type: "remoteSignOut" }
+  /** Desktop gear "Unlink this device…" — host confirms natively, then unlinks. */
+  | { type: "unlinkRemoteDevice" }
   | { type: "openRemotePortal"; withHint?: boolean }
   /** Open the desktop release page from the update notice. Host-local — a phone
    *  cannot update the desk. */
@@ -670,7 +703,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, moveViewHint: true, providerState: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true,
+  initialState: true, moveViewHint: true, providerState: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -682,7 +715,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   planNotice: true, autoCompactNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true, hostNotice: true,
-  xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
+  xaiNotification: true, subagentUpdate: true, childStream: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
   sessions: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
@@ -694,9 +727,9 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setMode: true, removeChip: true, toggleChip: true, openFile: true, showInFolder: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   addProjectFolder: true, removeProjectFolder: true,
-  openProjectConfig: true, runMcpList: true, showLogs: true, toggleDevTools: true, openSettings: true, moveView: true,
+  openProjectConfig: true, runMcpList: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
-  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
+  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, retryProviderSession: true,
@@ -711,7 +744,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
   rewindSession: true, editLastMessage: true, uiConfirmAnswer: true, workflowControl: true,
-  remoteSignIn: true, remoteSignOut: true, openRemotePortal: true,
+  remoteSignIn: true, remoteSignOut: true, unlinkRemoteDevice: true, openRemotePortal: true,
   openUpdateRelease: true, restartToUpdate: true,
 };
 

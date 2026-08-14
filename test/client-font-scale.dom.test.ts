@@ -26,7 +26,7 @@ const withRail = (window: any) => {
   window.document.body.appendChild(search);
 };
 
-function openGearMain(window: any, doc: Document) {
+function openSettingsGeneral(window: any, doc: Document) {
   // The rail only mounts once a `repos` frame arrives, and the settings surface
   // lives on the rail gear — so a harness that never sent one would silently
   // fall back to the composer gear and assert against the wrong panel.
@@ -38,30 +38,14 @@ function openGearMain(window: any, doc: Document) {
   } as never);
   const rail = doc.getElementById("rail-gear-btn");
   click(window, (rail || doc.getElementById("gear-btn"))!);
-  // Text size lives in the Basic settings sub-panel, not on the gear root: the
-  // root holds account and purpose, which are not settings.
   const entry = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
-    .find((el) => /Basic settings/.test(el.textContent || ""));
+    .find((el) => /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()));
   if (entry) click(window, entry as HTMLElement);
 }
 
-/**
- * Text size must LEAD THE SETTINGS GROUP, which is a different claim from
- * "first item in the popover": on a host with no rail the popover is not split,
- * so the conversation half renders above the app half and Text size is
- * correctly not first overall. Asserting position relative to a known app-half
- * item states the actual requirement and does not depend on whether the
- * harness happens to have mounted a rail.
- */
-function leadsSettings(doc: Document): boolean {
-  // "Leads Basic settings" = the first thing under the back link, i.e. above
-  // every preference toggle in the panel. Stated against the toggles rather
-  // than a neighbouring label, so renaming a setting cannot silently retire the
-  // assertion.
-  const items = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")];
-  const size = items.findIndex((el) => /Text size/.test(el.textContent || ""));
-  const firstSwitch = items.findIndex((el) => el.querySelector(".popover-switch"));
-  return size >= 0 && (firstSwitch === -1 || size < firstSwitch);
+function fontSlider(doc: Document): HTMLInputElement | null {
+  return (doc.getElementById("remote-font-scale") ||
+    doc.querySelector('[data-id="chatFontScale"] input[type="range"]')) as HTMLInputElement | null;
 }
 
 function firstGearLabel(doc: Document): string {
@@ -72,11 +56,11 @@ function firstGearLabel(doc: Document): string {
 }
 
 describe("client font scale (remote)", () => {
-  it("puts Text size first on the settings surface", () => {
+  it("puts Text size on General in the settings surface", () => {
     const { window, doc } = bootWebview({ remote: true, beforeScripts: withRail });
-    openGearMain(window, doc);
-    expect(doc.getElementById("remote-font-scale")).toBeTruthy();
-    expect(leadsSettings(doc)).toBe(true);
+    openSettingsGeneral(window, doc);
+    expect(fontSlider(doc)).toBeTruthy();
+    expect(doc.getElementById("settings-overlay")!.textContent).toContain("Text size");
   });
 
   it("steps, resets, persists, and is bounded", () => {
@@ -176,7 +160,7 @@ describe("client font scale (desktop bridge)", () => {
     expect((window as any).localStorage.getItem("grok.desktop.fontScale")).toBe("1.5");
   });
 
-  it("shows Text size first on the settings surface and keeps the slider in sync with shortcuts", () => {
+  it("shows Text size on General and keeps the slider in sync with shortcuts", () => {
     const { window, doc } = bootWebview({
       beforeScripts: (w) => {
         (w as any).grokDesktopShell = true;
@@ -185,9 +169,8 @@ describe("client font scale (desktop bridge)", () => {
         withRail(w);
       },
     });
-    openGearMain(window, doc);
-    expect(leadsSettings(doc)).toBe(true);
-    const slider = doc.getElementById("remote-font-scale") as HTMLInputElement;
+    openSettingsGeneral(window, doc);
+    const slider = fontSlider(doc)!;
     expect(slider).toBeTruthy();
     expect(slider.value).toBe("100");
     // Model/effort stay on the conversation surface, not this one.
@@ -226,8 +209,8 @@ describe("VS Code webview font scale (host-owned)", () => {
 
   it("does not show a Text size slider on the main gear panel", () => {
     const { window, doc } = bootWebview();
-    openGearMain(window, doc);
-    expect(doc.getElementById("remote-font-scale")).toBeNull();
+    click(window, doc.getElementById("gear-btn")!);
+    expect(doc.querySelector("#gear-popover input[type=range]")).toBeNull();
     expect(firstGearLabel(doc)).toMatch(/Model and Effort/);
   });
 });

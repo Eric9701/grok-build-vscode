@@ -477,4 +477,9 @@ describe("untitledTextOpenOptions (View all language passthrough)", () => {
     const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     expect(src).toMatch(/previewInApp:\s*this\.host\.canPreviewInApp/);
   });
+
+  it("sidebar initialState forwards settingsEditor from the host capability", () => {
+    const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    expect(src).toMatch(/settingsEditor:\s*this\.host\.canOpenSettingsEditor/);
+  });
 });

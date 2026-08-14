@@ -10,7 +10,7 @@ import { fileUriToPath } from "./file-ref";
 
 export type DispatchEvent =
   | { kind: "response"; id: number | string; result?: any; error?: any }
-  | { kind: "session-update"; update: any; meta?: any }
+  | { kind: "session-update"; update: any; meta?: any; sessionId?: string }
   | { kind: "server-request"; id?: number | string; method: string; params: any }
   | { kind: "non-json"; line: string };
 
@@ -26,12 +26,31 @@ export function parseAcpLine(line: string): DispatchEvent | null {
     return { kind: "response", id: msg.id, result: msg.result, error: msg.error };
   }
   if (msg.method === "session/update") {
-    return { kind: "session-update", update: msg.params?.update, meta: msg.params?._meta };
+    const sessionId = typeof msg.params?.sessionId === "string" && msg.params.sessionId
+      ? msg.params.sessionId
+      : undefined;
+    return { kind: "session-update", update: msg.params?.update, meta: msg.params?._meta, sessionId };
   }
   if (msg.method) {
     return { kind: "server-request", id: msg.id, method: msg.method, params: msg.params };
   }
   return null;
+}
+
+/** True when a session/update names a different conversation than this client. */
+export function isForeignSessionUpdate(
+  updateSessionId: unknown,
+  ownerSessionId: unknown,
+): updateSessionId is string {
+  return typeof updateSessionId === "string" && updateSessionId.length > 0
+    && typeof ownerSessionId === "string" && ownerSessionId.length > 0
+    && updateSessionId !== ownerSessionId;
+}
+
+/** System wake notes and other CLI-hidden user chunks (`update._meta.hideFromScrollback`). */
+export function updateHidesFromScrollback(update: unknown): boolean {
+  const meta = (update as { _meta?: { hideFromScrollback?: unknown } } | null | undefined)?._meta;
+  return meta?.hideFromScrollback === true;
 }
 
 /** Original wall-clock time attached by grok to live and replayed updates.
@@ -240,6 +259,7 @@ export function routeSessionUpdate(u: any): UpdateRoute | null {
       return { event: "messageChunk", text: c?.text ?? "" };
     }
     case "user_message_chunk":
+      if (updateHidesFromScrollback(u)) return null;
       return { event: "userMessageChunk", text: u.content?.text ?? "" };
     case "agent_thought_chunk":
       return { event: "thoughtChunk", text: u.content?.text ?? "" };
@@ -259,6 +279,33 @@ export function routeSessionUpdate(u: any): UpdateRoute | null {
       return { event: "taskCompleted", payload: u };
     default:
       return { event: "update", payload: u };
+  }
+}
+
+/**
+ * Map a routed child update onto the additive `childStream` host payload.
+ * Mode/commands/plan/media stay off this path — they are parent chrome.
+ */
+export function childStreamFromRoute(
+  childSessionId: string,
+  route: UpdateRoute,
+):
+  | { childSessionId: string; event: "messageChunk"; text: string }
+  | { childSessionId: string; event: "thoughtChunk"; text: string }
+  | { childSessionId: string; event: "userMessageChunk"; text: string }
+  | { childSessionId: string; event: "toolCall"; call: any }
+  | { childSessionId: string; event: "toolCallUpdate"; call: any }
+  | null {
+  switch (route.event) {
+    case "messageChunk":
+    case "thoughtChunk":
+    case "userMessageChunk":
+      return { childSessionId, event: route.event, text: route.text };
+    case "toolCall":
+    case "toolCallUpdate":
+      return { childSessionId, event: route.event, call: route.payload };
+    default:
+      return null;
   }
 }
 

@@ -58,12 +58,21 @@ const withRailMount = (w: any) => {
   w.document.body.appendChild(search);
 };
 
-/** Open the gear, then step into Basic settings where Text size lives. */
-const openBasicSettings = (window: any, doc: Document) => {
+/** Open the gear, then the Settings overlay where Text size lives. */
+const openSettingsGeneral = (window: any, doc: Document) => {
   click(window, (doc.getElementById("rail-gear-btn") || doc.getElementById("gear-btn"))!);
   const entry = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
-    .find((el) => /Basic settings/.test(el.textContent || ""));
+    .find((el) => /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()));
   if (entry) click(window, entry as HTMLElement);
+};
+
+const fontSlider = (doc: Document) =>
+  doc.querySelector('[data-id="chatFontScale"] input[type="range"]') as HTMLInputElement | null;
+
+const clickSettingsNav = (window: any, doc: Document, title: string) => {
+  const item = [...doc.querySelectorAll("#settings-overlay .settings-nav-item")]
+    .find((el) => (el.textContent || "").trim() === title);
+  click(window, item);
 };
 
 describe("AFK Pilot shared webview controls", () => {
@@ -762,16 +771,14 @@ describe("AFK Pilot shared webview controls", () => {
 
   it("previews remote text size while dragging, then persists and applies it on release", () => {
     const { window, doc } = bootWebview({ remote: true, beforeScripts: withRailMount });
-    // Text size lives in Basic settings under the rail gear, not on the
+    // Text size lives in Settings → General, not on the
     // composer's popover: that one is about this conversation (model, effort),
     // and how big the text is on this device is not a property of it.
-    openBasicSettings(window, doc);
+    openSettingsGeneral(window, doc);
 
-    const slider = doc.getElementById("remote-font-scale") as HTMLInputElement;
+    const slider = fontSlider(doc);
     expect(slider).toBeTruthy();
-    const gearItems = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item, #gear-popover .popover-section")];
-    const firstText = (gearItems[0]?.textContent || "").replace(/\s+/g, " ").trim();
-    expect(firstText.length).toBeGreaterThan(0);
+    expect(doc.getElementById("settings-overlay")!.textContent).toContain("Text size");
     // Model and Effort deliberately stay on the conversation surface.
 
     const output = slider.parentElement!.querySelector("output")!;
@@ -843,13 +850,13 @@ describe("AFK Pilot shared webview controls", () => {
     });
 
     click(window, doc.getElementById("gear-btn")!);
-    const config = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
-      .find((el) => el.textContent?.includes("Config & debug"))!;
-    click(window, config);
-    const toggle = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
-      .find((el) => el.textContent?.includes("Read replies aloud")) as HTMLElement;
+    const settings = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .find((el) => /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()))!;
+    click(window, settings);
+    clickSettingsNav(window, doc, "Voice");
+    const toggle = doc.querySelector('[data-id="readRepliesAloud"] .settings-switch') as HTMLElement;
     expect(toggle).toBeTruthy();
-    expect(toggle.querySelector(".popover-switch.on")).toBeNull();
+    expect(toggle.classList.contains("on")).toBe(false);
     click(window, toggle);
     expect(api.enabled).toBe(true);
     expect(posted.some((m) => m.type === "setReadRepliesAloud")).toBe(false);
@@ -865,8 +872,8 @@ describe("AFK Pilot shared webview controls", () => {
     });
     expect(posted.filter((message) => message.type === "remotePreferences")).toEqual([]);
 
-    openBasicSettings(window, doc);
-    const slider = doc.getElementById("remote-font-scale") as HTMLInputElement;
+    openSettingsGeneral(window, doc);
+    const slider = fontSlider(doc)!;
     expect(slider).toBeTruthy();
     slider.value = "150";
     slider.dispatchEvent(new (window as any).Event("change", { bubbles: true }));
@@ -884,11 +891,7 @@ describe("AFK Pilot shared webview controls", () => {
       usesTouch: false,
     });
 
-    // Re-open if needed — gear may still be open from above.
-    if (doc.getElementById("gear-popover")!.hidden) {
-      click(window, doc.getElementById("gear-btn")!);
-    }
-    const slider2 = doc.getElementById("remote-font-scale") as HTMLInputElement;
+    const slider2 = fontSlider(doc)!;
     slider2.value = "140";
     slider2.dispatchEvent(new (window as any).Event("change", { bubbles: true }));
 
@@ -920,15 +923,13 @@ describe("AFK Pilot shared webview controls", () => {
     });
     dispatch(window, { type: "initialState", readRepliesAloud: false });
     click(window, doc.getElementById("gear-btn")!);
-    const config = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
-      .find((el) => el.textContent?.includes("Config & debug"))!;
-    click(window, config);
-    const gearToggle = (label: string) => [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
-      .find((el) => el.textContent?.includes(label)) as HTMLElement;
-
-    const summarize = gearToggle("Read simplified summaries");
-    expect(summarize.querySelector(".popover-switch.on")).not.toBeNull();
-    expect(summarize.querySelector("span")?.title).toContain("Costs an extra xAI call per spoken reply");
+    const settings = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")]
+      .find((el) => /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()))!;
+    click(window, settings);
+    clickSettingsNav(window, doc, "Voice");
+    const summarize = doc.querySelector('[data-id="summarizeRepliesAloud"]') as HTMLElement;
+    expect(summarize.querySelector(".settings-switch.on")).not.toBeNull();
+    expect(summarize.textContent).toMatch(/costs an extra/i);
 
     posted.length = 0;
     dispatch(window, { type: "clearMessages" });
@@ -947,12 +948,12 @@ describe("AFK Pilot shared webview controls", () => {
     dispatch(window, { type: "speechSummary", requestId: request.requestId, text: "Brief update." });
     expect(spoken).toEqual(["Brief update."]);
 
-    click(window, gearToggle("Read replies aloud"));
+    click(window, doc.querySelector('[data-id="readRepliesAloud"] .settings-switch')!);
     expect((window as any).localStorage.getItem("grok.remote.tts")).toBe("false");
     expect((window as any).localStorage.getItem("grok.remote.ttsSummary")).toBe("false");
-    const disabledSummary = gearToggle("Read simplified summaries");
-    expect(disabledSummary.classList.contains("disabled")).toBe(true);
-    expect(disabledSummary.querySelector(".popover-switch.on")).toBeNull();
+    const disabledSummary = doc.querySelector('[data-id="summarizeRepliesAloud"]') as HTMLElement;
+    expect(disabledSummary.classList.contains("is-disabled")).toBe(true);
+    expect(disabledSummary.querySelector(".settings-switch.on")).toBeNull();
     expect(posted.at(-1)).toEqual({
       type: "remotePreferences",
       fontScale: 100,

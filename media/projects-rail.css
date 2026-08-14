@@ -419,6 +419,8 @@ html, body {
   background: var(--vscode-descriptionForeground);
   box-shadow: 0 0 0 1px var(--provider-badge-ring, var(--vscode-sideBar-background));
 }
+.provider-status-badge:not([data-dot]),
+.provider-status-badge[data-dot=""] { display: none; }
 .provider-status-badge[data-dot="working"] { background: var(--vscode-charts-blue); }
 .provider-status-badge[data-dot="needs-you"] { background: var(--vscode-charts-yellow); }
 .provider-status-badge[data-dot="unread"] { background: var(--vscode-charts-green); }
@@ -487,6 +489,7 @@ html, body {
   flex-direction: column;
   gap: 1px;
   min-width: 190px;
+  max-width: min(280px, calc(100vw - 16px));
   padding: 4px;
   background: var(--vscode-editorWidget-background);
   color: var(--vscode-foreground);
@@ -500,6 +503,10 @@ html, body {
   align-items: center;
   gap: 8px;
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 8px 9px;
   border: 0;
   border-radius: 4px;

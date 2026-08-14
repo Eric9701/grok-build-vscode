@@ -6,6 +6,7 @@ import type {
   HostTextDocumentContentProvider,
   HostWebview,
   HostWebviewView,
+  HostEditorWebview,
 } from "./host";
 import { Uri, disposeAll, formatRemoteInstallId, shouldRehydrateOnWebviewReady } from "./host";
 import { isCanonicallyInsideRoot } from "./file-tree";
@@ -53,12 +54,12 @@ import {
   turnIsInFlight,
 } from "./session";
 import { buildReapCandidates, selectReapable, computeDot, Dot } from "./session-pool";
-import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterms, voiceSettingForRepo, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
+import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterms, voiceSettingForRepo, voiceSettingWriteTarget, sanitizeVoiceSendPhrase, sanitizeVoiceKeyterms, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
-import { MediaRef, agentTimestampMsFromMeta, autoCompactStartedNote, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
@@ -177,7 +178,7 @@ import {
   resolveRemoteFileRoot,
   writeRemoteProjectFile,
 } from "./remote-files";
-import { deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, resolveRelayUrl } from "./remote-frames";
+import { buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
 import { historyImagePreviews } from "./image-history";
@@ -637,6 +638,7 @@ export class GrokSidebar {
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
     "onboarding", "providerState", "expandCommandOutputs", "steerByDefault", "soundNotifications",
+    "telemetryEnabled",
   ]);
   private cliPath?: string;
   private codexCliPath?: string;
@@ -655,6 +657,38 @@ export class GrokSidebar {
    *  coerced to false. Rebuilt on each refresh so removed keys cannot serve
    *  stale `true` forever. */
   private lastVoiceConfiguredByCwd = new Map<string, boolean>();
+  /** VS Code settings tab. Desktop/remote keep the in-page overlay. */
+  private settingsEditor?: HostEditorWebview;
+  private static readonly SETTINGS_PANEL_TYPES = new Set<WebviewMsg["type"]>([
+    "openSettingsSurface",
+    "closeSettingsSurface",
+    "setShowThinking",
+    "setAppPurpose",
+    "setExpandCommandOutputs",
+    "setSteerByDefault",
+    "setSoundNotifications",
+    "setProcessingSound",
+    "setReadRepliesAloud",
+    "setSummarizeRepliesAloud",
+    "setVoiceSendPhrase",
+    "setVoiceKeyterms",
+    "setTelemetryEnabled",
+    "openGlobalConfig",
+    "openProjectConfig",
+    "runMcpList",
+    "showLogs",
+    "toggleDevTools",
+    "openSettings",
+    "openUrl",
+    "moveView",
+    "logout",
+    "runGrokLogin",
+    "checkGrokUpdate",
+    "updateGrok",
+    "openRemotePortal",
+    "remoteSignIn",
+    "unlinkRemoteDevice",
+  ]);
   private readonly loginReprobeTimers = new Map<AcpProvider, ReturnType<typeof setTimeout>>();
   private grokVersionProbe?: Promise<string>;
   private codexVersionProbe?: Promise<string>;
@@ -1061,7 +1095,8 @@ export class GrokSidebar {
       if (
         e.affectsConfiguration("grok.voiceApiKey") ||
         e.affectsConfiguration("grok.ffmpegPath") ||
-        e.affectsConfiguration("grok.voiceSendPhrase")
+        e.affectsConfiguration("grok.voiceSendPhrase") ||
+        e.affectsConfiguration("grok.voiceKeyterms")
       ) {
         this.postVoiceConfigured();
       }
@@ -1127,6 +1162,12 @@ export class GrokSidebar {
       }
       if (e.affectsConfiguration("grok.remote.keepAwake")) {
         this.refreshKeepAwake();
+      }
+      if (e.affectsConfiguration("grok.telemetry.enabled")) {
+        this.post({
+          type: "telemetryEnabled",
+          value: this.host.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
+        });
       }
     });
     const authWatcher = this.host.createFileSystemWatcher(
@@ -2210,7 +2251,7 @@ Only continue if you trust this code.`,
         this.reportRequester(
           requester,
           "warning",
-          "Steering needs a newer Grok Build CLI — your message was queued instead. Update via the gear menu → Version & about.",
+          "Steering needs a newer Grok Build CLI — your message was queued instead. Update via Settings → About.",
         );
         return;
       }
@@ -2256,7 +2297,7 @@ Only continue if you trust this code.`,
         this.reportRequester(
           requester,
           "warning",
-          "Forking needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Forking needs a newer Grok Build CLI. Update via Settings → About.",
         );
         return;
       }
@@ -2350,7 +2391,7 @@ Only continue if you trust this code.`,
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
         return void this.host.showWarningMessage(
-          "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Editing a sent message needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       // If the wire's user-facing list no longer matches what the user sees, the
@@ -2395,7 +2436,7 @@ Only continue if you trust this code.`,
       });
       if (result === "unsupported") {
         return void this.host.showWarningMessage(
-          "Editing a sent message needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Editing a sent message needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       if (!result.success) {
@@ -2439,7 +2480,7 @@ Only continue if you trust this code.`,
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
         return void this.host.showWarningMessage(
-          "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Rewind needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
 
@@ -2518,7 +2559,7 @@ Only continue if you trust this code.`,
       });
       if (result === "unsupported") {
         return void this.host.showWarningMessage(
-          "Rewind needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Rewind needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       if (!result.success) {
@@ -2786,7 +2827,7 @@ Only continue if you trust this code.`,
             if (created === "unsupported") {
               watch.cancel();
               return void this.host.showWarningMessage(
-                "Worktrees need a newer Grok Build CLI. Update via the gear menu → Version & about.",
+                "Worktrees need a newer Grok Build CLI. Update via Settings → About.",
               );
             }
             const wtPath = created.worktreePath;
@@ -3239,7 +3280,7 @@ Only continue if you trust this code.`,
       const r = await session.client.applyWorktree(wt.path);
       if (r === "unsupported") {
         return void this.host.showWarningMessage(
-          "Apply worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Apply worktree needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       const n = r.files?.length ?? 0;
@@ -3332,7 +3373,7 @@ Only continue if you trust this code.`,
       }
       if (r === "unsupported") {
         return void this.host.showWarningMessage(
-          "Remove worktree needs a newer Grok Build CLI. Update via the gear menu → Version & about.",
+          "Remove worktree needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       // WHO OWNED IT — captured before the records that answer that are erased.
@@ -5497,6 +5538,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.codexInstallAbort?.abort(new Error("Installation cancelled."));
     this.codexInstallAbort = undefined;
     try { this.keepAwake.stop(); } catch { /* the pid watcher reaps it anyway */ }
+    try { this.settingsEditor?.dispose(); } catch { /* tab already gone */ }
+    this.settingsEditor = undefined;
     void this.disposePool();
     this.editorWatcher?.dispose();
     this.configWatcher?.dispose();
@@ -5764,7 +5807,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /**
-   * On-demand "is a newer grok available?" check for the gear → About panel.
+   * On-demand "is a newer grok available?" check for Settings → About.
    * Read-only — `grok update --check --json` doesn't touch the binary, so it's
    * safe while a session is live. Posts a grokUpdateStatus back to the webview.
    */
@@ -5776,7 +5819,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.host.getConfiguration("grok").get<string>("cliPath", ""),
     );
     if (!cliPath) {
-      this.post({ type: "grokUpdateStatus", error: "grok CLI not found" });
+      this.postGrokUpdateStatus({ type: "grokUpdateStatus", error: "grok CLI not found" });
       return;
     }
     // Compute the update policy from the installed version (issue #22) so the menu
@@ -5790,7 +5833,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         latestVersion?: string;
         updateAvailable?: boolean;
       };
-      this.post({
+      this.postGrokUpdateStatus({
         type: "grokUpdateStatus",
         current: info.currentVersion ?? null,
         latest: info.latestVersion ?? null,
@@ -5799,7 +5842,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       });
     } catch (e) {
       this.host.appendLine(`grok update --check failed: ${(e as Error).message}`);
-      this.post({ type: "grokUpdateStatus", error: (e as Error).message, policy });
+      this.postGrokUpdateStatus({ type: "grokUpdateStatus", error: (e as Error).message, policy });
     }
   }
 
@@ -6377,6 +6420,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       session.inUserMessage = false;
       session.historyEventCount += 1;
       this.emit(session, { type: "thoughtChunk", text });
+    });
+    client.on("childStream", (ev: { childSessionId: string; route: UpdateRoute }) => {
+      if (gen !== session.gen) return;
+      const payload = childStreamFromRoute(ev.childSessionId, ev.route);
+      if (!payload) return;
+      this.emit(session, { type: "childStream", ...payload });
     });
     client.on("mediaContent", (m: MediaRef) => {
       if (gen !== session.gen) return;
@@ -7090,8 +7139,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.linkRemoteDevice();
         break;
       case "remoteSignOut":
+      case "unlinkRemoteDevice": {
+        // Desktop confirms natively for both messages. VS Code's palette still
+        // calls unlinkRemoteDevice() directly; a leftover remoteSignOut there
+        // stays immediate.
+        if (msg.type === "unlinkRemoteDevice" || this.host.canSwitchWorkspaceFolder) {
+          const name = deviceDisplayName(os.hostname(), process.platform, os.release());
+          const ok = await this.confirmHostExecute(
+            "Unlink this device?",
+            `${name} will be unlinked from AFK Pilot. Other devices will lose access to this machine.`,
+            "Unlink",
+          );
+          if (!ok) break;
+        }
         await this.unlinkRemoteDevice();
         break;
+      }
       case "openRemotePortal":
         void this.host.openExternal(httpBaseFromRelayUrl(this.relayUrl()) + (msg.withHint ? "/?remoteHint=1" : ""));
         break;
@@ -7393,8 +7456,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "openSettings":
         await this.host.openSettings(typeof msg.section === "string" ? msg.section : "grok");
         break;
+      case "openSettingsSurface":
+        await this.openSettingsEditor(typeof msg.category === "string" ? msg.category : undefined);
+        break;
+      case "closeSettingsSurface":
+        this.settingsEditor?.dispose();
+        this.settingsEditor = undefined;
+        break;
       case "moveView": {
-        // Gear -> Config & debug -> Move view. Each destination targets an
+        // Settings -> Advanced -> Move view. Each destination targets an
         // extension-owned container, so the move is direct — no quickpick. An
         // unknown location falls back to the built-in destination picker
         // preselected on our view (the view-id argument also sidesteps the
@@ -7436,6 +7506,30 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "setSummarizeRepliesAloud":
         await this.host.getConfiguration("grok")
           .update("summarizeRepliesAloud", !!msg.value, "global");
+        break;
+      case "setVoiceSendPhrase": {
+        const cwd = messageCwd;
+        const cfg = this.host.getConfiguration("grok", cwd);
+        await cfg.update(
+          "voiceSendPhrase",
+          sanitizeVoiceSendPhrase(msg.value),
+          voiceSettingWriteTarget(cfg.inspect("voiceSendPhrase"), this.host.isInWorkspace(cwd)),
+        );
+        break;
+      }
+      case "setVoiceKeyterms": {
+        const cwd = messageCwd;
+        const cfg = this.host.getConfiguration("grok", cwd);
+        await cfg.update(
+          "voiceKeyterms",
+          sanitizeVoiceKeyterms(msg.value),
+          voiceSettingWriteTarget(cfg.inspect("voiceKeyterms"), this.host.isInWorkspace(cwd)),
+        );
+        break;
+      }
+      case "setTelemetryEnabled":
+        await this.host.getConfiguration("grok")
+          .update("telemetry.enabled", !!msg.value, "global");
         break;
       case "runInstallCmd": {
         // Host-owned confirmation, because this is one of the two messages that
@@ -9258,6 +9352,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       type: "voiceConfigured",
       value: configured,
       sendPhrase: this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
+      keyterms: sanitizeVoiceKeyterms(this.voiceSetting(cwd, "voiceKeyterms", [])),
     });
     for (const clientId of this.remoteClients.clients()) {
       // Scope = the project whose config we resolved. Classification is "scope"
@@ -9269,6 +9364,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         type: "voiceConfigured",
         value: remoteConfigured,
         sendPhrase: this.voiceSetting(remoteCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
+        keyterms: sanitizeVoiceKeyterms(this.voiceSetting(remoteCwd, "voiceKeyterms", [])),
       }, remoteCwd);
     }
   }
@@ -10994,9 +11090,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       soundNotifications: cfg.get("soundNotifications", false),
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
+      telemetryEnabled: cfg.get("telemetry.enabled", true),
       appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
       ...(commandLanguage ? { commandLanguage } : {}),
-      // For a remote's Version & about page. A phone is looking at neither GUI,
+      // For a remote's About page. A phone is looking at neither GUI,
       // so it has to be told which one is on the other end and what the machine
       // is called. `canSwitchWorkspaceFolder` is the desktop app's defining
       // capability and is already how every other host-kind decision here is
@@ -11032,6 +11129,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // overlay instead of a host editor or bare window. Remotes never
         // receive this (DESK_ONLY_CAPABILITIES).
         previewInApp: this.host.canPreviewInApp,
+        // OPT-IN: VS Code editor tab. Desktop/remotes keep the in-page overlay.
+        settingsEditor: this.host.canOpenSettingsEditor,
         // Only a host that owns its own folder set can add one. VS Code's
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.
@@ -11231,6 +11330,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     } else {
       this.sendRemoteSession(this.focused, message);
     }
+  }
+
+  /** Chat + the settings tab (when open) both consume About update status. */
+  private postGrokUpdateStatus(message: Extract<HostMsg, { type: "grokUpdateStatus" }>): void {
+    this.post(message);
+    void this.settingsEditor?.webview.postMessage(message);
   }
 
   /** Post to the VS Code webview only (plus catalog mirror to the projects rail). */
@@ -13482,6 +13587,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       relayUrl: this.relayUrl(),
       token,
       deviceName: deviceDisplayName(os.hostname(), process.platform, os.release()),
+      client: {
+        platform: process.platform,
+        release: os.release(),
+        appName: this.host.appName,
+        isDesktop: this.host.remoteInstallIdSuffix === ":desktop",
+      },
       snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
       // Socket-level project gate — also covers the catch-up snapshot path,
       // which never enters deliverRemote.
@@ -13611,19 +13722,28 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   async linkRemoteDevice(): Promise<void> {
     const base = httpBaseFromRelayUrl(this.relayUrl());
     try {
-      const name = deviceDisplayName(os.hostname(), process.platform, os.release());
       // Already persisted by the time this returns — getOrCreate writes the file
       // synchronously — so a first-ever link cannot outrun persistence and needs
       // no second write. Re-writing it would only add a way to mark the key
       // degraded on a link. Desktop appends `:desktop` (host capability) so the
       // relay shares one device-cap slot with the same machine's VS Code install.
       const installId = formatRemoteInstallId(this.installId(), this.host.remoteInstallIdSuffix);
+      const startBody = buildLinkStartBody({
+        hostname: os.hostname(),
+        platform: process.platform,
+        release: os.release(),
+        installId,
+        appName: this.host.appName,
+        isDesktop: this.host.remoteInstallIdSuffix === ":desktop",
+      });
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         // Stable per install so the relay can relink this machine instead of
-        // minting duplicate device rows for the same hostname.
-        body: JSON.stringify({ name, installId }),
+        // minting duplicate device rows for the same hostname. `name` stays the
+        // legacy HOST (Windows 11) form; clientLabel/platform/osLabel are optional
+        // extras for relays that render richer device rows.
+        body: JSON.stringify(startBody),
       });
       if (!startRes.ok) throw new Error(`link/start ${startRes.status}`);
       const { code } = (await startRes.json()) as { code: string };
@@ -13751,6 +13871,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       type: "voiceConfigured",
       value: voiceConfigured,
       sendPhrase: phrase,
+      keyterms: sanitizeVoiceKeyterms(this.voiceSetting(
+        voiceCwd,
+        "voiceKeyterms",
+        [],
+      )),
     });
     const activeVoice = this.remoteVoice.get(clientId);
     if (activeVoice) {
@@ -13818,6 +13943,162 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 </html>`;
   }
 
+  /**
+   * Open the shared settings surface as a VS Code editor tab.
+   *
+   * Snapshot-on-open: the tab does not subscribe to live chat updates. Every
+   * change still posts an existing set-/open- message, so the sidebar and
+   * chat webview stay in sync through the same handlers the gear uses.
+   */
+  async openSettingsEditor(category?: string): Promise<void> {
+    if (this.settingsEditor) {
+      this.settingsEditor.reveal();
+      if (category) {
+        void this.settingsEditor.webview.postMessage({ type: "settingsCategory", category });
+      }
+      return;
+    }
+    const panel = this.host.openEditorWebview({
+      viewType: "grok.settings",
+      title: "Grok Settings",
+      localResourceRoots: [
+        Uri.joinPath(this.context.extensionUri, "media"),
+        Uri.joinPath(this.context.extensionUri, "resources"),
+      ],
+    });
+    if (!panel) return;
+    this.settingsEditor = panel;
+    panel.onDidDispose(() => {
+      if (this.settingsEditor === panel) this.settingsEditor = undefined;
+    });
+    const token = await this.readDeviceToken();
+    if (this.settingsEditor !== panel) return;
+    panel.webview.html = this.getSettingsHtml(panel.webview, {
+      remoteLinked: !!token,
+      category,
+    });
+    panel.webview.onDidReceiveMessage((raw) => {
+      const msg = raw as WebviewMsg;
+      void this.onSettingsPanelMessage(msg).catch((e) => {
+        const text = (e as Error)?.message ?? String(e);
+        this.host.appendLine(`[settings] ${msg.type} failed: ${text}`);
+      });
+    });
+  }
+
+  private async onSettingsPanelMessage(msg: WebviewMsg): Promise<void> {
+    if (!GrokSidebar.SETTINGS_PANEL_TYPES.has(msg.type)) {
+      this.host.appendLine(`[settings] ignored ${msg.type}`);
+      return;
+    }
+    await this.onMessage(msg, "local");
+  }
+
+  private getSettingsHtml(
+    webview: HostWebview,
+    opts: { remoteLinked: boolean; category?: string },
+  ): string {
+    const nonce = getNonce();
+    const mediaUri = (file: string) =>
+      webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, "media", file));
+    const cfg = this.host.getConfiguration("grok");
+    const boot = {
+      snapshot: {
+        appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
+        showThinking: cfg.get("showThinking", false),
+        expandCommandOutputs: cfg.get("expandCommandOutputs", false),
+        steerByDefault: cfg.get("steerByDefault", false),
+        fontScale: this.chatFontScale(),
+        soundNotifications: cfg.get("soundNotifications", false),
+        processingSound: cfg.get("processingSound", false),
+        readRepliesAloud: cfg.get("readRepliesAloud", false),
+        summarizeRepliesAloud: cfg.get("summarizeRepliesAloud", true),
+        voiceConfigured: this.lastVoiceConfiguredByCwd.get(
+          normalizeRepoPath(this.workspaceRoot() || ""),
+        ) === true,
+        voiceSendPhrase: this.voiceSetting(
+          this.workspaceRoot(),
+          "voiceSendPhrase",
+          DEFAULT_SEND_PHRASE,
+        ),
+        voiceKeyterms: sanitizeVoiceKeyterms(
+          this.voiceSetting(this.workspaceRoot(), "voiceKeyterms", []),
+        ),
+        telemetryEnabled: cfg.get("telemetry.enabled", true),
+        providers: this.providerStateMessage().providers,
+        extVersion: this.context.extensionVersion,
+        cliVersion: this.providerCliVersions.grok || "",
+        hostKind: "extension" as const,
+        hostName: deviceDisplayName(os.hostname(), process.platform, os.release()),
+        grokUpdate: null,
+      },
+      category: opts.category || "general",
+      env: {
+        isRemote: false,
+        isDesktop: false,
+        clientOwnsFontScale: false,
+        steerSupported: true,
+        providersKnown: true,
+        remoteLinked: opts.remoteLinked,
+        hostCaps: {
+          relocateView: this.host.canRelocateView,
+          secondarySideBar: this.host.canUseSecondarySideBar,
+          showOutput: this.host.canShowOutput,
+          toggleDevTools: this.host.canToggleDevTools,
+          settingsEditor: true,
+        },
+      },
+    };
+    const bootJson = JSON.stringify(boot).replace(/</g, "\\u003c");
+    return `<!DOCTYPE html>
+<html lang="en" class="settings-page">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';" />
+<link rel="stylesheet" href="${mediaUri("settings.css")}" />
+<title>Grok Settings</title>
+</head>
+<body class="settings-page">
+  <div id="settings-root"></div>
+  <script nonce="${nonce}">window.__grokSettingsBoot = ${bootJson};</script>
+  <script nonce="${nonce}" src="${mediaUri("settings.js")}"></script>
+  <script nonce="${nonce}">
+    (function () {
+      var vscode = acquireVsCodeApi();
+      var boot = window.__grokSettingsBoot || {};
+      var tts = !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
+      var surface = window.GrokSettings.mount(document.getElementById("settings-root"), {
+        snapshot: boot.snapshot,
+        env: Object.assign({ ttsAvailable: tts }, boot.env || {}),
+        post: function (msg) { vscode.postMessage(msg); },
+        standalone: true,
+        category: boot.category,
+        onClose: function () { vscode.postMessage({ type: "closeSettingsSurface" }); }
+      });
+      window.addEventListener("message", function (e) {
+        var msg = e.data;
+        if (!msg || !msg.type || !surface) return;
+        if (msg.type === "grokUpdateStatus") {
+          var next = { grokUpdate: {
+            current: msg.current, latest: msg.latest,
+            updateAvailable: !!msg.updateAvailable, error: msg.error || null,
+            policy: msg.policy || null,
+          } };
+          if (msg.current) next.cliVersion = msg.current;
+          surface.update(next);
+        }
+        if (msg.type === "providerState" && Array.isArray(msg.providers)) {
+          surface.update({ providers: msg.providers });
+        }
+        if (msg.type === "settingsCategory" && msg.category) surface.setCategory(msg.category);
+      });
+    })();
+  </script>
+</body>
+</html>`;
+  }
+
   private getHtml(webview: HostWebview): string {
     const nonce = getNonce();
     // Join under extensionUri so remote hosts keep vscode-remote:// (Uri.file
@@ -13838,7 +14119,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       : "";
     const railMount = this.host.canSwitchWorkspaceFolder
       ? `
-  <aside id="projects-rail" class="projects-rail" hidden aria-label="Projects">
+  <aside id="projects-rail" class="projects-rail" aria-label="Projects">
     <div class="rail-top">
       <span class="rail-brand" title="Grok Build Desktop">
         <span class="mark" style="--rail-mark:url('${railMark}')" aria-hidden="true"></span>
@@ -13867,6 +14148,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       : "";
     const openMain = this.host.canSwitchWorkspaceFolder ? `<div class="app-main">` : "";
     const closeMain = this.host.canSwitchWorkspaceFolder ? `</div>` : "";
+    // Files shell is in the first HTML frame so desktop never paints the
+    // panel-less column and then upgrades. Inject reuses this node.
+    const fileShellOpen = this.host.canSwitchWorkspaceFolder
+      ? `<div id="desk-ft-shell" class="desk-ft-shell"><div class="desk-ft-chat">`
+      : "";
+    const fileShellClose = this.host.canSwitchWorkspaceFolder ? `</div></div>` : "";
+    const deskLayoutClass = this.host.canSwitchWorkspaceFolder ? " has-rail desk-with-ft" : "";
+    const firstFrameLayout = this.host.canSwitchWorkspaceFolder
+      ? `
+  body.desk.has-rail { display: flex; flex-direction: row; align-items: stretch; }
+  body.desk.has-rail #projects-rail { width: var(--rail-width, 260px); flex-shrink: 0; height: 100%; display: flex; flex-direction: column; }
+  body.desk.has-rail .app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  body.desk.has-rail .desk-ft-shell { display: flex; flex: 1 1 auto; flex-direction: row; min-width: 0; min-height: 0; height: 100%; }
+  body.desk.has-rail .desk-ft-chat { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }`
+      : "";
     // The shared file-panel asset is desktop-only in this generated document.
     // Remote browsers load it from the relay's own web/chat.html; VS Code gets
     // neither the tag nor the bytes, making the no-file-panel decision structural.
@@ -13896,11 +14192,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   html, body { background: var(--vscode-sideBar-background, var(--vscode-editor-background)); }
   body { color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
   .welcome { visibility: hidden; }
+${firstFrameLayout}
 </style>
 <link rel="stylesheet" href="${mediaUri("chat.css")}" />
+<link rel="stylesheet" href="${mediaUri("settings.css")}" />
 ${filePanelStyle}
 </head>
-<body class="desk${this.showThinking() ? "" : " thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
+<body class="desk${deskLayoutClass}${this.showThinking() ? "" : " thinking-hidden"}" style="--chat-zoom: ${this.chatFontScale()}">
+${this.host.canSwitchWorkspaceFolder ? `<script nonce="${nonce}">try{if(localStorage.getItem("desk-rail-open")==="0")document.body.classList.add("desk-rail-collapsed")}catch(e){}</script>` : ""}
 ${railMount}
 ${openMain}
   <header class="top-bar">
@@ -13922,7 +14221,7 @@ ${openMain}
     <div id="repo-popover" class="toolbar-popover repo-popover" hidden></div>
     <div id="history-popover" class="toolbar-popover history-popover" hidden></div>
   </header>
-
+${fileShellOpen}
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">
       <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
@@ -13968,6 +14267,7 @@ ${openMain}
     <div id="slash-popover" class="slash-popover" hidden></div>
     <div id="mention-popover" class="slash-popover mention-popover" hidden></div>
   </footer>
+${fileShellClose}
 ${closeMain}
 
   <script nonce="${nonce}">
@@ -13991,6 +14291,7 @@ ${closeMain}
   <script nonce="${nonce}" src="${mediaUri("mathjax/tex-svg-full.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("mermaid/mermaid.min.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("webview-helpers.js")}"></script>
+  <script nonce="${nonce}" src="${mediaUri("settings.js")}"></script>
   ${filePanelScript}
   <script nonce="${nonce}" src="${mediaUri("chat.js")}"></script>
 </body>

@@ -21,6 +21,7 @@ import {
   nextBackoffMs,
   INITIAL_BACKOFF_MS,
   redactRelayUrl,
+  type RelayClientSource,
 } from "./remote-frames";
 import { isSelfScopedOutbound, mayDeliverRemoteHostMsg } from "./remote-policy";
 
@@ -88,6 +89,8 @@ export interface RemoteUplinkOptions {
   /** Long-lived device token from the link flow. */
   token: string;
   deviceName?: string;
+  /** Same source `relayClientMeta` / `buildLinkStartBody` map into hello. */
+  client?: RelayClientSource;
   /** Ordered catch-up (already remote-transformed) for a newly-ready browser client. */
   snapshot: (clientId: string) => HostMsg[];
   /**
@@ -294,7 +297,7 @@ export class RemoteUplink {
       // Redacted: a relay may live behind a base path, and that path is not
       // ours to print into an output channel the user may paste anywhere.
       this.opts.log(`[remote] uplink connected to ${redactRelayUrl(this.opts.relayUrl)}`);
-      ws.send(JSON.stringify(helloFrame(this.opts.deviceName)));
+      ws.send(JSON.stringify(helloFrame(this.opts.deviceName, this.opts.client)));
     });
     ws.on("message", (raw) => {
       const frame = parseRelayFrame(raw.toString());

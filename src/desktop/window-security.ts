@@ -24,12 +24,12 @@ export function isAllowedAppNavigationUrl(url: string): boolean {
 }
 
 /**
- * Whether a window.open / target=_blank URL should be handed to the OS browser.
- * Everything else is denied (no child BrowserWindow).
+ * Whether a window.open / target=_blank URL should be handed to the OS browser
+ * or mail client. Everything else is denied (no child BrowserWindow).
  */
 export function shouldOpenExternally(url: string): boolean {
   if (typeof url !== "string") return false;
-  return url.startsWith("https:") || url.startsWith("http:");
+  return url.startsWith("https:") || url.startsWith("http:") || url.startsWith("mailto:");
 }
 
 /** Decision for setWindowOpenHandler. */

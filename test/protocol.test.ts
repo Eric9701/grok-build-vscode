@@ -57,6 +57,19 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     });
   });
 
+  it("contributes a native title-bar settings command on the chat view", () => {
+    expect(packageJson.contributes.commands).toContainEqual({
+      command: "grok.settings",
+      title: "Grok: Settings",
+      icon: "$(gear)",
+    });
+    expect(packageJson.contributes.menus["view/title"]).toContainEqual({
+      command: "grok.settings",
+      when: "view == grok.chat",
+      group: "navigation",
+    });
+  });
+
   it("uses findable AFK Pilot titles without changing the remote command ids", () => {
     expect(packageJson.contributes.commands).toContainEqual({
       command: "grok.linkRemote",

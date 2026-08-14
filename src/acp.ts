@@ -22,6 +22,7 @@ import {
   parseAcpLine,
   resolveModelId,
   routeSessionUpdate,
+  isForeignSessionUpdate,
 } from "./acp-dispatch";
 import {
   PLAN_BLOCKED_CODE,
@@ -919,32 +920,41 @@ export class AcpClient extends EventEmitter {
       return;
     }
     if (ev.kind === "session-update") {
-      this.handleSessionUpdate(ev.update, ev.meta);
+      this.handleSessionUpdate(ev.update, ev.meta, ev.sessionId);
       return;
     }
     void this.handleServerRequest({ id: ev.id, method: ev.method, params: ev.params });
   }
 
-  private handleSessionUpdate(u: any, meta?: any): void {
+  private handleSessionUpdate(u: any, meta?: any, sessionId?: string): void {
+    const foreign = isForeignSessionUpdate(sessionId, this.sessionId);
     const normalized = this.backend.normalizeUpdate(u, meta);
-    if (normalized.sessionTitle) {
-      this.currentSessionTitle = normalized.sessionTitle;
-      this.emit("sessionTitle", normalized.sessionTitle);
-    }
-    if (normalized.contextWindow !== undefined && this.currentModelId) {
-      const model = this.availableModels.find((entry) => entry.modelId === this.currentModelId);
-      if (model) model.totalContextTokens = normalized.contextWindow;
+    if (!foreign) {
+      if (normalized.sessionTitle) {
+        this.currentSessionTitle = normalized.sessionTitle;
+        this.emit("sessionTitle", normalized.sessionTitle);
+      }
+      if (normalized.contextWindow !== undefined && this.currentModelId) {
+        const model = this.availableModels.find((entry) => entry.modelId === this.currentModelId);
+        if (model) model.totalContextTokens = normalized.contextWindow;
+      }
     }
     if (normalized.update === undefined) return;
     u = normalized.update;
     meta = normalized.meta;
-    const contextUsed = contextUsedFromUpdateEnvelope(meta);
-    if (contextUsed !== null && contextUsed !== this.lastContextUsed) {
-      this.lastContextUsed = contextUsed;
-      this.emit("contextUsage", contextUsed);
+    if (!foreign) {
+      const contextUsed = contextUsedFromUpdateEnvelope(meta);
+      if (contextUsed !== null && contextUsed !== this.lastContextUsed) {
+        this.lastContextUsed = contextUsed;
+        this.emit("contextUsage", contextUsed);
+      }
     }
     const r = routeSessionUpdate(u);
     if (!r) return;
+    if (foreign) {
+      this.emit("childStream", { childSessionId: sessionId, route: r, meta });
+      return;
+    }
     if (r.event === "modeChanged") {
       this.currentModeId = r.modeId;
       this.emit("modeChanged", r.modeId);

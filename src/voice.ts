@@ -212,10 +212,56 @@ export interface SttStreamParams {
 
 /** The documented keyterm ceiling ("≤100 terms, ≤50 chars each"). */
 export const MAX_STT_KEYTERMS = 100;
+/** Per-term character cap, matching the SpaceXAI streaming keyterm limit. */
+export const MAX_VOICE_KEYTERM_CHARS = 50;
+
+/** Trim a send-phrase edit. Empty disables hands-free send. */
+export function sanitizeVoiceSendPhrase(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** Normalize a user-edited dictionary: strings only, trimmed, 50-char, unique, capped. */
+export function sanitizeVoiceKeyterms(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const term = item.trim().slice(0, MAX_VOICE_KEYTERM_CHARS);
+    if (!term) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(term);
+    if (out.length >= MAX_STT_KEYTERMS) break;
+  }
+  return out;
+}
 
 export interface VoiceSettingInspect<T> {
   defaultValue?: T;
   globalValue?: T;
+  workspaceValue?: T;
+  workspaceFolderValue?: T;
+}
+
+/**
+ * Write the scope that produced the displayed voice value.
+ *
+ * Settings show the resource-effective config (`voiceSettingForRepo`). A
+ * workspace / folder override is what the user is looking at, so an edit must
+ * update that override — writing User/global would leave the displayed value
+ * unchanged. Repos outside the window workspace already display User/default,
+ * so they stay on global even if the open window has its own override.
+ */
+export function voiceSettingWriteTarget(
+  inspect: VoiceSettingInspect<unknown> | undefined,
+  repoIsInWorkspace: boolean,
+): "global" | "workspace" | "workspaceFolder" {
+  if (!repoIsInWorkspace) return "global";
+  if (inspect?.workspaceFolderValue !== undefined) return "workspaceFolder";
+  if (inspect?.workspaceValue !== undefined) return "workspace";
+  return "global";
 }
 
 /**

@@ -111,16 +111,23 @@ describe("the Accounts cluster for an agent that needs a sign-in", () => {
     expect(types(h.posted)).not.toContain("logout");
   });
 
-  it("still offers sign-out for a healthy account", () => {
+  it("keeps sign-out for a healthy account in Settings, not the gear", () => {
     const h = bootWebview();
     dispatch(h.window, {
       type: "providerState",
       providers: [{ id: "codex", connected: true }],
     });
     click(h.window, $(h.doc, "gear-btn"));
-
-    expect(popoverText(h.doc)).toContain("Sign out");
-    expect(popoverText(h.doc)).not.toContain("Sign in again");
+    expect(popoverText(h.doc)).not.toContain("Sign out");
+    const settings = items(h.doc).find((el) =>
+      /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()),
+    );
+    click(h.window, settings!);
+    const providers = [...h.doc.querySelectorAll("#settings-overlay .settings-nav-item")]
+      .find((el) => (el.textContent || "").trim() === "Providers")!;
+    click(h.window, providers);
+    expect(h.doc.querySelector('[data-id="providerCodex"]')!.textContent).toContain("Sign out");
+    expect(h.doc.querySelector('[data-id="providerCodex"]')!.textContent).not.toContain("Sign in again");
   });
 });
 

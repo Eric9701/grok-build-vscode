@@ -41,6 +41,9 @@ import {
   resolveModelId,
   routeSessionUpdate,
   summarizeBackgroundCommand,
+  isForeignSessionUpdate,
+  updateHidesFromScrollback,
+  childStreamFromRoute,
 } from "../src/acp-dispatch";
 
 describe("parseAcpLine", () => {
@@ -84,7 +87,23 @@ describe("parseAcpLine", () => {
     if (r?.kind === "session-update") {
       expect(r.update.sessionUpdate).toBe("agent_message_chunk");
       expect(r.meta).toEqual({ agentTimestampMs: 1_783_845_298_123, isReplay: true });
+      expect(r.sessionId).toBeUndefined();
     }
+  });
+
+  it("keeps params.sessionId on a session/update (the child-stream demux key)", () => {
+    const r = parseAcpLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "child-sess-1",
+          update: { sessionUpdate: "agent_message_chunk", content: { text: "hi" } },
+        },
+      }),
+    );
+    expect(r?.kind).toBe("session-update");
+    if (r?.kind === "session-update") expect(r.sessionId).toBe("child-sess-1");
   });
 
   it("recognizes a server->client request (method present)", () => {
@@ -174,6 +193,15 @@ describe("routeSessionUpdate", () => {
   it("handles missing content.text gracefully", () => {
     const r = routeSessionUpdate({ sessionUpdate: "agent_message_chunk" });
     expect(r).toEqual({ event: "messageChunk", text: "" });
+  });
+
+  it("drops user_message_chunk with hideFromScrollback", () => {
+    const r = routeSessionUpdate({
+      sessionUpdate: "user_message_chunk",
+      content: { text: "<system-reminder>wake</system-reminder>" },
+      _meta: { hideFromScrollback: true },
+    });
+    expect(r).toBeNull();
   });
 
   it("routes task_backgrounded / task_completed to their own events (not generic update)", () => {
@@ -347,6 +375,32 @@ describe("autoCompactStartedNote (surface silent automatic compaction)", () => {
     expect(autoCompactStartedNote({ sessionUpdate: "subagent_finished" })).toBeNull();
     expect(autoCompactStartedNote(null)).toBeNull();
     expect(autoCompactStartedNote({})).toBeNull();
+  });
+});
+
+describe("isForeignSessionUpdate / childStreamFromRoute", () => {
+  it("treats a different sessionId as foreign only when both ids are known", () => {
+    expect(isForeignSessionUpdate("child", "parent")).toBe(true);
+    expect(isForeignSessionUpdate("parent", "parent")).toBe(false);
+    expect(isForeignSessionUpdate(undefined, "parent")).toBe(false);
+    expect(isForeignSessionUpdate("child", undefined)).toBe(false);
+    expect(isForeignSessionUpdate("", "parent")).toBe(false);
+  });
+
+  it("maps renderable child routes and drops parent-chrome events", () => {
+    expect(childStreamFromRoute("c1", { event: "messageChunk", text: "hi" })).toEqual({
+      childSessionId: "c1", event: "messageChunk", text: "hi",
+    });
+    expect(childStreamFromRoute("c1", { event: "toolCall", payload: { toolCallId: "t" } })).toEqual({
+      childSessionId: "c1", event: "toolCall", call: { toolCallId: "t" },
+    });
+    expect(childStreamFromRoute("c1", { event: "modeChanged", modeId: "plan" })).toBeNull();
+  });
+
+  it("detects hideFromScrollback on the update object", () => {
+    expect(updateHidesFromScrollback({ _meta: { hideFromScrollback: true } })).toBe(true);
+    expect(updateHidesFromScrollback({ _meta: {} })).toBe(false);
+    expect(updateHidesFromScrollback(null)).toBe(false);
   });
 });
 

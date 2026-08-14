@@ -87,6 +87,11 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "openSettings":
       if (type === "openSettings" && raw.section !== undefined && !isString(raw.section)) return null;
       break;
+    case "openSettingsSurface":
+      if (raw.category !== undefined && !isString(raw.category)) return null;
+      break;
+    case "closeSettingsSurface":
+      break;
     case "runInstallCmd":
     case "installCodex":
     case "cancelCodexInstall":
@@ -102,6 +107,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "removeWorktree":
     case "remoteSignIn":
     case "remoteSignOut":
+    case "unlinkRemoteDevice":
       break;
     case "runGrokLogin":
     case "logout":
@@ -163,12 +169,19 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "setSummarizeRepliesAloud":
     case "setExpandCommandOutputs":
     case "setSteerByDefault":
+    case "setTelemetryEnabled":
     case "composerFocus":
       if (type === "composerFocus") {
         if (!isBoolean(raw.focused)) return null;
       } else if (!isBoolean(raw.value)) {
         return null;
       }
+      break;
+    case "setVoiceSendPhrase":
+      if (!isString(raw.value)) return null;
+      break;
+    case "setVoiceKeyterms":
+      if (!Array.isArray(raw.value) || raw.value.some((item) => !isString(item))) return null;
       break;
     case "setAppPurpose":
       if (raw.value !== "knowledge" && raw.value !== "coding") return null;

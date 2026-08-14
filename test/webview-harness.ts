@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const helperSrc = read("../media/webview-helpers.js");
+const settingsSrc = read("../media/settings.js");
 const filePanelSrc = read("../media/file-panel.js");
 const chatSrc = read("../media/chat.js");
 
@@ -102,6 +103,7 @@ export function bootWebview(opts: {
   if (opts.remote) (window as any).grokRemoteClient = true;
   if (opts.beforeScripts) opts.beforeScripts(window);
   (window as any).eval(helperSrc);
+  (window as any).eval(settingsSrc);
   // Relay chat.html loads this before chat.js; VS Code does not load it at all,
   // but evaluating an inert component global here lets one harness cover both.
   (window as any).eval(filePanelSrc);

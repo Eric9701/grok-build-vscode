@@ -1,5 +1,5 @@
 /**
- * Gear → Config & debug → Move view, against the REAL shipped chat.js.
+ * Settings → Advanced → Move view, against the REAL shipped chat.js.
  *
  * The section exists for exactly one situation: an editor that refuses to create
  * our container in the secondary side bar (Cursor reserves it for its own agent
@@ -36,12 +36,15 @@ function boot(capabilities: Caps, opts: { remote?: boolean } = {}): Harness {
   return h;
 }
 
-/** Open the gear and descend into Config & debug, where Move view lives. */
+/** Open Settings → Advanced, where Move view lives. */
 function openMoveView(h: Harness): void {
   const gear = h.doc.getElementById("gear-btn") || h.doc.getElementById("rail-gear-btn");
   click(h.window, gear!);
-  const configEntry = items(h).find((el) => /Config & debug/.test(text(el)));
-  if (configEntry) click(h.window, configEntry);
+  const settings = items(h).find((el) => /(^|\s)Settings$/.test(text(el)));
+  if (settings) click(h.window, settings);
+  const advanced = [...h.doc.querySelectorAll("#settings-overlay .settings-nav-item")]
+    .find((el) => (el.textContent || "").trim() === "Advanced");
+  if (advanced) click(h.window, advanced);
 }
 
 function items(h: Harness): HTMLElement[] {
@@ -55,6 +58,8 @@ function text(el: Element): string {
 /** Whether the Move view section rendered at all — the section heading, not just
  *  its items, so removing the heading and leaving a stray item still fails. */
 function hasMoveViewSection(h: Harness): boolean {
+  const overlay = h.doc.getElementById("settings-overlay");
+  if (overlay) return !!overlay.querySelector('[data-id="moveView"]');
   return (h.doc.getElementById("gear-popover")!.textContent || "").includes("Move view");
 }
 
@@ -97,10 +102,9 @@ describe("Move view menu (DOM)", () => {
     // side bar. Three labels for one outcome, two of them untrue.
     const h = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(h);
-    const items_ = items(h)
-      .map(text)
-      .filter((t) => /^(To |Move view)/.test(t));
-    expect(items_).toEqual(["Move view…"]);
+    const row = h.doc.querySelector('[data-id="moveView"] .settings-action');
+    expect(row?.textContent).toBe("Move view…");
+    expect(h.doc.querySelectorAll('[data-id="moveView"]').length).toBe(1);
   });
 
   it("sends the un-mappable destination, which is what reaches the host picker", () => {
@@ -109,17 +113,17 @@ describe("Move view menu (DOM)", () => {
     // container id of ours can address.
     const h = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(h);
-    const el = items(h).find((e) => text(e) === "Move view…");
-    click(h.window, el!);
+    const el = h.doc.querySelector('[data-id="moveView"] .settings-action') as HTMLElement;
+    click(h.window, el);
     expect(h.posted.filter((m) => m.type === "moveView")).toEqual([
       { type: "moveView", location: "pick" },
     ]);
   });
 
-  it("carries the right-edge glyph, the same one the destination used to have", () => {
+  it("keeps the Move view action reachable from Settings → Advanced", () => {
     const h = boot({ relocateView: true, secondarySideBar: false });
     openMoveView(h);
-    expect(iconEdge(h, "Move view…")).toBe("right");
+    expect(h.doc.querySelector('[data-id="moveView"]')?.textContent).toContain("Move view");
   });
 
   it("hides the section on a host with no view containers", () => {

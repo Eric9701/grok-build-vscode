@@ -90,8 +90,8 @@ describe("projects rail", () => {
   });
 
   it("mounts for a non-remote host when the rail element exists and repos arrives", () => {
-    // Desktop multi-folder: no IS_REMOTE, but host shipped the mount + catalog.
-    // Capability gate is mount + reposKnown — not the remote flag.
+    // A rail mount without body.desk still waits for `repos`. Desktop first-frame
+    // chrome is the body.desk test below.
     const { doc, window } = bootWebview({ beforeScripts: withRail });
     expect(rail(doc).hidden).toBe(true);
     dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
@@ -106,6 +106,22 @@ describe("projects rail", () => {
     // No catalog means no probe: an older host must not be sent a dead frame
     // before it has even shown that it knows about repos.
     expect(posted.filter((p) => p.type === "listRepoSessions")).toEqual([]);
+  });
+
+  it("paints desktop rail chrome from the first frame, before repos arrive", () => {
+    const { doc, window } = bootWebview({
+      beforeScripts: (w) => {
+        w.document.body.classList.add("desk");
+        withRail(w);
+      },
+    });
+    expect(doc.body.classList.contains("has-rail")).toBe(true);
+    expect(rail(doc).hidden).toBe(false);
+    expect(rail(doc).textContent).toContain("Loading…");
+
+    dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    expect(repoNames(doc)).toContain("alpha");
+    expect(rail(doc).hidden).toBe(false);
   });
 
   // By name, and nothing else. Recency was the first answer and the wrong one:
@@ -202,6 +218,11 @@ describe("projects rail", () => {
 
     dispatch(h.window, { type: "sessionDot", id: "g1", dot: "error" });
     expect((h.doc.querySelector('[data-session-dot="g1"]') as HTMLElement).dataset.dot).toBe("error");
+
+    dispatch(h.window, { type: "sessionDot", id: "g1", dot: "none" });
+    dispatch(h.window, { type: "sessionDot", id: "c1", dot: "none" });
+    expect([...h.doc.querySelectorAll(".rail-session .provider-status-badge")].map((el) => el.className))
+      .toEqual(["provider-status-badge dot-none", "provider-status-badge dot-none"]);
   });
 
   it("renders duplicate ids once and selects equal GPT names by id", () => {
@@ -2053,6 +2074,20 @@ describe("rail overflow menus toggle", () => {
     expect(src).toContain('"session-head"');
     expect(src).toContain('"session:"');
     expect(src).toContain('"repo:"');
+  });
+
+  it("caps rail popover max-width at 280px and never past the viewport", () => {
+    const h = boot();
+    const host = h.doc.querySelector(".rail-repo") as HTMLElement;
+    expect(host).toBeTruthy();
+
+    h.window.innerWidth = 1200;
+    const wide = openMenu(h.window, host);
+    expect(parseInt(wide.style.maxWidth, 10)).toBe(280);
+
+    h.window.innerWidth = 150;
+    const narrow = openMenu(h.window, h.doc.querySelector(".rail-repo") as HTMLElement);
+    expect(parseInt(narrow.style.maxWidth, 10)).toBe(134);
   });
   // --- new session must never be unreachable -------------------------------
 

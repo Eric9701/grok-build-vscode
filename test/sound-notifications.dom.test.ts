@@ -168,13 +168,15 @@ describe("AudioContext is not held open while silent (#107)", () => {
       beforeScripts: (w) => { created = installFakeAudio(w); },
     });
     click(window, doc.getElementById("gear-btn")!);
-    const cfg = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Config & debug"),
+    const settings = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
+      (el) => /(^|\s)Settings$/.test((el.textContent || "").replace(/\s+/g, " ").trim()),
     ) as HTMLElement;
-    click(window, cfg);
-    const toggle = [...doc.querySelectorAll("#gear-popover .toolbar-popover-item")].find(
-      (el) => el.textContent?.includes("Sound notifications"),
+    click(window, settings);
+    const notifications = [...doc.querySelectorAll("#settings-overlay .settings-nav-item")].find(
+      (el) => (el.textContent || "").trim() === "Notifications",
     ) as HTMLElement;
+    click(window, notifications);
+    const toggle = doc.querySelector('[data-id="soundNotifications"] .settings-switch') as HTMLElement;
     expect(toggle).toBeTruthy();
     expect(created).toHaveLength(0);
     click(window, toggle);

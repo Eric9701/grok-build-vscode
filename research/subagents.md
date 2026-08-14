@@ -52,13 +52,43 @@ carries the whole delegation:
    tool_calls, turns, duration_ms, worktree_path, resume_from_hint }`, and the
    `subagent_finished.output` above.
 
-**Child activity is never streamed on the parent connection.** The child is
-persisted twice: as a **top-level sibling session** under the same cwd folder
-(`summary.json` carries `session_kind: "subagent"`, `agent_name: <type>` — this
-is what the history filter keys on) and as `<parent>/subagents/<child-id>/meta.json`
-(compact stats record). A nested inspector would read the child session from
-disk (or `session/load` it via `resume_from_hint`); the live stream can't
-provide it. `spawn_subagent` goes through the normal `session/request_permission`
+**Composer-era (≤0.2.x) legacy:** child activity was never streamed on the
+parent connection. The child was persisted twice: as a **top-level sibling
+session** under the same cwd folder (`summary.json` carries `session_kind:
+"subagent"`, `agent_name: <type>` — this is what the history filter keys on)
+and as `<parent>/subagents/<child-id>/meta.json` (compact stats record). A
+nested inspector would have had to read the child session from disk (or
+`session/load` it via `resume_from_hint`). That shape is still what
+`test/fixtures/composer-subagent-session.jsonl` pins, and the host must keep
+tolerating it.
+
+**grok 1.0.3+ multiplexed stdout (captured 2026-08-14):** the CLI writes
+parent and every background child onto **one** ACP stdout. Every
+`session/update` carries `params.sessionId` — there is no ACP `messageId`.
+Content chunks interleave word-level across writers. `_x.ai/session_notification`
+delivers `subagent_spawned` on the **parent** sessionId *before* the child's
+first chunk (`subagent_id` == `child_session_id`, plus `parent_session_id` /
+`description` / `model`). Child `tool_call` / `tool_call_update` /
+`user_message_chunk` / thoughts / prose then arrive with the **child's**
+sessionId. `fs/*` + `terminal/*` server requests still use the parent
+sessionId. `subagent_finished` (flattened `output`, `will_wake`) also rides
+the parent sessionId. A trailing parent `user_message_chunk` may set
+`update._meta.hideFromScrollback: true` (system wake note) — do not render
+it. `_x.ai/session/update` did not appear on this capture.
+
+The host demuxes on `params.sessionId` (`parseAcpLine` keeps it;
+`isForeignSessionUpdate` / `handleSessionUpdate` emit additive `childStream`
+messages). The webview routes those into the existing subagent card keyed by
+`child_session_id` (exact `subagent_id` first, FIFO first-untagged only as
+fallback). A child tool event closes the open prose segment so later prose
+appends *after* the tool row. Word-level chunks coalesce to one markdown /
+thought paint per card per frame. A child chunk whose session matches no card
+is dropped from the parent transcript. Cold `session/load` still does not
+replay child transcripts into the parent — children remain sibling sessions
+on disk; cards rebuild from the lifecycle rail. Fixture:
+`test/fixtures/grok-subagent-mux.jsonl`.
+
+`spawn_subagent` goes through the normal `session/request_permission`
 flow, so in Agent mode the user first approves it like any other tool.
 
 Bundled-docs theory confirmed against **grok 0.2.33** (CLI docs at
@@ -145,8 +175,10 @@ Disable subagents with `GROK_SUBAGENTS=0` or `[subagents] enabled = false`.
 
 ## Still open
 
-The **nested inspector** is still TODO: correlate each child's tool calls under
-its parent card. On native-Windows the correlation key is the background
+Live child prose/tools/thoughts now render inside the parent card on grok
+1.0.3+ (`childStream`). A deeper nested inspector (the child's own session
+from disk, `session_kind:"subagent"` siblings + `<parent>/subagents/<id>/meta.json`)
+is still a non-goal. On native-Windows the legacy correlation key is the background
 `task_id` (`"t1"`) shared between the spawn `run_terminal_command` and the
 `get_command_or_subagent_output` polls — so a future inspector can group the
 poll output under the spawn card by `task_id`. Today's card is a flat labeled

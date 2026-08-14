@@ -326,6 +326,13 @@ export interface HostWebviewView {
   show?(preserveFocus?: boolean): void;
 }
 
+/** Editor-area webview tab (VS Code settings). Desktop does not implement this. */
+export interface HostEditorWebview extends HostDisposable {
+  readonly webview: HostWebview;
+  reveal(): void;
+  onDidDispose(listener: () => void): HostDisposable;
+}
+
 export interface HostSecrets {
   get(key: string): Thenable<string | undefined>;
   store(key: string, value: string): Thenable<void>;
@@ -792,6 +799,21 @@ export interface Host {
    * viewers). True only for the desktop app.
    */
   readonly canPreviewInApp: boolean;
+  /**
+   * Whether gear → Settings should open an editor-area webview tab.
+   * Wired into `initialState.capabilities.settingsEditor`. OPT-IN: true only
+   * for VS Code. Desktop and remotes keep the in-page overlay.
+   */
+  readonly canOpenSettingsEditor: boolean;
+  /**
+   * Open (or create) an editor-area webview tab. VS Code implements this;
+   * desktop returns undefined because settings live in the chat overlay there.
+   */
+  openEditorWebview(opts: {
+    viewType: string;
+    title: string;
+    localResourceRoots: Uri[];
+  }): HostEditorWebview | undefined;
 }
 
 /**

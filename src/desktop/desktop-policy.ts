@@ -586,7 +586,7 @@ function trySessionMediaOpen(
 }
 
 /**
- * Authorize `openUrl` / shell.openExternal targets: http(s) only.
+ * Authorize `openUrl` / shell.openExternal targets: http(s) and mailto.
  * Blocks file:, javascript:, vscode:, custom handlers, etc.
  */
 export function authorizeOpenUrl(url: string): DesktopAuthResult {
@@ -604,7 +604,7 @@ export function authorizeOpenUrl(url: string): DesktopAuthResult {
   } catch {
     return { ok: false, reason: "invalid url" };
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "mailto:") {
     return { ok: false, reason: `scheme "${parsed.protocol}" refused` };
   }
   return { ok: true };

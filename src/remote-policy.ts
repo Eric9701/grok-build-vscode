@@ -324,6 +324,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   showLogs: "host-local",
   toggleDevTools: "host-local",
   openSettings: "host-local",
+  openSettingsSurface: "host-local",
+  closeSettingsSurface: "host-local",
   moveView: "host-local",
   dropFile: "host-local",
   pickFile: "host-local",
@@ -341,6 +343,13 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setProcessingSound: "host-local",
   setReadRepliesAloud: "host-local",
   setSummarizeRepliesAloud: "host-local",
+  // Phone dictation is first-class: the send phrase and dictionary are the
+  // same prefs the remote STT path already consumes. They write host config
+  // (like setAppPurpose), not a desk-only account or file action.
+  setVoiceSendPhrase: "propose",
+  setVoiceKeyterms: "propose",
+  // Remote surface is read-only for telemetry; the desk owns the switch.
+  setTelemetryEnabled: "host-local",
   // Machine-global disclosure preference in ~/.grok/client-state — the web
   // client inherits and may set it (host-owned store, not VS Code settings).
   setAppPurpose: "propose",
@@ -356,6 +365,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // token — only the local webview may drive them
   remoteSignIn: "host-local",
   remoteSignOut: "host-local",
+  // Desktop gear unlink — native confirm then drop THIS machine's device token.
+  // A remote must never be able to unlink the desk it is driving.
+  unlinkRemoteDevice: "host-local",
   openRemotePortal: "host-local",
   // Desktop update notice click-through — a phone cannot update the desk.
   openUpdateRelease: "host-local",
@@ -474,6 +486,8 @@ export function repoScopeFor(
  *   make the browser preload video the relay never sends.
  * - `showInFolder` — would offer "Show in folder" on a phone for a folder that
  *   only exists on the desk machine.
+ * - `settingsEditor` — would post `openSettingsSurface` for a VS Code tab a
+ *   phone cannot open; remotes use the in-page overlay instead.
  *
  * A list rather than a destructure at the call site so there is ONE place to
  * look when a capability is added, and so the removal is testable without a
@@ -485,6 +499,7 @@ export const DESK_ONLY_CAPABILITIES = [
   "servesMediaRanges",
   "showInFolder",
   "previewInApp",
+  "settingsEditor",
 ] as const satisfies ReadonlyArray<keyof HostUiCapabilities>;
 
 /** `capabilities` as a remote may see them. Pure; see DESK_ONLY_CAPABILITIES. */
@@ -521,6 +536,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   showThinking: "mirror",
   appPurpose: "mirror",
   fontScale: "mirror",
+  telemetryEnabled: "mirror",
   grokUpdateStatus: "mirror",
   // Desk-only installer notice / restart — a remote has nothing useful to do with it.
   updateAvailable: "host-local",
@@ -578,6 +594,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   hostNotice: "mirror",
   xaiNotification: "mirror",
   subagentUpdate: "mirror",
+  childStream: "mirror",
   runProgress: "mirror",
   commandOutput: "mirror",
   expandCommandOutputs: "mirror",
@@ -640,6 +657,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   showThinking: "none",
   appPurpose: "none",
   fontScale: "none",
+  telemetryEnabled: "none",
   grokUpdateStatus: "none",
   updateAvailable: "none",
   updateReady: "none",
@@ -731,6 +749,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   sessionContext: "scope",
   xaiNotification: "scope",
   subagentUpdate: "scope",
+  childStream: "scope",
   runProgress: "scope",
   commandOutput: "scope",
   setAllToolDetails: "scope",

@@ -92,9 +92,14 @@ when more than one provider is connected. In mixed-provider history and rail row
 the status dot overlays the mark; single-provider and old-host rows retain the
 standalone dot structure.
 
-The shared `media/chat.js` gear renders Accounts as its own final section only on
-the desk (VS Code and the desktop projects rail); the browser receives view-only
-connection state and renders no account-management controls. Desk account actions
+The shared `media/chat.js` gear opens with **Use this app for**, then Remote
+Control (desk only; Continue remotely + Your account, or Sign in / How it works —
+unlink is Settings → Account only), then a single **Settings** entry. Versions,
+CLI update, bug/feature tracker links, contact, and the non-affiliation
+disclaimer live in Settings → About. Provider account rows appear on the desk gear only when no
+provider is connected or one needs login; healthy connected accounts live in
+Settings → Providers. The browser receives view-only connection state and
+renders no account-management controls in the gear. Desk account actions
 reuse the sidebar's provider login/logout messages. The exhaustive inbound policy
 classifies `logout`, `runGrokLogin`, and the durable `recheckConnection` as
 host-local, so a modified remote cannot clear credentials, connect an account, or
@@ -127,6 +132,8 @@ clientless focused session on the other provider is untouched.
 The desktop has no Codex-path settings row. Its JSON config store still reads
 `grok.codexCliPath`, and VS Code keeps the contributed setting, so file/settings
 overrides continue to participate in discovery without renderer plumbing.
+
+Settings live in one shared surface ([media/settings.js](../media/settings.js)): a view over existing prefs and actions, plus the voice send-phrase / dictionary setters (`setVoiceSendPhrase` / `setVoiceKeyterms`, classified `propose` so a phone can edit them). Desktop and the remote browser open it as a full-window overlay from gear → **Settings**. The overlay traps Tab, marks covered siblings `inert`, and restores the opener on Escape or the top-left **← Back to app** link (above search; inside the trap). VS Code opens the same component in an editor-area webview tab (`grok.settings`, also a view/title gear on `grok.chat`) and has no Back link — the tab closes natively. Categories are General (purpose + chat display + telemetry), Voice, Notifications, Providers, Account, Advanced, About — each nav row is icon + label. About is last and is the only place the non-affiliation disclaimer appears. Restore defaults only resets toggles/selects/sliders (`restoreChanges` — never free-text or list inputs such as the send phrase or dictionary), hides the button when nothing on the page would change, and expands an in-surface confirm that lists the rows and target values before acting. The tab snapshots on open and posts the same `set*` / `open*` messages, so a change cannot be lost or desync the sidebar. Host-local Advanced rows stay hidden on remote; Providers and Account render as read-only desk connection state plus a device-manager link. Telemetry is a desktop toggle, a VS Code settings-opener, and a remote read-only row using the privacy.md claims.
 
 The `postMessage` half (host↔webview) is a **typed contract**: [src/protocol.ts](../src/protocol.ts)
 is the single source of truth — `HostMsg` (host→webview) and `WebviewMsg` (webview→host)

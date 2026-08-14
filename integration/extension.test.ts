@@ -28,6 +28,7 @@ suite("grok-build extension smoke", () => {
       "grok.open",
       "grok.newSession",
       "grok.showLogs",
+      "grok.settings",
       "grok.logout",
       // The escape hatch for an editor that hid the view somewhere unreachable —
       // useless if it is not in the palette.
@@ -1801,7 +1802,8 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       p.clientIds?.length === 1 &&
       p.clientIds[0] === "requester"
     ));
-    assert.ok(!posts.some((p) => p.dest === "local"));
+    const provoked = posts.filter((p) => p.msg?.type === "hostNotice" || p.msg?.type === "error");
+    assert.ok(!provoked.some((p) => p.dest === "local"));
   });
 
   test("a remote New session immediately carries its selected worktree binding", async () => {

@@ -14,7 +14,10 @@ import {
   parseVoiceCommand,
   DEFAULT_SEND_PHRASE,
   buildSttKeyterms,
+  sanitizeVoiceSendPhrase,
+  sanitizeVoiceKeyterms,
   voiceSettingForRepo,
+  voiceSettingWriteTarget,
   buildSttStreamUrl,
   buildFfmpegStreamArgs,
   applySegment,
@@ -379,6 +382,20 @@ describe("buildSttStreamUrl", () => {
   });
 });
 
+describe("sanitizeVoiceSendPhrase / sanitizeVoiceKeyterms", () => {
+  it("trims the send phrase and treats non-strings as empty", () => {
+    expect(sanitizeVoiceSendPhrase("  grok send  ")).toBe("grok send");
+    expect(sanitizeVoiceSendPhrase("")).toBe("");
+    expect(sanitizeVoiceSendPhrase(12)).toBe("");
+  });
+
+  it("keeps unique trimmed terms, caps length, and drops junk", () => {
+    expect(sanitizeVoiceKeyterms([" useEffect ", "useEffect", "", "x".repeat(80), 4]))
+      .toEqual(["useEffect", "x".repeat(50)]);
+    expect(sanitizeVoiceKeyterms("nope")).toEqual([]);
+  });
+});
+
 describe("buildSttKeyterms", () => {
   it("puts the send phrase and Grok ahead of trimmed, deduplicated user terms", () => {
     expect(buildSttKeyterms(" grok send ", [" useEffect ", "Grok", "", "useEffect"]))
@@ -435,6 +452,27 @@ describe("voiceSettingForRepo", () => {
       false,
       [],
     )).toEqual(["default-term"]);
+  });
+});
+
+describe("voiceSettingWriteTarget", () => {
+  it("writes the workspace override when one exists", () => {
+    expect(voiceSettingWriteTarget({ workspaceValue: "ok send" }, true)).toBe("workspace");
+  });
+
+  it("writes the folder override when one exists", () => {
+    expect(voiceSettingWriteTarget(
+      { workspaceFolderValue: "folder", workspaceValue: "ws" },
+      true,
+    )).toBe("workspaceFolder");
+  });
+
+  it("writes global when no workspace override exists", () => {
+    expect(voiceSettingWriteTarget({ globalValue: "grok send" }, true)).toBe("global");
+  });
+
+  it("writes global for a repo outside the workspace even if the window has a workspace value", () => {
+    expect(voiceSettingWriteTarget({ workspaceValue: "ws", globalValue: "user" }, false)).toBe("global");
   });
 });
 

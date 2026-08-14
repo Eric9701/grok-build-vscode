@@ -75,6 +75,10 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.setShowThinking).toBe("host-local");
     expect(INBOUND_DISPOSITION.setReadRepliesAloud).toBe("host-local");
     expect(INBOUND_DISPOSITION.setSummarizeRepliesAloud).toBe("host-local");
+    expect(INBOUND_DISPOSITION.setVoiceSendPhrase).toBe("propose");
+    expect(INBOUND_DISPOSITION.setVoiceKeyterms).toBe("propose");
+    expect(INBOUND_DISPOSITION.setTelemetryEnabled).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.telemetryEnabled).toBe("mirror");
     expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
     expect(INBOUND_DISPOSITION.requestImageFull).toBe("propose");
     // Worktree create/apply/remove are host-local, and this is load-bearing:
@@ -90,6 +94,7 @@ describe("remote-policy classification tables", () => {
     // relay account actions manage THIS machine's device token
     expect(INBOUND_DISPOSITION.remoteSignIn).toBe("host-local");
     expect(INBOUND_DISPOSITION.remoteSignOut).toBe("host-local");
+    expect(INBOUND_DISPOSITION.unlinkRemoteDevice).toBe("host-local");
     expect(INBOUND_DISPOSITION.openRemotePortal).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.remoteStatus).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.readRepliesAloud).toBe("host-local");
@@ -532,6 +537,13 @@ describe("allowFromRemote tier gating", () => {
       for (const tier of ["read-only", "propose", "full"] as const) {
         expect(allowFromRemote(type, tier)).toBe(false);
       }
+    }
+  });
+
+  it("refuses a remote unlink of this machine at every tier", () => {
+    expect(INBOUND_DISPOSITION.unlinkRemoteDevice).toBe("host-local");
+    for (const tier of ["read-only", "propose", "full"] as const) {
+      expect(allowFromRemote("unlinkRemoteDevice", tier)).toBe(false);
     }
   });
 
@@ -979,6 +991,7 @@ describe("capabilities a remote may see", () => {
       showOutput: true,
       toggleDevTools: true,
       previewInApp: true,
+      settingsEditor: true,
     } as unknown as Parameters<typeof capabilitiesForRemote>[0];
 
     const seen = capabilitiesForRemote(all) as Record<string, unknown>;

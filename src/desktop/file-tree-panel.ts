@@ -56,37 +56,43 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
     }
 
     try { window.__grokDeskFilePanel?.destroy?.(); } catch (_) { /* reload */ }
-    const previousShell = document.getElementById("desk-ft-shell");
-    if (previousShell) {
-      const previousChat = previousShell.querySelector(".desk-ft-chat");
-      const previousHost = previousShell.parentElement || document.body;
-      if (previousChat) {
-        while (previousChat.firstChild) previousHost.insertBefore(previousChat.firstChild, previousShell);
-      }
-      previousShell.remove();
-    }
     document.getElementById("desk-ft-top-sep")?.remove();
     document.body.classList.remove("desk-ft-closed", "desk-ft-resizing");
 
     const layoutHost = document.querySelector(".app-main") || document.body;
-    const shell = document.createElement("div");
-    shell.id = "desk-ft-shell";
-    shell.className = "desk-ft-shell";
-    const chat = document.createElement("div");
-    chat.className = "desk-ft-chat";
-    for (const child of Array.from(layoutHost.childNodes)) {
-      if (child.nodeType !== 1) continue;
-      if (child.tagName === "SCRIPT" || child.id === "projects-rail" || child.id === "desk-ft-shell") continue;
-      if (child.classList && child.classList.contains("top-bar")) continue;
-      chat.appendChild(child);
+    let shell = document.getElementById("desk-ft-shell");
+    let chat = shell && shell.querySelector(".desk-ft-chat");
+    // getHtml already ships the shell so the first frame is rail+files chrome.
+    // Reuse it — unwrapping and rebuilding after paint is the boot flash.
+    if (!shell || !chat) {
+      if (shell) {
+        const previousChat = shell.querySelector(".desk-ft-chat");
+        const previousHost = shell.parentElement || document.body;
+        if (previousChat) {
+          while (previousChat.firstChild) previousHost.insertBefore(previousChat.firstChild, shell);
+        }
+        shell.remove();
+      }
+      shell = document.createElement("div");
+      shell.id = "desk-ft-shell";
+      shell.className = "desk-ft-shell";
+      chat = document.createElement("div");
+      chat.className = "desk-ft-chat";
+      for (const child of Array.from(layoutHost.childNodes)) {
+        if (child.nodeType !== 1) continue;
+        if (child.tagName === "SCRIPT" || child.id === "projects-rail" || child.id === "desk-ft-shell") continue;
+        if (child.classList && child.classList.contains("top-bar")) continue;
+        chat.appendChild(child);
+      }
+      shell.appendChild(chat);
+      const insertAt = layoutHost.querySelector(":scope > .top-bar") || layoutHost.querySelector(".top-bar");
+      if (insertAt && insertAt.parentElement === layoutHost && insertAt.nextSibling) {
+        layoutHost.insertBefore(shell, insertAt.nextSibling);
+      } else {
+        layoutHost.appendChild(shell);
+      }
     }
-    shell.appendChild(chat);
     const topBar = layoutHost.querySelector(":scope > .top-bar") || layoutHost.querySelector(".top-bar");
-    if (topBar && topBar.parentElement === layoutHost && topBar.nextSibling) {
-      layoutHost.insertBefore(shell, topBar.nextSibling);
-    } else {
-      layoutHost.appendChild(shell);
-    }
     document.body.classList.add("desk-with-ft");
 
     let separator = document.getElementById("desk-ft-top-sep");

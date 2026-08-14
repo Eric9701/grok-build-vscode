@@ -9,6 +9,11 @@ import {
   buildUplinkUrl,
   httpBaseFromRelayUrl,
   deviceDisplayName,
+  deviceOsLabel,
+  devicePlatformCode,
+  deviceClientLabel,
+  sanitizeRelayDeviceField,
+  buildLinkStartBody,
   nextBackoffMs,
   INITIAL_BACKOFF_MS,
   MAX_BACKOFF_MS,
@@ -18,6 +23,33 @@ describe("uplink frame builders", () => {
   it("hello carries the protocol version and optional device name", () => {
     expect(helloFrame("dev-box")).toEqual({ t: "hello", proto: REMOTE_PROTO_VERSION, device: { name: "dev-box" } });
     expect(helloFrame()).toEqual({ t: "hello", proto: REMOTE_PROTO_VERSION });
+  });
+
+  it("hello carries the client object with the same mapped values as link/start", () => {
+    const src = {
+      hostname: "Dell",
+      platform: "win32",
+      release: "10.0.26200",
+      installId: "abc",
+      appName: "Visual Studio Code",
+      isDesktop: false,
+    };
+    const body = buildLinkStartBody(src);
+    expect(helloFrame("Dell (Windows 11)", src)).toEqual({
+      t: "hello",
+      proto: REMOTE_PROTO_VERSION,
+      device: { name: "Dell (Windows 11)" },
+      client: {
+        clientLabel: body.clientLabel,
+        platform: body.platform,
+        osLabel: body.osLabel,
+      },
+    });
+    expect(helloFrame("Dell (Windows 11)", src).client).toEqual({
+      clientLabel: "VS Code extension",
+      platform: "win",
+      osLabel: "Windows 11",
+    });
   });
 
   it("host/snapshot wrap protocol messages verbatim", () => {
@@ -358,6 +390,77 @@ describe("deviceDisplayName", () => {
 
   it("falls back to just the OS label when the hostname is empty", () => {
     expect(deviceDisplayName("", "win32", "10.0.26200")).toBe("Windows 11");
+  });
+});
+
+describe("richer device-row link/start fields", () => {
+  it("reuses the same OS string the legacy name already embeds", () => {
+    expect(deviceOsLabel("win32", "10.0.26200")).toBe("Windows 11");
+    expect(deviceOsLabel("win32", "10.0.19045")).toBe("Windows 10");
+    expect(deviceOsLabel("darwin", "23.5.0")).toBe("macOS");
+    expect(deviceOsLabel("linux", "6.1.0")).toBe("Linux");
+    expect(deviceDisplayName("Dell", "win32", "10.0.26200")).toBe("Dell (Windows 11)");
+  });
+
+  it("maps process.platform to win|mac|linux", () => {
+    expect(devicePlatformCode("win32")).toBe("win");
+    expect(devicePlatformCode("darwin")).toBe("mac");
+    expect(devicePlatformCode("linux")).toBe("linux");
+    expect(devicePlatformCode("freebsd")).toBeUndefined();
+  });
+
+  it("labels desktop as Desktop app and maps editor appName", () => {
+    expect(deviceClientLabel("Grok Build Desktop", true)).toBe("Desktop app");
+    expect(deviceClientLabel("Visual Studio Code", false)).toBe("VS Code extension");
+    expect(deviceClientLabel("Cursor", false)).toBe("Cursor extension");
+    expect(deviceClientLabel("Antigravity", false)).toBe("Antigravity extension");
+    expect(deviceClientLabel("VSCodium", false)).toBe("VSCodium extension");
+  });
+
+  it("keeps the legacy name and adds optional clientLabel/platform/osLabel", () => {
+    expect(buildLinkStartBody({
+      hostname: "Dell",
+      platform: "win32",
+      release: "10.0.26200",
+      installId: "abc",
+      appName: "Visual Studio Code",
+      isDesktop: false,
+    })).toEqual({
+      name: "Dell (Windows 11)",
+      installId: "abc",
+      clientLabel: "VS Code extension",
+      platform: "win",
+      osLabel: "Windows 11",
+    });
+    expect(buildLinkStartBody({
+      hostname: "Mac",
+      platform: "darwin",
+      release: "23.5.0",
+      installId: "abc:desktop",
+      appName: "Grok Build Desktop",
+      isDesktop: true,
+    })).toEqual({
+      name: "Mac (macOS)",
+      installId: "abc:desktop",
+      clientLabel: "Desktop app",
+      platform: "mac",
+      osLabel: "macOS",
+    });
+  });
+
+  it("sanitizes optional fields to trim / max-64 / no control chars", () => {
+    expect(sanitizeRelayDeviceField("  VS Code extension\u0000  ")).toBe("VS Code extension");
+    expect(sanitizeRelayDeviceField("x".repeat(80))).toHaveLength(64);
+    const body = buildLinkStartBody({
+      hostname: "box",
+      platform: "linux",
+      release: "6.1.0",
+      installId: "id",
+      appName: `  ${"N".repeat(80)}\n`,
+      isDesktop: false,
+    });
+    expect(body.clientLabel!.length).toBeLessThanOrEqual(64);
+    expect(body.clientLabel).not.toMatch(/[\u0000-\u001F]/);
   });
 });
 

@@ -1249,6 +1249,11 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     canShowInFolder: true,
     // No editor tabs — View all / proposed diffs use the in-app overlay.
     canPreviewInApp: true,
+    // Settings stay in the chat overlay — there is no editor-area tab here.
+    canOpenSettingsEditor: false,
+    openEditorWebview() {
+      return undefined;
+    },
   };
 }
 
