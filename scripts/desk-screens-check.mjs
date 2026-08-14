@@ -246,6 +246,24 @@ try {
     if (opts.expectChip) {
       assert.equal(strip.chip, true, `${where}: expected the overflow chip — ${JSON.stringify(strip)}`);
     }
+    // The maximize control may never vanish or be overlapped, in ANY state —
+    // pinned after the owner asked whether right-alignment had eaten it.
+    const maxi = await page.evaluate(() => {
+      const btn = document.querySelector(".gfp-maximize");
+      const header = document.querySelector(".gfp-header");
+      if (!btn || btn.hidden || !header) return { present: false };
+      const b = btn.getBoundingClientRect();
+      const h = header.getBoundingClientRect();
+      return {
+        present: b.width >= 16 && b.height >= 16,
+        inside: b.left >= h.left - 1 && b.right <= h.right + 1,
+        clearOfTabs: ![...document.querySelectorAll(".gfp-tab:not([hidden]), .gfp-overflow-chip")]
+          .some((t) => { const r = t.getBoundingClientRect(); return r.right > b.left + 1 && r.left < b.right - 1; }),
+      };
+    });
+    assert.ok(maxi.present, `${where}: maximize control missing or unsized`);
+    assert.ok(maxi.inside, `${where}: maximize control clipped outside the strip`);
+    assert.ok(maxi.clearOfTabs, `${where}: a tab or the chip overlaps the maximize control`);
     return strip;
   };
 

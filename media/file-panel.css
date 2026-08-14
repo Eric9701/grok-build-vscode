@@ -326,21 +326,26 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   .gfp-overflow-chip { min-width: 40px; }
 }
 
+/* The chip IS a tab (owner): same cell chrome as an idle tab — full height,
+   both edges, idle-tab tone, hover — holding "…" where a name would sit. */
 .gfp-overflow-chip {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  padding: 0 8px;
+  align-self: stretch;
+  min-width: 40px;
+  padding: 0 10px;
   border: 0;
   border-left: 1px solid var(--gfp-border);
+  border-right: 1px solid var(--gfp-border);
   background: transparent;
   color: var(--vscode-descriptionForeground, #999);
   font: inherit;
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 600;
   line-height: 1;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   cursor: pointer;
 }
 .gfp-overflow-chip:hover { background: var(--gfp-hover); color: inherit; }
