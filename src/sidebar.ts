@@ -6251,6 +6251,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const env = session.provider === "grok" ? this.buildEnv(cwd) : { ...process.env };
     const effortStr = cfg.get<string>("defaultEffort", "");
     const effort = effortStr ? (effortStr as EffortLevel) : undefined;
+    // Transient spawn/init after an update can throw once; retry the plain
+    // failure only (auth and the Windows stdio pin keep their own paths).
+    const startSpawnAttempts = 3;
+    const startSpawnBackoffMs = [300, 900] as const;
+    const createBoundClient = (): AcpClient => {
     const client = new AcpClient({
       cliPath,
       cwd,
@@ -6673,6 +6678,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     });
     client.on("exit", (code) => {
       if (gen !== session.gen) return; // suppress exit events from disposed/replaced clients
+      // Startup window: teardown owns the user-facing outcome — no banner
+      // (this is the empty-session spawn window the bounded retry exists
+      // for), and no detachClient, whose gen bump would abort that retry.
+      // But a death here is not always followed by a catch: the best-effort
+      // setMode during resume swallows its error, so a client that died
+      // there used to finish startup marked live and route every send into
+      // a dead pipe (review find, 2026-08-15). Drop the attachment only;
+      // the next send respawns. The equality check keeps a late exit from a
+      // replaced attempt's client away from the current attempt's pipe.
+      if (session.priming) {
+        if (session.client === client) {
+          session.client = undefined;
+          this.pool.delete(session);
+        }
+        return;
+      }
       this.emit(session, { type: "exit", code });
       if (session.queuedSends.length) {
         session.queuedSendDispatch = undefined;
@@ -6695,7 +6716,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       void client.dispose();
     });
     client.on("stderr", (text: string) => this.host.append(text));
+    return client;
+    };
 
+    for (let attempt = 1; attempt <= startSpawnAttempts; attempt++) {
+      if (gen !== session.gen) return undefined;
+      const client = createBoundClient();
+      // Once the resume branch starts emitting (queued plan/permission cards,
+      // then streamed history), a retry would replay onto the partial
+      // transcript and duplicate every message (review find, 2026-08-15) —
+      // so a failure past this flag surfaces immediately, like before the
+      // retry existed. The fresh-session path stays retryable end to end.
+      let replayBegan = false;
     try {
       const spawnAt = clock.now();
       await client.start();
@@ -6703,6 +6735,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (gen !== session.gen) { client.dispose(); return undefined; }
       const defaultModel = this.providerDefaultForProject(cwd, session.provider) ?? "";
       if (resumeId) {
+        replayBegan = true;
         // Queue any saved plans BEFORE replay starts so the webview can interleave
         // them inline with user messages as they replay (instead of dumping all
         // cards at the bottom).
@@ -6845,6 +6878,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
       }
 
+      // A spontaneous death during startup detaches the pipe (see the exit
+      // handler) without failing any awaited step — the best-effort setMode
+      // swallows its error. Returning here would hand callers a silent
+      // undefined, which recoverAuthAndResend and the send paths read as
+      // "failure already surfaced" (review find, 2026-08-15: a swallowed
+      // death consumed an auth-recovery resend with no error anywhere).
+      // Throw into the classifier instead: the retry budget owns transient
+      // startup deaths, and the final failure surfaces like any other.
+      if (session.client !== client) throw new Error("the provider exited during startup");
       // Session is live — unlock the composer and flush anything typed during
       // the startup window (#37).
       session.priming = false;
@@ -6858,18 +6900,40 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // it, before the queue flushes — the composer is where it was typed.
       this.restorePersistedDraft(session);
       if (gen === session.gen) void this.maybeFlushQueuedSends(session);
+      // A spontaneous death during startup detaches the pipe (see the exit
+      // handler) without failing any awaited step. Returning the dead client
+      // would hand the caller a dead pipe; report "no client" and let the
+      // next send respawn.
+      if (session.client !== client) { this.pool.delete(session); return undefined; }
+      return client;
     } catch (err) {
       if (gen !== session.gen) { client.dispose(); return undefined; }
       const msg = (err as any).message ?? String(err);
+      // Decide the branch first: only the plain-failure path retries. Auth
+      // must surface immediately; the Windows stdio pin has its own recovery.
+      const credentialFailure =
+        (client.provider === "codex" && client.isCredentialError(err)) ||
+        /auth|unauthor|401|api[_\s-]?key|credential|sign.?in/i.test(msg);
+      const stdioRegression =
+        session.provider === "grok" &&
+        process.platform === "win32" &&
+        /timed out: (initialize|session\/(new|load))|exited \(code null\)/i.test(msg);
+      const userFacing = credentialFailure || stdioRegression || replayBegan || attempt >= startSpawnAttempts;
+      client.removeAllListeners("exit");
       client.dispose();
       session.client = undefined;
+      if (!userFacing) {
+        await new Promise<void>((resolve) => setTimeout(resolve, startSpawnBackoffMs[attempt - 1]));
+        if (gen !== session.gen) return undefined;
+        continue;
+      }
       this.pool.delete(session);
       session.priming = false;
       this.emit(session, { type: "setBusy", value: false });
       // No `403`/`forbidden` here: the CLI deliberately does NOT map 403 to an
       // auth failure (entitlement/policy, which sign-in can't fix — #58); a
       // startup error carrying that wording surfaces as a plain error below.
-      if ((client.provider === "codex" && client.isCredentialError(err)) || /auth|unauthor|401|api[_\s-]?key|credential|sign.?in/i.test(msg)) {
+      if (credentialFailure) {
         // The onboarding overlay only reaches whoever is looking at THIS
         // session. The account-level flag is what tells the gear and the model
         // picker, on every view, that signing in is the action — strictly
@@ -6879,7 +6943,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.setProviderNeedsLogin(session.provider, true);
         }
         this.emit(session, { type: "onboarding", state: providerLoginState(session.provider) });
-      } else if (session.provider === "grok" && process.platform === "win32" && /timed out: (initialize|session\/(new|load))|exited \(code null\)/i.test(msg)) {
+      } else if (stdioRegression) {
         // The signature of the Windows stdio regression (issue #22): a startup request
         // hangs because the agent won't read stdin until EOF. It spanned 0.2.61–0.2.70
         // (`initialize` on 0.2.61–0.2.64, `session/new` on 0.2.67/0.2.69/0.2.70) and was
@@ -6890,11 +6954,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // once. A target-or-older build cannot loop through this recovery; a
         // later manual upgrade above the target re-arms it.
         const version = await this.readGrokVersion(cliPath);
+        if (gen !== session.gen) return undefined;
         if (!this.reactiveDowngradeInFlight && shouldReactivelyDowngrade(version, process.platform)) {
           this.reactiveDowngradeInFlight = true;
           try {
             const detected = parseGrokVersion(version)?.join(".") ?? version;
             if (await this.downgradeBrokenCli(cliPath, detected, "reactive")) {
+              if (gen !== session.gen) return undefined;
               return await this.startSession(resumeId, session); // retry the spawn on the supported build
             }
           } finally {
@@ -6915,7 +6981,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       return undefined;
     }
-    return client;
+    }
+    return undefined;
   }
 
   private remoteSessionFor(clientId: string): Session {

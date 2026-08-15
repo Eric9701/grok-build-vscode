@@ -12466,7 +12466,14 @@
       case "exit":
         stopProcessingCue();
         hideGrokking();
-        addError(`Grok exited (code ${msg.code}). Send a message to restart this session, or start a new one.`);
+        // A clean exit on an empty view is not an error: the composer's own
+        // "send to start" affordance already says what to do, and this event
+        // replays into freshly-refreshed empty sessions where it describes
+        // nothing real. welcomeVisible is the empty-transcript flag — it stays
+        // true until any conversation content (or an error) calls clearWelcome.
+        if (!(msg.code === 0 && state.welcomeVisible)) {
+          addError(`Grok exited (code ${msg.code}). Send a message to restart this session, or start a new one.`);
+        }
         // A process that dies takes the host's send queue with it: that text
         // never reached Grok, and the host empties the queue in the very next
         // breath after this message — so this is the last moment it exists

@@ -86,7 +86,10 @@ describe("consent gate wiring", () => {
     const src = sidebarSrc();
     const start = src.indexOf("private async startSession(resumeId");
     expect(start).toBeGreaterThan(0);
-    const body = src.slice(start, start + 3000);
+    // Wide enough to reach ++session.gen past startSession's early-return
+    // blocks as they grow; the assertions below still pin the ordering, the
+    // slice only bounds the search.
+    const body = src.slice(start, start + 6000);
     const asked = body.indexOf("confirmRepoForcedAutoApprove");
     expect(asked).toBeGreaterThan(0);
     // Before ++session.gen — nothing is mutated yet, so declining is a clean
