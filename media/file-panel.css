@@ -380,6 +380,11 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   cursor: pointer;
 }
 .gfp-tab-close { width: 22px; height: 22px; }
+/* The panel's ✕ pins to the strip's RIGHT edge even with no files open (the
+   empty tabs container is display:none and grows nothing). The maximize
+   control carries the same auto margin; they are never both visible, so the
+   free space always goes to whichever control is present. */
+.gfp-close { margin-left: auto; align-self: center; margin-right: 4px; }
 .gfp-tab-close:hover,
 .gfp-close:hover,
 .gfp-icon-button:hover,
