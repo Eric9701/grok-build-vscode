@@ -924,6 +924,10 @@ body.vscode-light {
   .gfp-row { min-height: 36px; }
   /* iOS Safari force-zooms the page when a focused input is under 16px. */
   .gfp-filter { font-size: 16px; }
+  /* The 36px segments fill the toolbar's 36px min-height edge to edge on
+     touch; give the row air. Desktop keeps 2px — its 28px controls already
+     breathe inside the same min-height. */
+  .gfp-viewer-head { padding-block: 6px; }
   .gfp-close,
   .gfp-icon-button,
   .gfp-toggle,
