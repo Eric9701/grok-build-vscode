@@ -145,7 +145,9 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   flex: 0 0 auto;
   align-items: stretch;
   min-width: 0;
-  min-height: 38px;
+  /* 44px everywhere - small tap targets hurt, not only on phones. The
+     overlay bumps this to match the central header's scale (asserted). */
+  min-height: 44px;
   overflow: hidden;
   /* The strip is its own surface so the ACTIVE tab can read as attached to
      the content below by wearing the content's background (see .gfp-tab-active).
@@ -222,7 +224,7 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   flex: 0 0 auto;
   max-width: none;
   min-width: 24px;
-  padding-inline: 8px;
+  padding-inline: 12px;
 }
 .gfp-title.gfp-title-icon-only .gfp-title-label { display: none; }
 /* Tree showing: the folder is the selected "tab" — content background, no
@@ -269,7 +271,7 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
      floor was the old scroll model's way to stop shrinking — it forced the
      strip to overflow. Icon and close are flex-none so they survive first. */
   max-width: 170px;
-  padding: 0 3px 0 8px;
+  padding: 0 6px 0 10px;
   border-left: 1px solid var(--gfp-border);
   color: var(--vscode-descriptionForeground, #999);
   cursor: pointer;
@@ -314,7 +316,7 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
 .gfp-tab-icon-only {
   flex: 0 0 auto;
   max-width: none;
-  padding: 0 6px;
+  padding: 0 8px;
 }
 .gfp-tab-icon-only .gfp-tab-name { display: none; }
 .gfp-tab-icon-only .gfp-tab-dirty:empty { display: none; }
@@ -384,7 +386,7 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
    empty tabs container is display:none and grows nothing). The maximize
    control carries the same auto margin; they are never both visible, so the
    free space always goes to whichever control is present. */
-.gfp-close { margin-left: auto; align-self: center; margin-right: 4px; }
+.gfp-close { margin-left: auto; align-self: center; margin-right: 8px; }
 .gfp-tab-close:hover,
 .gfp-close:hover,
 .gfp-icon-button:hover,
@@ -829,6 +831,7 @@ body.vscode-light {
     /* Above the rail (1100), so whichever was opened last is the one you see. */
     z-index: 1200;
   }
+  .gfp-panel.gfp-overlay .gfp-header { min-height: 51px; }
   /* The per-tab X used to be hidden here ("you leave the panel, you don't
      close files") — that rationale died with the overflow strip: only the
      ACTIVE tab carries an X now, so there is exactly one, and the owner's

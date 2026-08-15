@@ -5692,6 +5692,12 @@
   function renderSessionNameRepo() {
     const el = $("session-name-repo");
     if (!el) return;
+    // Owner decision 2026-08-15: the header shows JUST the conversation name,
+    // everywhere — same as VS Code with the current project. The rail groups
+    // by project and the header tooltip still carries the full path, so the
+    // second line repeated what the surroundings already say.
+    el.hidden = true;
+    if (el.hidden) return;
     // The `sessionName` frame carries the conversation's own cwd, so prefer it:
     // a conversation resumed from another project may not be in any list this
     // webview holds, and `state.cwd` is the host's, not the conversation's.
@@ -5734,11 +5740,10 @@
     titleEl.title = name;
 
     const cwd = record?.cwd || state.selectedRepoCwd;
-    // Same worktree rule as the desk header: label the owning project, not the
-    // isolated checkout the conversation happens to run in.
-    const headProjectCwd = (activeSessionName()?.repoCwd) || cwd;
-    subEl.textContent = headProjectCwd ? railRepoLabelFor(headProjectCwd) : "";
-    subEl.hidden = !cwd;
+    // Owner decision 2026-08-15: no project line under the name, anywhere —
+    // the rail says the project, the header tooltip keeps the full path.
+    subEl.textContent = "";
+    subEl.hidden = true;
     // The name has its own tooltip on the title element; leave the header's to
     // the full path, which the truncated repo line below cannot show.
     head.title = cwd || "";

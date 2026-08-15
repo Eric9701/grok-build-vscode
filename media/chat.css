@@ -4372,3 +4372,14 @@ body.vscode-light .preview-overlay {
     min-height: 36px;
   }
 }
+
+
+/* Mobile overlay: the rail's top row rides the central header's scale — the
+   8px margins read cramped beside the chat's own 51px header row (owner,
+   2026-08-15; the relay's phone gate asserts the parity). Lives HERE, not in
+   projects-rail.css: that file styles the VS Code sidebar view, whose webview
+   viewport is always narrow, so a max-width media query would always fire. */
+@media (max-width: 899px) {
+  .rail-search-wrap { margin: 12px 12px; }
+  .rail-search { padding-top: 9px; padding-bottom: 9px; }
+}

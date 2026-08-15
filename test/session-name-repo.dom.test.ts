@@ -39,51 +39,46 @@ function nameSession(h: Harness, cwd: string, name = "Some conversation") {
 const tag = (h: Harness) => h.doc.getElementById("session-name-repo") as HTMLElement;
 
 describe("session name project label", () => {
-  it("names the conversation's own project, not the host's", () => {
+  // Owner decision 2026-08-15: the header shows JUST the conversation name,
+  // everywhere — the rail groups by project and the tooltip keeps the path,
+  // so the second line repeated what the surroundings already say. These pins
+  // flipped from "shows when elsewhere" to "never shows".
+  it("never renders, even for a conversation from another project", () => {
     const h = bootWebview();
     sendRepos(h);
-    // Host is in /work/app; the open conversation belongs to the other project.
     nameSession(h, "/work/relay");
-    expect(tag(h).hidden).toBe(false);
-    expect(tag(h).textContent).toBe("relay");
-    expect(tag(h).title).toBe("/work/relay");
+    expect(tag(h).hidden).toBe(true);
   });
 
-  it("uses the catalog label, which is the only thing that separates same-named leaves", () => {
+  it("stays hidden when same-named leaves would need the catalog label", () => {
     const h = bootWebview();
     sendRepos(h, [
       { cwd: "/a/site", label: "acme/site", available: true, pinned: false, updatedAt: 2 },
       { cwd: "/b/site", label: "beta/site", available: true, pinned: false, updatedAt: 1 },
     ]);
     nameSession(h, "/b/site");
-    expect(tag(h).textContent).toBe("beta/site");
+    expect(tag(h).hidden).toBe(true);
   });
 
   it("stays quiet when the conversation is in the folder VS Code has open", () => {
-    // There the window title already says it, and the line is noise. The label
-    // exists to say "this conversation is somewhere else".
     const h = bootWebview();
     sendRepos(h, REPOS, "/work/app");
     nameSession(h, "/work/app");
     expect(tag(h).hidden).toBe(true);
   });
 
-  it("appears once the catalog says which folder the editor has open", () => {
-    // The catalog usually lands after the name; the header has to catch up.
+  it("stays hidden after the catalog lands", () => {
     const h = bootWebview();
     nameSession(h, "/work/relay");
     sendRepos(h, REPOS, "/work/app");
-    expect(tag(h).hidden).toBe(false);
-    expect(tag(h).textContent).toBe("relay");
+    expect(tag(h).hidden).toBe(true);
   });
 
-  it("stays put while the name is being edited", () => {
-    // It is a second ROW now rather than something competing with the rename
-    // input for width, so hiding it would only make the chip jump.
+  it("stays hidden while the name is being edited", () => {
     const h = bootWebview();
     sendRepos(h, REPOS, "/work/app");
     nameSession(h, "/work/relay");
-    expect(tag(h).hidden).toBe(false);
+    expect(tag(h).hidden).toBe(true);
 
     const label = h.doc.getElementById("session-name-label")!;
     label.dispatchEvent(new (h.window as never as { MouseEvent: typeof MouseEvent }).MouseEvent(
@@ -91,8 +86,7 @@ describe("session name project label", () => {
       { bubbles: true, cancelable: true },
     ));
     expect(h.doc.querySelector(".session-name-input")).toBeTruthy();
-    expect(tag(h).hidden).toBe(false);
-    expect(tag(h).textContent).toBe("relay");
+    expect(tag(h).hidden).toBe(true);
   });
 
   it("puts the rename pencil beside the NAME, not under the project line", () => {
@@ -159,7 +153,8 @@ describe("session name project label", () => {
     const h = bootWebview({ remote: true });
     sendRepos(h);
     nameSession(h, "/work/relay");
-    // #session-head-sub is the remote surface for this; the chip is desk-only.
+    // #session-head-sub was the remote surface for this; both it and the chip
+    // are permanently hidden since 2026-08-15 (header shows just the name).
     expect(tag(h).hidden).toBe(true);
   });
 });
