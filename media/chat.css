@@ -658,6 +658,12 @@ body.rail-resizing * {
 .rail-empty-action:hover { text-decoration: underline; }
 .rail-empty-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .rail-action-btn svg { width: 13px; height: 13px; }
+/* The same ellipsis button rides the HEADER slots, where 13px read tiny
+   beside the 20px bar icons (owner audit, 2026-08-15: 13/16/20 mix in one
+   row). Header instances take the bar scale; rail rows keep 13. */
+#session-head .rail-action-btn svg,
+#session-head-actions .rail-action-btn svg,
+#vscode-session-actions .rail-action-btn svg { width: 20px; height: 20px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; }
 /* Session indent: no left pad on the list; rows and Show more share --rail-indent. */
 /* 2px between conversations, the same value the VS Code rail uses. It was 1px

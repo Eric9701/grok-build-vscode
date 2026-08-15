@@ -616,8 +616,11 @@
           : 0;
         const closeEl = el.querySelector(".gfp-tab-close");
         const closeW = closeEl && !closeEl.hidden ? Math.max(closeEl.getBoundingClientRect().width, 22) : 0;
+        // +2 on the name: integer scrollWidth under-reports fractional text
+        // widths at mobile DPRs (measured: CLAUDE.md needed 69, got 68 at
+        // dpr 2.625) and the shortfall ellipsized the last glyph.
         const parts = pad + 1 + Math.max(iconW, 16)
-          + (nameW ? gap + nameW : 0)
+          + (nameW ? gap + nameW + 2 : 0)
           + (dirtySlotW ? gap + dirtySlotW : 0)
           + (closeW ? gap + closeW : 0);
         // Parts-FIRST, never max(box, parts): the rendered box is the previous

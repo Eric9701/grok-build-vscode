@@ -174,7 +174,7 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
   gap: 6px;
   min-width: 24px;
   overflow: hidden;
-  padding: 0 10px;
+  padding: 0 12px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -386,17 +386,17 @@ body.desk-rail-collapsed .desk-rail-open-btn { display: inline-flex; }
    empty tabs container is display:none and grows nothing). The maximize
    control carries the same auto margin; they are never both visible, so the
    free space always goes to whichever control is present. */
-.gfp-close { margin-left: auto; align-self: center; margin-right: 8px; }
+/* (the pin itself lives on the later .gfp-close rule — ONE margin owner) */
 .gfp-tab-close:hover,
 .gfp-close:hover,
 .gfp-icon-button:hover,
 .gfp-toggle:hover { background: var(--gfp-hover); color: inherit; }
-.gfp-tab-close svg { width: 12px; height: 12px; }
+.gfp-tab-close svg { width: 14px; height: 14px; }
 .gfp-close svg { width: 18px; height: 18px; }
 .gfp-icon-button svg,
-.gfp-toggle svg { width: 16px; height: 16px; }
+.gfp-toggle svg { width: 20px; height: 20px; } /* bar-scale: sits beside 20px header icons */
 
-.gfp-close { align-self: center; margin: 0 6px 0 2px; color: inherit; }
+.gfp-close { align-self: center; margin: 0 8px 0 auto; color: inherit; }
 .gfp-close[hidden] { display: none !important; }
 
 /* Same recipe as .desk-ft-top-toggle / chat.css .icon-btn: muted foreground,
