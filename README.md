@@ -208,7 +208,7 @@ Gear → the effort dots next to the model, `none` → `xhigh`. On recent CLIs i
 <details>
 <summary><strong>Remote Control (AFK Pilot)</strong> — watch and steer your sessions from a phone or any browser</summary>
 
-Gear → *Remote Control* → **Sign in (link this device)** pairs this machine with **[AFK Pilot](https://afkpilot.com)**, a companion web client that mirrors this chat in the browser: follow a running turn, approve permissions, answer questions, and send or steer messages from your phone while away from your desk. The extension dials **out** to the service — no inbound port, no port forwarding — and **Sign out** unlinks the device again. The mobile view renders the retained chat window in full fidelity (diffs, images, equations, diagrams) with touch-sized controls; on reconnect, the remote snapshot is capped at the last 10 user messages while the VS Code view keeps the complete buffer. Its own **+** picker attaches a photo or a document (`.md`/`.txt`/`.pdf`/`.csv`/`.xlsx`/`.docx`) straight from your phone. You can **dictate** there too — say *"grok send"* to submit hands-free — give each browser tab its **own conversation and repository**, and pick up the very conversation VS Code has open, live in both.
+Gear → *Remote Control* → **Sign in (link this device)** pairs this machine with **[AFK Pilot](https://afkpilot.com)** (its relay server + web client are [open source](https://github.com/phuryn/afkpilot)), a companion web client that mirrors this chat in the browser: follow a running turn, approve permissions, answer questions, and send or steer messages from your phone while away from your desk. The extension dials **out** to the service — no inbound port, no port forwarding — and **Sign out** unlinks the device again. The mobile view renders the retained chat window in full fidelity (diffs, images, equations, diagrams) with touch-sized controls; on reconnect, the remote snapshot is capped at the last 10 user messages while the VS Code view keeps the complete buffer. Its own **+** picker attaches a photo or a document (`.md`/`.txt`/`.pdf`/`.csv`/`.xlsx`/`.docx`) straight from your phone. You can **dictate** there too — say *"grok send"* to submit hands-free — give each browser tab its **own conversation and repository**, and pick up the very conversation VS Code has open, live in both.
 
 A **projects rail** lists every repository with Grok history and its newest conversations, with pinned conversations lifted above them across all projects and a search over both. You can start a session in any project without switching to it first, and rename, delete or clear history from the row — from the ⋯ button or by right-clicking it. Give a project a **colour** and its folder is tinted everywhere the rail appears, including your phone. Projects you put away — and any left untouched for 30 days — fold into **Archived**, and come back on their own the moment you work in one again. On a phone the rail is a drawer behind the handle in the header.
 
@@ -358,11 +358,11 @@ Building, testing and repo conventions live in **[docs/development.md](docs/deve
 The engineering documentation for the whole system — the architecture across
 the extension and its relay, the remote-control wire protocol, authentication,
 the cross-repo test matrix, and how releases ship — lives in the companion
-**[grok-remote](https://github.com/phuryn/grok-remote)** repository (the AFK
+**[afkpilot](https://github.com/phuryn/afkpilot)** repository (the AFK
 Pilot relay server + web client, open source). Contributions to either half
 are welcome; start with its
-[docs index](https://github.com/phuryn/grok-remote/tree/main/docs) and
-[CONTRIBUTING](https://github.com/phuryn/grok-remote/blob/main/CONTRIBUTING.md).
+[docs index](https://github.com/phuryn/afkpilot/tree/main/docs) and
+[CONTRIBUTING](https://github.com/phuryn/afkpilot/blob/main/CONTRIBUTING.md).
 
 ---
 

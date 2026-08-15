@@ -2,6 +2,8 @@
 
 VS Code sidebar and desktop client for Grok Build and OpenAI Codex, driven through the [Agent Client Protocol (ACP)](https://agentclientprotocol.com). The host owns presentation and provider metadata; each CLI owns its conversation state, tools, memory, and provider-specific plan enforcement.
 
+The Remote Control server half — the AFK Pilot relay + browser client — is open source at [phuryn/afkpilot](https://github.com/phuryn/afkpilot), which also hosts the system-wide engineering docs (two-repo map, wire contract, auth, test matrix, CI/CD). The wire contract is mirrored: `src/remote-frames.ts` here ↔ `src/frames.ts` there; bump `REMOTE_PROTO_VERSION` in both on any incompatible change, and prefer additive, capability-detected changes. Issues for BOTH repos are tracked here (afkpilot's tracker is deliberately disabled).
+
 ## Status
 
 See [CHANGELOG.md](CHANGELOG.md) for the current version and full release history (the Marketplace/GitHub-published build can lag the local working tree). The whole test suite is **binary-free** — CI uses fake Grok and Codex ACP fixtures; binary-dependent probes live separately in `research/*.cjs`. Grok Plan mode is enabled and enforced by the client safety gate (see `research/plan-mode.md` § Resolution); Codex plan review is an ordinary permission and enforcement stays in the adapter/CLI. Smoke-tested end-to-end on Linux, Windows-via-WSL, and the **native Windows build** (`irm https://x.ai/cli/install.ps1 | iex`) — `cli-locator` resolves `grok.cmd`/`grok.exe` and `terminal-manager` runs Grok-delegated commands under PowerShell on Windows (`pwsh`→`powershell`, mirroring the standalone CLI; #46), `/bin/sh` elsewhere.
