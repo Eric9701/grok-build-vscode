@@ -1,4 +1,5 @@
 import * as assert from "node:assert";
+import * as cp from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -79,6 +80,21 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
   let repoB = "";
   let grokHome = "";
   const prevGrokHome = process.env.GROK_HOME;
+
+  // A few tests below start a REAL session (a resume or a worktree apply
+  // through the live provider), which needs an installed grok CLI — dev boxes
+  // have one, the CI runner does not. Without it those flows dead-end in the
+  // missing-CLI onboarding with no error posted and time out (first caught
+  // 2026-08-15, the tests' first run on Linux). Skip them loudly there; the
+  // proper fix is a fake ACP CLI provisioned by this fixture, so the flows
+  // run everywhere.
+  const grokCliAvailable = (() => {
+    try {
+      cp.execSync(process.platform === "win32" ? "where grok" : "which grok", { stdio: "ignore" });
+      return true;
+    } catch { return false; }
+  })();
+  const liveSessionTest = grokCliAvailable ? test : test.skip;
 
   const storedSessionDirFor = (cwd: string, id: string) =>
     path.join(grokHome, "sessions", encodeURIComponent(cwd), id);
@@ -871,7 +887,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.strictEqual(norm(catalog.selectedCwd), norm(repoB));
   });
 
-  test("a remote resume waits for the first catalog build before refusing a still-warming session", async () => {
+  liveSessionTest("a remote resume waits for the first catalog build before refusing a still-warming session", async () => {
     // RED without the warmup retry: findSessionCatalogCwd misses, the host
     // immediately sends the permanent-sounding "may have been deleted" error,
     // and writing the session afterward cannot restore it.
@@ -909,7 +925,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     }
   });
 
-  test("a remote resume waits for the deferred session-list, not just the catalog post", async () => {
+  liveSessionTest("a remote resume waits for the deferred session-list, not just the catalog post", async () => {
     // RED if "warmed" is the start/end of postRepoCatalog: the catalog half has
     // already run, the wait is skipped, and writing the session afterward cannot
     // restore it. GREEN only when firstBootScanCompleted waits for the deferred
@@ -2017,7 +2033,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     probe.restore();
   });
 
-  test("local applyWorktree/removeWorktree with a matching sessionId run on the focused session", async () => {
+  liveSessionTest("local applyWorktree/removeWorktree with a matching sessionId run on the focused session", async () => {
     const worktree = path.join(hooks.workspaceRoot(), ".int-match-wt");
     const probe = hooks.seedFocusedWorktreeSession("focused-wt-match", {
       path: worktree,
