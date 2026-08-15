@@ -4450,3 +4450,12 @@ body.vscode-light .preview-overlay {
   .rail-search-wrap { margin: 12px 12px; }
   .rail-search { padding-top: 9px; padding-bottom: 9px; }
 }
+
+/* Touch refinement of the block above (must come after it — same specificity,
+   order decides): the 16px search input (the iOS no-zoom floor) is taller than
+   the 13px input those 12px margins were sized for, and the row measured 59px
+   against the central header's 51. Trim the block margins by the difference;
+   inline margins stay 12 for edge alignment. The phone gate asserts the parity. */
+@media (hover: none) and (pointer: coarse) and (max-width: 899px) {
+  .rail-search-wrap { margin-block: 8px; }
+}
