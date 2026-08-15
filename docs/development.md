@@ -48,3 +48,16 @@ material under `## Development` in `README.md` never reaches the store page.
 - Commits explain the *why*, not the *what*.
 - No speculative abstractions.
 - The grok-free suite is the floor — every change keeps it green.
+
+## The companion repository
+
+Remote Control's server half — the AFK Pilot relay and the browser client —
+is open source at [grok-remote](https://github.com/phuryn/grok-remote). That
+repo also carries the system-wide engineering documentation: the two-repo map
+and mirrored wire contract, authentication, the full cross-repo test matrix,
+delivery/CI, and the UI design system —
+[start at its docs index](https://github.com/phuryn/grok-remote/tree/main/docs).
+
+The relay vendors this repo's `media/` renderer (`npm run sync-ui` over
+there), so shared-UI changes are usually tested in both checkouts side by
+side — clone them as sibling directories.

@@ -355,6 +355,15 @@ Full diagram, message flow, module map, and design notes: **[docs/architecture.m
 
 Building, testing and repo conventions live in **[docs/development.md](docs/development.md)**.
 
+The engineering documentation for the whole system — the architecture across
+the extension and its relay, the remote-control wire protocol, authentication,
+the cross-repo test matrix, and how releases ship — lives in the companion
+**[grok-remote](https://github.com/phuryn/grok-remote)** repository (the AFK
+Pilot relay server + web client, open source). Contributions to either half
+are welcome; start with its
+[docs index](https://github.com/phuryn/grok-remote/tree/main/docs) and
+[CONTRIBUTING](https://github.com/phuryn/grok-remote/blob/main/CONTRIBUTING.md).
+
 ---
 
 ## Known limits
