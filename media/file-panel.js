@@ -620,7 +620,11 @@
           + (nameW ? gap + nameW : 0)
           + (dirtySlotW ? gap + dirtySlotW : 0)
           + (closeW ? gap + closeW : 0);
-        const liveFull = Math.max(box, parts);
+        // Parts-FIRST, never max(box, parts): the rendered box is the previous
+        // ceiled basis, so feeding it back ratchets every named tab +1px per
+        // apply pass — tabs slowly grew across resizes and never shrank back
+        // to content size (owner: "never longer than needed").
+        const liveFull = parts > (pad + 17) ? parts : box;
         const full = wasIconOnly ? (cachedFull || liveFull) : (liveFull || cachedFull);
         el.dataset.fullW = String(full);
         el.dataset.iconW = String(iconOnly);

@@ -396,6 +396,41 @@ try {
   assert.ok(seenStates.has("c"), `desk: never reached strip state C — saw ${[...seenStates]}`);
   assert.equal(stateC?.chip, true, `desk: state C must show the overflow chip — ${JSON.stringify(stateC)}`);
 
+  // Resize convergence (owner: "tabs never longer than needed, always match
+  // the last resolution"). Bounce the width and settle back wide, twice: every
+  // named tab must sit at its measured content width (no wider), and the
+  // second settle must reproduce the first — a +1px-per-pass basis ratchet
+  // once made tabs grow forever across resizes.
+  const settleMeasure = async () => {
+    await setPanelWidth(430);
+    await page.waitForTimeout(300);
+    return page.evaluate(() =>
+      [...document.querySelectorAll(".gfp-tab:not([hidden]):not(.gfp-tab-icon-only)")]
+        .map((el) => ({
+          rel: el.dataset.rel,
+          w: Math.round(el.getBoundingClientRect().width),
+          fullW: Math.round(Number(el.dataset.fullW) || 0),
+        })));
+  };
+  const settled1 = await settleMeasure();
+  await setPanelWidth(220);
+  await page.waitForTimeout(300);
+  const settled2 = await settleMeasure();
+  assert.ok(settled1.length >= 1, `desk: expected named tabs at 430px — ${JSON.stringify(settled1)}`);
+  for (const t of settled2) {
+    assert.ok(
+      t.w <= t.fullW + 2,
+      `desk: tab ${t.rel} renders wider than its content (${t.w} > fullW ${t.fullW})`,
+    );
+  }
+  assert.deepEqual(
+    settled2, settled1,
+    "desk: re-settling at the same width must reproduce identical tab widths (basis ratchet?)",
+  );
+  // Back to the narrow width the chip interaction below expects (state C).
+  await setPanelWidth(200);
+  await page.waitForTimeout(300);
+
   await page.locator(".gfp-overflow-chip").click();
   await page.waitForSelector(".gfp-overflow-menu", { timeout: 5000 });
   const overflowMenu = await page.evaluate(() => {
