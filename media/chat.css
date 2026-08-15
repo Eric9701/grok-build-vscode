@@ -245,32 +245,29 @@ body.rail-resizing * {
 .rail-brand .wordmark { font-size: 15px; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-brand .wordmark b { font-weight: 600; }
 .rail-brand .wordmark .dim { color: var(--vscode-descriptionForeground); font-weight: 500; }
+/* Bar-icon primitive (rail chrome): same recipe as .icon-btn — 20×20 glyph,
+   invisible 28×28 hit box, hover is color only. The box never paints. */
 .rail-icon-btn {
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
   padding: 0;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
 }
-/* Derived from the FOREGROUND, not a fixed surface token. These buttons only
-   appear on a row that is itself hovered or actively selected, and
-   toolbar-hoverBackground is close enough to both row highlights that the
-   button had no visible edge ÔÇö you could not tell the pin was a button until
-   you clicked it. A translucent tint of the text colour keeps a constant step
-   above whatever the row is doing underneath, in either theme. */
 .rail-icon-btn:hover {
   color: var(--vscode-foreground);
-  background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
+  background: transparent;
 }
-.rail-icon-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
-/* 20px: the same bar scale as every header icon — at 16 the close-rail
-   toggle read smaller than the open-rail button (owner audit 2026-08-15). */
+.rail-icon-btn:active { opacity: 0.82; }
+.rail-icon-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
 .rail-icon-btn svg { width: 20px; height: 20px; display: block; }
 .rail-toolbar {
   flex-shrink: 0;
@@ -660,9 +657,17 @@ body.rail-resizing * {
 .rail-empty-action:hover { text-decoration: underline; }
 .rail-empty-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .rail-action-btn svg { width: 13px; height: 13px; }
-/* The same ellipsis button rides the HEADER slots, where 13px read tiny
-   beside the 20px bar icons (owner audit, 2026-08-15: 13/16/20 mix in one
-   row). Header instances take the bar scale; rail rows keep 13. */
+/* Header ⋯ is a bar-icon (20×20 in an invisible 28 box). Rail *rows* keep
+   the 13px in-row affordance above — they are not this primitive. */
+#session-head .rail-action-btn,
+#session-head-actions .rail-action-btn,
+#vscode-session-actions .rail-action-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 8px;
+}
 #session-head .rail-action-btn svg,
 #session-head-actions .rail-action-btn svg,
 #vscode-session-actions .rail-action-btn svg { width: 20px; height: 20px; }
@@ -2780,12 +2785,17 @@ textarea#input {
 }
 .toolbar-btn svg { width: 16px; height: 16px; flex: none; }
 .toolbar-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
-/* Codex-style ghost icon button: 16px glyph in a 28px rounded-square hit
-   target. Used by the icon-only triggers (history, new session, add context,
-   settings); #mode-btn keeps .toolbar-btn because it carries a text label. */
+/* Bar-icon primitive: every ICON-ONLY action in the top areas (and, via
+   matching rules, the file-panel strip / viewer / rail chrome). Glyph 20×20
+   on every surface; the hit box is invisible — no border, no background —
+   min 28×28 (36 under (hover: none) and (pointer: coarse)). Hover is color
+   only. Keyboard keeps :focus-visible. Textual buttons stay .toolbar-btn /
+   .gfp-action. */
 .icon-btn {
   width: 28px;
   height: 28px;
+  min-width: 28px;
+  min-height: 28px;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -2797,20 +2807,25 @@ textarea#input {
   background: transparent;
   cursor: pointer;
 }
-.icon-btn svg { width: 16px; height: 16px; }
+.icon-btn svg { width: 20px; height: 20px; }
 /* The author `display: inline-flex` above beats the UA's `[hidden]` rule (same
    trap as .msg-actions), so a hidden icon button would still paint. */
 .icon-btn[hidden] { display: none; }
+/* Exception: the rename pencil is an inline title adornment — glyph 16, not
+   the 20px bar scale — but it still uses the color-hover / no-box rules. */
+.session-name-edit svg,
+#session-head-edit svg { width: 16px; height: 16px; }
 /* "Continue remotely" (local client, linked machines only). Deliberately the
    one tinted glyph in the top bar: it's an invitation to move to another
    device, not a peer of the neutral session controls. Uses the theme's own
    link accent so it stays legible in every VS Code theme. */
 .remote-btn { color: var(--vscode-textLink-foreground, #3794ff); }
-.remote-btn:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #3794ff)); }
 .icon-btn:hover {
   color: var(--vscode-foreground);
-  background: var(--vscode-toolbar-hoverBackground);
+  background: transparent;
 }
+.icon-btn:active { opacity: 0.82; }
+.remote-btn:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #3794ff)); }
 .icon-btn:focus-visible {
   color: var(--vscode-foreground);
   outline: 2px solid var(--vscode-focusBorder);
@@ -4286,11 +4301,11 @@ body.vscode-light .preview-overlay {
 }
 
 /* Touch devices: the 28px control row was drawn for a mouse ÔÇö give phones
-   real tap targets (36px, 19-20px glyphs). Scoped to hover-less/coarse
-   pointers, so desktop VS Code and desktop browsers keep the dense layout. */
+   real tap targets (36px). Glyphs are already 20 on every resolution; this
+   only grows the invisible hit box. Scoped to hover-less/coarse pointers,
+   so desktop VS Code and desktop browsers keep the dense layout. */
 @media (hover: none), (pointer: coarse) {
-  .icon-btn { width: 36px; height: 36px; }
-  .icon-btn svg { width: 20px; height: 20px; }
+  .icon-btn { width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
   .send { width: 36px; height: 36px; }
   .send svg { width: 19px; height: 19px; }
   .toolbar-btn { height: 36px; }
@@ -4375,7 +4390,22 @@ body.vscode-light .preview-overlay {
    developer tool. `npm run e2e:screens` asserts it from a real browser. */
 @media (hover: none) and (pointer: coarse) {
   .icon-btn,
-  .rail-action-btn {
+  .rail-action-btn,
+  .rail-icon-btn {
+    min-width: 36px;
+    min-height: 36px;
+  }
+  .rail-icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+  /* Header ⋯ is ID-scoped at 28 for the mouse layout; that specificity
+     beats the class floor above, so restating it here keeps the tap target. */
+  #session-head .rail-action-btn,
+  #session-head-actions .rail-action-btn,
+  #vscode-session-actions .rail-action-btn {
+    width: 36px;
+    height: 36px;
     min-width: 36px;
     min-height: 36px;
   }

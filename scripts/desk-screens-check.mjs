@@ -57,6 +57,80 @@ const BLANK_ICONS = `() => {
   return bad;
 }`;
 
+/** Bar-icon primitive: every visible icon-only chrome member is 20×20 with
+ *  an unpainted box (no border, transparent background). Pencil stays 16;
+ *  the in-tab X stays 14 (15 on coarse). Overflow … is a tab, not a member. */
+const BAR_ICONS = `() => {
+  const isTransparent = (c) => {
+    if (!c || c === "transparent") return true;
+    const m = String(c).match(/^rgba?\\((\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)(?:\\s*,\\s*([\\d.]+))?\\)$/);
+    return !!(m && m[1] === "0" && m[2] === "0" && m[3] === "0" && (m[4] === undefined || Number(m[4]) === 0));
+  };
+  const isVisible = (el) => {
+    if (!el || el.hidden) return false;
+    const s = getComputedStyle(el);
+    if (s.display === "none" || s.visibility === "hidden") return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && (el.offsetParent !== null || s.position === "fixed");
+  };
+  const paintedSvg = (el) => [...el.querySelectorAll("svg")].find((n) => getComputedStyle(n).display !== "none");
+  const glyphW = (el) => {
+    const svg = paintedSvg(el);
+    return svg ? Math.round(svg.getBoundingClientRect().width) : 0;
+  };
+  const noPaintedBox = (el) => {
+    const s = getComputedStyle(el);
+    const sides = ["Top", "Right", "Bottom", "Left"];
+    const borderNone = sides.every((side) => s["border" + side + "Style"] === "none" || parseFloat(s["border" + side + "Width"]) === 0);
+    return { borderNone, bgClear: isTransparent(s.backgroundColor), bg: s.backgroundColor, border: s.borderTopStyle };
+  };
+  const labelOf = (el) => el.id || el.getAttribute("aria-label") || el.title || String(el.className || "").trim().split(/\\s+/)[0] || "?";
+  const SEL = [
+    ".icon-btn:not(.session-name-edit):not(#session-head-edit)",
+    ".rail-icon-btn",
+    ".desk-rail-open-btn",
+    ".gfp-toggle",
+    ".gfp-icon-button",
+    ".gfp-close",
+    ".gfp-viewer .gfp-action.gfp-icon-only",
+    "#session-head .rail-action-btn",
+    "#session-head-actions .rail-action-btn",
+    "#vscode-session-actions .rail-action-btn",
+  ].join(",");
+  const bad = [];
+  const seen = [];
+  const members = [];
+  for (const el of document.querySelectorAll(SEL)) {
+    if (seen.includes(el) || !isVisible(el)) continue;
+    seen.push(el);
+    const g = glyphW(el);
+    const box = noPaintedBox(el);
+    const what = labelOf(el);
+    members.push({ what, glyph: g, bg: box.bg, border: box.border });
+    if (Math.abs(g - 20) > 1) bad.push(what + " glyph " + g + "px (want 20)");
+    if (!box.borderNone) bad.push(what + " border-style " + box.border);
+    if (!box.bgClear) bad.push(what + " background " + box.bg);
+  }
+  const pencil = document.querySelector("#session-head-edit, button.session-name-edit");
+  if (pencil && isVisible(pencil)) {
+    const g = glyphW(pencil);
+    const box = noPaintedBox(pencil);
+    members.push({ what: "pencil", glyph: g, exempt: true });
+    if (Math.abs(g - 16) > 1) bad.push("pencil glyph " + g + "px (want 16)");
+    if (!box.borderNone) bad.push("pencil border-style " + box.border);
+    if (!box.bgClear) bad.push("pencil background " + box.bg);
+  }
+  const tabX = document.querySelector(".gfp-tab-active:not([hidden]) .gfp-tab-close");
+  if (tabX && isVisible(tabX)) {
+    const g = glyphW(tabX);
+    const coarse = matchMedia("(hover: none) and (pointer: coarse)").matches;
+    const want = coarse ? 15 : 14;
+    members.push({ what: "tab-X", glyph: g, exempt: true });
+    if (Math.abs(g - want) > 1) bad.push("tab-X glyph " + g + "px (want " + want + ")");
+  }
+  return { bad, members };
+}`;
+
 // GROK_HOME is the supported override for the session store (`resolveGrokHome`),
 // so the app reads the fixture's history instead of this machine's.
 const env = { ...process.env, GROK_HOME: qa.grokHome };
@@ -88,6 +162,23 @@ try {
     const blank = await page.evaluate(`(${BLANK_ICONS})()`);
     assert.deepEqual(blank, [], `${where}: icons rendered with no size — ${JSON.stringify(blank)}`);
   };
+  const assertBarIcons = async (where) => {
+    const { bad, members } = await page.evaluate(`(${BAR_ICONS})()`);
+    assert.ok(members.length > 0, `${where}: bar-icon gate measured nothing`);
+    assert.deepEqual(bad, [], `${where}: bar-icon primitive — ${JSON.stringify(bad)} (saw ${JSON.stringify(members)})`);
+    const selected = await page.evaluate(() => {
+      const el = document.querySelector(".gfp-viewer .gfp-action.gfp-icon-only.gfp-active");
+      if (!el || el.offsetParent === null) return null;
+      const s = getComputedStyle(el);
+      return { title: el.title, bg: s.backgroundColor, border: s.borderTopStyle, borderW: s.borderTopWidth, shadow: s.boxShadow };
+    });
+    if (selected) {
+      const clear = !selected.bg || selected.bg === "transparent" || /^rgba\(\s*0,\s*0,\s*0,\s*0\s*\)$/.test(selected.bg);
+      assert.ok(clear, `${where}: selected "${selected.title}" must not fill a background (${selected.bg})`);
+      assert.ok(selected.border === "none" || parseFloat(selected.borderW) === 0, `${where}: selected "${selected.title}" must not paint a border`);
+      assert.ok(selected.shadow && selected.shadow !== "none", `${where}: selected "${selected.title}" needs the inset accent (box-shadow ${selected.shadow})`);
+    }
+  };
 
   await page.waitForSelector("#input", { timeout: 45000 });
   await page.waitForSelector("#desk-ft-top-toggle", { timeout: 25000 });
@@ -109,6 +200,7 @@ try {
   assert.equal(bootLayout.left, 0, `desk: documentElement.scrollLeft must stay 0 after boot (got ${bootLayout.left})`);
   await shot("desk-1-chat");
   await assertNoBlankIcons("desk chat");
+  await assertBarIcons("desk chat");
   // Proves the host actually READ the fixture store. Without this the check
   // passes just as happily against an empty rail, which is exactly what a wrong
   // session-directory encoding produces — silently.
@@ -141,12 +233,14 @@ try {
   await page.waitForTimeout(400);
   await shot("desk-2-tree");
   await assertNoBlankIcons("desk tree");
+  await assertBarIcons("desk tree");
 
   await page.locator(".gfp-row", { hasText: "README.md" }).first().click();
   await page.waitForSelector(".gfp-viewer:not([hidden])", { timeout: 25000 });
   await page.waitForTimeout(500);
   await shot("desk-3-file");
   await assertNoBlankIcons("desk file open");
+  await assertBarIcons("desk file open");
   assert.equal(
     await page.evaluate(() => { const f = document.querySelector(".gfp-filter"); return !!f && getComputedStyle(f).display !== "none"; }),
     false,
@@ -163,6 +257,7 @@ try {
   await page.waitForTimeout(400);
   await shot("desk-4-edit");
   await assertNoBlankIcons("desk editing");
+  await assertBarIcons("desk editing");
 
   const geometry = await page.evaluate(() => {
     const panel = document.querySelector(".gfp-panel");
@@ -291,6 +386,7 @@ try {
   await page.waitForTimeout(250);
   await shot("desk-3b-maximized");
   await assertNoBlankIcons("desk maximized");
+  await assertBarIcons("desk maximized");
   const maximized = await page.evaluate(() => {
     const panel = document.querySelector(".gfp-panel");
     const chat = document.querySelector(".desk-ft-chat");
@@ -502,6 +598,7 @@ try {
   const duringRename = await renameBoxes();
   await shot("desk-5-rename");
   await assertNoBlankIcons("desk renaming");
+  await assertBarIcons("desk renaming");
   assert.deepEqual(
     duringRename,
     beforeRename,

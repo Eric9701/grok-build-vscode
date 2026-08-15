@@ -629,6 +629,7 @@ describe("shared file-panel component", () => {
     const modes = [...h.document.querySelectorAll(".gfp-mode")];
     expect(modes.map((m) => m.getAttribute("title"))).toEqual(["Preview", "Edit source"]);
     expect(modes.every((m) => !m.textContent?.trim())).toBe(true);
+    expect(modes.every((m) => m.classList.contains("gfp-icon-only"))).toBe(true);
     expect(modes[0].classList.contains("gfp-active")).toBe(true);
     expect(modes[1].classList.contains("gfp-active")).toBe(false);
 

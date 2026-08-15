@@ -1748,6 +1748,7 @@
       const button = doc.createElement("button");
       button.type = "button";
       button.className = "gfp-action" + (tone ? " gfp-action-" + tone : "");
+      if (!label) button.classList.add("gfp-icon-only");
       button.textContent = label;
       button.addEventListener("click", listener);
       return button;
