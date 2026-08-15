@@ -344,6 +344,9 @@
     let renderedTreeState = null;
     let unsubscribeScope = null;
     let menu = null;
+    /** The control that opened `menu` (a button). Used so a second click on
+     *  that same control toggles closed instead of close-and-reopen. */
+    let menuAnchor = null;
     let overflowRelPaths = [];
     let lastStripPlan = null;
     let forcedStripPlan = null;
@@ -572,6 +575,12 @@
       }
       addTrailing(maximizeBtn);
       addTrailing(closePanel);
+      // Gap floor on the tab row (padding-right on .gfp-tabs) is measured
+      // here so A/B/C still plan against the width the last tab may use.
+      const tabsCs = typeof win.getComputedStyle === "function" ? win.getComputedStyle(tabsEl) : null;
+      if (tabsCs) {
+        trailingWidth += (parseFloat(tabsCs.paddingLeft) || 0) + (parseFloat(tabsCs.paddingRight) || 0);
+      }
 
       const tabs = [...tabsEl.querySelectorAll(".gfp-tab")];
       const tabFullWidths = [];
@@ -1495,16 +1504,35 @@
     }
 
     function renderViewerActions(head, tab) {
+      // Right-end group: Cancel / Save (text buttons) and ⋯ (bar-icon).
+      // margin-left:auto on this node parks them at the toolbar's trailing edge.
+      const end = doc.createElement("div");
+      end.className = "gfp-viewer-end";
       if (EDITABLE_KINDS.has(tab.kind) && access.write && tab.stamp && tab.expectedAbsPath) {
         if (tab.kind === "markdown") {
-          // Markdown has two modes and the desktop panel has always shown them
-          // as a PAIR of icon buttons with the current one marked active — not
-          // as one worded toggle. The worded version was a divergence
-          // introduced by the extraction, and it made Markdown read as a
-          // different kind of file from every other text file, which shows the
-          // pencil below.
+          // Modes are a segmented control (`.gfp-seg`), not bar-icons. A
+          // worded toggle made Markdown the odd one out beside the pencil
+          // every other text file gets; an accent-underline on a bar-icon
+          // pair read as two actions rather than one chosen mode.
+          const seg = doc.createElement("div");
+          seg.className = "gfp-seg";
+          seg.setAttribute("role", "group");
+          seg.setAttribute("aria-label", "View mode");
           const modeButton = (icon, label, mode) => {
-            const button = actionButton("", "", () => {
+            const button = doc.createElement("button");
+            button.type = "button";
+            button.className = "gfp-seg-btn gfp-mode files-browse-action";
+            // "Edit source" IS Markdown's edit control, so it keeps the class
+            // every other text file's pencil carries. One selector means
+            // "the control that puts this file into edit mode", whatever the
+            // file type — which is what callers and tests actually want.
+            if (mode === "code") button.classList.add("gfp-edit");
+            if (tab.mode === mode) button.classList.add("gfp-seg-on");
+            button.innerHTML = icon;
+            button.title = label;
+            button.setAttribute("aria-label", label);
+            button.setAttribute("aria-pressed", String(tab.mode === mode));
+            button.addEventListener("click", () => {
               tab.mode = mode;
               tab.editing = mode === "code";
               if (mode === "code") {
@@ -1515,21 +1543,11 @@
               const editor = viewer.querySelector(".gfp-editor");
               if (editor) editor.focus();
             });
-            button.classList.add("gfp-mode", "files-browse-action");
-            // "Edit source" IS Markdown's edit control, so it keeps the class
-            // every other text file's pencil carries. One selector means
-            // "the control that puts this file into edit mode", whatever the
-            // file type — which is what callers and tests actually want.
-            if (mode === "code") button.classList.add("gfp-edit");
-            if (tab.mode === mode) button.classList.add("gfp-active", "desk-ft-active");
-            button.innerHTML = icon;
-            button.title = label;
-            button.setAttribute("aria-label", label);
-            button.setAttribute("aria-pressed", String(tab.mode === mode));
             return button;
           };
-          head.appendChild(modeButton(ICON.preview, "Preview", "preview"));
-          head.appendChild(modeButton(ICON.code, "Edit source", "code"));
+          seg.appendChild(modeButton(ICON.preview, "Preview", "preview"));
+          seg.appendChild(modeButton(ICON.code, "Edit source", "code"));
+          head.appendChild(seg);
         } else if (!tab.editing) {
           const edit = actionButton("", "", () => {
             tab.editing = true;
@@ -1552,7 +1570,7 @@
           const save = actionButton(tab.saving ? "Saving…" : "Save", "primary", () => void saveTab(tab));
           save.classList.add("gfp-save", "files-browse-action", "files-browse-action-primary");
           save.disabled = tab.saving || !tab.dirty;
-          head.append(cancel, save);
+          end.append(cancel, save);
         }
       }
       if (access.openExternal || access.reveal) {
@@ -1562,8 +1580,9 @@
         more.innerHTML = ICON.more;
         more.title = "More actions";
         more.setAttribute("aria-label", "More actions");
-        head.appendChild(more);
+        end.appendChild(more);
       }
+      if (end.childNodes.length) head.appendChild(end);
     }
 
     function patchDirtyUi(tab) {
@@ -1796,8 +1815,30 @@
       menu.style.right = "auto";
     }
 
-    function openRowMenu(anchor, entry, pointerEvent) {
+    /** True when this click should toggle the open menu rather than dismiss
+     *  it from outside. Only a BUTTON (or the chip) counts — a tree row used
+     *  as a context-menu origin is too large to treat as the opener. */
+    function isOpenMenuAnchor(target) {
+      if (!menu || !menuAnchor || !target) return false;
+      if (menuAnchor === target) return true;
+      if (!menuAnchor.contains || !menuAnchor.contains(target)) return false;
+      const tag = String(menuAnchor.tagName || "").toLowerCase();
+      return tag === "button";
+    }
+
+    /** Shared by every gfp-menu opener: a second click on the same anchor
+     *  closes and does not reopen. Returns false when the caller should stop. */
+    function beginMenu(anchor) {
+      if (menu && menuAnchor === anchor) {
+        closeMenu();
+        return false;
+      }
       closeMenu();
+      return true;
+    }
+
+    function openRowMenu(anchor, entry, pointerEvent) {
+      if (!beginMenu(anchor)) return;
       menu = doc.createElement("div");
       menu.className = "gfp-menu desk-ft-overflow-menu desk-ft-open";
       menu.setAttribute("role", "menu");
@@ -1808,13 +1849,14 @@
         menu.appendChild(menuItem(ui.revealLabel || "Reveal in file manager", () => access.reveal(currentScope.id, entry.relPath)));
       }
       if (!menu.childNodes.length) return closeMenu();
+      menuAnchor = anchor;
       doc.body.appendChild(menu);
       positionMenu(anchor, pointerEvent);
     }
 
     function openOverflowMenu(anchor) {
       if (!overflowRelPaths.length || !currentState) return;
-      closeMenu();
+      if (!beginMenu(anchor)) return;
       menu = doc.createElement("div");
       menu.className = "gfp-menu gfp-overflow-menu desk-ft-overflow-menu desk-ft-open";
       menu.setAttribute("role", "menu");
@@ -1824,6 +1866,7 @@
         menu.appendChild(overflowMenuItem(relPath, tab));
       }
       if (!menu.childNodes.length) return closeMenu();
+      menuAnchor = anchor;
       doc.body.appendChild(menu);
       const chip = tabsEl.querySelector(".gfp-overflow-chip");
       if (chip) chip.setAttribute("aria-expanded", "true");
@@ -1870,6 +1913,7 @@
     function closeMenu() {
       if (menu) menu.remove();
       menu = null;
+      menuAnchor = null;
       const chip = tabsEl.querySelector(".gfp-overflow-chip");
       if (chip) chip.setAttribute("aria-expanded", "false");
     }
@@ -1924,15 +1968,22 @@
     }
 
     function closeMenuFromOutside(event) {
-      if (menu && !menu.contains(event.target)) closeMenu();
+      if (!menu) return;
+      if (menu.contains(event.target)) return;
+      // The open menu's own button must not be an "outside" click — the
+      // opener's handler is about to run and is what toggles. Closing here
+      // first made every second click close-and-reopen.
+      if (isOpenMenuAnchor(event.target)) return;
+      closeMenu();
     }
-    // CAPTURE phase, and that is the whole fix. On the bubble phase this ran
-    // AFTER the button that opened the menu, saw a click outside the (brand new)
-    // menu, and closed it again — so the viewer's "More actions" button did
-    // nothing at all on the desktop, silently. The tree's own more-button had
-    // been papered over with `stopPropagation`, which fixes one button and
-    // leaves the trap set for the next one. On capture, this runs BEFORE any
-    // opener, when `menu` is still null, so it cannot close what has not opened.
+    // CAPTURE phase. On the bubble phase this ran AFTER the button that opened
+    // the menu, saw a click outside the (brand new) menu, and closed it again
+    // — so the viewer's "More actions" button did nothing at all on the
+    // desktop, silently. The tree's own more-button had been papered over with
+    // `stopPropagation`, which fixes one button and leaves the trap set for
+    // the next one. On capture, this runs BEFORE any opener: `menu` is still
+    // null on the opening click (so it cannot close what has not opened), and
+    // on a second click of the same button it skips so `beginMenu` can toggle.
     doc.addEventListener("click", closeMenuFromOutside, true);
     win.addEventListener("resize", applyPresentation);
     function onChromeKey(event) {

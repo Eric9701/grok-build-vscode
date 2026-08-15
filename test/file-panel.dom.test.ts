@@ -617,26 +617,29 @@ describe("shared file-panel component", () => {
     expect(h.document.querySelector(".gfp-editor")).toBe(editorBefore);
   });
 
-  it("gives Markdown the desktop's two-icon mode pair, with the current one marked", async () => {
-    // Markdown had become the only file type with a WORDED toggle while every
-    // other text file got a pencil, which is what made the toolbar read as
-    // inconsistent. The desktop reference has always shown Preview and Edit
-    // source as an icon pair with the active mode marked.
+  it("gives Markdown a segmented mode control, with exactly one segment selected", async () => {
+    // Modes are a grouped segmented control, not bar-icons with an underline.
+    // The group, the on-class, and moving the selection are the contract.
     const h = harness();
     await settle();
     await h.panel.openPath("notes.md");
 
+    const group = h.document.querySelector(".gfp-viewer .gfp-seg");
+    expect(group, "markdown must render a .gfp-seg group").toBeTruthy();
     const modes = [...h.document.querySelectorAll(".gfp-mode")];
     expect(modes.map((m) => m.getAttribute("title"))).toEqual(["Preview", "Edit source"]);
     expect(modes.every((m) => !m.textContent?.trim())).toBe(true);
-    expect(modes.every((m) => m.classList.contains("gfp-icon-only"))).toBe(true);
-    expect(modes[0].classList.contains("gfp-active")).toBe(true);
-    expect(modes[1].classList.contains("gfp-active")).toBe(false);
+    expect(modes.every((m) => m.classList.contains("gfp-seg-btn"))).toBe(true);
+    expect(group!.querySelectorAll(".gfp-seg-on")).toHaveLength(1);
+    expect(modes[0].classList.contains("gfp-seg-on")).toBe(true);
+    expect(modes[1].classList.contains("gfp-seg-on")).toBe(false);
 
     click(h.window, modes[1]);
     await settle();
     const after = [...h.document.querySelectorAll(".gfp-mode")];
-    expect(after[1].classList.contains("gfp-active")).toBe(true);
+    expect(h.document.querySelectorAll(".gfp-seg-on")).toHaveLength(1);
+    expect(after[1].classList.contains("gfp-seg-on")).toBe(true);
+    expect(after[0].classList.contains("gfp-seg-on")).toBe(false);
     expect(h.document.querySelector(".gfp-editor")).toBeTruthy();
   });
 
@@ -1033,6 +1036,24 @@ describe("the overflow menu opens from every button that offers it", () => {
     await settle();
     expect(h.document.querySelector(".gfp-menu")).toBeNull();
   });
+
+  it("toggles closed on a second click of the same More-actions button", async () => {
+    // Capture-phase outside-click used to null the menu BEFORE the button's
+    // own handler ran, so the same click reopened it. A true toggle must
+    // leave the menu gone.
+    const h = withOsAccess();
+    (h.access as any).openExternal = async () => ({ ok: true });
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    const more = h.document.querySelector(".gfp-viewer .gfp-more");
+    click(h.window, more);
+    await settle();
+    expect(h.document.querySelector(".gfp-menu")).toBeTruthy();
+
+    click(h.window, h.document.querySelector(".gfp-viewer .gfp-more"));
+    await settle();
+    expect(h.document.querySelector(".gfp-menu")).toBeNull();
+  });
 });
 
 // A non-previewable file used to be handed straight to the OS on the desktop,
@@ -1397,7 +1418,14 @@ describe("tab strip structure follows the overflow design", () => {
     await settle();
     const menu = h.document.querySelector(".gfp-overflow-menu");
     expect(menu).toBeTruthy();
-    const rows = [...menu!.querySelectorAll(".gfp-overflow-item")];
+    click(h.window, h.document.querySelector(".gfp-overflow-chip"));
+    await settle();
+    expect(h.document.querySelector(".gfp-overflow-menu")).toBeNull();
+    click(h.window, h.document.querySelector(".gfp-overflow-chip"));
+    await settle();
+    const reopened = h.document.querySelector(".gfp-overflow-menu");
+    expect(reopened).toBeTruthy();
+    const rows = [...reopened!.querySelectorAll(".gfp-overflow-item")];
     expect(rows.map((row) => row.querySelector(".gfp-overflow-name")?.textContent)).toEqual(["notes.md", "a.ts"]);
     expect(rows.every((row) => row.querySelector(".gfp-tab-icon"))).toBe(true);
     expect(rows[0].querySelector(".gfp-overflow-dirty")?.textContent).toBe("•");

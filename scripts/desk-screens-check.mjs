@@ -167,17 +167,44 @@ try {
     assert.ok(members.length > 0, `${where}: bar-icon gate measured nothing`);
     assert.deepEqual(bad, [], `${where}: bar-icon primitive — ${JSON.stringify(bad)} (saw ${JSON.stringify(members)})`);
     const selected = await page.evaluate(() => {
-      const el = document.querySelector(".gfp-viewer .gfp-action.gfp-icon-only.gfp-active");
-      if (!el || el.offsetParent === null) return null;
-      const s = getComputedStyle(el);
-      return { title: el.title, bg: s.backgroundColor, border: s.borderTopStyle, borderW: s.borderTopWidth, shadow: s.boxShadow };
+      const group = document.querySelector(".gfp-viewer .gfp-seg");
+      if (!group || group.offsetParent === null) return null;
+      const gs = getComputedStyle(group);
+      const on = group.querySelector(".gfp-seg-on");
+      const os = on ? getComputedStyle(on) : null;
+      return {
+        groupBorder: gs.borderTopStyle,
+        groupBorderW: gs.borderTopWidth,
+        onTitle: on?.title || "",
+        onBg: os?.backgroundColor || "",
+        onCount: group.querySelectorAll(".gfp-seg-on").length,
+      };
     });
     if (selected) {
-      const clear = !selected.bg || selected.bg === "transparent" || /^rgba\(\s*0,\s*0,\s*0,\s*0\s*\)$/.test(selected.bg);
-      assert.ok(clear, `${where}: selected "${selected.title}" must not fill a background (${selected.bg})`);
-      assert.ok(selected.border === "none" || parseFloat(selected.borderW) === 0, `${where}: selected "${selected.title}" must not paint a border`);
-      assert.ok(selected.shadow && selected.shadow !== "none", `${where}: selected "${selected.title}" needs the inset accent (box-shadow ${selected.shadow})`);
+      assert.ok(
+        selected.groupBorder !== "none" && parseFloat(selected.groupBorderW) > 0,
+        `${where}: .gfp-seg must paint a group border (style ${selected.groupBorder}, width ${selected.groupBorderW})`,
+      );
+      assert.equal(selected.onCount, 1, `${where}: segmented control must have exactly one .gfp-seg-on`);
+      const clear = !selected.onBg || selected.onBg === "transparent" || /^rgba\(\s*0,\s*0,\s*0,\s*0\s*\)$/.test(selected.onBg);
+      assert.ok(!clear, `${where}: selected "${selected.onTitle}" must have a filled background (${selected.onBg})`);
     }
+  };
+
+  const assertToolbarEnd = async (where) => {
+    const info = await page.evaluate(() => {
+      const bar = document.querySelector(".gfp-viewer-head");
+      const end = document.querySelector(".gfp-viewer-end");
+      if (!bar || !end || end.offsetParent === null) return null;
+      const b = bar.getBoundingClientRect();
+      const e = end.getBoundingClientRect();
+      return { barRight: b.right, endRight: e.right, gap: Math.round(b.right - e.right) };
+    });
+    if (!info) return;
+    assert.ok(
+      info.gap >= -2 && info.gap <= 12,
+      `${where}: toolbar end (Cancel/Save/⋯) must sit at the bar's right edge (gap ${info.gap}px) — ${JSON.stringify(info)}`,
+    );
   };
 
   await page.waitForSelector("#input", { timeout: 45000 });
@@ -247,17 +274,22 @@ try {
     "desk: the tree filter must hide once a file is open — it has no tree to search",
   );
   assert.deepEqual(
-    await page.evaluate(() => [...document.querySelectorAll(".gfp-viewer .gfp-action")].map((b) => b.title)),
+    // Modes live in .gfp-seg now; titles still paint in this order because
+    // Preview / Edit source stay first in the toolbar and ⋯ is in the
+    // right-end group. Query by [title] so text buttons (no title) drop out.
+    await page.evaluate(() => [...document.querySelectorAll(".gfp-viewer-head [title]")].map((b) => b.title)),
     ["Preview", "Edit source", "More actions"],
     "desk: Markdown shows the mode pair, plus the host-local actions menu",
   );
+  await assertToolbarEnd("desk file open");
 
-  await page.locator(".gfp-viewer .gfp-action[title='Edit source']").click();
+  await page.locator(".gfp-viewer [title='Edit source']").click();
   await page.waitForSelector(".gfp-editor", { timeout: 25000 });
   await page.waitForTimeout(400);
   await shot("desk-4-edit");
   await assertNoBlankIcons("desk editing");
   await assertBarIcons("desk editing");
+  await assertToolbarEnd("desk editing");
 
   const geometry = await page.evaluate(() => {
     const panel = document.querySelector(".gfp-panel");
@@ -545,7 +577,7 @@ try {
     `desk: every overflow row needs an icon and a name — ${JSON.stringify(overflowMenu)}`,
   );
   await shot("desk-strip-c-menu");
-  await page.keyboard.press("Escape");
+  await page.locator(".gfp-overflow-chip").click();
   await page.waitForFunction(() => !document.querySelector(".gfp-overflow-menu"), { timeout: 5000 });
   await setPanelWidth(280);
 
