@@ -11593,7 +11593,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   installTestHooks(): {
     onPost(fn: (dest: MsgOrigin, message: HostMsg, clientIds?: string[]) => void): void;
     fromRemote(message: WebviewMsg, clientId?: string): void;
-    fromLocal(message: WebviewMsg): void;
+    fromLocal(message: WebviewMsg): Promise<void>;
     fromRelayFrame(raw: string): void;
     emitRemote(clientId: string, message: HostMsg): void;
     replayRemote(clientId: string, messages: HostMsg[], during?: () => void, fail?: boolean): Promise<void>;
@@ -11662,7 +11662,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       lastRemovePath(): string | undefined;
       restore(): void;
     };
+
     hasLiveSession(id: string): boolean;
+    /**
+     * Drop a previously located/connected Grok so the rest of this suite stays
+     * on the missing-CLI path even when the developer machine has a real
+     * binary. In-memory only — does not rewrite persisted account state.
+     */
+    isolateFromInstalledGrok(): void;
+    /**
+     * Point this host at a test-only ACP CLI and mark Grok connected so
+     * startSession/loadSession spawn it instead of taking the missing-CLI
+     * onboarding path. Does not start a session. The returned restore
+     * function puts the previous CLI path and connection flag back.
+     */
+    provisionFakeGrok(cliPath: string): () => void;
     remoteClientLeft(clientId: string): void;
     remoteClientRoster(clientIds: string[]): void;
     sweepEmptySessions(cwd: string): void;
@@ -11673,7 +11687,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.postTap = fn;
       },
       fromRemote: (message, clientId = "test-client") => this.handleRemoteMessage(clientId, message),
-      fromLocal: (message) => { void this.onMessage(message, "local"); },
+      fromLocal: (message) => this.onMessage(message, "local"),
       fromRelayFrame: (raw) => {
         const frame = parseRelayFrame(raw);
         if (frame?.t !== "client-ready") return;
@@ -11949,6 +11963,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       hasLiveSession: (id) => [...this.pool].some((session) =>
         session.activeSessionId === id && !!session.client
       ),
+      isolateFromInstalledGrok: () => {
+        this.cliPath = undefined;
+        this.setProviderConnectedInMemory("grok", false);
+      },
+      provisionFakeGrok: (cliPath) => {
+        const previous = {
+          cliPath: this.cliPath,
+          connected: this.providerConnections().grok === true,
+        };
+        this.cliPath = cliPath;
+        this.setProviderConnectedInMemory("grok", true);
+        return () => {
+          this.cliPath = previous.cliPath;
+          this.setProviderConnectedInMemory("grok", previous.connected);
+        };
+      },
       remoteClientLeft: (clientId) => this.releaseRemoteClient(clientId),
       remoteClientRoster: (clientIds) => this.retainRemoteClients(clientIds),
       sweepEmptySessions: (cwd) => this.sweepEmptySessions(cwd),

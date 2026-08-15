@@ -3,6 +3,8 @@
 // ACP that src/acp.ts actually exercises:
 //   - initialize, session/new, session/load, session/set_model, session/set_mode,
 //     session/prompt, session/cancel  (client → server)
+//   - session/load reads GROK_HOME/sessions/<encoded-cwd>/<id>/{updates,chat_history}.jsonl
+//     and streams those as session/update replay before the RPC result
 //   - fs/write_text_file, terminal/create, x.ai/exit_plan_mode,
 //     x.ai/ask_user_question  (server → client)
 //   - session/update notifications (agent_message_chunk, and a user_message_chunk
@@ -13,11 +15,13 @@
 // requests we need to exercise the host's behavior (plan-snoop, gate blocking,
 // exit_plan_mode round-trip), then ends the turn.
 //
-// Deliberately small (~150 lines) and grok-version-independent: it encodes only
-// what the protocol REQUIRES, not grok's quirks. The buggy "any response is
-// approval" behavior is handled host-side; this fake just ends its turn
-// whichever way the host replies to exit_plan_mode.
+// Deliberately small and grok-version-independent: it encodes only what the
+// protocol REQUIRES, not grok's quirks. The buggy "any response is approval"
+// behavior is handled host-side; this fake just ends its turn whichever way
+// the host replies to exit_plan_mode.
 
+const fs = require("fs");
+const path = require("path");
 const readline = require("readline");
 
 // Accept the startup arg shapes the extension actually sends: `agent stdio`,
@@ -72,6 +76,114 @@ const PLAN_PATH = process.env.FAKE_PLAN_PATH || "/tmp/fake-grok-home/.grok/sessi
 const WORKSPACE_FILE = (process.env.FAKE_WORKSPACE_ROOT || "/tmp/fake-workspace") + "/file.ts";
 const RELATIVE_WORKSPACE_FILE = "relative-file.ts";
 
+function grokHome() {
+  return process.env.GROK_HOME || path.join(process.env.USERPROFILE || process.env.HOME || "", ".grok");
+}
+
+function storedSessionDir(cwd, sessionId) {
+  if (!cwd || !sessionId) return "";
+  return path.join(grokHome(), "sessions", encodeURIComponent(cwd), sessionId);
+}
+
+function sessionHandle(sessionId) {
+  return {
+    sessionId,
+    models: {
+      currentModelId: "fake-model",
+      // Advertise per-session reasoning effort so the client's live-effort
+      // gate (currentModelSupportsEffort) can be exercised; reasoningEffort is
+      // the ACTIVE session override the client seeds currentReasoningEffort from.
+      availableModels: [{
+        modelId: "fake-model",
+        name: "Fake",
+        _meta: {
+          supportsReasoningEffort: true,
+          reasoningEffort: "high",
+          reasoningEfforts: [{ value: "high" }, { value: "medium" }, { value: "low" }],
+        },
+      }],
+    },
+    modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Agent" }, { id: "plan", name: "Plan" }] },
+  };
+}
+
+function persistNewSession(sessionId, cwd) {
+  const dir = storedSessionDir(cwd, sessionId);
+  if (!dir) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const summary = path.join(dir, "summary.json");
+    if (!fs.existsSync(summary)) {
+      fs.writeFileSync(summary, JSON.stringify({ session_id: sessionId }));
+    }
+  } catch {
+    /* catalog write is best-effort — the host already owns GROK_HOME */
+  }
+}
+
+function replayStoredSession(sessionId, cwd) {
+  const dir = storedSessionDir(cwd, sessionId);
+  if (!dir) return;
+  let st;
+  try { st = fs.statSync(dir); } catch { return; }
+  if (!st.isDirectory()) return;
+
+  const updatesPath = path.join(dir, "updates.jsonl");
+  if (fs.existsSync(updatesPath)) {
+    replayUpdatesJsonl(sessionId, fs.readFileSync(updatesPath, "utf8"));
+    return;
+  }
+  const historyPath = path.join(dir, "chat_history.jsonl");
+  if (fs.existsSync(historyPath)) {
+    replayChatHistory(sessionId, fs.readFileSync(historyPath, "utf8"));
+  }
+}
+
+function replayUpdatesJsonl(sessionId, text) {
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch { continue; }
+    const update = rec?.update && rec.update.sessionUpdate ? rec.update
+      : rec?.sessionUpdate ? rec
+      : null;
+    if (!update) continue;
+    notify("session/update", { sessionId, update });
+  }
+}
+
+function replayChatHistory(sessionId, text) {
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let rec;
+    try { rec = JSON.parse(line); } catch { continue; }
+    const role = rec?.type ?? rec?.role;
+    const raw = rec?.content;
+    const content = typeof raw === "string"
+      ? raw
+      : Array.isArray(raw)
+        ? raw.map((c) => (typeof c === "string" ? c : c?.text ?? "")).join("")
+        : "";
+    if (role === "user") {
+      if (rec?.synthetic_reason) continue;
+      const m = content.match(/<user_query>([\s\S]*?)(?:<\/user_query>|$)/);
+      const body = (m ? m[1] : content).trim();
+      if (!body || /^<user_info>/.test(body) || /^<system-reminder>/.test(body)) continue;
+      notify("session/update", {
+        sessionId,
+        update: { sessionUpdate: "user_message_chunk", content: { type: "text", text: body } },
+      });
+    } else if (role === "assistant" || role === "agent") {
+      const body = content.trim();
+      if (!body) continue;
+      notify("session/update", {
+        sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: body } },
+      });
+    }
+  }
+}
+
 rl.on("line", async (line) => {
   if (!line.trim()) return;
   let msg;
@@ -90,30 +202,19 @@ rl.on("line", async (line) => {
     case "initialize":
       return respondOk(id, { protocolVersion: 1, serverCapabilities: {} });
     case "session/new":
-      return respondOk(id, {
-        sessionId: SESSION_ID,
-        models: {
-          currentModelId: "fake-model",
-          // Advertise per-session reasoning effort so the client's live-effort
-          // gate (currentModelSupportsEffort) can be exercised; reasoningEffort is
-          // the ACTIVE session override the client seeds currentReasoningEffort from.
-          availableModels: [{
-            modelId: "fake-model",
-            name: "Fake",
-            _meta: {
-              supportsReasoningEffort: true,
-              reasoningEffort: "high",
-              reasoningEfforts: [{ value: "high" }, { value: "medium" }, { value: "low" }],
-            },
-          }],
-        },
-        modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Agent" }, { id: "plan", name: "Plan" }] },
-      });
-    case "session/load":
-      return respondOk(id, {
-        models: { currentModelId: "fake-model", availableModels: [] },
-        modes: { currentModeId: "default", availableModes: [] },
-      });
+      persistNewSession(SESSION_ID, params?.cwd);
+      return respondOk(id, sessionHandle(SESSION_ID));
+    case "session/load": {
+      // Resume must honor the requested id and replay whatever the host
+      // already wrote under GROK_HOME (the integration fixture's
+      // writeStoredSession / chat_history.jsonl). Missing files are an empty
+      // conversation, not an error — same as a brand-new on-disk session.
+      const sid = typeof params?.sessionId === "string" && params.sessionId
+        ? params.sessionId
+        : SESSION_ID;
+      replayStoredSession(sid, params?.cwd);
+      return respondOk(id, sessionHandle(sid));
+    }
     case "session/set_model": {
       // Echo the received _meta so a test can assert the client sent
       // reasoningEffort on a live effort switch.
@@ -132,6 +233,14 @@ rl.on("line", async (line) => {
     }
     case "session/set_mode":
       return respondOk(id, {});
+    case "_x.ai/git/worktree/apply":
+      return respondOk(id, { status: "ok", files: [], gitRoot: params?.worktreePath || "" });
+    case "_x.ai/git/worktree/remove":
+      return respondOk(id, { removed: true });
+    case "_x.ai/git/worktree/create":
+    case "_x.ai/git/worktree/list":
+    case "_x.ai/git/worktree/status":
+      return send({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     case "session/cancel":
       return respondOk(id, {});
     case "_x.ai/interject":

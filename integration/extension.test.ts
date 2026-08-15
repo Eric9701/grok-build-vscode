@@ -1,5 +1,4 @@
 import * as assert from "node:assert";
-import * as cp from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,10 +6,10 @@ import * as vscode from "vscode";
 
 // @vscode/test-electron smoke suite — the layer the grok-free vitest suite structurally
 // can't reach: it boots a real VS Code, activates the extension, and resolves the webview
-// inside a genuine Extension Host. It never needs the grok binary (CI has none), so it
-// runs the extension's *missing-CLI* path — which is exactly the host glue we want to
-// exercise: activation, command registration, getHtml/CSP, localResourceRoots, and the
-// first host->webview posts. See CLAUDE.md "What's next" #1.
+// inside a genuine Extension Host. The first suite stays on the *missing-CLI* onboarding
+// path (activation, command registration, getHtml/CSP, localResourceRoots). The
+// repo-selection suite then provisions test/fixtures/fake-grok-acp.cjs so resume and
+// worktree-id tests speak ACP without a real grok binary. See CLAUDE.md "What's next" #1.
 
 const EXT_ID = "PawelHuryn.grok-vscode-phuryn";
 
@@ -81,21 +80,6 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
   let grokHome = "";
   const prevGrokHome = process.env.GROK_HOME;
 
-  // A few tests below start a REAL session (a resume or a worktree apply
-  // through the live provider), which needs an installed grok CLI — dev boxes
-  // have one, the CI runner does not. Without it those flows dead-end in the
-  // missing-CLI onboarding with no error posted and time out (first caught
-  // 2026-08-15, the tests' first run on Linux). Skip them loudly there; the
-  // proper fix is a fake ACP CLI provisioned by this fixture, so the flows
-  // run everywhere.
-  const grokCliAvailable = (() => {
-    try {
-      cp.execSync(process.platform === "win32" ? "where grok" : "which grok", { stdio: "ignore" });
-      return true;
-    } catch { return false; }
-  })();
-  const liveSessionTest = grokCliAvailable ? test : test.skip;
-
   const storedSessionDirFor = (cwd: string, id: string) =>
     path.join(grokHome, "sessions", encodeURIComponent(cwd), id);
   const storedSessionDir = (id: string) => storedSessionDirFor(repoB, id);
@@ -107,6 +91,20 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       path.join(dir, "summary.json"),
       updatedAt ? JSON.stringify({ updated_at: updatedAt }) : "{}",
     );
+  };
+
+  // Hermetic ACP for the two resume tests that actually start a session.
+  // Scoped to those tests so selectRepo/delete in the rest of the suite stay
+  // on the missing-CLI path they were written against.
+  const provisionFakeCli = () => {
+    const fakeCli = process.platform === "win32"
+      ? path.join(__dirname, "..", "test", "fixtures", "fake-grok-acp.cmd")
+      : path.join(__dirname, "..", "test", "fixtures", "fake-grok-acp.sh");
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(fakeCli, 0o755); } catch { /* best-effort */ }
+    }
+    assert.ok(fs.existsSync(fakeCli), `fake ACP CLI missing: ${fakeCli}`);
+    return hooks.provisionFakeGrok(fakeCli);
   };
 
   suiteSetup(async () => {
@@ -132,6 +130,10 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     fs.mkdirSync(path.join(repoB, ".git"));
     fs.mkdirSync(path.join(grokHome, "sessions", encodeURIComponent(repoB)), { recursive: true });
     process.env.GROK_HOME = grokHome;
+    // The suite is written for the CI missing-CLI path. A developer box with
+    // grok installed would otherwise start real sessions from selectRepo and
+    // make delete / delayed-load assertions race the live process.
+    hooks.isolateFromInstalledGrok();
   });
 
   suiteTeardown(() => {
@@ -887,10 +889,11 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.strictEqual(norm(catalog.selectedCwd), norm(repoB));
   });
 
-  liveSessionTest("a remote resume waits for the first catalog build before refusing a still-warming session", async () => {
+  test("a remote resume waits for the first catalog build before refusing a still-warming session", async () => {
     // RED without the warmup retry: findSessionCatalogCwd misses, the host
     // immediately sends the permanent-sounding "may have been deleted" error,
     // and writing the session afterward cannot restore it.
+    const restoreCli = provisionFakeCli();
     const id = `warmup-${Date.now()}`;
     const clientId = `warmup-tab-${Date.now()}`;
     const delay = hooks.delayFirstCatalogBuild();
@@ -906,15 +909,20 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       delay.release();
       assert.ok(began, "the resume must defer the not-found refuse until catalog warmup");
 
+      const loaded = () => posts.some((p) =>
+        p.clientIds?.includes(clientId) &&
+        ((p.msg?.type === "session" && p.msg.sessionId === id) || p.msg?.type === "initialized")
+      );
       const deadline = Date.now() + 15000;
-      while (Date.now() < deadline && hooks.activeRemoteSessionId(clientId) !== id) {
+      while (Date.now() < deadline && !(hooks.activeRemoteSessionId(clientId) === id && loaded())) {
         await new Promise((r) => setTimeout(r, 50));
       }
       assert.strictEqual(
         hooks.activeRemoteSessionId(clientId),
         id,
-        `the session must restore after the catalog warmup: ${JSON.stringify(posts.filter((p) => p.msg?.type === "error"))}`,
+        `the session must restore after the catalog warmup: ${JSON.stringify(posts.filter((p) => p.msg?.type === "error" || p.msg?.type === "onboarding"))}`,
       );
+      assert.ok(loaded(), `session/load must complete against the fake CLI: ${JSON.stringify(posts.filter((p) => p.msg?.type === "session" || p.msg?.type === "initialized" || p.msg?.type === "onboarding" || p.msg?.type === "error"))}`);
       assert.ok(!posts.some((p) =>
         p.clientIds?.includes(clientId) &&
         p.msg?.type === "error" &&
@@ -922,14 +930,16 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       ), JSON.stringify(posts.filter((p) => p.msg?.type === "error")));
     } finally {
       delay.release();
+      restoreCli();
     }
   });
 
-  liveSessionTest("a remote resume waits for the deferred session-list, not just the catalog post", async () => {
+  test("a remote resume waits for the deferred session-list, not just the catalog post", async () => {
     // RED if "warmed" is the start/end of postRepoCatalog: the catalog half has
     // already run, the wait is skipped, and writing the session afterward cannot
     // restore it. GREEN only when firstBootScanCompleted waits for the deferred
     // session-list as well.
+    const restoreCli = provisionFakeCli();
     const id = `warmup-list-${Date.now()}`;
     const clientId = `warmup-list-tab-${Date.now()}`;
     const delay = hooks.delayFirstCatalogBuild();
@@ -950,15 +960,20 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       writeStoredSession(id);
       delay.release();
 
+      const loaded = () => posts.some((p) =>
+        p.clientIds?.includes(clientId) &&
+        ((p.msg?.type === "session" && p.msg.sessionId === id) || p.msg?.type === "initialized")
+      );
       const deadline = Date.now() + 15000;
-      while (Date.now() < deadline && hooks.activeRemoteSessionId(clientId) !== id) {
+      while (Date.now() < deadline && !(hooks.activeRemoteSessionId(clientId) === id && loaded())) {
         await new Promise((r) => setTimeout(r, 50));
       }
       assert.strictEqual(
         hooks.activeRemoteSessionId(clientId),
         id,
-        `the session must restore after the deferred session-list: ${JSON.stringify(posts.filter((p) => p.msg?.type === "error"))}`,
+        `the session must restore after the deferred session-list: ${JSON.stringify(posts.filter((p) => p.msg?.type === "error" || p.msg?.type === "onboarding"))}`,
       );
+      assert.ok(loaded(), `session/load must complete against the fake CLI: ${JSON.stringify(posts.filter((p) => p.msg?.type === "session" || p.msg?.type === "initialized" || p.msg?.type === "onboarding" || p.msg?.type === "error"))}`);
       assert.ok(!posts.some((p) =>
         p.clientIds?.includes(clientId) &&
         p.msg?.type === "error" &&
@@ -966,6 +981,7 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       ), JSON.stringify(posts.filter((p) => p.msg?.type === "error")));
     } finally {
       delay.release();
+      restoreCli();
     }
   });
 
@@ -2017,9 +2033,8 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     const posts: Array<{ dest: string; msg: any; clientIds?: string[] }> = [];
     hooks.onPost((dest: string, msg: any, clientIds?: string[]) => posts.push({ dest, msg, clientIds }));
 
-    hooks.fromLocal({ type: "applyWorktree", sessionId: "not-the-focused-session" });
-    hooks.fromLocal({ type: "removeWorktree", sessionId: "not-the-focused-session" });
-    await new Promise((r) => setTimeout(r, 100));
+    await hooks.fromLocal({ type: "applyWorktree", sessionId: "not-the-focused-session" });
+    await hooks.fromLocal({ type: "removeWorktree", sessionId: "not-the-focused-session" });
 
     const refusals = posts.filter((p) =>
       p.dest === "local" &&
@@ -2033,7 +2048,8 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     probe.restore();
   });
 
-  liveSessionTest("local applyWorktree/removeWorktree with a matching sessionId run on the focused session", async () => {
+  test("local applyWorktree/removeWorktree with a matching sessionId run on the focused session", async () => {
+    hooks.isolateFromInstalledGrok();
     const worktree = path.join(hooks.workspaceRoot(), ".int-match-wt");
     const probe = hooks.seedFocusedWorktreeSession("focused-wt-match", {
       path: worktree,

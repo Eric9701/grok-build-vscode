@@ -389,6 +389,44 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     await expect(client.cancel()).resolves.toBe(false);
   });
 
+  it("session/load replays chat_history.jsonl from GROK_HOME before resolving", async () => {
+    const resumeId = "stored-resume-1";
+    const dir = path.join(planHome, ".grok", "sessions", encodeURIComponent(workspace), resumeId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ session_id: resumeId }));
+    fs.writeFileSync(
+      path.join(dir, "chat_history.jsonl"),
+      [
+        JSON.stringify({ type: "user", content: "<user_query>stored question</user_query>" }),
+        JSON.stringify({ type: "assistant", content: "stored answer" }),
+      ].join("\n"),
+    );
+
+    const resumeClient = new AcpClient({
+      cliPath: fixtureCli(),
+      cwd: workspace,
+      env: {
+        ...process.env,
+        GROK_HOME: path.join(planHome, ".grok"),
+        FAKE_WORKSPACE_ROOT: workspace,
+      },
+      log: () => {},
+    });
+    const users: string[] = [];
+    const agents: string[] = [];
+    resumeClient.on("userMessageChunk", (t: string) => users.push(t));
+    resumeClient.on("messageChunk", (t: string) => agents.push(t));
+    try {
+      await resumeClient.start();
+      const loaded = await resumeClient.loadSession(resumeId);
+      expect(loaded.sessionId).toBe(resumeId);
+      expect(users.join("")).toContain("stored question");
+      expect(agents.join("")).toContain("stored answer");
+    } finally {
+      resumeClient.dispose();
+    }
+  });
+
   it("a write to a non-writable stdin is skipped, not attempted", () => {
     let called = false;
     (client as any).proc.stdin = {
