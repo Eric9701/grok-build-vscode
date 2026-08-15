@@ -269,7 +269,9 @@ body.rail-resizing * {
   background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent);
 }
 .rail-icon-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
-.rail-icon-btn svg { width: 16px; height: 16px; display: block; }
+/* 20px: the same bar scale as every header icon — at 16 the close-rail
+   toggle read smaller than the open-rail button (owner audit 2026-08-15). */
+.rail-icon-btn svg { width: 20px; height: 20px; display: block; }
 .rail-toolbar {
   flex-shrink: 0;
   padding: 0;
