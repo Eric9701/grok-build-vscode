@@ -12,6 +12,11 @@ sub-claims keep an older build: the 429 retry delay in §5 and the cross-product
 §9. Everything unconfirmed on this build is labelled in place and summarized under *Coverage of
 this pass*; nothing here is asserted as current on evidence we did not actually take.
 
+**§2 supersedes that basis (2026-08-15):** it was re-probed in full on grok CLI **1.0.4**
+(`d846eb93d9`) after a user report, and its finding changed shape — the image-aware `read_file`
+has shipped, but delegating clients cannot reach it. No other section has been re-run on 1.0.4, so
+treat the rest as 0.2.117 evidence until it is.
+
 ## Evidence discipline
 
 - **LIVE-VERIFIED** — observed on the named installed CLI build.
@@ -19,8 +24,11 @@ this pass*; nothing here is asserted as current on evidence we did not actually 
 - **SOURCE-ONLY** — changed upstream but never observed in a shipped binary.
 
 Only LIVE-VERIFIED evidence retires an issue or a compatibility fallback. That distinction is
-load-bearing: image-aware `read_file` and truthful created-file rewind reporting both exist in
-published source, and both are still broken in the shipped 0.2.117 binary.
+load-bearing in both directions. Truthful created-file rewind reporting exists in published source
+and is still broken in the shipped binary (§3). Image-aware `read_file` was the same story until
+1.0.4, where it shipped — and live probing then showed the section was not closed at all, only
+relocated: the branch exists and is unreachable whenever the client delegates reads (§2). Source
+evidence would have called that fixed; only live evidence found the real shape.
 
 ---
 
@@ -48,26 +56,86 @@ A smaller contract issue remains: after a cancelled verdict, same-turn re-planni
 nondeterministic. Identical prompts produced **1, 2 and 15** repeated `exit_plan_mode` asks within
 one turn, so a client cannot treat a re-ask as a lifecycle guarantee.
 
-## 2. Image capability and binary reads disagree with shipped behavior (archive §2.5)
+## 2. Image `read_file` works only when the client does NOT delegate reads (archive §2.5)
 
-**LIVE-VERIFIED 0.2.117.** `initialize` returns
-`promptCapabilities: {"image":false,"audio":false,"embeddedContext":true}` although inline
-`{type:"image"}` prompt blocks work. A client that trusts the advertised capability disables working
-vision.
+**LIVE-VERIFIED 1.0.4** (2026-08-15, Windows 11, authenticated account). Two things changed since
+0.2.117: the image-aware `read_file` branch has **shipped**, and we have isolated why ACP clients
+still cannot reach it. This section is no longer "the fix has not landed" — it is "the fix is
+unreachable by delegation".
 
-The inverse mismatch is more damaging: `read_file` on an image still returns
-`FileReadError: "Cannot read binary file"`. This affects pasted assets, generated media, and
-subagent-produced images. The image-aware branch is present in published source but remains
-**SOURCE-ONLY** — it has not reached the shipped binary.
+`initialize` still returns `promptCapabilities: {"image":false,"audio":false,"embeddedContext":true}`
+while inline `{type:"image"}` prompt blocks work. Unchanged, and still a flag a client must ignore
+to keep working vision.
+
+The `read_file` half now depends entirely on one advertised capability. Same build, same 256×256
+PNG, same prompt; the only variable is `clientCapabilities.fs`:
+
+| `clientCapabilities.fs` | `read_file` on the PNG | `fs/write_text_file` delegated |
+|---|---|---|
+| `{readTextFile: true, writeTextFile: true}` | `FileReadError: "Cannot read binary file"` | yes |
+| `{readTextFile: false, writeTextFile: true}` | `Read image file:` plus the image — model names the colour | **no** |
+| capability omitted entirely | works, as above | no |
+
+The shipped image branch lives on the CLI's own read path. When a client advertises
+`fs.readTextFile`, `read_file` is routed to that text-only client method instead, and that path has
+a binary guard but no image branch.
+
+The second column is the trap, and it is the reason we cannot simply stop advertising the
+capability. `writeTextFile: true` is **not honored independently**: with `readTextFile: false` the
+CLI performed the write itself and issued **no client requests at all** — zero inbound JSON-RPC
+across the whole turn, `session/request_permission` included. A client cannot opt out of read
+delegation while keeping write interception.
+
+**Content-level escape hatches, all measured on 1.0.4, all closed** — no response a client returns
+can make a delegated image read succeed:
+
+| Attempt | Result |
+|---|---|
+| Answer `fs/read_text_file` with a JSON-RPC error, hoping the CLI falls back to its own reader | No fallback; our message is wrapped verbatim into `FileReadError` |
+| Answer with structured `content: [{type:"image",…}]` | `Internal error: "failed to deserialize response"` — `content` is strictly a string |
+| Answer with a `data:image/png;base64,…` string | Ignored; still `Cannot read binary file`, so the guard inspects the file itself rather than our response |
+
+**What the delegation is actually worth, measured in Plan mode (1.0.4).** Our first reading — that
+`fs.readTextFile` is load-bearing for the Plan write-gate, so the capability could not be dropped —
+did not survive testing. Forcing the model to call both a write and a mutating shell command inside
+Plan mode gives **identical results under both capability configurations**:
+
+| Hook | `readTextFile: true` | `readTextFile: false` |
+|---|---|---|
+| `fs/write_text_file` | **never fires** | never fires |
+| `terminal/create` | fires | fires |
+| `session/request_permission` | fires (`kind: "execute"`) | fires (`kind: "execute"`) |
+
+The `write` tool is refused by grok itself before any delegation — *"Rejected: file edits are not
+allowed in plan mode - the only editable file is the plan file"* — so the client write-gate is
+already unreachable in Plan mode on this build. And `terminal/create` plus `session/request_permission`
+ride the **separate `terminal` capability**, so they are untouched by the `fs` flags. The hook that
+covers the real §1 hole (bash still executes in Plan) does not depend on `fs.readTextFile` at all.
+
+So the enforcement cost of dropping the capability is close to zero on this build. The remaining
+cost is a UX one: `fs/write_text_file` is also how we snoop grok's own plan file to populate the
+plan review card, since `exit_plan_mode` arrives with `planContent: null` (§1).
 
 **Client cost/workaround:** we ignore the capability flag, pin a live drift test, pre-read and send
-supported images ourselves, add "do not Read" hints to reduce transcript noise, and parse
-generated-media paths out of tool output. There is no client workaround when the model
-independently needs to inspect a generated image by path.
+user-attached images ourselves, add "do not Read" hints to reduce transcript noise, and parse
+generated-media paths out of tool output. A client can now recover model-initiated image reads by
+withholding `fs.readTextFile` — but only by giving up delegated reads wholesale, and while relying
+on a native Plan gate whose coverage §1 shows to be partial. That is a coin-flip between two
+documented capabilities, not a design. The one content-level lever left is cosmetic: a JSON-RPC
+error message reaches the model verbatim, so `Cannot read binary file` can be replaced with text
+telling it to ask the user to attach the file.
 
-**Ask:** advertise `image:true`; ship the source's image-aware `read_file` path; return generated
-media as structured `image`/`resource_link` content instead of a path embedded in text or
-`rawOutput`; expose dropped-image errors on a documented surface.
+**Ask:** route a binary/image path through the shipped image branch **even when the read is
+delegated** — a client advertising `fs.readTextFile` is offering to resolve text, not asking to
+disable vision. Failing that, either honor `writeTextFile` independently of `readTextFile`, or add a
+binary-capable client read method so delegation can carry pixels. Separately, still open from the
+archive: advertise `image:true`; return generated media as structured `image`/`resource_link`
+content instead of a path embedded in text or `rawOutput`; expose dropped-image errors on a
+documented surface.
+
+Re-confirmed on 1.0.4 and unchanged: an image below the 8×8 / 512-total-px floors is dropped, and
+the model is left hunting for an attachment it never received (*"the image wasn't available (it was
+1×1 and couldn't be processed)"*).
 
 ## 3. Rewind reports files it did not revert (archive §2.15)
 
@@ -359,6 +427,12 @@ not re-run here: reasoning effort is session-settable via `set_model` `_meta` (0
 advertises `reasoningEfforts` in `initialize._meta.modelState`).
 
 ## Coverage of this pass
+
+Re-probed live on **1.0.4** (2026-08-15): §2 only, in full — the capability A/B, three attempted
+content-level workarounds, and a Plan-mode hook comparison under both capability configurations
+(which corrected our own first reading; see the note in that section). §1's Plan-mode claims were
+NOT re-run on 1.0.4 beyond what that comparison touched: the `terminal/create` passthrough was
+re-observed, but the five-requests-per-turn measurement stays at 0.2.117.
 
 Re-observed live on 0.2.117: §1, §2, §3, §4, §5 (except the 429), §6, §7, §8, §9 (the reporting
 gap). Left at an older named build because the trigger cannot be produced without abusing an

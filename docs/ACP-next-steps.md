@@ -135,7 +135,7 @@ exactly why shipped-behavior evidence is the only kind that may remove a fallbac
 | Workaround | Keep because |
 |---|---|
 | Vision with no capability gate | `promptCapabilities.image:false` still advertised while image blocks work |
-| The "do not Read" image hint | `read_file` on a plain 109-byte PNG still fails `Cannot read binary file` — **source has an image-aware branch that has not shipped** |
+| The "do not Read" image hint | On 0.2.112: `read_file` on a plain 109-byte PNG fails `Cannot read binary file`, image-aware branch present in source but not shipped. **Superseded on 1.0.4** — the branch HAS shipped, and the failure is now caused by our own `fs.readTextFile` advertisement routing reads to a text-only path; see [ACP-feedback](ACP-feedback.md) §2. Keep the hint until that capability changes. |
 | Whole-session-only fork | Source truncates both logs; last measured shipped build did not |
 | Conservative rewind wording | `reverted_files` still lists created files left on disk — **source deletes them; stable doesn't** |
 | `/context` + `/always-approve` denylist | Both still advertised over ACP |
