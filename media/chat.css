@@ -846,6 +846,13 @@ body.rail-resizing * {
    On these devices actions stay in-flow (reserve space) ÔÇö overlay would
    permanently cover the trailing title. */
 @media (hover: none) {
+  body {
+    --rail-row-min-height: 36px;
+    /* Repo header is a tap target for expand/collapse; 34px sat under the 36 floor. */
+    --rail-repo-min-height: 40px;
+    --rail-row-font-size: 15px;
+    --rail-repo-font-size: 16px;
+  }
   .rail-repo-actions,
   .rail-session-actions {
     position: static;
@@ -858,25 +865,19 @@ body.rail-resizing * {
     background: transparent;
     padding-left: 0;
   }
-  /* IN-ROW secondary actions are contained within the row instead of
-     inflating it (owner, 2026-08-15: rows measured 44px on real phones while
-     web sat at 28). Deliberate exemption from the 36px tap floor: these are
-     secondary targets inside a row that is itself the primary target; 26px
-     clears the WCAG 2.5.8 AA floor (24px), and the density is the point.
-     The row heights follow --rail-row-min-height again. */
-  /* 32px CLICK area (owner's number) with a 26px LAYOUT footprint: the
-     3px hit-slop ring lives in padding cancelled by negative margin, so the
-     finger gets 32px while the row never grows past its variable. */
+  /* 36px click area (the universal tap floor — the old 32px exception is dead),
+     28px footprint: 4px hit-slop padding cancelled by negative margin. In a
+     36px row the ring extends exactly to the row edge, so there is zero bleed
+     into neighboring rows. */
   .rail-action-btn,
   .rail-session-actions .rail-action-btn {
     box-sizing: border-box;
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     padding: 4px;
     margin: -4px;
   }
-  .rail-repo-head { min-height: calc(var(--rail-repo-min-height, 34px)); }
-  .rail-session { min-height: var(--rail-row-min-height, 24px); }
+  .rail-session-repo { font-size: 12px; }
   .rail-menu-item { padding: 11px 10px; }
   .rail-head-btn { padding-block: 12px 8px; }
 }
@@ -4410,14 +4411,6 @@ body.vscode-light .preview-overlay {
     min-width: 36px;
     min-height: 36px;
   }
-  /* IN-ROW secondary actions: 32px click area (owner's number, hit-slop over
-     a 26px footprint) instead of the 36 floor - the row is the primary
-     target and density is the point. Header-slot instances keep 36. */
-  .rail-session-actions .rail-action-btn,
-  .rail-repo-actions .rail-action-btn {
-    min-width: 32px;
-    min-height: 32px;
-  }
   .rail-icon-btn {
     width: 36px;
     height: 36px;
@@ -4431,6 +4424,19 @@ body.vscode-light .preview-overlay {
     height: 36px;
     min-width: 36px;
     min-height: 36px;
+  }
+  /* iOS Safari force-zooms the page when a focused input is under 16px. */
+  .rail-search,
+  #rail-search,
+  textarea#input,
+  .input-highlight,
+  .session-name-input,
+  .history-search,
+  .history-rename,
+  .card textarea.plan-feedback,
+  .card .question-other-input,
+  .confirm-input {
+    font-size: 16px;
   }
 }
 

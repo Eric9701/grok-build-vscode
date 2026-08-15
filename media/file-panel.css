@@ -612,6 +612,8 @@ body.desk-ft-maximized .gfp-panel {
    hiding the underlay entirely — a browser-only failure that no DOM test can
    see, caught by `npm run e2e:screens`. Specificity, not order, so moving these
    rules cannot silently break it again. */
+/* Touch exception: stay 12px (code columns over point size). The two layers
+   must always change together — alignment is the feature. */
 .gfp-viewer-body pre.gfp-code-underlay,
 .gfp-editor.gfp-editor-overlaid {
   box-sizing: border-box;
@@ -914,6 +916,14 @@ body.vscode-light {
 }
 
 @media (hover: none) and (pointer: coarse) {
+  .gfp-panel { font-size: 15px; }
+  .gfp-viewer-name { font-size: 14px; }
+  /* Reader prose — 12px on a phone was the worst text in the app. 1.55 matches .desk-ft-md. */
+  .gfp-markdown { font-size: 15px; line-height: 1.55; }
+  /* Mirrors --rail-row-min-height for any mount that loads this file without chat.css. */
+  .gfp-row { min-height: 36px; }
+  /* iOS Safari force-zooms the page when a focused input is under 16px. */
+  .gfp-filter { font-size: 16px; }
   .gfp-close,
   .gfp-icon-button,
   .gfp-toggle,
@@ -929,6 +939,13 @@ body.vscode-light {
   .gfp-tab-close { width: 36px; height: 36px; }
   .gfp-tab-close svg { width: 15px; height: 15px; }
   .gfp-row-actions { display: flex; }
+  /* 36px buttons + 1px inset overflow a 36px row; cap to the inset box. */
+  .gfp-row-actions .gfp-icon-button {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    min-height: 34px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
