@@ -403,6 +403,13 @@ interface SessionLoadReservation {
   timer: NodeJS.Timeout;
 }
 
+type RemoteResumeTarget =
+  | { kind: "conflict"; selectedCwd: string }
+  | { kind: "repo-mismatch"; selectedCwd: string }
+  | { kind: "live"; selectedCwd: string; session: Session }
+  | { kind: "disk"; selectedCwd: string; actualCwd: string; provider: AcpProvider }
+  | { kind: "missing"; selectedCwd: string };
+
 interface RemoteRequester {
   clientId: string;
   tabToken?: string;
@@ -630,6 +637,14 @@ export class GrokSidebar {
     resumeId: string | undefined;
     started: () => void;
     wait: Promise<void>;
+  };
+  /** First `postRepoCatalog` has finished — later remote-resume misses refuse. */
+  private catalogWarmed = false;
+  private catalogWarmup: Promise<void> | null = null;
+  private testCatalogHold?: {
+    started: () => void;
+    wait: Promise<void>;
+    release: () => void;
   };
   // OS wake lock, held for exactly as long as the uplink is (linked device token
   // + live extension host) so an AFK machine can't idle-suspend out from under a
@@ -4009,6 +4024,7 @@ Only continue if you trust this code.`,
     for (const clientId of this.remoteClients.clients()) {
       this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));
     }
+    this.markCatalogWarmed();
   }
 
   /**
@@ -11551,6 +11567,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       sessionUsage: PromptUsage | undefined;
     };
     delayNextSessionStart(resumeId?: string): { started: Promise<void>; release(): void };
+    delayFirstCatalogBuild(): { started: Promise<void>; release(): void };
     waitForSessionLoad(id: string): Promise<void>;
     setSessionStatus(id: string, status: SessionStatus): void;
     activeRemoteSessionId(clientId: string): string | undefined;
@@ -11770,6 +11787,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         const started = new Promise<void>((resolve) => { markStarted = resolve; });
         const wait = new Promise<void>((resolve) => { release = resolve; });
         this.testSessionStartDelay = { resumeId, started: markStarted, wait };
+        return { started, release };
+      },
+      delayFirstCatalogBuild: () => {
+        let markStarted!: () => void;
+        let releaseWait!: () => void;
+        const started = new Promise<void>((resolve) => { markStarted = resolve; });
+        const wait = new Promise<void>((resolve) => { releaseWait = resolve; });
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          this.testCatalogHold = undefined;
+          releaseWait();
+        };
+        this.testCatalogHold = { started: markStarted, wait, release };
         return { started, release };
       },
       waitForSessionLoad: (id) => {
@@ -12716,6 +12748,73 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.sendRemoteSessionList(session, ownerTabToken);
   }
 
+  private refuseRemoteResume(clientId: string, id: string, text: string, selectedCwd: string): void {
+    this.sendRemoteClient(clientId, { type: "error", text, resumeFailed: { id } });
+    this.sendRemoteClient(clientId, this.buildSessionsList(selectedCwd, undefined, this.remoteActiveSessionId(clientId)));
+  }
+
+  private markCatalogWarmed(): void {
+    this.catalogWarmed = true;
+  }
+
+  private async waitForCatalogWarmup(): Promise<void> {
+    const hold = this.testCatalogHold;
+    if (hold) {
+      this.testCatalogHold = undefined;
+      hold.started();
+      await hold.wait;
+      return;
+    }
+    if (this.catalogWarmed) return;
+    if (!this.catalogWarmup) {
+      this.catalogWarmup = Promise.resolve()
+        .then(() => {
+          this.postRepoCatalog();
+        })
+        .finally(() => {
+          this.catalogWarmup = null;
+        });
+    }
+    await this.catalogWarmup;
+  }
+
+  private findRemoteResumeTarget(clientId: string, id: string, sessionCwd?: string): RemoteResumeTarget {
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const selectedCwd = this.adoptRepoForRemoteSession(clientId, sessionCwd, overrides);
+    const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
+    const conflictingOwner = this.remoteClients.clients().find((ownerId) =>
+      ownerId !== clientId && this.remoteClients.active(ownerId)?.activeSessionId === id
+    );
+    if (conflictingOwner) return { kind: "conflict", selectedCwd };
+    for (const session of this.pool) {
+      if (session.activeSessionId === id && session.client) {
+        if (!sessionCwdBelongsToRepo(this.sessionCwd(session), allowedCwds, pathsEqual)) {
+          return { kind: "repo-mismatch", selectedCwd };
+        }
+        return { kind: "live", selectedCwd, session };
+      }
+    }
+    const cachedCwd = this.sessionCache.get(id)?.entry.cwd;
+    const resumeCandidates = orderedResumeCwdCandidates({
+      messageCwd: sessionCwd,
+      trustedCwds: allowedCwds,
+      metaWorktreePath: overrides[id]?.worktreePath,
+      cachedCwd: overrides[id]?.providerCwd ?? cachedCwd,
+      sameCwd: pathsEqual,
+    });
+    const provider = overrides[id]?.provider ?? "grok";
+    const actualCwd = provider === "codex"
+      ? resumeCandidates.find((candidate) => allowedCwds.some((allowed) => pathsEqual(candidate, allowed)))
+      : findSessionCatalogCwd({
+          fs: defaultFs,
+          grokHome: resolveGrokHome(process.env),
+          id,
+          candidates: resumeCandidates,
+        });
+    if (!actualCwd) return { kind: "missing", selectedCwd };
+    return { kind: "disk", selectedCwd, actualCwd, provider };
+  }
+
   private async openRemoteSession(
     clientId: string,
     id: string,
@@ -12726,17 +12825,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!claim) {
       const selectedCwd = this.remoteClients.cwd(clientId);
       this.host.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
-      this.sendRemoteClient(clientId, {
-        type: "error",
-        text: "Could not restore this conversation because it is already being opened in another tab or the VS Code view.",
-      });
-      this.sendRemoteClient(
+      this.refuseRemoteResume(
         clientId,
-        this.buildSessionsList(
-          selectedCwd,
-          undefined,
-          this.remoteActiveSessionId(clientId),
-        ),
+        id,
+        "Could not restore this conversation because it is already being opened in another tab or the VS Code view.",
+        selectedCwd,
       );
       return;
     }
@@ -12792,7 +12885,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     sessionCwd?: string,
     notifyCatalog = true,
   ): Promise<void> {
-    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     // A remote may name a session that lives in a DIFFERENT repo of the catalog
     // it was shown — the projects rail lists every repo's sessions at once, so
     // "open that conversation over there" is now an ordinary click. Move the
@@ -12805,91 +12897,61 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // this replaces is unchanged in substance — the cwd must still belong to a
     // repo in the catalog (`remoteTargetableCwd` already gated it inbound), and
     // a cwd owned by no catalog repo still falls through to the refusal below.
-    const selectedCwd = this.adoptRepoForRemoteSession(clientId, sessionCwd, overrides);
-    const allowedCwds = this.sessionCwdsForRepo(selectedCwd, overrides);
-    const conflictingOwner = this.remoteClients.clients().find((ownerId) =>
-      ownerId !== clientId && this.remoteClients.active(ownerId)?.activeSessionId === id
-    );
+    let target = this.findRemoteResumeTarget(clientId, id, sessionCwd);
+    // Retry only while warm-up could EXPLAIN the miss — a warm catalog's miss
+    // is a genuine one, and re-kicking the build would just slow the refusal.
+    if (target.kind === "missing" && (!this.catalogWarmed || this.testCatalogHold)) {
+      await this.waitForCatalogWarmup();
+      // Re-resolve after the await: the requesting tab, reservation, and catalog
+      // can all have moved. Thread the live Session object, not a captured id.
+      if (!this.remoteClients.isCurrent(clientId)) return;
+      const held = this.sessionLoadReservations.get(id);
+      if (held?.token !== reservation.token) return;
+      target = this.findRemoteResumeTarget(clientId, id, sessionCwd);
+    }
     // Tabs stay mutually exclusive: each browser tab is its own conversation,
     // and the duplicate-tab theft guard builds on that. The VS Code view is
     // NOT a rival tab — a session open (or parked) at the desk is joined, not
     // refused: emit() fans every frame of a session to the focused webview and
     // to each remote holder, so the desk and the phone stay in sync.
-    if (conflictingOwner) {
+    if (target.kind === "conflict") {
       this.host.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
-      this.sendRemoteClient(clientId, {
-        type: "error",
-        text: "Could not restore this conversation because it is already open in another tab.",
-      });
-      this.sendRemoteClient(
+      this.refuseRemoteResume(
         clientId,
-        this.buildSessionsList(
-          selectedCwd,
-          undefined,
-          this.remoteActiveSessionId(clientId),
-        ),
+        id,
+        "Could not restore this conversation because it is already open in another tab.",
+        target.selectedCwd,
       );
       return;
     }
-    for (const session of this.pool) {
-      if (session.activeSessionId === id && session.client) {
-        if (!sessionCwdBelongsToRepo(this.sessionCwd(session), allowedCwds, pathsEqual)) {
-          this.host.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
-          this.sendRemoteClient(clientId, {
-            type: "error",
-            text: "Could not restore this tab's conversation because its repository is no longer selected or available.",
-          });
-          this.sendRemoteClient(
-            clientId,
-            this.buildSessionsList(
-              selectedCwd,
-              undefined,
-              this.remoteActiveSessionId(clientId),
-            ),
-          );
-          return;
-        }
-        this.parkRemoteSession(clientId, session);
-        this.dropRemoteVoice(clientId);
-        this.focusRemoteSession(clientId, session, notifyCatalog);
-        return;
-      }
+    if (target.kind === "repo-mismatch") {
+      this.host.appendLine(`[remote] dropped resumeSession (session cwd does not match selected repo)`);
+      this.refuseRemoteResume(
+        clientId,
+        id,
+        "Could not restore this tab's conversation because its repository is no longer selected or available.",
+        target.selectedCwd,
+      );
+      return;
     }
-    const cachedCwd = this.sessionCache.get(id)?.entry.cwd;
-    // Same property as local resume: message cwd is only a look-first among
-    // already-authorized repo catalogs; process root comes from disk.
-    const resumeCandidates = orderedResumeCwdCandidates({
-        messageCwd: sessionCwd,
-        trustedCwds: allowedCwds,
-        metaWorktreePath: overrides[id]?.worktreePath,
-        cachedCwd: overrides[id]?.providerCwd ?? cachedCwd,
-        sameCwd: pathsEqual,
-      });
-    const provider = overrides[id]?.provider ?? "grok";
-    const actualCwd = provider === "codex"
-      ? resumeCandidates.find((candidate) => allowedCwds.some((allowed) => pathsEqual(candidate, allowed)))
-      : findSessionCatalogCwd({
-          fs: defaultFs,
-          grokHome: resolveGrokHome(process.env),
-          id,
-          candidates: resumeCandidates,
-        });
-    if (!actualCwd) {
+    if (target.kind === "live") {
+      this.parkRemoteSession(clientId, target.session);
+      this.dropRemoteVoice(clientId);
+      this.focusRemoteSession(clientId, target.session, notifyCatalog);
+      return;
+    }
+    if (target.kind === "missing") {
       this.host.appendLine(`[remote] dropped resumeSession (session was not found in selected repo)`);
-      this.sendRemoteClient(clientId, {
-        type: "error",
-        text: "Could not restore this tab's previous conversation. It may have been deleted, or its repository may no longer be available. Start a new session explicitly to continue.",
-      });
-      this.sendRemoteClient(
+      this.refuseRemoteResume(
         clientId,
-        this.buildSessionsList(
-          selectedCwd,
-          undefined,
-          this.remoteActiveSessionId(clientId),
-        ),
+        id,
+        "Could not restore this tab's previous conversation. It may have been deleted, or its repository may no longer be available. Start a new session explicitly to continue.",
+        target.selectedCwd,
       );
       return;
     }
+    const { selectedCwd, actualCwd, provider } = target;
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const current = this.remoteClients.active(clientId);
     // Mirror of the desk-side adoption: if the DESK still holds this
     // conversation as a clientless object (crashed / reaped focused session),

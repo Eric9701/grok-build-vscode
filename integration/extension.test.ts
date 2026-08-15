@@ -871,6 +871,89 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     assert.strictEqual(norm(catalog.selectedCwd), norm(repoB));
   });
 
+  test("a remote resume waits for the first catalog build before refusing a still-warming session", async () => {
+    // RED without the warmup retry: findSessionCatalogCwd misses, the host
+    // immediately sends the permanent-sounding "may have been deleted" error,
+    // and writing the session afterward cannot restore it.
+    const id = `warmup-${Date.now()}`;
+    const clientId = `warmup-tab-${Date.now()}`;
+    const delay = hooks.delayFirstCatalogBuild();
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    try {
+      hooks.fromRemote({ type: "resumeSession", id, cwd: repoB }, clientId);
+      const began = await Promise.race([
+        delay.started.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
+      ]);
+      writeStoredSession(id);
+      delay.release();
+      assert.ok(began, "the resume must defer the not-found refuse until catalog warmup");
+
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && hooks.activeRemoteSessionId(clientId) !== id) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.strictEqual(
+        hooks.activeRemoteSessionId(clientId),
+        id,
+        `the session must restore after the catalog warmup: ${JSON.stringify(posts.filter((p) => p.msg?.type === "error"))}`,
+      );
+      assert.ok(!posts.some((p) =>
+        p.clientIds?.includes(clientId) &&
+        p.msg?.type === "error" &&
+        /may have been deleted/.test(p.msg.text)
+      ), JSON.stringify(posts.filter((p) => p.msg?.type === "error")));
+    } finally {
+      delay.release();
+    }
+  });
+
+  test("a genuinely missing remote resume carries resumeFailed with the requested id", async () => {
+    // RED without the machine-readable field: the error is human text only.
+    const id = `gone-${Date.now()}`;
+    const clientId = `missing-field-${Date.now()}`;
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    hooks.fromRemote({ type: "selectRepo", cwd: repoB }, clientId);
+    hooks.fromRemote({ type: "resumeSession", id, cwd: repoB }, clientId);
+
+    const deadline = Date.now() + 15000;
+    const missing = () => posts.find((p) =>
+      p.clientIds?.includes(clientId) &&
+      p.msg?.type === "error" &&
+      /may have been deleted/.test(p.msg.text)
+    );
+    while (Date.now() < deadline && !missing()) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const err = missing();
+    assert.ok(err, "a missing session id must surface Could not restore");
+    assert.deepStrictEqual(err!.msg.resumeFailed, { id });
+  });
+
+  test("the already-open-in-another-tab refusal carries resumeFailed", async () => {
+    // RED without the field on the theft refuse.
+    hooks.seedRemoteSession("tab-a", "session-a", repoB, [], true);
+    hooks.seedRemoteSession("tab-b", "session-b", repoB, [], true);
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    hooks.fromRemote({ type: "resumeSession", id: "session-a", cwd: repoB }, "tab-b");
+
+    const deadline = Date.now() + 15000;
+    const theft = () => posts.find((p) =>
+      p.clientIds?.includes("tab-b") &&
+      p.msg?.type === "error" &&
+      /already open/.test(p.msg.text)
+    );
+    while (Date.now() < deadline && !theft()) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const err = theft();
+    assert.ok(err, "tab-b must be refused when the session is live in another tab");
+    assert.deepStrictEqual(err!.msg.resumeFailed, { id: "session-a" });
+  });
+
   test("resume never steals another tab's live session or silently blank-starts a missing one", async () => {
     // Own the preconditions here. Earlier tests leave tab-a/session-a and
     // tab-b/session-b set up, but an intervening selectRepo can still be

@@ -360,7 +360,9 @@ export type HostMsg =
   | { type: "sessionContext" }
   | { type: "clearMessages" }
   | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login"; platform?: string; reason?: string; provider?: "grok" | "codex" }
-  | { type: "error"; text: string }
+  // resumeFailed is additive: a remote resume refusal names the requested id so
+  // the browser outbox can fail closed. Older clients ignore the extra field.
+  | { type: "error"; text: string; resumeFailed?: { id: string } }
   | { type: "hostNotice"; level: "info" | "warning"; text: string }
   | { type: "xaiNotification"; update?: unknown }
   // Persisted xAI lifecycle (method _x.ai/session/update): subagent spawn/finish
