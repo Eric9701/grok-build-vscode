@@ -203,11 +203,13 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
         railOpenButton = document.createElement("button");
         railOpenButton.type = "button";
         railOpenButton.id = "desk-rail-open-btn";
-        railOpenButton.className = "desk-rail-open-btn";
+        railOpenButton.className = "icon-btn desk-rail-open-btn";
         railOpenButton.innerHTML = shared.panelIcon("left");
         railOpenButton.title = "Show projects";
         railOpenButton.setAttribute("aria-label", "Show projects");
         topBar.insertBefore(railOpenButton, topBar.firstChild);
+      } else {
+        railOpenButton.classList.add("icon-btn");
       }
       const applyRailOpen = (open) => {
         document.body.classList.toggle("desk-rail-collapsed", !open);
