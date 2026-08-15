@@ -909,6 +909,50 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     }
   });
 
+  test("a remote resume waits for the deferred session-list, not just the catalog post", async () => {
+    // RED if "warmed" is the start/end of postRepoCatalog: the catalog half has
+    // already run, the wait is skipped, and writing the session afterward cannot
+    // restore it. GREEN only when firstBootScanCompleted waits for the deferred
+    // session-list as well.
+    const id = `warmup-list-${Date.now()}`;
+    const clientId = `warmup-list-tab-${Date.now()}`;
+    const delay = hooks.delayFirstCatalogBuild();
+    const posts: Array<{ msg: any; clientIds?: string[] }> = [];
+    hooks.onPost((_dest: string, msg: any, clientIds?: string[]) => posts.push({ msg, clientIds }));
+    try {
+      delay.beginDeferred();
+      const catalogPosted = await Promise.race([
+        delay.started.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
+      ]);
+      assert.ok(catalogPosted, "the deferred first-boot pass must reach catalog-done / session-list-held");
+
+      hooks.fromRemote({ type: "resumeSession", id, cwd: repoB }, clientId);
+      // The resume is async. Give the first lookup a chance to miss (session is
+      // not on disk yet) and either refuse (old warmed-at-catalog) or wait.
+      await new Promise((r) => setTimeout(r, 150));
+      writeStoredSession(id);
+      delay.release();
+
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && hooks.activeRemoteSessionId(clientId) !== id) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      assert.strictEqual(
+        hooks.activeRemoteSessionId(clientId),
+        id,
+        `the session must restore after the deferred session-list: ${JSON.stringify(posts.filter((p) => p.msg?.type === "error"))}`,
+      );
+      assert.ok(!posts.some((p) =>
+        p.clientIds?.includes(clientId) &&
+        p.msg?.type === "error" &&
+        /may have been deleted/.test(p.msg.text)
+      ), JSON.stringify(posts.filter((p) => p.msg?.type === "error")));
+    } finally {
+      delay.release();
+    }
+  });
+
   test("a genuinely missing remote resume carries resumeFailed with the requested id", async () => {
     // RED without the machine-readable field: the error is human text only.
     const id = `gone-${Date.now()}`;

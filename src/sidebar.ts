@@ -638,14 +638,21 @@ export class GrokSidebar {
     started: () => void;
     wait: Promise<void>;
   };
-  /** First `postRepoCatalog` has finished — later remote-resume misses refuse. */
-  private catalogWarmed = false;
-  private catalogWarmup: Promise<void> | null = null;
+  /** First full boot pass — repo catalog AND the deferred session-list — finished. */
+  private firstBootScanStarted = false;
+  private firstBootScanCompleted = false;
+  private resolveFirstBootScan: () => void = () => {};
+  private firstBootScanDone = new Promise<void>((resolve) => {
+    this.resolveFirstBootScan = resolve;
+  });
+  /** Test hook: parks the first boot pass after catalog, before session-list. */
   private testCatalogHold?: {
     started: () => void;
     wait: Promise<void>;
     release: () => void;
   };
+  /** Stalled boot must not hang a resume; the miss then stands as a real refusal. */
+  private static readonly FIRST_BOOT_SCAN_WAIT_MS = 8_000;
   // OS wake lock, held for exactly as long as the uplink is (linked device token
   // + live extension host) so an AFK machine can't idle-suspend out from under a
   // remote turn. `grok.remote.keepAwake` is the opt-out. See src/keep-awake.ts.
@@ -4024,7 +4031,6 @@ Only continue if you trust this code.`,
     for (const clientId of this.remoteClients.clients()) {
       this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));
     }
-    this.markCatalogWarmed();
   }
 
   /**
@@ -6977,8 +6983,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // catalog scan is deferred so ready returns and the UI paints first
         // (large histories must not block activation).
         if (!rehydrating) {
-          this.postRepoCatalog();
-          setImmediate(() => this.postSessionsList());
+          if (!this.firstBootScanStarted && !this.firstBootScanCompleted) {
+            void this.runFirstBootScan({ deferSessions: true });
+          } else {
+            this.postRepoCatalog();
+            setImmediate(() => this.postSessionsList());
+          }
+        } else {
+          this.completeFirstBootScan();
         }
         break;
       }
@@ -11567,7 +11579,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       sessionUsage: PromptUsage | undefined;
     };
     delayNextSessionStart(resumeId?: string): { started: Promise<void>; release(): void };
-    delayFirstCatalogBuild(): { started: Promise<void>; release(): void };
+    delayFirstCatalogBuild(): { started: Promise<void>; release(): void; beginDeferred(): void };
     waitForSessionLoad(id: string): Promise<void>;
     setSessionStatus(id: string, status: SessionStatus): void;
     activeRemoteSessionId(clientId: string): string | undefined;
@@ -11801,8 +11813,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.testCatalogHold = undefined;
           releaseWait();
         };
+        this.firstBootScanStarted = false;
+        this.firstBootScanCompleted = false;
+        this.firstBootScanDone = new Promise<void>((resolve) => {
+          this.resolveFirstBootScan = resolve;
+        });
         this.testCatalogHold = { started: markStarted, wait, release };
-        return { started, release };
+        return {
+          started,
+          release,
+          beginDeferred: () => { void this.runFirstBootScan({ deferSessions: true }); },
+        };
       },
       waitForSessionLoad: (id) => {
         const reservation = this.sessionLoadReservations.get(id);
@@ -12753,29 +12774,51 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.sendRemoteClient(clientId, this.buildSessionsList(selectedCwd, undefined, this.remoteActiveSessionId(clientId)));
   }
 
-  private markCatalogWarmed(): void {
-    this.catalogWarmed = true;
+  /**
+   * First full boot pass: repo catalog plus the deferred session-list build
+   * that ready/cold-boot schedule after it. "Warmed" means this pair finished,
+   * not that postRepoCatalog has merely started.
+   */
+  private async runFirstBootScan(opts?: { deferSessions?: boolean }): Promise<void> {
+    if (this.firstBootScanStarted || this.firstBootScanCompleted) return;
+    this.firstBootScanStarted = true;
+    this.postRepoCatalog();
+    const finish = async () => {
+      const hold = this.testCatalogHold;
+      if (hold) {
+        // Consume before awaiting so a resume that arrives in this window
+        // waits on firstBootScanCompleted, not on the hold flag itself.
+        this.testCatalogHold = undefined;
+        hold.started();
+        await hold.wait;
+      }
+      this.postSessionsList();
+      this.completeFirstBootScan();
+    };
+    if (opts?.deferSessions) {
+      setImmediate(() => { void finish(); });
+      return;
+    }
+    await finish();
+  }
+
+  private completeFirstBootScan(): void {
+    if (this.firstBootScanCompleted) return;
+    this.firstBootScanCompleted = true;
+    this.resolveFirstBootScan();
   }
 
   private async waitForCatalogWarmup(): Promise<void> {
-    const hold = this.testCatalogHold;
-    if (hold) {
-      this.testCatalogHold = undefined;
-      hold.started();
-      await hold.wait;
-      return;
+    if (this.firstBootScanCompleted) return;
+    if (!this.firstBootScanStarted) {
+      void this.runFirstBootScan({ deferSessions: false });
     }
-    if (this.catalogWarmed) return;
-    if (!this.catalogWarmup) {
-      this.catalogWarmup = Promise.resolve()
-        .then(() => {
-          this.postRepoCatalog();
-        })
-        .finally(() => {
-          this.catalogWarmup = null;
-        });
-    }
-    await this.catalogWarmup;
+    await Promise.race([
+      this.firstBootScanDone,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, GrokSidebar.FIRST_BOOT_SCAN_WAIT_MS);
+      }),
+    ]);
   }
 
   private findRemoteResumeTarget(clientId: string, id: string, sessionCwd?: string): RemoteResumeTarget {
@@ -12898,9 +12941,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // repo in the catalog (`remoteTargetableCwd` already gated it inbound), and
     // a cwd owned by no catalog repo still falls through to the refusal below.
     let target = this.findRemoteResumeTarget(clientId, id, sessionCwd);
-    // Retry only while warm-up could EXPLAIN the miss — a warm catalog's miss
-    // is a genuine one, and re-kicking the build would just slow the refusal.
-    if (target.kind === "missing" && (!this.catalogWarmed || this.testCatalogHold)) {
+    // Retry only while the first boot pass could EXPLAIN the miss — a completed
+    // catalog+session-list miss is genuine, and waiting again would just delay
+    // the refusal. catalog-posted-but-list-still-deferred is still warming.
+    if (target.kind === "missing" && !this.firstBootScanCompleted) {
       await this.waitForCatalogWarmup();
       // Re-resolve after the await: the requesting tab, reservation, and catalog
       // can all have moved. Thread the live Session object, not a captured id.
