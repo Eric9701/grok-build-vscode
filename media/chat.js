@@ -12741,7 +12741,17 @@
             // Also deliberately uses host-confirmed activeSessionId only — a
             // pending rail click must not be remembered as this tab's session.
             const activeRepoRow = state.repos.find((r) => sameCwd(r.cwd, state.activeRepoCwd));
-            saveRememberedRemoteSession({
+            // An EMPTY conversation is deliberately forgotten, not remembered:
+            // the host reaps an untouched session the moment this tab lets go
+            // of it (#24), so a remembered empty id turns every refresh into
+            // "could not restore — it may have been deleted" over a perfectly
+            // healthy new tab (owner-hit, 2026-08-15). Nothing to restore must
+            // mean no restore attempt. Both signals have to agree — the host's
+            // message count AND a blank view — so a refresh mid-first-turn,
+            // where the count still lags at 0, keeps remembering.
+            if (activeEntry?.numMessages === 0 && state.welcomeVisible) {
+              saveRememberedRemoteSession(null);
+            } else saveRememberedRemoteSession({
               id: state.activeSessionId,
               repoCwd: (activeRepoRow && activeRepoRow.cwd) ||
                 state.selectedRepoCwd || state.activeRepoCwd || state.cwd || "",
