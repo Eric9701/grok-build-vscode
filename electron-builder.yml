@@ -43,7 +43,6 @@ files:
   - node_modules/@anthropic-ai/claude-agent-sdk/package.json
   - node_modules/@anthropic-ai/claude-agent-sdk/*.mjs
   - node_modules/@anthropic-ai/claude-agent-sdk/*.js
-  - node_modules/@anthropic-ai/claude-agent-sdk/*.d.ts
   - node_modules/zod/**/*
   # LOAD-BEARING. The honest lockfile installs the adapter's declared tree,
   # and electron-builder packs the full hoisted production tree of every

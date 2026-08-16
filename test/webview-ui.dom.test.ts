@@ -1142,7 +1142,11 @@ describe("provider onboarding", () => {
     expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("claude auth login");
 
     dispatch(window, { type: "onboarding", state: "claude-login" });
-    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("does not offer Claude.ai login");
+    const loginCopy = doc.getElementById("welcome-onboarding")!.textContent ?? "";
+    expect(loginCopy).toContain("never implements, proxies, holds, or forwards Claude credentials");
+    expect(loginCopy).toContain("Claude subscription");
+    expect(loginCopy).toContain("Anthropic Console");
+    expect(loginCopy).not.toContain("does not offer Claude.ai login");
     const recheck = [...doc.querySelectorAll("#welcome-onboarding button")]
       .find((el) => el.textContent?.includes("connect Claude")) as HTMLElement;
     click(window, recheck);

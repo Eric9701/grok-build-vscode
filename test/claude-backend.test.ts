@@ -30,6 +30,8 @@ describe("Claude adapter spawn", () => {
   });
 
   it("does not pass a hide-subscription flag", () => {
+    // Deliberate: `--hide-claude-auth` would reject subscription accounts that
+    // already work in official Claude Code. We never handle the credential.
     const spec = new ClaudeBackend({ adapterPath: "adapter.js" }).spawn({
       cliPath: "claude",
       cwd: "/repo",

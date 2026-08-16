@@ -217,6 +217,15 @@ describe("primer sender retirement", () => {
 });
 
 describe("unavailable Plan recovery", () => {
+  it("follows a writable adapter mode without lowering grok's client gate", () => {
+    expect(modeChangedListener).toContain("!client.usesClientPlanGate");
+    expect(modeChangedListener).toContain("applyAgentModeToHostPlan(id, false)");
+    expect(modeChangedListener).toContain("this.setPlanActive(session, next.planActive)");
+    const grokDescriptive = modeChangedListener.slice(modeChangedListener.indexOf("} else if (session === this.focused)"));
+    expect(grokDescriptive).toContain("this.postMode()");
+    expect(grokDescriptive).not.toContain("this.setPlanActive(session, false)");
+  });
+
   it("raises the gate but defers recovery while session/load is replaying", () => {
     const raise = modeChangedListener.indexOf("this.setPlanActive(session, true)");
     const unavailable = modeChangedListener.indexOf("if (!session.planModeAvailable)", raise);

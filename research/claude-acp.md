@@ -31,12 +31,14 @@ ACP-level Claude.ai / Console login methods never appear.
 
 The adapter *can* offer `claude-ai-login` (`auth login --claudeai`) if a
 client asks. We never do. Login is the user's own `claude auth login`
-(no `--claudeai` flag from us). We do not store, forward, or broker a
-Claude credential.
+(no `--claudeai` flag from us). We do not implement, proxy, hold, or
+forward a Claude credential. Anthropic's CLI may use the user's Claude
+subscription or an Anthropic Console account depending on how they sign
+in — we do not restrict which account type it offers.
 
-`--hide-claude-auth` would reject subscription accounts at `session/new`.
-That is not what we want: a user who already signed into official Claude
-Code is using Anthropic's tooling. We find that install and spawn it.
+`--hide-claude-auth` is a **deliberate omission**. The flag would reject
+subscription accounts at `session/new` that already work in official
+Claude Code. We never handle the credential either way.
 
 Logged-out turns fail with `authRequired` / `Please run /login`. That is
 `isClaudeCredentialError`. Quota and rate-limit text is not.

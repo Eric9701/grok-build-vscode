@@ -408,6 +408,17 @@ export class AcpClient extends EventEmitter {
         this.opts.log(`[acp] Failed to set model to ${modelId}: ${(err as Error).message}. Falling back to default model ${this.currentModelId}.`);
       }
     }
+    // Spawn `--reasoning-effort` is grok-only. Adapters take effort as a
+    // session config option after session/new — recording `opts.effort`
+    // locally without this RPC left the UI showing a level Claude/Codex
+    // were not running.
+    if (this.opts.effort && this.provider !== "grok") {
+      try {
+        await this.setReasoningEffort(this.opts.effort);
+      } catch (err) {
+        this.opts.log(`[acp] Failed to set reasoning effort to ${this.opts.effort}: ${(err as Error).message}.`);
+      }
+    }
     return { sessionId: res.sessionId };
   }
 
@@ -1027,6 +1038,24 @@ export class AcpClient extends EventEmitter {
     if (r.event === "modeChanged") {
       this.currentModeId = r.modeId;
       this.emit("modeChanged", r.modeId);
+      return;
+    }
+    if (r.event === "configOptionUpdate") {
+      const state = this.backend.configState({ configOptions: r.configOptions }, {
+        modelId: this.currentModelId,
+        reasoningEffort: this.currentReasoningEffort,
+        modeId: this.currentModeId,
+      });
+      if (state.modelId) this.currentModelId = state.modelId;
+      if (state.reasoningEffort !== undefined) {
+        this.currentReasoningEffort = state.reasoningEffort;
+        const current = this.availableModels.find((entry) => entry.modelId === this.currentModelId);
+        if (current) current.reasoningEffort = this.currentReasoningEffort;
+      }
+      if (state.modeId && state.modeId !== this.currentModeId) {
+        this.currentModeId = state.modeId;
+        this.emit("modeChanged", state.modeId);
+      }
       return;
     }
     if (r.event === "commandsUpdate") {

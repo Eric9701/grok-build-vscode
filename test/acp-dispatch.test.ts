@@ -169,6 +169,21 @@ describe("routeSessionUpdate", () => {
     expect(r).toEqual({ event: "modeChanged", modeId: "plan" });
   });
 
+  it("routes config_option_update so adapter mode changes are not dropped", () => {
+    const r = routeSessionUpdate({
+      sessionUpdate: "config_option_update",
+      configOptions: [{ id: "collaboration_mode", currentValue: "default" }],
+    });
+    expect(r).toEqual({
+      event: "configOptionUpdate",
+      configOptions: [{ id: "collaboration_mode", currentValue: "default" }],
+    });
+    expect(routeSessionUpdate({ sessionUpdate: "config_option_update" })).toEqual({
+      event: "configOptionUpdate",
+      configOptions: [],
+    });
+  });
+
   it("routes available_commands_update", () => {
     const r = routeSessionUpdate({
       sessionUpdate: "available_commands_update",

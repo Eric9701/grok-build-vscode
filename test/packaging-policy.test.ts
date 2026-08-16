@@ -195,6 +195,15 @@ describe("VSIX excludes desktop app", () => {
     expect(full.scripts["dist:mac"]).not.toMatch(/--x64/);
   });
 
+  it("does not pack Claude Agent SDK type declarations", () => {
+    const vscodeignore = read(".vscodeignore");
+    const builder = read("electron-builder.yml");
+    expect(vscodeignore).not.toMatch(/claude-agent-sdk\/\*\.d\.ts/);
+    expect(builder).not.toMatch(/claude-agent-sdk\/\*\.d\.ts/);
+    expect(vscodeignore).toMatch(/!node_modules\/@anthropic-ai\/claude-agent-sdk\/\*\.js/);
+    expect(builder).toMatch(/node_modules\/@anthropic-ai\/claude-agent-sdk\/\*\.js/);
+  });
+
   it("packages the pinned Claude ACP runtime without native SDK binaries", () => {
     const builder = read("electron-builder.yml");
     const full = JSON.parse(read("package.json")) as { dependencies?: Record<string, string> };

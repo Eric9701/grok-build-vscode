@@ -5,6 +5,7 @@ import {
   isMutatingKind,
   isReadOnlyCommand,
   isPlanFileWrite,
+  applyAgentModeToHostPlan,
   permissionAnswerAllowed,
   permissionOptionsForPlan,
   pickRejectOption,
@@ -700,6 +701,26 @@ describe("permission gating", () => {
     )).toEqual([]);
     expect(permissionOptionsForPlan(options, false, "execute")).toBe(options);
     expect(permissionOptionsForPlan(options, true, "edit")).toBe(options);
+  });
+});
+
+describe("applyAgentModeToHostPlan", () => {
+  it("raises Plan for every provider on a plan mode id", () => {
+    expect(applyAgentModeToHostPlan("plan", true)).toEqual({ planActive: true, autoApprove: false });
+    expect(applyAgentModeToHostPlan("plan", false)).toEqual({ planActive: true, autoApprove: false });
+  });
+
+  it("leaves grok's client gate raised on a writable current_mode_update", () => {
+    expect(applyAgentModeToHostPlan("default", true)).toBeNull();
+    expect(applyAgentModeToHostPlan("auto", true)).toBeNull();
+  });
+
+  it("follows the adapter's writable mode so the host stops saying Plan", () => {
+    expect(applyAgentModeToHostPlan("default", false)).toEqual({ planActive: false, autoApprove: false });
+    expect(applyAgentModeToHostPlan("auto", false)).toEqual({ planActive: false, autoApprove: true });
+    expect(applyAgentModeToHostPlan("acceptEdits", false)).toEqual({ planActive: false, autoApprove: true });
+    expect(applyAgentModeToHostPlan("bypassPermissions", false)).toEqual({ planActive: false, autoApprove: true });
+    expect(applyAgentModeToHostPlan("agent-full-access", false)).toEqual({ planActive: false, autoApprove: true });
   });
 });
 

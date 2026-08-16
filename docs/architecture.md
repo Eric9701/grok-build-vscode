@@ -62,8 +62,8 @@ packs its JS deps and never the optional native SDK binaries. Both adapters
 normalize models, config options, usage, titles, and `session/list` into the
 existing host shapes. Plan enforcement stays in the adapter/CLI, so the Grok
 terminal/fs Plan gate is off for those providers. Claude authentication stays
-in Anthropic's own `claude` CLI — this host never implements Claude.ai login
-or stores an API key.
+in Anthropic's own `claude` CLI — this host never implements, proxies, holds,
+or forwards Claude credentials.
 
 Connection is explicit and binary-aware. `grok.providerConnections` records the
 user choice; a located binary alone never connects Codex. `grok.providerModelCache`
@@ -341,6 +341,9 @@ Codex plan review follows a different wire path: it is a normal
 the ordinary permission card and returns the selected option. `CodexBackend`
 reports `usesClientPlanGate = false`, so none of the Grok filesystem/terminal
 gate, plan-file snooping, or `x.ai/exit_plan_mode` verdict machinery is attached.
+Their Plan/Agent chrome still follows the agent's mode (`applyAgentModeToHostPlan`,
+plus Codex `config_option_update`) so the button cannot stay on Plan after an
+approved exit.
 
 The full pedagogical write-up lives in
 [research/understanding-plan-mode.md](../research/understanding-plan-mode.md).
@@ -355,7 +358,7 @@ The full pedagogical write-up lives in
 | [src/acp.ts](../src/acp.ts) | Provider-neutral ACP client — spawns the selected backend, manages session lifecycle, normalizes through its backend hooks, and emits the extension's established events. `interject` (#52 Steer), `forkSession` (#48), and worktree RPCs (P2-8) call the unadvertised `_x.ai/*` methods, returning `"unsupported"` on -32601 rather than throwing |
 | [src/acp-backend.ts](../src/acp-backend.ts) / [src/grok-backend.ts](../src/grok-backend.ts) / [src/codex-backend.ts](../src/codex-backend.ts) / [src/claude-backend.ts](../src/claude-backend.ts) | Backend contract, Grok identity, Codex and Claude host normalization. Codex uses `session/set_config_option`; Claude maps `configOptions` into the host model picker, lists sessions with `{ cwd }`, and maps Agent/Auto-accept onto native permission modes |
 | [src/codex-model-cache.ts](../src/codex-model-cache.ts) / [src/claude-model-cache.ts](../src/claude-model-cache.ts) | Short-lived connect warm-up that caches adapter models from a scratch `session/new`, deletes the temporary adapter-owned session, and cleans up the client/cwd |
-| [src/provider-ui.ts](../src/provider-ui.ts) | Pure provider presentation/state policy — Grok-first model grouping, empty-model default sentinel, normalized project defaults, Codex history shaping, and mixed-provider recency merge |
+| [src/provider-ui.ts](../src/provider-ui.ts) | Pure provider presentation/state policy — Grok-first model grouping, empty-model default sentinel, normalized project defaults, Codex-only listing-time freeze (`adapterActivityAt`), clear-all refresh guard (`adapterEntriesEligibleForClear`), and mixed-provider recency merge |
 | [src/worktree.ts](../src/worktree.ts) | Pure worktree helpers (P2-8) — parse create/list/apply/remove/status, multi-cwd history merge; wire notes in [research/worktree.md](../research/worktree.md) |
 | [src/session.ts](../src/session.ts) | Per-session state bag — one `Session` per live backend process, with immutable `provider` identity (the sidebar holds a *pool* plus one focused); carries the send queue (#37) and optional worktree binding (`cwd` / `worktree`), while cumulative billing stays solely in session-id-keyed metadata (#53) |
 | [src/session-pool.ts](../src/session-pool.ts) | Pure reaping policy (`selectReapable`) — idle-TTL + LRU cap over the live-session pool |

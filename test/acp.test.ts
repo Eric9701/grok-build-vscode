@@ -6,18 +6,45 @@ import {
   acpClientCapabilities,
   buildGrokAgentArgs,
 } from "../src/acp";
+import type { AcpBackend } from "../src/acp-backend";
+import { ClaudeBackend } from "../src/claude-backend";
+import { CodexBackend } from "../src/codex-backend";
 
 // Unit tests for AcpClient internals that don't need a real subprocess. We
 // stand up the client with a fake writable proc and drive `request`/`onLine`
 // directly.
-function clientWithFakeProc(): { client: AcpClient; written: string[] } {
-  const client = new AcpClient({ cliPath: "x", cwd: "/", log: () => {} });
+function clientWithFakeProc(opts?: {
+  backend?: AcpBackend;
+  effort?: "high";
+}): { client: AcpClient; written: string[] } {
+  const client = new AcpClient({
+    cliPath: "x",
+    cwd: "/",
+    log: () => {},
+    ...(opts?.backend ? { backend: opts.backend } : {}),
+    ...(opts?.effort ? { effort: opts.effort } : {}),
+  });
   const written: string[] = [];
   (client as any).proc = {
     killed: false,
     stdin: { writable: true, write: (s: string) => written.push(s) },
   };
   return { client, written };
+}
+
+function replyToWrites(
+  client: AcpClient,
+  written: string[],
+  resultFor: (msg: any) => any,
+): void {
+  (client as any).proc.stdin.write = (s: string) => {
+    written.push(s);
+    const msg = JSON.parse(s);
+    queueMicrotask(() => {
+      (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: resultFor(msg) }));
+    });
+    return true;
+  };
 }
 
 describe("AcpClient notification metadata", () => {
@@ -299,5 +326,96 @@ describe("buildGrokAgentArgs", () => {
     expect(buildGrokAgentArgs("high")).toEqual(["agent", "--reasoning-effort", "high", "stdio"]);
     expect(buildGrokAgentArgs("none")).toEqual(["agent", "--reasoning-effort", "none", "stdio"]);
     expect(buildGrokAgentArgs("xhigh")).toEqual(["agent", "--reasoning-effort", "xhigh", "stdio"]);
+  });
+});
+
+describe("adapter session/new effort", () => {
+  it("sends Claude effort as session/set_config_option after session/new", async () => {
+    const { client, written } = clientWithFakeProc({ backend: new ClaudeBackend(), effort: "high" });
+    replyToWrites(client, written, (msg) => {
+      if (msg.method === "session/new") {
+        return {
+          sessionId: "s1",
+          configOptions: [
+            { id: "model", currentValue: "claude-opus-4-6", options: [{ value: "claude-opus-4-6", name: "Opus" }] },
+            { id: "effort", currentValue: "default", options: [{ value: "low" }, { value: "high" }] },
+          ],
+        };
+      }
+      if (msg.method === "session/set_config_option") {
+        return { configOptions: [
+          { id: "model", currentValue: "claude-opus-4-6" },
+          { id: "effort", currentValue: msg.params.value },
+        ] };
+      }
+      return {};
+    });
+    await client.newSession();
+    const calls = written.map((line) => JSON.parse(line));
+    expect(calls.some((msg) => msg.method === "session/set_config_option" && msg.params.configId === "effort" && msg.params.value === "high")).toBe(true);
+    expect(client.currentReasoningEffort).toBe("high");
+  });
+
+  it("sends Codex effort as session/set_config_option after session/new", async () => {
+    const { client, written } = clientWithFakeProc({ backend: new CodexBackend(), effort: "high" });
+    replyToWrites(client, written, (msg) => {
+      if (msg.method === "session/new") {
+        return {
+          sessionId: "s1",
+          models: {
+            currentModelId: "gpt-5.6-sol[high]",
+            availableModels: [
+              { modelId: "gpt-5.6-sol[low]", name: "Sol (low)" },
+              { modelId: "gpt-5.6-sol[high]", name: "Sol (high)" },
+            ],
+          },
+        };
+      }
+      if (msg.method === "session/set_config_option") {
+        return { configOptions: [
+          { id: "model", currentValue: "gpt-5.6-sol" },
+          { id: "reasoning_effort", currentValue: msg.params.value },
+        ] };
+      }
+      return {};
+    });
+    await client.newSession();
+    const calls = written.map((line) => JSON.parse(line));
+    expect(calls.some((msg) => msg.method === "session/set_config_option" && msg.params.configId === "reasoning_effort" && msg.params.value === "high")).toBe(true);
+    expect(client.currentReasoningEffort).toBe("high");
+  });
+
+  it("does not send a post-new effort RPC for grok (spawn already applied it)", async () => {
+    const { client, written } = clientWithFakeProc({ effort: "high" });
+    replyToWrites(client, written, (msg) => {
+      if (msg.method === "session/new") return { sessionId: "s1", models: { currentModelId: "grok-build", availableModels: [] } };
+      return { _meta: { model: { Ok: "grok-build" } } };
+    });
+    await client.newSession();
+    expect(written.map((line) => JSON.parse(line).method)).toEqual(["session/new"]);
+  });
+});
+
+describe("adapter config_option_update", () => {
+  it("emits modeChanged when Codex leaves plan via config_option_update", () => {
+    const { client } = clientWithFakeProc({ backend: new CodexBackend() });
+    const modes: string[] = [];
+    client.on("modeChanged", (mode) => modes.push(mode));
+    client.currentModeId = "plan";
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: [
+            { id: "collaboration_mode", currentValue: "default" },
+            { id: "mode", currentValue: "agent" },
+          ],
+        },
+      },
+    }));
+    expect(modes).toEqual(["default"]);
+    expect(client.currentModeId).toBe("default");
   });
 });

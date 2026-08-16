@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  adapterActivityAt,
+  adapterEntriesEligibleForClear,
+  adapterListEntry,
   codexListEntry,
   compareHistoryEntries,
   connectedProviderIds,
@@ -246,6 +249,38 @@ describe("provider UI pure policy", () => {
       "codex:Codex default",
       "claude:Claude default",
     ]);
+  });
+
+  it("pins Codex recency to send-time but lets Claude listing timestamps move", () => {
+    expect(adapterActivityAt("codex", 900, 100)).toBe(100);
+    expect(adapterActivityAt("claude", 900, 100)).toBe(900);
+    expect(adapterActivityAt("claude", 200, 500)).toBe(500);
+    expect(adapterActivityAt("claude", 300)).toBe(300);
+
+    const claude = adapterListEntry(
+      { sessionId: "c1", cwd: "/repo", title: "External", updatedAt: 900 },
+      { c1: { provider: "claude", activeAt: 100 } },
+      "claude",
+    );
+    expect(claude.updatedAt).toBe(900);
+
+    const codex = adapterListEntry(
+      { sessionId: "x1", cwd: "/repo", title: "Opened", updatedAt: 900 },
+      { x1: { provider: "codex", activeAt: 100 } },
+      "codex",
+    );
+    expect(codex.updatedAt).toBe(100);
+  });
+
+  it("omits adapter history that was not successfully refreshed before clear-all", () => {
+    const checked = new Set<"codex" | "claude">(["claude"]);
+    expect(adapterEntriesEligibleForClear([
+      { provider: "codex", entries: [{ id: "stale-codex" }] },
+      { provider: "claude", entries: [{ id: "fresh-claude" }] },
+    ], checked)).toEqual([{ id: "fresh-claude" }]);
+    expect(adapterEntriesEligibleForClear([
+      { provider: "codex", entries: [{ id: "stale-codex" }] },
+    ], new Set())).toEqual([]);
   });
 
   it("keeps Codex ordering stable across an open-only adapter restamp, then moves on send", () => {

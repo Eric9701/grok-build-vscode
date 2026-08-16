@@ -182,6 +182,30 @@ describe("multi-provider review regressions", () => {
     expect(recheck).toContain("await this.reprobeProviderCredentials(provider)");
   });
 
+  it("refuses to clear adapter history that could not be refreshed", () => {
+    const body = methodBody("private async clearAllSessions(");
+    expect(body).toContain("const adapterHistoryChecked = new Set<AcpProvider>()");
+    expect(body).toContain("adapterHistoryChecked.add(provider)");
+    expect(body).toContain("adapterEntriesEligibleForClear(");
+    const catchIdx = body.indexOf("history could not be checked, so its conversations were not cleared");
+    const addIdx = body.indexOf("adapterHistoryChecked.add(provider)");
+    const eligibleIdx = body.indexOf("adapterEntriesEligibleForClear(");
+    const skipIdx = body.indexOf("if (!adapterHistoryChecked.has(provider)) continue");
+    expect(catchIdx).toBeGreaterThan(-1);
+    expect(addIdx).toBeGreaterThan(-1);
+    expect(eligibleIdx).toBeGreaterThan(catchIdx);
+    expect(skipIdx).toBeGreaterThan(eligibleIdx);
+  });
+
+  it("freezes Codex listing time on first discovery but not Claude lastModified", () => {
+    const body = methodBody("private async refreshAdapterHistory(");
+    expect(body).toContain('if (provider === "codex")');
+    expect(body).toContain("if (typeof previous.activeAt === \"number\") continue");
+    const freeze = body.slice(body.indexOf('if (provider === "codex")'));
+    expect(freeze).toContain("activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt");
+    expect(body).toContain("...(provider === \"codex\"");
+  });
+
   it("puts minimal provider state in every remote client snapshot", () => {
     const instance = Object.create(GrokSidebar.prototype) as any;
     instance.providerConnections = vi.fn(() => ({ grok: true, codex: true }));

@@ -796,6 +796,38 @@ export interface PermissionOptionLike {
   name?: string;
 }
 
+/** Claude/Codex modes that mean Auto accept in the host picker. */
+const ADAPTER_AUTO_ACCEPT_MODES = new Set([
+  "yolo",
+  "auto",
+  "acceptEdits",
+  "bypassPermissions",
+  "agent-full-access",
+]);
+
+/**
+ * Map an agent-reported mode onto the host's Plan / Auto-accept flags.
+ *
+ * Grok's `current_mode_update` is descriptive: only a Plan *entry* raises the
+ * client gate; a writable mode does not lower it (the verdict / `setMode` own
+ * that). Adapters with `usesClientPlanGate === false` are the opposite — the
+ * agent's mode is authority, because they switch to a writable mode and then
+ * edit (Claude `ExitPlanMode`, Codex plan approval).
+ */
+export function applyAgentModeToHostPlan(
+  modeId: string,
+  usesClientPlanGate: boolean,
+): { planActive: boolean; autoApprove: boolean } | null {
+  if (modeId === "plan") {
+    return { planActive: true, autoApprove: false };
+  }
+  if (usesClientPlanGate) return null;
+  return {
+    planActive: false,
+    autoApprove: ADAPTER_AUTO_ACCEPT_MODES.has(modeId),
+  };
+}
+
 export function permissionOptionsForPlan<T extends PermissionOptionLike>(
   options: T[],
   planActive: boolean,

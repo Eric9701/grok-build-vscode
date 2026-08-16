@@ -84,6 +84,7 @@ export type UpdateRoute =
   | { event: "toolCallUpdate"; payload: any }
   | { event: "plan"; payload: any }
   | { event: "modeChanged"; modeId: string }
+  | { event: "configOptionUpdate"; configOptions: any[] }
   | { event: "commandsUpdate"; commands: any[] }
   | { event: "taskBackgrounded"; payload: any }
   | { event: "taskCompleted"; payload: any }
@@ -271,6 +272,11 @@ export function routeSessionUpdate(u: any): UpdateRoute | null {
       return { event: "plan", payload: u };
     case "current_mode_update":
       return { event: "modeChanged", modeId: u.currentModeId };
+    case "config_option_update":
+      return {
+        event: "configOptionUpdate",
+        configOptions: Array.isArray(u.configOptions) ? u.configOptions : [],
+      };
     case "available_commands_update":
       return { event: "commandsUpdate", commands: u.availableCommands ?? [] };
     case "task_backgrounded":

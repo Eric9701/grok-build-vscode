@@ -142,6 +142,26 @@ export function modelsForConnectedProviders(
   return out;
 }
 
+/** Codex restamps listing time on load, so send-time `activeAt` is the clock.
+ *  Claude reports the SDK's real lastModified — a later listing may promote.
+ *  A local send still wins when it is newer than the adapter stamp. */
+export function adapterActivityAt(
+  provider: AcpProvider,
+  reportedAt: number,
+  activeAt?: number,
+): number {
+  if (typeof activeAt !== "number") return reportedAt;
+  if (provider === "codex") return activeAt;
+  return Math.max(reportedAt, activeAt);
+}
+
+export function adapterEntriesEligibleForClear<T>(
+  caches: ReadonlyArray<{ provider: AcpProvider; entries: readonly T[] }>,
+  refreshed: ReadonlySet<AcpProvider>,
+): T[] {
+  return caches.flatMap((cache) => refreshed.has(cache.provider) ? [...cache.entries] : []);
+}
+
 export function adapterListEntry(
   raw: BackendSessionListEntry,
   overrides: SessionMetaOverrides,
@@ -153,10 +173,8 @@ export function adapterListEntry(
   const parsed = typeof raw.updatedAt === "number"
     ? raw.updatedAt
     : Date.parse(String(raw.updatedAt ?? ""));
-  // Codex restamps listing time on load; once we have seen a row, send-time
-  // `activeAt` is the activity clock. Opening alone must never promote it.
   const reportedAt = Number.isFinite(parsed) ? parsed : now;
-  const updatedAt = typeof meta?.activeAt === "number" ? meta.activeAt : reportedAt;
+  const updatedAt = adapterActivityAt(provider, reportedAt, meta?.activeAt);
   const customName = meta?.customName?.trim() || undefined;
   const autoName = meta?.autoName?.trim() || title;
   return {

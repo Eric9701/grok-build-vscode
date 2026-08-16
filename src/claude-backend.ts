@@ -240,6 +240,9 @@ export class ClaudeBackend implements AcpBackend {
 
   spawn(options: BackendSpawnOptions): BackendSpawnSpec {
     const command = this.options.nodePath || process.execPath;
+    // Deliberately omit `--hide-claude-auth`. That flag makes the adapter
+    // reject Claude subscription accounts that already work in official Claude
+    // Code. We never handle the credential either way — Anthropic's CLI does.
     return {
       command,
       args: [this.adapterPath()],

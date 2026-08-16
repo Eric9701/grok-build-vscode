@@ -240,7 +240,7 @@ These give you high confidence that the policy and the card rendering match the 
 
 ## Lesson 8: Common Misconceptions & Debugging Tips
 
-- **"The CLI log says `default`, but the mode button still says Plan"** — expected after a descriptive non-plan update: the safety gate is not lowered by that notification alone, and the button derives from `planActive`.
+- **"The CLI log says `default`, but the mode button still says Plan"** — expected for grok after a descriptive non-plan update: the safety gate is not lowered by that notification alone, and the button derives from `planActive`. Claude/Codex do not use the client gate, so a writable agent mode must clear `planActive` (`applyAgentModeToHostPlan`).
 - **"Grok just wrote a file while I was in Plan mode"** — either the `fs/write_text_file` callback wrote its own `plan.md` (outside the workspace) or the gate was not actually up at that moment. Shell-based writes to that plan path are blocked too.
 - **"I rejected the plan but Grok still started implementing"** — this should no longer happen with the shipped B+ gate. If it does, you have found a bug in the containment or the allowlist.
 - **"Why did a second plan card appear after I clicked Reject?"** — native `cancelled` keeps the original turn in Plan, so grok revises and can call `exit_plan_mode` again without a synthetic prompt or extra user turn.

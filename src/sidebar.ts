@@ -24,6 +24,7 @@ import { CLAUDE_ACP_ADAPTER_VERSION, ClaudeBackend, isClaudeCredentialError } fr
 import { locateClaudeCli, parseClaudeVersionOutput } from "./claude-cli-locator";
 import { warmClaudeModelCache } from "./claude-model-cache";
 import {
+  adapterEntriesEligibleForClear,
   adapterListEntry,
   connectedProviderIds,
   findCachedAdapterSession,
@@ -162,7 +163,7 @@ import {
   unreferencedUploadsForRemovedSessions,
 } from "./file-upload";
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
-import { permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { applyAgentModeToHostPlan, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import {
   planReviewFileName,
@@ -6514,6 +6515,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         // CLI entered plan mode (covers the agent self-initiating it from a
         // natural-language request). Raise our gate so the exit is enforced.
+      } else if (!client.usesClientPlanGate) {
+        // Claude ExitPlanMode / Codex plan approval switch to a writable mode
+        // and then edit. Follow that mode so the button and permission filter
+        // stop saying Plan. Grok's descriptive update must not do this.
+        const next = applyAgentModeToHostPlan(id, false);
+        if (next) {
+          session.autoApprove = next.autoApprove;
+          this.setPlanActive(session, next.planActive);
+        }
       } else if (session === this.focused) {
         // A non-plan update is descriptive, not authority to lower the safety
         // gate. The verdict handler settles that gate before its response; direct
@@ -8442,13 +8452,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const result = await client.listSessions(cwd, process.platform);
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const stableOverrides: SessionMetaOverrides = { ...overrides };
-      for (const entry of result.sessions) {
-        const previous = stableOverrides[entry.sessionId] ?? {};
-        if (typeof previous.activeAt === "number") continue;
-        stableOverrides[entry.sessionId] = {
-          ...previous,
-          activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
-        };
+      // Codex restamps listing time on `session/load`; freeze first-seen
+      // `activeAt` so an open cannot promote the row. Claude reports the SDK's
+      // real lastModified — do not pin that to the first refresh.
+      if (provider === "codex") {
+        for (const entry of result.sessions) {
+          const previous = stableOverrides[entry.sessionId] ?? {};
+          if (typeof previous.activeAt === "number") continue;
+          stableOverrides[entry.sessionId] = {
+            ...previous,
+            activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
+          };
+        }
       }
       const entries = result.sessions.map((entry) => adapterListEntry(entry, stableOverrides, provider));
       this.setProviderNeedsLogin(provider, false);
@@ -8464,9 +8479,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             ...previous,
             provider,
             providerCwd: entry.cwd,
-            activeAt: typeof previous.activeAt === "number"
-              ? previous.activeAt
-              : stableOverrides[entry.sessionId]?.activeAt,
+            ...(provider === "codex"
+              ? {
+                  activeAt: typeof previous.activeAt === "number"
+                    ? previous.activeAt
+                    : stableOverrides[entry.sessionId]?.activeAt,
+                }
+              : {}),
             ...(!previous.customName && title ? { autoName: title } : {}),
           };
           if (JSON.stringify(updated) !== JSON.stringify(previous)) {
@@ -9253,9 +9272,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
     // Adapter history is provider-owned, so make the cache authoritative before
     // a destructive combined-history action. Grok-only installs skip this.
+    // A failed refresh must not fall through to the stale cache — that is how
+    // "were not cleared" became a delete. Only providers that checked succeed.
+    const adapterHistoryChecked = new Set<AcpProvider>();
     for (const provider of this.connectedProviders().filter(isAdapterProvider)) {
       try {
         await this.refreshAdapterHistory(provider, cwd);
+        adapterHistoryChecked.add(provider);
       } catch (error) {
         const text = `${providerDisplayName(provider)} history could not be checked, so its conversations were not cleared: ${(error as Error).message}`;
         this.host.appendLine(`[sessions] ${text}`);
@@ -9281,10 +9304,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       cwd: sessionCwd,
       entries: indexSessions({ fs: defaultFs, grokHome, cwd: sessionCwd }),
     })));
-    const adapterEntries = [
-      ...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? []),
-      ...(this.claudeSessionCache.get(projectProviderKey(cwd)) ?? []),
-    ];
+    const adapterEntries = adapterEntriesEligibleForClear(
+      [
+        { provider: "codex", entries: this.codexSessionCache.get(projectProviderKey(cwd)) ?? [] },
+        { provider: "claude", entries: this.claudeSessionCache.get(projectProviderKey(cwd)) ?? [] },
+      ],
+      adapterHistoryChecked,
+    );
     const allEntries = [...repoEntries, ...adapterEntries];
     const keptForAnotherOwner = allEntries.some(
       (entry) => protectedIds.has(entry.id) && entry.id !== requesterId,
@@ -9324,6 +9350,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     }
     for (const provider of (["codex", "claude"] as const)) {
+      if (!adapterHistoryChecked.has(provider)) continue;
       const history = this.adapterHistory(provider);
       const entries = (history?.cache.get(projectProviderKey(cwd)) ?? [])
         .filter((entry) => !protectedIds.has(entry.id));
