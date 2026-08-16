@@ -343,7 +343,11 @@ reports `usesClientPlanGate = false`, so none of the Grok filesystem/terminal
 gate, plan-file snooping, or `x.ai/exit_plan_mode` verdict machinery is attached.
 Their Plan/Agent chrome still follows the agent's mode (`applyAgentModeToHostPlan`,
 plus Codex `config_option_update`) so the button cannot stay on Plan after an
-approved exit.
+approved exit. Codex's effective mode is Plan when `collaboration_mode` is Plan
+and otherwise the permission `mode` (`codexEffectiveModeId`) — collaboration
+`default` is not flattened to Agent, because the adapter always reports
+`agent-full-access` on that same snapshot. A user Plan pick raises `planActive`
+only after `session/set_mode` succeeds.
 
 The full pedagogical write-up lives in
 [research/understanding-plan-mode.md](../research/understanding-plan-mode.md).

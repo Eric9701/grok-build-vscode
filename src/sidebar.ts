@@ -1838,15 +1838,22 @@ Only continue if you trust this code.`,
       }
       return;
     }
-    session.autoApprove = false;
     if (modeId === "plan") {
-      this.setPlanActive(session, true); // posts displayMode → "plan"
+      // Raise only after the agent accepts Plan. Doing it first left the badge
+      // claiming Plan when set_mode failed — Claude/Codex have no client gate,
+      // and grok's native writes can skip the partial delegated-command one.
       if (session.client) {
-        try { await session.client.setMode("plan"); }
-        catch (e) { this.reportRequester(requester, "error", `Couldn't switch mode: ${(e as Error).message}`); }
+        try {
+          await session.client.setMode("plan");
+          session.autoApprove = false;
+          this.setPlanActive(session, true);
+        } catch (e) {
+          this.reportRequester(requester, "error", `Couldn't switch mode: ${(e as Error).message}`);
+        }
       }
       return;
     }
+    session.autoApprove = false;
     // agent
     this.setPlanActive(session, false); // posts displayMode → "agent"
     if (session.client) {

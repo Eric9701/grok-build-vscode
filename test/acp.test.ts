@@ -397,7 +397,7 @@ describe("adapter session/new effort", () => {
 });
 
 describe("adapter config_option_update", () => {
-  it("emits modeChanged when Codex leaves plan via config_option_update", () => {
+  it("emits the permission mode when Codex leaves plan via config_option_update", () => {
     const { client } = clientWithFakeProc({ backend: new CodexBackend() });
     const modes: string[] = [];
     client.on("modeChanged", (mode) => modes.push(mode));
@@ -415,7 +415,29 @@ describe("adapter config_option_update", () => {
         },
       },
     }));
-    expect(modes).toEqual(["default"]);
-    expect(client.currentModeId).toBe("default");
+    expect(modes).toEqual(["agent"]);
+    expect(client.currentModeId).toBe("agent");
+  });
+
+  it("emits agent-full-access when Codex leaves plan still in full-access", () => {
+    const { client } = clientWithFakeProc({ backend: new CodexBackend() });
+    const modes: string[] = [];
+    client.on("modeChanged", (mode) => modes.push(mode));
+    client.currentModeId = "plan";
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: [
+            { id: "collaboration_mode", currentValue: "default" },
+            { id: "mode", currentValue: "agent-full-access" },
+          ],
+        },
+      },
+    }));
+    expect(modes).toEqual(["agent-full-access"]);
+    expect(client.currentModeId).toBe("agent-full-access");
   });
 });

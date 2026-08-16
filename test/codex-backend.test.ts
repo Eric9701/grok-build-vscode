@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compositeModelId,
   configStateFromCodexOptions,
+  codexEffectiveModeId,
   isCodexCredentialError,
   listAllCodexSessions,
   normalizeCodexModels,
@@ -11,6 +12,7 @@ import {
   parseCompositeModelId,
   CodexBackend,
 } from "../src/codex-backend";
+import { applyAgentModeToHostPlan } from "../src/plan-gate";
 
 describe("Codex adapter spawn", () => {
   it("always runs the Electron executable as Node in every host", () => {
@@ -158,6 +160,36 @@ describe("Codex config response state", () => {
       { id: "mode", currentValue: "agent-full-access" },
       { id: "collaboration_mode", currentValue: "plan" },
     ] }, {})).toEqual({ modelId: "gpt-5.6-terra", reasoningEffort: "max", modeId: "plan" });
+  });
+
+  it("keeps permission mode when collaboration is default so full-access is not Agent", () => {
+    expect(codexEffectiveModeId("default", "agent-full-access")).toBe("agent-full-access");
+    expect(codexEffectiveModeId("default", "agent")).toBe("agent");
+    expect(codexEffectiveModeId("plan", "agent-full-access")).toBe("plan");
+    expect(codexEffectiveModeId("default", undefined, "plan")).toBe("default");
+
+    const fullAccess = configStateFromCodexOptions({ configOptions: [
+      { id: "mode", currentValue: "agent-full-access" },
+      { id: "collaboration_mode", currentValue: "default" },
+    ] }, { modeId: "plan" });
+    expect(fullAccess.modeId).toBe("agent-full-access");
+    expect(applyAgentModeToHostPlan(fullAccess.modeId!, false)).toEqual({
+      planActive: false,
+      autoApprove: true,
+    });
+
+    const agent = configStateFromCodexOptions({ configOptions: [
+      { id: "mode", currentValue: "agent" },
+      { id: "collaboration_mode", currentValue: "default" },
+    ] }, {});
+    expect(agent.modeId).toBe("agent");
+    expect(applyAgentModeToHostPlan(agent.modeId!, false)).toEqual({
+      planActive: false,
+      autoApprove: false,
+    });
+
+    // Grok's client gate must stay independent of this mapping.
+    expect(applyAgentModeToHostPlan("agent-full-access", true)).toBeNull();
   });
 });
 

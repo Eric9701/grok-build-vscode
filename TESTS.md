@@ -170,6 +170,10 @@ These actually spawn real shell children (real `/bin/sh`, or real PowerShell on 
 - **`isEmptySession`** — the predicate the sweep deletes on (#97). Chat history is authoritative: zero real user queries means empty, whatever `num_messages` says, which covers both today's never-typed-into sessions and legacy primer-only ones. Renamed, pinned, worktree-bound and subagent sessions are refused, as is a history file that exists but cannot be read; a directory holding nothing but `summary.json` is the unloadable shape and does qualify
 - **`historyIsIntelligible`** — the interlock beneath it: a history in a format we cannot parse is never called empty (one CLI schema change would otherwise make the sweep delete everything), while a truncated final line from a write in progress still leaves the real queries before it visible, and a zero-byte file falls through to the message count rather than to a parse failure
 
+### `test/plan-mode-transition.test.ts` — Plan chrome follows the RPC outcome
+
+Drives `GrokSidebar.setMode("plan")` against a stub client. A rejected `session/set_mode` must leave `planActive` down and keep the previous Auto-accept badge; a successful one must not raise the gate until the RPC returns.
+
 ### `test/plan-gate.test.ts` — plan-mode policy (63 tests)
 
 The pure heart of client-side plan enforcement. No spawn, no fs — just the classification logic the **three** choke points call (`fs/write_text_file`, `terminal/create`, and — since 2.1.1 — `session/request_permission`, which previously auto-declined every `execute` on tool kind alone).

@@ -173,6 +173,23 @@ function optionValue(option: any): unknown {
   return option?.currentValue ?? option?.value;
 }
 
+/**
+ * Codex reports two axes at once: `collaboration_mode` (Plan vs Default) and
+ * permission `mode` (`agent` / `agent-full-access`). Plan wins; otherwise the
+ * permission mode is the host-facing id. Flattening collaboration `default` to
+ * `"default"` discarded full-access and the toolbar then claimed Agent.
+ */
+export function codexEffectiveModeId(
+  collaboration: unknown,
+  mode: unknown,
+  fallback?: string,
+): string | undefined {
+  if (collaboration === "plan") return "plan";
+  if (typeof mode === "string") return mode;
+  if (collaboration === "default") return "default";
+  return fallback;
+}
+
 export function configStateFromCodexOptions(response: any, fallback: BackendConfigState): BackendConfigState {
   const options = Array.isArray(response?.configOptions) ? response.configOptions : [];
   const byId = new Map<string, unknown>();
@@ -182,18 +199,10 @@ export function configStateFromCodexOptions(response: any, fallback: BackendConf
   }
   const model = byId.get("model");
   const effort = byId.get("reasoning_effort");
-  const collaboration = byId.get("collaboration_mode");
-  const mode = byId.get("mode");
   return {
     modelId: typeof model === "string" ? model : fallback.modelId,
     reasoningEffort: typeof effort === "string" ? effort : fallback.reasoningEffort,
-    modeId: collaboration === "plan"
-      ? "plan"
-      : collaboration === "default"
-        ? "default"
-        : typeof mode === "string"
-          ? mode
-          : fallback.modeId,
+    modeId: codexEffectiveModeId(byId.get("collaboration_mode"), byId.get("mode"), fallback.modeId),
   };
 }
 

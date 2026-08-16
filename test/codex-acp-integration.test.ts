@@ -66,7 +66,8 @@ describe("Codex ACP integration (real subprocess, fake adapter)", () => {
     expect(modes).toContain("plan");
     await client.setMode("default");
     await client.setMode("agent-full-access");
-    expect(client.currentModeId).toBe("default");
+    expect(client.currentModeId).toBe("agent-full-access");
+    expect(modes).toContain("agent-full-access");
   });
 
   it("normalizes streamed tools, usage, title, permissions, plan review, and prompt usage", async () => {
