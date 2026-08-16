@@ -971,8 +971,13 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
       ]);
       writeStoredSession(id);
+      // Reservation exists once resume is waiting on the catalog hold — capture
+      // before release, because waitForSessionLoad rejects when nothing is in flight.
+      const loadCompleted = hooks.waitForSessionLoad(id);
       delay.release();
       assert.ok(began, "the resume must defer the not-found refuse until catalog warmup");
+      await loadCompleted;
+      assert.ok(hooks.hasLiveSession(id), "session/load must complete into a live ACP session");
 
       const marker = storedSessionReplayMarker(id);
       const replayed = () => posts.some((p) =>
@@ -1022,8 +1027,12 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
       // The resume is async. Give the first lookup a chance to miss (session is
       // not on disk yet) and either refuse (old warmed-at-catalog) or wait.
       await new Promise((r) => setTimeout(r, 150));
+      // Still held on the session-list half, so the load reservation is live.
+      const loadCompleted = hooks.waitForSessionLoad(id);
       writeStoredSession(id);
       delay.release();
+      await loadCompleted;
+      assert.ok(hooks.hasLiveSession(id), "session/load must complete into a live ACP session");
 
       const marker = storedSessionReplayMarker(id);
       const replayed = () => posts.some((p) =>
