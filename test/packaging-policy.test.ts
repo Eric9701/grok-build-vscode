@@ -111,6 +111,7 @@ describe("VSIX excludes desktop app", () => {
     expect(vscodeignore).toMatch(/^\s*out\/desktop\/\*\*/m);
     expect(vscodeignore).toMatch(/^\s*src\/desktop\/\*\*/m);
     expect(vscodeignore).toMatch(/^\s*scripts\/run-desktop\.cjs\s*$/m);
+    expect(vscodeignore).toMatch(/^\s*scripts\/lifecycle-host\.mjs\s*$/m);
     expect(vscodeignore).toMatch(/^\s*vitest\.desktop\.config\.ts\s*$/m);
     expect(vscodeignore).toMatch(/^\s*electron-builder\.yml\s*$/m);
     expect(vscodeignore).toMatch(/^\s*docs\/desktop-update-spec\.md\s*$/m);

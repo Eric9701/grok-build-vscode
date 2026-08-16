@@ -53,6 +53,12 @@ import {
 } from "./paths";
 import { createSafeStorageSecrets } from "./safe-secrets";
 import {
+  RELAY_DEVICE_TOKEN_ENV,
+  RELAY_DEVICE_TOKEN_SECRET,
+  resolveInjectedDeviceToken,
+  withInjectedSecret,
+} from "../remote-frames";
+import {
   injectFileTreePanelLogged,
   registerFileTreeIpc,
 } from "./file-tree-ipc";
@@ -321,11 +327,35 @@ async function createApp(): Promise<void> {
   // Device token is a credential: encrypt with OS keychain via safeStorage.
   // Ciphertext file only — never plaintext next to config. Encryption-unavailable
   // fails on store/get (createSafeStorageSecrets), never silent fallback.
+  //
+  // A Node harness cannot pre-seed that file (the ciphertext is OS-keyed),
+  // so a development overlay answers the one key from memory when
+  // resolveInjectedDeviceToken is certain the relay URL was also overridden.
+  // Packaged builds are isPackaged=true; the resolver returns undefined and
+  // withInjectedSecret is a no-op — no token, no uplink, regardless of env.
+  const storedSecrets = createSafeStorageSecrets(
+    path.join(userData, "secrets.enc.json"),
+    safeStorage,
+  );
+  const injectedToken = resolveInjectedDeviceToken({
+    isProduction: app.isPackaged,
+    env: process.env,
+  });
+  if (process.env[RELAY_DEVICE_TOKEN_ENV] && !injectedToken) {
+    log("ignoring GROK_RELAY_DEVICE_TOKEN (production build or relay URL not overridden)");
+  } else if (injectedToken) {
+    log("using injected development device token (relay URL override active)");
+  }
   const hostContext: HostContext = {
-    secrets: createSafeStorageSecrets(
-      path.join(userData, "secrets.enc.json"),
-      safeStorage,
-    ),
+    secrets: {
+      get: withInjectedSecret(
+        (key) => storedSecrets.get(key),
+        RELAY_DEVICE_TOKEN_SECRET,
+        injectedToken,
+      ),
+      store: (key, value) => storedSecrets.store(key, value),
+      delete: (key) => storedSecrets.delete(key),
+    },
     globalStorageUri: Uri.file(globalStorageDir),
     extensionUri: Uri.file(extensionRoot),
     extensionId: pkg.id,

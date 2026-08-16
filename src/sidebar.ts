@@ -178,7 +178,7 @@ import {
   resolveRemoteFileRoot,
   writeRemoteProjectFile,
 } from "./remote-files";
-import { buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, resolveRelayUrl } from "./remote-frames";
+import { buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, RELAY_DEVICE_TOKEN_SECRET, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
 import { historyImagePreviews } from "./image-history";
@@ -13869,7 +13869,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
   }
 
-  private static readonly DEVICE_TOKEN_SECRET = "grok.remoteControl.deviceToken";
+  private static readonly DEVICE_TOKEN_SECRET = RELAY_DEVICE_TOKEN_SECRET;
 
   /**
    * The relay this build talks to — the production constant, unless a
