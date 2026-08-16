@@ -31,9 +31,10 @@ history survives.
 webview / browser
        │ additive HostMsg/WebviewMsg (session.provider, providerState, models)
        ▼
-sidebar host ──► AcpClient ──► GrokBackend  ──► grok agent stdio
-                         └────► CodexBackend ──► node codex-acp (CODEX_PATH=codex,
-                                                     ELECTRON_RUN_AS_NODE=1)
+sidebar host ──► AcpClient ──► GrokBackend   ──► grok agent stdio
+                         ├────► CodexBackend  ──► node codex-acp (CODEX_PATH=codex)
+                         └────► ClaudeBackend ──► node claude-agent-acp
+                                                   (CLAUDE_CODE_EXECUTABLE=claude)
        ▲                         │
        └── established internal events ◄── Codex wire normalization
 ```
@@ -53,15 +54,16 @@ Codex, an unreadable version, and a cache/unverified banner keep
 `terminal` is a separate capability.
 
 `AcpClient` has a provider seam at the wire's divergence points. The default
-`grokBackend` is an identity adapter: it preserves Grok's spawn arguments,
-requests, responses, and notifications. `CodexBackend`
-spawns the pinned `@agentclientprotocol/codex-acp` entry point under Node with
-`CODEX_PATH` set to the discovered Codex CLI and `ELECTRON_RUN_AS_NODE=1`
-explicitly set for VS Code, desktop Electron, and plain Node hosts, then normalizes composite model
-ids, config-option responses, usage, tool output, diffs, permissions, generated
-titles, and session-list pages into the existing host event shapes. Codex runs
-commands and edits server-side, and its Plan enforcement stays server-side, so
-the Grok terminal/fs Plan gate is disabled for that provider.
+`grokBackend` is an identity adapter. `CodexBackend` and `ClaudeBackend` spawn
+the pinned `@agentclientprotocol/*-acp` entry points under Node with
+`ELECTRON_RUN_AS_NODE=1` and the user's own CLI path (`CODEX_PATH` /
+`CLAUDE_CODE_EXECUTABLE`). Claude's adapter is unbundled ESM, so the vsix also
+packs its JS deps and never the optional native SDK binaries. Both adapters
+normalize models, config options, usage, titles, and `session/list` into the
+existing host shapes. Plan enforcement stays in the adapter/CLI, so the Grok
+terminal/fs Plan gate is off for those providers. Claude authentication stays
+in Anthropic's own `claude` CLI — this host never implements Claude.ai login
+or stores an API key.
 
 Connection is explicit and binary-aware. `grok.providerConnections` records the
 user choice; a located binary alone never connects Codex. `grok.providerModelCache`
@@ -351,8 +353,8 @@ The full pedagogical write-up lives in
 | [src/sidebar.ts](../src/sidebar.ts) | Webview provider, message routing, fs handlers, native diff opening, logout, generated-media serving (`postGeneratedMedia` → `asWebviewUri`, base64 fallback) |
 | [src/diff-view.ts](../src/diff-view.ts) | Pure whole-file native-diff reconstruction (#66) — combines Grok's replaced regions + positioned sites with disk content, bounds expansion size, and finds the first changed line |
 | [src/acp.ts](../src/acp.ts) | Provider-neutral ACP client — spawns the selected backend, manages session lifecycle, normalizes through its backend hooks, and emits the extension's established events. `interject` (#52 Steer), `forkSession` (#48), and worktree RPCs (P2-8) call the unadvertised `_x.ai/*` methods, returning `"unsupported"` on -32601 rather than throwing |
-| [src/acp-backend.ts](../src/acp-backend.ts) / [src/grok-backend.ts](../src/grok-backend.ts) / [src/codex-backend.ts](../src/codex-backend.ts) | Backend contract, Grok identity implementation, and Codex host normalization. Codex uses `session/set_config_option`, consumes `session_info_update`, paginates `session/list` without `cwd`, and keeps the existing host/webview shapes provider-neutral |
-| [src/codex-model-cache.ts](../src/codex-model-cache.ts) | Short-lived connect warm-up that caches Codex models from a scratch `session/new`, deletes the temporary adapter-owned session, and cleans up the client/cwd |
+| [src/acp-backend.ts](../src/acp-backend.ts) / [src/grok-backend.ts](../src/grok-backend.ts) / [src/codex-backend.ts](../src/codex-backend.ts) / [src/claude-backend.ts](../src/claude-backend.ts) | Backend contract, Grok identity, Codex and Claude host normalization. Codex uses `session/set_config_option`; Claude maps `configOptions` into the host model picker, lists sessions with `{ cwd }`, and maps Agent/Auto-accept onto native permission modes |
+| [src/codex-model-cache.ts](../src/codex-model-cache.ts) / [src/claude-model-cache.ts](../src/claude-model-cache.ts) | Short-lived connect warm-up that caches adapter models from a scratch `session/new`, deletes the temporary adapter-owned session, and cleans up the client/cwd |
 | [src/provider-ui.ts](../src/provider-ui.ts) | Pure provider presentation/state policy — Grok-first model grouping, empty-model default sentinel, normalized project defaults, Codex history shaping, and mixed-provider recency merge |
 | [src/worktree.ts](../src/worktree.ts) | Pure worktree helpers (P2-8) — parse create/list/apply/remove/status, multi-cwd history merge; wire notes in [research/worktree.md](../research/worktree.md) |
 | [src/session.ts](../src/session.ts) | Per-session state bag — one `Session` per live backend process, with immutable `provider` identity (the sidebar holds a *pool* plus one focused); carries the send queue (#37) and optional worktree binding (`cwd` / `worktree`), while cumulative billing stays solely in session-id-keyed metadata (#53) |
@@ -360,7 +362,7 @@ The full pedagogical write-up lives in
 | [src/acp-dispatch.ts](../src/acp-dispatch.ts) | Pure protocol helpers — line parsing, update routing, response + generated-media extraction, live context extraction (`contextUsedFromUpdateEnvelope` plus compact notifications), billing helpers (`extractPromptUsage`/`addUsage`/`usageIsRealMeasurement`, including `costUsdTicks`), and the -32601 capability gate behind private RPCs |
 | [src/protocol.ts](../src/protocol.ts) | Single source of truth for the host↔webview message contract — `HostMsg`/`WebviewMsg` unions + the runtime `HOST_MESSAGE_TYPES`/`WEBVIEW_MESSAGE_TYPES` arrays (kept exhaustive by compile-time `Record` maps). Pure types + two arrays, no runtime deps |
 | [src/cli-locator.ts](../src/cli-locator.ts) / [src/cli-process.ts](../src/cli-process.ts) | Locate and invoke the `grok` binary cross-platform; one shim-aware execution policy covers ACP spawn plus version/update commands |
-| [src/codex-cli-locator.ts](../src/codex-cli-locator.ts) / [src/codex-managed-installer.ts](../src/codex-managed-installer.ts) | Pure, injected Codex discovery with the managed package at lowest priority; pinned target/URL/hash selection, streamed download, SHA-256 verification, dependency-free tar extraction, cleanup, and atomic versioned layout |
+| [src/codex-cli-locator.ts](../src/codex-cli-locator.ts) / [src/codex-managed-installer.ts](../src/codex-managed-installer.ts) / [src/claude-cli-locator.ts](../src/claude-cli-locator.ts) | Pure, injected Codex discovery with the managed package at lowest priority; Claude discovery is PATH + `grok.claudeCliPath` + well-known user-bin locations only — no managed Anthropic installer |
 | [src/terminal-manager.ts](../src/terminal-manager.ts) | Headless shells for the agent's `terminal/*` calls |
 | [src/plan-gate.ts](../src/plan-gate.ts) | Plan-mode policy (pure) — workspace-write containment + read-only command allowlist |
 | [src/plan-restore.ts](../src/plan-restore.ts) | Plan persist + restore decision (pure) |

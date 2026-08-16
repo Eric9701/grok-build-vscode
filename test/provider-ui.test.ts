@@ -233,6 +233,19 @@ describe("provider UI pure policy", () => {
   it("selects the provider-specific second-stage login state", () => {
     expect(providerLoginState("grok")).toBe("auth-required");
     expect(providerLoginState("codex")).toBe("codex-login");
+    expect(providerLoginState("claude")).toBe("claude-login");
+  });
+
+  it("places Claude as a third picker group with its own default row", () => {
+    const models = modelsForConnectedProviders(
+      ["grok", "codex", "claude"],
+      { claude: { models: [], seenAt: 1 } },
+    );
+    expect(models.map((model) => `${model.provider}:${model.name}`)).toEqual([
+      "grok:Grok default",
+      "codex:Codex default",
+      "claude:Claude default",
+    ]);
   });
 
   it("keeps Codex ordering stable across an open-only adapter restamp, then moves on send", () => {

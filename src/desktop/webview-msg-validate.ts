@@ -113,7 +113,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "logout":
     case "recheckConnection":
     case "retryProviderSession":
-      if (raw.provider !== undefined && raw.provider !== "grok" && raw.provider !== "codex") return null;
+      if (raw.provider !== undefined && raw.provider !== "grok" && raw.provider !== "codex" && raw.provider !== "claude") return null;
       break;
     case "setMode":
       if (raw.modeId !== "agent" && raw.modeId !== "plan" && raw.modeId !== "yolo") {
@@ -210,7 +210,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       break;
     case "setModel":
       if (!isString(raw.modelId)) return null;
-      if (raw.provider !== undefined && raw.provider !== "grok" && raw.provider !== "codex") return null;
+      if (raw.provider !== undefined && raw.provider !== "grok" && raw.provider !== "codex" && raw.provider !== "claude") return null;
       break;
     case "listSessions":
       if (!opt(raw.offset, isNumber) || !opt(raw.limit, isNumber) || !opt(raw.query, isString)) {

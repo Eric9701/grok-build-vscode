@@ -340,7 +340,7 @@ export class AcpClient extends EventEmitter {
       this.emit("stderr", text);
     });
     this.proc.on("exit", (code) => {
-      this.opts.log(`${this.provider === "grok" ? "grok" : "codex adapter"} exited with code ${code}`);
+      this.opts.log(`${this.backend.processName} exited with code ${code}`);
       // Drop the process handle so later writes are skipped rather than hitting
       // a destroyed pipe (`this.proc?` alone stays truthy after exit).
       this.proc = undefined;
@@ -577,7 +577,7 @@ export class AcpClient extends EventEmitter {
 
   async listSessions(cwd = this.opts.cwd, platform: NodeJS.Platform = process.platform): Promise<BackendSessionListResult> {
     const result = await this.backend.listSessions((method, params) => this.request(method, params), cwd, platform);
-    if (this.provider !== "codex" || !this.sessionId || result.sessions.some((entry) => entry.sessionId === this.sessionId)) {
+    if (this.provider === "grok" || !this.sessionId || result.sessions.some((entry) => entry.sessionId === this.sessionId)) {
       return result;
     }
     return {
@@ -587,7 +587,7 @@ export class AcpClient extends EventEmitter {
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    if (this.provider !== "codex") throw new Error("This backend does not support ACP session deletion.");
+    if (this.provider === "grok") throw new Error("This backend does not support ACP session deletion.");
     await this.request("session/delete", { sessionId });
   }
 
@@ -857,7 +857,7 @@ export class AcpClient extends EventEmitter {
       try { proc?.kill(); } catch { /* already gone */ }
       return Promise.resolve();
     }
-    if (this.provider === "codex") {
+    if (this.provider !== "grok") {
       return new Promise<void>((resolve) => {
         let done = false;
         const finish = () => {
@@ -975,7 +975,7 @@ export class AcpClient extends EventEmitter {
         this.pending.delete(ev.id as number);
         if (p.timer) clearTimeout(p.timer);
         if (ev.error) {
-          if (this.provider === "codex" && this.backend.isCredentialError(ev.error)) {
+          if (this.provider !== "grok" && this.backend.isCredentialError(ev.error)) {
             this.emit("credentialError", ev.error);
           }
           p.reject(ev.error);
@@ -1178,7 +1178,7 @@ export class AcpClient extends EventEmitter {
           sessionId: normalizedParams.sessionId,
           toolCall: normalizedParams.toolCall,
           options: normalizedParams.options ?? [],
-          ...(this.provider === "codex" && normalizedParams._meta !== undefined
+          ...(this.provider !== "grok" && normalizedParams._meta !== undefined
             ? { _meta: normalizedParams._meta }
             : {}),
         };

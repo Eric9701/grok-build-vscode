@@ -15,19 +15,25 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
 import type { AcpProvider, BackendSessionListEntry } from "./acp-backend";
+import { isAdapterProvider, isAcpProvider } from "./acp-backend";
 import { CODEX_ACP_ADAPTER_VERSION, CodexBackend, isCodexCredentialError } from "./codex-backend";
 import { locateCodexCli, resolveCodexHome } from "./codex-cli-locator";
 import { CODEX_MANAGED_VERSION, installManagedCodex } from "./codex-managed-installer";
 import { warmCodexModelCache } from "./codex-model-cache";
+import { CLAUDE_ACP_ADAPTER_VERSION, ClaudeBackend, isClaudeCredentialError } from "./claude-backend";
+import { locateClaudeCli, parseClaudeVersionOutput } from "./claude-cli-locator";
+import { warmClaudeModelCache } from "./claude-model-cache";
 import {
-  codexListEntry,
+  adapterListEntry,
   connectedProviderIds,
-  findCachedCodexSession,
+  findCachedAdapterSession,
   mergeProviderHistoryPage,
   mergeProviderSessionEntries,
+  missingProviderState,
   modelsForConnectedProviders,
   parseCodexVersionOutput,
   projectProviderKey,
+  providerDisplayName,
   providerLoginState,
   versionIsOlder,
   type ProjectProviderDefaults,
@@ -556,10 +562,13 @@ export class GrokSidebar {
    * (it's just a read cache, never a source of truth).
    */
   private sessionCache = new Map<string, { mtimeMs: number; entry: SessionListEntry }>();
-  /** Codex owns its store, so these rows come from ACP rather than Grok's disk index. */
+  /** Adapter catalogs come from ACP session/list rather than Grok's disk index. */
   private codexSessionCache = new Map<string, SessionListEntry[]>();
   private codexSessionCacheAt = new Map<string, number>();
   private codexSessionRefresh = new Map<string, Promise<void>>();
+  private claudeSessionCache = new Map<string, SessionListEntry[]>();
+  private claudeSessionCacheAt = new Map<string, number>();
+  private claudeSessionRefresh = new Map<string, Promise<void>>();
   private codexInstallAbort?: AbortController;
   private providerConnectionState: ProviderConnections = {};
   /**
@@ -676,6 +685,7 @@ export class GrokSidebar {
   ]);
   private cliPath?: string;
   private codexCliPath?: string;
+  private claudeCliPath?: string;
   private readonly providerCliVersions: Partial<Record<AcpProvider, string>> = {};
   /** Accounts that are configured but answered an auth-shaped failure. Not the
    *  same as disconnected: the CLI is installed and the user meant to use it,
@@ -726,6 +736,7 @@ export class GrokSidebar {
   private readonly loginReprobeTimers = new Map<AcpProvider, ReturnType<typeof setTimeout>>();
   private grokVersionProbe?: Promise<string>;
   private codexVersionProbe?: Promise<string>;
+  private claudeVersionProbe?: Promise<string>;
   /** History browsing scope. Deliberately independent of the live session cwd. */
   private selectedRepoCwd?: string;
   /**
@@ -802,22 +813,31 @@ export class GrokSidebar {
   }
 
   private locateProvider(provider: AcpProvider): string | undefined {
-    const cached = provider === "grok" ? this.cliPath : this.codexCliPath;
-    if (cached && fs.existsSync(cached)) return cached;
-    if (provider === "grok" && this.testForceMissingGrokCli) {
-      this.cliPath = undefined;
-      return undefined;
+    if (provider === "grok") {
+      if (this.cliPath && fs.existsSync(this.cliPath)) return this.cliPath;
+      if (this.testForceMissingGrokCli) {
+        this.cliPath = undefined;
+        return undefined;
+      }
+      const located = locateGrokCli(this.host.getConfiguration("grok").get<string>("cliPath", "")) || undefined;
+      this.cliPath = located;
+      return located;
     }
-    const cfg = this.host.getConfiguration("grok");
-    const located = provider === "grok"
-      ? locateGrokCli(cfg.get<string>("cliPath", "")) || undefined
-      : locateCodexCli({
-          configuredPath: cfg.get<string>("codexCliPath", ""),
-          managedStorageRoot: this.context.globalStorageUri.fsPath,
-          arch: process.arch,
-        });
-    if (provider === "grok") this.cliPath = located;
-    else this.codexCliPath = located;
+    if (provider === "codex") {
+      if (this.codexCliPath && fs.existsSync(this.codexCliPath)) return this.codexCliPath;
+      const located = locateCodexCli({
+        configuredPath: this.host.getConfiguration("grok").get<string>("codexCliPath", ""),
+        managedStorageRoot: this.context.globalStorageUri.fsPath,
+        arch: process.arch,
+      });
+      this.codexCliPath = located;
+      return located;
+    }
+    if (this.claudeCliPath && fs.existsSync(this.claudeCliPath)) return this.claudeCliPath;
+    const located = locateClaudeCli({
+      configuredPath: this.host.getConfiguration("grok").get<string>("claudeCliPath", ""),
+    });
+    this.claudeCliPath = located;
     return located;
   }
 
@@ -825,7 +845,32 @@ export class GrokSidebar {
     return {
       grok: !!this.locateProvider("grok"),
       codex: !!this.locateProvider("codex"),
+      claude: !!this.locateProvider("claude"),
     };
+  }
+
+  private adapterHistory(provider: AcpProvider): {
+    cache: Map<string, SessionListEntry[]>;
+    at: Map<string, number>;
+    refresh: Map<string, Promise<void>>;
+  } | undefined {
+    if (provider === "codex") {
+      return { cache: this.codexSessionCache, at: this.codexSessionCacheAt, refresh: this.codexSessionRefresh };
+    }
+    if (provider === "claude") {
+      return { cache: this.claudeSessionCache, at: this.claudeSessionCacheAt, refresh: this.claudeSessionRefresh };
+    }
+    return undefined;
+  }
+
+  private allAdapterCatalogs(): Iterable<readonly SessionListEntry[]> {
+    return [...this.codexSessionCache.values(), ...this.claudeSessionCache.values()];
+  }
+
+  private createProviderBackend(provider: AcpProvider): CodexBackend | ClaudeBackend | undefined {
+    if (provider === "codex") return new CodexBackend();
+    if (provider === "claude") return new ClaudeBackend();
+    return undefined;
   }
 
   private connectedProviders(): AcpProvider[] {
@@ -846,6 +891,7 @@ export class GrokSidebar {
     const migrated: ProviderConnections = {
       grok: usedBefore && !!this.locateProvider("grok"),
       codex: false,
+      claude: false,
     };
     void this.state.update(PROVIDER_CONNECTIONS_KEY, migrated);
     return migrated;
@@ -854,11 +900,12 @@ export class GrokSidebar {
   private setProviderConnectedInMemory(provider: AcpProvider, connected: boolean): void {
     const current = this.providerConnections();
     this.providerConnectionState = { ...current, [provider]: connected };
-    if (!connected && provider === "codex") {
-      this.codexSessionCache.clear();
+    if (!connected && isAdapterProvider(provider)) {
+      const history = this.adapterHistory(provider);
+      history?.cache.clear();
       // A reconnect must re-list immediately. Keeping the old freshness stamp
       // after dropping the rows creates a fresh-but-empty cache for ten seconds.
-      this.codexSessionCacheAt.clear();
+      history?.at.clear();
     }
     this.postProviderState();
     if (connected) void this.probeProviderVersion(provider);
@@ -883,9 +930,9 @@ export class GrokSidebar {
    * model picker, a history list that just comes back empty) shows the same
    * sign-in action the connect flow uses.
    *
-   * Only the provider's credential classifier may raise it: Codex probes use
-   * `isCodexCredentialError` alone, while Grok uses `isCredentialError`. The
-   * billing/entitlement family must never route to a login screen (#58).
+   * Only the provider's credential classifier may raise it: adapter probes use
+   * that backend's `isCredentialError`, while Grok uses `isCredentialError`.
+   * The billing/entitlement family must never route to a login screen (#58).
    */
   private setProviderNeedsLogin(provider: AcpProvider, needsLogin: boolean): void {
     const current = this.providerNeedsLogin ?? {};
@@ -893,7 +940,7 @@ export class GrokSidebar {
     this.providerNeedsLogin = { ...current, [provider]: needsLogin };
     // A recovered account must be able to re-list at once; the freshness stamp
     // would otherwise hold the empty catalog for its full back-off window.
-    if (!needsLogin && provider === "codex") this.codexSessionCacheAt.clear();
+    if (!needsLogin && isAdapterProvider(provider)) this.adapterHistory(provider)?.at.clear();
     this.postProviderState();
   }
 
@@ -919,10 +966,31 @@ export class GrokSidebar {
     }
   }
 
+  private async warmConnectedClaudeModels(): Promise<boolean> {
+    const cliPath = this.locateProvider("claude");
+    if (!cliPath) return false;
+    try {
+      await warmClaudeModelCache({
+        cliPath,
+        onModels: (models, currentModelId) => this.cacheProviderModels("claude", models, currentModelId),
+        log: (message) => this.host.appendLine(message),
+      });
+      this.setProviderNeedsLogin("claude", false);
+      return true;
+    } catch (error) {
+      this.host.appendLine(`[claude] model-cache warm-up failed: ${(error as Error).message}`);
+      if (isClaudeCredentialError(error)) {
+        this.setProviderNeedsLogin("claude", true);
+      }
+      return false;
+    }
+  }
+
   /** Explicit credential observation. Unlike history refresh this never obeys
    * the listing freshness clock, so a completed sign-in is visible at once. */
   private async reprobeProviderCredentials(provider: AcpProvider): Promise<boolean> {
     if (provider === "codex") return this.warmConnectedCodexModels();
+    if (provider === "claude") return this.warmConnectedClaudeModels();
     const cliPath = this.locateProvider("grok");
     if (!cliPath) return false;
     const client = new AcpClient({
@@ -1014,6 +1082,7 @@ export class GrokSidebar {
     const needsLogin = this.providerNeedsLogin ?? {};
     const grokConnected = connected.grok === true && located.grok === true;
     const codexConnected = connected.codex === true && located.codex === true;
+    const claudeConnected = connected.claude === true && located.claude === true;
     this.lastProviderConnected = { grok: grokConnected, codex: codexConnected };
     return {
       type: "providerState",
@@ -1034,6 +1103,13 @@ export class GrokSidebar {
             latestCliVersion: CODEX_MANAGED_VERSION,
             ...(versions.codex ? { updateAvailable: versionIsOlder(versions.codex, CODEX_MANAGED_VERSION) } : {}),
           } : {}),
+        },
+        {
+          id: "claude",
+          connected: claudeConnected,
+          ...(claudeConnected && needsLogin.claude ? { needsLogin: true } : {}),
+          ...(claudeConnected && versions.claude ? { cliVersion: versions.claude } : {}),
+          ...(claudeConnected ? { adapterVersion: CLAUDE_ACP_ADAPTER_VERSION } : {}),
         },
       ],
     };
@@ -1095,7 +1171,7 @@ export class GrokSidebar {
   private providerForRequestedModel(modelId: string, fallback: AcpProvider): AcpProvider {
     if (!modelId) return fallback;
     const cache = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
-    const matches = (["grok", "codex"] as const).filter((provider) =>
+    const matches = (["grok", "codex", "claude"] as const).filter((provider) =>
       cache[provider]?.models.some((model) => model.modelId === modelId));
     return matches.length === 1 ? matches[0] : fallback;
   }
@@ -1147,6 +1223,10 @@ export class GrokSidebar {
       }
       if (e.affectsConfiguration("grok.codexCliPath")) {
         this.codexCliPath = undefined;
+        this.postProviderState();
+      }
+      if (e.affectsConfiguration("grok.claudeCliPath")) {
+        this.claudeCliPath = undefined;
         this.postProviderState();
       }
       if (e.affectsConfiguration("grok.expandCommandOutputs")) {
@@ -1379,7 +1459,7 @@ export class GrokSidebar {
       !this.focused.hasHistory,
     );
     const items = models.map((m) => ({
-      label: `${m.provider === "grok" ? "Grok" : "Codex"} · ${m.name ?? m.modelId}`,
+      label: `${providerDisplayName(m.provider)} · ${m.name ?? m.modelId}`,
       description: m.provider === this.focused.provider && m.modelId === this.focused.client!.currentModelId ? "$(check) current" : "",
       detail: m.description,
       modelId: m.modelId,
@@ -1411,8 +1491,8 @@ export class GrokSidebar {
     if (!client || session.priming) return;
     if (provider !== session.provider) {
       if (session.hasHistory) {
-        const current = session.provider === "codex" ? "Codex" : "Grok";
-        const requested = provider === "codex" ? "Codex" : "Grok";
+        const current = providerDisplayName(session.provider);
+        const requested = providerDisplayName(provider);
         this.reportRequester(
           requester,
           "warning",
@@ -1421,14 +1501,14 @@ export class GrokSidebar {
         return;
       }
       if (!this.connectedProviders().includes(provider)) {
-        this.reportRequester(requester, "warning", `${provider === "codex" ? "Codex" : "Grok"} is not connected.`);
+        this.reportRequester(requester, "warning", `${providerDisplayName(provider)} is not connected.`);
         return;
       }
       const oldProvider = session.provider;
       const discardId = session.activeSessionId;
-      if (oldProvider === "codex" && discardId) {
+      if (isAdapterProvider(oldProvider) && discardId) {
         try { await client.deleteSession(discardId); }
-        catch (error) { this.host.appendLine(`[codex] could not discard empty session ${discardId}: ${(error as Error).message}`); }
+        catch (error) { this.host.appendLine(`[${oldProvider}] could not discard empty session ${discardId}: ${(error as Error).message}`); }
       }
       session.provider = provider;
       await this.rememberProjectProvider(this.sessionCwd(session), provider, modelId || undefined);
@@ -1443,7 +1523,7 @@ export class GrokSidebar {
       const discardId = session.activeSessionId;
       await this.rememberProjectProvider(this.sessionCwd(session), provider, undefined);
       if (provider === "grok") await cfg.update("defaultModel", "", "global");
-      else await this.discardCodexEmptySession(discardId, this.sessionCwd(session), client);
+      else if (isAdapterProvider(provider)) await this.discardAdapterEmptySession(provider, discardId, this.sessionCwd(session), client);
       await this.startSession(undefined, session);
       if (provider === "grok") this.discardRestartedEmptySession(discardId, session);
       return;
@@ -1748,6 +1828,8 @@ Only continue if you trust this code.`,
           if (session.provider === "codex") {
             await session.client.setMode("default");
             await session.client.setMode("agent-full-access");
+          } else if (session.provider === "claude") {
+            await session.client.setMode("yolo");
           } else {
             await session.client.setMode(ACT_MODE_ID);
           }
@@ -1770,6 +1852,8 @@ Only continue if you trust this code.`,
       try {
         if (session.provider === "codex") {
           await session.client.setMode("default");
+          await session.client.setMode("agent");
+        } else if (session.provider === "claude") {
           await session.client.setMode("agent");
         } else {
           await session.client.setMode(ACT_MODE_ID);
@@ -2144,9 +2228,13 @@ Only continue if you trust this code.`,
       ...overrides,
       [sid]: { ...(overrides[sid] ?? {}), activeAt },
     });
-    for (const [key, entries] of this.codexSessionCache) {
-      this.codexSessionCache.set(key, entries.map((entry) =>
-        entry.id === sid ? { ...entry, updatedAt: activeAt } : entry));
+    for (const provider of (["codex", "claude"] as const)) {
+      const history = this.adapterHistory(provider);
+      if (!history) continue;
+      for (const [key, entries] of history.cache) {
+        history.cache.set(key, entries.map((entry) =>
+          entry.id === sid ? { ...entry, updatedAt: activeAt } : entry));
+      }
     }
     const cwd = this.sessionCwd(session);
     this.postSessionsList();
@@ -4874,10 +4962,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Resolve the home repo once, at pin time: the client sends the row's own
       // cwd (already gated against the catalog), and falling back to whatever
       // repo happens to be selected would file the pin under the wrong project.
-      const cachedCodexCwd = [...this.codexSessionCache.values()]
-        .flat()
-        .find((entry) => entry.id === id)?.cwd;
-      const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd || cachedCodexCwd;
+      const cachedAdapterCwd = [...this.allAdapterCatalogs()].flat().find((entry) => entry.id === id)?.cwd;
+      const home = cwd || existing?.pinnedCwd || this.sessionCache.get(id)?.entry.cwd || cachedAdapterCwd;
       if (!home) return null; // nothing to write (pin or unpin)
       // Authorization is not only "cwd was once in the catalog": a remote client
       // that knows a session id must not mutate pin state for a closed project.
@@ -5015,15 +5101,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       byCwd.set(key, bucket);
     }
     const entries: SessionListEntry[] = [];
-    const cachedCodexIds = new Set(
-      [...this.codexSessionCache.values()].flat().map((entry) => entry.id),
+    const cachedAdapterIds = new Set(
+      [...this.allAdapterCatalogs()].flat().map((entry) => entry.id),
     );
     for (const { cwd, ids } of byCwd.values()) {
-      const codexIds = new Set(ids.filter((id) => overrides[id]?.provider === "codex" || cachedCodexIds.has(id)));
-      if (codexIds.size) this.scheduleCodexHistoryRefresh(cwd);
-      for (const id of codexIds) {
-        const cached = findCachedCodexSession(
-          this.codexSessionCache.values(),
+      const adapterIds = new Set(ids.filter((id) => {
+        const provider = overrides[id]?.provider;
+        return (provider && isAdapterProvider(provider)) || cachedAdapterIds.has(id);
+      }));
+      if (adapterIds.size) {
+        this.scheduleAdapterHistoryRefresh("codex", cwd);
+        this.scheduleAdapterHistoryRefresh("claude", cwd);
+      }
+      for (const id of adapterIds) {
+        const cached = findCachedAdapterSession(
+          this.allAdapterCatalogs(),
           id,
           [cwd],
           (entryCwd, allowed) => sessionCwdBelongsToRepo(entryCwd, allowed, pathsEqual),
@@ -5036,7 +5128,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           pinnedAt: overrides[id]?.pinnedAt,
         });
       }
-      const wanted = new Set(ids.filter((id) => !codexIds.has(id)));
+      const wanted = new Set(ids.filter((id) => !adapterIds.has(id)));
       if (!wanted.size) continue;
       const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
       const present = index.filter((e) => wanted.has(e.id));
@@ -5263,33 +5355,35 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * the webview back to the auth-required onboarding state. Resolves issue #13.
    */
   async logout(provider: AcpProvider = "grok"): Promise<void> {
-    if (provider === "codex") {
-      const cliPath = this.codexCliPath || this.locateProvider("codex");
+    if (isAdapterProvider(provider)) {
+      const cliPath = this.locateProvider(provider);
+      const name = providerDisplayName(provider);
       if (!cliPath) {
-        await this.host.showErrorMessage("Codex sign-out could not run because the Codex CLI was not found. The account remains connected.");
+        await this.host.showErrorMessage(`${name} sign-out could not run because the ${name} CLI was not found. The account remains connected.`);
         return;
       }
       const choice = await this.host.showWarningMessage(
-        "Sign out of Codex? This clears the Codex CLI's cached credentials.",
+        `Sign out of ${name}? This clears the ${name} CLI's cached credentials.`,
         { modal: true },
         "Sign Out",
       );
       if (choice !== "Sign Out") return;
+      const logoutArgs = provider === "claude" ? ["auth", "logout"] : ["logout"];
       try {
-        await execGrokCli(cliPath, ["logout"], { timeout: 30_000, windowsHide: true });
+        await execGrokCli(cliPath, logoutArgs, { timeout: 30_000, windowsHide: true });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "EACCES" || code === "EPERM") {
-          this.host.createTerminal({ name: "Codex Logout", shellPath: cliPath, shellArgs: ["logout"] }).show();
+          this.host.createTerminal({ name: `${name} Logout`, shellPath: cliPath, shellArgs: logoutArgs }).show();
           await this.host.showErrorMessage(
-            "Codex sign-out could not be observed, so it was opened in a terminal. The account remains connected until sign-out is confirmed.",
+            `${name} sign-out could not be observed, so it was opened in a terminal. The account remains connected until sign-out is confirmed.`,
           );
         } else {
-          await this.host.showErrorMessage(`Codex sign-out failed: ${errorDetail(error)}. The account remains connected.`);
+          await this.host.showErrorMessage(`${name} sign-out failed: ${errorDetail(error)}. The account remains connected.`);
         }
         return;
       }
-      await this.finishProviderLogout("codex");
+      await this.finishProviderLogout(provider);
       return;
     }
     const cliPath = this.locateProvider("grok");
@@ -5315,7 +5409,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     try {
       await this.persistProviderConnections();
     } catch (error) {
-      const providerName = provider === "codex" ? "Codex" : "Grok";
+      const providerName = providerDisplayName(provider);
       const detail = errorDetail(error);
       this.host.appendLine(`[providers] ${providerName} signed out, but saving connection state failed: ${detail}`);
       await this.host.showErrorMessage(
@@ -5345,7 +5439,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // instead, and reconnecting any provider adopts them.
     const needsProvider = connected.length === 0;
     const replacementProvider = (cwd: string) => this.defaultProviderForProject(cwd);
-    const providerName = provider === "codex" ? "Codex" : "Grok";
+    const providerName = providerDisplayName(provider);
     const detachedReplacements: Session[] = [];
     const detachedSessions = this.remoteClients.replaceDetachedActiveWhere(
       (session) => session.provider === provider,
@@ -5618,6 +5712,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private probeProviderVersion(provider: AcpProvider): Promise<string> {
     if (provider === "codex") return this.probeCodexVersion();
+    if (provider === "claude") return this.probeClaudeVersion();
     if (this.grokVersionProbe) return this.grokVersionProbe;
     this.grokVersionProbe = (async () => {
       const cliPath = this.locateProvider("grok");
@@ -5653,6 +5748,32 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     })();
     return this.codexVersionProbe;
+  }
+
+  /** Read `claude --version` once per activation. The adapter handshake version
+   * is a stale package constant (0.49.0 on 0.69.0) and must not be displayed. */
+  private probeClaudeVersion(): Promise<string> {
+    if (this.claudeVersionProbe) return this.claudeVersionProbe;
+    this.claudeVersionProbe = (async () => {
+      const cliPath = this.locateProvider("claude");
+      if (!cliPath) return "";
+      try {
+        const { stdout } = await execGrokCli(cliPath, ["--version"], {
+          timeout: 30_000,
+          windowsHide: true,
+        });
+        const version = parseClaudeVersionOutput(stdout ?? "");
+        if (!version) throw new Error("unrecognized version output");
+        this.providerCliVersions.claude = version;
+        this.postProviderState();
+        return version;
+      } catch (error) {
+        this.host.appendLine(`claude --version failed: ${(error as Error).message}`);
+        this.postProviderState();
+        return "";
+      }
+    })();
+    return this.claudeVersionProbe;
   }
 
   /** Preserve the original silent-update contract: once per extension upgrade,
@@ -6110,7 +6231,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postProviderState();
       this.emit(target, {
         type: "onboarding",
-        state: this.connectedProviders().length ? (target.provider === "codex" ? "missing-codex" : "missing-cli") : "connect-agent",
+        state: this.connectedProviders().length ? missingProviderState(target.provider) : "connect-agent",
         platform: process.platform,
         provider: target.provider,
       });
@@ -6220,7 +6341,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.emit(session, { type: "setBusy", value: false });
       this.emit(session, {
         type: "onboarding",
-        state: session.provider === "codex" ? "missing-codex" : "missing-cli",
+        state: missingProviderState(session.provider),
         platform: process.platform,
         provider: session.provider,
       });
@@ -6287,9 +6408,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       env,
       effort,
       log: (msg) => this.host.appendLine(msg),
-      ...(session.provider === "codex"
-        ? { backend: new CodexBackend() }
-        : { grokVersion: grokHandshakeVersion, grokVersionVerified }),
+      ...(session.provider === "grok"
+        ? { grokVersion: grokHandshakeVersion, grokVersionVerified }
+        : { backend: this.createProviderBackend(session.provider) }),
     });
     session.client = client;
 
@@ -6943,7 +7064,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Decide the branch first: only the plain-failure path retries. Auth
       // must surface immediately; the Windows stdio pin has its own recovery.
       const credentialFailure =
-        (client.provider === "codex" && client.isCredentialError(err)) ||
+        (client.provider !== "grok" && client.isCredentialError(err)) ||
         /auth|unauthor|401|api[_\s-]?key|credential|sign.?in/i.test(msg);
       const stdioRegression =
         session.provider === "grok" &&
@@ -7008,7 +7129,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             `\`grok update --version ${GROK_STDIO_DOWNGRADE_TARGET}\` in a terminal, then start a new session.`,
         });
       } else {
-        this.emit(session, { type: "error", text: `Failed to start ${session.provider === "codex" ? "Codex" : "Grok"}: ${msg}` });
+        this.emit(session, { type: "error", text: `Failed to start ${providerDisplayName(session.provider)}: ${msg}` });
       }
       return undefined;
     }
@@ -7475,7 +7596,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           msg.modelId,
           session,
           requester,
-          msg.provider === "codex" || msg.provider === "grok"
+          isAcpProvider(msg.provider)
             ? msg.provider
             : this.providerForRequestedModel(msg.modelId, session.provider),
         );
@@ -7498,8 +7619,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           const wasEmpty = !session.hasHistory;
           const discardId = session.activeSessionId;
           await cfg2.update("defaultEffort", newLevel, "global");
-          if (wasEmpty && session.provider === "codex") {
-            await this.discardCodexEmptySession(discardId, this.sessionCwd(session), session.client);
+          if (wasEmpty && isAdapterProvider(session.provider)) {
+            await this.discardAdapterEmptySession(session.provider, discardId, this.sessionCwd(session), session.client);
           }
           await this.startSession(undefined, session);
           if (wasEmpty && session.provider === "grok") this.discardRestartedEmptySession(discardId, session);
@@ -7681,25 +7802,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "runGrokLogin": {
-        const provider: AcpProvider = msg.provider === "codex" ? "codex" : "grok";
-        const cliPath = provider === "grok"
-          ? this.cliPath || this.locateProvider("grok")
-          : this.codexCliPath || this.locateProvider("codex");
+        const provider: AcpProvider = isAcpProvider(msg.provider) ? msg.provider : "grok";
+        const cliPath = this.locateProvider(provider);
         if (!cliPath) {
           this.post({
             type: "onboarding",
-            state: provider === "codex" ? "missing-codex" : "missing-cli",
+            state: missingProviderState(provider),
             platform: process.platform,
             provider,
           });
           break;
         }
-        // shellPath/shellArgs, not sendText — a quoted path typed into
-        // PowerShell is a parser error (see runMcpList).
+        // Official CLI owns login. For Claude this is `claude auth login`
+        // without --claudeai — we never implement or proxy Claude.ai OAuth.
+        const loginArgs = provider === "claude" ? ["auth", "login"] : ["login"];
         const term = this.host.createTerminal({
-          name: provider === "codex" ? "Codex Login" : "Grok Login",
+          name: `${providerDisplayName(provider)} Login`,
           shellPath: cliPath,
-          shellArgs: ["login"],
+          shellArgs: loginArgs,
         });
         term.show();
         // The terminal is outside the host protocol, so completion cannot be
@@ -7717,12 +7837,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "recheckConnection": {
-        const provider: AcpProvider = msg.provider === "codex" ? "codex" : msg.provider === "grok" ? "grok" : session.provider;
+        const provider: AcpProvider = isAcpProvider(msg.provider) ? msg.provider : session.provider;
         const connectedBefore = this.connectedProviders();
         if (!this.locateProvider(provider)) {
           this.post({
             type: "onboarding",
-            state: provider === "codex" ? "missing-codex" : "missing-cli",
+            state: missingProviderState(provider),
             platform: process.platform,
             provider,
           });
@@ -7748,17 +7868,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         } else {
           // Adding a second account must not restart or change the conversation
           // currently on screen; it becomes available in New session instead.
-          if (provider === "codex") this.scheduleCodexHistoryRefresh(this.sessionCwd(session));
+          if (isAdapterProvider(provider)) this.scheduleAdapterHistoryRefresh(provider, this.sessionCwd(session));
           this.postSessionsList();
         }
         break;
       }
       case "retryProviderSession": {
-        const provider: AcpProvider = msg.provider === "codex" ? "codex" : msg.provider === "grok" ? "grok" : session.provider;
+        const provider: AcpProvider = isAcpProvider(msg.provider) ? msg.provider : session.provider;
         if (!this.connectedProviders().includes(provider)) {
           if (requester) this.sendRemoteRequester(requester, {
             type: "error",
-            text: `${provider === "codex" ? "Codex" : "Grok"} must be connected at the desk before a remote session can be retried.`,
+            text: `${providerDisplayName(provider)} must be connected at the desk before a remote session can be retried.`,
           });
           break;
         }
@@ -7768,7 +7888,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "logout":
-        await this.logout(msg.provider === "codex" ? "codex" : "grok");
+        await this.logout(isAcpProvider(msg.provider) ? msg.provider : "grok");
         break;
       case "checkGrokUpdate":
         await this.checkGrokUpdate();
@@ -8218,12 +8338,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     cwd = listCwd;
     const providers = this.connectedProviders();
-    if (providers.includes("codex")) this.scheduleCodexHistoryRefresh(cwd);
+    const adapterProviders = providers.filter(isAdapterProvider);
+    for (const provider of adapterProviders) this.scheduleAdapterHistoryRefresh(provider, cwd);
     // Grok rows are files under GROK_HOME/sessions (plus live-pool synthesis) —
     // listing is disk/buffer-truth and must not wait for a located grok binary.
-    // Codex rows come from the adapter's session/list RPC, so they legitimately
-    // require the Codex CLI.
-    if (!providers.includes("codex")) {
+    // Adapter rows come from session/list, so they legitimately require that CLI.
+    if (!adapterProviders.length) {
       return this.buildGrokSessionsList(cwd, opts, activeId, scope);
     }
 
@@ -8234,21 +8354,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           ? { offset: 0, limit: Number.MAX_SAFE_INTEGER, query }
           : { offset: providerCursor.grokOffset, limit, query }, activeId, scope);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const codex = providers.includes("codex")
-      ? [...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? [])]
-      : [];
+    const adapter: SessionListEntry[] = [];
+    if (providers.includes("codex")) adapter.push(...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? []));
+    if (providers.includes("claude")) adapter.push(...(this.claudeSessionCache.get(projectProviderKey(cwd)) ?? []));
     for (const session of this.pool) {
-      if (session.provider !== "codex" || !session.activeSessionId || !pathsEqual(this.sessionCwd(session), cwd)) continue;
-      if (codex.some((entry) => entry.id === session.activeSessionId)) continue;
-      codex.push(this.liveSessionEntry(session, session.activeSessionId, this.sessionCwd(session), overrides));
+      if (!isAdapterProvider(session.provider) || !session.activeSessionId || !pathsEqual(this.sessionCwd(session), cwd)) continue;
+      if (adapter.some((entry) => entry.id === session.activeSessionId)) continue;
+      adapter.push(this.liveSessionEntry(session, session.activeSessionId, this.sessionCwd(session), overrides));
     }
-    codex.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    adapter.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
     const merged = query
-      ? mergeProviderSessionEntries(grok?.entries ?? [], codex, providers, query)
+      ? mergeProviderSessionEntries(grok?.entries ?? [], adapter, providers, query)
       : undefined;
     const combinedPage = query ? undefined : mergeProviderHistoryPage(
       grok,
-      providers.includes("codex") ? codex : [],
+      adapter,
       providerCursor,
       limit,
     );
@@ -8260,7 +8380,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const nextOffset = query
       ? offset + entries.length
       : Math.max(offset + entries.length, combinedPage?.providerCursor.grokOffset ?? 0);
-    const total = query ? (merged?.length ?? 0) : (grok?.total ?? 0) + codex.length;
+    const total = query ? (merged?.length ?? 0) : (grok?.total ?? 0) + adapter.length;
     return {
       type: "sessions",
       entries,
@@ -8276,34 +8396,45 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private scheduleCodexHistoryRefresh(cwd: string): void {
-    if (!this.connectedProviders().includes("codex")) return;
+    this.scheduleAdapterHistoryRefresh("codex", cwd);
+  }
+
+  private scheduleAdapterHistoryRefresh(provider: AcpProvider, cwd: string): void {
+    if (!isAdapterProvider(provider) || !this.connectedProviders().includes(provider)) return;
+    const history = this.adapterHistory(provider);
+    if (!history) return;
     const key = projectProviderKey(cwd);
-    if (this.codexSessionRefresh.has(key)) return;
-    if (Date.now() - (this.codexSessionCacheAt.get(key) ?? 0) < 10_000) return;
-    const refresh = this.refreshCodexHistory(cwd, key)
+    if (history.refresh.has(key)) return;
+    if (Date.now() - (history.at.get(key) ?? 0) < 10_000) return;
+    const refresh = (provider === "codex"
+      ? this.refreshCodexHistory(cwd, key)
+      : this.refreshAdapterHistory(provider, cwd, key))
       .catch((error) => {
-        this.host.appendLine(`[codex] session listing failed: ${(error as Error).message}`);
-        // Swallowing this rendered a signed-out agent as a history list that is
-        // simply empty — indistinguishable from having no conversations.
-        if (!isCodexCredentialError(error)) return;
-        // Stamp the clock before flipping the flag: the list refresh is driven
-        // by rendering, so an un-backed-off credential failure would re-list on
-        // every repaint it causes.
-        this.codexSessionCacheAt.set(key, Date.now());
-        this.setProviderNeedsLogin("codex", true);
+        this.host.appendLine(`[${provider}] session listing failed: ${(error as Error).message}`);
+        const credential = provider === "claude" ? isClaudeCredentialError(error) : isCodexCredentialError(error);
+        if (!credential) return;
+        history.at.set(key, Date.now());
+        this.setProviderNeedsLogin(provider, true);
       })
-      .finally(() => this.codexSessionRefresh.delete(key));
-    this.codexSessionRefresh.set(key, refresh);
+      .finally(() => history.refresh.delete(key));
+    history.refresh.set(key, refresh);
   }
 
   private async refreshCodexHistory(cwd: string, key = projectProviderKey(cwd)): Promise<void> {
-    const cliPath = this.locateProvider("codex");
-    if (!cliPath || !this.connectedProviders().includes("codex")) return;
+    return this.refreshAdapterHistory("codex", cwd, key);
+  }
+
+  private async refreshAdapterHistory(provider: AcpProvider, cwd: string, key = projectProviderKey(cwd)): Promise<void> {
+    if (!isAdapterProvider(provider)) return;
+    const history = this.adapterHistory(provider);
+    const cliPath = this.locateProvider(provider);
+    const backend = this.createProviderBackend(provider);
+    if (!history || !cliPath || !backend || !this.connectedProviders().includes(provider)) return;
     const client = new AcpClient({
       cliPath,
       cwd,
       env: { ...process.env },
-      backend: new CodexBackend(),
+      backend,
       log: (message) => this.host.appendLine(message),
     });
     try {
@@ -8316,14 +8447,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (typeof previous.activeAt === "number") continue;
         stableOverrides[entry.sessionId] = {
           ...previous,
-          activeAt: codexListEntry(entry, {}, Date.now()).updatedAt,
+          activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
         };
       }
-      const entries = result.sessions.map((entry) => codexListEntry(entry, stableOverrides));
-      // Ahead of the stamp: clearing the flag also clears the back-off clock.
-      this.setProviderNeedsLogin("codex", false);
-      this.codexSessionCache.set(key, entries);
-      this.codexSessionCacheAt.set(key, Date.now());
+      const entries = result.sessions.map((entry) => adapterListEntry(entry, stableOverrides, provider));
+      this.setProviderNeedsLogin(provider, false);
+      history.cache.set(key, entries);
+      history.at.set(key, Date.now());
       await this.updateSessionMeta((current) => {
         let changed = false;
         const next = { ...current };
@@ -8332,7 +8462,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           const title = typeof entry.title === "string" ? entry.title.trim() : "";
           const updated = {
             ...previous,
-            provider: "codex" as const,
+            provider,
             providerCwd: entry.cwd,
             activeAt: typeof previous.activeAt === "number"
               ? previous.activeAt
@@ -8556,7 +8686,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // a nameless session reads like a row rather than a bare "(Fork)".
     const generated = (override?.autoName || "").trim();
     const opening = (session.firstUserMessageForTitle || "").trim();
-    const first = session.client?.provider === "codex" ? generated || opening : opening || generated;
+    const first = session.client && isAdapterProvider(session.client.provider) ? generated || opening : opening || generated;
     return fallbackName(first, Date.now());
   }
 
@@ -8728,15 +8858,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (sessionCwdBelongsToRepo(cwd, allowedCwds, pathsEqual)) return { cwd };
     }
 
-    const cachedCodex = findCachedCodexSession(
-      this.codexSessionCache.values(),
+    const cachedAdapter = findCachedAdapterSession(
+      this.allAdapterCatalogs(),
       id,
       allowedCwds,
       (cwd, allowed) => sessionCwdBelongsToRepo(cwd, allowed, pathsEqual),
     );
-    const provider = live?.provider ?? overrides[id]?.provider ?? (cachedCodex ? "codex" : "grok");
-    if (provider === "codex") {
-      return cachedCodex ? { cwd: cachedCodex.cwd } : { reason: "gone", repoCwd: selectedCwd };
+    const provider = live?.provider ?? overrides[id]?.provider ?? cachedAdapter?.provider ?? "grok";
+    if (provider && isAdapterProvider(provider)) {
+      return cachedAdapter ? { cwd: cachedAdapter.cwd } : { reason: "gone", repoCwd: selectedCwd };
     }
 
     const candidates = [...new Set([
@@ -8811,16 +8941,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // A rename changes displayName but not summary.json's mtime, so the mtime-keyed cache would
     // otherwise keep serving the old name. Drop it so the next read rebuilds the entry.
     this.sessionCache.delete(id);
-    for (const [key, entries] of this.codexSessionCache) {
-      this.codexSessionCache.set(key, entries.map((entry) => {
-        if (entry.id !== id) return entry;
-        const customName = next[id]?.customName?.trim() || undefined;
-        return {
-          ...entry,
-          customName,
-          displayName: customName || entry.rawSummary || next[id]?.autoName || `Untitled (${new Date(entry.updatedAt).toLocaleDateString()})`,
-        };
-      }));
+    for (const adapter of (["codex", "claude"] as const)) {
+      const history = this.adapterHistory(adapter);
+      if (!history) continue;
+      for (const [key, entries] of history.cache) {
+        history.cache.set(key, entries.map((entry) => {
+          if (entry.id !== id) return entry;
+          const customName = next[id]?.customName?.trim() || undefined;
+          return {
+            ...entry,
+            customName,
+            displayName: customName || entry.rawSummary || next[id]?.autoName || `Untitled (${new Date(entry.updatedAt).toLocaleDateString()})`,
+          };
+        }));
+      }
     }
     const live = [...this.pool].find((session) => session.activeSessionId === id);
     this.postSessionsList();
@@ -8991,16 +9125,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             ? requestedCwd
             : undefined)
         : undefined;
-    const cachedCodex = [...this.codexSessionCache.values()].flat().find((entry) => entry.id === id);
+    const cachedAdapter = [...this.allAdapterCatalogs()].flat().find((entry) => entry.id === id);
     const cwd =
       authorizedRemoteCwd ||
       live?.cwd ||
       overridesNow[id]?.worktreePath ||
       this.sessionCache.get(id)?.entry.cwd ||
-      cachedCodex?.cwd ||
+      cachedAdapter?.cwd ||
       localNamedCwd ||
       this.historyCwdFor(origin);
-    const provider = live?.provider ?? overridesNow[id]?.provider ?? cachedCodex?.provider ?? "grok";
+    const provider = live?.provider ?? overridesNow[id]?.provider ?? cachedAdapter?.provider ?? "grok";
     // Tear the CLI down BEFORE touching the disk, not after. The live process
     // owns this conversation and re-persists it: delete the directory first and
     // it simply comes back, which is why deleting the open conversation used to
@@ -9008,22 +9142,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // turn, drops the client and disposes it, so by the time the files go there
     // is nothing left that could write them again.
     const wasFocused = !!live && live === this.focused;
-    if (provider === "codex") {
+    if (isAdapterProvider(provider)) {
       let temporary: AcpClient | undefined;
+      const name = providerDisplayName(provider);
       try {
-        const cliPath = this.locateProvider("codex");
-        if (!cliPath) throw new Error("Codex CLI is not available.");
+        const cliPath = this.locateProvider(provider);
+        const backend = this.createProviderBackend(provider);
+        if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
         const client = live?.client ?? (temporary = new AcpClient({
           cliPath,
           cwd,
           env: { ...process.env },
-          backend: new CodexBackend(),
+          backend,
           log: (message) => this.host.appendLine(message),
         }));
         if (temporary) await temporary.start();
         await client.deleteSession(id);
       } catch (error) {
-        const text = `Codex refused to delete this conversation: ${(error as Error).message}`;
+        const text = `${name} refused to delete this conversation: ${(error as Error).message}`;
         this.host.appendLine(`[sessions] ${text}`);
         if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
         else {
@@ -9035,8 +9171,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       if (temporary) await temporary.dispose();
       if (live) this.disposeSession(live);
-      for (const [key, entries] of this.codexSessionCache) {
-        this.codexSessionCache.set(key, entries.filter((entry) => entry.id !== id));
+      const history = this.adapterHistory(provider);
+      if (history) {
+        for (const [key, entries] of history.cache) {
+          history.cache.set(key, entries.filter((entry) => entry.id !== id));
+        }
       }
     } else {
       if (live) this.disposeSession(live);
@@ -9112,16 +9251,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
-    // Codex history is provider-owned, so make the cache authoritative before a
-    // destructive combined-history action. This branch is unreachable for a
-    // Grok-only install and therefore leaves the long-standing disk path alone.
-    let codexHistoryChecked = !this.connectedProviders().includes("codex");
-    if (this.connectedProviders().includes("codex")) {
+    // Adapter history is provider-owned, so make the cache authoritative before
+    // a destructive combined-history action. Grok-only installs skip this.
+    for (const provider of this.connectedProviders().filter(isAdapterProvider)) {
       try {
-        await this.refreshCodexHistory(cwd);
-        codexHistoryChecked = true;
+        await this.refreshAdapterHistory(provider, cwd);
       } catch (error) {
-        const text = `Codex history could not be checked, so its conversations were not cleared: ${(error as Error).message}`;
+        const text = `${providerDisplayName(provider)} history could not be checked, so its conversations were not cleared: ${(error as Error).message}`;
         this.host.appendLine(`[sessions] ${text}`);
         if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
         else void this.host.showErrorMessage(text);
@@ -9145,10 +9281,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       cwd: sessionCwd,
       entries: indexSessions({ fs: defaultFs, grokHome, cwd: sessionCwd }),
     })));
-    const codexEntries = codexHistoryChecked
-      ? (this.codexSessionCache.get(projectProviderKey(cwd)) ?? [])
-      : [];
-    const allEntries = [...repoEntries, ...codexEntries];
+    const adapterEntries = [
+      ...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? []),
+      ...(this.claudeSessionCache.get(projectProviderKey(cwd)) ?? []),
+    ];
+    const allEntries = [...repoEntries, ...adapterEntries];
     const keptForAnotherOwner = allEntries.some(
       (entry) => protectedIds.has(entry.id) && entry.id !== requesterId,
     );
@@ -9186,33 +9323,38 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         );
       }
     }
-    const clearableCodex = codexEntries.filter((entry) => !protectedIds.has(entry.id));
-    if (clearableCodex.length) {
+    for (const provider of (["codex", "claude"] as const)) {
+      const history = this.adapterHistory(provider);
+      const entries = (history?.cache.get(projectProviderKey(cwd)) ?? [])
+        .filter((entry) => !protectedIds.has(entry.id));
+      if (!entries.length) continue;
       let client: AcpClient | undefined;
+      const name = providerDisplayName(provider);
       try {
-        const cliPath = this.locateProvider("codex");
-        if (!cliPath) throw new Error("Codex CLI is not available.");
+        const cliPath = this.locateProvider(provider);
+        const backend = this.createProviderBackend(provider);
+        if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
         client = new AcpClient({
           cliPath,
           cwd,
           env: { ...process.env },
-          backend: new CodexBackend(),
+          backend,
           log: (message) => this.host.appendLine(message),
         });
         await client.start();
-        for (const entry of clearableCodex) {
+        for (const entry of entries) {
           try {
             await client.deleteSession(entry.id);
             removedIds.add(entry.id);
           } catch (error) {
-            const text = `Codex refused to delete “${entry.displayName}”: ${(error as Error).message}`;
+            const text = `${name} refused to delete “${entry.displayName}”: ${(error as Error).message}`;
             this.host.appendLine(`[sessions] ${text}`);
             if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
             else void this.host.showErrorMessage(text);
           }
         }
       } catch (error) {
-        const text = `Codex conversations were not cleared: ${(error as Error).message}`;
+        const text = `${name} conversations were not cleared: ${(error as Error).message}`;
         this.host.appendLine(`[sessions] ${text}`);
         if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
         else void this.host.showErrorMessage(text);
@@ -9224,8 +9366,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
     if (removed.length) {
       const gone = new Set(removed);
-      for (const [key, entries] of this.codexSessionCache) {
-        this.codexSessionCache.set(key, entries.filter((entry) => !gone.has(entry.id)));
+      for (const adapter of (["codex", "claude"] as const)) {
+        const history = this.adapterHistory(adapter);
+        if (!history) continue;
+        for (const [key, entries] of history.cache) {
+          history.cache.set(key, entries.filter((entry) => !gone.has(entry.id)));
+        }
       }
     }
 
@@ -12277,7 +12423,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const cwd = this.sessionCwd(cur);
     const provider = cur.provider;
     this.disposeSession(cur);
-    if (provider === "codex") void this.discardCodexEmptySession(id, cwd);
+    if (isAdapterProvider(provider)) void this.discardAdapterEmptySession(provider, id, cwd);
     else this.removeSessionFromDisk(id, cwd);
     this.postSessionsList();
   }
@@ -12310,7 +12456,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const cwd = this.sessionCwd(current);
     const provider = current.provider;
     this.disposeSession(current);
-    if (provider === "codex") void this.discardCodexEmptySession(id, cwd);
+    if (isAdapterProvider(provider)) void this.discardAdapterEmptySession(provider, id, cwd);
     else this.removeSessionFromDisk(id, cwd);
   }
 
@@ -12669,29 +12815,34 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     void this.state.update(SESSION_META_KEY, next);
   }
 
-  /** Codex owns its persistence, so abandoning an empty conversation must use
-   *  the advertised ACP delete operation rather than touching Grok's store. */
-  private async discardCodexEmptySession(
+  /** Adapter catalogs own their persistence, so abandoning an empty conversation
+   *  must use the advertised ACP delete rather than touching Grok's store. */
+  private async discardAdapterEmptySession(
+    provider: AcpProvider,
     id: string | undefined,
     cwd: string,
     liveClient?: AcpClient,
   ): Promise<void> {
-    if (!id) return;
+    if (!id || !isAdapterProvider(provider)) return;
     let temporary: AcpClient | undefined;
     try {
-      const cliPath = this.locateProvider("codex");
-      if (!cliPath) throw new Error("Codex CLI is not available.");
+      const cliPath = this.locateProvider(provider);
+      const backend = this.createProviderBackend(provider);
+      if (!cliPath || !backend) throw new Error(`${providerDisplayName(provider)} CLI is not available.`);
       const client = liveClient ?? (temporary = new AcpClient({
         cliPath,
         cwd,
         env: { ...process.env },
-        backend: new CodexBackend(),
+        backend,
         log: (message) => this.host.appendLine(message),
       }));
       if (temporary) await temporary.start();
       await client.deleteSession(id);
-      for (const [key, entries] of this.codexSessionCache) {
-        this.codexSessionCache.set(key, entries.filter((entry) => entry.id !== id));
+      const history = this.adapterHistory(provider);
+      if (history) {
+        for (const [key, entries] of history.cache) {
+          history.cache.set(key, entries.filter((entry) => entry.id !== id));
+        }
       }
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       if (overrides[id]) {
@@ -12700,7 +12851,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.state.update(SESSION_META_KEY, next);
       }
     } catch (error) {
-      this.host.appendLine(`[codex] could not discard empty session ${id}: ${(error as Error).message}`);
+      this.host.appendLine(`[${provider}] could not discard empty session ${id}: ${(error as Error).message}`);
     } finally {
       if (temporary) await temporary.dispose();
     }
@@ -12974,7 +13125,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       sameCwd: pathsEqual,
     });
     const provider = overrides[id]?.provider ?? "grok";
-    const actualCwd = provider === "codex"
+    const actualCwd = provider && isAdapterProvider(provider)
       ? resumeCandidates.find((candidate) => allowedCwds.some((allowed) => pathsEqual(candidate, allowed)))
       : findSessionCatalogCwd({
           fs: defaultFs,
@@ -13376,7 +13527,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       cachedCwd: o?.providerCwd ?? this.sessionCache.get(id)?.entry.cwd,
       sameCwd: pathsEqual,
     });
-    const cwd = this.focused.provider === "codex"
+    const cwd = isAdapterProvider(this.focused.provider)
       ? candidates.find((candidate) => trustedCwds.some((trusted) => pathsEqual(candidate, trusted)))
       : findSessionCatalogCwd({
           fs: defaultFs,

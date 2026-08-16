@@ -23,6 +23,7 @@ import { writeFileAtomic } from "./safe-secrets";
 export const CONFIG_DEFAULTS: Readonly<Record<string, unknown>> = {
   "grok.cliPath": "",
   "grok.codexCliPath": "",
+  "grok.claudeCliPath": "",
   "grok.defaultModel": "",
   "grok.defaultMode": "",
   "grok.includeActiveFileByDefault": true,

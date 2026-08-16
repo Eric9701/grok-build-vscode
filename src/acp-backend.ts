@@ -1,6 +1,16 @@
 import type { EffortLevel } from "./acp";
 
-export type AcpProvider = "grok" | "codex";
+export const ACP_PROVIDERS = ["grok", "codex", "claude"] as const;
+export type AcpProvider = (typeof ACP_PROVIDERS)[number];
+
+export function isAcpProvider(value: unknown): value is AcpProvider {
+  return value === "grok" || value === "codex" || value === "claude";
+}
+
+/** Providers whose conversations live in an adapter catalog, not ~/.grok. */
+export function isAdapterProvider(provider: AcpProvider): boolean {
+  return provider === "codex" || provider === "claude";
+}
 
 export interface BackendSpawnOptions {
   cliPath: string;

@@ -34,6 +34,17 @@ files:
   - node_modules/@agentclientprotocol/codex-acp/package.json
   - node_modules/@agentclientprotocol/codex-acp/dist/**/*
   - node_modules/@agentclientprotocol/codex-acp/LICENSE
+  - node_modules/@agentclientprotocol/claude-agent-acp/package.json
+  - node_modules/@agentclientprotocol/claude-agent-acp/dist/**/*
+  - node_modules/@agentclientprotocol/claude-agent-acp/LICENSE
+  - node_modules/@agentclientprotocol/sdk/package.json
+  - node_modules/@agentclientprotocol/sdk/dist/**/*
+  - node_modules/@agentclientprotocol/sdk/LICENSE-APACHE
+  - node_modules/@anthropic-ai/claude-agent-sdk/package.json
+  - node_modules/@anthropic-ai/claude-agent-sdk/*.mjs
+  - node_modules/@anthropic-ai/claude-agent-sdk/*.js
+  - node_modules/@anthropic-ai/claude-agent-sdk/*.d.ts
+  - node_modules/zod/**/*
   # LOAD-BEARING. The honest lockfile installs the adapter's declared tree,
   # and electron-builder packs the full hoisted production tree of every
   # direct dep — verified in the built asar, which carries zod, vscode-jsonrpc
@@ -43,7 +54,9 @@ files:
   # patterns reach the node_modules matcher, so a blocklist is the one tool
   # here; the small hoisted helpers that still ride along are harmless.
   - "!node_modules/@openai/**"
+  - "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
   - "!node_modules/@agentclientprotocol/codex-acp/node_modules/**"
+  - "!node_modules/@agentclientprotocol/claude-agent-acp/node_modules/**"
   - "!out/**/*.map"
   - "!**/*.{ts,tsx,md}"
 

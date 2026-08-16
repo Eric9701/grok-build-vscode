@@ -27,6 +27,26 @@ node_modules/**
 !node_modules/@agentclientprotocol/codex-acp/package.json
 !node_modules/@agentclientprotocol/codex-acp/dist/**
 !node_modules/@agentclientprotocol/codex-acp/LICENSE
+# Claude adapter is unbundled ESM. Pack its JS tree, never the optional
+# native Anthropic platform binaries (~300MB).
+!node_modules/@agentclientprotocol/claude-agent-acp/package.json
+!node_modules/@agentclientprotocol/claude-agent-acp/dist/**
+!node_modules/@agentclientprotocol/claude-agent-acp/LICENSE
+!node_modules/@agentclientprotocol/sdk/package.json
+!node_modules/@agentclientprotocol/sdk/dist/**
+!node_modules/@agentclientprotocol/sdk/LICENSE-APACHE
+!node_modules/@anthropic-ai/claude-agent-sdk/package.json
+!node_modules/@anthropic-ai/claude-agent-sdk/*.mjs
+!node_modules/@anthropic-ai/claude-agent-sdk/*.js
+!node_modules/@anthropic-ai/claude-agent-sdk/*.d.ts
+!node_modules/@anthropic-ai/claude-agent-sdk/LICENSE*
+!node_modules/zod/package.json
+!node_modules/zod/index.js
+!node_modules/zod/index.cjs
+!node_modules/zod/index.d.ts
+!node_modules/zod/index.d.cts
+!node_modules/zod/v3/**
+!node_modules/zod/v4/**
 .git/**
 **/*.map
 **/*.ts

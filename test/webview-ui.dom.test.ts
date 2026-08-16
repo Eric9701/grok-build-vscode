@@ -1105,7 +1105,7 @@ describe("provider onboarding", () => {
   it("shows desk sign-in guidance remotely and posts no provider-management action", () => {
     const { window, doc, posted } = bootWebview({ remote: true });
 
-    for (const state of ["connect-agent", "auth-required", "codex-login"] as const) {
+    for (const state of ["connect-agent", "auth-required", "codex-login", "claude-login"] as const) {
       dispatch(window, { type: "onboarding", state });
       const onboarding = doc.getElementById("welcome-onboarding")!;
       expect(onboarding.textContent).toContain("Sign in at the desk");
@@ -1122,14 +1122,31 @@ describe("provider onboarding", () => {
     dispatch(window, { type: "onboarding", state: "connect-agent" });
 
     const tiles = [...doc.querySelectorAll(".onb-agent-tile")] as HTMLButtonElement[];
-    expect(tiles).toHaveLength(2);
+    expect(tiles).toHaveLength(3);
     expect(tiles[0].textContent).toContain("Grok");
     expect(tiles[0].classList.contains("primary")).toBe(true);
     expect(tiles[1].textContent).toContain("Codex");
+    expect(tiles[2].textContent).toContain("Claude");
     expect(tiles.every((tile) => !!tile.querySelector("svg.provider-logo path"))).toBe(true);
 
     click(window, tiles[1]);
     expect(posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
+    click(window, tiles[2]);
+    expect(posted).toContainEqual({ type: "runGrokLogin", provider: "claude" });
+  });
+
+  it("tells the user to install and sign in with Anthropic's own Claude CLI", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "onboarding", state: "missing-claude" });
+    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("does not install or sign in to Claude");
+    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("claude auth login");
+
+    dispatch(window, { type: "onboarding", state: "claude-login" });
+    expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("does not offer Claude.ai login");
+    const recheck = [...doc.querySelectorAll("#welcome-onboarding button")]
+      .find((el) => el.textContent?.includes("connect Claude")) as HTMLElement;
+    click(window, recheck);
+    expect(posted).toContainEqual({ type: "recheckConnection", provider: "claude" });
   });
 
   it("shows Codex install guidance and provider-specific re-check", () => {

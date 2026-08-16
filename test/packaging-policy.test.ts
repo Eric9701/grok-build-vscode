@@ -195,6 +195,25 @@ describe("VSIX excludes desktop app", () => {
     expect(full.scripts["dist:mac"]).not.toMatch(/--x64/);
   });
 
+  it("packages the pinned Claude ACP runtime without native SDK binaries", () => {
+    const builder = read("electron-builder.yml");
+    const full = JSON.parse(read("package.json")) as { dependencies?: Record<string, string> };
+    expect(full.dependencies?.["@agentclientprotocol/claude-agent-acp"]).toBe("0.69.0");
+    expect(builder).toMatch(/node_modules\/@agentclientprotocol\/claude-agent-acp\/package\.json/);
+    expect(builder).toMatch(/node_modules\/@agentclientprotocol\/claude-agent-acp\/dist\/\*\*\/\*/);
+    expect(builder).not.toMatch(/node_modules\/@agentclientprotocol\/claude-agent-acp\/\*\*\/\*/);
+    expect(builder).toMatch(/node_modules\/@anthropic-ai\/claude-agent-sdk\/package\.json/);
+    expect(builder).toMatch(/^\s*- "!node_modules\/@anthropic-ai\/claude-agent-sdk-\*\/\*\*"\s*$/m);
+    expect(fs.existsSync(path.join(
+      root,
+      "node_modules",
+      "@agentclientprotocol",
+      "claude-agent-acp",
+      "dist",
+      "index.js",
+    ))).toBe(true);
+  });
+
   it("packages the pinned Codex ACP runtime in the desktop artifact", () => {
     const builder = read("electron-builder.yml");
     const full = JSON.parse(read("package.json")) as { dependencies?: Record<string, string> };
@@ -254,6 +273,18 @@ describe("VSIX excludes desktop app", () => {
     // nested node_modules once npm installs the declared tree.
     expect(vscodeignore).not.toMatch(
       /^\s*!node_modules\/@agentclientprotocol\/codex-acp\/\*\*\s*$/m,
+    );
+    expect(vscodeignore).toMatch(
+      /^\s*!node_modules\/@agentclientprotocol\/claude-agent-acp\/package\.json\s*$/m,
+    );
+    expect(vscodeignore).toMatch(
+      /^\s*!node_modules\/@agentclientprotocol\/claude-agent-acp\/dist\/\*\*\s*$/m,
+    );
+    expect(vscodeignore).not.toMatch(
+      /^\s*!node_modules\/@agentclientprotocol\/claude-agent-acp\/\*\*\s*$/m,
+    );
+    expect(vscodeignore).not.toMatch(
+      /^\s*!node_modules\/@anthropic-ai\/claude-agent-sdk-\*\*?\s*$/m,
     );
   });
 });

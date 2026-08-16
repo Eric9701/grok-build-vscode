@@ -66,19 +66,33 @@ const problems = [];
 // declared tree, including optional @openai/codex platform binaries.
 // Those must stay out of the vsix — the adapter bundle does not need
 // them when the host sets CODEX_PATH, and packing them balloons the file.
-const ALLOWED_PACKED_DEPS = new Set(["ws", "jpeg-js", "@agentclientprotocol/codex-acp"]);
+const ALLOWED_PACKED_DEPS = new Set([
+  "ws",
+  "jpeg-js",
+  "@agentclientprotocol/codex-acp",
+  "@agentclientprotocol/claude-agent-acp",
+  "@agentclientprotocol/sdk",
+  "@anthropic-ai/claude-agent-sdk",
+  "zod",
+]);
 for (const name of packedDeps) {
   if (!ALLOWED_PACKED_DEPS.has(name)) {
     problems.push(
-      `node_modules/${name}/ is packed, but only ws, jpeg-js, and the Codex adapter belong in the vsix.\n` +
-        `    Narrow .vscodeignore; do not re-include adapter nested node_modules or @openai/codex.`,
+      `node_modules/${name}/ is packed, but only ws, jpeg-js, the Codex adapter, and the Claude adapter JS tree belong in the vsix.\n` +
+        `    Narrow .vscodeignore; do not re-include adapter nested node_modules, @openai/codex, or Claude native binaries.`,
     );
   }
 }
 for (const file of packed) {
-  if (file.startsWith("node_modules/@agentclientprotocol/codex-acp/node_modules/")) {
+  if (file.startsWith("node_modules/@agentclientprotocol/codex-acp/node_modules/") ||
+      file.startsWith("node_modules/@agentclientprotocol/claude-agent-acp/node_modules/")) {
     problems.push(
       `${file}\n    nested adapter dependency packed — re-include only package.json / dist / LICENSE.`,
+    );
+  }
+  if (file.startsWith("node_modules/@anthropic-ai/claude-agent-sdk-")) {
+    problems.push(
+      `${file}\n    Claude SDK native binary packed — set CLAUDE_CODE_EXECUTABLE and keep optional natives out of the vsix.`,
     );
   }
 }

@@ -25,23 +25,24 @@ function methodBody(signature: string): string {
 describe("multi-provider review regressions", () => {
   it("proves cold Codex session existence from the adapter-backed cache before Grok disk lookup", () => {
     const body = methodBody("private remoteSessionTarget(");
-    expect(body).toContain("findCachedCodexSession(");
-    expect(body.indexOf("findCachedCodexSession(")).toBeLessThan(body.indexOf("indexSessions("));
+    expect(body).toContain("findCachedAdapterSession(");
+    expect(body.indexOf("findCachedAdapterSession(")).toBeLessThan(body.indexOf("indexSessions("));
     expect(body).toContain("sessionCwdBelongsToRepo");
   });
 
   it("builds pinned Codex rows from the adapter-backed cache", () => {
     const body = methodBody("private buildPinnedSessions(");
-    expect(body).toContain("this.codexSessionCache.values()");
-    expect(body).toContain("this.scheduleCodexHistoryRefresh(cwd)");
-    expect(body).toContain("findCachedCodexSession(");
+    expect(body).toContain("this.allAdapterCatalogs()");
+    expect(body).toContain("this.scheduleAdapterHistoryRefresh");
+    expect(body).toContain("findCachedAdapterSession(");
     expect(body).toContain("pinnedAt: overrides[id]?.pinnedAt");
   });
 
   it("uses one ordinary Grok page and the complete cached Codex catalog for combined history", () => {
     const body = methodBody("private buildSessionsList(");
     expect(body).toContain("{ offset: providerCursor.grokOffset, limit, query }");
-    expect(body).toContain('providers.includes("codex") ? codex : []');
+    expect(body).toContain("providers.includes(\"codex\")");
+    expect(body).toContain("providers.includes(\"claude\")");
     expect(body).not.toContain("slotOffsets");
     expect(body).not.toContain("lookAhead");
   });
@@ -153,15 +154,15 @@ describe("multi-provider review regressions", () => {
 
   it("observes Codex logout success before entering the synchronous logout reset", () => {
     const body = sidebar.slice(sidebar.indexOf("async logout("), sidebar.indexOf("dispose(): void"));
-    const exec = body.indexOf('await execGrokCli(cliPath, ["logout"]');
-    const disconnect = body.indexOf('await this.finishProviderLogout("codex")');
+    const exec = body.indexOf("await execGrokCli(cliPath, logoutArgs");
+    const disconnect = body.indexOf("await this.finishProviderLogout(provider)");
     expect(exec).toBeGreaterThan(-1);
     expect(disconnect).toBeGreaterThan(exec);
     expect(body.slice(exec, disconnect)).toContain("catch (error)");
     expect(body).toContain("The account remains connected");
-    expect(body).toContain('this.locateProvider("codex")');
+    expect(body).toContain("this.locateProvider(provider)");
     expect(body).toContain('this.locateProvider("grok")');
-    expect(body).toContain('await this.finishProviderLogout("codex")');
+    expect(body).toContain("await this.finishProviderLogout(provider)");
     expect(body).toContain('await this.finishProviderLogout("grok")');
   });
 
@@ -184,12 +185,13 @@ describe("multi-provider review regressions", () => {
   it("puts minimal provider state in every remote client snapshot", () => {
     const instance = Object.create(GrokSidebar.prototype) as any;
     instance.providerConnections = vi.fn(() => ({ grok: true, codex: true }));
-    instance.locatedProviders = vi.fn(() => ({ grok: true, codex: false }));
+    instance.locatedProviders = vi.fn(() => ({ grok: true, codex: false, claude: false }));
     expect(instance.providerStateMessage()).toEqual({
       type: "providerState",
       providers: [
         { id: "grok", connected: true },
         { id: "codex", connected: false },
+        { id: "claude", connected: false },
       ],
     });
 
