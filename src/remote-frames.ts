@@ -332,11 +332,18 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
   }
 }
 
+/** The production relay. The hostname is written only here.
+ *  `scripts/check-production-relay.mjs` refuses to package unless
+ *  {@link REMOTE_RELAY_URL} resolves to this value. */
+export const PRODUCTION_RELAY_URL = "wss://afkpilot.com";
+
 /** The relay the extension talks to. Fixed in code on purpose — the pairing
  *  flow, the web portal, and the gear "AFK Pilot" section all assume this one
  *  service, so there is no user SETTING. A development build can override it
- *  (see {@link resolveRelayUrl}); a published one never can. */
-export const REMOTE_RELAY_URL = "wss://afkpilot.com";
+ *  (see {@link resolveRelayUrl}); a published one never can. A local
+ *  `install.ps1` build rewrites this assignment to a staging URL and restores
+ *  it afterwards. */
+export const REMOTE_RELAY_URL = PRODUCTION_RELAY_URL;
 
 /** Environment variable a DEVELOPMENT build reads instead of the constant. */
 export const RELAY_URL_ENV = "GROK_RELAY_URL";

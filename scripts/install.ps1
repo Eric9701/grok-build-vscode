@@ -21,6 +21,10 @@
 # reached the PUBLIC repo once already; that is the whole reason this is
 # automated rather than written down. The staging URL itself is NOT in this
 # file - it comes from the gitignored .env, because this repository is public.
+#
+# `npm run package` now refuses a non-production REMOTE_RELAY_URL. This script
+# sets GROK_ALLOW_STAGING_RELAY_VSIX to the required phrase for that one
+# build only — a flag or a leftover `=1` will not pass.
 
 param(
     [string]$VsixPath,
@@ -36,7 +40,11 @@ if (-not $Cli -and $env:CODE_CLI) { $Cli = $env:CODE_CLI }
 if ($All -and $Cli) { throw "-All and -Cli are mutually exclusive." }
 
 $framesPath = Join-Path $repoRoot "src\remote-frames.ts"
-$prodRelayLine = 'export const REMOTE_RELAY_URL = "wss://afkpilot.com";'
+$prodRelayLine = 'export const REMOTE_RELAY_URL = PRODUCTION_RELAY_URL;'
+# Must match scripts/check-production-relay.mjs. A tripwire in
+# test/check-production-relay.test.ts fails if either side drifts.
+$allowStagingRelayEnv = "GROK_ALLOW_STAGING_RELAY_VSIX"
+$allowStagingRelayValue = "I_UNDERSTAND_THIS_VSIX_MUST_NOT_BE_RELEASED"
 
 function Get-DevRelayUrl {
     $envFile = Join-Path $repoRoot ".env"
@@ -93,11 +101,20 @@ Or build against production explicitly: pwsh scripts\install.ps1 -Prod
     Write-Host ""
     Write-Host "Building a fresh .vsix from current source..."
     Push-Location $repoRoot
+    $previousAllowStaging = [Environment]::GetEnvironmentVariable($allowStagingRelayEnv)
     try {
         if (-not (Test-Path "node_modules")) { npm install }
+        if ($swappedRelayLine) {
+            [Environment]::SetEnvironmentVariable($allowStagingRelayEnv, $allowStagingRelayValue)
+        }
         npm run package   # clears stale grok-vscode-phuryn-*.vsix first, then builds
         $vsix = Get-ChildItem -Path $repoRoot -Filter "*.vsix" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     } finally {
+        if ($null -eq $previousAllowStaging) {
+            [Environment]::SetEnvironmentVariable($allowStagingRelayEnv, $null)
+        } else {
+            [Environment]::SetEnvironmentVariable($allowStagingRelayEnv, $previousAllowStaging)
+        }
         Pop-Location
         if ($swappedRelayLine) {
             # Restore even when the build threw, by swapping OUR line back in the

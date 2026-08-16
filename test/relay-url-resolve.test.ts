@@ -13,6 +13,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  PRODUCTION_RELAY_URL,
   REMOTE_RELAY_URL,
   RELAY_URL_ENV,
   redactRelayUrl,
@@ -20,6 +21,14 @@ import {
 } from "../src/remote-frames";
 
 const STAGING = "wss://staging-relay.example";
+
+describe("REMOTE_RELAY_URL", () => {
+  it("is the production constant in committed source", () => {
+    // install.ps1 rewrites the assignment for a local staging vsix. A leftover
+    // swap must fail this suite, not wait for someone to extract a vsix.
+    expect(REMOTE_RELAY_URL).toBe(PRODUCTION_RELAY_URL);
+  });
+});
 
 describe("resolveRelayUrl", () => {
   it("IGNORES the environment in a production build", () => {

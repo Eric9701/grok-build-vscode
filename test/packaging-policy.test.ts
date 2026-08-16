@@ -146,6 +146,14 @@ describe("VSIX excludes desktop app", () => {
     expect(pkg.scripts.prepackage).toMatch(/check:vsix/);
   });
 
+  it("packaging cannot run without the production-relay check", () => {
+    expect(pkg.scripts["check:relay"]).toMatch(/check-production-relay/);
+    expect(pkg.scripts.prepackage).toMatch(/check:relay/);
+    expect(pkg.scripts.prepackage.indexOf("check:vsix")).toBeGreaterThan(
+      pkg.scripts.prepackage.indexOf("check:relay"),
+    );
+  });
+
   it("desktop dist scripts exist and do not replace npm run package", () => {
     expect(pkg.scripts["dist:win"]).toMatch(/electron-builder/);
     expect(pkg.scripts["dist:mac"]).toMatch(/electron-builder/);

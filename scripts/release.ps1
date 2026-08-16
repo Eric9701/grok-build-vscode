@@ -11,6 +11,7 @@
     1. assert on `main`
     2. tsc --noEmit + npm test       (skip all gating with -NoTest)
        + npm run test:integration    (real Extension Host; skip with -SkipIntegration)
+       + npm run e2e:screens         (real Electron desktop; skip with -SkipScreens)
        + npm run test:live           (real grok — mandatory gate; skip with -SkipLive)
     3. assert tag vX.Y.Z is free     (bump the version if it isn't)
     4. npm run package               -> grok-vscode-phuryn-X.Y.Z.vsix
@@ -37,6 +38,7 @@ param(
   [switch]$NoTest,
   [switch]$SkipLive,
   [switch]$SkipIntegration,
+  [switch]$SkipScreens,
   [switch]$DryRun
 )
 
@@ -89,6 +91,14 @@ if (-not $NoTest) {
   # explicit -SkipLive escape hatch, but the DEFAULT is to run it so it can't be
   # silently forgotten under release pressure. A live FAIL (non-zero exit) aborts the
   # release; a SKIP inside the suite (no subscription, grok declined to delegate) is exit 0.
+  # The desktop app ships the same compiled src/ as the extension, so a change
+  # can reach it without src/desktop/ being touched — 3.10.1 shipped an ACP
+  # capability change that way. This is the only gate that boots real Electron.
+  if (-not $SkipScreens) {
+    Run "npm run e2e:screens (real Electron desktop)" { npm run e2e:screens }
+  } else {
+    Step "SKIPPING the Electron desktop gate (-SkipScreens) - nothing else exercises the packaged app"
+  }
   if (-not $SkipLive) {
     Run "npm run test:live (real grok)" { npm run test:live }
   } else {
@@ -101,6 +111,9 @@ if (git tag --list $tag) { throw "Tag $tag already exists - bump package.json/ch
 
 # 4. build the vsix that will be attached to the release
 $vsix = "grok-vscode-phuryn-$version.vsix"
+# install.ps1 sets this so a local staging vsix can build. A release must not
+# inherit it from the shell — that is how a staging artifact could ship.
+Remove-Item Env:GROK_ALLOW_STAGING_RELAY_VSIX -ErrorAction SilentlyContinue
 Run "npm run package" { npm run package }
 if (-not (Test-Path $vsix)) { throw "Expected $vsix but it wasn't produced." }
 

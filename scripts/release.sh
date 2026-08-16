@@ -73,6 +73,9 @@ if git tag --list "$tag" | grep -q .; then
   echo "Tag $tag already exists - bump package.json/changelog first." >&2; exit 1
 fi
 
+# install.ps1 sets this so a local staging vsix can build. A release must not
+# inherit it from the shell — that is how a staging artifact could ship.
+unset GROK_ALLOW_STAGING_RELAY_VSIX
 step "npm run package"; npm run package
 [ -f "$vsix" ] || { echo "Expected $vsix but it wasn't produced." >&2; exit 1; }
 

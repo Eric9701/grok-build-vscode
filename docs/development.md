@@ -11,7 +11,8 @@ npm test                  # grok-free unit/DOM/fake-CLI suite
 npm run test:integration  # real VS Code Extension Host smoke (also required by CI)
 npm run test:desktop      # real Electron window + fake CLI (desktop host)
 npm run e2e:screens       # real Electron, real layout — leaves frames in .screens/
-npm run package           # → grok-vscode-phuryn-<version>.vsix (marketplace README only)
+npm run package           # → grok-vscode-phuryn-<version>.vsix (marketplace README only;
+                          #    refuses a non-production REMOTE_RELAY_URL)
 npm run desktop           # run Desktop from the compile tree
 npm run dist:win          # Windows x64 installer → dist-desktop/
 npm run dist:mac          # macOS arm64 + x64 (must run on macOS)
