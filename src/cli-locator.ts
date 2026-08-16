@@ -237,6 +237,8 @@ export type PlanModeAvailabilityResolution = {
   /** Present only after a parseable live probe, so the host can persist it. */
   nextCache?: CliVersionCache;
   usedCache: boolean;
+  /** Live banner, else the matching cache banner, else the unparseable probe text. */
+  versionOutput: string;
 };
 
 /**
@@ -259,6 +261,7 @@ export async function resolvePlanModeAvailability(opts: {
       decision: decidePlanModeAvailability(versionOutput),
       nextCache: storeCachedCliVersion(opts.cache, opts.identity, versionOutput),
       usedCache: false,
+      versionOutput,
     };
   }
   const cached = lookupCachedCliVersion(opts.cache, opts.identity);
@@ -268,9 +271,9 @@ export async function resolvePlanModeAvailability(opts: {
     const decision: PlanModeAvailabilityDecision = fromBanner.available
       ? { available: true, verified: false }
       : { available: false, verified: false, reason: PLAN_MODE_UNVERIFIED_REASON };
-    return { decision, usedCache: true };
+    return { decision, usedCache: true, versionOutput: cached };
   }
-  return { decision: decidePlanModeAvailability(versionOutput), usedCache: false };
+  return { decision: decidePlanModeAvailability(versionOutput), usedCache: false, versionOutput };
 }
 
 /**

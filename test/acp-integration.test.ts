@@ -102,6 +102,7 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
         FAKE_PLAN_PATH: planPath,
       },
       log: () => {},
+      grokVersion: "1.0.4",
     });
     client.on("stderr", (t: string) => captured.push(t));
 
@@ -138,8 +139,41 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
 
   it("lifecycle: spawn → initialize → session/new succeeds and a basic prompt round-trips", async () => {
     expect(client.sessionId).toBe("fake-session-1");
+    await waitForStderr(stderr, /INITIALIZE_CAPS:/);
+    const capsLine = stderr.find((t) => t.includes("INITIALIZE_CAPS:"));
+    const capsJson = capsLine!.slice(capsLine!.indexOf("INITIALIZE_CAPS:") + "INITIALIZE_CAPS:".length);
+    expect(JSON.parse(capsJson)).toEqual({ fs: { writeTextFile: true }, terminal: true });
     const meta = await client.prompt("hello");
     expect(meta).toMatchObject({ totalTokens: 10 });
+  });
+
+  it("advertises the delegated handshake on grok 0.2.117", async () => {
+    const captured: string[] = [];
+    const legacy = new AcpClient({
+      cliPath: fixtureCli(),
+      cwd: workspace,
+      env: {
+        ...process.env,
+        GROK_HOME: path.join(planHome, ".grok"),
+        FAKE_WORKSPACE_ROOT: workspace,
+      },
+      log: () => {},
+      grokVersion: "0.2.117",
+    });
+    legacy.on("stderr", (t: string) => captured.push(t));
+    try {
+      await legacy.start();
+      await waitForStderr(captured, /INITIALIZE_CAPS:/);
+      const capsLine = captured.find((t) => t.includes("INITIALIZE_CAPS:"));
+      const capsJson = capsLine!.slice(capsLine!.indexOf("INITIALIZE_CAPS:") + "INITIALIZE_CAPS:".length);
+      expect(JSON.parse(capsJson)).toEqual({
+        fs: { readTextFile: true, writeTextFile: true },
+        terminal: true,
+      });
+    } finally {
+      try { legacy.removeAllListeners(); } catch { /* */ }
+      try { await legacy.dispose(); } catch { /* */ }
+    }
   });
 
   it("dispatches a final interject ACK before exposing immediate process exit", async () => {

@@ -44,9 +44,11 @@ Plan can mutate the workspace through the terminal while claiming edits are forb
 **fourth consecutive build** we have measured it on. Published source explains the split:
 `plan_mode_edit_gate` gates `AccessKind::Edit`, while bash, MCP and web fall through.
 
-**Client cost/workaround:** we maintain a second plan-policy engine at the mandatory
-`fs/write_text_file` and `terminal/create` handlers, classify read-only shell commands, constrain
-paths, and reject everything else. It is the one safety workaround we cannot remove even though
+**Client cost/workaround:** we keep a plan-policy engine at `terminal/create` (load-bearing: Plan
+still hands mutating shells to the client) and at `fs/write_text_file` (kept for 0.2.x delegated
+writes and a later CLI that honours `writeTextFile` independently). On grok 1.x the write hook is
+unreachable because withholding `readTextFile` also stops write delegation; native Plan already
+refuses the edit tool. Terminal gating is the one safety workaround we cannot remove even though
 native verdicts now work.
 
 **Ask:** enforce one server-side Plan tool policy across edit, shell, MCP and web surfaces — allow
@@ -80,11 +82,14 @@ The shipped image branch lives on the CLI's own read path. When a client adverti
 `fs.readTextFile`, `read_file` is routed to that text-only client method instead, and that path has
 a binary guard but no image branch.
 
-The second column is the trap, and it is the reason we cannot simply stop advertising the
-capability. `writeTextFile: true` is **not honored independently**: with `readTextFile: false` the
-CLI performed the write itself and issued **no client requests at all** — zero inbound JSON-RPC
-across the whole turn, `session/request_permission` included. A client cannot opt out of read
-delegation while keeping write interception.
+The second column is why this is a coin-flip, not a free lunch. `writeTextFile: true` is **not
+honored independently**: with `readTextFile` withheld the CLI performs the write itself and issues
+**no client fs requests at all**. A client cannot opt out of read delegation while keeping write
+interception. We withhold `readTextFile` on grok >= 1.0 (`acpClientCapabilities`) because the write
+hook is already unreachable in Plan on this build (next table) and `exit_plan_mode` arrives with
+`planContent` populated, so the plan-review card is fed by `req.plan` rather than the plan.md snoop.
+0.2.x and Codex keep the delegated handshake — this workaround was not measured there, and 0.2.117
+still sends `planContent: null`.
 
 **Content-level escape hatches, all measured on 1.0.4, all closed** — no response a client returns
 can make a delegated image read succeed:
@@ -112,18 +117,17 @@ already unreachable in Plan mode on this build. And `terminal/create` plus `sess
 ride the **separate `terminal` capability**, so they are untouched by the `fs` flags. The hook that
 covers the real §1 hole (bash still executes in Plan) does not depend on `fs.readTextFile` at all.
 
-So the enforcement cost of dropping the capability is close to zero on this build. The remaining
-cost is a UX one: `fs/write_text_file` is also how we snoop grok's own plan file to populate the
-plan review card, since `exit_plan_mode` arrives with `planContent: null` (§1).
+So the enforcement cost of dropping the capability is close to zero on this build. Plan review no
+longer depends on the snoop: `exit_plan_mode` arrives with `planContent` fully populated, and the
+host prefers `req.plan` over any snooped `lastPlanText`.
 
-**Client cost/workaround:** we ignore the capability flag, pin a live drift test, pre-read and send
-user-attached images ourselves, add "do not Read" hints to reduce transcript noise, and parse
-generated-media paths out of tool output. A client can now recover model-initiated image reads by
-withholding `fs.readTextFile` — but only by giving up delegated reads wholesale, and while relying
-on a native Plan gate whose coverage §1 shows to be partial. That is a coin-flip between two
-documented capabilities, not a design. The one content-level lever left is cosmetic: a JSON-RPC
-error message reaches the model verbatim, so `Cannot read binary file` can be replaced with text
-telling it to ask the user to attach the file.
+**Client cost/workaround:** `acpClientCapabilities` withholds `fs.readTextFile` for grok >= 1.0,
+pins that matrix in `test/acp.test.ts`, and pins the two live behaviours in
+`research/image-read-capability-probe.cjs` (image read succeeds when the flag is withheld; Plan
+still refuses file edits natively). 0.2.x, Codex, and an unknown version keep the delegated
+handshake. User-attached images still go as inline pixel blocks. The "do not Read" hint stays on
+that send path to cut transcript noise. Terminal plan-gating is untouched. This remains a
+coin-flip between two documented capabilities, not a design — §1's shell hole is still open.
 
 **Ask:** route a binary/image path through the shipped image branch **even when the read is
 delegated** — a client advertising `fs.readTextFile` is offering to resolve text, not asking to

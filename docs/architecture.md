@@ -43,9 +43,13 @@ Grok supplies the mandatory `fs/*` and `terminal/*` callbacks, native
 rail. Codex executes commands and edits server-side; its adapter sends ordinary
 tool/diff updates and `session/request_permission`, including plan review.
 
-The extension implements **every mandatory server→client handler**
-(`fs/read_text_file`, `fs/write_text_file`, `terminal/{create,output,wait_for_exit,kill,release}`)
-— miss one and the agent crashes mid-session.
+`initialize` uses `acpClientCapabilities(provider, grokVersion)`: grok >= 1.0
+withholds `readTextFile` so the CLI's image-aware `read_file` runs (#79).
+Measured 1.x builds treat client fs as all-or-nothing, so that also stops
+write delegation. 0.2.x, Codex, and an unreadable version keep
+`readTextFile: true`. The handlers still exist (`fs/read_text_file`,
+`fs/write_text_file`, `terminal/{create,output,wait_for_exit,kill,release}`);
+`terminal` is a separate capability.
 
 `AcpClient` has a provider seam at the wire's divergence points. The default
 `grokBackend` is an identity adapter: it preserves Grok's spawn arguments,
@@ -272,15 +276,16 @@ ends the turn without a continuation. There is no synthetic verdict prompt, turn
 cancel, or synthetic lifecycle.
 
 - **The gate** ([src/plan-gate.ts](../src/plan-gate.ts)). While Plan Mode is
-  active, the two mandatory server→client choke points are policed: a
-  `fs/write_text_file` resolving inside the workspace is blocked, and a
-  `terminal/create` that isn't on a read-only allowlist is blocked. grok's own
-  `~/.grok/sessions/<…>/plan.md` is allowed through `fs/write_text_file` and
-  snooped to recover the plan text (since `exit_plan_mode` arrives with
-  `planContent: null`); a shell command that writes the same path is still
-  blocked, after which the CLI retries through the filesystem callback. Entering
-  plan mode *any* way — including the agent
-  self-initiating it — raises the gate; only an explicit user action lowers it.
+  active, `terminal/create` that isn't on a read-only allowlist is blocked —
+  that hook is load-bearing because the CLI still hands mutating shells to the
+  client. On grok 1.x, Plan-mode file safety rests on grok's native edit
+  refusal (writes are not delegated). The `fs/write_text_file` workspace block
+  stays in the handler for 0.2.x (still delegated) and for a later CLI that
+  honours `writeTextFile` independently. Plan review is fed by `req.plan`
+  (`exit_plan_mode.planContent` arrives populated on 1.x; 0.2.117 still sends
+  `null`); the plan.md snoop is a fallback. Entering plan mode *any* way —
+  including the agent self-initiating it — raises the gate; only an explicit
+  user action lowers it.
 
 - **Verdict state and comments.** `handleExitPlan` settles all implementation-
   relevant state *before* releasing the blocked response. Approval restores the

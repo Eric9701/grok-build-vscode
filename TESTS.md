@@ -214,9 +214,10 @@ happy-dom test (see [Webview DOM tests](#webview-dom-tests) below). Drives the s
 - `planNotice` / `planBlocked` (command + write variants) render a `.plan-notice` with the right text
 - Read-only plan-history card renders with the persisted verdict label
 
-### `test/acp.test.ts` — ACP client helpers (3 tests)
+### `test/acp.test.ts` — ACP client helpers
 
 - **Request timer lifecycle** — a resolved `request()` clears its timeout (no leaked timer).
+- **Advertised `clientCapabilities` (#79)** — `acpClientCapabilities(provider, grokVersion)` withholds `readTextFile` only for grok >= 1.0; grok 0.2.117, Codex, and an unknown version keep the delegated handshake. The fake-CLI integration lifecycle test asserts the 1.0.4 wire payload; a second case asserts 0.2.117 still advertises `readTextFile`.
 - **Spawn argv** — `buildGrokAgentArgs()` returns `["agent", "stdio"]` with no effort, and `["agent", "--reasoning-effort", <value>, "stdio"]` (flag before the subcommand) for a valid effort.
 
 ### `test/acp-integration.test.ts` — ACP wire layer + plan-mode gate (17 tests)

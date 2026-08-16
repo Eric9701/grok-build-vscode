@@ -184,6 +184,7 @@ describe("planModeCompatibility cache substitute", () => {
     instance.readGrokVersion = vi.fn(async () => versionOutput);
     instance.emit = vi.fn();
     instance.store = store;
+    instance.providerCliVersions = {};
     return instance;
   }
 
@@ -212,6 +213,7 @@ describe("planModeCompatibility cache substitute", () => {
       planModeAvailable: true,
       planModeVersionVerified: false,
       usedCache: true,
+      cliVersion: "0.2.117",
     });
     expect(sidebar.host.appendLine).toHaveBeenCalledWith(
       "grok --version failed; using last verified version for Plan mode.",
@@ -259,6 +261,7 @@ describe("planModeCompatibility cache substitute", () => {
       planModeAvailable: true,
       planModeVersionVerified: true,
       usedCache: false,
+      cliVersion: "0.2.117",
     });
     const identity = readCliBinaryIdentity(cliPath);
     if (!identity) throw new Error("expected identity for temp CLI");

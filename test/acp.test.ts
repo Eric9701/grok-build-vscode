@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { AcpClient, buildGrokAgentArgs } from "../src/acp";
+import {
+  AcpClient,
+  ACP_DELEGATED_FS_CAPABILITIES,
+  ACP_IMAGE_READ_FS_CAPABILITIES,
+  acpClientCapabilities,
+  buildGrokAgentArgs,
+} from "../src/acp";
 
 // Unit tests for AcpClient internals that don't need a real subprocess. We
 // stand up the client with a fake writable proc and drive `request`/`onLine`
@@ -239,6 +245,36 @@ describe("AcpClient.request timer lifecycle", () => {
 // #3/#4 (thanks @shugav for the crash report): the startup crash was the bogus
 // `max` value, not reasoningEffort itself — grok accepts none|minimal|low|medium|
 // high|xhigh, and the flag must precede the `stdio` subcommand.
+// #79: grok's image-aware read_file only runs when we do not advertise
+// readTextFile. That workaround was measured on 1.0.4; apply it only there.
+describe("acpClientCapabilities", () => {
+  it("withholds readTextFile on grok 1.0.x", () => {
+    expect(acpClientCapabilities("grok", "1.0.4")).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "grok 1.0.0 (abc) [stable]")).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "1.1.0").fs).not.toHaveProperty("readTextFile");
+  });
+
+  it("keeps the delegated handshake on grok 0.2.117", () => {
+    expect(acpClientCapabilities("grok", "0.2.117")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "grok 0.2.117 (x) [stable]")).toEqual({
+      fs: { readTextFile: true, writeTextFile: true },
+      terminal: true,
+    });
+  });
+
+  it("keeps the delegated handshake for Codex", () => {
+    expect(acpClientCapabilities("codex")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("codex", "1.0.4")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+  });
+
+  it("keeps the delegated handshake when the grok version is unknown", () => {
+    expect(acpClientCapabilities("grok")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "unparseable")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", null)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+  });
+});
+
 describe("buildGrokAgentArgs", () => {
   it("starts ACP sessions with the stdio subcommand when no effort is set", () => {
     expect(buildGrokAgentArgs()).toEqual(["agent", "stdio"]);

@@ -3,15 +3,22 @@
  *
  * grok's `x.ai/exit_plan_mode` treats *any* client response as approval, so we
  * cannot reject a plan at the protocol layer. Instead we enforce plan/act on
- * *our* side, at the two mandatory server→client choke points the agent cannot
- * avoid:
+ * our side at the server→client hooks the agent still reaches:
  *
- *   - `fs/write_text_file` — every file write
- *   - `terminal/create`    — every shell command
+ *   - `terminal/create` — every shell command. Load-bearing on every supported
+ *     grok: Plan still hands mutating shells to the client.
+ *   - `fs/write_text_file` — workspace writes, when they are delegated.
  *
- * Empirically (grok 0.2.3–0.2.117, ACP), a plan-mode turn only *reads* the
- * workspace (`fs/read_text_file` + internal search tools) and writes its plan
- * to `~/.grok/sessions/<cwd>/<id>/plan.md`. The gate therefore refuses every
+ * On grok 1.x we withhold `readTextFile`, the CLI treats client fs as
+ * all-or-nothing, and writes are not delegated. Plan-mode file safety then
+ * rests on grok's native edit refusal; only terminal mutations remain
+ * extension-enforced. The write handler + this gate stay so a later CLI that
+ * honours `writeTextFile` independently still has the hook, and so 0.2.x
+ * (which still advertises the delegated handshake) is unchanged.
+ *
+ * Empirically (grok 0.2.3–0.2.117, ACP, delegated fs), a plan-mode turn only
+ * *reads* the workspace and writes its plan to
+ * `~/.grok/sessions/<cwd>/<id>/plan.md`. The gate therefore refuses every
  * other file write, including writes outside the workspace.
  *
  * These functions are pure so the policy can be unit-tested without spawning a
@@ -825,8 +832,9 @@ export function pickRejectOption(options: PermissionOptionLike[]): string | unde
 
 /**
  * True if `path` is grok's own plan file (`.grok/sessions/.../plan.md`). We
- * snoop the content of that write to populate the plan-review card, since
- * `exit_plan_mode` itself arrives with `planContent: null`.
+ * still snoop that write as a fallback. Current CLIs send `exit_plan_mode`
+ * with `planContent` populated; sidebar.ts prefers `req.plan` over the
+ * snooped `lastPlanText`.
  */
 export function isPlanFileWrite(path: string): boolean {
   return /[\\/]\.grok[\\/]sessions[\\/].*[\\/]plan\.md$/i.test(String(path || ""));

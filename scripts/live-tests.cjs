@@ -42,15 +42,17 @@ const fs = require("node:fs");
 
 // ── Real extension modules (compiled CJS + shipped webview helper) ───────────
 const REPO = path.resolve(__dirname, "..");
-let dispatch, planGate, helpers;
+let dispatch, planGate, helpers, acpMod;
 try {
   dispatch = require(path.join(REPO, "out", "acp-dispatch.js"));
   planGate = require(path.join(REPO, "out", "plan-gate.js"));
   helpers = require(path.join(REPO, "media", "webview-helpers.js"));
+  acpMod = require(path.join(REPO, "out", "acp.js"));
 } catch (e) {
   console.error("Could not load compiled modules — run `npm run compile` (or `tsc -p .`) first.\n" + e.message);
   process.exit(2);
 }
+const { acpClientCapabilities } = acpMod;
 const { isMediaGenToolCall, extractGeneratedMediaPaths, contextUsedFromCompactNotification, resolveModelId } = dispatch;
 const { shouldBlockWrite } = planGate;
 const { isSubagentToolCall, subagentLabel } = helpers;
@@ -243,7 +245,27 @@ class Acp {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-const INIT = { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true } };
+function readGrokVersionBanner() {
+  try {
+    const win = process.platform === "win32";
+    const useShell = /\.(cmd|bat)$/i.test(GROK);
+    return String(require("node:child_process").execFileSync(GROK, ["--version"], {
+      encoding: "utf8",
+      timeout: 30000,
+      windowsHide: true,
+      shell: useShell && win,
+    }) || "").trim();
+  } catch {
+    return "";
+  }
+}
+const GROK_VERSION = readGrokVersionBanner();
+// Same selection the extension ships (`acpClientCapabilities`). On 1.x this
+// withholds readTextFile; on 0.2.117 / unreadable it keeps the delegated
+// handshake. Plan/rewind/edit then exercise the production wire, not a
+// leftover client-delegated filesystem.
+const INIT = { protocolVersion: 1, clientCapabilities: acpClientCapabilities("grok", GROK_VERSION) };
+const READ_TEXT_FILE_ADVERTISED = INIT.clientCapabilities.fs.readTextFile === true;
 function mkTmp(tag) { return fs.mkdtempSync(path.join(os.tmpdir(), "grok-live-" + tag + "-")); }
 function withTimeout(promise, ms, label) {
   return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout after ${ms}ms: ${label}`)), ms))]);
@@ -339,7 +361,7 @@ async function testHandshake() {
     const r = init.result || {};
     assert(r.protocolVersion != null || r.agentCapabilities || r.promptCapabilities, "no capabilities in initialize result");
     const caps = r.agentCapabilities || r.promptCapabilities || {};
-    return `protocolVersion=${r.protocolVersion}, caps=${Object.keys(caps).join("|") || "?"}`;
+    return `protocolVersion=${r.protocolVersion}, caps=${Object.keys(caps).join("|") || "?"}, advertised=${JSON.stringify(INIT.clientCapabilities.fs)}`;
   } finally { acp.kill(); }
 }
 
@@ -650,10 +672,11 @@ async function testRewind() {
 }
 
 // Rewind FILE RESTORE (P2-9) — the risky half: rewinding reverts code on disk.
-// Have grok actually edit a file (the harness performs fs/write_text_file for
-// real), then rewind with mode "all" + force and assert the file is restored to
-// its pre-edit contents. Disposable temp git repo. SKIPs if grok doesn't take the
-// file-edit path (non-deterministic) or the CLI lacks rewind (-32601).
+// Have grok actually edit a file (0.2.x: the harness performs
+// fs/write_text_file; 1.x: grok writes the file itself), then rewind with
+// mode "all" + force and assert the file is restored to its pre-edit contents.
+// Disposable temp git repo. SKIPs if grok doesn't take the file-edit path
+// (non-deterministic) or the CLI lacks rewind (-32601).
 async function testRewindFiles() {
   const rw = require(path.join(REPO, "out", "rewind.js"));
   const execFileSync = require("node:child_process").execFileSync;
@@ -673,8 +696,9 @@ async function testRewindFiles() {
     assert(!r.error && r.result && r.result.sessionId, "session/new failed: " + JSON.stringify(r.error));
     const sessionId = r.result.sessionId;
 
-    // Ask grok to overwrite foo.txt. The harness writes it to disk for real, so
-    // the file actually changes and grok snapshots a rewind point for the turn.
+    // Ask grok to overwrite foo.txt. Under the delegated handshake the harness
+    // writes it; on 1.x grok writes it itself. Either way the file changes
+    // and grok snapshots a rewind point for the turn.
     const edit = await withTimeout(acp.send("session/prompt", {
       sessionId,
       prompt: [{ type: "text", text: "Use your file-editing tool to replace the ENTIRE contents of foo.txt with exactly this one line:\nMODIFIED LINE\nThen stop. Do not run any shell commands." }],
@@ -885,10 +909,13 @@ async function testEditDiffRestore() {
 //
 // Two separate signals are tracked, per the plan-mode research:
 //   A. in-workspace ACP write *attempts* while the gate is up = model discipline
-//      (grok tried to implement) — informational; a blocked attempt is the gate working.
-//   B. disk mutation despite ack-without-write = a CONTAINMENT failure (a write path
-//      not mediated by the client fs/write_text_file) — this is the hard assertion,
-//      caught by reading the seed file back and comparing bytes (the canary).
+//      (grok tried to implement) — informational, and only populated under the
+//      delegated handshake (0.2.x). On 1.x writes are not delegated; an empty
+//      acp.writes list is the shipped behaviour, not a miss.
+//   B. disk mutation before the rejected verdict = a CONTAINMENT failure. On
+//      0.2.x that means a write path the harness did not mediate; on 1.x Plan
+//      file safety rests on grok's native edit refusal. The hard assertion is
+//      the seed-file canary either way.
 // Rewind/Edit contract (#56 + P2-9), exercised over the shape that actually
 // broke in dogfooding: repeated no-op plans, each CANCELLED.
 //
@@ -1144,8 +1171,14 @@ async function testPlanMode() {
     const landed = diskMutated();
     assert(landed, "native approval did not land the implementation inside the original turn");
 
+    if (!READ_TEXT_FILE_ADVERTISED) {
+      assert(acp.writes.length === 0,
+        "grok 1.x delegated fs/write_text_file despite withheld readTextFile — write independence changed; " +
+        "plan-gate.ts is no longer unreachable on this handshake");
+    }
+
     const wrotePlan = acp.writes.some((w) => /plan\.md$/i.test(w));
-    return `native cancelled → ${spontaneousReplan ? "same-turn re-plan" : "turn ended, user-prompted revision"} → approved (${acp.exitPlans.length} exit requests); ${rejectedAttempts} pre-reject workspace attempt(s) contained; gate lowered before implementation; ${wsAttempts()} total workspace write request(s), implementation landed${wrotePlan ? "; grok kept its own plan.md" : ""}`;
+    return `native cancelled → ${spontaneousReplan ? "same-turn re-plan" : "turn ended, user-prompted revision"} → approved (${acp.exitPlans.length} exit requests); ${rejectedAttempts} pre-reject workspace attempt(s) contained; gate lowered before implementation; ${wsAttempts()} total workspace write request(s)${READ_TEXT_FILE_ADVERTISED ? "" : " (none expected: 1.x withheld readTextFile)"}, implementation landed${wrotePlan ? "; grok kept its own plan.md" : ""}`;
   } finally { acp.kill(); }
 }
 
@@ -1466,6 +1499,8 @@ function selected() {
 (async () => {
   const list = selected();
   console.log(`\n grok live suite — binary: ${GROK}`);
+  console.log(` grok --version: ${GROK_VERSION || "(unreadable)"}`);
+  console.log(` initialize.clientCapabilities: ${JSON.stringify(INIT.clientCapabilities)}`);
   console.log(` running ${list.length} test(s)${QUICK ? " (quick: generative tests skipped)" : ""}\n`);
   const results = [];
   for (const t of list) {

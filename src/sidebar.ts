@@ -433,6 +433,8 @@ interface CliCompatibilityResult {
   planModeVersionVerified: boolean;
   /** True when Plan availability came from `grok.cliVersionCache`, not a live `--version`. */
   usedCache?: boolean;
+  /** Parseable `X.Y.Z` from this probe (live or cache). Absent when unknown. */
+  cliVersion?: string;
 }
 
 interface SessionsListOptions {
@@ -924,6 +926,7 @@ export class GrokSidebar {
       cwd: this.workspaceRoot(),
       env: this.buildEnv(this.workspaceRoot()),
       log: (message) => this.host.appendLine(message),
+      grokVersion: this.providerCliVersions.grok,
     });
     try {
       await client.start();
@@ -3276,6 +3279,7 @@ Only continue if you trust this code.`,
       cwd: sourcePath,
       env: this.buildEnv(sourcePath),
       log: (msg) => this.host.appendLine(msg),
+      grokVersion: this.providerCliVersions.grok,
     });
     // Minimal handlers so the handshake doesn't hang on server requests.
     client.fsRead = async (p) => fs.readFileSync(p, "utf8");
@@ -5708,18 +5712,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   ): Promise<CliCompatibilityResult> {
     const notify = opts.notify !== false;
     const cache = this.state.get<CliVersionCache>(CLI_VERSION_CACHE_KEY, {});
-    const { decision, nextCache, usedCache } = await resolvePlanModeAvailability({
+    const { decision, nextCache, usedCache, versionOutput } = await resolvePlanModeAvailability({
       readOnce: () => this.readGrokVersion(cliPath),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       identity: readCliBinaryIdentity(cliPath),
       cache,
     });
     if (nextCache) void this.state.update(CLI_VERSION_CACHE_KEY, nextCache);
+    const parsed = parseGrokVersion(versionOutput);
+    const cliVersion = parsed ? parsed.join(".") : undefined;
+    if (cliVersion) this.providerCliVersions.grok = cliVersion;
     if (decision.available) {
       if (usedCache) {
         this.host.appendLine("grok --version failed; using last verified version for Plan mode.");
       }
-      return { planModeAvailable: true, planModeVersionVerified: decision.verified, usedCache };
+      return { planModeAvailable: true, planModeVersionVerified: decision.verified, usedCache, cliVersion };
     }
     if (decision.verified) {
       const message =
@@ -5732,6 +5739,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         planModeVersionVerified: true,
         planModeUnavailableReason: decision.reason,
         usedCache,
+        cliVersion,
       };
     }
     // Unverified: log + optional toast once at session start; a later Plan pick
@@ -5752,6 +5760,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       planModeVersionVerified: false,
       planModeUnavailableReason: decision.reason,
       usedCache,
+      cliVersion,
     };
   }
 
@@ -6214,9 +6223,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
 
     // Keep the established once-per-extension-upgrade update trigger, then read
-    // the resulting version solely to decide whether Plan is safe to expose.
+    // the resulting version solely to decide whether Plan is safe to expose
+    // and which initialize handshake to advertise.
     const versionAt = clock.now();
     let versionNote: string | undefined;
+    let grokHandshakeVersion: string | undefined;
     if (session.provider === "grok") {
       await this.maybeUpdateCliOnUpgrade(cliPath);
       if (gen !== session.gen) return undefined;
@@ -6225,6 +6236,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const compatibility = await this.planModeCompatibility(cliPath);
       if (gen !== session.gen) return undefined;
       if (compatibility.usedCache) versionNote = "cached";
+      grokHandshakeVersion = compatibility.cliVersion;
       this.applyPlanModeCompatibility(session, compatibility);
     } else {
       session.planModeAvailable = true;
@@ -6265,11 +6277,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       env,
       effort,
       log: (msg) => this.host.appendLine(msg),
-      ...(session.provider === "codex" ? { backend: new CodexBackend() } : {}),
+      ...(session.provider === "codex"
+        ? { backend: new CodexBackend() }
+        : { grokVersion: grokHandshakeVersion }),
     });
     session.client = client;
 
-    // fs handlers (mandatory — the agent calls these to read/write files)
+    // fs handlers. Still wired on every session: 0.2.x and Codex advertise
+    // readTextFile and will call them. grok 1.x currently will not (withheld
+    // read → no client fs at all) but a later CLI may honour writeTextFile
+    // independently.
     client.fsRead = async (p: string) => {
       try {
         // Agent paths are genuine workspace disk paths on the extension host.
@@ -6496,7 +6513,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     });
     client.on("plan", (u) => {
       if (gen !== session.gen) return;
-      // Stash plan text — x.ai/exit_plan_mode params are typically empty
+      // Fallback stash. Current CLIs send exit_plan_mode with planContent
+      // populated; postExitPlanRequest prefers req.plan over lastPlanText.
       session.lastPlanText =
         (typeof u?.plan === "string" ? u.plan : "") ||
         (typeof u?.planText === "string" ? u.planText : "") ||

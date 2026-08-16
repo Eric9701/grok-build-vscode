@@ -200,6 +200,7 @@ rl.on("line", async (line) => {
   const { id, method, params } = msg;
   switch (method) {
     case "initialize":
+      process.stderr.write(`INITIALIZE_CAPS: ${JSON.stringify(params && params.clientCapabilities)}\n`);
       return respondOk(id, { protocolVersion: 1, serverCapabilities: {} });
     case "session/new":
       persistNewSession(SESSION_ID, params?.cwd);
