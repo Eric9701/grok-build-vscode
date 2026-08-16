@@ -165,6 +165,12 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
   const host = createVsCodeHost(output, context);
   const hostContext = createVsCodeHostContext(context);
   const sidebar = new GrokSidebar(hostContext, host);
+  // Test host only. Latch missing-CLI discovery before ensureViewPlacement can
+  // reveal the view (ready → startSession). Production never takes this branch.
+  const testHooks = context.extensionMode === vscode.ExtensionMode.Test
+    ? sidebar.installTestHooks()
+    : undefined;
+  testHooks?.isolateFromInstalledGrok();
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -272,9 +278,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
   // VS Code sets ExtensionMode.Test ONLY when the extension host was launched by
   // a test runner, so an installed build can never reach this branch and the
   // seam is genuinely absent there rather than merely undocumented.
-  return context.extensionMode === vscode.ExtensionMode.Test
-    ? { __test: sidebar.installTestHooks() }
-    : {};
+  return testHooks ? { __test: testHooks } : {};
 }
 
 export function deactivate(): void {

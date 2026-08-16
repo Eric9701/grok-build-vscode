@@ -207,8 +207,9 @@ rl.on("line", async (line) => {
     case "session/load": {
       // Resume must honor the requested id and replay whatever the host
       // already wrote under GROK_HOME (the integration fixture's
-      // writeStoredSession / chat_history.jsonl). Missing files are an empty
-      // conversation, not an error — same as a brand-new on-disk session.
+      // writeStoredSession / updates.jsonl, else chat_history.jsonl). Missing
+      // files are an empty conversation, not an error — same as a brand-new
+      // on-disk session.
       const sid = typeof params?.sessionId === "string" && params.sessionId
         ? params.sessionId
         : SESSION_ID;

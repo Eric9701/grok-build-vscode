@@ -638,6 +638,12 @@ export class GrokSidebar {
     started: () => void;
     wait: Promise<void>;
   };
+  /**
+   * Test-only latch. When set, Grok discovery stops after an explicit cached
+   * path (provisionFakeGrok). Config and PATH are not searched, so a developer
+   * box cannot silently pick up a real CLI. Production never sets this.
+   */
+  private testForceMissingGrokCli = false;
   /** First full boot pass — repo catalog AND the deferred session-list — finished. */
   private firstBootScanStarted = false;
   private firstBootScanCompleted = false;
@@ -792,6 +798,10 @@ export class GrokSidebar {
   private locateProvider(provider: AcpProvider): string | undefined {
     const cached = provider === "grok" ? this.cliPath : this.codexCliPath;
     if (cached && fs.existsSync(cached)) return cached;
+    if (provider === "grok" && this.testForceMissingGrokCli) {
+      this.cliPath = undefined;
+      return undefined;
+    }
     const cfg = this.host.getConfiguration("grok");
     const located = provider === "grok"
       ? locateGrokCli(cfg.get<string>("cliPath", "")) || undefined
@@ -3259,8 +3269,7 @@ Only continue if you trust this code.`,
       return { client: this.focused.client, disposeAfter: false };
     }
     // Temporary client: initialize + session/new, caller disposes after create.
-    const cfg = this.host.getConfiguration("grok");
-    const cliPath = locateGrokCli(cfg.get<string>("cliPath", ""));
+    const cliPath = this.locateProvider("grok");
     if (!cliPath) return undefined;
     const client = new AcpClient({
       cliPath,
@@ -5765,9 +5774,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    */
   private async recheckPlanModeAvailability(session: Session): Promise<boolean> {
     const gen = session.gen;
-    const cliPath = this.cliPath || locateGrokCli(
-      this.host.getConfiguration("grok").get<string>("cliPath", ""),
-    );
+    const cliPath = this.locateProvider("grok");
     if (!cliPath) return false;
     this.host.appendLine("Re-checking Grok CLI version for Plan mode…");
     // Silent: the initial session-start probe already notified; a second toast
@@ -5835,9 +5842,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const connected = this.connectedProviders();
     if (connected.includes("codex")) void this.probeCodexVersion();
     if (!connected.includes("grok")) return;
-    const cliPath = this.cliPath || locateGrokCli(
-      this.host.getConfiguration("grok").get<string>("cliPath", ""),
-    );
+    const cliPath = this.locateProvider("grok");
     if (!cliPath) {
       this.postGrokUpdateStatus({ type: "grokUpdateStatus", error: "grok CLI not found" });
       return;
@@ -5874,9 +5879,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * Connected · v<new>) shows progress.
    */
   private async updateGrokCliOnDemand(): Promise<void> {
-    const cliPath = this.cliPath || locateGrokCli(
-      this.host.getConfiguration("grok").get<string>("cliPath", ""),
-    );
+    const cliPath = this.locateProvider("grok");
     if (!cliPath) {
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform, provider: "grok" });
       return;
@@ -7532,9 +7535,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // string literal and errors "Unexpected token". Launching the binary
         // directly sidesteps shell quoting entirely and behaves the same on
         // PowerShell, cmd, and POSIX shells.
-        const mcpCli = this.cliPath || locateGrokCli(
-          this.host.getConfiguration("grok").get<string>("cliPath", ""),
-        );
+        const mcpCli = this.locateProvider("grok");
         const mcpCwd = this.sessionCwd(session);
         const term = mcpCli
           ? this.host.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
@@ -11665,11 +11666,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
     hasLiveSession(id: string): boolean;
     /**
-     * Drop a previously located/connected Grok so the rest of this suite stays
-     * on the missing-CLI path even when the developer machine has a real
-     * binary. In-memory only — does not rewrite persisted account state.
+     * Latch Grok discovery to the missing-CLI path. `locateProvider("grok")`
+     * will not search config or PATH; an explicit `provisionFakeGrok` path
+     * still wins because it is cached first. In-memory only — does not
+     * rewrite persisted account state.
      */
     isolateFromInstalledGrok(): void;
+    /** Current Grok resolution after the isolate / provision latches. */
+    locatedGrokCli(): string | undefined;
     /**
      * Point this host at a test-only ACP CLI and mark Grok connected so
      * startSession/loadSession spawn it instead of taking the missing-CLI
@@ -11920,12 +11924,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       activeRemoteWorktree: (clientId) => this.remoteClients.active(clientId)?.worktree,
       focusedSessionId: () => this.focused.activeSessionId,
       seedFocusedWorktreeSession: (id, worktree) => {
-        const prev = {
-          id: this.focused.activeSessionId,
-          cwd: this.focused.cwd,
-          worktree: this.focused.worktree,
-          client: this.focused.client,
-        };
+        // Tear down a leftover live/in-flight client first. startSession writes
+        // session.client with no gen check, so a stub seeded onto that same
+        // Session is overwritten and apply/remove never reach this probe.
+        const prev = this.focused;
+        this.detachClient(prev)?.dispose();
+        this.focused = this.newLocalSession();
         this.focused.activeSessionId = id;
         this.focused.cwd = worktree.sourceGitRoot;
         this.focused.worktree = worktree;
@@ -11953,10 +11957,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           lastApplyPath: () => lastApplyPath,
           lastRemovePath: () => lastRemovePath,
           restore: () => {
-            this.focused.activeSessionId = prev.id;
-            this.focused.cwd = prev.cwd;
-            this.focused.worktree = prev.worktree;
-            this.focused.client = prev.client;
+            this.focused = prev;
           },
         };
       },
@@ -11964,9 +11965,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         session.activeSessionId === id && !!session.client
       ),
       isolateFromInstalledGrok: () => {
+        this.testForceMissingGrokCli = true;
         this.cliPath = undefined;
         this.setProviderConnectedInMemory("grok", false);
       },
+      locatedGrokCli: () => this.locateProvider("grok"),
       provisionFakeGrok: (cliPath) => {
         const previous = {
           cliPath: this.cliPath,
