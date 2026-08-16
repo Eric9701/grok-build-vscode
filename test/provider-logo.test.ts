@@ -12,7 +12,7 @@ describe("provider logo assets", () => {
     expect(source).toContain('viewBox="0 0 24 24" fill="currentColor"');
     expect(source).toContain("M9.27 15.29l7.978-5.897");
     expect(source).toContain("M9.205 8.658v-2.26");
-    expect(source).toContain("M12 2l2.2 7.8L22 12l-7.8 2.2L12 22");
+    expect(source).toContain("M4.709 15.955l4.72-2.647.08-.23-.08-.128");
     const providerSvgs = source.match(/<svg class="provider-logo"[^>]*>/g) ?? [];
     expect(providerSvgs.length).toBeGreaterThan(0);
     expect(providerSvgs.every((svg) => !svg.includes("style="))).toBe(true);
