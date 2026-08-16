@@ -15,8 +15,11 @@ function makeSidebar(session: Session): any {
   sidebar.sendRemoteSession = vi.fn();
   sidebar.emit = vi.fn();
   sidebar.setStatus = vi.fn();
+  sidebar.state = { get: () => ({}), update: vi.fn(async () => {}) };
+  sidebar.openDiffsByRequest = { take: () => undefined };
   sidebar.host = {
     getConfiguration: () => ({ update: vi.fn(async () => {}) }),
+    workspaceRoot: () => "/workspace",
     showErrorMessage: vi.fn(async () => undefined),
     showWarningMessage: vi.fn(async () => undefined),
     showInformationMessage: vi.fn(async () => undefined),
@@ -253,5 +256,165 @@ describe("Plan permission same-chunk raise", () => {
     expect(reply?.result?.outcome?.optionId).not.toBe("allow-always");
     expect(reply?.result?.outcome?.optionId).not.toBe("allow-once");
     expect(client.usesClientPlanGate).toBe(false);
+  });
+});
+
+function planningAdapterSession(
+  opts: { backend: AcpBackend; provider: "codex" | "claude"; setMode?: () => Promise<void> },
+): { client: AcpClient; written: string[]; session: Session } {
+  const { client, written } = clientWithFakeProc({ backend: opts.backend });
+  client.setMode = opts.setMode ?? (async () => {});
+  const session = liveSession({
+    autoApprove: false,
+    planActive: true,
+    provider: opts.provider,
+    client,
+  });
+  client.planActive = true;
+  return { client, written, session };
+}
+
+function showPermission(sidebar: any, session: Session, client: AcpClient, id: number, permission: object): void {
+  sidebar.handlePermissionRequest(session, client, { id, ...permission }, "/workspace");
+}
+
+describe("Auto accept does not implement a pending plan review", () => {
+  it("does not approve a pending Codex implement_plan when flipping to Auto accept", async () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new CodexBackend(),
+      provider: "codex",
+    });
+    const sidebar = makeSidebar(session);
+    showPermission(sidebar, session, client, 99, CODEX_PLAN_REVIEW);
+
+    await sidebar.setMode("yolo", session);
+
+    expect(permissionReply(written, 99)?.result?.outcome?.optionId).not.toBe("implement_plan");
+    expect(session.pendingPermissions.has(99)).toBe(true);
+
+    await sidebar.onMessage({ type: "permissionAnswer", requestId: 99, optionId: "implement_plan" }, "local");
+    expect(permissionReply(written, 99)?.result?.outcome?.optionId).toBe("implement_plan");
+  });
+
+  it("does not approve a pending Claude ExitPlanMode card when flipping to Auto accept", async () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new ClaudeBackend(),
+      provider: "claude",
+    });
+    const sidebar = makeSidebar(session);
+    showPermission(sidebar, session, client, 77, CLAUDE_EXIT_PLAN);
+
+    await sidebar.setMode("yolo", session);
+
+    const optionId = permissionReply(written, 77)?.result?.outcome?.optionId;
+    expect(optionId).not.toBe("acceptEdits");
+    expect(optionId).not.toBe("default");
+    expect(session.pendingPermissions.has(77)).toBe(true);
+
+    await sidebar.onMessage({ type: "permissionAnswer", requestId: 77, optionId: "acceptEdits" }, "local");
+    expect(permissionReply(written, 77)?.result?.outcome?.optionId).toBe("acceptEdits");
+  });
+
+  it("does not approve a pending Codex plan review when the mode-change RPC then fails", async () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new CodexBackend(),
+      provider: "codex",
+      setMode: async () => { throw new Error("mode refused"); },
+    });
+    const sidebar = makeSidebar(session);
+    showPermission(sidebar, session, client, 99, CODEX_PLAN_REVIEW);
+
+    await sidebar.setMode("yolo", session);
+
+    expect(permissionReply(written, 99)?.result?.outcome?.optionId).not.toBe("implement_plan");
+    expect(session.pendingPermissions.has(99)).toBe(true);
+
+    await sidebar.onMessage({ type: "permissionAnswer", requestId: 99, optionId: "revise_plan" }, "local");
+    expect(permissionReply(written, 99)?.result?.outcome?.optionId).toBe("revise_plan");
+  });
+
+  it("does not approve a pending Claude ExitPlanMode card when the mode-change RPC then fails", async () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new ClaudeBackend(),
+      provider: "claude",
+      setMode: async () => { throw new Error("mode refused"); },
+    });
+    const sidebar = makeSidebar(session);
+    showPermission(sidebar, session, client, 77, CLAUDE_EXIT_PLAN);
+
+    await sidebar.setMode("yolo", session);
+
+    const optionId = permissionReply(written, 77)?.result?.outcome?.optionId;
+    expect(optionId).not.toBe("acceptEdits");
+    expect(optionId).not.toBe("default");
+    expect(session.pendingPermissions.has(77)).toBe(true);
+
+    await sidebar.onMessage({ type: "permissionAnswer", requestId: 77, optionId: "plan" }, "local");
+    expect(permissionReply(written, 77)?.result?.outcome?.optionId).toBe("plan");
+  });
+
+  it("still auto-approves a pending edit card when flipping to Auto accept", async () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new CodexBackend(),
+      provider: "codex",
+    });
+    const sidebar = makeSidebar(session);
+    showPermission(sidebar, session, client, 42, EDIT_PERMISSION);
+
+    await sidebar.setMode("yolo", session);
+
+    expect(permissionReply(written, 42)?.result?.outcome?.optionId).toBe("allow-always");
+    expect(session.pendingPermissions.has(42)).toBe(false);
+  });
+
+  it("auto-approves a sibling edit without implementing a pending plan review", async () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new CodexBackend(),
+      provider: "codex",
+    });
+    const sidebar = makeSidebar(session);
+    showPermission(sidebar, session, client, 42, EDIT_PERMISSION);
+    showPermission(sidebar, session, client, 99, CODEX_PLAN_REVIEW);
+
+    await sidebar.setMode("yolo", session);
+
+    expect(permissionReply(written, 42)?.result?.outcome?.optionId).toBe("allow-always");
+    expect(permissionReply(written, 99)?.result?.outcome?.optionId).not.toBe("implement_plan");
+    expect(session.pendingPermissions.has(99)).toBe(true);
+    expect(sidebar.setStatus).not.toHaveBeenCalledWith(session, "working");
+  });
+
+  it("does not auto-grant a Codex plan-review that arrives after Auto accept is already on", () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new CodexBackend(),
+      provider: "codex",
+    });
+    session.autoApprove = true;
+    session.planActive = false;
+    client.planActive = false;
+    const sidebar = makeSidebar(session);
+
+    showPermission(sidebar, session, client, 99, CODEX_PLAN_REVIEW);
+
+    expect(permissionReply(written, 99)?.result?.outcome?.optionId).not.toBe("implement_plan");
+    expect(session.pendingPermissions.has(99)).toBe(true);
+  });
+
+  it("does not auto-grant a Claude ExitPlanMode card that arrives after Auto accept is already on", () => {
+    const { client, written, session } = planningAdapterSession({
+      backend: new ClaudeBackend(),
+      provider: "claude",
+    });
+    session.autoApprove = true;
+    session.planActive = false;
+    client.planActive = false;
+    const sidebar = makeSidebar(session);
+
+    showPermission(sidebar, session, client, 77, CLAUDE_EXIT_PLAN);
+
+    const optionId = permissionReply(written, 77)?.result?.outcome?.optionId;
+    expect(optionId).not.toBe("acceptEdits");
+    expect(optionId).not.toBe("default");
+    expect(session.pendingPermissions.has(77)).toBe(true);
   });
 });

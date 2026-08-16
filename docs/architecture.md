@@ -342,7 +342,11 @@ cancel, or synthetic lifecycle.
 Codex plan review follows a different wire path: it is a normal
 `session/request_permission` whose tool kind is `switch_mode` and whose
 `allow_once` means "implement this plan". The host renders the ordinary
-permission card and returns the selected option. `CodexBackend` reports
+permission card and returns the selected option. Auto accept does not
+select that option — `isPlanReviewPermission` keeps `switch_mode` cards
+out of `autoApprovePendingPermissions` and the incoming Auto-accept
+grant, so a mode flip (even one whose RPC later fails) cannot implement
+an unread plan. `CodexBackend` reports
 `usesClientPlanGate = false`, so none of the Grok filesystem/terminal
 gate, plan-file snooping, or `x.ai/exit_plan_mode` verdict machinery is attached.
 A successful Plan `session/set_config_option` still raises `client.planActive`

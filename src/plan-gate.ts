@@ -875,6 +875,16 @@ export function permissionAnswerAllowed(
 }
 
 /**
+ * Adapter plan-review rides an ordinary `request_permission` whose allow
+ * option means "implement this plan" (Codex `implement_plan`, Claude
+ * `acceptEdits` / `default`). Auto accept is consent to routine tool
+ * grants, not to that unread card.
+ */
+export function isPlanReviewPermission(toolKind?: string): boolean {
+  return String(toolKind || "").toLowerCase() === "switch_mode";
+}
+
+/**
  * Pick the option that means "no" from a permission request's options. Prefers
  * an explicit `reject_once`, then any reject/deny kind; returns undefined if the
  * request offers no way to decline (caller should then fall back to the user).

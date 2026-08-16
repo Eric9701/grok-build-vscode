@@ -163,7 +163,7 @@ import {
   unreferencedUploadsForRemovedSessions,
 } from "./file-upload";
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
-import { applyAgentModeToHostPlan, effectivePlanActive, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { applyAgentModeToHostPlan, effectivePlanActive, isPlanReviewPermission, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import {
   planReviewFileName,
@@ -1822,7 +1822,8 @@ Only continue if you trust this code.`,
       session.autoApprove = true;
       this.setPlanActive(session, false); // posts displayMode → "yolo"
       // Flipping to Auto-accept mid-turn (#64) should unblock the CURRENT prompt,
-      // not just future requests: clear any permission card already on screen.
+      // not just future requests: clear routine tool cards already on screen.
+      // Plan-review stays — that card is not a routine grant.
       this.autoApprovePendingPermissions(session);
       if (session.client) {
         try {
@@ -2324,7 +2325,10 @@ Only continue if you trust this code.`,
       });
       return;
     }
-    if (session.autoApprove && !planActive) {
+    // Auto accept is not a verdict on a plan-review card. Same rule as
+    // autoApprovePendingPermissions, including after a failed mode RPC
+    // that already cleared the Plan bit.
+    if (session.autoApprove && !planActive && !isPlanReviewPermission(req.toolCall?.kind)) {
       const opt = req.options.find((o) => o.kind === "allow_always") ??
                   req.options.find((o) => o.kind === "allow_once");
       if (opt) { client.respondPermission(req.id, opt.optionId); return; }
@@ -2361,17 +2365,19 @@ Only continue if you trust this code.`,
     this.setStatus(session, "needs-you");
   }
 
-  /** Auto-approve every permission card currently awaiting the user (#64). Fired
-   *  when the user switches to Auto-accept mid-turn so on-screen cards resolve
-   *  immediately instead of only future requests. Mirrors the `permissionAnswer`
-   *  handler for each pending request; a card with no allow option is left for
-   *  the user to decide. */
+  /** Auto-approve routine permission cards currently awaiting the user (#64).
+   *  Fired when the user switches to Auto-accept mid-turn so on-screen tool
+   *  cards resolve immediately instead of only future requests. Plan-review
+   *  / `switch_mode` cards are excluded: that flip is not a verdict on an
+   *  unread plan, and the card must stay answerable. A card with no allow
+   *  option is left for the user as well. */
   private autoApprovePendingPermissions(session: Session): void {
     const client = session.client;
     if (!client || session.pendingPermissions.size === 0) return;
     let resolved = 0;
     // Snapshot first — persistPermissionAnswer mutates pendingPermissions.
     for (const [requestId, pending] of [...session.pendingPermissions]) {
+      if (isPlanReviewPermission(pending.toolKind)) continue;
       const opt = preferredPermissionAllowOption(pending, session.planActive);
       if (!opt) continue;
       if (!client.respondPermission(requestId, opt.optionId)) continue;
@@ -2380,7 +2386,8 @@ Only continue if you trust this code.`,
       this.closeDiffForRequest(session, requestId);
       resolved += 1;
     }
-    if (resolved > 0) this.setStatus(session, "working"); // the turn resumes
+    // A leftover plan-review (or a card with no allow option) still needs the user.
+    if (resolved > 0 && session.pendingPermissions.size === 0) this.setStatus(session, "working");
   }
 
   /**

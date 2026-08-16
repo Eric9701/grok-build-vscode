@@ -9,6 +9,7 @@ import {
   effectivePlanActive,
   permissionAnswerAllowed,
   permissionOptionsForPlan,
+  isPlanReviewPermission,
   pickRejectOption,
   shouldBlockWrite,
   shouldBlockTerminal,
@@ -702,6 +703,14 @@ describe("permission gating", () => {
     )).toEqual([]);
     expect(permissionOptionsForPlan(options, false, "execute")).toBe(options);
     expect(permissionOptionsForPlan(options, true, "edit")).toBe(options);
+  });
+
+  it("treats only switch_mode as a plan-review card", () => {
+    expect(isPlanReviewPermission("switch_mode")).toBe(true);
+    expect(isPlanReviewPermission("Switch_Mode")).toBe(true);
+    expect(isPlanReviewPermission("edit")).toBe(false);
+    expect(isPlanReviewPermission("execute")).toBe(false);
+    expect(isPlanReviewPermission(undefined)).toBe(false);
   });
 });
 
