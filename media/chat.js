@@ -8210,11 +8210,12 @@
     scrollToBottom();
   }
 
-  function addError(text) {
+  function addError(text, code) {
     clearWelcome();
     const el = document.createElement("div");
     el.className = "msg error";
     el.textContent = text;
+    if (typeof code === "string" && code) el.setAttribute("data-error-code", code);
     messagesEl.appendChild(el);
     scrollToBottom();
   }
@@ -12698,7 +12699,7 @@
           renderQueuedBlocks();
           updateSendButton();
         }
-        addError(msg.text);
+        addError(msg.text, msg.code);
         break;
       case "hostNotice":
         addPlanNotice(msg.text);

@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   FAKE_UNIQUE_SESSION_IDS_ENV,
   LIFECYCLE_HOST_READY_LINE,
@@ -17,6 +17,7 @@ import {
   isLifecycleShutdownLine,
   lifecycleChildEnv,
   parseLifecycleWorkspaces,
+  superviseLifecycleChild,
   terminateAndWait,
 } from "../scripts/lifecycle-host.mjs";
 
@@ -120,6 +121,67 @@ describe("lifecycle-host stdin shutdown", () => {
     const result = await terminateAndWait(child, { timeoutMs: 2_000, forceWaitMs: 1_000 });
     expect(result.timedOut).toBe(false);
     expect(child.exitCode != null || child.signalCode != null).toBe(true);
+  });
+
+  it("stays alive past the ready deadline once admitted, then exits on the stdin token", async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "setTimeout(() => process.stdout.write('[remote] relay clients: 0\\n'), 10); setInterval(() => {}, 1000)",
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    const run = superviseLifecycleChild(child, {
+      readyMs: 300,
+      shutdownMs: 2_000,
+      stdin,
+      stdout,
+      stderr,
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(output).toContain(LIFECYCLE_HOST_READY_LINE);
+      });
+      // Well past the 300ms admission deadline — a leftover timer would have
+      // rejected `run` with "relay did not admit this host" by now.
+      await new Promise((r) => setTimeout(r, 400));
+      expect(output).not.toMatch(/relay did not admit this host/);
+      stdin.write(`${LIFECYCLE_HOST_SHUTDOWN_LINE}\n`);
+      await expect(run).resolves.toBe(0);
+    } finally {
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill();
+      }
+    }
+  });
+
+  it("still times out when the relay never admits the host", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      await expect(
+        superviseLifecycleChild(child, {
+          readyMs: 50,
+          shutdownMs: 2_000,
+          stdin: new PassThrough(),
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+        }),
+      ).rejects.toThrow(/relay did not admit this host within 50ms/);
+    } finally {
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill();
+      }
+    }
   });
 
   it("does not hang if the child never emits exit", async () => {

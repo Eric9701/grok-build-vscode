@@ -174,7 +174,7 @@ import {
 } from "./plan-review";
 import { isPrimerText } from "./grok-primer";
 import { AsyncSerialQueue } from "./async-serial";
-import { HOST_CAPABILITIES, HostMsg, WebviewMsg } from "./protocol";
+import { HOST_CAPABILITIES, HostMsg, INTERRUPTED_SEND_CODE, WebviewMsg } from "./protocol";
 import { withoutArchiveFields } from "./project-discovery";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
@@ -6321,7 +6321,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Generic `error`, not agentError: after a gen bump this Session is the
     // replacement, and agentError would clear its startup lock or a flushed
     // follow-on turn.
-    this.emit(session, { type: "error", text: INTERRUPTED_SEND_TEXT });
+    this.emit(session, { type: "error", text: INTERRUPTED_SEND_TEXT, code: INTERRUPTED_SEND_CODE });
   }
 
   private async startSession(

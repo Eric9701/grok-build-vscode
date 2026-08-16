@@ -70,6 +70,9 @@ export const HOST_CAPABILITIES = {
   editProjectFiles: true,
 } as const;
 
+/** Machine-readable `error.code` for a send abandoned after its userMessage echo. */
+export const INTERRUPTED_SEND_CODE = "interrupted-send" as const;
+
 /** Host-kind affordances merged into `initialState.capabilities` at post time. */
 export type HostUiCapabilities = {
   uploadFile: boolean;
@@ -362,7 +365,9 @@ export type HostMsg =
   | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login"; platform?: string; reason?: string; provider?: "grok" | "codex" | "claude" }
   // resumeFailed is additive: a remote resume refusal names the requested id so
   // the browser outbox can fail closed. Older clients ignore the extra field.
-  | { type: "error"; text: string; resumeFailed?: { id: string } }
+  // code is additive too — a harness must not match user-facing `text`.
+  // "interrupted-send" is a send abandoned after its userMessage echo.
+  | { type: "error"; text: string; resumeFailed?: { id: string }; code?: typeof INTERRUPTED_SEND_CODE }
   | { type: "hostNotice"; level: "info" | "warning"; text: string }
   | { type: "xaiNotification"; update?: unknown }
   // Persisted xAI lifecycle (method _x.ai/session/update): subagent spawn/finish

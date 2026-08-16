@@ -202,11 +202,11 @@ on that echo, so this was silent work loss.
 Two rules now hold:
 
 - **A post-echo bail reports itself.** `emitAbandonedSend` emits a generic
-  `error` (`INTERRUPTED_SEND_TEXT`), not `agentError` — after the generation
-  bump this `Session` *is* the replacement, and `agentError` would clear its
-  startup lock or a flushed follow-on turn. Cancel recovery emits its own
-  `agentError` first and sets `staleSendReported`, so an abandoned send is never
-  double-reported.
+  `error` (`INTERRUPTED_SEND_TEXT` + additive `code: "interrupted-send"`),
+  not `agentError` — after the generation bump this `Session` *is* the
+  replacement, and `agentError` would clear its startup lock or a flushed
+  follow-on turn. Cancel recovery emits its own `agentError` first and sets
+  `staleSendReported`, so an abandoned send is never double-reported.
 - **Starts do not interleave with a live turn.** `runExclusiveSessionStart`
   serializes starts per `Session`, and `handleSend` waits for that tail before
   committing. `decideSessionStart` takes an intent: opportunistic callers —

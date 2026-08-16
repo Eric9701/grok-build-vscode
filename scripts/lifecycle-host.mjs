@@ -195,6 +195,106 @@ function requestHardKill(child) {
   }
 }
 
+/**
+ * Ready/shutdown supervisor for an already-spawned host child.
+ * Extracted so a grok-free test can prove the ready deadline dies on READY
+ * (a leftover timer would kill an admitted host mid-run).
+ */
+export async function superviseLifecycleChild(child, opts = {}) {
+  const readyMs = opts.readyMs ?? 60_000;
+  const shutdownMs = opts.shutdownMs ?? DEFAULT_SHUTDOWN_MS;
+  const stdin = opts.stdin ?? process.stdin;
+  const out = opts.stdout ?? process.stdout;
+  const err = opts.stderr ?? process.stderr;
+  const relayUrl = opts.relayUrl ?? "";
+  const redact = typeof opts.redactRelayUrl === "function" ? opts.redactRelayUrl : (u) => u;
+
+  let ready = false;
+  let finished = false;
+  let shuttingDown = false;
+
+  return await new Promise((resolve, reject) => {
+    let detachStdin = () => {};
+    let readyTimer;
+    const done = (error, code) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(readyTimer);
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+      detachStdin();
+      if (error) reject(error);
+      else resolve(code ?? 0);
+    };
+    const beginShutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      return await terminateAndWait(child, { timeoutMs: shutdownMs });
+    };
+    const scanner = createReadyScanner(UPLINK_ADMITTED_NEEDLE, () => {
+      ready = true;
+      // A leftover deadline would tear down an admitted host and dump a false
+      // "relay did not admit this host" on top of a healthy run.
+      clearTimeout(readyTimer);
+      out.write(`${LIFECYCLE_HOST_READY_LINE}\n`);
+    });
+    const scan = (buf, stream) => {
+      const text = buf.toString("utf8");
+      stream.write(text);
+      scanner.push(text);
+    };
+    if (child.stdout) child.stdout.on("data", (buf) => scan(buf, out));
+    if (child.stderr) child.stderr.on("data", (buf) => scan(buf, err));
+    readyTimer = setTimeout(() => {
+      if (ready || finished || shuttingDown) return;
+      void beginShutdown().then(() => {
+        done(
+          new Error(
+            `relay did not admit this host within ${readyMs}ms ` +
+              `(relay ${redact(relayUrl)})`,
+          ),
+        );
+      });
+    }, readyMs);
+    const shutdown = () => {
+      void beginShutdown().then((result) => {
+        if (result?.timedOut) {
+          done(undefined, LIFECYCLE_HOST_SHUTDOWN_STUCK_CODE);
+          return;
+        }
+        if (!ready) {
+          done(
+            new Error(
+              `host exited before relay admitted it (code ${result?.code}, signal ${result?.signal})`,
+            ),
+          );
+          return;
+        }
+        done(undefined, 0);
+      });
+    };
+    const onSignal = () => {
+      shutdown();
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+    detachStdin = attachStdinShutdown(stdin, shutdown);
+    child.once("error", (error) => done(error));
+    child.once("exit", (code, signal) => {
+      if (shuttingDown) return;
+      if (!ready) {
+        done(
+          new Error(
+            `host exited before relay admitted it (code ${code}, signal ${signal})`,
+          ),
+        );
+        return;
+      }
+      done(undefined, 0);
+    });
+  });
+}
+
 /** Kill the child and resolve only after it actually exits — or we give up. */
 export function terminateAndWait(child, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_SHUTDOWN_MS;
@@ -356,88 +456,12 @@ export async function runLifecycleHost(opts) {
     },
   );
 
-  const readyMs = Number(envIn.GROK_LIFECYCLE_READY_MS) || 60_000;
-  const shutdownMs = Number(envIn.GROK_LIFECYCLE_SHUTDOWN_MS) || DEFAULT_SHUTDOWN_MS;
-  let ready = false;
-  let finished = false;
-  let shuttingDown = false;
-
-  const scanner = createReadyScanner(UPLINK_ADMITTED_NEEDLE, () => {
-    ready = true;
-    process.stdout.write(`${LIFECYCLE_HOST_READY_LINE}\n`);
-  });
-  const scan = (buf, stream) => {
-    const text = buf.toString("utf8");
-    stream.write(text);
-    scanner.push(text);
-  };
-  child.stdout.on("data", (buf) => scan(buf, process.stdout));
-  child.stderr.on("data", (buf) => scan(buf, process.stderr));
-
-  return await new Promise((resolve, reject) => {
-    let detachStdin = () => {};
-    const done = (err, code) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(readyTimer);
-      process.removeListener("SIGINT", onSignal);
-      process.removeListener("SIGTERM", onSignal);
-      detachStdin();
-      if (err) reject(err);
-      else resolve(code ?? 0);
-    };
-    const readyTimer = setTimeout(() => {
-      void beginShutdown().then(() => {
-        done(
-          new Error(
-            `relay did not admit this host within ${readyMs}ms ` +
-              `(relay ${redactRelayUrl(envIn[RELAY_URL_ENV] || "")})`,
-          ),
-        );
-      });
-    }, readyMs);
-    const beginShutdown = async () => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      const result = await terminateAndWait(child, { timeoutMs: shutdownMs });
-      return result;
-    };
-    const shutdown = () => {
-      void beginShutdown().then((result) => {
-        if (result?.timedOut) {
-          done(undefined, LIFECYCLE_HOST_SHUTDOWN_STUCK_CODE);
-          return;
-        }
-        if (!ready) {
-          done(
-            new Error(
-              `host exited before relay admitted it (code ${result?.code}, signal ${result?.signal})`,
-            ),
-          );
-          return;
-        }
-        done(undefined, 0);
-      });
-    };
-    const onSignal = () => {
-      shutdown();
-    };
-    process.on("SIGINT", onSignal);
-    process.on("SIGTERM", onSignal);
-    detachStdin = attachStdinShutdown(opts.stdin ?? process.stdin, shutdown);
-    child.once("error", (err) => done(err));
-    child.once("exit", (code, signal) => {
-      if (shuttingDown) return;
-      if (!ready) {
-        done(
-          new Error(
-            `host exited before relay admitted it (code ${code}, signal ${signal})`,
-          ),
-        );
-        return;
-      }
-      done(undefined, 0);
-    });
+  return await superviseLifecycleChild(child, {
+    readyMs: Number(envIn.GROK_LIFECYCLE_READY_MS) || 60_000,
+    shutdownMs: Number(envIn.GROK_LIFECYCLE_SHUTDOWN_MS) || DEFAULT_SHUTDOWN_MS,
+    stdin: opts.stdin ?? process.stdin,
+    relayUrl: envIn[RELAY_URL_ENV] || "",
+    redactRelayUrl,
   });
 }
 

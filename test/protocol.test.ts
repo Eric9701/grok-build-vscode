@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   HOST_CAPABILITIES,
   HOST_MESSAGE_TYPES as TS_HOST,
+  INTERRUPTED_SEND_CODE,
   WEBVIEW_MESSAGE_TYPES as TS_WEBVIEW,
 } from "../src/protocol";
 // The webview's own copy of the contract (plain JS — it can't import the TS types).
@@ -16,6 +17,11 @@ const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.me
 const sorted = (a: readonly string[]) => [...a].sort();
 
 describe("host <-> webview message contract (src/protocol.ts is the source of truth)", () => {
+  it("pins the interrupted-send error code so harnesses do not match copy", () => {
+    expect(INTERRUPTED_SEND_CODE).toBe("interrupted-send");
+    expect(chatSrc).toContain('el.setAttribute("data-error-code", code)');
+  });
+
   it("advertises remote voice as a host protocol capability", () => {
     expect(HOST_CAPABILITIES).toEqual({
       uploadFile: true,

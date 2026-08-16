@@ -11,7 +11,7 @@ import {
   beginTurn,
   turnIsInFlight,
 } from "../src/session";
-import type { HostMsg } from "../src/protocol";
+import { INTERRUPTED_SEND_CODE, type HostMsg } from "../src/protocol";
 
 const promptControl = {
   calls: 0,
@@ -219,7 +219,11 @@ describe("send vs concurrent startSession", () => {
 
     const errors = sidebar.posted.filter((m: HostMsg) => m.type === "error");
     expect(errors).toEqual([
-      expect.objectContaining({ type: "error", text: INTERRUPTED_SEND_TEXT }),
+      expect.objectContaining({
+        type: "error",
+        text: INTERRUPTED_SEND_TEXT,
+        code: INTERRUPTED_SEND_CODE,
+      }),
     ]);
     expect(sidebar.posted.some((m: HostMsg) => m.type === "agentError")).toBe(false);
     expect(sidebar.focused.status).not.toBe("error");
