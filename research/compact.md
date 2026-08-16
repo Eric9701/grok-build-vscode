@@ -6,7 +6,7 @@
 > `_x.ai/session_notification` → `auto_compact_completed.tokens_after`
 > (`contextUsedFromCompactNotification`) as PRIMARY, with the hidden `/session-info`
 > scrape only a fallback for pre-rail CLIs. See `research/grok-build-oss-findings.md`
-> and `docs/ACP-feedback.md` §2.3. The position-0 dispatch rule and the async-rewrite
+> and `docs/internal/ACP-feedback.md` §2.3. The position-0 dispatch rule and the async-rewrite
 > sections remain accurate.
 
 Probe: `research/compact-probe.cjs` (needs a logged-in grok; `VARIANT=`,

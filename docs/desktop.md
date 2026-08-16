@@ -72,33 +72,31 @@ build Windows installers on Windows, macOS installers on macOS.
 
 Dev run without packaging: `npm run desktop` (compile tree + local Electron).
 
-## Unsigned installs — what users see
+## Install warnings — what users see
 
-**There is no code signing certificate yet.** Builds are intentionally unsigned.
-That is the largest install-conversion friction until certificates exist.
+**macOS is signed and notarised from 3.2.7 onward; Windows is still unsigned.**
+Only the Windows half remains install-conversion friction.
 
-### macOS (Gatekeeper)
+### macOS — no warning
 
-On first open of a signed-but-not-notarised download, macOS shows:
+Builds are signed with a Developer ID, notarised by Apple and stapled
+(`desktop-release.yml`, using `CSC_LINK` / `CSC_KEY_PASSWORD` plus an App Store
+Connect API key for `notarytool`). The app opens straight from the `.dmg`: no
+Gatekeeper block, nothing to allow through in System Settings, and no quarantine
+flag for anyone to clear.
 
-> “Grok Build Desktop” cannot be opened because it is from an unidentified developer.
+Keep this in step with `/desktop` and `/desktop-update` on the relay — those are
+the other two places a user reads it, and steps for a dialog that never appears
+read as "you did it wrong" rather than "we are out of date".
 
-**Workaround for users — and NOT "right-click → Open" any more.** macOS 15
-removed that shortcut; the block dialog offers only *Move to Trash* and *Done*.
-The override lives in Settings:
+<details>
+<summary>History — what users saw before 3.2.7, and why <code>adhoc-sign-mac.cjs</code> still runs</summary>
 
-1. Click **Done** on the warning (not *Move to Trash*).
-2. System Settings → **Privacy & Security** → scroll to **Security**.
-3. **Open Anyway** beside the blocked-app message, then authenticate. The button
-   is only offered for about an hour after the blocked launch, so if it is not
-   there, try opening the app again first.
-
-Or clear the quarantine flag and skip the dance:
+Unsigned downloads were blocked with “cannot be opened because it is from an
+unidentified developer”, and macOS 15 had already removed the right-click → Open
+shortcut, so the only overrides were System Settings → **Privacy & Security** →
+**Open Anyway** (offered for roughly an hour after the blocked launch) or
 `xattr -dr com.apple.quarantine "/Applications/Grok Build Desktop.app"`.
-
-Keep this in step with the same steps on `/desktop` in the relay repo — they are
-the two places a user reads it, and stale unblock instructions read as "you did
-it wrong" rather than "we are out of date".
 
 **The failure mode one step worse than that**, and what 3.2.2 shipped:
 
@@ -115,11 +113,14 @@ confers no trust; it is a floor, not a destination.
 A user already holding a 3.2.2 download can recover it by dropping the quarantine
 flag: `xattr -dr com.apple.quarantine "/Applications/Grok Build Desktop.app"`.
 
-**To remove the warning for real:** Apple Developer Program membership +
-Developer ID Application certificate, codesign the app (hardened runtime +
-entitlements as required), then **notarize** with Apple (`notarytool`) and
-staple the ticket. electron-builder supports this via `mac.identity`,
-`CSC_LINK` / `CSC_KEY_PASSWORD`, and notarize hooks once credentials exist.
+**That is what 3.2.7 finally did:** Apple Developer Program membership and a
+Developer ID Application certificate, codesigning with the hardened runtime,
+then `notarytool` and a stapled ticket — wired through electron-builder's
+`mac.identity`, `CSC_LINK` / `CSC_KEY_PASSWORD` and notarize hooks. The ad-hoc
+`afterPack` signing stays regardless: it is what keeps a repackaged bundle
+loadable at all.
+
+</details>
 
 ### Windows (SmartScreen)
 

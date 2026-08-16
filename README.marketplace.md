@@ -189,6 +189,13 @@ Click the model name in the gear popover. The list comes from your CLI; switchin
 </details>
 
 <details>
+<summary><strong>Multi-provider</strong> — built for Grok Build, works with other ACP agents</summary>
+
+The host talks **ACP** (JSON-RPC over stdio), not a Grok-specific protocol, so the same UI drives any agent that speaks it — **Codex** included. Grok Build is the default and the one everything is tuned against; other providers are selected per session and get the same chat, diffs, permission cards, and history.
+
+</details>
+
+<details>
 <summary><strong>Reasoning effort</strong> — trade tokens for depth</summary>
 
 Gear → the effort dots next to the model, `none` → `xhigh`. On recent CLIs it applies **live** to the running session; older ones restart, with an optional *Summarize & Restart* that carries context forward.

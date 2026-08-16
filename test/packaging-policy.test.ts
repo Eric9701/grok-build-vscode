@@ -24,7 +24,10 @@ describe("marketplace vs GitHub README", () => {
   it("GitHub README covers Grok Build Desktop and both hosts", () => {
     expect(github).toMatch(/Grok Build Desktop/);
     expect(github).toMatch(/VS Code extension/i);
-    expect(github).toMatch(/GitHub Releases/);
+    // Desktop downloads moved from GitHub Releases to the site, which detects
+    // the visitor's platform. The assertion follows the download source rather
+    // than pinning the old one.
+    expect(github).toMatch(/afkpilot\.com\/desktop/);
     expect(github).toMatch(/Grok-Build-Desktop-<version>-mac-arm64\.dmg/);
     expect(github).toMatch(/Grok-Build-Desktop-<version>-win-x64\.exe/);
   });

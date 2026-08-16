@@ -7,7 +7,7 @@
 > them (`isSubagentLifecycleUpdate` re-routes to the webview's `subagentUpdate`)
 > for real `duration_ms` + output, **including the Composer agent**. Any "only
 > logs / never transmitted over ACP" note below is superseded — see
-> `research/grok-build-oss-findings.md` § discovery-2 and `docs/ACP-feedback.md` §2.4.
+> `research/grok-build-oss-findings.md` § discovery-2 and `docs/internal/ACP-feedback.md` §2.4.
 
 > **Status: SHIPPED (subagent row) as of grok 0.2.93 / extension post-1.5.5.**
 > grok now emits a **genuine `spawn_subagent` tool call** — see § Ground truth

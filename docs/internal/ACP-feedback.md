@@ -1,0 +1,442 @@
+# Grok CLI over ACP — current field feedback
+
+Feedback for the xAI team from a thin ACP client (`grok agent stdio`, JSON-RPC over stdio). It
+carries open behavior only, plus a short record of what has closed. The 0.2.3–0.2.112 record is
+[archived separately](ACP-feedback-through-0.2.112.md); headings below cite the archive section
+they continue.
+
+**Current basis (2026-07-31):** grok CLI **0.2.117** (`f1c0609308`), re-probed against an
+authenticated account on Windows 11. **Nine of the eleven sections below carry fresh 0.2.117
+evidence.** Two do not — §10 (needs a 403) and §11 (needs a subagent run) — and two further
+sub-claims keep an older build: the 429 retry delay in §5 and the cross-product settings merge in
+§9. Everything unconfirmed on this build is labelled in place and summarized under *Coverage of
+this pass*; nothing here is asserted as current on evidence we did not actually take.
+
+**§2 supersedes that basis (2026-08-15):** it was re-probed in full on grok CLI **1.0.4**
+(`d846eb93d9`) after a user report, and its finding changed shape — the image-aware `read_file`
+has shipped, but delegating clients cannot reach it. No other section has been re-run on 1.0.4, so
+treat the rest as 0.2.117 evidence until it is.
+
+## Evidence discipline
+
+- **LIVE-VERIFIED** — observed on the named installed CLI build.
+- **SOURCE-VERIFIED** — present in the named dated OSS snapshot.
+- **SOURCE-ONLY** — changed upstream but never observed in a shipped binary.
+
+Only LIVE-VERIFIED evidence retires an issue or a compatibility fallback. That distinction is
+load-bearing in both directions. Truthful created-file rewind reporting exists in published source
+and is still broken in the shipped binary (§3). Image-aware `read_file` was the same story until
+1.0.4, where it shipped — and live probing then showed the section was not closed at all, only
+relocated: the branch exists and is unreachable whenever the client delegates reads (§2). Source
+evidence would have called that fixed; only live evidence found the real shape.
+
+---
+
+## 1. Plan mode still permits delegated mutation (archive §2.1)
+
+**LIVE-VERIFIED 0.2.117.** Native exit verdicts now behave correctly: `{outcome:"cancelled"}` stays
+in Plan, `"approved"` implements in the same turn, `"abandoned"` exits, and the model is told which
+the user chose. That earlier issue is closed — thank you.
+
+The safety boundary is not. In one 0.2.117 plan turn the CLI correctly refused the edit tool but
+passed **five `terminal/create` requests** to the client. A normal ACP client executes those, so
+Plan can mutate the workspace through the terminal while claiming edits are forbidden. This is the
+**fourth consecutive build** we have measured it on. Published source explains the split:
+`plan_mode_edit_gate` gates `AccessKind::Edit`, while bash, MCP and web fall through.
+
+**Client cost/workaround:** we maintain a second plan-policy engine at the mandatory
+`fs/write_text_file` and `terminal/create` handlers, classify read-only shell commands, constrain
+paths, and reject everything else. It is the one safety workaround we cannot remove even though
+native verdicts now work.
+
+**Ask:** enforce one server-side Plan tool policy across edit, shell, MCP and web surfaces — allow
+demonstrably read-only operations, reject potentially mutating ones before dispatch.
+
+A smaller contract issue remains: after a cancelled verdict, same-turn re-planning is
+nondeterministic. Identical prompts produced **1, 2 and 15** repeated `exit_plan_mode` asks within
+one turn, so a client cannot treat a re-ask as a lifecycle guarantee.
+
+## 2. Image `read_file` works only when the client does NOT delegate reads (archive §2.5)
+
+**LIVE-VERIFIED 1.0.4** (2026-08-15, Windows 11, authenticated account). Two things changed since
+0.2.117: the image-aware `read_file` branch has **shipped**, and we have isolated why ACP clients
+still cannot reach it. This section is no longer "the fix has not landed" — it is "the fix is
+unreachable by delegation".
+
+`initialize` still returns `promptCapabilities: {"image":false,"audio":false,"embeddedContext":true}`
+while inline `{type:"image"}` prompt blocks work. Unchanged, and still a flag a client must ignore
+to keep working vision.
+
+The `read_file` half now depends entirely on one advertised capability. Same build, same 256×256
+PNG, same prompt; the only variable is `clientCapabilities.fs`:
+
+| `clientCapabilities.fs` | `read_file` on the PNG | `fs/write_text_file` delegated |
+|---|---|---|
+| `{readTextFile: true, writeTextFile: true}` | `FileReadError: "Cannot read binary file"` | yes |
+| `{readTextFile: false, writeTextFile: true}` | `Read image file:` plus the image — model names the colour | **no** |
+| capability omitted entirely | works, as above | no |
+
+The shipped image branch lives on the CLI's own read path. When a client advertises
+`fs.readTextFile`, `read_file` is routed to that text-only client method instead, and that path has
+a binary guard but no image branch.
+
+The second column is the trap, and it is the reason we cannot simply stop advertising the
+capability. `writeTextFile: true` is **not honored independently**: with `readTextFile: false` the
+CLI performed the write itself and issued **no client requests at all** — zero inbound JSON-RPC
+across the whole turn, `session/request_permission` included. A client cannot opt out of read
+delegation while keeping write interception.
+
+**Content-level escape hatches, all measured on 1.0.4, all closed** — no response a client returns
+can make a delegated image read succeed:
+
+| Attempt | Result |
+|---|---|
+| Answer `fs/read_text_file` with a JSON-RPC error, hoping the CLI falls back to its own reader | No fallback; our message is wrapped verbatim into `FileReadError` |
+| Answer with structured `content: [{type:"image",…}]` | `Internal error: "failed to deserialize response"` — `content` is strictly a string |
+| Answer with a `data:image/png;base64,…` string | Ignored; still `Cannot read binary file`, so the guard inspects the file itself rather than our response |
+
+**What the delegation is actually worth, measured in Plan mode (1.0.4).** Our first reading — that
+`fs.readTextFile` is load-bearing for the Plan write-gate, so the capability could not be dropped —
+did not survive testing. Forcing the model to call both a write and a mutating shell command inside
+Plan mode gives **identical results under both capability configurations**:
+
+| Hook | `readTextFile: true` | `readTextFile: false` |
+|---|---|---|
+| `fs/write_text_file` | **never fires** | never fires |
+| `terminal/create` | fires | fires |
+| `session/request_permission` | fires (`kind: "execute"`) | fires (`kind: "execute"`) |
+
+The `write` tool is refused by grok itself before any delegation — *"Rejected: file edits are not
+allowed in plan mode - the only editable file is the plan file"* — so the client write-gate is
+already unreachable in Plan mode on this build. And `terminal/create` plus `session/request_permission`
+ride the **separate `terminal` capability**, so they are untouched by the `fs` flags. The hook that
+covers the real §1 hole (bash still executes in Plan) does not depend on `fs.readTextFile` at all.
+
+So the enforcement cost of dropping the capability is close to zero on this build. The remaining
+cost is a UX one: `fs/write_text_file` is also how we snoop grok's own plan file to populate the
+plan review card, since `exit_plan_mode` arrives with `planContent: null` (§1).
+
+**Client cost/workaround:** we ignore the capability flag, pin a live drift test, pre-read and send
+user-attached images ourselves, add "do not Read" hints to reduce transcript noise, and parse
+generated-media paths out of tool output. A client can now recover model-initiated image reads by
+withholding `fs.readTextFile` — but only by giving up delegated reads wholesale, and while relying
+on a native Plan gate whose coverage §1 shows to be partial. That is a coin-flip between two
+documented capabilities, not a design. The one content-level lever left is cosmetic: a JSON-RPC
+error message reaches the model verbatim, so `Cannot read binary file` can be replaced with text
+telling it to ask the user to attach the file.
+
+**Ask:** route a binary/image path through the shipped image branch **even when the read is
+delegated** — a client advertising `fs.readTextFile` is offering to resolve text, not asking to
+disable vision. Failing that, either honor `writeTextFile` independently of `readTextFile`, or add a
+binary-capable client read method so delegation can carry pixels. Separately, still open from the
+archive: advertise `image:true`; return generated media as structured `image`/`resource_link`
+content instead of a path embedded in text or `rawOutput`; expose dropped-image errors on a
+documented surface.
+
+Re-confirmed on 1.0.4 and unchanged: an image below the 8×8 / 512-total-px floors is dropped, and
+the model is left hunting for an attachment it never received (*"the image wasn't available (it was
+1×1 and couldn't be processed)"*).
+
+## 3. Rewind reports files it did not revert (archive §2.15)
+
+**LIVE-VERIFIED 0.2.117.** `_x.ai/rewind/execute` with `mode:"all"` can return a newly created path
+in `reverted_files` while leaving that file on disk, so the response tells a client that more was
+restored than actually was.
+
+Published source deletes a file whose before-snapshot is missing and only then appends it to
+`reverted_files`. That fix is **SOURCE-ONLY**; the shipped result is still wrong.
+
+**Client cost/workaround:** our UI cannot state a restoration count or enumerate restored paths from
+the response, so when the array is non-empty it says files were rolled back and warns that anything
+created after that point may still be on disk. We also had to probe two undocumented semantics: the
+target prompt is discarded inclusively, and the current tip is a legal target.
+
+**Ask:** ship truthful created-file handling (or split `restored` from `createdLeftInPlace`),
+document the discard-inclusive boundary, and advertise the rewind capability and its schema.
+
+## 4. A large shipped surface is undiscoverable (archive §2.16, §2.2)
+
+**LIVE-VERIFIED 0.2.117** (method existence by error code: `-32601` absent, `-32602`/success
+present, run with known-present, known-absent and bare-prefix controls).
+
+Routed and useful, advertised nowhere: `_x.ai/session/list`, `_x.ai/session/info`,
+`_x.ai/session/fork`, `_x.ai/session/usage`, `_x.ai/session/state`, `_x.ai/session/import`,
+`_x.ai/session/updates`, `_x.ai/rewind/points`, `_x.ai/hooks/list`, and
+`_x.ai/compact_conversation` (returns `{}` — the position-independent compact clients otherwise have
+to guess exists).
+
+Push rails nothing announces: `_x.ai/settings/update`, `_x.ai/announcements/update`,
+`_x.ai/models/update`, `_x.ai/sessions/changed`, `_x.ai/queue/changed`,
+`_x.ai/mcp/servers_updated`, `_x.ai/mcp_initialized`, `_x.ai/session/prompt_complete`, plus the two
+lifecycle rails — `_x.ai/session_notification` live and `_x.ai/session/update` on replay — whose
+0.2.117 kinds include `tool_call_delta_chunk`, `response_completed`, `hook_execution`,
+`pending_interaction`, `interaction_resolved`, `session_summary_generated` and `turn_completed`.
+
+`initialize` does advertise more than it used to (`x.ai/hooks`, `x.ai/fs_notify`,
+`x.ai/capabilities.toolOverrides`, `modelState`, `defaultAuthMethodId`, `sessionCapabilities.list`,
+and the flags `grokShell` / `voiceMode` / `cancelRewind` / `sessionRecap` / `x.ai/mcp/sdk` /
+`x.ai/pluginDirs`) — but none of it names a method or a rail, so none of it makes the list above
+discoverable.
+
+Two slash commands that a generic client should not dispatch are still advertised on 0.2.117.
+`/context` dispatches and emits **zero** output bytes — no inference, no content (LIVE-VERIFIED);
+`/always-approve` flips the process-wide permission state (still advertised on 0.2.117;
+SOURCE-VERIFIED 2026-07-16 for the mechanism). There is still no TUI-only or unsafe flag on an
+advertised command, so every client ships its own denylist. Dispatch also still requires position 0:
+sending `"Some editor-injected context.\n/session-info"` did not dispatch — the text went to the
+model instead, taking the session from 5 472 to 16 047 context tokens.
+
+**Client cost/workaround:** private method-name knowledge, `-32601` feature gates, payload probes,
+send-reordering so commands land at position 0, and denylists for advertised commands. A rename or
+prefix change silently breaks features.
+
+**Ask:** publish an `initialize` capability set naming supported methods, push rails, versions and
+schemas; mark commands that are TUI-only or unsafe for generic dispatch; document that xAI extension
+methods are `_x.ai/...` on the wire; and accept a slash command anywhere in the first text block (or
+provide a structured command field).
+
+## 5. Context and usage numbers have misleading scopes (archive §2.3, §2.13)
+
+**LIVE-VERIFIED 0.2.117.** The prompt **result**'s `_meta.totalTokens` is still a placeholder: a
+`/session-info` turn returned `{"totalTokens":0,"modelId":"grok-4.5",…}` while its own reply prose
+reported the true 5 474. The `session/update` **envelope** `_meta.totalTokens` is the trustworthy
+one — in a second 0.2.117 capture it carried 5 473, matching that run's prose exactly, and it
+climbs truthfully during a turn. The result value never does.
+
+Not re-checked on 0.2.117 and **last LIVE-VERIFIED 0.2.112 / SOURCE-VERIFIED 2026-07-29**: the same
+placeholder zero on `/compact` (where the sibling `_meta` usage fields are a stale echo of the
+*previous* inference turn), a native `/compact` streaming no content at all, and the absence of any
+standard ACP `usage_update` notification.
+
+`_x.ai/session/usage` is scoped to the agent **process**, not the session. Measured on 0.2.117:
+`totalTokens 31828, numTurns 2, costUsdTicks 180384000` (now with a welcome per-model `modelUsage`
+breakdown), then **all zeros** on the next call after `session/load` in a fresh process, and
+`numTurns: 1` after one further turn in a session that had had three. A cumulative-looking counter
+that silently resets under-reports while still looking authoritative. Published source defines the
+fixed-point scale as **10^10 ticks per USD**, so that captured cost is `$0.0180384`.
+
+**Client cost/workaround:** we discard placeholder zeros, read context size from `session/update`
+envelopes (with `signals.json` retained only to seed a cold restore), and maintain our own persisted
+per-turn ledger because the cumulative-looking RPC is process-scoped. Tokens and `costUsdTicks`
+share that ledger, so rewind subtracts both. No hidden `/session-info` turn or prose parser remains.
+
+**Ask:** return the true post-operation context size on the prompt result, including after
+`session/load`; emit a standard `usage_update`; and either persist `_x.ai/session/usage` across load
+or rename it `process/usage`.
+
+Related quota gap, **last LIVE-VERIFIED 0.2.103, SOURCE-VERIFIED 2026-07-29, not re-checked on
+0.2.117** (we cannot force a rate-limit without abusing the account): HTTP 429 maps to `-32003`
+without the available retry delay. There is also still no queryable quota surface — eight plausible
+method names (`_x.ai/usage`, `_x.ai/quota`, `_x.ai/limits`, `_x.ai/rate_limits`,
+`_x.ai/account/usage`, `_x.ai/user/usage`, `_x.ai/billing/usage`, `_x.ai/usage/get`) all returned
+`-32601` on 0.2.117. A client can only say "try again later". Please preserve `retry_after_secs` in
+error data and expose account quota independently of per-process token accounting.
+
+## 6. Edit diff delivery is inconsistent, and `old_line` is a post-edit coordinate (archive §2.10)
+
+**LIVE-VERIFIED 0.2.117** across five edit shapes (single replace, multi-line region replace,
+whole-file overwrite, new file, and a replace-all whose replacement grows each site).
+
+- **The three delivery paths carry different metadata, never the same.** The pre-write echo carries
+  block-level `_meta:{old_line,new_line}` and no `details[]`; the completed update carries
+  `_meta:{details:[…]}` and **no** block-level `old_line`; `session/load` replay carries only
+  `details[]`. A client seeding from the echo's shape gets nothing on replay, and vice versa.
+- **The first diff is wrong for whole-file writes.** On an overwrite the echo's diff block has
+  `oldText: ""` while the completed update carries the real 58-byte prior content — and the echo's
+  `_meta` is `{}`, with no line numbers at all. A client painting the earliest diff paints a false
+  "new file".
+- **`details[].old_line` is located in post-edit text.** For a replace-all where each replacement
+  adds two lines, the ground-truth pre-edit occurrences are lines 2, 4, 6, but `details[]` reports
+  `old_line` 2, 6, 10 — identical to `new_line`. The pre-edit line number is therefore not
+  recoverable from the payload at all.
+- `details[]` does now enumerate every replaced site (12 of 12, at real 1-based lines 3, 5, … 25),
+  which is right and worth keeping. It carries `line_prefix` plus `context_before`/`context_after`,
+  but no `line_suffix` and no full changed line.
+
+**Client cost/workaround:** we key idempotency on diff content, treat a missing `status` as
+provisional, merge three incompatible metadata shapes, and reconstruct whole-file context from disk
+when it still matches.
+
+**Ask:** send one authoritative diff or mark the echo explicitly provisional; use identical metadata
+on echo, completion and replay; include the full old/new changed line (or `line_suffix`); and define
+the coordinate space — if `old_line` is post-edit, say so, or add a genuine pre-edit line.
+
+## 7. Fork's cut point is undocumented and moved between builds (archive §2.12)
+
+**LIVE-VERIFIED FIXED on 0.2.117 — the headline is a thank-you.** `_x.ai/session/fork` with
+`targetPromptIndex` now truncates **both** logs at the same boundary. On a 2-prompt session a full
+fork copied 17 chat messages / 24 updates; `targetPromptIndex: 0` copied 10 / 10, and the second
+prompt's text is absent from `chat_history.jsonl` **and** `updates.jsonl` on disk. The 0.2.101
+failure — the model forgetting turns that `session/load` still replayed to the user — is gone.
+
+Two residual issues stop us from shipping per-message branching:
+
+- **The index base changed with no signal.** On 0.2.101, `targetPromptIndex: 1` against a 2-prompt
+  session cut to the first prompt. On 0.2.117 the identical call copies the *whole* session, and `0`
+  is the value that cuts there. Same wire call, different cut point, nothing on the wire
+  distinguishes them.
+- **Out-of-range is silent.** `targetPromptIndex: 99` returns a successful **full** copy rather than
+  an error, so a client that miscounts gets a whole-session fork and never learns.
+
+**Client cost/workaround:** we ship whole-session fork only and withhold per-message branching,
+because we cannot pin a cut point across builds.
+
+**Ask:** document the index base, return the effective cut point in `ForkSessionResponse` so a
+client can validate its own replay, and reject an out-of-range index instead of silently copying
+everything.
+
+## 8. The shell dialect comes from the agent's environment, not the client (archive §2.9)
+
+**LIVE-VERIFIED 0.2.117.** In ACP mode grok hands raw commands to the client to execute, but every
+model-facing shell signal is derived from the grok host process. Measured: with `GROK_SHELL` unset
+the model's first user message carries `Shell: powershell`; with `GROK_SHELL=bash` it carries
+`Shell: bash`. Nothing in `clientCapabilities` is consulted, so detection and execution can diverge
+and the model can emit POSIX syntax for a PowerShell executor (originally observed on 0.2.101).
+`initialize._meta.grokShell` is advertised as `true`, but it is a constant — identical with
+`GROK_SHELL` unset and set — so it does not report the resolved dialect either.
+
+**Client cost/workaround:** on Windows we resolve the shell we will actually run and set the
+undocumented `GROK_SHELL` variable in the stdio process's environment. Without it each mismatch
+costs an extra tool call and model turn; rewriting arbitrary commands client-side is not safe.
+
+**Ask:** document `GROK_SHELL`, and preferably accept and honor a client-declared terminal dialect
+during `initialize`.
+
+## 9. Effective permission policy is visible only in fragments (archive §2.11, §2.7)
+
+**LIVE-VERIFIED 0.2.117 for the reporting gap.** `_x.ai/settings/update` carries `permission_mode`
+and `auto_permission_mode_enabled`, both `null` on a default config, so a client cannot distinguish
+"not set" from "not reported" — and neither field names the winning rule or its source file. There
+is no getter: `_x.ai/settings`, `_x.ai/settings/get`, `_x.ai/settings/list`, `_x.ai/permissions/get`,
+`_x.ai/permission/mode` and `_x.ai/session/config` all return `-32601`.
+
+**Last LIVE-VERIFIED 0.2.99–0.2.101; SOURCE-VERIFIED 2026-07-16** for the underlying cause, which we
+did not re-run on 0.2.117 because reproducing it means mutating another product's config: permission
+prompts vary by machine because grok merges several invisible policy sources — Grok project grants,
+managed settings, and Claude Code's `~/.claude/settings*.json`. An `Edit`, `Write` or `Bash` allow
+granted to a different product can bypass `session/request_permission` before this client is
+involved.
+
+**Client cost/workaround:** review is decoupled from approval and rendered from every diff update.
+To explain why no approval arrived, a client would have to reimplement the CLI's policy-resolution
+stack — and still could not manufacture the missing choice.
+
+**Ask:** report the effective per-session decision policy, the winning rule and its source file, and
+make the cross-product Claude settings import explicit rather than silent.
+
+## 10. Entitlement failures are still prose-only (archive §2.14)
+
+**Last LIVE-VERIFIED 0.2.101; SOURCE-VERIFIED 2026-07-29; not re-checked on 0.2.117** — we cannot
+provoke a 403 on an entitled account. A 403 entitlement failure is returned as generic
+`-32603 internal_error`, sharing a bucket with policy blocks and server faults, and the only
+discriminator is mutable prose.
+
+Subscription *state* is observable — `initialize._meta.defaultAuthMethodId` settled "which credential
+won?" on 0.2.112, and `_x.ai/settings/update` carries `subscription_tier_display`, `allow_access` and
+`gate_message`/`gate_url`/`gate_label` (all still present on 0.2.117). None of that classifies the
+error that ended a turn.
+
+**Client cost/workaround:** conservative text heuristics, to keep a subscription failure in chat
+instead of dropping the user into an unfixable login loop.
+
+**Ask:** put a stable machine-readable code in the error's `data` for the entitlement, policy and
+server-fault families.
+
+## 11. Restore and subagent normalization remain client work (archive §2.6, §2.4)
+
+**Last LIVE-VERIFIED 0.2.112 (restore) and 0.2.101 (subagents); not re-checked on 0.2.117** —
+reproducing the subagent dialects costs several long delegated turns, so we left these labelled
+rather than re-assert them. `session/load` can replay `<system-reminder>` and protocol-marker turns
+as user content and cannot replay resolved permission requests. Subagent completion has foreground,
+Composer and background-poller dialects; a background start ack is marked completed before the real
+result arrives; result text duplicates structured output inside wrappers; child sessions appear as
+top-level rows and must be filtered by `sessionKind`.
+
+What we did re-confirm on 0.2.117 is the part that is genuinely fine: lifecycle events do ship, on
+both rails — `_x.ai/session_notification` live and `_x.ai/session/update` on replay, observed
+together in a single session. The remaining issue is that this two-rail contract and its payload
+kinds are undocumented.
+
+**Client cost/workaround:** replay filters, persisted and re-injected interaction state, wrapper
+stripping, task-id correlation, and separate live/replay lifecycle routing.
+
+**Ask:** keep internal reminders out of user replay; persist resolved interactions; make a
+background "completed" mean completed; stop duplicating structured output in text; document both
+lifecycle rails.
+
+---
+
+## 12. `ask_user_question` promises a free-text "Other" that never arrives (new)
+
+**LIVE-VERIFIED 0.2.117.** The agent-facing description of `ask_user_question` tells the model that
+every question automatically carries an "Other" choice accepting free text, and that the typed text —
+not the literal label — is what comes back. Over ACP, `x.ai/ask_user_question` requests carry only
+the options the model itself supplied. A user therefore has no way to answer anything the listed
+options do not cover, which is precisely when a clarifying question matters
+([#85](https://github.com/phuryn/grok-build-vscode/issues/85)).
+
+The response side is not the problem: `answers` is a `HashMap<String,String>` keyed by question
+text, so a client can put typed text where a label would go and it deserializes. The gap is that
+nothing tells the client the option should exist, and `annotations.notes` / `chat_about_this` are
+undocumented enough that neither reads as the sanctioned channel.
+
+**Client cost/workaround:** we append the missing option in the webview and send the typed text in
+place of the label. That leaves us guessing at a wording the CLI might one day use — the day grok
+starts sending its own, under any label we do not recognise, the user sees two of them.
+
+**Ask:** inject the promised "Other" server-side so it reaches clients with the request; failing
+that, document which of `answers`, `annotations.notes` and `chat_about_this` a free-text answer is
+supposed to travel in, and mark the option in the payload so clients can recognise it by structure
+rather than by label.
+
+## 13. Auto session titles track the opener's shape, not the work (new)
+
+**FIELD-REPORT** ([#98](https://github.com/phuryn/grok-build-vscode/issues/98)) — user-observed,
+not probed by us, on extension builds that already prefer the CLI's `session_summary` / generated
+title over the raw first prompt. The generated titles paraphrase the first message rather than the
+work: one multi-day effort produced "Wayfinder Continue Session", "Wayfinder Continue Development
+Session", "Wayfinder Continue Command Session" — and three distinct sessions all titled "Wayfinder
+Agent-Home GitHub Issue 4". Resume and history search by title are not usable in that state.
+
+**Client cost/workaround:** none available. The title text is generated by the CLI; the client
+already shows the best field there is and lets a manual rename win, but it cannot regenerate titles
+without a model call it has no business making.
+
+**Ask:** bias summary/title generation toward topic + outcome rather than a Title-Case echo of the
+opener; refresh the auto-title after substantive work when the first-turn title stayed generic; and
+avoid emitting identical titles for distinct sessions started the same way (same continue command,
+same issue link).
+
+---
+
+## Closed since the archive
+
+Recorded so the list above is not read as static. Both are LIVE-VERIFIED on 0.2.117, not merely
+fixed in source.
+
+| Was | Now |
+|---|---|
+| §2.1 — a rejected plan needed a synthetic hidden-prompt protocol, because the CLI read a JSON-RPC error response to `exit_plan_mode` as a disconnect | Success `{outcome:"cancelled"\|"approved"\|"abandoned"}` behaves correctly inside the original turn; we deleted the primer machinery |
+| §2.12 — `targetPromptIndex` truncated `chat_history.jsonl` but not `updates.jsonl`, so a forked session replayed turns the model had forgotten | Both logs truncate at the same boundary (verified on disk). Only the undocumented index base and the silent out-of-range remain — §7 |
+
+Also retired earlier. Re-observed on 0.2.117: `_x.ai/sessions/changed` pushes the incremental session
+catalog we once asked for; `initialize._meta.defaultAuthMethodId` (`"cached_token"`) answers "which
+credential won?"; and lifecycle events do ship on both rails, retiring the old "they never ship"
+claim — though the subagent-specific kinds were last seen on 0.2.112. Retired on source evidence and
+not re-run here: reasoning effort is session-settable via `set_model` `_meta` (0.2.117 still
+advertises `reasoningEfforts` in `initialize._meta.modelState`).
+
+## Coverage of this pass
+
+Re-probed live on **1.0.4** (2026-08-15): §2 only, in full — the capability A/B, three attempted
+content-level workarounds, and a Plan-mode hook comparison under both capability configurations
+(which corrected our own first reading; see the note in that section). §1's Plan-mode claims were
+NOT re-run on 1.0.4 beyond what that comparison touched: the `terminal/create` passthrough was
+re-observed, but the five-requests-per-turn measurement stays at 0.2.117.
+
+Re-observed live on 0.2.117: §1, §2, §3, §4, §5 (except the 429), §6, §7, §8, §9 (the reporting
+gap). Left at an older named build because the trigger cannot be produced without abusing an
+account or spending many delegated turns: the 429 `retry_after_secs` gap in §5 (0.2.103), the
+cross-product settings merge in §9 (0.2.99–0.2.101), the 403 classification in §10 (0.2.101), and
+restore/subagent normalization in §11 (0.2.112 / 0.2.101). Those four are the only claims here not
+confirmed on the current build, and they are labelled in place.
