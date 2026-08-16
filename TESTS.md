@@ -172,7 +172,7 @@ These actually spawn real shell children (real `/bin/sh`, or real PowerShell on 
 
 ### `test/plan-mode-transition.test.ts` — Plan chrome follows the RPC outcome
 
-Drives `GrokSidebar.setMode("plan")` against a stub client. A rejected `session/set_mode` must leave `planActive` down and keep the previous Auto-accept badge; a successful one must not raise the gate until the RPC returns.
+Drives `GrokSidebar.setMode("plan")` against a stub client. A rejected `session/set_mode` must leave `planActive` down and keep the previous Auto-accept badge; a successful one must not raise the host chrome until the RPC returns. The same-chunk race — success reply plus a `terminal/create` in one stdout write — is pinned in `test/acp.test.ts` through the real readline dispatch, not by calling handlers directly.
 
 ### `test/plan-gate.test.ts` — plan-mode policy (63 tests)
 
@@ -223,6 +223,7 @@ happy-dom test (see [Webview DOM tests](#webview-dom-tests) below). Drives the s
 ### `test/acp.test.ts` — ACP client helpers
 
 - **Request timer lifecycle** — a resolved `request()` clears its timeout (no leaked timer).
+- **Plan gate same-chunk raise** — a successful `session/set_mode` reply and a mutating `terminal/create` in one stdout write must block the command. The gate is committed in the response hook so readline cannot dispatch the request before `planActive` is up.
 - **Advertised `clientCapabilities` (#79)** — `acpClientCapabilities(provider, grokVersion, versionVerified)` withholds `readTextFile` only for a live-verified grok >= 1.0.4 (no upper cap). A live 1.0.3, a cache/unverified 1.x banner, grok 0.2.117, Codex, and an unknown version keep the delegated handshake. The fake-CLI integration lifecycle test asserts the 1.0.4 wire payload; a second case asserts 0.2.117 still advertises `readTextFile`.
 - **Spawn argv** — `buildGrokAgentArgs()` returns `["agent", "stdio"]` with no effort, and `["agent", "--reasoning-effort", <value>, "stdio"]` (flag before the subcommand) for a valid effort.
 

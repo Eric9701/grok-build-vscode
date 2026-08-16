@@ -1842,6 +1842,8 @@ Only continue if you trust this code.`,
       // Raise only after the agent accepts Plan. Doing it first left the badge
       // claiming Plan when set_mode failed — Claude/Codex have no client gate,
       // and grok's native writes can skip the partial delegated-command one.
+      // The client commits its own gate in the set_mode response hook so a
+      // same-chunk terminal/create cannot observe the window this await leaves.
       if (session.client) {
         try {
           await session.client.setMode("plan");

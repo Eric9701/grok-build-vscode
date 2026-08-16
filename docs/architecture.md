@@ -346,8 +346,10 @@ plus Codex `config_option_update`) so the button cannot stay on Plan after an
 approved exit. Codex's effective mode is Plan when `collaboration_mode` is Plan
 and otherwise the permission `mode` (`codexEffectiveModeId`) — collaboration
 `default` is not flattened to Agent, because the adapter always reports
-`agent-full-access` on that same snapshot. A user Plan pick raises `planActive`
-only after `session/set_mode` succeeds.
+`agent-full-access` on that same snapshot. A user Plan pick commits `planActive`
+in the `session/set_mode` response hook — after a successful reply, before the
+next ACP line — so a same-chunk `terminal/create` still sees the gate. A
+rejected transition keeps the previous badge and gate.
 
 The full pedagogical write-up lives in
 [research/understanding-plan-mode.md](../research/understanding-plan-mode.md).

@@ -1,3 +1,5 @@
+import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
 import { describe, it, expect, vi } from "vitest";
 import {
   AcpClient,
@@ -246,6 +248,43 @@ describe("AcpClient Plan terminal environment", () => {
     });
 
     expect(create).toHaveBeenCalledWith({ command: "custom-command", env });
+  });
+
+  it("raises the Plan gate before a same-chunk terminal/create is dispatched", async () => {
+    const { client, written } = clientWithFakeProc();
+    const create = vi.fn(() => ({ terminalId: "t-1" }));
+    const blocked: Array<{ kind: string; target: string }> = [];
+    (client as any).sessionId = "session-1";
+    (client as any).terminal = { create };
+    client.on("mutationBlocked", (v) => blocked.push(v));
+
+    const stdout = new PassThrough();
+    const rl = createInterface({ input: stdout });
+    rl.on("line", (line) => (client as any).onLine(line));
+
+    try {
+      const pending = client.setMode("plan");
+      const req = JSON.parse(written[0]);
+      expect(req.method).toBe("session/set_mode");
+
+      stdout.write(
+        JSON.stringify({ jsonrpc: "2.0", id: req.id, result: {} }) + "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 99,
+          method: "terminal/create",
+          params: { command: "rm -rf /tmp/x" },
+        }) + "\n",
+      );
+
+      await pending;
+      expect(client.planActive).toBe(true);
+      expect(create).not.toHaveBeenCalled();
+      expect(blocked).toEqual([{ kind: "terminal", target: "rm -rf /tmp/x" }]);
+    } finally {
+      rl.close();
+      stdout.destroy();
+    }
   });
 });
 
