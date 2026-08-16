@@ -9,12 +9,13 @@
  *     grok: Plan still hands mutating shells to the client.
  *   - `fs/write_text_file` — workspace writes, when they are delegated.
  *
- * On grok 1.x we withhold `readTextFile`, the CLI treats client fs as
- * all-or-nothing, and writes are not delegated. Plan-mode file safety then
- * rests on grok's native edit refusal; only terminal mutations remain
- * extension-enforced. The write handler + this gate stay so a later CLI that
- * honours `writeTextFile` independently still has the hook, and so 0.2.x
- * (which still advertises the delegated handshake) is unchanged.
+ * On a live-verified grok >= 1.0.4 we withhold `readTextFile`, the CLI treats
+ * client fs as all-or-nothing, and writes are not delegated. Plan-mode file
+ * safety then rests on grok's native edit refusal; only terminal mutations
+ * remain extension-enforced. The write handler + this gate stay so a later
+ * CLI that honours `writeTextFile` independently still has the hook, and so
+ * 0.2.x / unverified (which still advertise the delegated handshake) is
+ * unchanged.
  *
  * Empirically (grok 0.2.3–0.2.117, ACP, delegated fs), a plan-mode turn only
  * *reads* the workspace and writes its plan to

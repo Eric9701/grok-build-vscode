@@ -135,7 +135,7 @@ exactly why shipped-behavior evidence is the only kind that may remove a fallbac
 | Workaround | Keep because |
 |---|---|
 | Vision with no capability gate | `promptCapabilities.image:false` still advertised while image blocks work |
-| The "do not Read" image hint | On 0.2.112: `read_file` on a plain 109-byte PNG fails `Cannot read binary file`. **Superseded on 1.0.4** — the image branch HAS shipped; grok >= 1.0 withholds `fs.readTextFile` so the CLI's own reader runs (#79). The hint stays on the user-attach send path to cut transcript noise if the model still reaches for a persisted copy. |
+| The "do not Read" image hint | On 0.2.112: `read_file` on a plain 109-byte PNG fails `Cannot read binary file`. **Superseded on 1.0.4** — the image branch HAS shipped; a live-verified grok >= 1.0.4 withholds `fs.readTextFile` so the CLI's own reader runs (#79). The hint stays on the user-attach send path to cut transcript noise if the model still reaches for a persisted copy. |
 | Whole-session-only fork | Source truncates both logs; last measured shipped build did not |
 | Conservative rewind wording | `reverted_files` still lists created files left on disk — **source deletes them; stable doesn't** |
 | `/context` + `/always-approve` denylist | Both still advertised over ACP |

@@ -103,6 +103,7 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
       },
       log: () => {},
       grokVersion: "1.0.4",
+      grokVersionVerified: true,
     });
     client.on("stderr", (t: string) => captured.push(t));
 

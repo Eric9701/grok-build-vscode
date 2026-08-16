@@ -85,7 +85,7 @@ a binary guard but no image branch.
 The second column is why this is a coin-flip, not a free lunch. `writeTextFile: true` is **not
 honored independently**: with `readTextFile` withheld the CLI performs the write itself and issues
 **no client fs requests at all**. A client cannot opt out of read delegation while keeping write
-interception. We withhold `readTextFile` on grok >= 1.0 (`acpClientCapabilities`) because the write
+interception. We withhold `readTextFile` on a live-verified grok >= 1.0.4 (`acpClientCapabilities`) because the write
 hook is already unreachable in Plan on this build (next table) and `exit_plan_mode` arrives with
 `planContent` populated, so the plan-review card is fed by `req.plan` rather than the plan.md snoop.
 0.2.x and Codex keep the delegated handshake — this workaround was not measured there, and 0.2.117
@@ -121,7 +121,7 @@ So the enforcement cost of dropping the capability is close to zero on this buil
 longer depends on the snoop: `exit_plan_mode` arrives with `planContent` fully populated, and the
 host prefers `req.plan` over any snooped `lastPlanText`.
 
-**Client cost/workaround:** `acpClientCapabilities` withholds `fs.readTextFile` for grok >= 1.0,
+**Client cost/workaround:** `acpClientCapabilities` withholds `fs.readTextFile` for a live-verified grok >= 1.0.4,
 pins that matrix in `test/acp.test.ts`, and pins the two live behaviours in
 `research/image-read-capability-probe.cjs` (image read succeeds when the flag is withheld; Plan
 still refuses file edits natively). 0.2.x, Codex, and an unknown version keep the delegated

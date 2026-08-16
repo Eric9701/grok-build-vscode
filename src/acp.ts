@@ -75,6 +75,12 @@ export interface AcpClientOptions {
   backend?: AcpBackend;
   /** Banner or `X.Y.Z` from the grok version probe. Ignored for other providers. */
   grokVersion?: string;
+  /**
+   * True only after a live parseable `--version`. A cache stand-in or failed
+   * probe stays false — `acpClientCapabilities` will not withhold reads from
+   * an unverified banner even when the number is at the image-read floor.
+   */
+  grokVersionVerified?: boolean;
 }
 
 export interface ModelInfo {
@@ -182,31 +188,46 @@ export const ACP_DELEGATED_FS_CAPABILITIES: AcpClientCapabilities = {
   terminal: true,
 };
 
-/** Handshake that lets grok 1.x run its own image-aware `read_file` (#79). */
+/** Handshake that lets grok >= 1.0.4 run its own image-aware `read_file` (#79). */
 export const ACP_IMAGE_READ_FS_CAPABILITIES: AcpClientCapabilities = {
   fs: { writeTextFile: true },
   terminal: true,
 };
 
-/** First grok major whose image-aware `read_file` branch exists. Measured on 1.0.4. */
-export const GROK_IMAGE_READ_MIN_VERSION: [number, number, number] = [1, 0, 0];
+/**
+ * Lowest grok version whose image-aware `read_file` and all-or-nothing client
+ * fs were measured (`docs/internal/ACP-feedback.md` §2, 1.0.4). Builds below
+ * this keep the delegated handshake — 1.0.0–1.0.3 were never probed, and
+ * withholding `readTextFile` also drops write interception.
+ *
+ * No upper bound. A later major dropping the image branch is a feature
+ * removal, which is unlikely and would be caught by
+ * `research/image-read-capability-probe.cjs`. Capping would make every future
+ * grok release silently lose the #79 fix until someone bumps a constant; run
+ * that probe to re-establish the evidence when a new major appears.
+ */
+export const GROK_IMAGE_READ_MIN_VERSION: [number, number, number] = [1, 0, 4];
 
 /**
  * Advertised `initialize.clientCapabilities`.
  *
- * Withhold `readTextFile` only for grok >= 1.0, where the image-aware CLI
- * reader exists and the all-or-nothing fs treatment was measured (1.0.4).
+ * Withhold `readTextFile` only for a live-verified grok >= 1.0.4, where the
+ * image-aware CLI reader exists and the all-or-nothing fs treatment was
+ * measured. `versionVerified` must be a live parseable `--version` — a cache
+ * stand-in is never treated as verified, even when its number is at the floor.
  *
- * Unknown / unparseable grok versions keep the pre-1.0 handshake. A missed
- * version probe must not silently drop client fs: on 0.2.117 that can blank
- * plan review (`planContent: null`) and may also stop write delegation
- * (unverified). Codex is not this bug and keeps the delegated handshake.
+ * Unknown, unparseable, unverified, or cached grok versions keep the pre-1.0
+ * handshake. A missed version probe must not silently drop client fs: on
+ * 0.2.117 that can blank plan review (`planContent: null`) and may also stop
+ * write delegation. Codex is not this bug and keeps the delegated handshake.
  */
 export function acpClientCapabilities(
   provider: AcpProvider,
   grokVersion?: string | null,
+  versionVerified = false,
 ): AcpClientCapabilities {
   if (provider !== "grok") return ACP_DELEGATED_FS_CAPABILITIES;
+  if (!versionVerified) return ACP_DELEGATED_FS_CAPABILITIES;
   const parsed = parseGrokVersion(grokVersion ?? "");
   if (!parsed) return ACP_DELEGATED_FS_CAPABILITIES;
   return compareVersionTuple(parsed, GROK_IMAGE_READ_MIN_VERSION) >= 0
@@ -343,7 +364,11 @@ export class AcpClient extends EventEmitter {
 
     const init = await this.request("initialize", {
       protocolVersion: 1,
-      clientCapabilities: acpClientCapabilities(this.provider, this.opts.grokVersion),
+      clientCapabilities: acpClientCapabilities(
+        this.provider,
+        this.opts.grokVersion,
+        this.opts.grokVersionVerified === true,
+      ),
     });
     this.emit("initialized", init);
   }

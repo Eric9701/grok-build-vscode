@@ -260,11 +260,11 @@ function readGrokVersionBanner() {
   }
 }
 const GROK_VERSION = readGrokVersionBanner();
-// Same selection the extension ships (`acpClientCapabilities`). On 1.x this
-// withholds readTextFile; on 0.2.117 / unreadable it keeps the delegated
-// handshake. Plan/rewind/edit then exercise the production wire, not a
-// leftover client-delegated filesystem.
-const INIT = { protocolVersion: 1, clientCapabilities: acpClientCapabilities("grok", GROK_VERSION) };
+// Same selection the extension ships (`acpClientCapabilities`). A live
+// grok >= 1.0.4 withholds readTextFile; 0.2.117 / unreadable keeps the
+// delegated handshake. Plan/rewind/edit then exercise the production wire,
+// not a leftover client-delegated filesystem.
+const INIT = { protocolVersion: 1, clientCapabilities: acpClientCapabilities("grok", GROK_VERSION, true) };
 const READ_TEXT_FILE_ADVERTISED = INIT.clientCapabilities.fs.readTextFile === true;
 function mkTmp(tag) { return fs.mkdtempSync(path.join(os.tmpdir(), "grok-live-" + tag + "-")); }
 function withTimeout(promise, ms, label) {

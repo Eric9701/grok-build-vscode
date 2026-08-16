@@ -43,10 +43,11 @@ Grok supplies the mandatory `fs/*` and `terminal/*` callbacks, native
 rail. Codex executes commands and edits server-side; its adapter sends ordinary
 tool/diff updates and `session/request_permission`, including plan review.
 
-`initialize` uses `acpClientCapabilities(provider, grokVersion)`: grok >= 1.0
-withholds `readTextFile` so the CLI's image-aware `read_file` runs (#79).
-Measured 1.x builds treat client fs as all-or-nothing, so that also stops
-write delegation. 0.2.x, Codex, and an unreadable version keep
+`initialize` uses `acpClientCapabilities(provider, grokVersion, versionVerified)`:
+only a live-verified grok >= 1.0.4 withholds `readTextFile` so the CLI's
+image-aware `read_file` runs (#79). Measured 1.0.4+ builds treat client fs as
+all-or-nothing, so that also stops write delegation. 0.2.x, 1.0.0–1.0.3,
+Codex, an unreadable version, and a cache/unverified banner keep
 `readTextFile: true`. The handlers still exist (`fs/read_text_file`,
 `fs/write_text_file`, `terminal/{create,output,wait_for_exit,kill,release}`);
 `terminal` is a separate capability.

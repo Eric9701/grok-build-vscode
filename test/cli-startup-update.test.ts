@@ -118,6 +118,15 @@ describe("CLI startup compatibility", () => {
     expect(setMode).toContain("this.recheckPlanModeAvailability(session)");
   });
 
+  it("does not feed a cache stand-in into the initialize handshake", () => {
+    expect(sessionStart).toContain("grokVersionVerified = compatibility.planModeVersionVerified");
+    expect(sessionStart).toMatch(
+      /grokHandshakeVersion = grokVersionVerified\s*\?\s*compatibility\.cliVersion\s*:\s*undefined/,
+    );
+    expect(fullSessionStart).toContain("grokVersion: grokHandshakeVersion, grokVersionVerified");
+    expect(fullSessionStart).not.toMatch(/grokHandshakeVersion = compatibility\.cliVersion\s*;/);
+  });
+
   it("awaits the replaced process before the upgrade trigger can replace the binary", () => {
     const capture = fullSessionStart.indexOf("const replacedClient = session.client");
     const clear = fullSessionStart.indexOf("session.client = undefined", capture);
@@ -205,6 +214,17 @@ describe("planModeCompatibility cache substitute", () => {
       vi.useRealTimers();
     }
   }
+
+  it("timeout + cached 1.x stays unverified even when the number is at the image-read floor", async () => {
+    const sidebar = makeSidebar("", matchingCache("grok 1.0.4 (x) [stable]"));
+    const result = await runCompatibility(sidebar);
+    expect(result).toMatchObject({
+      planModeAvailable: true,
+      planModeVersionVerified: false,
+      usedCache: true,
+      cliVersion: "1.0.4",
+    });
+  });
 
   it("timeout + cached-good keeps Plan available and unverified", async () => {
     const sidebar = makeSidebar("", matchingCache("grok 0.2.117 (x) [stable]"));

@@ -246,17 +246,32 @@ describe("AcpClient.request timer lifecycle", () => {
 // `max` value, not reasoningEffort itself — grok accepts none|minimal|low|medium|
 // high|xhigh, and the flag must precede the `stdio` subcommand.
 // #79: grok's image-aware read_file only runs when we do not advertise
-// readTextFile. That workaround was measured on 1.0.4; apply it only there.
+// readTextFile. Measured on 1.0.4; only a live-verified banner at that
+// floor (no upper cap) may select the withheld handshake.
 describe("acpClientCapabilities", () => {
-  it("withholds readTextFile on grok 1.0.x", () => {
-    expect(acpClientCapabilities("grok", "1.0.4")).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
-    expect(acpClientCapabilities("grok", "grok 1.0.0 (abc) [stable]")).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
-    expect(acpClientCapabilities("grok", "1.1.0").fs).not.toHaveProperty("readTextFile");
+  it("withholds readTextFile on a live-verified grok at or above 1.0.4", () => {
+    expect(acpClientCapabilities("grok", "1.0.4", true)).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "grok 1.0.4 (abc) [stable]", true)).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "1.1.0", true).fs).not.toHaveProperty("readTextFile");
+    expect(acpClientCapabilities("grok", "2.0.0", true)).toEqual(ACP_IMAGE_READ_FS_CAPABILITIES);
+  });
+
+  it("keeps the delegated handshake on a live-verified grok 1.0.3", () => {
+    expect(acpClientCapabilities("grok", "1.0.3", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "grok 1.0.3 (x) [stable]", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "1.0.0", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+  });
+
+  it("keeps the delegated handshake for an unverified 1.x banner even when the number is at the floor", () => {
+    expect(acpClientCapabilities("grok", "1.0.4")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "1.0.4", false)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "grok 1.1.0 (x) [stable]")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "2.0.0", false)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
   });
 
   it("keeps the delegated handshake on grok 0.2.117", () => {
-    expect(acpClientCapabilities("grok", "0.2.117")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
-    expect(acpClientCapabilities("grok", "grok 0.2.117 (x) [stable]")).toEqual({
+    expect(acpClientCapabilities("grok", "0.2.117", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "grok 0.2.117 (x) [stable]", true)).toEqual({
       fs: { readTextFile: true, writeTextFile: true },
       terminal: true,
     });
@@ -264,14 +279,14 @@ describe("acpClientCapabilities", () => {
 
   it("keeps the delegated handshake for Codex", () => {
     expect(acpClientCapabilities("codex")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
-    expect(acpClientCapabilities("codex", "1.0.4")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("codex", "1.0.4", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
   });
 
   it("keeps the delegated handshake when the grok version is unknown", () => {
     expect(acpClientCapabilities("grok")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
     expect(acpClientCapabilities("grok", "")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
-    expect(acpClientCapabilities("grok", "unparseable")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
-    expect(acpClientCapabilities("grok", null)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", "unparseable", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+    expect(acpClientCapabilities("grok", null, true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
   });
 });
 

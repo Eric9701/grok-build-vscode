@@ -433,7 +433,11 @@ interface CliCompatibilityResult {
   planModeVersionVerified: boolean;
   /** True when Plan availability came from `grok.cliVersionCache`, not a live `--version`. */
   usedCache?: boolean;
-  /** Parseable `X.Y.Z` from this probe (live or cache). Absent when unknown. */
+  /**
+   * Parseable `X.Y.Z` from this probe (live or cache). Absent when unknown.
+   * Display / Plan only — initialize must not see this unless
+   * `planModeVersionVerified` is true.
+   */
   cliVersion?: string;
 }
 
@@ -5703,8 +5707,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * parseable below-floor banner sticks for the session. Retries once on
    * empty/unparseable output, then falls back to the last verified banner for
    * this binary when the file identity still matches. A cache hit keeps that
-   * availability and is never treated as verified. Performs no update or pool
-   * orchestration.
+   * availability and is never treated as verified — initialize must not use
+   * `cliVersion` unless `planModeVersionVerified` is true. Performs no update
+   * or pool orchestration.
    */
   private async planModeCompatibility(
     cliPath: string,
@@ -6228,6 +6233,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const versionAt = clock.now();
     let versionNote: string | undefined;
     let grokHandshakeVersion: string | undefined;
+    let grokVersionVerified = false;
     if (session.provider === "grok") {
       await this.maybeUpdateCliOnUpgrade(cliPath);
       if (gen !== session.gen) return undefined;
@@ -6236,7 +6242,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const compatibility = await this.planModeCompatibility(cliPath);
       if (gen !== session.gen) return undefined;
       if (compatibility.usedCache) versionNote = "cached";
-      grokHandshakeVersion = compatibility.cliVersion;
+      // initialize cannot be renegotiated; only a live probe may change the fs handshake.
+      grokVersionVerified = compatibility.planModeVersionVerified;
+      grokHandshakeVersion = grokVersionVerified
+        ? compatibility.cliVersion
+        : undefined;
       this.applyPlanModeCompatibility(session, compatibility);
     } else {
       session.planModeAvailable = true;
@@ -6279,14 +6289,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       log: (msg) => this.host.appendLine(msg),
       ...(session.provider === "codex"
         ? { backend: new CodexBackend() }
-        : { grokVersion: grokHandshakeVersion }),
+        : { grokVersion: grokHandshakeVersion, grokVersionVerified }),
     });
     session.client = client;
 
-    // fs handlers. Still wired on every session: 0.2.x and Codex advertise
-    // readTextFile and will call them. grok 1.x currently will not (withheld
-    // read → no client fs at all) but a later CLI may honour writeTextFile
-    // independently.
+    // fs handlers. Still wired on every session: 0.2.x, unverified, and Codex
+    // advertise readTextFile and will call them. A live-verified grok >= 1.0.4
+    // currently will not (withheld read → no client fs at all) but a later CLI
+    // may honour writeTextFile independently.
     client.fsRead = async (p: string) => {
       try {
         // Agent paths are genuine workspace disk paths on the extension host.
