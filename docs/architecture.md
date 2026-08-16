@@ -169,6 +169,59 @@ session provider (**Ask Grok…** / **Ask GPT…**). While a user turn is waitin
 same animated activity row says **Grokking…** for Grok or **Opening AI…** for
 Codex, then is replaced in place by the first thought / message / tool card.
 
+### One stdout chunk is dispatched synchronously — state raised after an `await` is too late
+
+`readline` emits a `line` event for **every** line in a chunk before the write
+returns, so two ACP messages that arrive together are handled in the same
+synchronous turn. Anything a handler sets *after* awaiting a response is
+therefore **not** in force when the next line is processed.
+
+This is not theoretical. It is how a `terminal/create` arriving in the same chunk
+as a `session/set_mode` success ran `rm -rf` with Plan mode's gate still down:
+the gate was raised after the await, one event-loop turn too late. The fix, and
+the pattern to copy, is the `onResolve` hook on `AcpClient.request(...)` — it
+runs **inside** `onLine`, after a successful response and before the promise
+resolves, so state committed there is visible to the very next line. See
+[Plan Mode](#plan-mode--provider-owned-review-grok-client-safety-gate).
+
+Whenever a decision depends on state a response is *about* to establish, commit
+it in that hook, not after the `await`. Tests must drive real line dispatch — a
+single `stdout.write` carrying both JSON lines — because a test that
+hand-sequences the two events cannot fail the way production does. Three review
+rounds missed this precisely because the tests sequenced by hand.
+
+### Session starts are serialized, and an abandoned send says so
+
+`startSession` bumps `session.gen`, and `handleSend` checks that generation
+after it has already emitted `userMessage`. A concurrent start therefore used to
+strand a send: the echo painted a bubble, any client reasonably read it as
+acceptance, and the guard then returned with no `agentEnd` and no `agentError`,
+so no reply ever came and nothing retried. Remote clients drop their retry record
+on that echo, so this was silent work loss.
+
+Two rules now hold:
+
+- **A post-echo bail reports itself.** `emitAbandonedSend` emits a generic
+  `error` (`INTERRUPTED_SEND_TEXT`), not `agentError` — after the generation
+  bump this `Session` *is* the replacement, and `agentError` would clear its
+  startup lock or a flushed follow-on turn. Cancel recovery emits its own
+  `agentError` first and sets `staleSendReported`, so an abandoned send is never
+  double-reported.
+- **Starts do not interleave with a live turn.** `runExclusiveSessionStart`
+  serializes starts per `Session`, and `handleSend` waits for that tail before
+  committing. `decideSessionStart` takes an intent: opportunistic callers —
+  desktop boot, `client-ready`, non-live `resumeSession` — pass `"ensure"`,
+  which refuses while a turn is in flight, reuses a matching ready client, and
+  never bumps `gen` over a live send. Deliberate restarts (cancel recovery, auth
+  recovery, model/effort changes) pass `"replace"`.
+
+The generation guard itself is correct and stays; the bug was the silent return.
+Note that an already-echoed send **cannot** be transparently replayed — the echo
+is in the session buffer, so a client-side retry duplicates the prompt. Visible
+and recoverable is the correct terminal outcome for that interleaving; it is not
+a substitute for delivering work queued while the host was down, which still
+arrives.
+
 ## The session pool (Agent Dashboard)
 
 The sidebar shows one conversation at a time, but it keeps a **pool of live
