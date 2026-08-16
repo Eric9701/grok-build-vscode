@@ -172,9 +172,9 @@ These actually spawn real shell children (real `/bin/sh`, or real PowerShell on 
 
 ### `test/plan-mode-transition.test.ts` — Plan chrome follows the RPC outcome
 
-Drives `GrokSidebar.setMode("plan")` against a stub client. A rejected `session/set_mode` must leave `planActive` down and keep the previous Auto-accept badge; a successful one must not raise the host chrome until the RPC returns. The same-chunk race — success reply plus a `terminal/create` in one stdout write — is pinned in `test/acp.test.ts` through the real readline dispatch, not by calling handlers directly.
+Drives `GrokSidebar.setMode("plan")` against a stub client. A rejected `session/set_mode` must leave `planActive` down and keep the previous Auto-accept badge; a successful one must not raise the host chrome until the RPC returns. The same-chunk race — success reply plus a `terminal/create` in one stdout write — is pinned in `test/acp.test.ts` through the real readline dispatch, not by calling handlers directly. Auto accept → Plan plus a same-chunk `session/request_permission` is pinned here through that same readline path: the permission must be rejected, not `allow_always`/`allow_once`, because a stale `session.planActive` read would still see `autoApprove` and grant.
 
-### `test/plan-gate.test.ts` — plan-mode policy (63 tests)
+### `test/plan-gate.test.ts` — plan-mode policy (68 tests)
 
 The pure heart of client-side plan enforcement. No spawn, no fs — just the classification logic the **three** choke points call (`fs/write_text_file`, `terminal/create`, and — since 2.1.1 — `session/request_permission`, which previously auto-declined every `execute` on tool kind alone).
 

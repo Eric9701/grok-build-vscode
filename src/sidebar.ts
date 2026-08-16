@@ -163,7 +163,7 @@ import {
   unreferencedUploadsForRemovedSessions,
 } from "./file-upload";
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
-import { applyAgentModeToHostPlan, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { applyAgentModeToHostPlan, effectivePlanActive, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import {
   planReviewFileName,
@@ -2280,6 +2280,83 @@ Only continue if you trust this code.`,
       ...overrides,
       [sid]: { ...cur, permissions },
     });
+  }
+
+  /**
+   * Decide a live `session/request_permission`. Grok reads the client gate
+   * (raised in the set_mode hook) so a same-chunk request cannot still see
+   * Auto accept; Codex/Claude keep the session flag and adapter enforcement.
+   */
+  private handlePermissionRequest(
+    session: Session,
+    client: AcpClient,
+    req: PermissionRequest,
+    cwd: string,
+  ): void {
+    const planActive = effectivePlanActive(
+      client.usesClientPlanGate,
+      client.planActive,
+      session.planActive,
+    );
+    // While planning, decline permissions for operations the same fs/terminal
+    // policy would block. A read-only execute request falls through to the
+    // ordinary permission prompt; Plan mode never grants permission itself.
+    if (client.usesClientPlanGate && planActive && shouldRejectPermission(req.toolCall, {
+      active: true,
+      workspaceRoot: cwd,
+      grokHome: resolveGrokHome(process.env),
+      shellDialect: resolvedTerminalShellDialect(),
+    })) {
+      const rejectId = pickRejectOption(req.options);
+      if (rejectId) {
+        client.respondPermission(req.id, rejectId);
+      } else {
+        client.respondPermissionCancelled(req.id);
+      }
+      const kind = String(req.toolCall?.kind || "tool").toLowerCase();
+      this.emit(session, {
+        type: "planNotice",
+        text: kind === "execute"
+          ? "Plan mode declined this command because it was not verified as safe to run while planning. Question-card answers are unaffected."
+          : `Plan mode declined this ${kind} request because workspace changes are blocked while planning. Question-card answers are unaffected.`,
+      });
+      return;
+    }
+    if (session.autoApprove && !planActive) {
+      const opt = req.options.find((o) => o.kind === "allow_always") ??
+                  req.options.find((o) => o.kind === "allow_once");
+      if (opt) { client.respondPermission(req.id, opt.optionId); return; }
+    }
+    // Remember it so the answer can be persisted for replay on resume.
+    const visibleOptions = permissionOptionsForPlan(
+      req.options ?? [],
+      planActive,
+      req.toolCall?.kind,
+    );
+    if (
+      planActive &&
+      String(req.toolCall?.kind ?? "").toLowerCase() === "execute" &&
+      visibleOptions.length === 0
+    ) {
+      client.respondPermissionCancelled(req.id);
+      this.emit(session, {
+        type: "planNotice",
+        text: "Plan mode declined this command because it offered no safe one-time or reject option.",
+      });
+      return;
+    }
+    session.pendingPermissions.set(req.id, createPendingPermission({
+      title: req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`,
+      toolCallId: req.toolCall?.toolCallId,
+      toolKind: req.toolCall?.kind,
+      options: (req.options ?? []).map((o) => ({
+        optionId: o.optionId,
+        kind: o.kind,
+        name: o.name,
+      })),
+    }));
+    this.emit(session, { type: "permissionRequest", req: { ...req, options: visibleOptions } });
+    this.setStatus(session, "needs-you");
   }
 
   /** Auto-approve every permission card currently awaiting the user (#64). Fired
@@ -6764,65 +6841,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     });
     client.on("permissionRequest", (req: PermissionRequest) => {
       if (gen !== session.gen) return;
-      // While planning, decline permissions for operations the same fs/terminal
-      // policy would block. A read-only execute request falls through to the
-      // ordinary permission prompt; Plan mode never grants permission itself.
-      if (client.usesClientPlanGate && session.planActive && shouldRejectPermission(req.toolCall, {
-        active: true,
-        workspaceRoot: cwd,
-        grokHome: resolveGrokHome(process.env),
-        shellDialect: resolvedTerminalShellDialect(),
-      })) {
-        const rejectId = pickRejectOption(req.options);
-        if (rejectId) {
-          client.respondPermission(req.id, rejectId);
-        } else {
-          client.respondPermissionCancelled(req.id);
-        }
-        const kind = String(req.toolCall?.kind || "tool").toLowerCase();
-        this.emit(session, {
-          type: "planNotice",
-          text: kind === "execute"
-            ? "Plan mode declined this command because it was not verified as safe to run while planning. Question-card answers are unaffected."
-            : `Plan mode declined this ${kind} request because workspace changes are blocked while planning. Question-card answers are unaffected.`,
-        });
-        return;
-      }
-      if (session.autoApprove) {
-        const opt = req.options.find((o) => o.kind === "allow_always") ??
-                    req.options.find((o) => o.kind === "allow_once");
-        if (opt) { client.respondPermission(req.id, opt.optionId); return; }
-      }
-      // Remember it so the answer can be persisted for replay on resume.
-      const visibleOptions = permissionOptionsForPlan(
-        req.options ?? [],
-        session.planActive,
-        req.toolCall?.kind,
-      );
-      if (
-        session.planActive &&
-        String(req.toolCall?.kind ?? "").toLowerCase() === "execute" &&
-        visibleOptions.length === 0
-      ) {
-        client.respondPermissionCancelled(req.id);
-        this.emit(session, {
-          type: "planNotice",
-          text: "Plan mode declined this command because it offered no safe one-time or reject option.",
-        });
-        return;
-      }
-      session.pendingPermissions.set(req.id, createPendingPermission({
-        title: req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`,
-        toolCallId: req.toolCall?.toolCallId,
-        toolKind: req.toolCall?.kind,
-        options: (req.options ?? []).map((o) => ({
-          optionId: o.optionId,
-          kind: o.kind,
-          name: o.name,
-        })),
-      }));
-      this.emit(session, { type: "permissionRequest", req: { ...req, options: visibleOptions } });
-      this.setStatus(session, "needs-you");
+      this.handlePermissionRequest(session, client, req, cwd);
     });
     client.on("mutationBlocked", (info: { kind: string; target: string }) => {
       if (gen !== session.gen) return;

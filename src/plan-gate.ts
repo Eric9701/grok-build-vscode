@@ -828,6 +828,23 @@ export function applyAgentModeToHostPlan(
   };
 }
 
+/**
+ * Live Plan bit for a permission decision.
+ *
+ * Grok commits the client gate in the `session/set_mode` response hook, before
+ * the next ACP line in that stdout chunk. Session chrome (`session.planActive`)
+ * and `autoApprove` still wait on the host await, so reading those here would
+ * auto-grant a same-chunk `request_permission`. Adapters without the client
+ * gate keep the host session flag — their Plan enforcement lives in the adapter.
+ */
+export function effectivePlanActive(
+  usesClientPlanGate: boolean,
+  clientPlanActive: boolean,
+  sessionPlanActive: boolean,
+): boolean {
+  return usesClientPlanGate ? clientPlanActive : sessionPlanActive;
+}
+
 export function permissionOptionsForPlan<T extends PermissionOptionLike>(
   options: T[],
   planActive: boolean,

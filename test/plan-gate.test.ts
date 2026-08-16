@@ -6,6 +6,7 @@ import {
   isReadOnlyCommand,
   isPlanFileWrite,
   applyAgentModeToHostPlan,
+  effectivePlanActive,
   permissionAnswerAllowed,
   permissionOptionsForPlan,
   pickRejectOption,
@@ -721,6 +722,18 @@ describe("applyAgentModeToHostPlan", () => {
     expect(applyAgentModeToHostPlan("acceptEdits", false)).toEqual({ planActive: false, autoApprove: true });
     expect(applyAgentModeToHostPlan("bypassPermissions", false)).toEqual({ planActive: false, autoApprove: true });
     expect(applyAgentModeToHostPlan("agent-full-access", false)).toEqual({ planActive: false, autoApprove: true });
+  });
+});
+
+describe("effectivePlanActive", () => {
+  it("reads the client gate for grok so a same-chunk Plan pick is already up", () => {
+    expect(effectivePlanActive(true, true, false)).toBe(true);
+    expect(effectivePlanActive(true, false, true)).toBe(false);
+  });
+
+  it("keeps the host session flag for adapters that do not use the client gate", () => {
+    expect(effectivePlanActive(false, true, false)).toBe(false);
+    expect(effectivePlanActive(false, false, true)).toBe(true);
   });
 });
 

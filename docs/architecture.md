@@ -288,7 +288,10 @@ cancel, or synthetic lifecycle.
   (`exit_plan_mode.planContent` arrives populated on 1.x; 0.2.117 still sends
   `null`); the plan.md snoop is a fallback. Entering plan mode *any* way —
   including the agent self-initiating it — raises the gate; only an explicit
-  user action lowers it.
+  user action lowers it. A grok user Plan pick commits `planActive` in the
+  `session/set_mode` response hook — after a successful reply, before the next
+  ACP line — so a same-chunk `terminal/create` or `session/request_permission`
+  still sees the gate. A rejected transition keeps the previous badge and gate.
 
 - **Verdict state and comments.** `handleExitPlan` settles all implementation-
   relevant state *before* releasing the blocked response. Approval restores the
@@ -346,10 +349,8 @@ plus Codex `config_option_update`) so the button cannot stay on Plan after an
 approved exit. Codex's effective mode is Plan when `collaboration_mode` is Plan
 and otherwise the permission `mode` (`codexEffectiveModeId`) — collaboration
 `default` is not flattened to Agent, because the adapter always reports
-`agent-full-access` on that same snapshot. A user Plan pick commits `planActive`
-in the `session/set_mode` response hook — after a successful reply, before the
-next ACP line — so a same-chunk `terminal/create` still sees the gate. A
-rejected transition keeps the previous badge and gate.
+`agent-full-access` on that same snapshot. Codex Plan is `session/set_config_option`,
+not grok's `session/set_mode` response hook — `usesClientPlanGate` stays false.
 
 The full pedagogical write-up lives in
 [research/understanding-plan-mode.md](../research/understanding-plan-mode.md).
