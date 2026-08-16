@@ -22,6 +22,7 @@ import {
   RELAY_DEVICE_TOKEN_SECRET,
   RELAY_URL_ENV,
   redactRelayUrl,
+  consumeInjectedDeviceToken,
   resolveInjectedDeviceToken,
   resolveRelayUrl,
   withInjectedSecret,
@@ -218,6 +219,39 @@ describe("resolveInjectedDeviceToken", () => {
   });
 });
 
+describe("consumeInjectedDeviceToken", () => {
+  it("deletes the env entry so later process.env copies cannot inherit it", () => {
+    const env: Record<string, string | undefined> = {
+      [RELAY_URL_ENV]: LOCAL,
+      [RELAY_DEVICE_TOKEN_ENV]: TOKEN,
+      PATH: "/bin",
+    };
+    const token = consumeInjectedDeviceToken({ isProduction: false, env });
+    expect(token).toBe(TOKEN);
+    expect(RELAY_DEVICE_TOKEN_ENV in env).toBe(false);
+    const inherited = { ...env };
+    expect(inherited[RELAY_DEVICE_TOKEN_ENV]).toBeUndefined();
+    expect(inherited.PATH).toBe("/bin");
+  });
+
+  it("still deletes the entry when the gate refuses the token", () => {
+    const env: Record<string, string | undefined> = {
+      [RELAY_DEVICE_TOKEN_ENV]: TOKEN,
+    };
+    expect(consumeInjectedDeviceToken({ isProduction: true, env })).toBeUndefined();
+    expect(RELAY_DEVICE_TOKEN_ENV in env).toBe(false);
+  });
+
+  it("does not change when the token is honoured versus refused", () => {
+    const honoured = consumeInjectedDeviceToken({
+      isProduction: false,
+      env: { ...both },
+    });
+    const refused = resolveInjectedDeviceToken({ isProduction: false, env: both });
+    expect(honoured).toBe(refused);
+  });
+});
+
 describe("withInjectedSecret", () => {
   it("is a no-op when the resolver returned undefined — no overlay, no uplink", () => {
     const get = vi.fn(async () => "stored");
@@ -243,17 +277,23 @@ describe("injected-token consumers", () => {
 
   it("desktop main is the only product consumer and gates on app.isPackaged", () => {
     const main = src(path.join("desktop", "main.ts"));
-    expect(main).toContain("resolveInjectedDeviceToken");
+    expect(main).toContain("consumeInjectedDeviceToken");
     expect(main).toMatch(/isProduction:\s*app\.isPackaged/);
     expect(main).toContain("withInjectedSecret");
     expect(main).toContain("RELAY_DEVICE_TOKEN_SECRET");
+    const consumeAt = main.indexOf("consumeInjectedDeviceToken({");
+    const sidebarAt = main.indexOf("new GrokSidebar(");
+    expect(consumeAt).toBeGreaterThan(0);
+    expect(sidebarAt).toBeGreaterThan(consumeAt);
     // VS Code never reads the env token — ExtensionMode.Production has no
     // overlay, and Development/Test still start the uplink from SecretStorage.
     const sidebar = src("sidebar.ts");
     expect(sidebar).not.toContain("resolveInjectedDeviceToken");
+    expect(sidebar).not.toContain("consumeInjectedDeviceToken");
     expect(sidebar).not.toContain("RELAY_DEVICE_TOKEN_ENV");
     expect(sidebar).not.toContain("GROK_RELAY_DEVICE_TOKEN");
     expect(src("vscode-host.ts")).not.toContain("resolveInjectedDeviceToken");
+    expect(src("vscode-host.ts")).not.toContain("consumeInjectedDeviceToken");
   });
 
   it("keeps the SecretStorage key in one place", () => {

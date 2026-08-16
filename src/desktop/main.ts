@@ -55,7 +55,7 @@ import { createSafeStorageSecrets } from "./safe-secrets";
 import {
   RELAY_DEVICE_TOKEN_ENV,
   RELAY_DEVICE_TOKEN_SECRET,
-  resolveInjectedDeviceToken,
+  consumeInjectedDeviceToken,
   withInjectedSecret,
 } from "../remote-frames";
 import {
@@ -337,11 +337,13 @@ async function createApp(): Promise<void> {
     path.join(userData, "secrets.enc.json"),
     safeStorage,
   );
-  const injectedToken = resolveInjectedDeviceToken({
+  // Capture then delete — sidebar copies process.env into every ACP spawn.
+  const envTokenPresent = !!process.env[RELAY_DEVICE_TOKEN_ENV];
+  const injectedToken = consumeInjectedDeviceToken({
     isProduction: app.isPackaged,
     env: process.env,
   });
-  if (process.env[RELAY_DEVICE_TOKEN_ENV] && !injectedToken) {
+  if (envTokenPresent && !injectedToken) {
     log("ignoring GROK_RELAY_DEVICE_TOKEN (production build or relay URL not overridden)");
   } else if (injectedToken) {
     log("using injected development device token (relay URL override active)");

@@ -462,6 +462,66 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     }
   });
 
+  it("unique mode: two ACP processes mint distinct session ids", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const extra = new AcpClient({
+        cliPath: fixtureCli(),
+        cwd: workspace,
+        env: {
+          ...process.env,
+          GROK_HOME: path.join(planHome, ".grok"),
+          FAKE_WORKSPACE_ROOT: workspace,
+          FAKE_UNIQUE_SESSION_IDS: "1",
+        },
+        log: () => {},
+      });
+      try {
+        await extra.start();
+        const created = await extra.newSession();
+        ids.push(created.sessionId);
+      } finally {
+        extra.dispose();
+      }
+    }
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toMatch(/^fake-session-\d+-1$/);
+    expect(ids[1]).toMatch(/^fake-session-\d+-1$/);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it("session/load: later notifications keep the loaded id, not a pid-derived one", async () => {
+    const resumeId = "kept-across-restart";
+    const dir = path.join(planHome, ".grok", "sessions", encodeURIComponent(workspace), resumeId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ session_id: resumeId }));
+
+    const resumeClient = new AcpClient({
+      cliPath: fixtureCli(),
+      cwd: workspace,
+      env: {
+        ...process.env,
+        GROK_HOME: path.join(planHome, ".grok"),
+        FAKE_WORKSPACE_ROOT: workspace,
+        FAKE_UNIQUE_SESSION_IDS: "1",
+      },
+      log: () => {},
+    });
+    const echoes: string[] = [];
+    resumeClient.on("userMessageChunk", (t: string) => echoes.push(t));
+    try {
+      await resumeClient.start();
+      const loaded = await resumeClient.loadSession(resumeId);
+      expect(loaded.sessionId).toBe(resumeId);
+      await resumeClient.prompt("hello after load");
+      // isForeignSessionUpdate drops chunks whose sessionId is not the loaded
+      // one — a pid-derived constant after restart would make this silent.
+      expect(echoes).toContain("hello after load");
+    } finally {
+      resumeClient.dispose();
+    }
+  });
+
   it("a write to a non-writable stdin is skipped, not attempted", () => {
     let called = false;
     (client as any).proc.stdin = {

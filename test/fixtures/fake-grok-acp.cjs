@@ -5,6 +5,9 @@
 //     session/prompt, session/cancel  (client → server)
 //   - session/load reads GROK_HOME/sessions/<encoded-cwd>/<id>/{updates,chat_history}.jsonl
 //     and streams those as session/update replay before the RPC result
+//   - session/new mints a unique id when FAKE_UNIQUE_SESSION_IDS=1 (or
+//     FAKE_SESSION_ID_FROM_PID=1); session/load updates the active id so
+//     later notifications refer to the session that was actually loaded
 //   - fs/write_text_file, terminal/create, x.ai/exit_plan_mode,
 //     x.ai/ask_user_question  (server → client)
 //   - session/update notifications (agent_message_chunk, and a user_message_chunk
@@ -69,9 +72,8 @@ function callClient(method, params) {
   });
 }
 
-const SESSION_ID = process.env.FAKE_SESSION_ID_FROM_PID === "1"
-  ? `fake-session-${process.pid}`
-  : "fake-session-1";
+const { createFakeSessionState } = require("./fake-session-state.cjs");
+const sessions = createFakeSessionState({ env: process.env });
 const PLAN_PATH = process.env.FAKE_PLAN_PATH || "/tmp/fake-grok-home/.grok/sessions/cwd-x/sess-y/plan.md";
 const WORKSPACE_FILE = (process.env.FAKE_WORKSPACE_ROOT || "/tmp/fake-workspace") + "/file.ts";
 const RELATIVE_WORKSPACE_FILE = "relative-file.ts";
@@ -202,18 +204,19 @@ rl.on("line", async (line) => {
     case "initialize":
       process.stderr.write(`INITIALIZE_CAPS: ${JSON.stringify(params && params.clientCapabilities)}\n`);
       return respondOk(id, { protocolVersion: 1, serverCapabilities: {} });
-    case "session/new":
-      persistNewSession(SESSION_ID, params?.cwd);
-      return respondOk(id, sessionHandle(SESSION_ID));
+    case "session/new": {
+      const sid = sessions.onNew();
+      persistNewSession(sid, params?.cwd);
+      return respondOk(id, sessionHandle(sid));
+    }
     case "session/load": {
       // Resume must honor the requested id and replay whatever the host
       // already wrote under GROK_HOME (the integration fixture's
       // writeStoredSession / updates.jsonl, else chat_history.jsonl). Missing
       // files are an empty conversation, not an error — same as a brand-new
-      // on-disk session.
-      const sid = typeof params?.sessionId === "string" && params.sessionId
-        ? params.sessionId
-        : SESSION_ID;
+      // on-disk session. Later notifications use this same id — a pid-derived
+      // constant would be a different conversation after a host restart.
+      const sid = sessions.onLoad(params?.sessionId);
       replayStoredSession(sid, params?.cwd);
       return respondOk(id, sessionHandle(sid));
     }
@@ -227,7 +230,7 @@ rl.on("line", async (line) => {
       const eff = params._meta && params._meta.reasoningEffort;
       if (eff) {
         notify("_x.ai/session_notification", {
-          sessionId: SESSION_ID,
+          sessionId: sessions.id,
           update: { sessionUpdate: "model_changed", model_id: params.modelId, reasoning_effort: eff },
         });
       }
@@ -274,7 +277,7 @@ async function runScenario(promptId, text, params) {
     // starts working (0.2.3 did not). Model it on EVERY prompt so the host's
     // replay-only de-dup is faithfully exercised by the whole integration suite
     // — the regression that doubled every sent message lived exactly here.
-    notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "user_message_chunk", content: { type: "text", text } } });
+    notify("session/update", { sessionId: sessions.id, update: { sessionUpdate: "user_message_chunk", content: { type: "text", text } } });
 
     if (text.includes("SCENARIO_VISION_ECHO")) {
       // Echo what vision payload actually crossed the wire, so the test can
@@ -283,7 +286,7 @@ async function runScenario(promptId, text, params) {
       const imgs = (params?.prompt ?? []).filter((b) => b && b.type === "image");
       const ok = imgs.every((b) => typeof b.data === "string" && b.data.length > 0);
       const summary = `vision:${imgs.length}:${imgs.map((b) => b.mimeType).join(",")}:${ok}`;
-      notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: summary } } });
+      notify("session/update", { sessionId: sessions.id, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: summary } } });
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 5 } });
       return;
     }
@@ -291,11 +294,11 @@ async function runScenario(promptId, text, params) {
     if (text.includes("SCENARIO_PROPOSE_PLAN")) {
       // 1. Write to grok's own plan.md (outside the workspace — should be allowed).
       const planText = "# TEST PLAN\n\nStep 1\nStep 2";
-      const writeResp = await callClient("fs/write_text_file", { sessionId: SESSION_ID, path: PLAN_PATH, content: planText });
+      const writeResp = await callClient("fs/write_text_file", { sessionId: sessions.id, path: PLAN_PATH, content: planText });
       // 2. Send exit_plan_mode with planContent: null (matches grok 0.2.3 behavior).
-      const exitResp = await callClient("x.ai/exit_plan_mode", { sessionId: SESSION_ID, planContent: null });
+      const exitResp = await callClient("x.ai/exit_plan_mode", { sessionId: sessions.id, planContent: null });
       // 3. End the turn whichever way the host replied.
-      notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "(plan turn end)" } } });
+      notify("session/update", { sessionId: sessions.id, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "(plan turn end)" } } });
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 100 } });
       // Stash the exit response on stderr so the test can inspect what the host sent back.
       process.stderr.write(`EXIT_RESPONSE: ${JSON.stringify(exitResp)}\n`);
@@ -303,35 +306,35 @@ async function runScenario(promptId, text, params) {
     }
 
     if (text.includes("SCENARIO_WORKSPACE_WRITE")) {
-      const writeResp = await callClient("fs/write_text_file", { sessionId: SESSION_ID, path: WORKSPACE_FILE, content: "// new file" });
+      const writeResp = await callClient("fs/write_text_file", { sessionId: sessions.id, path: WORKSPACE_FILE, content: "// new file" });
       process.stderr.write(`WRITE_RESPONSE: ${JSON.stringify(writeResp)}\n`);
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 50 } });
       return;
     }
 
     if (text.includes("SCENARIO_RELATIVE_WORKSPACE_WRITE")) {
-      const writeResp = await callClient("fs/write_text_file", { sessionId: SESSION_ID, path: RELATIVE_WORKSPACE_FILE, content: "// relative file" });
+      const writeResp = await callClient("fs/write_text_file", { sessionId: sessions.id, path: RELATIVE_WORKSPACE_FILE, content: "// relative file" });
       process.stderr.write(`WRITE_RESPONSE: ${JSON.stringify(writeResp)}\n`);
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 50 } });
       return;
     }
 
     if (text.includes("SCENARIO_MUTATING_TERMINAL")) {
-      const termResp = await callClient("terminal/create", { sessionId: SESSION_ID, command: "rm -rf /tmp/foo" });
+      const termResp = await callClient("terminal/create", { sessionId: sessions.id, command: "rm -rf /tmp/foo" });
       process.stderr.write(`TERMINAL_RESPONSE: ${JSON.stringify(termResp)}\n`);
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 50 } });
       return;
     }
 
     if (text.includes("SCENARIO_MUTATING_READONLY_HEAD_TERMINAL")) {
-      const termResp = await callClient("terminal/create", { sessionId: SESSION_ID, command: "sed -i s/a/b/ file.ts" });
+      const termResp = await callClient("terminal/create", { sessionId: sessions.id, command: "sed -i s/a/b/ file.ts" });
       process.stderr.write(`TERMINAL_RESPONSE: ${JSON.stringify(termResp)}\n`);
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 50 } });
       return;
     }
 
     if (text.includes("SCENARIO_READONLY_TERMINAL")) {
-      const termResp = await callClient("terminal/create", { sessionId: SESSION_ID, command: "ls -la" });
+      const termResp = await callClient("terminal/create", { sessionId: sessions.id, command: "ls -la" });
       process.stderr.write(`TERMINAL_RESPONSE: ${JSON.stringify(termResp)}\n`);
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 50 } });
       return;
@@ -339,7 +342,7 @@ async function runScenario(promptId, text, params) {
 
     if (text.includes("SCENARIO_ASK_QUESTION")) {
       const askResp = await callClient("x.ai/ask_user_question", {
-        sessionId: SESSION_ID,
+        sessionId: sessions.id,
         questions: [{
           question: "Pick one?",
           options: [{ label: "Option A", description: "first" }, { label: "Option B" }],
@@ -358,16 +361,16 @@ async function runScenario(promptId, text, params) {
       // (stripped host-side). Shape captured from grok 0.2.101
       // (research/oss-surfaces-probe.cjs).
       notify("_x.ai/session_notification", {
-        sessionId: SESSION_ID,
+        sessionId: sessions.id,
         update: { sessionUpdate: "auto_compact_completed", tokens_before: 20000, tokens_after: 12345, summary_preview: null },
       });
-      notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "(compacted)" } } });
+      notify("session/update", { sessionId: sessions.id, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "(compacted)" } } });
       respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 0 } });
       return;
     }
 
     // Default: just emit one chunk and end.
-    notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } });
+    notify("session/update", { sessionId: sessions.id, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } });
     respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 10 } });
   } catch (e) {
     process.stderr.write(`SCENARIO_ERROR: ${e.message}\n`);

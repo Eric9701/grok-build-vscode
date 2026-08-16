@@ -35,8 +35,10 @@ lifecycle suite (real relay + real browser + real host + a host restart). The
 relay repo's orchestrator spawns it as a child. Contract: `GROK_RELAY_URL`,
 `GROK_RELAY_DEVICE_TOKEN`, `GROK_HOME`, and `GROK_LIFECYCLE_WORKSPACES`
 (OS-delimited paths, or a JSON array; two folders for repo switching). It
-prints `GROK_LIFECYCLE_HOST_READY` on stdout once the uplink is connected,
-then idles until killed. A production build never honours the injected token
+prints `GROK_LIFECYCLE_HOST_READY` on stdout once the relay admits the host
+(`clients` frame — not the local socket `open`), then idles until it reads
+`GROK_LIFECYCLE_HOST_SHUTDOWN` on stdin (SIGINT/SIGTERM remain a fallback).
+A production build never honours the injected token
 (`resolveInjectedDeviceToken`). Linux CI: `xvfb-run npm run e2e:lifecycle-host`.
 Details live in the header of `scripts/lifecycle-host.mjs`.
 

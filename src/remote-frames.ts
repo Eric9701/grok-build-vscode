@@ -456,6 +456,23 @@ export function resolveInjectedDeviceToken(opts: {
 }
 
 /**
+ * Read {@link resolveInjectedDeviceToken}, then drop the env entry.
+ *
+ * Desktop `buildEnv` and every `{...process.env}` spawn copy inherit the
+ * process environment. Leaving the token there would leak a credential that
+ * used to live only in SecretStorage into the agent binary and any command
+ * it runs. The in-memory overlay already holds the value.
+ */
+export function consumeInjectedDeviceToken(opts: {
+  isProduction: boolean;
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+}): string | undefined {
+  const token = resolveInjectedDeviceToken(opts);
+  delete opts.env[RELAY_DEVICE_TOKEN_ENV];
+  return token;
+}
+
+/**
  * Overlay one SecretStorage key. `undefined` / empty returns `get` unchanged
  * so a production build — whose resolver already returned `undefined` —
  * cannot grow an overlay by accident.

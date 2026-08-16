@@ -3,9 +3,10 @@
 //
 // Part 2 (the relay repo) spawns this as a child and drives everything else
 // through a real browser against a real relay. This process is a participant:
-// boot the shipped desktop host, wait until the uplink is actually connected,
-// print one ready line, then idle until killed. A restart is the orchestrator
-// killing us and spawning us again with the same GROK_HOME + token.
+// boot the shipped desktop host, wait until the relay admits this host,
+// print one ready line, then idle until told to stop. A restart is the
+// orchestrator shutting us down and spawning us again with the same
+// GROK_HOME + token.
 //
 //   npm --prefix <this repo> run e2e:lifecycle-host
 //
@@ -19,9 +20,26 @@
 //                               the value trims to `[…`. Repo switching needs
 //                               two distinct folders; one is enough to boot.
 //   GROK_LIFECYCLE_READY_MS     optional ready timeout, default 60000
+//   GROK_LIFECYCLE_SHUTDOWN_MS  optional Electron-exit wait, default 10000
 //
 // Ready line (stdout, once, greppable):
 //   GROK_LIFECYCLE_HOST_READY
+//
+// Printed only after the relay admits this host. The local WebSocket `open`
+// event is not enough — the relay upgrades first and may then reject (bad
+// or revoked token, duplicate host / close 4002). The `clients` frame is
+// the first post-admission signal we log (`[remote] relay clients:`).
+//
+// Shutdown (stdin, one line — the reliable path; SIGINT/SIGTERM remain as
+// a fallback). After this token we kill Electron, wait for its actual
+// exit, then exit ourselves:
+//   GROK_LIFECYCLE_HOST_SHUTDOWN
+//
+// Bounded wait: GROK_LIFECYCLE_SHUTDOWN_MS, then a force kill, then a
+// short extra wait. If Electron is still alive we exit 2 rather than hang
+// or claim a restart that never happened. `npm run` owns this process and
+// Electron is its grandchild; a signal to npm does not reliably reach us
+// (POSIX grandchildren survive; Windows ChildProcess.kill is uncatchable).
 //
 // Why desktop, not @vscode/test-electron: the contract is "boot and idle
 // until killed", which is Electron's natural shape. vscode-test is "run a
@@ -32,23 +50,34 @@
 // Token injection cannot be a Node pre-seed of SecretStorage — desktop
 // ciphertext is OS-keyed. The env token is honoured only by
 // resolveInjectedDeviceToken (production + un-overridden URL ⇒ no token,
-// no overlay, no uplink). A packaged build never accepts it.
+// no overlay, no uplink). A packaged build never accepts it. Desktop main
+// consumes the env entry after capture so ACP children do not inherit it;
+// this wrapper still forwards the variable into Electron so a restart
+// (fresh process + same orchestrator env) can read it again.
 //
 // Fake ACP: grok.cliPath → test/fixtures/fake-grok-acp.{cmd,sh}. A configured
 // path is never followed by a PATH search (locateGrokCli), so an installed
-// grok cannot leak in.
+// grok cannot leak in. FAKE_UNIQUE_SESSION_IDS is set so two workspaces
+// cannot share fake-session-1 (the host looks up by id before cwd).
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
 export const LIFECYCLE_HOST_READY_LINE = "GROK_LIFECYCLE_HOST_READY";
+export const LIFECYCLE_HOST_SHUTDOWN_LINE = "GROK_LIFECYCLE_HOST_SHUTDOWN";
+export const LIFECYCLE_HOST_SHUTDOWN_STUCK_CODE = 2;
 export const LIFECYCLE_WORKSPACES_ENV = "GROK_LIFECYCLE_WORKSPACES";
-export const UPLINK_CONNECTED_NEEDLE = "[remote] uplink connected";
+export const FAKE_UNIQUE_SESSION_IDS_ENV = "FAKE_UNIQUE_SESSION_IDS";
+/** First post-admission log line from RemoteUplink's `clients` frame. */
+export const UPLINK_ADMITTED_NEEDLE = "[remote] relay clients:";
+export const DEFAULT_SHUTDOWN_MS = 10_000;
+export const DEFAULT_FORCE_WAIT_MS = 2_000;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -75,6 +104,133 @@ export function parseLifecycleWorkspaces(
     return parsed.map((p) => String(p).trim()).filter(Boolean);
   }
   return trimmed.split(delimiter).map((p) => p.trim()).filter(Boolean);
+}
+
+export function isLifecycleShutdownLine(line) {
+  return String(line).trim() === LIFECYCLE_HOST_SHUTDOWN_LINE;
+}
+
+/** Env handed to Electron. Must keep the token — main consumes it. */
+export function lifecycleChildEnv(envIn, { grokHome, userData }) {
+  const env = { ...envIn };
+  delete env.ELECTRON_RUN_AS_NODE;
+  env.GROK_HOME = path.resolve(grokHome);
+  env.NODE_ENV = "test";
+  env.GROK_DESKTOP_TEST_ALLOW_MULTIPLE = "1";
+  env.GROK_DESKTOP_USER_DATA = userData;
+  env[FAKE_UNIQUE_SESSION_IDS_ENV] = "1";
+  return env;
+}
+
+export function createReadyScanner(needle, onReady) {
+  let ready = false;
+  let carry = "";
+  return {
+    get ready() {
+      return ready;
+    },
+    push(text) {
+      const combined = carry + String(text);
+      if (!ready && combined.includes(needle)) {
+        ready = true;
+        onReady();
+      }
+      carry = combined.slice(-needle.length);
+    },
+  };
+}
+
+export function attachStdinShutdown(stdin, onShutdown) {
+  if (!stdin || typeof stdin.on !== "function") return () => {};
+  if (stdin.readableEnded || stdin.destroyed) return () => {};
+  let rl;
+  try {
+    rl = createInterface({ input: stdin });
+  } catch {
+    return () => {};
+  }
+  const onLine = (line) => {
+    if (isLifecycleShutdownLine(line)) onShutdown();
+  };
+  rl.on("line", onLine);
+  return () => {
+    rl.off("line", onLine);
+    try {
+      rl.close();
+    } catch {
+      /* already closed */
+    }
+  };
+}
+
+function requestSoftKill(child) {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    /* already gone */
+  }
+}
+
+function requestHardKill(child) {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  if (process.platform === "win32" && child.pid) {
+    spawn("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Kill the child and resolve only after it actually exits — or we give up. */
+export function terminateAndWait(child, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_SHUTDOWN_MS;
+  const forceWaitMs = opts.forceWaitMs ?? DEFAULT_FORCE_WAIT_MS;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(softTimer);
+      clearTimeout(hardTimer);
+      resolve(result);
+    };
+    if (!child || child.exitCode != null || child.signalCode != null) {
+      finish({
+        timedOut: false,
+        code: child?.exitCode ?? 0,
+        signal: child?.signalCode ?? null,
+      });
+      return;
+    }
+    child.once("exit", (code, signal) => {
+      finish({ timedOut: false, code, signal });
+    });
+    requestSoftKill(child);
+    const softTimer = setTimeout(() => {
+      requestHardKill(child);
+    }, timeoutMs);
+    const hardTimer = setTimeout(() => {
+      finish({
+        timedOut: true,
+        code: child.exitCode,
+        signal: child.signalCode,
+      });
+    }, timeoutMs + forceWaitMs);
+  });
 }
 
 function resolveFakeCli() {
@@ -118,22 +274,6 @@ function ensureSessionCatalogs(grokHome, workspaces) {
   for (const cwd of workspaces) {
     const dir = path.join(grokHome, "sessions", encodeURIComponent(path.resolve(cwd)));
     fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function killTree(child) {
-  if (!child || child.killed || child.exitCode != null) return;
-  if (process.platform === "win32" && child.pid) {
-    spawn("taskkill", ["/T", "/F", "/PID", String(child.pid)], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    return;
-  }
-  try {
-    child.kill("SIGTERM");
-  } catch {
-    /* already gone */
   }
 }
 
@@ -199,13 +339,7 @@ export async function runLifecycleHost(opts) {
   const configJson = writeProfile(userData, workspaces, fakeCli);
   ensureSessionCatalogs(path.resolve(grokHome), workspaces);
 
-  const env = { ...envIn };
-  delete env.ELECTRON_RUN_AS_NODE;
-  env.GROK_HOME = path.resolve(grokHome);
-  env.NODE_ENV = "test";
-  env.GROK_DESKTOP_TEST_ALLOW_MULTIPLE = "1";
-  // Isolate from a developer instance that might hold the same branded profile.
-  env.GROK_DESKTOP_USER_DATA = userData;
+  const env = lifecycleChildEnv(envIn, { grokHome, userData });
 
   const child = spawn(
     electronExe,
@@ -223,58 +357,85 @@ export async function runLifecycleHost(opts) {
   );
 
   const readyMs = Number(envIn.GROK_LIFECYCLE_READY_MS) || 60_000;
+  const shutdownMs = Number(envIn.GROK_LIFECYCLE_SHUTDOWN_MS) || DEFAULT_SHUTDOWN_MS;
   let ready = false;
   let finished = false;
-  let carry = "";
+  let shuttingDown = false;
 
+  const scanner = createReadyScanner(UPLINK_ADMITTED_NEEDLE, () => {
+    ready = true;
+    process.stdout.write(`${LIFECYCLE_HOST_READY_LINE}\n`);
+  });
   const scan = (buf, stream) => {
     const text = buf.toString("utf8");
     stream.write(text);
-    const combined = carry + text;
-    if (!ready && combined.includes(UPLINK_CONNECTED_NEEDLE)) {
-      ready = true;
-      process.stdout.write(`${LIFECYCLE_HOST_READY_LINE}\n`);
-    }
-    carry = combined.slice(-UPLINK_CONNECTED_NEEDLE.length);
+    scanner.push(text);
   };
   child.stdout.on("data", (buf) => scan(buf, process.stdout));
   child.stderr.on("data", (buf) => scan(buf, process.stderr));
 
   return await new Promise((resolve, reject) => {
+    let detachStdin = () => {};
     const done = (err, code) => {
       if (finished) return;
       finished = true;
       clearTimeout(readyTimer);
-      process.removeListener("SIGINT", shutdown);
-      process.removeListener("SIGTERM", shutdown);
+      process.removeListener("SIGINT", onSignal);
+      process.removeListener("SIGTERM", onSignal);
+      detachStdin();
       if (err) reject(err);
       else resolve(code ?? 0);
     };
     const readyTimer = setTimeout(() => {
-      killTree(child);
-      done(
-        new Error(
-          `uplink did not connect within ${readyMs}ms ` +
-            `(relay ${redactRelayUrl(envIn[RELAY_URL_ENV] || "")})`,
-        ),
-      );
+      void beginShutdown().then(() => {
+        done(
+          new Error(
+            `relay did not admit this host within ${readyMs}ms ` +
+              `(relay ${redactRelayUrl(envIn[RELAY_URL_ENV] || "")})`,
+          ),
+        );
+      });
     }, readyMs);
-    const shutdown = () => {
-      killTree(child);
+    const beginShutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      const result = await terminateAndWait(child, { timeoutMs: shutdownMs });
+      return result;
     };
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    const shutdown = () => {
+      void beginShutdown().then((result) => {
+        if (result?.timedOut) {
+          done(undefined, LIFECYCLE_HOST_SHUTDOWN_STUCK_CODE);
+          return;
+        }
+        if (!ready) {
+          done(
+            new Error(
+              `host exited before relay admitted it (code ${result?.code}, signal ${result?.signal})`,
+            ),
+          );
+          return;
+        }
+        done(undefined, 0);
+      });
+    };
+    const onSignal = () => {
+      shutdown();
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+    detachStdin = attachStdinShutdown(opts.stdin ?? process.stdin, shutdown);
     child.once("error", (err) => done(err));
     child.once("exit", (code, signal) => {
+      if (shuttingDown) return;
       if (!ready) {
         done(
           new Error(
-            `host exited before uplink connected (code ${code}, signal ${signal})`,
+            `host exited before relay admitted it (code ${code}, signal ${signal})`,
           ),
         );
         return;
       }
-      // Orchestrator kill after ready is the expected end of a run.
       done(undefined, 0);
     });
   });
