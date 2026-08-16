@@ -286,6 +286,44 @@ describe("AcpClient Plan terminal environment", () => {
       stdout.destroy();
     }
   });
+
+  it("does not block a same-chunk terminal/create for Codex after Plan is accepted", async () => {
+    const { client, written } = clientWithFakeProc({ backend: new CodexBackend() });
+    const create = vi.fn(() => ({ terminalId: "t-1" }));
+    const blocked: Array<{ kind: string; target: string }> = [];
+    (client as any).sessionId = "session-1";
+    (client as any).terminal = { create };
+    client.on("mutationBlocked", (v) => blocked.push(v));
+
+    const stdout = new PassThrough();
+    const rl = createInterface({ input: stdout });
+    rl.on("line", (line) => (client as any).onLine(line));
+
+    try {
+      const pending = client.setMode("plan");
+      const req = JSON.parse(written[0]);
+      expect(req.method).toBe("session/set_config_option");
+
+      stdout.write(
+        JSON.stringify({ jsonrpc: "2.0", id: req.id, result: {} }) + "\n" +
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 99,
+          method: "terminal/create",
+          params: { command: "rm -rf /tmp/x" },
+        }) + "\n",
+      );
+
+      await pending;
+      expect(client.planActive).toBe(true);
+      expect(client.usesClientPlanGate).toBe(false);
+      expect(create).toHaveBeenCalledWith({ command: "rm -rf /tmp/x" });
+      expect(blocked).toEqual([]);
+    } finally {
+      rl.close();
+      stdout.destroy();
+    }
+  });
 });
 
 describe("AcpClient.request timer lifecycle", () => {

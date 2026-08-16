@@ -340,17 +340,20 @@ cancel, or synthetic lifecycle.
   mechanism.
 
 Codex plan review follows a different wire path: it is a normal
-`session/request_permission` whose tool kind is `switch_mode`. The host renders
-the ordinary permission card and returns the selected option. `CodexBackend`
-reports `usesClientPlanGate = false`, so none of the Grok filesystem/terminal
+`session/request_permission` whose tool kind is `switch_mode` and whose
+`allow_once` means "implement this plan". The host renders the ordinary
+permission card and returns the selected option. `CodexBackend` reports
+`usesClientPlanGate = false`, so none of the Grok filesystem/terminal
 gate, plan-file snooping, or `x.ai/exit_plan_mode` verdict machinery is attached.
-Their Plan/Agent chrome still follows the agent's mode (`applyAgentModeToHostPlan`,
-plus Codex `config_option_update`) so the button cannot stay on Plan after an
-approved exit. Codex's effective mode is Plan when `collaboration_mode` is Plan
+A successful Plan `session/set_config_option` still raises `client.planActive`
+in the response hook so Auto accept cannot grant that review (or any other
+same-chunk permission) before the host await continues. Their Plan/Agent chrome
+still follows the agent's mode (`applyAgentModeToHostPlan`, plus Codex
+`config_option_update`) so the button cannot stay on Plan after an approved
+exit. Codex's effective mode is Plan when `collaboration_mode` is Plan
 and otherwise the permission `mode` (`codexEffectiveModeId`) — collaboration
 `default` is not flattened to Agent, because the adapter always reports
-`agent-full-access` on that same snapshot. Codex Plan is `session/set_config_option`,
-not grok's `session/set_mode` response hook — `usesClientPlanGate` stays false.
+`agent-full-access` on that same snapshot.
 
 The full pedagogical write-up lives in
 [research/understanding-plan-mode.md](../research/understanding-plan-mode.md).

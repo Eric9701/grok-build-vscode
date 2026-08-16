@@ -280,12 +280,10 @@ export class AcpClient extends EventEmitter {
   private terminalCommands = new Map<string, string>();
 
   /**
-   * Client-enforced plan gate. While true, mutating shell commands are refused
-   * at `terminal/create`, and workspace writes are refused at
-   * `fs/write_text_file` when those writes are actually delegated — see
-   * `plan-gate.ts`. The host toggles this, and a successful `session/set_mode`
-   * to plan also commits it in the response hook so a later line in the same
-   * stdout chunk already sees the gate. The CLI's own plan mode is advisory.
+   * Plan-accepted bit used by permission handling (`effectivePlanActive`).
+   * For grok (`usesClientPlanGate`) it is also the fs/terminal safety gate.
+   * A successful Plan RPC commits it in the response hook so a later line
+   * in the same stdout chunk already sees Plan.
    */
   planActive = false;
 
@@ -557,9 +555,13 @@ export class AcpClient extends EventEmitter {
     const call = this.backend.setMode(this.sessionId, modeId);
     const res = await this.request(call.method, call.params, () => {
       // The host still raises session chrome after this await. readline can
-      // deliver a later ACP line in this same turn, so the client gate has
-      // to land here — after a successful reply, before the next onLine.
-      if (this.usesClientPlanGate && modeId === "plan") this.planActive = true;
+      // deliver a later ACP line in this same turn, so the Plan-accepted bit
+      // has to land here — after a successful reply, before the next onLine.
+      // Grok needs the fs/terminal gate up; Codex/Claude need the same bit so
+      // Auto accept cannot grant a same-chunk request_permission (plan review
+      // is one). usesClientPlanGate still decides whether writes/terminals
+      // are blocked.
+      if (modeId === "plan") this.planActive = true;
     });
     const state = this.backend.configState(res, {
       modelId: this.currentModelId,

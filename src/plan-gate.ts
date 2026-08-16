@@ -834,15 +834,22 @@ export function applyAgentModeToHostPlan(
  * Grok commits the client gate in the `session/set_mode` response hook, before
  * the next ACP line in that stdout chunk. Session chrome (`session.planActive`)
  * and `autoApprove` still wait on the host await, so reading those here would
- * auto-grant a same-chunk `request_permission`. Adapters without the client
- * gate keep the host session flag — their Plan enforcement lives in the adapter.
+ * auto-grant a same-chunk `request_permission`.
+ *
+ * Adapters without the fs/terminal gate still raise `client.planActive` on a
+ * successful Plan RPC: Codex plan review is an ordinary `request_permission`
+ * whose `allow_once` means "implement this plan", and Auto accept would select
+ * it. `usesClientPlanGate` stays false, so this bit does not enable grok's
+ * write/terminal refusal. The session flag remains a fallback because a
+ * `config_option_update` can raise Plan without going through that RPC.
  */
 export function effectivePlanActive(
   usesClientPlanGate: boolean,
   clientPlanActive: boolean,
   sessionPlanActive: boolean,
 ): boolean {
-  return usesClientPlanGate ? clientPlanActive : sessionPlanActive;
+  if (usesClientPlanGate) return clientPlanActive;
+  return clientPlanActive || sessionPlanActive;
 }
 
 export function permissionOptionsForPlan<T extends PermissionOptionLike>(

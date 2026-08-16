@@ -2283,9 +2283,11 @@ Only continue if you trust this code.`,
   }
 
   /**
-   * Decide a live `session/request_permission`. Grok reads the client gate
-   * (raised in the set_mode hook) so a same-chunk request cannot still see
-   * Auto accept; Codex/Claude keep the session flag and adapter enforcement.
+   * Decide a live `session/request_permission`. The Plan bit comes from
+   * `effectivePlanActive` so a same-chunk request cannot still see Auto
+   * accept after a successful Plan RPC. Grok also refuses mutating tools
+   * through the client gate; Codex/Claude do not — their Plan is
+   * adapter-enforced, but the permission card still has to reach a human.
    */
   private handlePermissionRequest(
     session: Session,

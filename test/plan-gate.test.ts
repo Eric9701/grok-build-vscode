@@ -731,9 +731,10 @@ describe("effectivePlanActive", () => {
     expect(effectivePlanActive(true, false, true)).toBe(false);
   });
 
-  it("keeps the host session flag for adapters that do not use the client gate", () => {
-    expect(effectivePlanActive(false, true, false)).toBe(false);
+  it("reads the client Plan-accepted bit for adapters, with the session flag as fallback", () => {
+    expect(effectivePlanActive(false, true, false)).toBe(true);
     expect(effectivePlanActive(false, false, true)).toBe(true);
+    expect(effectivePlanActive(false, false, false)).toBe(false);
   });
 });
 

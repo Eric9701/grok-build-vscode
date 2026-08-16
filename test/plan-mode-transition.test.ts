@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { AcpClient } from "../src/acp";
 import type { AcpBackend } from "../src/acp-backend";
+import { ClaudeBackend } from "../src/claude-backend";
 import { CodexBackend } from "../src/codex-backend";
 import { GrokSidebar } from "../src/sidebar";
 import { Session } from "../src/session";
@@ -53,11 +54,45 @@ const EDIT_PERMISSION = {
   ],
 };
 
+/** Codex adapter shape: allow_once means "implement this plan". */
+const CODEX_PLAN_REVIEW = {
+  sessionId: "session-1",
+  toolCall: {
+    toolCallId: "plan-review:item-1",
+    title: "Implement this plan?",
+    kind: "switch_mode",
+    status: "pending",
+    rawInput: { plan: "# Plan\n\n1. Change it" },
+  },
+  options: [
+    { optionId: "implement_plan", name: "Yes, implement this plan", kind: "allow_once" },
+    { optionId: "revise_plan", name: "No, and tell Codex what to do differently", kind: "reject_once" },
+  ],
+  _meta: { codex: { kind: "plan_review", planItemId: "item-1" } },
+};
+
+/** Claude ExitPlanMode: allow_once/always options all mean leave Plan and implement. */
+const CLAUDE_EXIT_PLAN = {
+  sessionId: "session-1",
+  toolCall: {
+    toolCallId: "exit-plan-1",
+    title: "Ready to code?",
+    kind: "switch_mode",
+    rawInput: { plan: "# Plan\n\n1. Change it" },
+  },
+  options: [
+    { optionId: "acceptEdits", kind: "allow_always", name: "Yes, and auto-accept edits" },
+    { optionId: "default", kind: "allow_once", name: "Yes, and manually approve edits" },
+    { optionId: "plan", kind: "reject_once", name: "No, keep planning" },
+  ],
+};
+
 async function dispatchSetModeThenPermission(
   sidebar: any,
   session: Session,
   client: AcpClient,
   written: string[],
+  permission: object = EDIT_PERMISSION,
 ): Promise<any> {
   client.on("permissionRequest", (req) => {
     sidebar.handlePermissionRequest(session, client, req, "/workspace");
@@ -78,7 +113,7 @@ async function dispatchSetModeThenPermission(
         jsonrpc: "2.0",
         id: 99,
         method: "session/request_permission",
-        params: EDIT_PERMISSION,
+        params: permission,
       }) + "\n",
     );
 
@@ -169,7 +204,44 @@ describe("Plan permission same-chunk raise", () => {
     expect(client.planActive).toBe(true);
   });
 
-  it("still auto-grants that same-chunk request for Codex (no client gate)", async () => {
+  it("does not auto-grant a same-chunk Codex plan-review permission", async () => {
+    const { client, written } = clientWithFakeProc({ backend: new CodexBackend() });
+    const session = liveSession({ autoApprove: true, client });
+    session.provider = "codex";
+    const sidebar = makeSidebar(session);
+
+    const reply = await dispatchSetModeThenPermission(
+      sidebar,
+      session,
+      client,
+      written,
+      CODEX_PLAN_REVIEW,
+    );
+
+    expect(reply?.result?.outcome?.optionId).not.toBe("implement_plan");
+    expect(client.usesClientPlanGate).toBe(false);
+  });
+
+  it("does not auto-grant a same-chunk Claude ExitPlanMode permission", async () => {
+    const { client, written } = clientWithFakeProc({ backend: new ClaudeBackend() });
+    const session = liveSession({ autoApprove: true, client });
+    session.provider = "claude";
+    const sidebar = makeSidebar(session);
+
+    const reply = await dispatchSetModeThenPermission(
+      sidebar,
+      session,
+      client,
+      written,
+      CLAUDE_EXIT_PLAN,
+    );
+
+    expect(reply?.result?.outcome?.optionId).not.toBe("acceptEdits");
+    expect(reply?.result?.outcome?.optionId).not.toBe("default");
+    expect(client.usesClientPlanGate).toBe(false);
+  });
+
+  it("does not apply grok's Plan write refusal to a same-chunk Codex edit", async () => {
     const { client, written } = clientWithFakeProc({ backend: new CodexBackend() });
     const session = liveSession({ autoApprove: true, client });
     session.provider = "codex";
@@ -177,10 +249,9 @@ describe("Plan permission same-chunk raise", () => {
 
     const reply = await dispatchSetModeThenPermission(sidebar, session, client, written);
 
-    expect(reply.result.outcome).toEqual({
-      outcome: "selected",
-      optionId: "allow-always",
-    });
+    expect(reply?.result?.outcome?.optionId).not.toBe("reject-once");
+    expect(reply?.result?.outcome?.optionId).not.toBe("allow-always");
+    expect(reply?.result?.outcome?.optionId).not.toBe("allow-once");
     expect(client.usesClientPlanGate).toBe(false);
   });
 });
