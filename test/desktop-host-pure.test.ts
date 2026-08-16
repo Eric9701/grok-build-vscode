@@ -4449,11 +4449,11 @@ describe("openFile / openDiff session roots (P2-4 / P2-5)", () => {
     const initialStart = sidebar.indexOf("private postInitialState(");
     const initialEnd = sidebar.indexOf("private rehydrateWebviewFromFocused(", initialStart);
     const initialBody = sidebar.slice(initialStart, initialEnd);
-    expect(initialBody).toContain("startSession()");
+    expect(initialBody).toContain('startSession(undefined, this.focused, "ensure")');
     expect(initialBody).toContain("postSessionsList()");
     expect(initialBody).toContain("sweepEmptySessions()");
     // postSessionsList must run on the startSession success path (not only on ready).
-    const thenIdx = initialBody.indexOf("startSession().then");
+    const thenIdx = initialBody.indexOf('startSession(undefined, this.focused, "ensure").then');
     expect(thenIdx).toBeGreaterThan(0);
     expect(initialBody.indexOf("postSessionsList()", thenIdx)).toBeGreaterThan(thenIdx);
   });

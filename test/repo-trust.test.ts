@@ -84,7 +84,7 @@ describe("who turned auto-approve on", () => {
 describe("consent gate wiring", () => {
   it("asks before the session starts, and declining starts nothing", () => {
     const src = sidebarSrc();
-    const start = src.indexOf("private async startSession(resumeId");
+    const start = src.indexOf("private async startSessionBody(");
     expect(start).toBeGreaterThan(0);
     // Wide enough to reach ++session.gen past startSession's early-return
     // blocks as they grow; the assertions below still pin the ordering, the

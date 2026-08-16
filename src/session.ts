@@ -224,6 +224,13 @@ export class Session {
    */
   gen = 0;
 
+  /**
+   * True when this generation already told the user an in-flight send was
+   * abandoned. Cancel recovery emits first; a later stale-generation bail
+   * must not add a second interruption.
+   */
+  staleSendReported = false;
+
   /** Derived status for the dashboard dot (see SessionStatus). */
   status: SessionStatus = "idle";
 
@@ -333,6 +340,7 @@ export class Session {
 export function beginTurn(session: Session): object {
   const token = {};
   session.turnToken = token;
+  session.staleSendReported = false;
   return token;
 }
 
@@ -347,7 +355,7 @@ export function endTurn(session: Session, token: object): boolean {
 
 /** Whether a prompt is genuinely running. Asked instead of reading `status`,
  *  which cannot distinguish "working" from "was working and never settled". */
-export function turnIsInFlight(session: Session): boolean {
+export function turnIsInFlight(session: { turnToken?: object }): boolean {
   return session.turnToken !== undefined;
 }
 
@@ -357,8 +365,43 @@ export function turnIsInFlight(session: Session): boolean {
  * may already exist while `sessionId` is still unset — a prompt then throws
  * "no session" after consuming chips. Callers must queue instead.
  */
-export function sessionReadyForPrompt(session: Session): boolean {
+export function sessionReadyForPrompt(session: {
+  client?: { sessionId?: string };
+  priming: boolean;
+}): boolean {
   return !!session.client && !session.priming && !!session.client.sessionId;
+}
+
+/**
+ * Opportunistic starts (boot, client-ready, resume, ensureClient) must not
+ * tear down a live turn or a just-started matching client. Intentional
+ * replacements (restart, auth/cancel recovery, model switch) always proceed.
+ */
+export type SessionStartIntent = "ensure" | "replace";
+
+export type SessionStartDecision = "proceed" | "reuse" | "refuse-turn" | "refuse-mismatch";
+
+export const INTERRUPTED_SEND_TEXT =
+  "The session restarted while this message was being sent, so delivery is uncertain. Check the conversation and send it again if needed.";
+
+export function decideSessionStart(
+  session: {
+    turnToken?: object;
+    client?: { sessionId?: string };
+    priming: boolean;
+    activeSessionId?: string;
+  },
+  resumeId: string | undefined,
+  intent: SessionStartIntent,
+): SessionStartDecision {
+  if (intent === "replace") return "proceed";
+  if (turnIsInFlight(session)) return "refuse-turn";
+  if (sessionReadyForPrompt(session)) {
+    const liveId = session.client?.sessionId;
+    if (!resumeId || resumeId === liveId) return "reuse";
+    return "refuse-mismatch";
+  }
+  return "proceed";
 }
 
 /**

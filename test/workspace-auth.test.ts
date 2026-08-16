@@ -204,7 +204,7 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(remoteBody).toContain('m.type !== "selectRepo"');
 
     // startSession refuses unauthorized target.cwd even with resumeId.
-    const startStart = src.indexOf("private async startSession(");
+    const startStart = src.indexOf("private async startSessionBody(");
     const startBody = src.slice(startStart, startStart + 1200);
     expect(startBody).toContain("isAuthorizedCwd(target.cwd)");
     expect(startBody).toContain("refused startSession");

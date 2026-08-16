@@ -185,6 +185,10 @@ The pure heart of client-side plan enforcement. No spawn, no fs — just the cla
 - **One narrow control-flow grammar** — `if (Test-Path … | $? | $LASTEXITCODE) { … } else { … }` with both branches recursively classified. Script-block braces stay unsafe by default; nested control flow, computed conditions and calculated properties (`@{e={ … }}`) remain refused
 - **Regression corpus** — each bypass found during the 2.1.1 review rounds is pinned: a mutating command riding along with a plan write, `$()` inside a quoted payload, a bare-paren subexpression behind an allowlisted head, and escaped dangerous options
 
+### `test/session-start-decision.test.ts` / `test/send-start-race.test.ts` — send vs startSession
+
+A concurrent `startSession` used to swallow a send: `handleSend` echoed `userMessage`, then `gen !== session.gen` returned with no turn-failed signal. `decideSessionStart` is the pure gate (`ensure` refuses a live turn and reuses a matching ready client). The sidebar tests drive real `handleSend` / `startSession`: an opportunistic start during a turn leaves `gen` and the client untouched; a replacing start after the echo emits `INTERRUPTED_SEND_TEXT` as `error` (not `agentError`); a send behind a paused start issues exactly one prompt after startup settles.
+
 ### `test/queued-send-commit.test.ts` — queued-send claim lifecycle (4 tests)
 
 The queue is released at `handleSend`'s synchronous commit point, not before it. Covers: a send that bails before committing keeps the text, a send that commits releases it and cannot be re-flushed at turn end, and text appended during the attempt survives.

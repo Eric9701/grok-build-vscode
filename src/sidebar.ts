@@ -46,10 +46,13 @@ import {
 import { PersistedState } from "./persisted-state";
 import {
   Session,
+  SessionStartIntent,
   SessionStatus,
+  INTERRUPTED_SEND_TEXT,
   beginQueuedSendCommit,
   beginTurn,
   createPendingPermission,
+  decideSessionStart,
   endTurn,
   finishQueuedSendCommit,
   pendingPermissionOptions,
@@ -648,6 +651,12 @@ export class GrokSidebar {
   /** Sessions being spawned on a remote tab's behalf — a reconnect burst must
    *  not start the same one twice. */
   private readonly startingForRemote = new WeakSet<Session>();
+  /**
+   * Per-Session start tail. Boot, client-ready, resume, and ensureClient all
+   * share it with handleSend so a send cannot commit an echo while a start
+   * is still replacing the process.
+   */
+  private sessionStartTails?: WeakMap<Session, Promise<void>>;
   private static readonly SESSION_LOAD_RESERVATION_TTL_MS = 10 * 60_000;
   private testSessionStartDelay?: {
     resumeId: string | undefined;
@@ -5789,7 +5798,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // conversation (a bare startSession would open a blank-context session
     // under the old transcript). Fresh/unstarted sessions have no id and start
     // clean as before.
-    return this.startSession(session.activeSessionId, session);
+    await this.waitForSessionStart(session);
+    if (session.client) return session.client;
+    return this.startSession(session.activeSessionId, session, "ensure");
   }
 
   /** Read `grok --version` for policy checks. Returns "" on failure (logged). */
@@ -6284,7 +6295,48 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.postSessionsList();
   }
 
-  private async startSession(resumeId?: string, target: Session = this.focused): Promise<AcpClient | undefined> {
+  private sessionStartTailMap(): WeakMap<Session, Promise<void>> {
+    return (this.sessionStartTails ??= new WeakMap());
+  }
+
+  private runExclusiveSessionStart<R>(session: Session, action: () => Promise<R>): Promise<R> {
+    const tails = this.sessionStartTailMap();
+    const previous = tails.get(session) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(action);
+    const tail = run.then(() => undefined, () => undefined);
+    tails.set(session, tail);
+    return run.finally(() => {
+      if (tails.get(session) === tail) tails.delete(session);
+    });
+  }
+
+  private async waitForSessionStart(session: Session): Promise<void> {
+    const tail = this.sessionStartTailMap().get(session);
+    if (tail) await tail;
+  }
+
+  private emitAbandonedSend(session: Session): void {
+    if (session.staleSendReported) return;
+    session.staleSendReported = true;
+    // Generic `error`, not agentError: after a gen bump this Session is the
+    // replacement, and agentError would clear its startup lock or a flushed
+    // follow-on turn.
+    this.emit(session, { type: "error", text: INTERRUPTED_SEND_TEXT });
+  }
+
+  private async startSession(
+    resumeId?: string,
+    target: Session = this.focused,
+    intent: SessionStartIntent = "replace",
+  ): Promise<AcpClient | undefined> {
+    return this.runExclusiveSessionStart(target, () => this.startSessionBody(resumeId, target, intent));
+  }
+
+  private async startSessionBody(
+    resumeId: string | undefined,
+    target: Session,
+    intent: SessionStartIntent,
+  ): Promise<AcpClient | undefined> {
     // Desktop with no open folder: empty rail is valid — do not spawn grok
     // against process.cwd(). Adding a folder starts a session via select/switch.
     if (
@@ -6337,6 +6389,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Deliberately here, before anything is mutated: nothing has been touched
     // yet, so declining is a clean no-op rather than a half-started session.
     if (target.provider === "grok" && !(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
+      return undefined;
+    }
+    // After the last await before ++gen: a send can have begun a turn (or
+    // another start can have finished) while consent was up.
+    const startDecision = decideSessionStart(target, resumeId, intent);
+    if (startDecision === "reuse" || startDecision === "refuse-turn") {
+      if (startDecision === "refuse-turn") {
+        this.host.appendLine(`[sessions] refused startSession (turn in flight)`);
+      }
+      return target.client;
+    }
+    if (startDecision === "refuse-mismatch") {
+      this.host.appendLine(
+        `[sessions] refused startSession (ensure resumeId=${resumeId} does not match live session)`,
+      );
       return undefined;
     }
     // The session this start (re)builds. Today always the focused one (pool-of-1);
@@ -7160,7 +7227,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             const detected = parseGrokVersion(version)?.join(".") ?? version;
             if (await this.downgradeBrokenCli(cliPath, detected, "reactive")) {
               if (gen !== session.gen) return undefined;
-              return await this.startSession(resumeId, session); // retry the spawn on the supported build
+              return await this.startSessionBody(resumeId, session, intent); // same exclusive; do not re-enter the tail
             }
           } finally {
             this.reactiveDowngradeInFlight = false;
@@ -10963,6 +11030,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // new turn had failed, and clearing the busy state of a turn that had only
     // just begun. Live-only as a consequence (the restart clears the buffer);
     // the conversation itself is reloaded from disk intact.
+    session.staleSendReported = true;
     this.emit(session, {
       type: "agentError",
       text: "Stopped. The agent didn't answer the stop request, so its process is being restarted. This conversation is intact.",
@@ -11027,6 +11095,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // turn ended while another was focused). Only the focused session may spawn
     // a client on demand; a background target without one has nothing to talk to.
     const session = target ?? this.focused;
+    await this.waitForSessionStart(session);
     // Desk↔remote co-attach: the OTHER view only learns `busy` once the
     // mirrored agentStart crosses the relay, so a send can race through that
     // window into a turn that is already running — and a second
@@ -11215,7 +11284,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         session.sawCompactFailed = false;
       }
       const meta = await client.prompt(promptBlocks);
-      if (gen !== session.gen) return; // session was switched mid-turn
+      if (gen !== session.gen) {
+        this.emitAbandonedSend(session);
+        return;
+      }
       // A cancel recovery may have settled this turn already; a second agentEnd
       // would end a turn that is no longer ours.
       if (!endTurn(session, turn)) return;
@@ -11238,7 +11310,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.maybeGenerateTitle(session);
       this.postSessionName(session);
     } catch (err) {
-      if (gen !== session.gen) return; // prompt rejected because we disposed the old client — don't leak the error into the new session
+      if (gen !== session.gen) {
+        this.emitAbandonedSend(session);
+        return;
+      }
       // Same rule as the success path: if a cancel recovery already ended this
       // turn, the failure it eventually reported is not ours to announce.
       // Checked BEFORE the auth resend, which starts a turn of its own.
@@ -11325,7 +11400,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.setStatus(session, "working");
     try {
       const meta = await client.prompt(promptBlocks);
-      if (gen !== session.gen) return true;
+      if (gen !== session.gen) {
+        this.emitAbandonedSend(session);
+        return true;
+      }
       if (!endTurn(session, turn)) return true;
       this.emit(session, { type: "agentEnd", meta });
       this.setStatus(session, "done");
@@ -11333,7 +11411,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.maybeGenerateTitle(session);
       this.postSessionName(session);
     } catch (err2) {
-      if (gen !== session.gen) return true;
+      if (gen !== session.gen) {
+        this.emitAbandonedSend(session);
+        return true;
+      }
       if (!endTurn(session, turn)) return true;
       const e2 = err2 as any;
       // The resend ran into a usage limit — that's the real story, not auth
@@ -11541,7 +11622,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!this.focused.hasHistory && !this.focused.client) {
       this.focused.provider = this.defaultProviderForProject(this.sessionCwd(this.focused));
     }
-    void this.startSession().then(() => {
+    void this.startSession(undefined, this.focused, "ensure").then(() => {
       this.postSessionsList();
       this.sweepEmptySessions();
     });
@@ -13371,7 +13452,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.remoteClients.setActive(clientId, session);
     this.bindSessionLoad(id, reservation, session);
     this.sendRemoteClient(clientId, { type: "clearMessages" });
-    await this.startSession(id, session);
+    await this.startSession(id, session, "ensure");
     this.markRead(session);
     if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteSessionList(session, reservation.ownerTabToken);
@@ -13570,7 +13651,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.focused = held;
       this.pool.add(this.focused);
       await this.followSessionWorkspace(this.focused);
-      await this.startSession(id);
+      await this.startSession(id, this.focused, "ensure");
       this.markRead(this.focused);
       this.postRepoCatalog();
       return;
@@ -13629,7 +13710,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     }
     await this.followSessionWorkspace(this.focused);
-    await this.startSession(id);
+    await this.startSession(id, this.focused, "ensure");
     this.markRead(this.focused); // opening a cold session clears its unread badge
     this.postRepoCatalog();
   }
@@ -14066,21 +14147,30 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // synchronously right after we return, and the start's frames must land
     // after it, not race it.
     if (!session.client) {
-      setTimeout(() => {
-        if (this.remoteClients.active(clientId) !== session) return; // moved on
-        if (session.client || this.startingForRemote.has(session)) return;
-        this.startingForRemote.add(session);
-        this.pool.add(session);
-        void this.startSession(session.activeSessionId, session)
-          .then((started) => {
+      // Enqueue on the tab tail immediately so a following send waits. The
+      // 0-delay stays inside the action so the snapshot posted after we
+      // return still lands first.
+      void this.remoteClients.runSessionTransition(
+        clientId,
+        session.activeSessionId,
+        async (currentClientId) => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          if (this.remoteClients.active(currentClientId) !== session) return;
+          if (session.client || this.startingForRemote.has(session)) return;
+          this.startingForRemote.add(session);
+          this.pool.add(session);
+          try {
+            const started = await this.startSession(session.activeSessionId, session, "ensure");
             if (
               started &&
-              this.remoteClients.active(clientId) === session &&
+              this.remoteClients.active(currentClientId) === session &&
               !session.needsProvider
             ) this.restoreStrandedDraft(session);
-          })
-          .finally(() => this.startingForRemote.delete(session));
-      }, 0);
+          } finally {
+            this.startingForRemote.delete(session);
+          }
+        },
+      );
     }
   }
 

@@ -144,7 +144,7 @@ describe("multi-provider review regressions", () => {
   it("routes every sidebar Codex discovery through the class-owned locator", () => {
     expect(sidebar.match(/locateCodexCli\(/g)).toHaveLength(1);
     expect(desktopSources).not.toContain("locateCodexCli(");
-    const start = methodBody("private async startSession(");
+    const start = methodBody("private async startSessionBody(");
     expect(start).toContain("this.locateProvider(session.provider)");
     expect(start).not.toContain("locateCodexCli(");
     const owner = methodBody("private locateProvider(");
