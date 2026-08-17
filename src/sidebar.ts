@@ -898,6 +898,32 @@ export class GrokSidebar {
     return usableProviderIds(this.providerConnections(), this.locatedProviders(), this.providerNeedsLogin ?? {});
   }
 
+  /**
+   * The onboarding panel a session should show when it cannot run.
+   *
+   * With nothing CONNECTED, offer the choice of all three rather than one
+   * provider's sign-in instructions: a session can carry a stale `provider`
+   * inherited from a project default, and telling someone who has connected
+   * nothing to "Complete codex login" names an agent they may never have picked.
+   *
+   * A conversation WITH history is different, and never gets the chooser: its
+   * provider is pinned after the first turn, so there is nothing to choose. If
+   * that agent's credentials die mid-session, its own sign-in is the only
+   * correct panel — offering three would trade an answer for a question about
+   * something the session cannot change anyway.
+   *
+   * Otherwise it depends on whether anything can answer. With NONE available,
+   * the provider on an empty session is only a guess — a project default, or
+   * whatever was used last — so naming one agent's sign-in presents a decision
+   * as though it had already been made; offer all three and ask honestly. With
+   * something available the session's own provider is the specific gap to
+   * close, so show that.
+   */
+  private onboardingForSession(session: Session): "connect-agent" | "auth-required" | "codex-login" | "claude-login" {
+    if (session.hasHistory) return providerLoginState(session.provider);
+    return this.usableProviders().length ? providerLoginState(session.provider) : "connect-agent";
+  }
+
   private migrateProviderConnections(): ProviderConnections {
     const existing = this.state.get<ProviderConnections>(PROVIDER_CONNECTIONS_KEY);
     if (existing !== undefined) return existing;
@@ -1180,10 +1206,31 @@ export class GrokSidebar {
   ): PromiseLike<void> {
     const current = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
     const clean = models.map(({ provider: _provider, defaultImplied: _default, ...model }: any) => model);
-    return this.state.update(PROVIDER_MODEL_CACHE_KEY, {
+    const stored = this.state.update(PROVIDER_MODEL_CACHE_KEY, {
       ...current,
       [provider]: { models: clean, currentModelId, seenAt: Date.now() },
     } satisfies ProviderModelCache);
+    // The picker reads this cache, and an adapter's models arrive
+    // ASYNCHRONOUSLY — the warm-up runs after the connect returns. Re-posting
+    // only at connect time therefore published an empty list, and the newly
+    // connected agent appeared in the picker only after a New session, which is
+    // exactly what the owner saw with Codex. Push the catalog again once the
+    // models actually exist.
+    void Promise.resolve(stored).then(() => {
+      for (const session of this.emptySessionsForModelRefresh()) this.postSessionModels(session);
+    });
+    return stored;
+  }
+
+  /** Sessions whose picker may be refreshed in place: no history, so there is
+   *  nothing a changed model list could disturb. */
+  private emptySessionsForModelRefresh(): Session[] {
+    const seen = new Set<Session>();
+    for (const session of [this.focused, ...this.pool]) {
+      if (!session || seen.has(session)) continue;
+      seen.add(session);
+    }
+    return [...seen].filter((session) => !session.hasHistory && session.client?.sessionId);
   }
 
   /**
@@ -7358,7 +7405,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (client.isCredentialError(err) || isCredentialError(err)) {
           this.setProviderNeedsLogin(session.provider, true);
         }
-        this.emit(session, { type: "onboarding", state: providerLoginState(session.provider) });
+        this.emit(session, { type: "onboarding", state: this.onboardingForSession(session) });
       } else if (stdioRegression) {
         // The signature of the Windows stdio regression (issue #22): a startup request
         // hangs because the agent won't read stdin until EOF. It spanned 0.2.61–0.2.70
@@ -8101,6 +8148,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // helpers may already have completed, and the explicit Re-check below
         // remains available for interactive terminals still in progress.
         this.watchProviderLogin(provider);
+        // Connecting an agent is about the NEXT conversation, not the one on
+        // screen. Showing its sign-in panel over a session with history covered
+        // that transcript, and the confirmation afterwards had nowhere sensible
+        // to land — the owner connected Claude from an open Grok conversation
+        // and got the panel there, then no confirmation at all. So start a fresh
+        // session first and run the whole flow in it.
+        // Not without a project: on desktop with nothing open, workspaceRoot()
+        // is deliberately empty rather than the install directory, so there is
+        // nowhere to start a session. Connecting still works — it only opens a
+        // terminal — and the panel below still shows; the fresh session simply
+        // waits until there is a project to put it in.
+        if (session.hasHistory && origin !== "remote" && this.workspaceRoot()) {
+          await this.newFocusedSession(origin);
+        }
         // ALWAYS show this provider's login panel, and say the terminal was
         // launched. Two bugs lived in the gate this replaces.
         //
@@ -11674,7 +11735,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // already re-authed.
         this.emit(session, { type: "agentError", text: errorDetail(e2) });
         this.setStatus(session, "error");
-        this.post({ type: "onboarding", state: providerLoginState(session.provider) });
+        this.post({ type: "onboarding", state: this.onboardingForSession(session) });
       } else {
         // Entitlement/billing wording (or anything else) on a fresh process is
         // not a sign-in problem — promptErrorText shows the entitlement notice

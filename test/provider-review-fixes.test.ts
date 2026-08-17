@@ -168,7 +168,11 @@ describe("multi-provider review regressions", () => {
 
   it("posts provider-specific recovery UI after a second auth failure", () => {
     const body = methodBody("private async recoverAuthAndResend(");
-    expect(body).toContain("providerLoginState(session.provider)");
+    // Via onboardingForSession, which still resolves to providerLoginState for
+    // this case — the provider IS connected, its credentials just died — and
+    // falls back to the three-way chooser only when nothing is connected at
+    // all, where naming one agent's login would name one nobody picked.
+    expect(body).toContain("this.onboardingForSession(session)");
   });
 
   it("routes Re-check through the provider credential probe without allowing Codex warm-up failure to escape", () => {
