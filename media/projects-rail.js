@@ -123,6 +123,115 @@
     return cwdKey(a) === cwdKey(b);
   }
 
+  // Same contract as createPendingOverlay in webview-helpers.js. The VS Code
+  // rail is a standalone webview and does not load that file, so the helper
+  // is inlined; keep the two in lockstep.
+  function createPendingOverlay(opts) {
+    const helpers = typeof globalThis !== "undefined" ? globalThis.GrokWebviewHelpers : null;
+    if (helpers && typeof helpers.createPendingOverlay === "function") {
+      return helpers.createPendingOverlay(opts);
+    }
+    const onExpire = opts && typeof opts.onExpire === "function" ? opts.onExpire : null;
+    let pending = null;
+    let timer = null;
+    function resolveTimeout() {
+      if (opts && typeof opts.timeoutMs === "function") {
+        const n = Number(opts.timeoutMs());
+        return n > 0 ? n : 8000;
+      }
+      if (opts && Number(opts.timeoutMs) > 0) return Number(opts.timeoutMs);
+      return 8000;
+    }
+    function clearTimer() {
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }
+    function expire() {
+      timer = null;
+      if (!pending) return;
+      pending = null;
+      if (onExpire) onExpire();
+    }
+    return {
+      paint(key, value) {
+        clearTimer();
+        pending = { key: String(key), value };
+        timer = setTimeout(expire, resolveTimeout());
+      },
+      valueFor(key) {
+        if (key == null || !pending || pending.key !== String(key)) return undefined;
+        return pending.value;
+      },
+      has(key) {
+        return !!(pending && key != null && pending.key === String(key));
+      },
+      peek() {
+        return pending;
+      },
+      settle(key) {
+        if (!pending || key == null || pending.key !== String(key)) return false;
+        clearTimer();
+        pending = null;
+        return true;
+      },
+      settleAny(keys) {
+        if (!pending) return false;
+        for (const key of keys || []) {
+          if (key != null && pending.key === String(key)) {
+            clearTimer();
+            pending = null;
+            return true;
+          }
+        }
+        return false;
+      },
+      clear() {
+        clearTimer();
+        pending = null;
+      },
+    };
+  }
+
+  const pendingRepoColor = createPendingOverlay({
+    onExpire() { render(); },
+  });
+  const pendingRename = createPendingOverlay({
+    onExpire() { render(); },
+  });
+
+  function repoColorOf(repo) {
+    const painted = pendingRepoColor.valueFor(cwdKey(repo && repo.cwd));
+    if (painted !== undefined) return painted;
+    return typeof repo?.color === "string" ? repo.color : "";
+  }
+
+  function sessionRowName(s) {
+    const painted = s && pendingRename.valueFor(s.id);
+    if (painted !== undefined) return painted || "Untitled";
+    return (s && s.displayName) || "Untitled";
+  }
+
+  function paintPendingRepoColor(cwd, color) {
+    pendingRepoColor.paint(cwdKey(cwd), color);
+    render();
+  }
+
+  function paintPendingRename(id, name) {
+    if (!id) return;
+    pendingRename.paint(id, name);
+    render();
+  }
+
+  function settlePendingRepoColor(entries) {
+    pendingRepoColor.settleAny((entries || []).map((r) => r && cwdKey(r.cwd)).filter(Boolean));
+  }
+
+  function settlePendingRename(entries) {
+    pendingRename.settleAny((entries || []).map((e) => e && e.id).filter(Boolean));
+  }
+
   function uniqueSessionRows(entries) {
     const byId = new Map();
     for (const entry of Array.isArray(entries) ? entries : []) {
@@ -444,7 +553,7 @@
   function openColorPicker(anchor, repo, at) {
     closeColorPicker();
     if (!anchor || !repo) return;
-    const current = typeof repo.color === "string" ? repo.color : "";
+    const current = repoColorOf(repo);
     const picker = document.createElement("div");
     picker.className = "rail-color-picker";
     picker.setAttribute("role", "listbox");
@@ -467,6 +576,9 @@
         // Skip a no-op write: re-picking the current colour should not churn the catalog.
         if (sw.id === current) return;
         vscode.postMessage({ type: "setRepoColor", cwd: repo.cwd, color: sw.id });
+        // Paint now. The next `repos` frame that names this cwd is the
+        // authority — confirm, contradict, or a silent host's expiry.
+        paintPendingRepoColor(repo.cwd, sw.id);
       };
       picker.appendChild(btn);
     }
@@ -888,9 +1000,8 @@
     twisty.className = "rail-twisty";
     twisty.innerHTML = expanded ? ICON.folderOpen : ICON.folderClosed;
     twisty.setAttribute("aria-hidden", "true");
-    if (typeof repo.color === "string" && repo.color) {
-      twisty.dataset.repoColor = repo.color;
-    }
+    const repoColor = repoColorOf(repo);
+    if (repoColor) twisty.dataset.repoColor = repoColor;
     head.appendChild(twisty);
 
     const name = document.createElement("span");
@@ -1160,7 +1271,7 @@
     const row = document.createElement("div");
     const active = !!(state.activeSessionId && s.id === state.activeSessionId);
     row.className = "rail-session" + (active ? " active" : "");
-    row.title = s.displayName || "";
+    row.title = sessionRowName(s);
     row.setAttribute("role", "button");
     row.tabIndex = 0;
     if (active) row.setAttribute("aria-current", "true");
@@ -1185,7 +1296,7 @@
 
     const label = document.createElement("span");
     label.className = "rail-session-name";
-    label.textContent = s.displayName || "Untitled";
+    label.textContent = sessionRowName(s);
     row.appendChild(label);
 
     if (opts && opts.showRepo) {
@@ -1243,6 +1354,7 @@
             const name = next.trim();
             if (!name || name === s.displayName) return;
             vscode.postMessage({ type: "renameSession", id: s.id, name, cwd });
+            paintPendingRename(s.id, name);
           },
         },
         {
@@ -1307,6 +1419,7 @@
       case "repos": {
         const leaving = state.currentCwd;
         state.repos = Array.isArray(msg.entries) ? msg.entries : [];
+        settlePendingRepoColor(state.repos);
         state.currentCwd = msg.selectedCwd || "";
         state.activeCwd = msg.activeCwd || "";
         // Older host: no separate workspace root, so fall back to the selection
@@ -1371,6 +1484,7 @@
         if (msg.offset === 0 || msg.offset == null) {
           state.currentSessions = uniqueSessionRows(msg.entries);
           state.currentSessionsKnown = true;
+          settlePendingRename(state.currentSessions);
           if (msg.activeId != null && acceptActiveId(msg.activeId || null)) {
             state.activeSessionId = msg.activeId || null;
           }
@@ -1387,6 +1501,7 @@
           entries: uniqueSessionRows(msg.entries),
           total: msg.total || 0,
         };
+        settlePendingRename(state.previews[key].entries);
         if (msg.dots && typeof msg.dots === "object") {
           Object.assign(state.dots, msg.dots);
         }
@@ -1396,6 +1511,7 @@
       case "pinnedSessions": {
         state.pinnedSessions = uniqueSessionRows(msg.entries);
         state.pinnedKnown = true;
+        settlePendingRename(state.pinnedSessions);
         if (msg.dots && typeof msg.dots === "object") {
           Object.assign(state.dots, msg.dots);
         }

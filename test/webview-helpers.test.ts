@@ -1,8 +1,43 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
+
+describe("createPendingOverlay", () => {
+  it("paints until a frame for that key arrives, then dies", () => {
+    const overlay = createPendingOverlay({ timeoutMs: 60_000 });
+    overlay.paint("s1", "New name");
+    expect(overlay.valueFor("s1")).toBe("New name");
+    expect(overlay.valueFor("s2")).toBeUndefined();
+    expect(overlay.settle("s2")).toBe(false);
+    expect(overlay.valueFor("s1")).toBe("New name");
+    expect(overlay.settle("s1")).toBe(true);
+    expect(overlay.valueFor("s1")).toBeUndefined();
+  });
+
+  it("a contradicting settle still clears — the frame is the authority", () => {
+    const overlay = createPendingOverlay({ timeoutMs: 60_000 });
+    overlay.paint("/work/a", "blue");
+    expect(overlay.settleAny(["/work/b", "/work/a"])).toBe(true);
+    expect(overlay.peek()).toBeNull();
+  });
+
+  it("expires a silent host so a lie cannot stick", async () => {
+    vi.useFakeTimers();
+    try {
+      let expired = 0;
+      const overlay = createPendingOverlay({ timeoutMs: 50, onExpire: () => { expired += 1; } });
+      overlay.paint("s1", "Ghost");
+      expect(overlay.valueFor("s1")).toBe("Ghost");
+      await vi.advanceTimersByTimeAsync(50);
+      expect(overlay.valueFor("s1")).toBeUndefined();
+      expect(expired).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("spokenTextFromMarkdown", () => {
   it("keeps prose and link labels while omitting fenced code", () => {

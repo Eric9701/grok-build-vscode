@@ -109,6 +109,58 @@ describe("focused conversation name chip", () => {
     ]);
   });
 
+  it("paints a header rename on the history row before any host frame", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "sessions", entries: [row("s1", "Keep this")], activeId: "s1", dots: {} });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Keep this", cwd: "/work/repo" });
+    click(window, doc.getElementById("history-btn")!);
+    click(window, doc.getElementById("session-name-edit")!);
+    const input = doc.getElementById("session-name-label") as HTMLInputElement;
+    input.value = "Painted now";
+    input.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Painted now");
+    expect(doc.querySelector(".history-row-name")!.textContent).toBe("Painted now");
+
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Painted now", cwd: "/work/repo" });
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Painted now");
+    expect(doc.querySelector(".history-row-name")!.textContent).toBe("Painted now");
+
+    dispatch(window, {
+      type: "sessions",
+      entries: [row("s1", "Painted now")],
+      activeId: "s1",
+      dots: {},
+    });
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Painted now");
+    expect(doc.querySelector(".history-row-name")!.textContent).toBe("Painted now");
+  });
+
+  it("paints a history-row rename on the header before any host frame", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "sessions", entries: [row("s1", "Keep this")], activeId: "s1", dots: {} });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Keep this", cwd: "/work/repo" });
+    click(window, doc.getElementById("history-btn")!);
+    click(window, doc.querySelector(".history-row .history-action-btn") as HTMLElement);
+    const inp = doc.querySelector(".history-rename") as HTMLInputElement;
+    inp.value = "From history";
+    inp.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("From history");
+    expect(doc.querySelector(".history-row-name")!.textContent).toBe("From history");
+
+    // Contradict while the overlay is still live — a catalog that names this
+    // id is the authority, including a refusal that sends the old title back.
+    dispatch(window, {
+      type: "sessions",
+      entries: [row("s1", "Catalog override")],
+      activeId: "s1",
+      dots: {},
+    });
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Catalog override");
+    expect(doc.querySelector(".history-row-name")!.textContent).toBe("Catalog override");
+  });
+
   it("stays quiet against an older host that never sends the name frame", () => {
     const local = bootWebview();
     dispatch(local.window, { type: "sessions", entries: [row("s1", "Legacy title")], activeId: "s1", dots: {} });
@@ -430,6 +482,62 @@ describe("session rows (regression: only the label was clickable)", () => {
 
     expect(doc.querySelector(".history-row input.history-rename")).not.toBeNull();
     expect(types(posted)).not.toContain("resumeSession");
+  });
+
+  it("opening a history row paints the title and hides the old transcript before any host frame", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "sessions",
+      entries,
+      activeId: "s1",
+      dots: {},
+    });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Add subtract fn", cwd: "/work/project" });
+    dispatch(window, { type: "userMessage", text: "old transcript" });
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("old transcript");
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Add subtract fn");
+
+    click(window, doc.getElementById("history-btn")!);
+    posted.length = 0;
+    const rows = doc.querySelectorAll(".history-row");
+    click(window, rows[1] as HTMLElement);
+
+    expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
+      { type: "resumeSession", id: "s2", cwd: undefined },
+    ]);
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Refactor parser");
+    expect((doc.querySelector(".msg.user") as HTMLElement).hidden).toBe(true);
+    expect(doc.getElementById("welcome")!.hidden).toBe(false);
+    const ver = doc.getElementById("welcome-version") as HTMLElement;
+    expect(ver.dataset.status).toBe("Loading conversation");
+
+    dispatch(window, { type: "clearMessages" });
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Refactor parser");
+
+    dispatch(window, { type: "sessionName", sessionId: "s2", name: "Refactor parser", cwd: "/work/project" });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessage", text: "new transcript" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Refactor parser");
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("new transcript");
+    expect((doc.querySelector(".msg.user") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("a failed history open restores the previous title and transcript", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "sessions", entries, activeId: "s1", dots: {} });
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "Add subtract fn", cwd: "/work/project" });
+    dispatch(window, { type: "userMessage", text: "old transcript" });
+
+    click(window, doc.getElementById("history-btn")!);
+    click(window, doc.querySelectorAll(".history-row")[1] as HTMLElement);
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Refactor parser");
+    expect((doc.querySelector(".msg.user") as HTMLElement).hidden).toBe(true);
+
+    dispatch(window, { type: "error", text: "Session is owned by another client.", resumeFailed: { id: "s2" } });
+    expect(doc.getElementById("session-name-label")!.textContent).toBe("Add subtract fn");
+    expect((doc.querySelector(".msg.user") as HTMLElement).hidden).toBe(false);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("old transcript");
   });
 
   it("shows a Clear all footer that confirms in-page, then posts clearAllSessions", async () => {

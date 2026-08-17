@@ -1144,6 +1144,48 @@ describe("projects rail", () => {
         { type: "setRepoColor", cwd: "/work/alpha", color: "blue" },
       ]);
       expect(h.doc.querySelector(".rail-color-picker")).toBe(null);
+      // Optimistic: the folder tints before any repos frame.
+      const alphaAfter = h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")];
+      expect(alphaAfter.querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe("blue");
+    });
+
+    it("keeps a confirming color frame and yields to a contradicting one", () => {
+      const h = bootWebview({ remote: true, beforeScripts: withRail });
+      dispatch(h.window, {
+        type: "repos",
+        entries: withColors(),
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      const alpha = h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")];
+      click(h.window, menuItem(openMenu(h.window, alpha.querySelector(".rail-repo-head") as HTMLElement), "Set color") as HTMLElement);
+      click(h.window, [...h.doc.querySelectorAll(".rail-color-swatch")].find((s) => s.getAttribute("aria-label") === "Blue") as HTMLElement);
+      expect(h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")]
+        .querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe("blue");
+
+      dispatch(h.window, {
+        type: "repos",
+        entries: withColors().map((r) => r.cwd === "/work/alpha" ? { ...r, color: "blue" } : r),
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      expect(h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")]
+        .querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe("blue");
+
+      const alpha2 = h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")];
+      click(h.window, menuItem(openMenu(h.window, alpha2.querySelector(".rail-repo-head") as HTMLElement), "Set color") as HTMLElement);
+      click(h.window, [...h.doc.querySelectorAll(".rail-color-swatch")].find((s) => s.getAttribute("aria-label") === "Coral") as HTMLElement);
+      expect(h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")]
+        .querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe("coral");
+
+      dispatch(h.window, {
+        type: "repos",
+        entries: withColors(),
+        selectedCwd: "/work/alpha",
+        activeCwd: "/work/alpha",
+      });
+      expect(h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")]
+        .querySelector(".rail-twisty")?.getAttribute("data-repo-color")).toBe(null);
     });
 
     it("tints the folder stroke when the catalog carries a colour", () => {
@@ -1948,6 +1990,85 @@ describe("rail transition (optimistic highlight)", () => {
     ]);
     expect(activeName(doc, "alpha")).toBe("alpha two");
     expect(welcomeStatus(doc)).toBe("Loading conversation");
+  });
+
+  it("switches the header and hides the old transcript before any host reply", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    dispatch(window, { type: "sessionName", sessionId: "a1", name: "alpha one", cwd: "/work/alpha" });
+    dispatch(window, { type: "userMessage", text: "old transcript" });
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("alpha one");
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("old transcript");
+
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    click(window, section.querySelectorAll(".rail-session")[1] as HTMLElement);
+
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("alpha two");
+    expect((doc.querySelector(".msg.user") as HTMLElement).hidden).toBe(true);
+    expect(welcomeStatus(doc)).toBe("Loading conversation");
+
+    dispatch(window, { type: "sessionName", sessionId: "a2", name: "alpha two", cwd: "/work/alpha" });
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("alpha two");
+
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessage", text: "new transcript" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("alpha two");
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("new transcript");
+  });
+
+  it("a contradicting identity frame after a rail open does not keep the pending title", () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([
+        row("a1", "/work/alpha", "alpha one", 9),
+        row("a2", "/work/alpha", "alpha two", 8),
+      ]),
+      activeId: "a1",
+    });
+    dispatch(window, { type: "sessionName", sessionId: "a1", name: "alpha one", cwd: "/work/alpha" });
+
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    click(window, section.querySelectorAll(".rail-session")[1] as HTMLElement);
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("alpha two");
+
+    dispatch(window, { type: "error", text: "not found", resumeFailed: { id: "a2" } });
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("alpha one");
+    expect(activeName(doc, "alpha")).toBe("alpha one");
+  });
+
+  it("paints a rail rename on the header and row before any host frame", async () => {
+    const { doc, window } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]),
+      activeId: "a1",
+    });
+    dispatch(window, { type: "sessionName", sessionId: "a1", name: "alpha one", cwd: "/work/alpha" });
+
+    const section = doc.querySelectorAll(".rail-repo")[repoNames(doc).indexOf("alpha")];
+    click(window, menuItem(openMenu(window, section.querySelector(".rail-session") as HTMLElement), "Rename")!);
+    const input = doc.querySelector(".confirm-input") as HTMLInputElement;
+    expect(input).toBeTruthy();
+    input.value = "Renamed on rail";
+    click(window, doc.querySelector(".confirm-primary") as HTMLElement);
+    await Promise.resolve();
+
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("Renamed on rail");
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))[0]).toBe("Renamed on rail");
+
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "Catalog title", 9)]),
+      activeId: "a1",
+    });
+    expect(doc.getElementById("session-head-title")!.textContent).toBe("Catalog title");
+    expect(sessionNames(doc, repoNames(doc).indexOf("alpha"))[0]).toBe("Catalog title");
   });
 
   it("does not confirm a resume on a non-matching activeId (multi-tab echo)", () => {
