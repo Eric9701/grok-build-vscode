@@ -17,6 +17,8 @@
     4. npm run package               -> grok-vscode-phuryn-X.Y.Z.vsix
     5. commit the working tree        (message from -MessageFile / -Message / default)
     6. push main
+    6b. wait for CI to go GREEN on the pushed SHA  (skip with -SkipCiWait,
+        budget with -CiTimeoutMinutes) — before any tag exists
     7. annotated tag vX.Y.Z + push
     8. gh release create vX.Y.Z       with the changelog section as notes
                                        AND the .vsix attached as a release asset
@@ -40,6 +42,8 @@ param(
   [switch]$SkipLive,
   [switch]$SkipIntegration,
   [switch]$SkipScreens,
+  [switch]$SkipCiWait,
+  [int]$CiTimeoutMinutes = 20,
   [switch]$DryRun
 )
 
@@ -151,6 +155,46 @@ if (git status --porcelain) {
 
 # 7. push, tag, push tag
 Run "git push origin main" { git push origin main }
+
+# 7b. CI must be green on exactly what was just pushed, and this is checked
+# BEFORE a tag exists. Order is the whole point: a red build then costs a fix
+# and a re-run, instead of a tag, a GitHub Release and an Open VSX publish that
+# all have to be withdrawn. Local suites are not a substitute — v2.3.0 and
+# v2.3.1 both shipped with `main` red because a green Windows box was taken as
+# the answer, and the owner found it rather than the release.
+if ($SkipCiWait) {
+  Step "skipping the CI wait (-SkipCiWait)"
+} else {
+  # Full SHA, never the short form: `gh run list --commit` matches literally and
+  # answers an empty list for an abbreviated one — which would read as "no CI
+  # configured" and wave the release straight through.
+  $sha = (git rev-parse HEAD).Trim()
+  Step "waiting for CI on $sha"
+  $deadline = (Get-Date).AddMinutes($CiTimeoutMinutes)
+  $everSeen = $false
+  while ($true) {
+    $ErrorActionPreference = "Continue"
+    $raw = gh run list --commit $sha --json status,conclusion,workflowName 2>$null
+    $ErrorActionPreference = "Stop"
+    $runs = @()
+    if ($raw) { $runs = @(($raw | ConvertFrom-Json) | Where-Object { $_.workflowName -eq "CI" }) }
+    if ($runs.Count -gt 0) {
+      $everSeen = $true
+      if (@($runs | Where-Object { $_.status -ne "completed" }).Count -eq 0) {
+        $bad = @($runs | Where-Object { $_.conclusion -ne "success" })
+        if ($bad.Count) { throw "CI is $($bad[0].conclusion) on $sha. Nothing tagged - fix it and re-run." }
+        Write-Host "    CI green on $sha" -ForegroundColor DarkGray
+        break
+      }
+    }
+    if ((Get-Date) -ge $deadline) {
+      if ($everSeen) { throw "CI did not finish on $sha within $CiTimeoutMinutes min. Nothing tagged." }
+      throw "No CI run appeared for $sha within $CiTimeoutMinutes min. Nothing tagged."
+    }
+    Start-Sleep -Seconds 15
+  }
+}
+
 Run "git tag -a $tag"      { git tag -a $tag -m "Release $tag" }
 Run "git push origin $tag" { git push origin $tag }
 
