@@ -6791,10 +6791,31 @@
     if (state.onboardingRanMode !== state.onboardingMode) {
       state.onboardingRanMode = state.onboardingMode;
       state.onboardingRan = [];
+      state.onboardingLaunched = [];
     }
     const key = launchKey(act, provider);
     if (!state.onboardingRan.includes(key)) state.onboardingRan.push(key);
     applyOnboardingLaunchState();
+  }
+
+  /**
+   * The HOST opened a login terminal — from a Settings → Providers connect, or
+   * from a connect tile it handled itself. A click in this webview is not the
+   * only way one gets opened, and marking only on click meant an automatically
+   * launched terminal left the button looking untouched.
+   *
+   * Recorded per provider rather than per button, because the same launch is
+   * spelled `runLogin` on Grok's panel and `connectProvider` on the adapters'.
+   */
+  function markOnboardingLaunchedByHost(provider) {
+    if (state.onboardingRanMode !== state.onboardingMode) {
+      state.onboardingRanMode = state.onboardingMode;
+      state.onboardingRan = [];
+      state.onboardingLaunched = [];
+    }
+    const list = state.onboardingLaunched || (state.onboardingLaunched = []);
+    if (provider && !list.includes(provider)) list.push(provider);
+    if (!provider && !list.includes("*")) list.push("*");
   }
 
   /**
@@ -6808,12 +6829,21 @@
     if (!onb) return;
     if (state.onboardingRanMode !== state.onboardingMode) return;
     const ran = state.onboardingRan || [];
-    if (!ran.length) return;
+    const launched = state.onboardingLaunched || [];
+    if (!ran.length && !launched.length) return;
+    // The panel's own provider, for Grok's `runLogin` button which carries none.
+    const panelProvider = (state.onboardingInfo && state.onboardingInfo.provider)
+      || (state.onboardingMode === "codex-login" ? "codex"
+        : state.onboardingMode === "claude-login" ? "claude"
+        : state.onboardingMode === "auth-required" ? "grok" : undefined);
     let anyRan = false;
     for (const btn of onb.querySelectorAll(".onb-action")) {
       const act = btn.dataset.act;
       if (!LAUNCH_ACTS.includes(act)) continue;
-      if (!ran.includes(launchKey(act, btn.dataset.provider))) continue;
+      const forProvider = btn.dataset.provider || panelProvider;
+      const hostLaunched = launched.includes("*")
+        || (forProvider && launched.includes(forProvider));
+      if (!ran.includes(launchKey(act, btn.dataset.provider)) && !hostLaunched) continue;
       anyRan = true;
       btn.classList.add("onb-ran", "onb-secondary");
       if (!btn.querySelector(".onb-ran-mark")) {
@@ -6826,10 +6856,13 @@
     }
   }
 
-  function showOnboarding(mode, info) {
+  /** `beforeRender` runs after the mode is set and before markup is built, so a
+   *  host-launched terminal can be recorded against the panel it belongs to. */
+  function showOnboarding(mode, info, beforeRender) {
     info = info || {};
     state.onboardingMode = mode;
     state.onboardingInfo = info;
+    if (beforeRender) beforeRender();
     const welcome = $("welcome");
     if (welcome) welcome.hidden = false;
     state.welcomeVisible = true;
@@ -12955,7 +12988,12 @@
         resetForNewSession();
         break;
       case "onboarding":
-          showOnboarding(msg.state, { platform: msg.platform, reason: msg.reason, provider: msg.provider });
+          // Record the host-launched terminal BEFORE rendering, so the panel is
+          // painted with the done mark already on rather than flashing an
+          // untouched button first.
+          showOnboarding(msg.state, { platform: msg.platform, reason: msg.reason, provider: msg.provider }, () => {
+            if (msg.launched) markOnboardingLaunchedByHost(msg.provider);
+          });
         break;
       case "error":
         if (state.repoSwitchPending) {

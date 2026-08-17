@@ -8101,13 +8101,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // helpers may already have completed, and the explicit Re-check below
         // remains available for interactive terminals still in progress.
         this.watchProviderLogin(provider);
-        if (this.providerConnections()[provider] !== true) {
-          this.post({
-            type: "onboarding",
-            state: providerLoginState(provider),
-            platform: process.platform,
-          });
-        }
+        // ALWAYS show this provider's login panel, and say the terminal was
+        // launched. Two bugs lived in the gate this replaces.
+        //
+        // It only posted when the provider was not marked connected, so
+        // connecting a lapsed Codex from Settings opened its browser flow and
+        // left the chat on whatever panel was already there — no instructions,
+        // and no Re-check button to finish with.
+        //
+        // And `launched` matters because this terminal is opened by the HOST,
+        // not by a click in the webview. The done mark was only set on click, so
+        // an automatically opened terminal left the button looking untouched —
+        // which reads as "that did nothing, press it again".
+        this.post({
+          type: "onboarding",
+          state: providerLoginState(provider),
+          platform: process.platform,
+          provider,
+          launched: true,
+        });
         break;
       }
       case "recheckConnection": {
