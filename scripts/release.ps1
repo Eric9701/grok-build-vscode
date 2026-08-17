@@ -20,9 +20,10 @@
     7. annotated tag vX.Y.Z + push
     8. gh release create vX.Y.Z       with the changelog section as notes
                                        AND the .vsix attached as a release asset
+    9. npm run publish:ovsx           publish that .vsix to Open VSX
 
-  Marketplace publish (vsce) is deliberately NOT here — that's a separate,
-  explicit step (`npm run publish`).
+  Open VSX is part of the release. The VS Code Marketplace is deliberately NOT —
+  that one is the owner's, a separate explicit step (`npm run publish`).
 
 .EXAMPLE
   pwsh scripts\release.ps1
@@ -156,6 +157,15 @@ Run "git push origin $tag" { git push origin $tag }
 # 8. GitHub Release with the vsix attached (always attach - update procedure)
 Run "gh release create $tag" { gh release create $tag --title "Release $tag" --notes-file $notesFile $vsix }
 
-Write-Host "`nReleased $tag with $vsix attached." -ForegroundColor Green
-Write-Host "Marketplace publish is separate: npm run publish" -ForegroundColor DarkGray
-Write-Host "Open VSX publish:                npm run publish:ovsx" -ForegroundColor DarkGray
+# 9. Open VSX. Part of the release, not a reminder printed after it: leaving it
+# to a follow-up step is how a version ships to GitHub and the Marketplace while
+# Open VSX silently stays a release behind. It runs LAST on purpose — everything
+# above is already durable, so a missing token costs a re-run of this one
+# command rather than a half-made release.
+#
+# The VS Code Marketplace is deliberately still NOT here. That one is the
+# owner's to run (`npm run publish`).
+Run "npm run publish:ovsx" { npm run publish:ovsx }
+
+Write-Host "`nReleased $tag with $vsix attached, and published to Open VSX." -ForegroundColor Green
+Write-Host "Marketplace publish is the owner's: npm run publish" -ForegroundColor DarkGray
