@@ -135,7 +135,7 @@ describe("rehydrate during priming does not lose a prompt", () => {
 
   /** Mirror of handleSend's divert decision (pure) — what the host must do. */
   function wouldQueueSend(session: Session): boolean {
-    return !!session.client && !sessionReadyForPrompt(session);
+    return session.priming || (!!session.client && !sessionReadyForPrompt(session));
   }
 
   /** Mirror of divertRacingSend + maybeFlush readiness. */
@@ -181,6 +181,18 @@ describe("rehydrate during priming does not lose a prompt", () => {
     expect(chrome.locked).toBe(true);
     expect(chrome.value).toBe(true);
     expect(sessionReadyForPrompt(session)).toBe(false);
+  });
+
+  it("queues a send on a priming session that has no client yet", () => {
+    const session = new Session();
+    session.priming = true;
+    expect(session.client).toBeUndefined();
+    expect(wouldQueueSend(session)).toBe(true);
+    const { queuedDuringPriming } = queueThenFlushModel(
+      session,
+      "from the phone during sign-out",
+    );
+    expect(queuedDuringPriming).toEqual(["from the phone during sign-out"]);
   });
 
   it("queues a send during priming and flushes the same text when ready", () => {

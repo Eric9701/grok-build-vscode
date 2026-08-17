@@ -278,4 +278,38 @@ describe("send vs concurrent startSession", () => {
     expect(promptControl.calls).toBe(1);
     expect(sidebar.posted.filter((m: HostMsg) => m.type === "userMessage")).toHaveLength(1);
   });
+
+  it("queues a send on a priming replacement that has no client yet", async () => {
+    const sidebar = makeSidebar("/repo");
+    sidebar.focused.priming = true;
+
+    await sidebar.handleSend("from the phone");
+
+    expect(sidebar.focused.queuedSends).toEqual(["from the phone"]);
+    expect(promptControl.starts).toBe(0);
+    expect(promptControl.calls).toBe(0);
+    expect(sidebar.posted.some((m: HostMsg) => m.type === "userMessage")).toBe(false);
+    expect(sidebar.posted.filter((m: HostMsg) => m.type === "queuedSends")).toEqual([
+      { type: "queuedSends", items: ["from the phone"] },
+    ]);
+  });
+
+  it("flushes that queued send once the replacement start finishes", async () => {
+    const sidebar = makeSidebar("/repo");
+    delete sidebar.maybeFlushQueuedSends;
+    sidebar.focused.priming = true;
+    await sidebar.handleSend("from the phone");
+    expect(promptControl.starts).toBe(0);
+
+    await sidebar.startSession(undefined, sidebar.focused);
+    await vi.waitFor(() => {
+      expect(promptControl.calls).toBe(1);
+    });
+
+    expect(promptControl.starts).toBe(1);
+    expect(sidebar.posted.filter((m: HostMsg) => m.type === "userMessage")).toEqual([
+      expect.objectContaining({ type: "userMessage", text: "from the phone" }),
+    ]);
+    expect(sidebar.focused.queuedSends).toEqual([]);
+  });
 });

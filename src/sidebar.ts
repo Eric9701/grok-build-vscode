@@ -705,7 +705,7 @@ export class GrokSidebar {
    *  never rediscovers CLIs on the first-send path. Null until the first
    *  refresh so an unsnapshotted send OMITS the flags instead of reporting a
    *  constructor default as a measurement. */
-  private lastProviderConnected: { grok: boolean; codex: boolean } | null = null;
+  private lastProviderConnected: { grok: boolean; codex: boolean; claude: boolean } | null = null;
   /** Last `postVoiceConfigured` result per normalized cwd. Same send-path
    *  rule: a cwd with no entry is unknown and the field is omitted, never
    *  coerced to false. Rebuilt on each refresh so removed keys cannot serve
@@ -1093,7 +1093,7 @@ export class GrokSidebar {
     const grokConnected = connected.grok === true && located.grok === true;
     const codexConnected = connected.codex === true && located.codex === true;
     const claudeConnected = connected.claude === true && located.claude === true;
-    this.lastProviderConnected = { grok: grokConnected, codex: codexConnected };
+    this.lastProviderConnected = { grok: grokConnected, codex: codexConnected, claude: claudeConnected };
     return {
       type: "providerState",
       providers: [
@@ -9741,6 +9741,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           voiceLanguageSet: !!String(this.voiceSetting(cwd, "voiceLanguage", "") || "").trim(),
           grokConnected: this.lastProviderConnected?.grok,
           codexConnected: this.lastProviderConnected?.codex,
+          claudeConnected: this.lastProviderConnected?.claude,
         },
         {
           appVersion,
@@ -11113,10 +11114,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
       return;
     }
-    // Priming window (spawn → session/new|load): the client object may exist
-    // while sessionId is still unset. A prompt then throws "no session" after
-    // consuming chips — work loss. Queue until startSession flushes on ready.
-    if (session.client && !sessionReadyForPrompt(session)) {
+    // Priming is latched before a client exists (sign-out replacements start
+    // sequentially). A phone send in that gap used to call ensureClient and
+    // race the planned replace. Queue whenever startup already owns this
+    // session — not only when a client is sitting without a session id.
+    if (session.priming || (session.client && !sessionReadyForPrompt(session))) {
       if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
       return;
     }

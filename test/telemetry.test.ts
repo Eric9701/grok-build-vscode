@@ -44,6 +44,7 @@ const REQUIRED: SessionStartProps = {
   voiceLanguageSet: false,
   grokConnected: true,
   codexConnected: false,
+  claudeConnected: false,
 };
 
 describe("aptabaseHost — region from app key", () => {
@@ -172,6 +173,7 @@ describe("buildSessionStartEvent", () => {
       voiceLanguageSet: false,
       grokConnected: true,
       codexConnected: false,
+      claudeConnected: false,
     });
   });
 
@@ -296,6 +298,7 @@ describe("session_start — feature flags + host (analytics)", () => {
       "voiceLanguageSet",
       "grokConnected",
       "codexConnected",
+      "claudeConnected",
     ]);
   });
 });
@@ -383,6 +386,7 @@ describe("sanitizeSessionStartProps — allowlist, no paths, no free text", () =
       voiceLanguageSet: true,
       grokConnected: true,
       codexConnected: false,
+      claudeConnected: false,
     };
     const out = sanitizeSessionStartProps(dirty);
     expect(out).toEqual({
@@ -397,6 +401,7 @@ describe("sanitizeSessionStartProps — allowlist, no paths, no free text", () =
       voiceLanguageSet: true,
       grokConnected: true,
       codexConnected: false,
+      claudeConnected: false,
     });
     for (const value of Object.values(out)) {
       if (typeof value === "string") {
@@ -492,6 +497,7 @@ describe("sanitizeSessionStartProps — allowlist, no paths, no free text", () =
       voiceLanguageSet: true,
       grokConnected: false,
       codexConnected: true,
+      claudeConnected: false,
     };
     const extra = { ...valid, unlistedPicker: true, prompt: "do not send" };
     const out = sanitizeSessionStartProps(extra);
@@ -514,7 +520,7 @@ function sidebarMethodBody(signature: string): string {
 
 function makeTelemetrySidebar(cwd = "/repo"): any {
   const instance = Object.create(GrokSidebar.prototype) as any;
-  instance.lastProviderConnected = { grok: true, codex: false };
+  instance.lastProviderConnected = { grok: true, codex: false, claude: false };
   instance.lastVoiceConfiguredByCwd = new Map([[normalizeRepoPath(cwd), true]]);
   instance.locatedProviders = vi.fn(() => {
     throw new Error("reportSessionStart must not rediscover providers");
@@ -569,6 +575,7 @@ describe("sidebar session_start wiring", () => {
     expect(body).not.toContain("resolveVoiceApiKey(");
     expect(body).toContain("this.lastProviderConnected?.grok");
     expect(body).toContain("this.lastProviderConnected?.codex");
+    expect(body).toContain("this.lastProviderConnected?.claude");
     expect(body).toContain("this.lastVoiceConfiguredByCwd.get(");
   });
 
@@ -591,6 +598,7 @@ describe("sidebar session_start wiring", () => {
         voiceLanguageSet: true,
         grokConnected: true,
         codexConnected: false,
+        claudeConnected: false,
         chatFontScale: 125,
         readRepliesAloud: false,
         soundNotifications: false,
@@ -611,12 +619,12 @@ describe("sidebar session_start wiring", () => {
 
   it("snapshots connected flags when providerState refreshes", () => {
     const sidebar = Object.create(GrokSidebar.prototype) as any;
-    sidebar.providerConnections = vi.fn(() => ({ grok: true, codex: true }));
-    sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: false }));
+    sidebar.providerConnections = vi.fn(() => ({ grok: true, codex: true, claude: true }));
+    sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: false, claude: true }));
     sidebar.providerCliVersions = {};
     sidebar.providerNeedsLogin = {};
     sidebar.providerStateMessage();
-    expect(sidebar.lastProviderConnected).toEqual({ grok: true, codex: false });
+    expect(sidebar.lastProviderConnected).toEqual({ grok: true, codex: false, claude: true });
   });
 
   it("omits voice and provider flags when no snapshot exists (never a fake false)", () => {
@@ -631,6 +639,7 @@ describe("sidebar session_start wiring", () => {
       expect(input.voiceConfigured).toBeUndefined();
       expect(input.grokConnected).toBeUndefined();
       expect(input.codexConnected).toBeUndefined();
+      expect(input.claudeConnected).toBeUndefined();
       const props = telemetry.sanitizeSessionStartProps(
         telemetry.buildSessionStartEvent(
           input as any,
@@ -640,6 +649,7 @@ describe("sidebar session_start wiring", () => {
       expect(props).not.toHaveProperty("voiceConfigured");
       expect(props).not.toHaveProperty("grokConnected");
       expect(props).not.toHaveProperty("codexConnected");
+      expect(props).not.toHaveProperty("claudeConnected");
     } finally {
       spy.mockRestore();
     }

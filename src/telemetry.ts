@@ -76,6 +76,7 @@ export interface SessionStartProps {
   /** Omitted (undefined) until the first providerState refresh. */
   grokConnected?: boolean;
   codexConnected?: boolean;
+  claudeConnected?: boolean;
   /** Browser-owned AFK Pilot preferences. Omitted until a remote reports them. */
   remoteFontScale?: number;
   remoteReadRepliesAloud?: boolean;
@@ -119,6 +120,7 @@ export const SESSION_START_ALLOWED_KEYS = [
   "voiceLanguageSet",
   "grokConnected",
   "codexConnected",
+  "claudeConnected",
 ] as const;
 
 const ALLOWED_MODES = new Set<string>(["agent", "plan", "yolo"]);
@@ -250,6 +252,8 @@ export function sanitizeSessionStartProps(raw: unknown): Record<string, string |
   if (grokConnected !== undefined) picked.grokConnected = grokConnected;
   const codexConnected = pickBoolean(src.codexConnected);
   if (codexConnected !== undefined) picked.codexConnected = codexConnected;
+  const claudeConnected = pickBoolean(src.claudeConnected);
+  if (claudeConnected !== undefined) picked.claudeConnected = claudeConnected;
 
   // The allowlist is the only way a key can leave. A picker for an unlisted
   // name writes into `picked` and is dropped here.

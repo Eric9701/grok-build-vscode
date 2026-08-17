@@ -19,6 +19,10 @@ The adapter is compiled ESM, not a single bundle like `codex-acp`.
   `@anthropic-ai/claude-agent-sdk-*` packages (~300MB) must not.
 - Set `CLAUDE_CODE_EXECUTABLE` to the user's official `claude` CLI. Without
   it the adapter looks for those optional natives.
+- That path must be a native executable. The SDK spawn is `shell: false`;
+  modern Node rejects a Windows `.cmd` with `EINVAL`. `locateClaudeCli`
+  prefers `claude.exe` and `resolveClaudeSpawnTarget` follows an npm
+  `claude.cmd` shim to the package `bin/claude.exe`.
 
 It does **not** need us to install Claude. Find `claude` on PATH (or
 `grok.claudeCliPath` / well-known user-bin paths) and spawn.
