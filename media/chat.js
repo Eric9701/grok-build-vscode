@@ -1779,7 +1779,11 @@
 
     const used = state.usedTokens || 0;
     const pct = Math.min(100, Math.round((used / state.contextWindow) * 100));
-    info("Context used", `${tok(used)} / ${tok(state.contextWindow)} (${pct}%)`);
+    const adapterContext = state.activeProvider === "claude" || state.activeProvider === "codex";
+    info(
+      adapterContext ? "Last prompt" : "Context used",
+      `${tok(used)} / ${tok(state.contextWindow)} (${pct}%)`,
+    );
 
     // Compact sits directly under the context line — it is the action ON that
     // number, so it belongs to it, not stranded below the billing sections.
@@ -1813,6 +1817,7 @@
       section("Session total");
       row(sess, "Input", "inputTokens");
       row(sess, "↳ cache read", "cachedReadTokens");
+      row(sess, "↳ cache write", "cachedWriteTokens");
       row(sess, "Output", "outputTokens");
       row(sess, "Cost", "costUsdTicks", usdTicks);
     }
@@ -1827,6 +1832,7 @@
       contextPopover.appendChild(body);
       row(turn, "Input", "inputTokens", null, body);
       row(turn, "↳ cache read", "cachedReadTokens", null, body);
+      row(turn, "↳ cache write", "cachedWriteTokens", null, body);
       row(turn, "Output", "outputTokens", null, body);
       row(turn, "↳ reasoning", "reasoningTokens", null, body);
       row(turn, "Cost", "costUsdTicks", usdTicks, body);
@@ -1846,7 +1852,9 @@
 
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
-    fine.textContent = turn || sess
+    fine.textContent = adapterContext
+      ? "This adapter reports the last turn's prompt size (input plus cache), not a running conversation occupancy. The number can move down between turns with no compaction."
+      : turn || sess
       ? "Context is how full the window is. Token counts are billed usage tracked here — each model call re-sends the conversation, so a turn bills far more than the context it holds."
       : "Counted by the CLI at the end of each turn.";
     contextPopover.appendChild(fine);
@@ -9673,6 +9681,20 @@
     el.appendChild(line);
   }
 
+  function resolvePermissionCardEl(el, opt, fallbackTitle) {
+    if (el._planShown) {
+      resolvePlanCardEl(el, /reject|deny/i.test(opt && opt.kind) ? "rejected" : "approved");
+      return;
+    }
+    if (el.classList.contains("plan")) {
+      // A switch_mode card with no plan text is a mode question. Do not claim
+      // a plan was approved.
+      collapsePermissionCard(el, opt && opt.kind, (opt && opt.name) || "mode change");
+      return;
+    }
+    collapsePermissionCard(el, opt && opt.kind, fallbackTitle);
+  }
+
   function renderPermissionActions(el, requestId, cardTitle, rawOptions) {
     const oldActions = el.querySelector(".card-actions");
     if (oldActions) oldActions.remove();
@@ -9711,7 +9733,7 @@
         });
         // Collapse to one muted line and show the working indicator — grok
         // resumes the turn after the answer.
-        collapsePermissionCard(el, opt.kind, cardTitle);
+        resolvePermissionCardEl(el, opt, cardTitle);
         showGrokking();
         // Return the caret to the composer so the next message can be typed
         // immediately — answering must not orphan focus on the collapsed card
@@ -9752,9 +9774,67 @@
     const cards = [...messagesEl.querySelectorAll(".card.permission")];
     const el = cards.find((card) =>
       card.dataset.permReqId === String(requestId) &&
-      !card.classList.contains("perm-resolved")
+      !card.classList.contains("perm-resolved") &&
+      !card.classList.contains("resolved")
     );
     if (el) renderPermissionActions(el, requestId, el._permTitle, options);
+  }
+
+  function isPlanReviewTool(call) {
+    return String((call && call.kind) || "").toLowerCase() === "switch_mode";
+  }
+
+  function addPlanReviewPermissionCard(req) {
+    clearWelcome();
+    hideGrokking();
+    commitAgentTurn();
+    const planText = typeof req.plan === "string" ? req.plan : "";
+    const hasPlan = !!planText.trim();
+    const el = document.createElement("div");
+    el.className = "card plan permission";
+    el.dataset.permReqId = String(req.id);
+    el._permTitle = req.toolCall?.title || "Plan review";
+    el._planShown = hasPlan;
+
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = "Plan ready for review";
+    el.appendChild(title);
+
+    const sub = document.createElement("div");
+    sub.className = "card-subtitle";
+    sub.textContent = hasPlan
+      ? "Nothing has been written yet. Choose how to continue."
+      : "The agent asked to leave plan mode, but did not include the plan text.";
+    el.appendChild(sub);
+
+    const body = document.createElement("div");
+    body.className = "plan-body";
+    if (hasPlan) {
+      body.innerHTML = renderMarkdown(planText);
+      applyAutoDir(body);
+      renderMermaidIn(body);
+    } else {
+      body.textContent = "No plan was provided with this request.";
+    }
+    el.appendChild(body);
+
+    const { buttons, defaultIndex } =
+      renderPermissionActions(el, req.id, el._permTitle, req.options);
+    messagesEl.appendChild(el);
+    el.querySelectorAll("pre").forEach((pre) => pre._syncOverflowAffordance?.());
+    forceScrollToBottom();
+    if (
+      defaultIndex >= 0 &&
+      shouldFocusPermissionCard({
+        replaying: state.replaying,
+        composing: state.composingIME,
+        composerText: input.value,
+        defaultIndex,
+      })
+    ) {
+      focusPermissionButton(buttons, defaultIndex);
+    }
   }
 
   function addPermissionCard(req) {
@@ -9764,6 +9844,10 @@
     // grok's continuation after the answer renders BELOW this card, not appended
     // to the bubble that was streaming above it.
     commitAgentTurn();
+    if (typeof req.plan === "string" || isPlanReviewTool(req.toolCall)) {
+      addPlanReviewPermissionCard(req);
+      return;
+    }
     const cardTitle = req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`;
     const el = document.createElement("div");
     el.className = "card permission";
@@ -10603,7 +10687,10 @@
     donutArc.setAttribute("stroke", color);
     donutLabel.textContent = `${toK(used)}/${toK(max)}`;
     donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
-    donutEl.title = `Context usage — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
+    const adapterContext = state.activeProvider === "claude" || state.activeProvider === "codex";
+    donutEl.title = adapterContext
+      ? `Last prompt — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`
+      : `Context usage — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
   }
 
   // ---------- slash autocomplete ----------
@@ -12135,6 +12222,10 @@
       case "toolCall":
         advanceHistoryEvent();
         if (state.suppressReplayTurn) break; // tool calls inside the primer turn (unlikely but defensive)
+        if (isPlanReviewTool(msg.call)) {
+          // Plan text belongs on the review card, not a generic tool row.
+          break;
+        }
         if (isQuestionTool(msg.call)) {
           // No generic tool chip — the question card stands in for it.
           if (state.replaying) {
@@ -12185,6 +12276,7 @@
       case "toolCallUpdate": {
         advanceHistoryEvent();
         if (state.suppressReplayTurn) break;
+        if (isPlanReviewTool(msg.call)) break;
         // Resume: anchor a restored permission card here — the update carries the
         // tool's real title (the tool_call is often a generic "Shell"/"Grep"), so
         // a card saved without a toolCallId still matches by title.
@@ -12342,10 +12434,14 @@
         // live right after the user answers — collapse the matching card if it's
         // still active. Idempotent: a live click already collapsed it.
         const cards = [...messagesEl.querySelectorAll(".card.permission")];
-        const el = cards.find((c) => c.dataset.permReqId === String(msg.requestId) && !c.classList.contains("perm-resolved"));
+        const el = cards.find((c) =>
+          c.dataset.permReqId === String(msg.requestId) &&
+          !c.classList.contains("perm-resolved") &&
+          !c.classList.contains("resolved")
+        );
         if (el) {
           const opt = (el._permOptions || []).find((o) => o.optionId === msg.optionId);
-          collapsePermissionCard(el, opt && opt.kind, el._permTitle);
+          resolvePermissionCardEl(el, opt, el._permTitle);
         }
         break;
       }

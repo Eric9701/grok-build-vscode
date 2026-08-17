@@ -885,6 +885,39 @@ export function isPlanReviewPermission(toolKind?: string): boolean {
 }
 
 /**
+ * Codex puts the plan on `rawInput.plan`. Claude ExitPlanMode puts the same
+ * string there and also as a `content` text block. Empty means the adapter
+ * asked for a mode change without sending anything to review.
+ */
+export function planTextFromPermissionToolCall(toolCall?: {
+  rawInput?: unknown;
+  content?: unknown;
+} | null): string {
+  const raw = toolCall?.rawInput as { plan?: unknown } | undefined;
+  if (typeof raw?.plan === "string" && raw.plan.trim()) return raw.plan;
+  const blocks = Array.isArray(toolCall?.content) ? toolCall.content : [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const rec = block as Record<string, unknown>;
+    if (rec.type === "content" && rec.content && typeof rec.content === "object") {
+      const inner = rec.content as Record<string, unknown>;
+      if (inner.type === "text" && typeof inner.text === "string" && inner.text.trim()) {
+        return inner.text;
+      }
+    }
+    if ((rec.type === "text" || rec.type === "input_text") && typeof rec.text === "string" && rec.text.trim()) {
+      return rec.text;
+    }
+  }
+  return "";
+}
+
+/** Adapter allow options implement the plan; reject keeps planning. */
+export function planReviewVerdictForOption(kind?: string): "approved" | "rejected" {
+  return kind && /reject|deny/i.test(kind) ? "rejected" : "approved";
+}
+
+/**
  * Pick the option that means "no" from a permission request's options. Prefers
  * an explicit `reject_once`, then any reject/deny kind; returns undefined if the
  * request offers no way to decline (caller should then fall back to the user).

@@ -280,3 +280,68 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect(notices[2]).toContain("Plan mode blocked a write to src/app.ts");
   });
 });
+
+describe("adapter plan-review permission card", () => {
+  const claudeReview = {
+    type: "permissionRequest" as const,
+    req: {
+      id: 80,
+      toolCall: { toolCallId: "exit-plan-1", title: "Ready to code?", kind: "switch_mode" },
+      options: [
+        { optionId: "default", kind: "allow_once", name: "Yes, and manually approve edits" },
+        { optionId: "acceptEdits", kind: "allow_always", name: "Yes, and auto-accept edits" },
+        { optionId: "plan", kind: "reject_once", name: "No, keep planning" },
+      ],
+      plan: "# Ship it\n\n1. Change the donut",
+    },
+  };
+
+  it("renders the plan with the adapter's mode options", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, claudeReview);
+
+    const card = doc.querySelector(".card.plan.permission")!;
+    expect(card.querySelector(".card-title")!.textContent).toBe("Plan ready for review");
+    expect(card.querySelector(".plan-body")!.textContent).toContain("Change the donut");
+    expect([...card.querySelectorAll(".card-actions button")].map((b) => b.textContent)).toEqual([
+      "Yes, and manually approve edits",
+      "Yes, and auto-accept edits",
+      "No, keep planning",
+    ]);
+
+    const approve = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Yes, and manually approve edits") as HTMLButtonElement;
+    click(window, approve);
+    expect(posted).toContainEqual({
+      type: "permissionAnswer",
+      requestId: 80,
+      optionId: "default",
+    });
+    expect(card.querySelector(".plan-verdict-label")!.textContent).toBe("Approved");
+  });
+
+  it("does not claim a plan was approved when no plan text arrived", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "permissionRequest",
+      req: {
+        id: 81,
+        toolCall: { toolCallId: "exit-plan-empty", title: "Ready to code?", kind: "switch_mode" },
+        options: [
+          { optionId: "default", kind: "allow_once", name: "Yes, and manually approve edits" },
+          { optionId: "plan", kind: "reject_once", name: "No, keep planning" },
+        ],
+        plan: "",
+      },
+    });
+
+    const card = doc.querySelector(".card.plan.permission")!;
+    expect(card.querySelector(".plan-body")!.textContent).toBe("No plan was provided with this request.");
+    const approve = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Yes, and manually approve edits") as HTMLButtonElement;
+    click(window, approve);
+    expect(card.querySelector(".plan-verdict-label")).toBeNull();
+    expect(card.textContent).not.toMatch(/Plan approved|Approved/i);
+    expect(card.textContent).toContain("Yes, and manually approve edits");
+  });
+});

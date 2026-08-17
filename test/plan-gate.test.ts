@@ -10,6 +10,8 @@ import {
   permissionAnswerAllowed,
   permissionOptionsForPlan,
   isPlanReviewPermission,
+  planReviewVerdictForOption,
+  planTextFromPermissionToolCall,
   pickRejectOption,
   shouldBlockWrite,
   shouldBlockTerminal,
@@ -711,6 +713,17 @@ describe("permission gating", () => {
     expect(isPlanReviewPermission("edit")).toBe(false);
     expect(isPlanReviewPermission("execute")).toBe(false);
     expect(isPlanReviewPermission(undefined)).toBe(false);
+  });
+
+  it("reads Codex rawInput.plan and Claude content-block plan text", () => {
+    expect(planTextFromPermissionToolCall({ rawInput: { plan: "# Plan\n\n1. Change it" } }))
+      .toBe("# Plan\n\n1. Change it");
+    expect(planTextFromPermissionToolCall({
+      content: [{ type: "content", content: { type: "text", text: "Claude plan" } }],
+    })).toBe("Claude plan");
+    expect(planTextFromPermissionToolCall({ rawInput: { plan: "   " }, content: [] })).toBe("");
+    expect(planReviewVerdictForOption("allow_once")).toBe("approved");
+    expect(planReviewVerdictForOption("reject_once")).toBe("rejected");
   });
 });
 

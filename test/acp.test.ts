@@ -69,6 +69,37 @@ describe("AcpClient notification metadata", () => {
     expect(seen).toEqual([5487, 15781, 16015]);
   });
 
+  it("emits the adapter usage_update window even when the live model id is missing or unmatched", () => {
+    const { client } = clientWithFakeProc({ backend: new ClaudeBackend() });
+    const seen: Array<{ used: number; window?: number }> = [];
+    client.on("contextUsage", (used, window) => seen.push({ used, window }));
+
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 35671, size: 1000000 } },
+    }));
+    expect(seen).toEqual([{ used: 35671, window: 1000000 }]);
+
+    (client as any).currentModelId = "opus[1m]";
+    (client as any).availableModels = [{ modelId: "claude-opus-4-6", name: "Opus" }];
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 35709, size: 1000000 } },
+    }));
+    expect(seen[1]).toEqual({ used: 35709, window: 1000000 });
+    expect((client as any).availableModels[0].totalContextTokens).toBeUndefined();
+
+    (client as any).currentModelId = "claude-opus-4-6";
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { update: { sessionUpdate: "usage_update", used: 35709, size: 1000000 } },
+    }));
+    expect((client as any).availableModels[0].totalContextTokens).toBe(1000000);
+  });
+
   it("preserves session/update metadata on routed text events", () => {
     const { client } = clientWithFakeProc();
     const seen: unknown[] = [];

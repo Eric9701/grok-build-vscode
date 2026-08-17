@@ -100,9 +100,9 @@ describe("Codex ACP integration (real subprocess, fake adapter)", () => {
       _meta: { codex: { kind: "plan_review" } },
     });
     expect(meta).toMatchObject({
-      totalTokens: 100,
+      totalTokens: 80,
       reasoningTokens: 10,
-      usage: { inputTokens: 60, outputTokens: 30, cachedReadTokens: 20, reasoningTokens: 10 },
+      usage: { inputTokens: 60, outputTokens: 30, cachedReadTokens: 20, totalTokens: 100, reasoningTokens: 10 },
     });
     expect(meta.usage?.costUsdTicks).toBeUndefined();
   });

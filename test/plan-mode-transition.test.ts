@@ -242,6 +242,13 @@ describe("Plan permission same-chunk raise", () => {
     expect(reply?.result?.outcome?.optionId).not.toBe("acceptEdits");
     expect(reply?.result?.outcome?.optionId).not.toBe("default");
     expect(client.usesClientPlanGate).toBe(false);
+    expect(sidebar.emit).toHaveBeenCalledWith(
+      session,
+      expect.objectContaining({
+        type: "permissionRequest",
+        req: expect.objectContaining({ plan: "# Plan\n\n1. Change it" }),
+      }),
+    );
   });
 
   it("does not apply grok's Plan write refusal to a same-chunk Codex edit", async () => {

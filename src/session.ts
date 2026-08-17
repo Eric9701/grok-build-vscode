@@ -18,6 +18,8 @@ export interface PendingPermission {
   title: string;
   toolCallId?: string;
   toolKind?: string;
+  /** Adapter plan-review text, when the permission carried one. */
+  plan?: string;
   /** Full option set offered by the CLI. */
   options: PendingPermissionOption[];
   /** Subset safe to expose while the client-side Plan gate remains active. */

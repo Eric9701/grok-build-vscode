@@ -65,3 +65,19 @@ Claude has a native `plan` permission mode described as "no actual tool
 execution", plus `bypassPermissions` for Auto accept. The client plan gate
 exists because grok's Plan still lets shell through. It is not applied here
 (`usesClientPlanGate: false`).
+
+Plan review is `ExitPlanMode` over `session/request_permission` with
+`kind: "switch_mode"` and title `"Ready to code?"`. The plan string is
+`toolUse.input.plan`, forwarded as `rawInput.plan` and as a `content`
+text block. The host lifts that with `planTextFromPermissionToolCall`
+and the webview shows grok's plan-review card plus Claude's mode options
+(`default` / `acceptEdits` / `auto` / `bypassPermissions` / keep planning).
+
+## Context usage
+
+`usage_update.used` and prompt `usage.totalTokens` are the billed sum
+(`input + output + cache_read + cache_write`). Occupancy for the donut
+is `adapterContextOccupancy` (those partitions minus output). `size` is
+the window and must ride `contextUsage.window` — Claude's live id is
+often `opus[1m]`, which does not match the picker model list, so stamping
+`availableModels[].totalContextTokens` alone never updates the webview.

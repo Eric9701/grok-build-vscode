@@ -10,6 +10,7 @@ import type {
   BackendSpawnSpec,
   BackendUpdate,
 } from "./acp-backend";
+import { adapterContextOccupancy } from "./acp-dispatch";
 
 export const CODEX_ACP_ADAPTER_VERSION = packageManifest.dependencies["@agentclientprotocol/codex-acp"];
 
@@ -89,16 +90,19 @@ export function normalizeCodexPromptResult(result: any): any {
     outputTokens: finiteNumber(usage.outputTokens),
     totalTokens: finiteNumber(usage.totalTokens),
     cachedReadTokens: finiteNumber(usage.cachedReadTokens),
+    cachedWriteTokens: finiteNumber(usage.cachedWriteTokens),
     reasoningTokens: finiteNumber(usage.thoughtTokens),
   };
   return {
     ...result,
     _meta: {
       ...(result?._meta ?? {}),
-      totalTokens: finiteNumber(usage.totalTokens),
+      // Donut occupancy, not the billed sum the adapter puts in usage.totalTokens.
+      totalTokens: adapterContextOccupancy(normalizedUsage) ?? finiteNumber(usage.totalTokens),
       inputTokens: finiteNumber(usage.inputTokens),
       outputTokens: finiteNumber(usage.outputTokens),
       cachedReadTokens: finiteNumber(usage.cachedReadTokens),
+      cachedWriteTokens: finiteNumber(usage.cachedWriteTokens),
       reasoningTokens: finiteNumber(usage.thoughtTokens),
       usage: normalizedUsage,
     },

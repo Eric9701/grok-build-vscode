@@ -125,9 +125,12 @@ export interface PermissionRequest {
     kind: string; // "edit" | "execute" | "read" | ...
     title: string;
     rawInput?: any;
+    content?: unknown;
   };
   options: PermissionOption[];
   _meta?: any;
+  /** Present on adapter `switch_mode` reviews (possibly empty). */
+  plan?: string;
 }
 
 export interface ExitPlanRequest {
@@ -252,6 +255,7 @@ export class AcpClient extends EventEmitter {
   availableCommands: SlashCommand[] = [];
   lastMeta?: PromptResultMeta;
   private lastContextUsed?: number;
+  private lastContextWindow?: number;
   private currentSessionTitle?: string;
   /**
    * The session's effective reasoning effort. Seeded from the spawn flag
@@ -1023,8 +1027,14 @@ export class AcpClient extends EventEmitter {
         this.currentSessionTitle = normalized.sessionTitle;
         this.emit("sessionTitle", normalized.sessionTitle);
       }
-      if (normalized.contextWindow !== undefined && this.currentModelId) {
-        const model = this.availableModels.find((entry) => entry.modelId === this.currentModelId);
+      if (normalized.contextWindow !== undefined) {
+        this.lastContextWindow = normalized.contextWindow;
+        // Claude's live id is often an alias (`opus[1m]`) that is not the
+        // picker value. Still keep the window — the webview reads it off
+        // contextUsage, not the model catalog.
+        const model = this.currentModelId
+          ? this.availableModels.find((entry) => entry.modelId === this.currentModelId)
+          : undefined;
         if (model) model.totalContextTokens = normalized.contextWindow;
       }
     }
@@ -1033,9 +1043,10 @@ export class AcpClient extends EventEmitter {
     meta = normalized.meta;
     if (!foreign) {
       const contextUsed = contextUsedFromUpdateEnvelope(meta);
-      if (contextUsed !== null && contextUsed !== this.lastContextUsed) {
-        this.lastContextUsed = contextUsed;
-        this.emit("contextUsage", contextUsed);
+      const usedChanged = contextUsed !== null && contextUsed !== this.lastContextUsed;
+      if (usedChanged) this.lastContextUsed = contextUsed;
+      if ((usedChanged || normalized.contextWindow !== undefined) && this.lastContextUsed != null) {
+        this.emit("contextUsage", this.lastContextUsed, this.lastContextWindow);
       }
     }
     const r = routeSessionUpdate(u);

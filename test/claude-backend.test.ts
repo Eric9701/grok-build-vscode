@@ -116,15 +116,30 @@ describe("Claude output and usage normalization", () => {
       .toEqual({ sessionTitle: "Named" });
   });
 
-  it("maps prompt usage into existing meta", () => {
+  it("maps prompt usage into existing meta and keeps occupancy off the billed total", () => {
     const result = normalizeClaudePromptResult({
       stopReason: "end_turn",
-      usage: { totalTokens: 40, inputTokens: 25, outputTokens: 15, cachedReadTokens: 5, thoughtTokens: 3 },
+      usage: {
+        totalTokens: 35671,
+        inputTokens: 2,
+        outputTokens: 12,
+        cachedReadTokens: 25408,
+        cachedWriteTokens: 10249,
+        thoughtTokens: 3,
+      },
     });
     expect(result._meta).toMatchObject({
-      totalTokens: 40,
+      totalTokens: 35659,
+      cachedWriteTokens: 10249,
       reasoningTokens: 3,
-      usage: { totalTokens: 40, inputTokens: 25, outputTokens: 15, cachedReadTokens: 5, reasoningTokens: 3 },
+      usage: {
+        totalTokens: 35671,
+        inputTokens: 2,
+        outputTokens: 12,
+        cachedReadTokens: 25408,
+        cachedWriteTokens: 10249,
+        reasoningTokens: 3,
+      },
     });
   });
 });

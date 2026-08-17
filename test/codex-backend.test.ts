@@ -115,7 +115,7 @@ describe("Codex output and usage normalization", () => {
       _meta: { quota: { token_count: 90, model_usage: [{ model: "gpt-5.6-sol", inputTokens: 50 }] } },
     });
     expect(result._meta).toMatchObject({
-      totalTokens: 90,
+      totalTokens: 70,
       reasoningTokens: 10,
       usage: { totalTokens: 90, inputTokens: 50, cachedReadTokens: 20, outputTokens: 30, reasoningTokens: 10 },
       quota: { token_count: 90 },

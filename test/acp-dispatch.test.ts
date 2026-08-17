@@ -4,6 +4,7 @@ import {
   addUsage,
   sumUsage,
   collectToolImages,
+  adapterContextOccupancy,
   contextUsedFromCompactNotification,
   contextUsedFromUpdateEnvelope,
   enforceCompleteSessionCost,
@@ -319,6 +320,30 @@ describe("gateZeroTokenMeta (#39)", () => {
   it("passes absent totalTokens through unchanged", () => {
     const meta = { inputTokens: 80 };
     expect(gateZeroTokenMeta(meta)).toBe(meta);
+  });
+});
+
+describe("adapterContextOccupancy", () => {
+  it("sums the disjoint prompt partitions and ignores output", () => {
+    expect(adapterContextOccupancy({
+      inputTokens: 2,
+      outputTokens: 12,
+      cachedReadTokens: 25408,
+      cachedWriteTokens: 10249,
+      totalTokens: 35671,
+    })).toBe(35659);
+    expect(adapterContextOccupancy({
+      inputTokens: 7791,
+      outputTokens: 21,
+      cachedReadTokens: 11008,
+      totalTokens: 18820,
+    })).toBe(18799);
+  });
+
+  it("falls back to billed minus output when input is absent", () => {
+    expect(adapterContextOccupancy({ totalTokens: 18820, outputTokens: 21 })).toBe(18799);
+    expect(adapterContextOccupancy({ totalTokens: 90 })).toBe(90);
+    expect(adapterContextOccupancy(undefined)).toBeUndefined();
   });
 });
 

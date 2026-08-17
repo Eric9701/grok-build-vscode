@@ -166,7 +166,7 @@ import {
   unreferencedUploadsForRemovedSessions,
 } from "./file-upload";
 import { MAX_DIFF_EXPAND_BYTES, expandDiffToWholeFile } from "./diff-view";
-import { applyAgentModeToHostPlan, effectivePlanActive, isPlanReviewPermission, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { applyAgentModeToHostPlan, effectivePlanActive, isPlanReviewPermission, permissionAnswerAllowed, permissionOptionsForPlan, pickRejectOption, planReviewVerdictForOption, planTextFromPermissionToolCall, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, planRestoreSource, truncateResolvedAfter, countsAsUserBubble, decideRestoreState, isInterjectionText } from "./plan-restore";
 import {
   planReviewFileName,
@@ -2280,11 +2280,17 @@ Only continue if you trust this code.`,
     const sid = session.activeSessionId ?? session.client?.sessionId;
     if (!sid) return;
     const outcome = permissionOutcomeFor(pending.options, optionId);
+    const chosen = pending.options.find((option) => option.optionId === optionId);
+    // A switch_mode card with no plan text is a mode question, not a plan
+    // review — persist the option they picked, not "Ready to code?".
+    const title = isPlanReviewPermission(pending.toolKind) && !pending.plan?.trim()
+      ? (chosen?.name || pending.title)
+      : pending.title;
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[sid] ?? {};
     const permissions = [
       ...(cur.permissions ?? []),
-      { title: pending.title, outcome, toolCallId: pending.toolCallId, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount },
+      { title, outcome, toolCallId: pending.toolCallId, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount },
     ];
     void this.state.update(SESSION_META_KEY, {
       ...overrides,
@@ -2360,17 +2366,28 @@ Only continue if you trust this code.`,
       });
       return;
     }
+    const plan = isPlanReviewPermission(req.toolCall?.kind)
+      ? planTextFromPermissionToolCall(req.toolCall)
+      : undefined;
     session.pendingPermissions.set(req.id, createPendingPermission({
       title: req.toolCall?.title || `permission: ${req.toolCall?.kind || "tool"}`,
       toolCallId: req.toolCall?.toolCallId,
       toolKind: req.toolCall?.kind,
+      plan,
       options: (req.options ?? []).map((o) => ({
         optionId: o.optionId,
         kind: o.kind,
         name: o.name,
       })),
     }));
-    this.emit(session, { type: "permissionRequest", req: { ...req, options: visibleOptions } });
+    this.emit(session, {
+      type: "permissionRequest",
+      req: {
+        ...req,
+        options: visibleOptions,
+        ...(plan !== undefined ? { plan } : {}),
+      },
+    });
     this.setStatus(session, "needs-you");
   }
 
@@ -6837,9 +6854,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // fetch the stale pre-compact count (the CLI recomputes it only at the
       // next inference turn's end; research/signals-refresh-probe.cjs).
     });
-    client.on("contextUsage", (used: number) => {
+    client.on("contextUsage", (used: number, window?: number) => {
       if (gen !== session.gen) return;
-      this.emit(session, { type: "contextUsage", used });
+      this.emit(session, {
+        type: "contextUsage",
+        used,
+        ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { window } : {}),
+      });
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -7019,13 +7040,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // plan.md — which rewind doesn't truncate — and resurrected the very
         // plan the user had just removed, labelled "Restored from the previous
         // session".
-        const saved = client.usesClientPlanGate ? overrides[resumeId]?.plans : undefined;
-        if (client.usesClientPlanGate) {
-          const planSource = planRestoreSource(saved);
-          if (planSource === "saved") {
-            this.emit(session, { type: "planHistoryQueue", plans: await this.withPlanReviewPaths(saved!, resumeId) });
-            session.lastPlanText = saved![saved!.length - 1].text;
-          } else if (planSource === "disk") {
+        const saved = overrides[resumeId]?.plans;
+        const planSource = planRestoreSource(saved);
+        if (planSource === "saved") {
+          this.emit(session, { type: "planHistoryQueue", plans: await this.withPlanReviewPaths(saved!, resumeId) });
+          session.lastPlanText = saved![saved!.length - 1].text;
+        } else if (client.usesClientPlanGate && planSource === "disk") {
             // Legacy Grok session (no per-plan persistence): fall back to the
             // on-disk latest plan, which we'll render at the bottom after replay.
             const sessDir = sessionDirFor(resolveGrokHome(process.env), cwd, resumeId, { fs: defaultFs });
@@ -7053,7 +7073,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
                 this.host.appendLine(`[plan-restore] ${(e as Error).message}`);
               }
             }
-          }
         }
 
         const loadAt = clock.now();
@@ -7685,9 +7704,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           // replays the card collapsed instead of active (the live collapse is a
           // webview-only DOM mutation that the buffer never captured).
           this.emit(session, { type: "permissionResolved", requestId: msg.requestId, optionId: msg.optionId });
-          // Persist it (title + outcome) so a cold reload replays a collapsed card —
-          // the CLI doesn't replay request_permission on session/load.
-          this.persistPermissionAnswer(session, msg.requestId, msg.optionId);
+          const chosen = pending.options.find((option) => option.optionId === msg.optionId);
+          if (isPlanReviewPermission(pending.toolKind) && pending.plan?.trim()) {
+            this.persistPlanVerdict(
+              session,
+              planReviewVerdictForOption(chosen?.kind),
+              pending.plan,
+            );
+            session.pendingPermissions.delete(msg.requestId);
+          } else {
+            // Persist it (title + outcome) so a cold reload replays a collapsed card —
+            // the CLI doesn't replay request_permission on session/load.
+            this.persistPermissionAnswer(session, msg.requestId, msg.optionId);
+          }
           this.closeDiffForRequest(session, msg.requestId); // tidy up the auto-opened diff (#21)
           this.setStatus(session, "working"); // turn resumes after the answer
           break;

@@ -324,7 +324,9 @@ export function childStreamFromRoute(
  * 16371 context vs 32488 billed. The two never decompose into each other, so the
  * donut arc stays context-only and this drives the popover's usage rows (#53).
  *
- * There is **no cache-CREATION field** anywhere in the CLI — only `cachedRead`.
+ * There is **no cache-CREATION field** anywhere in the grok CLI — only `cachedRead`.
+ * Claude/Codex may send `cachedWriteTokens`; keep it when present so occupancy
+ * can be derived without inventing grok cache-write rows.
  * Wire capture: research/grok-build-oss-findings.md § 3b.
  */
 export interface PromptUsage {
@@ -332,6 +334,7 @@ export interface PromptUsage {
   outputTokens?: number;
   totalTokens?: number;
   cachedReadTokens?: number;
+  cachedWriteTokens?: number;
   reasoningTokens?: number;
   modelCalls?: number;
   apiDurationMs?: number;
@@ -345,6 +348,7 @@ export interface PromptResultMeta {
   inputTokens?: number;
   outputTokens?: number;
   cachedReadTokens?: number;
+  cachedWriteTokens?: number;
   reasoningTokens?: number;
   modelId?: string;
   usage?: PromptUsage;
@@ -362,6 +366,7 @@ export function extractPromptUsage(meta: any): PromptUsage | undefined {
     outputTokens: num(u.outputTokens),
     totalTokens: num(u.totalTokens),
     cachedReadTokens: num(u.cachedReadTokens),
+    ...(num(u.cachedWriteTokens) !== undefined ? { cachedWriteTokens: num(u.cachedWriteTokens) } : {}),
     reasoningTokens: num(u.reasoningTokens),
     modelCalls: num(u.modelCalls),
     apiDurationMs: num(u.apiDurationMs),
@@ -378,6 +383,7 @@ export function extractPromptMeta(result: any): PromptResultMeta {
     inputTokens: m.inputTokens,
     outputTokens: m.outputTokens,
     cachedReadTokens: m.cachedReadTokens,
+    cachedWriteTokens: m.cachedWriteTokens,
     reasoningTokens: m.reasoningTokens,
     modelId: m.modelId,
     usage: extractPromptUsage(m),
@@ -401,8 +407,8 @@ export function addUsage(a: PromptUsage | undefined, b: PromptUsage | undefined)
   if (!b) return { ...a };
   const keys: (keyof PromptUsage)[] = [
     "inputTokens", "outputTokens", "totalTokens", "cachedReadTokens",
-    "reasoningTokens", "modelCalls", "apiDurationMs", "numTurns",
-    "costUsdTicks",
+    "cachedWriteTokens", "reasoningTokens", "modelCalls", "apiDurationMs",
+    "numTurns", "costUsdTicks",
   ];
   const out: PromptUsage = {};
   for (const k of keys) {
@@ -505,6 +511,34 @@ export function gateZeroTokenMeta(meta: PromptResultMeta): PromptResultMeta {
 export function contextUsedFromUpdateEnvelope(meta: unknown): number | null {
   const used = (meta as { totalTokens?: unknown } | null | undefined)?.totalTokens;
   return typeof used === "number" && Number.isFinite(used) && used > 0 ? used : null;
+}
+
+/**
+ * Adapter occupancy is the prompt actually sent this turn: uncached input plus
+ * cache read and cache write. Those three partitions are disjoint on both
+ * Claude and Codex. `usage.totalTokens` / `usage_update.used` add output and
+ * are a billing sum, not conversation occupancy.
+ *
+ * When the parts are missing, `totalTokens - outputTokens` is the same
+ * quantity (verified against Claude 0.69.0 and a live Codex 5.6 turn).
+ */
+export function adapterContextOccupancy(usage: {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+} | null | undefined): number | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+  const input = num(usage.inputTokens);
+  const output = num(usage.outputTokens);
+  const billed = num(usage.totalTokens);
+  const cacheRead = num(usage.cachedReadTokens) ?? 0;
+  const cacheWrite = num(usage.cachedWriteTokens) ?? 0;
+  if (input !== undefined) return input + cacheRead + cacheWrite;
+  if (billed !== undefined && output !== undefined) return Math.max(0, billed - output);
+  return billed;
 }
 
 /**
