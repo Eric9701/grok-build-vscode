@@ -103,11 +103,26 @@ Or build against production explicitly: pwsh scripts\install.ps1 -Prod
     Push-Location $repoRoot
     $previousAllowStaging = [Environment]::GetEnvironmentVariable($allowStagingRelayEnv)
     try {
-        if (-not (Test-Path "node_modules")) { npm install }
+        # npm writes to stderr for things that are not failures - and on the dev
+        # path it ALWAYS does, because `npm run package` warns that it is
+        # packaging a non-production relay, which is the whole point of this
+        # script. Under $ErrorActionPreference = "Stop", Windows PowerShell 5.1
+        # turns any native-command stderr into a terminating error, so the build
+        # aborted on its own success message. (pwsh 7 does not, which is why the
+        # documented `pwsh scripts\install.ps1` invocation never hit it.) Exit
+        # codes are the truth here, same as for the editor CLIs below.
+        $ErrorActionPreference = "Continue"
+        if (-not (Test-Path "node_modules")) {
+            npm install
+            if ($LASTEXITCODE) { $ErrorActionPreference = "Stop"; throw "npm install failed (exit $LASTEXITCODE)" }
+        }
         if ($swappedRelayLine) {
             [Environment]::SetEnvironmentVariable($allowStagingRelayEnv, $allowStagingRelayValue)
         }
         npm run package   # clears stale grok-vscode-phuryn-*.vsix first, then builds
+        $packageExit = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        if ($packageExit) { throw "npm run package failed (exit $packageExit)" }
         $vsix = Get-ChildItem -Path $repoRoot -Filter "*.vsix" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     } finally {
         if ($null -eq $previousAllowStaging) {
