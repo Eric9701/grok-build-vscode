@@ -87,6 +87,47 @@ describe("single-edit tool group stays expandable + reviewable (#30, #45)", () =
       .toBe("Edit old-name.ts → new-name.ts");
   });
 
+  it("names a tool whose arguments only arrive on the update, and keeps them", () => {
+    // Claude's shape: a generic first call, then the real title and arguments,
+    // then an update carrying ONLY the tool response. Rendering the first call
+    // and ignoring the rest produced a flat list of bare verbs — Run, Read,
+    // Search — with no argument, input or output.
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "c1", kind: "read", title: "Read File", rawInput: {} },
+    });
+    const label = () => doc.querySelector(".tool-item-label")!.textContent;
+    expect(label()).toBe("Read");
+
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: { toolCallId: "c1", title: "Read package.json", rawInput: { file_path: "/repo/package.json" } },
+    });
+    expect(label()).toBe("Read package.json");
+
+    // The sparse response-only update must not blank what we just learned, and
+    // a null title (Grok sends these) must not either.
+    dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "c1" } });
+    dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "c1", title: null, status: "completed" } });
+    expect(label()).toBe("Read package.json");
+  });
+
+  it("gives a row its IN/OUT box when the command only lands on the update", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "s1", kind: "execute", title: "Run Shell", rawInput: {} },
+    });
+    expect(doc.querySelector(".cmd-block")).toBeNull();
+
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: { toolCallId: "s1", title: "Run git status", rawInput: { command: "git status" } },
+    });
+    expect(doc.querySelector(".cmd-block")).not.toBeNull();
+  });
+
   it("collapsed by default; expanding the group then the row reveals the diff", () => {
     const { window, doc } = bootWebview();
 

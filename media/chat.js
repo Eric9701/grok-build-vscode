@@ -7932,6 +7932,54 @@
     state.pendingCommandDetails.push({ command, details, done: false, toolCallId });
   }
 
+  /**
+   * Fold a `tool_call_update` back into its row's label and detail.
+   *
+   * Grok puts the arguments on the FIRST `tool_call`, so its rows read correctly
+   * the moment they appear. Claude does not: the first call is a generic
+   * `{title:"Read File", rawInput:{}}` and the real `{title:"Read package.json",
+   * rawInput:{file_path:…}}` arrives on an update — which nothing was applying,
+   * so a Claude turn rendered as a flat list of bare verbs: Run, Read, Search,
+   * with no argument, input or output.
+   *
+   * Applies to every provider, not just Claude — it is simply a no-op where the
+   * first call was already complete, which is the Grok case. That is also why
+   * the merge is field by field and skips null: Grok's updates frequently carry
+   * `title: null`, and a wholesale replace would blank a good label. Claude also
+   * sends an update carrying ONLY a toolCallId and `_meta` (the tool response),
+   * which would erase everything gathered so far.
+   */
+  function refreshToolRowFromUpdate(update) {
+    const id = update && update.toolCallId;
+    if (!id) return;
+    const item = state.toolItemsByToolCallId.get(id);
+    if (!item || !item._call) return;
+    const merged = { ...item._call };
+    for (const key of ["title", "kind", "status", "locations", "rawOutput"]) {
+      if (update[key] !== undefined && update[key] !== null) merged[key] = update[key];
+    }
+    // Arguments accumulate across updates (`{}` → `{file_path}` → `{file_path,
+    // limit}`), so merge rather than replace or a later, sparser update would
+    // drop the path.
+    for (const key of ["rawInput", "input"]) {
+      if (update[key] && typeof update[key] === "object") {
+        merged[key] = { ...(item._call[key] || {}), ...update[key] };
+      }
+    }
+    item._call = merged;
+    const labelEl = item.querySelector(".tool-item-label");
+    if (labelEl) {
+      const next = toolLabel(merged);
+      if (next && next !== labelEl.textContent) labelEl.textContent = next;
+    }
+    // A shell command that only shows up on the update still earns its IN/OUT
+    // box; attachCommandDetails is a no-op once the row already has one.
+    const args = merged.rawInput || merged.input || {};
+    const cmd = typeof args.command === "string" ? args.command.trim()
+      : typeof args.cmd === "string" ? args.cmd.trim() : "";
+    if (cmd && !item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, id);
+  }
+
   function attachCommandOutput(details, msg) {
     const block = details.querySelector(".cmd-block");
     if (!block || block.querySelector(".cmd-out")) return; // idempotent (buffer replay)
@@ -12611,6 +12659,9 @@
           markToolFailed(id, hint ? failure + "\n" + hint : failure);
           break;
         }
+        // Fold the refined title and arguments into the row before the diff
+        // pass — for Claude this is where a row stops being a bare verb.
+        refreshToolRowFromUpdate(msg.call);
         applyToolDiffs(msg.call);
         break;
       }
