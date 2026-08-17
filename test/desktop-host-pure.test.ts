@@ -620,6 +620,38 @@ describe("desktop main wiring (source gates)", () => {
     expect(sidebar.slice(unlinkStart, unlinkEnd)).not.toContain("confirmHostExecute");
   });
 
+  it("first-run default project is provisioned from paths.ts before the sidebar starts", () => {
+    const main = fs.readFileSync(path.join(testRepoRoot, "src", "desktop", "main.ts"), "utf8");
+    expect(main).toContain("provisionDefaultProjectDir");
+    expect(main).toContain("desktopUserHomeDir");
+    expect(main).toContain("provisionDefaultProject:");
+    // Sidebar must already see the root — constructing it first left
+    // RemoteClientState / defaultProvider on "".
+    const provisionAt = main.indexOf("provisionDefaultProjectDir");
+    const sidebarAt = main.indexOf("new GrokSidebar");
+    expect(provisionAt).toBeGreaterThan(0);
+    expect(sidebarAt).toBeGreaterThan(provisionAt);
+
+    const host = fs.readFileSync(path.join(testRepoRoot, "src", "desktop", "electron-host.ts"), "utf8");
+    expect(host).toContain("provisionDefaultProject?.()");
+    expect(host).toContain("seeded.length");
+
+    const sidebar = fs.readFileSync(path.join(testRepoRoot, "src", "sidebar.ts"), "utf8");
+    expect(sidebar).toContain("presentEmptyProjectState");
+    const startBody = sidebar.slice(
+      sidebar.indexOf("private async startSessionBody("),
+      sidebar.indexOf("private async startSessionBody(") + 1800,
+    );
+    expect(startBody).toContain("presentEmptyProjectState(target)");
+    expect(startBody).toContain("refused startSession");
+    const removeBody = sidebar.slice(
+      sidebar.indexOf("async removeProjectFolder("),
+      sidebar.indexOf("private presentEmptyProjectState("),
+    );
+    expect(removeBody).toContain("presentEmptyProjectState(this.focused)");
+    expect(sidebar).toMatch(/if \(this\.host\.canSwitchWorkspaceFolder\) return "";/);
+  });
+
   it("registers file-tree IPC while getHtml loads the component only for desktop", () => {
     const main = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "desktop", "main.ts"),

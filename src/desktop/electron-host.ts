@@ -1315,7 +1315,10 @@ export function discoverSeedProjectPaths(opts?: {
  * - `--workspace=` / forced path: open that folder (test / CLI launch).
  * - Existing prefs: keep the user's open set.
  * - Empty set on first seed: run host-side discovery — **no folder picker**.
- * - Empty after seed completed: stay empty (user-owned).
+ *   If discovery finds nothing, provision the default chat folder
+ *   (`provisionDefaultProject`) so first run is connect-agent → chat.
+ * - Empty after seed completed: stay empty (user-owned). The default is
+ *   never re-created — it is an ordinary row they can remove.
  *
  * Returns the active root when one exists; undefined when the rail is empty.
  * Never blocks on a dialog. Seeding runs before the window is needed.
@@ -1327,6 +1330,11 @@ export function ensureWorkspaceRoot(
   seed?: {
     /** Override discovery (tests). Default: {@link discoverSeedProjectPaths}. */
     runDiscoverySeed?: () => string[];
+    /**
+     * First-run empty catalog: create `~/Grok Build` (or userData).
+     * Production main always supplies this. Tests omit it to stay off $HOME.
+     */
+    provisionDefaultProject?: () => string | undefined;
   },
 ): string | undefined {
   if (forced && fs.existsSync(forced)) {
@@ -1360,6 +1368,14 @@ export function ensureWorkspaceRoot(
     if (seeded.length) {
       if (!config.setActiveWorkspaceRoot(seeded[0])) {
         config.setWorkspaceRoot(seeded[0]);
+      }
+    } else {
+      // Nothing already in use on this machine. A default folder is the
+      // first-run chat home — not a hidden project, and not re-created
+      // after the user removes it (the seed flag is marked below).
+      const provisioned = seed?.provisionDefaultProject?.();
+      if (provisioned) {
+        config.setWorkspaceRoot(path.resolve(provisioned));
       }
     }
     config.markDiscoverySeedCompleted();

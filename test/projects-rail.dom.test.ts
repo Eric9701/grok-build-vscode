@@ -124,6 +124,34 @@ describe("projects rail", () => {
     expect(rail(doc).hidden).toBe(false);
   });
 
+  it("empty first repos frame is No projects yet, not a stuck Loading…", () => {
+    // Desktop paints "Loading…" until the first `repos` frame. An empty
+    // catalog after that frame is a real empty state, not an unfinished boot.
+    const { doc, window, posted } = bootWebview({
+      beforeScripts: (w) => {
+        w.document.body.classList.add("desk");
+        withRail(w);
+      },
+    });
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: false, steerByDefault: false,
+      soundNotifications: false, processingSound: false, readRepliesAloud: false,
+      capabilities: { addProjectFolder: true },
+    });
+    expect(rail(doc).textContent).toContain("Loading…");
+    dispatch(window, { type: "repos", entries: [], selectedCwd: "", activeCwd: "" });
+    expect(rail(doc).textContent).toContain("No projects yet");
+    expect(rail(doc).textContent).not.toContain("Loading…");
+    const add = doc.querySelector(".rail-empty-action") as HTMLButtonElement;
+    expect(add).toBeTruthy();
+    expect(add.textContent).toBe("Add a project folder");
+    posted.length = 0;
+    add.click();
+    expect(posted).toEqual([{ type: "addProjectFolder" }]);
+  });
+
   // By name, and nothing else. Recency was the first answer and the wrong one:
   // the rail is navigated by memory, so a list that reorders itself as you work
   // moves the row you were reaching for. `beta` carries pinned:true in the

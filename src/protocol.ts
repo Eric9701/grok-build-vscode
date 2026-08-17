@@ -367,10 +367,13 @@ export type HostMsg =
   // "provider-connected" is the one SUCCESS state here: a re-check that worked
   // used to leave a bare empty session, indistinguishable from nothing having
   // happened. It clears itself when the first message paints.
+  // "no-project" is the desktop empty-open-set state: chat cannot start until
+  // the user adds a folder. It replaces the baked "Starting" spinner that
+  // otherwise never clears (startSession used to return without unlocking).
   // `launched` says the HOST already opened the login terminal, so the panel can
   // show it as done. Without it an automatically opened terminal leaves the
   // button looking untouched, which reads as "press it again".
-  | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "provider-connected"; platform?: string; reason?: string; provider?: "grok" | "codex" | "claude"; launched?: boolean }
+  | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "provider-connected" | "no-project"; platform?: string; reason?: string; provider?: "grok" | "codex" | "claude"; launched?: boolean }
   // resumeFailed is additive: a remote resume refusal names the requested id so
   // the browser outbox can fail closed. Older clients ignore the extra field.
   // code is additive too — a harness must not match user-facing `text`.

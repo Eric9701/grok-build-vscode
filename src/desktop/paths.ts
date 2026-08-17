@@ -15,6 +15,7 @@
  */
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 
 /**
  * Branded profile directory under the OS app-data root (e.g.
@@ -311,6 +312,107 @@ export function resolveExtensionRootFrom(
   }
 
   return fromOut;
+}
+
+/**
+ * Visible first-run project folder, created directly in the user's home
+ * directory. On macOS this is not TCC-protected (unlike Desktop / Documents /
+ * Downloads), so creating it does not raise a consent dialog, and it is
+ * findable in Finder for a knowledge-work user.
+ */
+export const DEFAULT_PROJECT_DIRNAME = "Grok Build";
+
+/**
+ * The user's home directory the way the desktop app should create folders in
+ * it: USERPROFILE on Windows (HOME is often a git-bash overlay), HOME
+ * elsewhere, then `os.homedir()`. Not GROK_HOME — that is the CLI store.
+ */
+export function desktopUserHomeDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  homedir: () => string = () => os.homedir(),
+): string {
+  const fromEnv = platform === "win32" ? env.USERPROFILE : env.HOME;
+  const trimmed = typeof fromEnv === "string" ? fromEnv.trim() : "";
+  return trimmed || homedir();
+}
+
+/** Preferred first-run project: `<home>/Grok Build`. */
+export function preferredDefaultProjectPath(homeDir: string): string {
+  return path.join(homeDir, DEFAULT_PROJECT_DIRNAME);
+}
+
+/**
+ * Last-resort first-run project: a CHILD of the profile directory, never the
+ * profile directory itself. The parent is writable under a sandbox that cannot
+ * create folders in $HOME, which is why the fallback lives here — but handing
+ * the agent the profile ROOT would authorize a workspace containing
+ * `config.json`, globalStorage and the encrypted device-token secrets, so a
+ * prompt (or a linked remote's file API) could read or overwrite credentials.
+ * A default project must never be a directory that holds secrets.
+ */
+export function fallbackDefaultProjectPath(userDataDir: string): string {
+  return path.join(userDataDir, DEFAULT_PROJECT_DIRNAME);
+}
+
+export interface DefaultProjectFs {
+  mkdirSync(p: string, opts?: { recursive?: boolean }): void;
+  existsSync(p: string): boolean;
+  statSync?(p: string): { isDirectory(): boolean };
+}
+
+function isUsableDirectory(p: string, io: DefaultProjectFs): boolean {
+  if (!p) return false;
+  try {
+    if (!io.existsSync(p)) return false;
+    return io.statSync ? io.statSync(p).isDirectory() : true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create the first-run default project folder. Prefer `~/Grok Build`. Any
+ * failure — permissions, sandbox, the name already exists as a file —
+ * silently uses `userData` instead. Never throws: a first-run error dialog
+ * would be worse than landing in the profile directory.
+ *
+ * A project is just a folder. No git init.
+ */
+export function provisionDefaultProjectDir(opts: {
+  homeDir: string;
+  userDataDir: string;
+  fs?: DefaultProjectFs;
+}): { dir: string; usedFallback: boolean } | null {
+  const io = opts.fs ?? fs;
+  const preferred = preferredDefaultProjectPath(opts.homeDir);
+  const fallback = fallbackDefaultProjectPath(opts.userDataDir);
+  try {
+    if (!isUsableDirectory(preferred, io)) {
+      io.mkdirSync(preferred, { recursive: true });
+    }
+    if (isUsableDirectory(preferred, io)) {
+      return { dir: path.resolve(preferred), usedFallback: false };
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    if (!isUsableDirectory(fallback, io)) {
+      io.mkdirSync(fallback, { recursive: true });
+    }
+    if (isUsableDirectory(fallback, io)) {
+      return { dir: path.resolve(fallback), usedFallback: true };
+    }
+  } catch {
+    /* fall through to no default at all */
+  }
+  // Neither location worked. Return nothing rather than naming a directory we
+  // failed to create: the caller leaves the open set empty and the user gets
+  // the empty-project state, which is honest. The alternative — falling back to
+  // some directory that merely exists — is how the profile root became an
+  // authorized workspace.
+  return null;
 }
 
 /** Repo / install root: parent of `out/` when running from a compile tree. */

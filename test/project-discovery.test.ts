@@ -10,6 +10,7 @@
  *  6. Future-dated sessions do not count (floor <= t <= now)
  *  7. Non-git-root directories are not seeded
  *  8. Mtime-only (empty/malformed summary) sessions do not count
+ *  9. First seed with nothing found provisions a default; later empty does not
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
@@ -337,6 +338,67 @@ describe("ensureWorkspaceRoot seeding (host-side)", () => {
       },
     });
     expect(calls).toBe(0);
+  });
+
+  it("provisions a default project when first seed finds nothing", () => {
+    const store = new ConfigStore(prefsFile);
+    const def = fs.mkdtempSync(path.join(tmp, "default-"));
+    let provisionCalls = 0;
+    const root = ensureWorkspaceRoot(store, () => null, undefined, {
+      runDiscoverySeed: () => [],
+      provisionDefaultProject: () => {
+        provisionCalls++;
+        return def;
+      },
+    });
+    expect(provisionCalls).toBe(1);
+    expect(root && path.resolve(root)).toBe(path.resolve(def));
+    expect(store.getWorkspaceRoots().map((p) => path.resolve(p))).toEqual([path.resolve(def)]);
+    expect(store.isDiscoverySeedCompleted()).toBe(true);
+
+    // A later empty launch (user removed it) must not re-create it.
+    store.removeWorkspaceRoot(def);
+    expect(store.getWorkspaceRoots()).toEqual([]);
+    const again = ensureWorkspaceRoot(store, () => null, undefined, {
+      runDiscoverySeed: () => [],
+      provisionDefaultProject: () => {
+        provisionCalls++;
+        return def;
+      },
+    });
+    expect(provisionCalls).toBe(1);
+    expect(again).toBeUndefined();
+    expect(store.getWorkspaceRoots()).toEqual([]);
+  });
+
+  it("does not provision a default when discovery already found projects", () => {
+    const store = new ConfigStore(prefsFile);
+    let provisionCalls = 0;
+    const root = ensureWorkspaceRoot(store, () => null, undefined, {
+      runDiscoverySeed: () => [hot],
+      provisionDefaultProject: () => {
+        provisionCalls++;
+        return path.join(tmp, "should-not-exist");
+      },
+    });
+    expect(provisionCalls).toBe(0);
+    expect(root && path.resolve(root)).toBe(path.resolve(hot));
+    expect(store.getWorkspaceRoots().map((p) => path.resolve(p))).toEqual([path.resolve(hot)]);
+  });
+
+  it("does not provision a default when the machine already has open folders", () => {
+    const store = new ConfigStore(prefsFile);
+    store.addWorkspaceRoot(hot, true);
+    let provisionCalls = 0;
+    ensureWorkspaceRoot(store, () => null, undefined, {
+      runDiscoverySeed: () => [],
+      provisionDefaultProject: () => {
+        provisionCalls++;
+        return path.join(tmp, "should-not-exist");
+      },
+    });
+    expect(provisionCalls).toBe(0);
+    expect(store.getWorkspaceRoots().map((p) => path.resolve(p))).toEqual([path.resolve(hot)]);
   });
 
   it("allows closing the last folder without re-seeding on next ensure", () => {

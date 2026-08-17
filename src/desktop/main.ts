@@ -48,6 +48,8 @@ import {
 } from "./host-dialogs";
 import { createFileMemento } from "./memento";
 import {
+  desktopUserHomeDir,
+  provisionDefaultProjectDir,
   resolveDesktopProfileDir,
   resolveExtensionRoot,
   resolveUserDataDir,
@@ -320,6 +322,20 @@ async function createApp(): Promise<void> {
       log(`failed to read config-json: ${(e as Error).message}`);
     }
   }
+
+  // Open-folder set BEFORE the sidebar exists so workspaceRoot() is already
+  // the first-run default (or a restored/discovered project). After this the
+  // constructor's RemoteClientState / default provider see a real cwd.
+  // Empty is still valid: a user who removed every project owns that set.
+  const workspace = ensureWorkspaceRoot(config, () => mainWindow, args.workspace, {
+    provisionDefaultProject: () =>
+      provisionDefaultProjectDir({
+        homeDir: desktopUserHomeDir(),
+        userDataDir: userData,
+      })?.dir,
+  });
+  if (workspace) log(`workspace: ${workspace}`);
+  else log("workspace: (none — empty project rail; use Add Project Folder)");
 
   const globalStorageDir = path.join(userData, "globalStorage");
   fs.mkdirSync(globalStorageDir, { recursive: true });
@@ -614,11 +630,6 @@ async function createApp(): Promise<void> {
     webview?.dispatchMessage(message);
   });
 
-  // Open-folder set: restore prefs or one-shot discovery seed — never a folder
-  // picker. Empty is valid (user adds via File → Add Project Folder).
-  const workspace = ensureWorkspaceRoot(config, () => mainWindow, args.workspace);
-  if (workspace) log(`workspace: ${workspace}`);
-  else log("workspace: (none — empty project rail; use Add Project Folder)");
   log(`extension root: ${extensionRoot}`);
   log(`cliPath config: ${String(config.getValue("grok.cliPath") || "(auto)")}`);
 

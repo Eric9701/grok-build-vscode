@@ -9,11 +9,16 @@ import * as path from "node:path";
 import {
   brandedDesktopProfilePath,
   brandedDesktopProfileStagingPath,
+  DEFAULT_PROJECT_DIRNAME,
   DESKTOP_PROFILE_DIRNAME,
   desktopProfileLooksOccupied,
+  desktopUserHomeDir,
+  fallbackDefaultProjectPath,
   isExtensionRoot,
   legacyDesktopProfilePaths,
+  preferredDefaultProjectPath,
   profileTreeFullyCopied,
+  provisionDefaultProjectDir,
   resolveDesktopProfileDir,
   resolveExtensionRootFrom,
 } from "../src/desktop/paths";
@@ -346,5 +351,99 @@ describe("desktop userData branding + legacy migration", () => {
       ok: true,
     });
     expect(fs.existsSync(staging)).toBe(false);
+  });
+});
+
+describe("first-run default project paths", () => {
+  it("prefers <home>/Grok Build and falls back INSIDE userData, never to its root", () => {
+    expect(DEFAULT_PROJECT_DIRNAME).toBe("Grok Build");
+    expect(preferredDefaultProjectPath("/Users/sam")).toBe(path.join("/Users/sam", "Grok Build"));
+    const profile = "/Users/sam/Library/Application Support/GrokBuildDesktop";
+    // The profile root holds config.json, globalStorage and the encrypted
+    // device-token secrets. A default project must never BE that directory:
+    // authorizing it as a workspace would put credentials inside the agent's
+    // reach, and inside a linked remote's file API.
+    expect(fallbackDefaultProjectPath(profile)).not.toBe(profile);
+    expect(fallbackDefaultProjectPath(profile)).toBe(path.join(profile, "Grok Build"));
+  });
+
+  it("reads USERPROFILE on Windows and HOME elsewhere", () => {
+    expect(desktopUserHomeDir({ USERPROFILE: "C:\\Users\\sam", HOME: "/home/gitbash" }, "win32", () => "unused"))
+      .toBe("C:\\Users\\sam");
+    expect(desktopUserHomeDir({ HOME: "/Users/sam", USERPROFILE: "C:\\Users\\wrong" }, "darwin", () => "unused"))
+      .toBe("/Users/sam");
+    expect(desktopUserHomeDir({}, "linux", () => "/fallback-home")).toBe("/fallback-home");
+  });
+
+  it("creates ~/Grok Build when that path is writable", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-default-proj-"));
+    try {
+      const home = path.join(tmp, "home");
+      const userData = path.join(tmp, "userData");
+      fs.mkdirSync(home);
+      fs.mkdirSync(userData);
+      const out = provisionDefaultProjectDir({ homeDir: home, userDataDir: userData });
+      expect(out?.usedFallback).toBe(false);
+      expect(out?.dir).toBe(path.resolve(home, "Grok Build"));
+      expect(fs.statSync(out!.dir).isDirectory()).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to a CHILD of userData, never the profile root itself", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-default-fb-"));
+    try {
+      const home = path.join(tmp, "home");
+      const userData = path.join(tmp, "userData");
+      fs.mkdirSync(home);
+      fs.mkdirSync(userData);
+      // Occupied by a FILE — mkdir of that path fails, so the fallback wins.
+      fs.writeFileSync(path.join(home, "Grok Build"), "not a directory");
+      const out = provisionDefaultProjectDir({ homeDir: home, userDataDir: userData });
+      expect(out?.usedFallback).toBe(true);
+      // The profile ROOT holds config.json, globalStorage and the encrypted
+      // device-token secrets. Authorizing it as a workspace would let a prompt
+      // — or a linked remote's file API — read or overwrite credentials.
+      expect(out?.dir).not.toBe(path.resolve(userData));
+      expect(out?.dir).toBe(path.resolve(userData, "Grok Build"));
+      expect(fs.statSync(path.join(home, "Grok Build")).isFile()).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("provisions nothing when neither location can be created", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-default-none-"));
+    try {
+      const home = path.join(tmp, "home");
+      const userData = path.join(tmp, "userData");
+      fs.mkdirSync(home);
+      fs.mkdirSync(userData);
+      // Both candidate paths occupied by files, so neither mkdir can succeed.
+      fs.writeFileSync(path.join(home, "Grok Build"), "not a directory");
+      fs.writeFileSync(path.join(userData, "Grok Build"), "not a directory");
+      // Null, not "some directory that happens to exist" — the caller then
+      // leaves the open set empty and the user gets the empty-project state.
+      expect(provisionDefaultProjectDir({ homeDir: home, userDataDir: userData })).toBeNull();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("uses an already-existing ~/Grok Build rather than falling back", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-default-exist-"));
+    try {
+      const home = path.join(tmp, "home");
+      const userData = path.join(tmp, "userData");
+      const preferred = path.join(home, "Grok Build");
+      fs.mkdirSync(preferred, { recursive: true });
+      fs.mkdirSync(userData);
+      const out = provisionDefaultProjectDir({ homeDir: home, userDataDir: userData });
+      expect(out?.usedFallback).toBe(false);
+      expect(out?.dir).toBe(path.resolve(preferred));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

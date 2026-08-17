@@ -4773,6 +4773,8 @@ Only continue if you trust this code.`,
    */
   async addProjectFolder(cwd?: string): Promise<void> {
     if (!this.canAddProjectFolder()) return;
+    const wasEmpty =
+      this.host.canSwitchWorkspaceFolder && !this.openWorkspaceFolders().length;
     let folder = cwd;
     if (!folder) {
       const picked = await this.host.showOpenDialog({
@@ -4800,6 +4802,16 @@ Only continue if you trust this code.`,
     }
     this.authEpoch++;
     await this.switchLocalWorkspaceFolder(resolved);
+    // 0 → 1 folders is not "browse another project" — there is no conversation
+    // to protect. Start one in the folder just added so Add project folder
+    // from the empty state is connect-or-chat, not another dead Starting.
+    if (wasEmpty) {
+      this.setSessionCwd(this.focused, resolved, resolved);
+      if (!this.focused.hasHistory && !this.focused.client) {
+        this.focused.provider = this.defaultProviderForProject(resolved);
+      }
+      await this.startSession(undefined, this.focused, "ensure");
+    }
   }
 
   /**
@@ -4997,14 +5009,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       await this.switchLocalWorkspaceFolder(next);
     } else if (!next) {
       // Empty open set — focused may already have been disposed by revoke.
+      // clearMessages alone resets the welcome to "Starting"; without a
+      // follow-on startSession unlock that spinner never clears.
       if (this.pool.has(this.focused) || this.focused.client) {
         this.parkFocused();
       }
       this.focused = this.newLocalSession();
       this.selectedRepoCwd = "";
-      this.postRepoCatalog();
-      this.postSessionsList();
       this.emit(this.focused, { type: "clearMessages" });
+      this.presentEmptyProjectState(this.focused);
     } else {
       // Revoke may have disposed the focused session when it lived in the closed
       // folder even though another folder remains active.
@@ -5014,6 +5027,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postRepoCatalog();
       this.postSessionsList();
     }
+  }
+
+  /**
+   * Desktop with nothing open: unlock the baked "Starting" welcome and name
+   * the problem. startSession used to return here without either, which is
+   * the first-run hang (#116) — grok is inferred connected from ~/.grok, so
+   * postInitialState never shows connect-agent, and the spinner never clears.
+   * Do not spawn against process.cwd() (that is the install directory).
+   */
+  private presentEmptyProjectState(session: Session): void {
+    session.priming = false;
+    this.emit(session, { type: "setBusy", value: false });
+    this.emit(session, {
+      type: "onboarding",
+      state: "no-project",
+      platform: process.platform,
+    });
+    this.postRepoCatalog();
+    this.postSessionsList();
   }
 
   /**
@@ -6557,15 +6589,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     intent: SessionStartIntent,
   ): Promise<AcpClient | undefined> {
     // Desktop with no open folder: empty rail is valid — do not spawn grok
-    // against process.cwd(). Adding a folder starts a session via select/switch.
+    // against process.cwd(). Unlock the baked "Starting" welcome; returning
+    // silently here left first-run / last-project-removed on that spinner
+    // forever (the HTML default is busy "Starting", and nothing else cleared
+    // it). Adding a folder starts a session via select/switch.
     if (
       this.host.canSwitchWorkspaceFolder &&
       !this.openWorkspaceFolders().length &&
       !resumeId &&
       !target.cwd
     ) {
-      this.postRepoCatalog();
-      this.postSessionsList();
+      this.presentEmptyProjectState(target);
       return undefined;
     }
     // Resume / held-session paths set target.cwd before start. A closed folder
@@ -6580,10 +6614,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         `[sessions] refused startSession (cwd not authorized): ${target.cwd}` +
           (resumeId ? ` resumeId=${resumeId}` : ""),
       );
-      target.priming = false;
-      this.emit(target, { type: "setBusy", value: false });
-      this.postRepoCatalog();
-      this.postSessionsList();
+      if (!this.openWorkspaceFolders().length) {
+        this.presentEmptyProjectState(target);
+      } else {
+        target.priming = false;
+        this.emit(target, { type: "setBusy", value: false });
+        this.postRepoCatalog();
+        this.postSessionsList();
+      }
       return undefined;
     }
     // An EMPTY conversation pinned to a provider that cannot answer just moves
@@ -8330,6 +8368,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // for did not appear in the case he was testing.
         const confirmConnected = () => {
           if (session.hasHistory || !this.usableProviders().includes(provider)) return;
+          // No folder to start in — "You can start grokking!" would be a lie.
+          // startSession already painted no-project.
+          if (this.host.canSwitchWorkspaceFolder && !this.openWorkspaceFolders().length) return;
           this.emit(session, {
             type: "onboarding",
             state: "provider-connected",

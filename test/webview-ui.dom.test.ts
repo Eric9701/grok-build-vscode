@@ -1217,6 +1217,40 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
 });
 
 describe("provider onboarding", () => {
+  it("names a missing project and blocks send instead of leaving Starting up", () => {
+    const { window, doc, posted } = bootWebview();
+    const send = doc.getElementById("send-btn") as HTMLButtonElement;
+    const welcome = doc.getElementById("welcome-version")!;
+    expect(welcome.textContent).toContain("Starting");
+
+    dispatch(window, { type: "onboarding", state: "no-project" });
+    const onboarding = doc.getElementById("welcome-onboarding")!;
+    expect(onboarding.textContent).toContain("No project folder");
+    expect(onboarding.textContent).toContain("Add one to continue");
+    expect(welcome.textContent).toContain("No project folder");
+    expect(welcome.classList.contains("welcome-status-busy")).toBe(false);
+    expect(send.disabled).toBe(true);
+    expect(send.title).toContain("Add a project folder");
+
+    (doc.getElementById("input") as HTMLTextAreaElement).value = "hello";
+    click(window, send);
+    expect(posted.filter((p) => p.type === "send")).toEqual([]);
+
+    const add = onboarding.querySelector('[data-act="addProjectFolder"]') as HTMLButtonElement;
+    expect(add).toBeTruthy();
+    click(window, add);
+    expect(posted).toContainEqual({ type: "addProjectFolder" });
+  });
+
+  it("tells a remote client to add the folder at the desk", () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+    dispatch(window, { type: "onboarding", state: "no-project" });
+    const onboarding = doc.getElementById("welcome-onboarding")!;
+    expect(onboarding.textContent).toContain("Add a project folder on the computer");
+    expect(onboarding.querySelectorAll("button")).toHaveLength(0);
+    expect(posted).toEqual([]);
+  });
+
   it("shows desk sign-in guidance remotely and posts no provider-management action", () => {
     const { window, doc, posted } = bootWebview({ remote: true });
 
