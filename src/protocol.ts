@@ -361,7 +361,10 @@ export type HostMsg =
   | { type: "summarizing" }
   | { type: "sessionContext" }
   | { type: "clearMessages" }
-  | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login"; platform?: string; reason?: string; provider?: "grok" | "codex" | "claude" }
+  // "provider-connected" is the one SUCCESS state here: a re-check that worked
+  // used to leave a bare empty session, indistinguishable from nothing having
+  // happened. It clears itself when the first message paints.
+  | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "provider-connected"; platform?: string; reason?: string; provider?: "grok" | "codex" | "claude" }
   // resumeFailed is additive: a remote resume refusal names the requested id so
   // the browser outbox can fail closed. Older clients ignore the extra field.
   // code is additive too — a harness must not match user-facing `text`.

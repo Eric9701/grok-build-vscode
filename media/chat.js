@@ -2740,14 +2740,24 @@
     }
   }
 
-  /** Gear account rows: only when nothing is connected, or a connected
-   *  account needs sign-in. Healthy connected accounts live in Settings. */
+  /**
+   * Gear account rows: ONLY while nothing can answer. Once any agent is usable
+   * the gear stops carrying accounts entirely and Settings → Providers owns
+   * them (owner, 2026-08-17).
+   *
+   * This used to stay visible whenever any connected account needed a sign-in,
+   * which meant a working setup with one lapsed extra account kept a
+   * half-broken Accounts list in the quick menu forever. The gear's job is to
+   * get someone unstuck; a second account that needs attention is management,
+   * not a blocker.
+   *
+   * "Usable", not "connected" — a linked account whose credentials lapsed
+   * cannot answer, so it must not count as the thing that hides this.
+   */
   function gearShowsProviderAccounts() {
     if (IS_REMOTE || !state.providersKnown) return false;
     const list = state.providers || [];
-    const anyConnected = list.some((p) => p.connected);
-    const needsAttention = list.some((p) => p.connected && p.needsLogin === true);
-    return !anyConnected || needsAttention;
+    return !list.some((p) => p.connected && p.needsLogin !== true);
   }
 
   function renderProviderAccounts() {
@@ -6781,6 +6791,24 @@
         `</div>`;
       return;
     }
+    if (mode === "provider-connected") {
+      // A successful re-check used to leave a bare empty session, which reads
+      // identically to "nothing happened" — the one moment someone most wants
+      // to be told it worked. It clears itself the instant a message is added
+      // (addMessage calls clearWelcome), so it never survives into a real
+      // conversation and does not need dismissing.
+      const id = info.provider || "grok";
+      const done = id === "codex"
+        ? "You can start working with OpenAI!"
+        : id === "claude" ? "You can start clauding!" : "You can start grokking!";
+      if (ver) setWelcomeStatus("Connected", false);
+      onb.innerHTML =
+        `<div class="onb onb-connected">` +
+          `<p class="onb-heading"><span class="onb-ok">${ICON.check}</span>Connected</p>` +
+          `<p class="onb-desc">${done}</p>` +
+        `</div>`;
+      return;
+    }
     if (mode === "connect-agent") {
       if (ver) setWelcomeStatus("Connect an agent", false);
       onb.innerHTML =
@@ -6789,7 +6817,11 @@
           `<p class="onb-desc">Choose the command-line agent that will own this conversation.</p>` +
           `<div class="onb-agent-grid">` +
             `<button class="onb-agent-tile primary onb-action" type="button" data-act="connectProvider" data-provider="grok">` +
-              `<span class="onb-agent-mark">${providerLogoMarkup("grok")}</span><span><strong>Grok</strong><small>Recommended default</small></span>` +
+              // Name then CLI, matching the other two tiles. "Recommended default"
+              // described our ranking where the others described what the agent
+              // IS, so the one tile a newcomer reads first was the one that did
+              // not say what it would install.
+              `<span class="onb-agent-mark">${providerLogoMarkup("grok")}</span><span><strong>Grok (Recommended)</strong><small>Grok Build CLI</small></span>` +
             `</button>` +
             `<button class="onb-agent-tile onb-action" type="button" data-act="connectProvider" data-provider="codex">` +
               `<span class="onb-agent-mark">${providerLogoMarkup("codex")}</span><span><strong>Codex</strong><small>OpenAI Codex CLI</small></span>` +
@@ -13522,6 +13554,19 @@
       e.preventDefault();
       e.stopPropagation();
       const act = onbAction.dataset.act;
+      // Mark a launched terminal as already run. The sign-in happens outside
+      // this window, so nothing here can observe it finishing — and without a
+      // mark the button looks untouched, so the honest reading is "that did
+      // not work, press it again", which opens a second terminal on top of a
+      // login already in progress. A failed re-check re-renders this panel from
+      // scratch, which clears the mark: it is only ever a record of THIS
+      // attempt (owner, 2026-08-17).
+      if (act === "runInstall" || act === "runLogin" || act === "connectProvider") {
+        onbAction.classList.add("onb-ran");
+        if (!onbAction.querySelector(".onb-ran-mark")) {
+          onbAction.insertAdjacentHTML("afterbegin", `<span class="onb-ran-mark">${ICON.check}</span>`);
+        }
+      }
       if (act === "runInstall") vscode.postMessage({ type: "runInstallCmd" });
       else if (act === "installCodex") vscode.postMessage({ type: "installCodex" });
       else if (act === "cancelCodexInstall") vscode.postMessage({ type: "cancelCodexInstall" });

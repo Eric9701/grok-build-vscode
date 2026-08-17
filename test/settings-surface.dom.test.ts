@@ -297,10 +297,12 @@ describe("settings overlay (chat.js)", () => {
     });
     click(h.window, h.doc.getElementById("gear-btn")!);
     click(h.window, h.doc.getElementById("gear-btn")!);
-    // Connect, not "Sign in again" — an unusable provider gets one verb
-    // regardless of whether it was ever linked (owner, 2026-08-17).
-    expect(gearLabels(h).join(" ")).toMatch(/Connect/);
+    // Codex is healthy here, so SOMETHING can answer and the gear stops
+    // carrying accounts entirely — Settings → Providers owns them (owner,
+    // 2026-08-17). Previously a single lapsed account kept a half-broken
+    // Accounts list in the quick menu even on a working setup.
     expect(gearLabels(h).join(" ")).not.toMatch(/Sign in again/);
+    expect(gearLabels(h).some((l) => /^(Connect|Sign out)$/.test(l.trim()))).toBe(false);
 
     dispatch(h.window, {
       type: "providerState",

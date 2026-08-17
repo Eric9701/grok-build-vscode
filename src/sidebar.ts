@@ -1186,10 +1186,35 @@ export class GrokSidebar {
     } satisfies ProviderModelCache);
   }
 
+  /**
+   * Re-post the model catalog for a session already on screen.
+   *
+   * Connecting a second agent used to leave the picker stale until the user
+   * clicked New session — on a session that was already new. An empty
+   * conversation has nothing to protect, so its catalog is refreshed in place;
+   * one with history is left alone, because changing the model list under a
+   * live thread is a different thing entirely.
+   */
+  private postSessionModels(session: Session): void {
+    const client = session.client;
+    if (!client?.sessionId || session.hasHistory) return;
+    this.emit(session, {
+      type: "session",
+      sessionId: client.sessionId,
+      models: this.modelsForSession(session, client.availableModels, client.currentModelId, true),
+      currentModelId: client.currentModelId,
+      worktree: !!session.worktree,
+      provider: session.provider,
+    });
+  }
+
   private modelsForSession(session: Session, ownModels: readonly any[], currentModelId?: string, newSession = false): ProviderModelInfo[] {
     if (!newSession) return ownModels.map((model) => ({ ...model, provider: session.provider }));
     return modelsForConnectedProviders(
-      this.connectedProviders(),
+      // Usable, not connected: a provider that cannot answer contributes no
+      // rows to the picker, so its heading and its stale cached models go with
+      // it (owner, 2026-08-17: "Not connected => Not visible").
+      this.usableProviders(),
       this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {}),
       { provider: session.provider, models: ownModels, currentModelId },
     );
@@ -8110,20 +8135,47 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // the empty session stayed on Codex — asking for a codex login while
         // the picker read Grok 4.6. What matters is whether the session's own
         // provider can answer, not how many others are linked.
-        const strandedOnUnusable = !session.hasHistory && !this.usableProviders().includes(session.provider);
+        // Both halves matter: the session is stranded on something that cannot
+        // answer, AND the provider just re-checked can. A FAILED re-check leaves
+        // it unusable, and handing the empty session to it there would start a
+        // session against an agent that just refused to authenticate.
+        const nowUsable = this.usableProviders();
+        const strandedOnUnusable = !session.hasHistory
+          && !nowUsable.includes(session.provider)
+          && nowUsable.includes(provider);
+        // Say it worked. An empty session looks exactly like a re-check that did
+        // nothing, and this is the moment someone most wants confirmation. Only
+        // on a conversation with no history — a real transcript is its own
+        // evidence, and the panel would cover it.
+        const confirmConnected = () => {
+          if (session.hasHistory) return;
+          this.emit(session, {
+            type: "onboarding",
+            state: "provider-connected",
+            platform: process.platform,
+            provider,
+          });
+        };
         if (adopted.has(session)) {
+          confirmConnected();
           this.postSessionsList();
         } else if (strandedOnUnusable) {
           session.provider = provider;
           await this.rememberProjectProvider(this.sessionCwd(session), provider);
           await this.startSession(undefined, session);
+          confirmConnected();
         } else if (session.provider === provider && !session.client) {
           // Retry a provider whose first real session exposed a credential error.
           await this.startSession(session.hasHistory ? session.activeSessionId : undefined, session);
         } else {
-          // Adding a second account must not restart or change the conversation
-          // currently on screen; it becomes available in New session instead.
+          // Adding a second account must not restart or change a conversation
+          // with history on screen. But an EMPTY one has nothing to protect,
+          // and leaving its picker stale meant the newly connected agent's
+          // models only appeared after clicking New session — for a session
+          // that already was new. Re-post the catalog so the picker picks it up
+          // in place.
           if (isAdapterProvider(provider)) this.scheduleAdapterHistoryRefresh(provider, this.sessionCwd(session));
+          if (!session.hasHistory) this.postSessionModels(session);
           this.postSessionsList();
         }
         break;
