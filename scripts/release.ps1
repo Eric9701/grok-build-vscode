@@ -23,6 +23,9 @@
     8. gh release create vX.Y.Z       with the changelog section as notes
                                        AND the .vsix attached as a release asset
     9. npm run publish:ovsx           publish that .vsix to Open VSX
+   10. install.ps1 -VsixPath ... -All install the released .vsix into every
+                                       detected local editor (skip with
+                                       -NoInstall; never fails the release)
 
   Open VSX is part of the release. The VS Code Marketplace is deliberately NOT —
   that one is the owner's, a separate explicit step (`npm run publish`).
@@ -44,6 +47,7 @@ param(
   [switch]$SkipScreens,
   [switch]$SkipCiWait,
   [int]$CiTimeoutMinutes = 20,
+  [switch]$NoInstall,
   [switch]$DryRun
 )
 
@@ -210,6 +214,29 @@ Run "gh release create $tag" { gh release create $tag --title "Release $tag" --n
 # The VS Code Marketplace is deliberately still NOT here. That one is the
 # owner's to run (`npm run publish`).
 Run "npm run publish:ovsx" { npm run publish:ovsx }
+
+# 10. Install what was just released into this machine's editors. The released
+# .vsix is passed by path on purpose, so install.ps1 skips its own build AND its
+# staging-relay swap — the editors end up running the exact artifact users get,
+# production relay included, rather than a look-alike rebuilt afterwards.
+#
+# Never fatal. Everything above this line is published and irreversible, so a
+# missing editor CLI must read as "install it yourself" and not as a failed
+# release. -NoInstall skips it outright (CI, or a release cut from a machine
+# that is not the one being tested on).
+if ($NoInstall) {
+  Step "skipping the local install (-NoInstall)"
+} else {
+  Step "installing $tag into local editors"
+  $ErrorActionPreference = "Continue"
+  & (Join-Path $PSScriptRoot "install.ps1") -VsixPath $vsix -All
+  $installExit = $LASTEXITCODE
+  $ErrorActionPreference = "Stop"
+  if ($installExit) {
+    Write-Host "  Local install did not complete (exit $installExit). The release itself is done;" -ForegroundColor Yellow
+    Write-Host "  re-run: scripts\install.ps1 -VsixPath $vsix -All" -ForegroundColor Yellow
+  }
+}
 
 Write-Host "`nReleased $tag with $vsix attached, and published to Open VSX." -ForegroundColor Green
 Write-Host "Marketplace publish is the owner's: npm run publish" -ForegroundColor DarkGray
