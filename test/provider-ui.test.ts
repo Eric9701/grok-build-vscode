@@ -6,6 +6,7 @@ import {
   codexListEntry,
   compareHistoryEntries,
   connectedProviderIds,
+  usableProviderIds,
   findCachedCodexSession,
   mergeProviderHistoryPage,
   mergeProviderSessionEntries,
@@ -28,6 +29,29 @@ describe("provider UI pure policy", () => {
       { codex: true },
       { grok: true, codex: true },
     )).toEqual(["codex"]);
+  });
+
+  it("excludes a connected provider whose credentials lapsed from the usable set", () => {
+    // The exact state the owner hit: Grok and Claude never connected, Codex
+    // connected and located but its credential probe failed. It stayed
+    // connected[0], so every new empty session was handed to Codex and opened
+    // its terminal-login screen. Nothing here can answer a turn.
+    const connections = { codex: true } as const;
+    const located = { grok: true, codex: true, claude: true } as const;
+    expect(connectedProviderIds(connections, located)).toEqual(["codex"]);
+    expect(usableProviderIds(connections, located, { codex: true })).toEqual([]);
+    // A working Codex is still usable — the filter is the lapsed flag, not the
+    // provider.
+    expect(usableProviderIds(connections, located, {})).toEqual(["codex"]);
+    expect(usableProviderIds(connections, located, { codex: false })).toEqual(["codex"]);
+  });
+
+  it("keeps a usable provider when another one has lapsed", () => {
+    expect(usableProviderIds(
+      { grok: true, codex: true },
+      { grok: true, codex: true },
+      { codex: true },
+    )).toEqual(["grok"]);
   });
 
   it("groups Grok first, uses live models, and implies a default for an empty cache", () => {

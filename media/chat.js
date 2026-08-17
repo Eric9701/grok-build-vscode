@@ -2759,7 +2759,13 @@
       // action is the connect flow, not "Sign out" of credentials that are
       // already refused.
       const needsLogin = connected && provider.needsLogin === true;
-      const action = needsLogin ? "Sign in again" : connected ? "Sign out" : "Connect";
+      // Two states in the verb, not three. "Sign in again" told the user about
+      // OUR bookkeeping — that this account was linked once and its credentials
+      // lapsed — while "Connect" next to it meant the same thing to them: this
+      // one does not work, press here to fix it. Both open the same login. The
+      // stale case keeps its warning styling, so the difference is still
+      // visible without inventing a second word for one action.
+      const action = connected && !needsLogin ? "Sign out" : "Connect";
       const name = providerDisplayName(provider.id);
       addGearItem(
         `<span class="gear-lead"><span class="provider-glyph provider-${provider.id}">${providerLogoMarkup(provider.id)}</span><span>${name}</span></span><span class="popover-ver${needsLogin ? " popover-warn" : ""}">${action}</span>`,

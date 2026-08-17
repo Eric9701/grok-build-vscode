@@ -27,6 +27,7 @@ import {
   adapterEntriesEligibleForClear,
   adapterListEntry,
   connectedProviderIds,
+  usableProviderIds,
   findCachedAdapterSession,
   mergeProviderHistoryPage,
   mergeProviderSessionEntries,
@@ -890,6 +891,13 @@ export class GrokSidebar {
     return connectedProviderIds(this.providerConnections(), this.locatedProviders());
   }
 
+  /** Connected AND able to answer — see usableProviderIds. Use this to decide who
+   *  runs a turn or which onboarding to show; use connectedProviders() to decide
+   *  what to say ABOUT a provider, which still wants the lapsed ones. */
+  private usableProviders(): AcpProvider[] {
+    return usableProviderIds(this.providerConnections(), this.locatedProviders(), this.providerNeedsLogin ?? {});
+  }
+
   private migrateProviderConnections(): ProviderConnections {
     const existing = this.state.get<ProviderConnections>(PROVIDER_CONNECTIONS_KEY);
     if (existing !== undefined) return existing;
@@ -1132,13 +1140,19 @@ export class GrokSidebar {
     this.post(this.providerStateMessage());
   }
 
+  // USABLE, not merely connected. A provider whose credentials have lapsed is
+  // still connected and still located, so it used to win connected[0] and
+  // capture every new session — the owner had Grok and Claude unconnected and
+  // Codex connected-but-expired, and a fresh session dropped him into "Complete
+  // codex login" rather than letting him pick. Grok stays the fallback when
+  // nothing can answer, which is what the empty case already did.
   private defaultProviderForProject(cwd: string): AcpProvider {
-    const connected = this.connectedProviders();
+    const usable = this.usableProviders();
     const saved = this.state.get<ProjectProviderDefaults>(PROJECT_PROVIDER_DEFAULTS_KEY, {})[
       projectProviderKey(cwd)
     ];
-    if (saved && connected.includes(saved.provider)) return saved.provider;
-    return connected[0] ?? "grok";
+    if (saved && usable.includes(saved.provider)) return saved.provider;
+    return usable[0] ?? "grok";
   }
 
   private providerDefaultForProject(cwd: string, provider: AcpProvider): string | undefined {
@@ -6414,7 +6428,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postProviderState();
       this.emit(target, {
         type: "onboarding",
-        state: this.connectedProviders().length ? missingProviderState(target.provider) : "connect-agent",
+        // Usable, not connected — with only a lapsed provider left there is
+        // nothing to fall back to, so offer the choice rather than this one
+        // provider's missing-CLI copy.
+        state: this.usableProviders().length ? missingProviderState(target.provider) : "connect-agent",
         platform: process.platform,
         provider: target.provider,
       });
@@ -11714,7 +11731,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.refreshImplicitChip(true);
     this.postVoiceConfigured();
     void this.postRemoteStatus();
-    if (this.connectedProviders().length === 0) {
+    // Usable, not connected: with only a lapsed provider there is nothing that
+    // can answer, and connect-agent lets the user pick any of the three rather
+    // than being funnelled into that one provider's login instructions.
+    if (this.usableProviders().length === 0) {
       this.focused.priming = false;
       this.post({ type: "setBusy", value: false });
       this.post({ type: "onboarding", state: "connect-agent", platform: process.platform });

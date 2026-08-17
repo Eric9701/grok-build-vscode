@@ -79,6 +79,28 @@ export function connectedProviderIds(
   return PROVIDER_ORDER.filter((provider) => connections[provider] === true && located[provider] === true);
 }
 
+/**
+ * Connected AND able to answer — the set a new session may be handed to.
+ *
+ * "Connected" only means the user linked this provider and we can find its
+ * binary. A provider whose credentials have since lapsed is still connected and
+ * still located, so it stayed at the head of {@link connectedProviderIds} and
+ * captured every new empty session: the owner had Grok and Claude unconnected,
+ * Codex connected with expired credentials, and got dropped into "Complete
+ * codex login" on a fresh session he might have wanted Grok for.
+ *
+ * Keep both functions. Deciding whether to OFFER a sign-out, or whether to show
+ * a provider as stale at all, genuinely wants "connected"; deciding who runs a
+ * turn wants this.
+ */
+export function usableProviderIds(
+  connections: ProviderConnections,
+  located: Partial<Record<AcpProvider, boolean>>,
+  needsLogin: Partial<Record<AcpProvider, boolean>>,
+): AcpProvider[] {
+  return connectedProviderIds(connections, located).filter((provider) => needsLogin[provider] !== true);
+}
+
 export function providerLoginState(provider: AcpProvider): "auth-required" | "codex-login" | "claude-login" {
   if (provider === "codex") return "codex-login";
   if (provider === "claude") return "claude-login";

@@ -297,7 +297,10 @@ describe("settings overlay (chat.js)", () => {
     });
     click(h.window, h.doc.getElementById("gear-btn")!);
     click(h.window, h.doc.getElementById("gear-btn")!);
-    expect(gearLabels(h).join(" ")).toMatch(/Sign in again/);
+    // Connect, not "Sign in again" — an unusable provider gets one verb
+    // regardless of whether it was ever linked (owner, 2026-08-17).
+    expect(gearLabels(h).join(" ")).toMatch(/Connect/);
+    expect(gearLabels(h).join(" ")).not.toMatch(/Sign in again/);
 
     dispatch(h.window, {
       type: "providerState",

@@ -99,13 +99,19 @@ describe("model picker for an agent that needs a sign-in", () => {
 });
 
 describe("the Accounts cluster for an agent that needs a sign-in", () => {
-  it("offers signing in again, not signing out", () => {
+  // The verb is Connect, same as a provider that was never linked. "Sign in
+  // again" described OUR bookkeeping — linked once, credentials lapsed — and to
+  // the user both rows meant the same thing: this one does not work, press here.
+  // Owner's call, 2026-08-17. The row keeps its warning styling, so the stale
+  // state is still visible without a second word for one action.
+  it("offers Connect, not signing out, and never says Sign in again", () => {
     const h = bootSignedOutCodex();
     click(h.window, $(h.doc, "gear-btn"));
 
-    expect(popoverText(h.doc)).toContain("Sign in again");
+    expect(popoverText(h.doc)).toContain("Connect");
+    expect(popoverText(h.doc)).not.toContain("Sign in again");
     expect(popoverText(h.doc)).not.toContain("Sign out");
-    const row = items(h.doc).find((el) => el.textContent?.includes("Sign in again")) as HTMLElement;
+    const row = items(h.doc).find((el) => el.textContent?.includes("Connect")) as HTMLElement;
     click(h.window, row);
     expect(h.posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
     expect(types(h.posted)).not.toContain("logout");
@@ -127,7 +133,7 @@ describe("the Accounts cluster for an agent that needs a sign-in", () => {
       .find((el) => (el.textContent || "").trim() === "Providers")!;
     click(h.window, providers);
     expect(h.doc.querySelector('[data-id="providerCodex"]')!.textContent).toContain("Sign out");
-    expect(h.doc.querySelector('[data-id="providerCodex"]')!.textContent).not.toContain("Sign in again");
+    expect(h.doc.querySelector('[data-id="providerCodex"]')!.textContent).not.toContain("Connect");
   });
 });
 
