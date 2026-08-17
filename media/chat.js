@@ -2900,23 +2900,12 @@
       heading.textContent = providerDisplayName(provider);
       gearPopover.appendChild(heading);
     };
-    const addSignInRow = (provider) => {
-      addProviderHeading(provider);
-      const el = document.createElement("div");
-      // Accounts are connected on the machine running the workspace, and the
-      // host refuses `runGrokLogin` from a remote — so a phone gets the fact,
-      // not a button that would do nothing.
-      el.className = "toolbar-popover-item model-signin" + (IS_REMOTE ? "" : " popover-action");
-      el.innerHTML = `<span class="popover-warn">${IS_REMOTE ? "Sign in at the desk to load models" : "Sign in to load models"}</span>`;
-      if (!IS_REMOTE) {
-        el.onclick = (e) => {
-          e.stopPropagation();
-          vscode.postMessage({ type: "runGrokLogin", provider });
-          closePopovers();
-        };
-      }
-      gearPopover.appendChild(el);
-    };
+    // A provider that cannot answer is simply not in this list. It used to get
+    // a heading and a "Sign in to load models" row, which put an agent you
+    // cannot pick in the middle of the menu for picking one — and on a phone it
+    // could not even be actioned, since the host refuses runGrokLogin from a
+    // remote. Manage providers at the bottom is the way back for all three
+    // (owner, 2026-08-17: "Not connected => Not visible").
     const renderModelRow = (m) => {
       const modelProvider = m.provider || state.activeProvider;
       addProviderHeading(modelProvider);
@@ -2960,14 +2949,11 @@
         for (const m of models) {
           if ((m.provider || state.activeProvider) === provider) renderModelRow(m);
         }
-        if (signInProviders.includes(provider)) addSignInRow(provider);
       }
       addManageProvidersRow();
       return;
     }
     for (const m of models) renderModelRow(m);
-    // Ungrouped means one agent is in play: only its own gap is worth an action.
-    if (signInProviders.includes(state.activeProvider)) addSignInRow(state.activeProvider);
     addManageProvidersRow();
   }
 

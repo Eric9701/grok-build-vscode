@@ -6416,6 +6416,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postSessionsList();
       return undefined;
     }
+    // An EMPTY conversation pinned to a provider that cannot answer just moves
+    // to one that can, silently. There is nothing to preserve — no history, no
+    // model choice worth defending — and the alternative is what the owner hit:
+    // Grok connected and chosen in the picker, while the turn insisted on
+    // finishing a codex login because the session object still said "codex".
+    // A conversation WITH history is never retargeted; that would silently
+    // change who is answering someone mid-thread.
+    if (!target.hasHistory && !this.usableProviders().includes(target.provider)) {
+      const fallback = this.defaultProviderForProject(this.sessionCwd(target));
+      if (fallback !== target.provider && this.usableProviders().includes(fallback)) {
+        this.host.appendLine(
+          `[providers] ${target.provider} cannot answer; empty session retargeted to ${fallback}`,
+        );
+        target.provider = fallback;
+        await this.rememberProjectProvider(this.sessionCwd(target), fallback);
+        this.postProviderState();
+      }
+    }
     if (!this.connectedProviders().includes(target.provider)) {
       const testDelay = this.testSessionStartDelay;
       if (testDelay && testDelay.resumeId === resumeId) {
@@ -8069,7 +8087,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       case "recheckConnection": {
         const provider: AcpProvider = isAcpProvider(msg.provider) ? msg.provider : session.provider;
-        const connectedBefore = this.connectedProviders();
         if (!this.locateProvider(provider)) {
           this.post({
             type: "onboarding",
@@ -8086,10 +8103,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.reprobeProviderCredentials(provider);
         // Every view stranded by a last-provider sign-out, not just this one.
         const adopted = await this.retargetNeedsProviderSessions(provider);
-        const firstConnection = connectedBefore.length === 0;
+        // An empty conversation bound to a provider that cannot answer has
+        // nothing worth preserving, so hand it to the one just connected. This
+        // used to require `firstConnection`, computed from CONNECTED providers,
+        // so a lapsed Codex made connecting Grok look like a second account and
+        // the empty session stayed on Codex — asking for a codex login while
+        // the picker read Grok 4.6. What matters is whether the session's own
+        // provider can answer, not how many others are linked.
+        const strandedOnUnusable = !session.hasHistory && !this.usableProviders().includes(session.provider);
         if (adopted.has(session)) {
           this.postSessionsList();
-        } else if (firstConnection && !session.hasHistory) {
+        } else if (strandedOnUnusable) {
           session.provider = provider;
           await this.rememberProjectProvider(this.sessionCwd(session), provider);
           await this.startSession(undefined, session);

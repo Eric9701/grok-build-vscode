@@ -39,23 +39,25 @@ function bootSignedOutCodex(opts: { remote?: boolean } = {}) {
   return h;
 }
 
+// "Not connected => Not visible" (owner, 2026-08-17). A provider that cannot
+// answer is absent from the picker entirely — no models, no heading, no
+// sign-in row. It used to put an agent you cannot choose in the middle of the
+// menu for choosing one, and on a phone that row could not even be actioned,
+// because the host refuses `runGrokLogin` from a remote. Manage providers at the
+// bottom is the single way back, for every provider and every surface.
 describe("model picker for an agent that needs a sign-in", () => {
-  it("replaces its model rows with the sign-in action", () => {
+  it("omits it entirely rather than offering a row that cannot be chosen", () => {
     const h = bootSignedOutCodex();
     click(h.window, $(h.doc, "gear-btn"));
     click(h.window, modelBtn(h.doc));
 
     expect(popoverText(h.doc)).not.toContain("Codex default");
     expect(popoverText(h.doc)).not.toContain("GPT-5.6 Sol");
-    const action = items(h.doc).find((el) => el.textContent?.includes("Sign in to load models"));
-    expect(action).toBeDefined();
-
-    click(h.window, action as HTMLElement);
-    expect(h.posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
-    expect(types(h.posted)).not.toContain("setModel");
+    expect(popoverText(h.doc)).not.toContain("Sign in to load models");
+    expect(popoverText(h.doc)).toContain("Manage providers");
   });
 
-  it("keeps a healthy agent's models next to a signed-out one's action", () => {
+  it("keeps a healthy agent's models and drops the signed-out one's heading", () => {
     const h = bootWebview();
     dispatch(h.window, {
       type: "providerState",
@@ -79,19 +81,18 @@ describe("model picker for an agent that needs a sign-in", () => {
 
     expect(popoverText(h.doc)).toContain("Grok Build");
     expect(popoverText(h.doc)).not.toContain("GPT-5.6 Sol");
+    // Codex contributes nothing at all now, so its heading goes with its rows.
     expect([...h.doc.querySelectorAll(".model-provider-heading")].map((el) => el.textContent))
-      .toEqual(["Grok", "Codex"]);
-    expect(popoverText(h.doc)).toContain("Sign in to load models");
+      .toEqual(["Grok"]);
+    expect(popoverText(h.doc)).not.toContain("Sign in to load models");
   });
 
-  it("tells a remote where the sign-in has to happen instead of offering a dead button", () => {
+  it("shows a remote the same absence, never a button the host would refuse", () => {
     const h = bootSignedOutCodex({ remote: true });
     click(h.window, $(h.doc, "gear-btn"));
     click(h.window, modelBtn(h.doc));
 
-    const action = items(h.doc).find((el) => el.textContent?.includes("Sign in at the desk"));
-    expect(action).toBeDefined();
-    click(h.window, action as HTMLElement);
+    expect(popoverText(h.doc)).not.toContain("Sign in at the desk to load models");
     // `runGrokLogin` is host-local; the host would refuse it, so the phone must
     // not send it in the first place.
     expect(types(h.posted)).not.toContain("runGrokLogin");

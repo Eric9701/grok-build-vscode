@@ -54,6 +54,17 @@ describe("provider UI pure policy", () => {
     )).toEqual(["grok"]);
   });
 
+  it("prefers Grok, then Codex, then Claude when several can answer", () => {
+    // The order a stranded empty session falls back through (owner, 2026-08-17:
+    // "Prefer Grok > Codex > Claude Code"). It is PROVIDER_ORDER, so this test
+    // exists to stop that list being reordered for an unrelated reason —
+    // grouping in the picker reads from the same constant.
+    const all = { grok: true, codex: true, claude: true } as const;
+    expect(usableProviderIds(all, all, {})).toEqual(["grok", "codex", "claude"]);
+    expect(usableProviderIds(all, all, { grok: true })).toEqual(["codex", "claude"]);
+    expect(usableProviderIds(all, all, { grok: true, codex: true })).toEqual(["claude"]);
+  });
+
   it("groups Grok first, uses live models, and implies a default for an empty cache", () => {
     const models = modelsForConnectedProviders(
       ["codex", "grok"],
