@@ -6,7 +6,9 @@ const root = path.resolve(__dirname, "..");
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 
 describe("provider logo assets", () => {
-  it.each(["media/chat.js", "media/projects-rail.js"])("inlines both currentColor Lobe marks in %s", (file) => {
+  // settings.js carries a third copy because the VS Code settings TAB loads
+  // only settings.css + settings.js — it cannot reach a shared helper.
+  it.each(["media/chat.js", "media/projects-rail.js", "media/settings.js"])("inlines both currentColor Lobe marks in %s", (file) => {
     const source = read(file);
     expect(source).toContain("Provider marks from Lobe Icons (MIT)");
     expect(source).toContain('viewBox="0 0 24 24" fill="currentColor"');

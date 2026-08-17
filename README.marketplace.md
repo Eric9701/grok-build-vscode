@@ -191,7 +191,7 @@ Click the model name in the gear popover. The list comes from your CLI; switchin
 <details>
 <summary><strong>Multi-provider</strong> — built for Grok Build, works with other ACP agents</summary>
 
-The host talks **ACP** (JSON-RPC over stdio), not a Grok-specific protocol, so the same UI drives any agent that speaks it — **Codex** included. Grok Build is the default and the one everything is tuned against; other providers are selected per session and get the same chat, diffs, permission cards, and history.
+The host talks **ACP** (JSON-RPC over stdio), not a Grok-specific protocol, so the same UI drives any agent that speaks it — **OpenAI Codex** and **Claude Code** included. Connect them in **Settings → Providers**; each signs in through its own CLI. Grok Build is the default and the one everything is tuned against, but every connected agent shares one model picker, and each conversation keeps the agent it started with, so all three can run side by side with the same chat, diffs, permission cards, and history.
 
 </details>
 

@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
 import type { AcpProvider, BackendSessionListEntry } from "./acp-backend";
-import { isAdapterProvider, isAcpProvider } from "./acp-backend";
+import { isAdapterProvider, isAcpProvider, ACP_PROVIDERS } from "./acp-backend";
 import { CODEX_ACP_ADAPTER_VERSION, CodexBackend, isCodexCredentialError } from "./codex-backend";
 import { locateCodexCli, resolveCodexHome } from "./codex-cli-locator";
 import { CODEX_MANAGED_VERSION, installManagedCodex } from "./codex-managed-installer";
@@ -1204,12 +1204,23 @@ export class GrokSidebar {
    * truth, and it runs both from the page's Refresh button and when the page
    * is opened.
    *
-   * Deliberately NOT `recheckConnection`: that marks its provider connected,
-   * which is right for "I just signed in" and wrong for a refresh — it would
-   * invent an account the user never connected.
+   * Every INSTALLED agent is probed, not just the ones already marked connected.
+   * Signing in happens outside this extension — a browser OAuth approval, a
+   * `grok login` in any terminal — and the desk has no way to hear about it.
+   * Probing only the already-connected set made the button useless in exactly
+   * the case people press it: approve Grok in the browser, press Refresh, and
+   * it skipped Grok because the stale flag said "not connected" (owner, and it
+   * meant opening the chat and pressing Check instead).
    *
-   * Only connected accounts are probed. An account that was never connected has
-   * no credentials to observe, so probing it would spawn a CLI to learn nothing.
+   * A provider whose CLI is not installed is still skipped — there is nothing
+   * to run and nothing to learn.
+   *
+   * Still NOT `recheckConnection`: that marks its provider connected BEFORE
+   * probing, so a failed sign-in leaves an account the user never had. Here the
+   * probe comes first and only a SUCCESS promotes — evidence, not assumption.
+   * A failure never demotes: a lapsed account keeps its row and gets the
+   * sign-in action (see setProviderNeedsLogin), and one that was never
+   * connected simply stays that way.
    */
   private async refreshProviderStates(): Promise<void> {
     if (this.providerRefreshInFlight) return;
@@ -1225,7 +1236,9 @@ export class GrokSidebar {
       this.codexCliPath = undefined;
       this.claudeCliPath = undefined;
       // Read AFTER dropping the paths, so a CLI that appeared since boot counts.
-      const connected = this.connectedProviders();
+      const located = this.locatedProviders();
+      const installed = ACP_PROVIDERS.filter((provider) => located[provider]);
+      const connectedBefore = this.providerConnections();
       // Failures are the answer here, not an error: a rejected probe is how a
       // lapsed account gets its needsLogin flag. reprobeProviderCredentials
       // already classifies and records that, so nothing is swallowed.
@@ -1233,8 +1246,16 @@ export class GrokSidebar {
       // Versions are deliberately not re-probed. They are read once per
       // activation by design, they do not appear on this page, and every
       // connected account already probes its version when it connects.
-      await Promise.all(connected.map((provider) =>
-        this.reprobeProviderCredentials(provider).catch(() => false)));
+      await Promise.all(installed.map(async (provider) => {
+        const authenticated = await this.reprobeProviderCredentials(provider).catch(() => false);
+        // Promote on a SUCCESSFUL probe only. This is the sign-in that happened
+        // somewhere the desk could not see; the probe is what makes it a fact
+        // rather than a guess. Persisted, so it survives a reload the way the
+        // connect flow's own state does.
+        if (authenticated && connectedBefore[provider] !== true) {
+          await this.setProviderConnected(provider, true);
+        }
+      }));
     } finally {
       this.providerRefreshInFlight = false;
       // Always the last word, however the probes went — a spinner that outlives

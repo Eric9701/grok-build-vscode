@@ -29,6 +29,9 @@ function makeSidebar(connections: Record<string, boolean>): AnySidebar {
   sidebar.connectedProviders = vi.fn(() =>
     (["grok", "codex", "claude"] as const).filter((id) => sidebar.providerConnectionState[id]));
   sidebar.reprobeProviderCredentials = vi.fn(async () => true);
+  sidebar.setProviderConnected = vi.fn(async (id: string, on: boolean) => {
+    sidebar.providerConnectionState = { ...sidebar.providerConnectionState, [id]: on };
+  });
   sidebar.host = { appendLine: vi.fn() };
   sidebar.settingsEditor = undefined;
   sidebar.post = vi.fn();
@@ -43,23 +46,44 @@ const refresh = (sidebar: AnySidebar): Promise<void> =>
   (GrokSidebar.prototype as AnySidebar).refreshProviderStates.call(sidebar);
 
 describe("Settings → Providers refresh", () => {
-  it("re-probes only the accounts that are actually connected", async () => {
-    const sidebar = makeSidebar({ grok: true, claude: true });
+  it("probes every INSTALLED agent, not just the ones marked connected", async () => {
+    // The reported bug: approve Grok in a browser, press Refresh, nothing
+    // happens — because the stale flag said "not connected" so it was skipped.
+    const sidebar = makeSidebar({ grok: false, codex: false, claude: false });
     await refresh(sidebar);
     const probed = sidebar.reprobeProviderCredentials.mock.calls.map(([id]: [string]) => id);
-    expect(probed.sort()).toEqual(["claude", "grok"]);
-    // Codex was never connected — there are no credentials to observe, so
-    // probing it would spawn a CLI to learn nothing.
-    expect(probed).not.toContain("codex");
+    expect(probed.sort()).toEqual(["claude", "codex", "grok"]);
   });
 
-  it("asserts nothing about a provider — a refresh is not a connect", async () => {
+  it("skips an agent whose CLI is not installed — nothing to run", async () => {
+    const sidebar = makeSidebar({ grok: true });
+    sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: false, claude: false }));
+    await refresh(sidebar);
+    const probed = sidebar.reprobeProviderCredentials.mock.calls.map(([id]: [string]) => id);
+    expect(probed).toEqual(["grok"]);
+  });
+
+  it("promotes an agent that signed in elsewhere, once the probe proves it", async () => {
     const sidebar = makeSidebar({ grok: false, codex: false, claude: false });
-    sidebar.setProviderConnected = vi.fn(async () => {});
+    sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: false, claude: false }));
+    sidebar.reprobeProviderCredentials = vi.fn(async () => true);
+    await refresh(sidebar);
+    expect(sidebar.setProviderConnected).toHaveBeenCalledWith("grok", true);
+  });
+
+  it("a failed probe never invents a connection", async () => {
+    const sidebar = makeSidebar({ grok: false, codex: false, claude: false });
+    sidebar.reprobeProviderCredentials = vi.fn(async () => false);
     await refresh(sidebar);
     expect(sidebar.setProviderConnected).not.toHaveBeenCalled();
     expect(sidebar.providerConnectionState).toEqual({ grok: false, codex: false, claude: false });
-    expect(sidebar.reprobeProviderCredentials).not.toHaveBeenCalled();
+  });
+
+  it("does not re-persist an agent that was already connected", async () => {
+    const sidebar = makeSidebar({ grok: true, codex: true, claude: true });
+    sidebar.reprobeProviderCredentials = vi.fn(async () => true);
+    await refresh(sidebar);
+    expect(sidebar.setProviderConnected).not.toHaveBeenCalled();
   });
 
   it("drops the cached CLI paths so a newly installed CLI is found", async () => {
@@ -83,6 +107,8 @@ describe("Settings → Providers refresh", () => {
 
   it("reports checking while it works and idle once it is done", async () => {
     const sidebar = makeSidebar({ grok: true });
+    // One installed CLI, so one probe to hold open and release deterministically.
+    sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: false, claude: false }));
     let release: (() => void) | undefined;
     sidebar.reprobeProviderCredentials = vi.fn(() => new Promise<boolean>((resolve) => {
       release = () => resolve(true);
@@ -108,6 +134,7 @@ describe("Settings → Providers refresh", () => {
 
   it("ignores a second request while one is in flight", async () => {
     const sidebar = makeSidebar({ grok: true });
+    sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: false, claude: false }));
     let release: (() => void) | undefined;
     sidebar.reprobeProviderCredentials = vi.fn(() => new Promise<boolean>((resolve) => {
       release = () => resolve(true);
