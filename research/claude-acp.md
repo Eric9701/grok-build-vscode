@@ -75,16 +75,32 @@ and the webview shows grok's plan-review card plus Claude's mode options
 
 ## Context usage
 
-`usage_update.used` and prompt `usage.totalTokens` are the billed sum
-(`input + output + cache_read + cache_write`). Occupancy for the donut
-is `adapterContextOccupancy` (those partitions minus output) — the prompt
-re-sent each turn *is* the conversation. The host persists that figure
-per session (`SessionMetaOverride.contextUsed`) and keeps it monotonic
-between compactions so a subagent or other smaller call cannot replace
-it. Ordinary `usage_update.used` is not occupancy; the adapter sends
+`usage_update.used` is the **current assistant call's** billed total
+(`input + output + cache_read + cache_write`). Prompt
+`usage.totalTokens` is **not** that number: the adapter accumulates
+every model call in the turn into `session.accumulatedUsage` and that
+SUM is what `PromptResponse.usage` carries.
+
+Measured on Claude Code 2.1.233 / adapter 0.69.0
+(`research/adapter-usage-probe.cjs claude multi`): a Read+Write+Read
+turn emitted 13 `usage_update`s, `used` staying in a 36172→37475 band
+(never dropping; each later call is slightly larger). The prompt result
+was `{ inputTokens: 12, outputTokens: 1136, cachedReadTokens: 219067,
+cachedWriteTokens: 1965, totalTokens: 222180 }` —
+`adapterContextOccupancy` 221044, about six times the largest call.
+That is the sum of six prompts, not the conversation.
+
+Occupancy is therefore `occupancyFromAdapterTurn`: the largest
+`usage_update.used` in the turn, preferring the result's partition
+occupancy only when it does not exceed that max (Codex / a one-call
+Claude turn, where the result excludes output). The host persists that
+figure per session (`SessionMetaOverride.contextUsed`) and keeps it
+monotonic between compactions. Ordinary `usage_update.used` is not
+occupancy by itself (it includes that call's output); the adapter sends
 real occupancy via `getContextUsage` only on compact (`compact_boundary`),
 and the host adopts that `usage_update.used` after `adapterCompactSignal`
-reports completed. `size` is the window and must ride
+reports completed. A later summed PromptResponse must not overwrite
+that adoption. `size` is the window and must ride
 `contextUsage.window` — Claude's live id is often `opus[1m]`, which does
 not match the picker model list, so stamping
 `availableModels[].totalContextTokens` alone never updates the webview.

@@ -1,6 +1,8 @@
 // Live Claude/Codex ACP usage probe: several turns + /compact, log every
 // usage_update and prompt-usage partition so occupancy can be compared to billed.
-//   node research/adapter-usage-probe.cjs [codex|claude]
+//   node research/adapter-usage-probe.cjs [codex|claude] [full|multi]
+// `multi` is one ping plus a tool-using turn (several model calls) so
+// per-call usage_update can be compared with PromptResponse.usage.
 const { spawn } = require("node:child_process");
 const readline = require("node:readline");
 const os = require("node:os");
@@ -76,7 +78,48 @@ proc.stderr.on("data", (d) => process.stderr.write(`[${provider}-stderr] ${d}`))
 proc.on("exit", (code) => log(`exit ${code}`));
 
 const usageUpdates = [];
+const toolEvents = [];
 const compactSignals = [];
+
+function usageSlice(from) {
+  return usageUpdates.slice(from).map((u, i) => ({
+    i,
+    used: u.used,
+    size: u.size,
+    cost: u.cost,
+    meta: u._meta,
+    delta: i === 0 ? null : (typeof u.used === "number" && typeof usageUpdates[from + i - 1]?.used === "number"
+      ? u.used - usageUpdates[from + i - 1].used
+      : null),
+  }));
+}
+
+function analyzeTurn(label, from, result) {
+  const usage = result?.usage || result?._meta?.usage || null;
+  const updates = usageSlice(from);
+  const useds = updates.map((u) => u.used).filter((n) => typeof n === "number");
+  const maxUsed = useds.length ? Math.max(...useds) : null;
+  const lastUsed = useds.length ? useds[useds.length - 1] : null;
+  const drops = updates.filter((u) => typeof u.delta === "number" && u.delta < 0);
+  const occ = occupancy(usage);
+  const resultPrompt = occ && typeof occ.occupancy === "number" ? occ.occupancy : null;
+  log(`${label} usage_updates ${JSON.stringify(updates)}`);
+  log(`${label} tools ${JSON.stringify(toolEvents.filter((t) => t.at >= from))}`);
+  log(`${label} result ${JSON.stringify(usage || result?.usage || result?._meta || result)}`);
+  log(`${label} occupancy ${JSON.stringify(occ)}`);
+  log(`${label} compare ${JSON.stringify({
+    updateCount: updates.length,
+    usedSequence: useds,
+    maxUsed,
+    lastUsed,
+    drops: drops.map((d) => ({ i: d.i, used: d.used, delta: d.delta })),
+    resultPrompt,
+    resultLooksLikeSum: resultPrompt != null && maxUsed != null && resultPrompt > maxUsed,
+    resultMatchesLastUsed: resultPrompt != null && lastUsed != null && resultPrompt === lastUsed,
+    resultMatchesMaxUsed: resultPrompt != null && maxUsed != null && resultPrompt === maxUsed,
+  })}`);
+  return { updates, usage, occ };
+}
 const rl = readline.createInterface({ input: proc.stdout });
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -101,6 +144,14 @@ rl.on("line", (line) => {
       }
     } else if (kind === "tool_call" || kind === "tool_call_update") {
       const title = update.title || "";
+      toolEvents.push({
+        at: usageUpdates.length,
+        kind,
+        title,
+        status: update.status,
+        toolCallId: update.toolCallId,
+      });
+      log(`tool ${JSON.stringify({ kind, title, status: update.status, id: update.toolCallId || "" })}`);
       if (update._meta?.contextCompaction || /compact/i.test(title)) {
         compactSignals.push({ kind, title, status: update.status, meta: update._meta });
         log(`compact-tool ${JSON.stringify({ kind, title, status: update.status, meta: update._meta })}`);
@@ -121,6 +172,25 @@ rl.on("line", (line) => {
     return;
   }
   if (msg.method && msg.id != null) {
+    if (msg.method === "fs/read_text_file") {
+      const target = msg.params?.path;
+      try {
+        respond(msg.id, { content: fs.readFileSync(target, "utf8") });
+      } catch (error) {
+        respond(msg.id, { content: "", error: String(error && error.message ? error.message : error) });
+      }
+      return;
+    }
+    if (msg.method === "fs/write_text_file") {
+      const target = msg.params?.path;
+      try {
+        fs.writeFileSync(target, String(msg.params?.content ?? ""), "utf8");
+        respond(msg.id, {});
+      } catch (error) {
+        respond(msg.id, { error: String(error && error.message ? error.message : error) });
+      }
+      return;
+    }
     if (msg.method === "terminal/create") respond(msg.id, { terminalId: "t1" });
     else if (msg.method === "terminal/output") respond(msg.id, { output: "", exitStatus: { exitCode: 0 }, truncated: false });
     else if (msg.method === "terminal/wait_for_exit") respond(msg.id, { exitCode: 0 });
@@ -134,35 +204,54 @@ rl.on("line", (line) => {
     const session = await send("session/new", { cwd, mcpServers: [] });
     const sessionId = session.sessionId;
     log(`session ${sessionId} currentModel=${session.models?.currentModelId || session.configOptions?.find((o) => (o.id || o.configId) === "model")?.currentValue}`);
-    const turns = [
-      "Reply with the single word ping.",
-      "Reply with the single word pong.",
-      "Reply with the single word ready.",
-      "List three short words, nothing else.",
-    ];
+    const mode = (process.argv[3] || "full").toLowerCase();
+    fs.writeFileSync(path.join(cwd, "probe-note.txt"), "alpha-mark\n", "utf8");
+    const simpleTurns = mode === "multi"
+      ? ["Reply with the single word ping."]
+      : [
+        "Reply with the single word ping.",
+        "Reply with the single word pong.",
+        "Reply with the single word ready.",
+        "List three short words, nothing else.",
+      ];
     const beforeCompact = usageUpdates.length;
-    for (const [i, text] of turns.entries()) {
+    for (const [i, text] of simpleTurns.entries()) {
+      const from = usageUpdates.length;
       const result = await send("session/prompt", { sessionId, prompt: [{ type: "text", text }] });
-      const usage = result.usage || result._meta?.usage || null;
-      log(`turn ${i + 1} usage ${JSON.stringify(usage || result.usage || result._meta || result)}`);
-      log(`turn ${i + 1} occupancy ${JSON.stringify(occupancy(usage))}`);
+      analyzeTurn(`turn ${i + 1}`, from, result);
     }
-    const midUpdates = usageUpdates.slice(beforeCompact).map((u) => u.used);
-    log(`pre-compact usage_update.used sequence ${JSON.stringify(midUpdates)}`);
-    const compactFrom = usageUpdates.length;
-    log("sending /compact");
-    try {
-      const compactResult = await send("session/prompt", { sessionId, prompt: [{ type: "text", text: "/compact" }] });
-      log(`compact result ${JSON.stringify(compactResult.usage || compactResult._meta || compactResult)}`);
-      log(`compact occupancy ${JSON.stringify(occupancy(compactResult.usage || compactResult._meta?.usage))}`);
-    } catch (error) {
-      log(`compact FAILED ${error && error.message ? error.message : error}`);
+    {
+      // Force several model calls in one prompt so per-call usage_update can
+      // be compared with the turn-level PromptResponse.usage (Claude sums).
+      const from = usageUpdates.length;
+      const text = [
+        "The file probe-note.txt exists in this working directory.",
+        "Read it, then write probe-out.txt containing exactly that same text,",
+        "then read probe-out.txt back, then reply with the single word done.",
+        "Do not skip the tools.",
+      ].join(" ");
+      log("sending multi-call tool turn");
+      const result = await send("session/prompt", { sessionId, prompt: [{ type: "text", text }] });
+      analyzeTurn("multi-call", from, result);
     }
-    log(`compact usage_updates ${JSON.stringify(usageUpdates.slice(compactFrom).map((u) => ({ used: u.used, size: u.size, cost: u.cost })))}`);
-    log(`compact signals ${JSON.stringify(compactSignals)}`);
-    const after = await send("session/prompt", { sessionId, prompt: [{ type: "text", text: "Reply with the single word done." }] });
-    log(`post-compact usage ${JSON.stringify(after.usage || after._meta || after)}`);
-    log(`post-compact occupancy ${JSON.stringify(occupancy(after.usage || after._meta?.usage))}`);
+    if (mode !== "multi") {
+      const midUpdates = usageUpdates.slice(beforeCompact).map((u) => u.used);
+      log(`pre-compact usage_update.used sequence ${JSON.stringify(midUpdates)}`);
+      const compactFrom = usageUpdates.length;
+      log("sending /compact");
+      try {
+        const compactResult = await send("session/prompt", { sessionId, prompt: [{ type: "text", text: "/compact" }] });
+        log(`compact result ${JSON.stringify(compactResult.usage || compactResult._meta || compactResult)}`);
+        log(`compact occupancy ${JSON.stringify(occupancy(compactResult.usage || compactResult._meta?.usage))}`);
+      } catch (error) {
+        log(`compact FAILED ${error && error.message ? error.message : error}`);
+      }
+      log(`compact usage_updates ${JSON.stringify(usageUpdates.slice(compactFrom).map((u) => ({ used: u.used, size: u.size, cost: u.cost })))}`);
+      log(`compact signals ${JSON.stringify(compactSignals)}`);
+      const after = await send("session/prompt", { sessionId, prompt: [{ type: "text", text: "Reply with the single word done." }] });
+      log(`post-compact usage ${JSON.stringify(after.usage || after._meta || after)}`);
+      log(`post-compact occupancy ${JSON.stringify(occupancy(after.usage || after._meta?.usage))}`);
+    }
     log(`usage_update count ${usageUpdates.length}`);
   } catch (error) {
     log(`FAILED ${error && error.message ? error.message : error}`);

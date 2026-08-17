@@ -514,13 +514,17 @@ export function contextUsedFromUpdateEnvelope(meta: unknown): number | null {
 }
 
 /**
- * Adapter occupancy is the prompt actually sent this turn: uncached input plus
+ * Adapter occupancy is the prompt actually sent this call: uncached input plus
  * cache read and cache write. Those three partitions are disjoint on both
  * Claude and Codex. `usage.totalTokens` / `usage_update.used` add output and
  * are a billing sum, not conversation occupancy.
  *
  * When the parts are missing, `totalTokens - outputTokens` is the same
  * quantity (verified against Claude 0.69.0 and a live Codex 5.6 turn).
+ *
+ * Claude's PromptResponse.usage is the SUM of every call in the turn — do
+ * not pass that figure here and treat the result as occupancy. Reduce a
+ * turn with `occupancyFromAdapterTurn`.
  */
 export function adapterContextOccupancy(usage: {
   inputTokens?: number;
@@ -546,11 +550,40 @@ function positiveTokens(value: unknown): number | undefined {
 }
 
 /**
- * Per-session adapter occupancy. The prompt sent on a turn *is* the
- * conversation at that moment (every call re-sends it). A later smaller
- * prompt without a compact is a different-shaped call (subagent, tool
- * follow-up) and must not replace the conversation figure — that is the
- * 135k↔389k swing. Compaction is the only reset.
+ * Occupancy for one adapter turn. Claude's PromptResponse.usage is
+ * `accumulatedUsage` — the SUM of every model call — so
+ * `adapterContextOccupancy(result)` is larger than the conversation.
+ * `usage_update.used` is the current call's billed total. Occupancy is
+ * the largest of those, never the sum. When the result does not exceed
+ * that max it is a single/last call and excludes output, so it wins.
+ *
+ * Without per-call observations the wire cannot tell a sum from a
+ * single call; the result is the honest fallback.
+ * Measurement: research/claude-acp.md, adapter-usage-probe.cjs.
+ */
+export function occupancyFromAdapterTurn(
+  resultOccupancy: number | undefined,
+  perCallUsed: readonly number[] | undefined,
+): number | undefined {
+  let callMax: number | undefined;
+  for (const used of perCallUsed ?? []) {
+    const n = positiveTokens(used);
+    if (n === undefined) continue;
+    callMax = callMax === undefined ? n : Math.max(callMax, n);
+  }
+  const result = positiveTokens(resultOccupancy);
+  if (callMax === undefined) return result;
+  if (result === undefined) return callMax;
+  return result > callMax ? callMax : result;
+}
+
+/**
+ * Per-session adapter occupancy. The prompt sent on a call *is* the
+ * conversation at that moment (every call re-sends it). Feed
+ * `occupancyFromAdapterTurn`, not Claude's summed PromptResponse. A later
+ * smaller prompt without a compact is a different-shaped call (subagent,
+ * tool follow-up) and must not replace the conversation figure — that is
+ * the 135k↔389k swing. Compaction is the only reset.
  */
 export interface ContextOccupancyState {
   used?: number;

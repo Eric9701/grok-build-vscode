@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adapterCompactSignal,
   applyContextOccupancy,
+  occupancyFromAdapterTurn,
   occupancyFromUsageLog,
   type ContextOccupancyState,
 } from "../src/acp-dispatch";
@@ -57,6 +58,27 @@ describe("applyContextOccupancy", () => {
   it("ignores non-positive observations", () => {
     expect(applyContextOccupancy({ used: 10 }, { occupancy: 0 })).toEqual({ used: 10, pendingCompact: false });
     expect(applyContextOccupancy({ used: 10 }, { occupancy: -4 })).toEqual({ used: 10, pendingCompact: false });
+  });
+});
+
+describe("occupancyFromAdapterTurn", () => {
+  it("uses the largest per-call observation when the result is a sum", () => {
+    // research/adapter-usage-probe.cjs claude multi (2026-08-17):
+    // 5 tools / ~6 model calls. usage_update.used stayed in the 36–37k
+    // band; PromptResponse occupancy was the SUM, 221044.
+    const calls = [
+      36172, 36268, 36286, 36713, 36756, 37043, 37117, 37242, 37282, 37439, 37473, 37475, 37475,
+    ];
+    expect(occupancyFromAdapterTurn(221044, calls)).toBe(37475);
+  });
+
+  it("prefers the result when it is a single/last call (excludes output)", () => {
+    expect(occupancyFromAdapterTurn(35507, [35511, 35511])).toBe(35507);
+  });
+
+  it("falls back to the result when the wire has no per-call updates", () => {
+    expect(occupancyFromAdapterTurn(35507, [])).toBe(35507);
+    expect(occupancyFromAdapterTurn(undefined, undefined)).toBeUndefined();
   });
 });
 
@@ -147,5 +169,37 @@ describe("session context persistence lifecycle", () => {
       pendingCompact: false,
     });
     expect(occupancyFromUsageLog(log.slice(0, 3)).used).toBe(51200);
+  });
+
+  it("a multi-call turn does not persist the sum or clobber a compact adoption", () => {
+    const id = "sess-multi";
+    const live: Record<string, SessionMetaOverride> = {};
+
+    const first = occupancyFromAdapterTurn(35507, [35511]);
+    expect(observe(live, id, { occupancy: first, window: 1000000 })?.used).toBe(35507);
+
+    const multi = occupancyFromAdapterTurn(221044, [36172, 37475]);
+    expect(multi).toBe(37475);
+    expect(observe(live, id, { occupancy: multi })?.used).toBe(37475);
+
+    live[id] = persistSessionContext(live[id], { compacted: true, occupancy: 51200 });
+    expect(persistedContextUsage(live[id])).toEqual({ used: 51200, window: 1000000 });
+
+    const afterCompact = occupancyFromAdapterTurn(180000, [52000, 54800]);
+    expect(afterCompact).toBe(54800);
+    expect(observe(live, id, { occupancy: afterCompact })?.used).toBe(54800);
+
+    live[id] = {
+      ...live[id],
+      usageLog: [
+        { afterUserMessage: 1, contextUsed: 35507 },
+        { afterUserMessage: 2, contextUsed: 37475 },
+        { afterUserMessage: 3, contextUsed: 51200, compacted: true },
+        { afterUserMessage: 4, contextUsed: 54800 },
+      ],
+    };
+    const reloaded: Record<string, SessionMetaOverride> = JSON.parse(JSON.stringify(live));
+    expect(persistedContextUsage(reloaded[id])).toEqual({ used: 54800, window: 1000000 });
+    expect(occupancyFromUsageLog(reloaded[id].usageLog).used).toBe(54800);
   });
 });

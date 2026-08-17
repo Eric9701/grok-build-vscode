@@ -174,6 +174,11 @@ describe("wiring — the guard is what actually runs", () => {
     expect(install).toContain("export const REMOTE_RELAY_URL = PRODUCTION_RELAY_URL;");
   });
 
+  it("install.ps1 refuses a leftover vsix when npm never actually built", () => {
+    expect(install).toMatch(/Get-Command npm/);
+    expect(install).toContain("refusing to install a leftover build");
+  });
+
   it("release scripts drop the hatch before packaging", () => {
     expect(releasePs1).toMatch(/Remove-Item Env:GROK_ALLOW_STAGING_RELAY_VSIX/);
     expect(releaseSh).toMatch(/unset GROK_ALLOW_STAGING_RELAY_VSIX/);

@@ -199,6 +199,12 @@ export class Session {
   /** This turn is a Claude/Codex compaction — usageLog records the reset. */
   adapterCompactThisTurn = false;
 
+  /**
+   * This turn's `usage_update.used` values. Claude's prompt-result usage
+   * is a SUM; occupancy is the max of these (`occupancyFromAdapterTurn`).
+   */
+  adapterTurnCallUsed: number[] = [];
+
   /** grok's id for this session (set on session/new or session/load). */
   activeSessionId?: string;
 

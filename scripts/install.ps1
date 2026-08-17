@@ -102,6 +102,7 @@ Or build against production explicitly: pwsh scripts\install.ps1 -Prod
     Write-Host "Building a fresh .vsix from current source..."
     Push-Location $repoRoot
     $previousAllowStaging = [Environment]::GetEnvironmentVariable($allowStagingRelayEnv)
+    $beforeVsix = @()
     try {
         # npm writes to stderr for things that are not failures - and on the dev
         # path it ALWAYS does, because `npm run package` warns that it is
@@ -109,8 +110,17 @@ Or build against production explicitly: pwsh scripts\install.ps1 -Prod
         # script. Under $ErrorActionPreference = "Stop", Windows PowerShell 5.1
         # turns any native-command stderr into a terminating error, so the build
         # aborted on its own success message. (pwsh 7 does not, which is why the
-        # documented `pwsh scripts\install.ps1` invocation never hit it.) Exit
-        # codes are the truth here, same as for the editor CLIs below.
+        # documented `pwsh scripts\install.ps1` invocation never hit it.)
+        #
+        # PS 5.1 also leaves $LASTEXITCODE unchanged when command *resolution*
+        # fails. If npm is missing, both exit-code checks would pass and the
+        # leftover *.vsix would be installed under a "fresh build" banner.
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            throw "npm is not on PATH. Install Node.js, then re-run."
+        }
+        $beforeVsix = @(Get-ChildItem -Path $repoRoot -Filter "*.vsix" -ErrorAction SilentlyContinue | ForEach-Object {
+            [pscustomobject]@{ Path = $_.FullName; Ticks = $_.LastWriteTimeUtc.Ticks; Length = $_.Length }
+        })
         $ErrorActionPreference = "Continue"
         if (-not (Test-Path "node_modules")) {
             npm install
@@ -150,6 +160,12 @@ Or build against production explicitly: pwsh scripts\install.ps1 -Prod
         }
     }
     if (-not $vsix) { throw "Build did not produce a .vsix." }
+    $unchanged = $beforeVsix | Where-Object {
+        $_.Path -eq $vsix.FullName -and $_.Ticks -eq $vsix.LastWriteTimeUtc.Ticks -and $_.Length -eq $vsix.Length
+    }
+    if ($unchanged) {
+        throw "npm run package did not produce a new .vsix (refusing to install a leftover build)."
+    }
     $VsixPath = $vsix.FullName
 }
 

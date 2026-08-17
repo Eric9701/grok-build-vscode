@@ -69,7 +69,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
-import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
@@ -6518,6 +6518,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.priming = true;
     session.compactUsageArmed = false;
     session.adapterCompactThisTurn = false;
+    session.adapterTurnCallUsed = [];
     session.queuedSendDispatch = undefined;
     // session.authRecoveryTried deliberately NOT reset here: recoverAuthAndResend
     // calls startSession as its own retry, and a reset would let an entitlement
@@ -6871,7 +6872,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (isAdapterProvider(session.provider) && !session.replaying) {
         // Stale partitions on a zero-inference compact turn are the previous
         // turn replayed — observing them would undo the compact reset.
-        const occupancy = usageIsRealMeasurement(meta) ? adapterContextOccupancy(meta.usage) : undefined;
+        // Claude's result usage is a SUM; occupancy is the largest call.
+        const occupancy = this.adapterTurnOccupancy(session, meta);
         const remembered = this.rememberAdapterContext(session, occupancy !== undefined ? { occupancy } : {});
         this.emit(session, {
           type: "promptComplete",
@@ -6881,6 +6883,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.emit(session, { type: "promptComplete", meta: gated });
       }
       void this.accumulateUsage(session, meta);
+      session.adapterTurnCallUsed = [];
       // A zero report (stripped above) is /compact or /session-info; neither
       // warrants a donut update here. /session-info leaves the context
       // untouched, and after /compact the fresh count comes from the live
@@ -6921,6 +6924,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { window } : {}),
         });
         return;
+      }
+      if (typeof used === "number" && Number.isFinite(used) && used > 0) {
+        session.adapterTurnCallUsed.push(used);
       }
       if (typeof window === "number" && Number.isFinite(window) && window > 0) {
         this.rememberAdapterContext(session, { window });
@@ -11391,6 +11397,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     try {
       session.adapterCompactThisTurn = false;
       session.compactUsageArmed = false;
+      session.adapterTurnCallUsed = [];
       // Arm the compact-notification watch BEFORE the prompt: the live
       // auto_compact_completed / auto_compact_failed land DURING this turn.
       if (slashCommand === "compact") {
@@ -11515,6 +11522,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // outer turn's `finally` can no longer end it (the tokens differ).
     const turn = beginTurn(session);
     this.setStatus(session, "working");
+    session.adapterTurnCallUsed = [];
     try {
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) {
@@ -13139,7 +13147,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!id) return;
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
-    const occupancy = measured ? adapterContextOccupancy(meta.usage) : undefined;
+    const occupancy = this.adapterTurnOccupancy(session, meta);
     const compacted = isAdapterProvider(session.provider) && session.adapterCompactThisTurn;
     const usageLog = [
       ...(cur.usageLog ?? []),
@@ -13208,6 +13216,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.adapterCompactThisTurn = true;
     session.compactUsageArmed = signal === "completed";
     this.rememberAdapterContext(session, { compacted: true });
+  }
+
+  /**
+   * Largest single call in this turn, never Claude's summed PromptResponse.
+   * A compact turn must not feed that sum back over getContextUsage.
+   */
+  private adapterTurnOccupancy(session: Session, meta: PromptResultMeta): number | undefined {
+    if (!usageIsRealMeasurement(meta) || session.adapterCompactThisTurn) return undefined;
+    return occupancyFromAdapterTurn(adapterContextOccupancy(meta.usage), session.adapterTurnCallUsed);
   }
 
   /**
