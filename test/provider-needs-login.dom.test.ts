@@ -46,15 +46,18 @@ function bootSignedOutCodex(opts: { remote?: boolean } = {}) {
 // because the host refuses `runGrokLogin` from a remote. Manage providers at the
 // bottom is the single way back, for every provider and every surface.
 describe("model picker for an agent that needs a sign-in", () => {
-  it("omits it entirely rather than offering a row that cannot be chosen", () => {
+  it("locks the selector when nothing can answer, rather than opening an unusable list", () => {
+    // Signed-out Codex is the only provider here, so there is nothing to choose
+    // between and the picker does not open at all (owner, 2026-08-17: "when no
+    // provider is available disable model selector"). The omission of a
+    // signed-out provider FROM a list is covered by the next test, where another
+    // agent is healthy and the list therefore exists.
     const h = bootSignedOutCodex();
     click(h.window, $(h.doc, "gear-btn"));
-    click(h.window, modelBtn(h.doc));
+    expect(modelBtn(h.doc).className).toContain("disabled");
 
-    expect(popoverText(h.doc)).not.toContain("Codex default");
-    expect(popoverText(h.doc)).not.toContain("GPT-5.6 Sol");
+    click(h.window, modelBtn(h.doc));
     expect(popoverText(h.doc)).not.toContain("Sign in to load models");
-    expect(popoverText(h.doc)).toContain("Manage providers");
   });
 
   it("keeps a healthy agent's models and drops the signed-out one's heading", () => {

@@ -1010,9 +1010,18 @@ export class GrokSidebar {
     } catch (error) {
       this.host.appendLine(`[codex] model-cache warm-up failed: ${(error as Error).message}`);
       // The warm-up is the first thing that talks to the agent after a connect,
-      // so its failure is the earliest honest answer about the credentials.
+      // so its failure is the earliest honest answer about the credentials —
+      // but only when the failure IS about credentials.
       if (isCodexCredentialError(error)) {
         this.setProviderNeedsLogin("codex", true);
+      } else {
+        // Anything else says nothing about the sign-in, and leaving a stale
+        // needs-login standing made Codex permanently unusable: it never
+        // cleared, so it stayed out of the model picker and out of the
+        // "connected" confirmation, no matter how many times the user signed
+        // in. Observed as `Internal error` from session/new, which is not a
+        // credential failure at all.
+        this.setProviderNeedsLogin("codex", false);
       }
       return false;
     }

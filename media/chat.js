@@ -2596,7 +2596,14 @@
 
     // Model + effort both restart or race the session, so they are locked while
     // a turn or session startup is in flight (the same busy signal as Send).
-    const settingsLocked = state.busy;
+    //
+    // Also locked when NOTHING can answer: with no usable agent there is no
+    // model to choose between, and an enabled picker offering a list you cannot
+    // act on is worse than one that plainly says not yet. Connect an agent and
+    // it unlocks with that agent's own default selected (owner, 2026-08-17).
+    const anyUsableProvider = !state.providersKnown
+      || (state.providers || []).some((p) => p.connected && p.needsLogin !== true);
+    const settingsLocked = state.busy || !anyUsableProvider;
 
     // Until the session's model info arrives (its name + advertised effort menu),
     // don't show a guessed model or a stale effort ladder — show a Loading state.

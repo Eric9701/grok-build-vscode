@@ -60,7 +60,16 @@ export async function warmCodexModelCache(options: WarmCodexModelCacheOptions): 
       `[codex] model-cache warm-up in a scratch dir failed (${(error as Error).message}); retrying in the workspace`,
     );
   } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    // Best effort, and never fatal. The adapter process can still hold this
+    // directory for a moment after it answers, so Windows throws EBUSY on
+    // rmdir — and thrown from a `finally` that beat the retry line, it replaced
+    // the retry with its own failure. A leftover temp directory is harmless;
+    // losing the model cache over one is not.
+    try {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    } catch (cleanup) {
+      options.log?.(`[codex] left a scratch dir behind: ${(cleanup as Error).message}`);
+    }
   }
   await readModelsIn(options.fallbackCwd, options);
 }
