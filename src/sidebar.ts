@@ -999,6 +999,11 @@ export class GrokSidebar {
         cliPath,
         onModels: (models, currentModelId) => this.cacheProviderModels("codex", models, currentModelId),
         log: (message) => this.host.appendLine(message),
+        // Codex answered "Internal error" for a session in a bare temp dir on
+        // Windows, so the cache never filled and a freshly connected Codex was
+        // missing from the picker until a real session created one. The
+        // workspace is the cwd a real session uses, so it is known to work.
+        fallbackCwd: this.workspaceRoot() || undefined,
       });
       this.setProviderNeedsLogin("codex", false);
       return true;

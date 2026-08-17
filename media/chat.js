@@ -6692,7 +6692,12 @@
     if (welcome) {
       welcome.hidden = false;
       const onb = $("welcome-onboarding");
-      if (onb) onb.innerHTML = "";
+      // Keep a just-shown "Connected" confirmation. Connecting an agent starts a
+      // fresh session for it, and that session swap arrives as clearMessages —
+      // so wiping the panel here erased the very confirmation the swap was
+      // announcing, which is why Codex and Claude never showed one. Any other
+      // panel is genuinely stale at this point and still goes.
+      if (onb && state.onboardingMode !== "provider-connected") onb.innerHTML = "";
       // A host clearMessages during an optimistic new-session transition must
       // not replace the paired "Loading conversation" veil with Starting — the
       // click already owns that wait. Otherwise the rail highlights the
