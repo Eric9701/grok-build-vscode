@@ -5629,7 +5629,8 @@
 
   // History stays a dedicated control; New sits next to it on every surface
   // (top-bar `#new-btn`, remote `#session-new`). Older remote pages omit the
-  // latter — inject it after History rather than leaving New only in ⋯.
+  // latter — inject it after History so current-project New is still there
+  // when the rail is closed (see railSessionMenuItems).
   function ensureVisibleNewSession() {
     if (newBtn) {
       newBtn.hidden = false;
@@ -5691,8 +5692,9 @@
     // Fall back to what we already know rather than degrading the menu.
     // activeSessionRecord() searches the loaded lists, and a conversation can be
     // the live one before it appears in any of them — right after a fork, most
-    // visibly. The menu then dropped to New-only, and came back later when a
-    // list happened to refresh, which read as options randomly disappearing.
+    // visibly. The menu then dropped its conversation actions, and came back
+    // later when a list happened to refresh, which read as options randomly
+    // disappearing.
     // This menu acts on the conversation you are IN; its id and cwd are state we
     // hold, so a missing list entry is not a reason to withhold Rename, Delete
     // or Continue in a new chat.
@@ -6331,16 +6333,15 @@
         onSelect: () => railRenameSession(s, cwd),
       },
     ];
-    // Header overflow used to carry New when the top-bar control was hidden.
-    // New is a first-class top-bar action now; rail ROWS still must not gain
-    // a second one — they already have + on the project head.
-    if (opts?.includeNew) {
-      items.unshift({
-        label: "New session",
-        icon: ICON.squarePen,
-        onSelect: () => beginNewSession(),
-      });
-    }
+    // New used to live in the conversation overflow so rail hosts would not
+    // show three similar New icons (top bar, rail +, project +). That
+    // assumed the rail is on screen. It can be closed or minimised, and then
+    // neither + is reachable — the top-bar New is the only one left. It is
+    // also a different object: a new session in the CURRENT project, not
+    // "create one in the project I am pointing at". So New is top-bar only.
+    // Two places, not three: rail + (project-scoped, only while the rail is
+    // open) and the top bar (current project, always). Rail rows must not
+    // gain a copy — they already have + on the project head.
     // "Continue in a new chat" belongs with the other things you do TO a
     // conversation (rename, pin, delete), not in the composer's settings beside
     // model and effort — those adjust how the agent answers; this one makes a
@@ -13223,8 +13224,6 @@
     renderMic();
   }
   newBtn.onclick = () => beginNewSession();
-  // Hide top-bar New immediately when the overflow slot is in the DOM (rail
-  // hosts). fillSessionHeadActions re-asserts this whenever the menu refreshes.
   fillSessionHeadActions();
   // Desktop ships the rail mount in the first HTML frame. Paint the skeleton
   // before catalog frames arrive so the window never starts panel-less.

@@ -93,23 +93,28 @@ describe("model picker provider marks and manage-providers", () => {
   });
 });
 
+function overflowLabels(window: Window, doc: Document, slotId: string): string[] {
+  const overflow = $(doc, slotId).querySelector(".rail-menu-btn");
+  expect(overflow, `${slotId} ⋯ menu`).toBeTruthy();
+  click(window, overflow!);
+  return [...doc.querySelectorAll(".rail-menu-item")].map((el) => (el.textContent || "").trim());
+}
+
 describe("New session in the top bar", () => {
-  it("keeps New session next to History and out of the overflow", () => {
+  it("keeps New session next to History; overflow keeps Delete and Continue", () => {
     const h = bootWebview();
     dispatch(h.window, { type: "sessionName", sessionId: "s1", name: "Live", cwd: "/w" });
     const newBtn = $(h.doc, "new-btn") as HTMLButtonElement;
     expect(newBtn.hidden).toBe(false);
     expect(newBtn.title).toBe("New session");
 
-    const overflow = $(h.doc, "session-head-actions").querySelector(".rail-menu-btn");
-    expect(overflow).toBeTruthy();
-    click(h.window, overflow!);
-    const labels = [...h.doc.querySelectorAll(".rail-menu-item")].map((el) => el.textContent || "");
+    const labels = overflowLabels(h.window, h.doc, "session-head-actions");
     expect(labels.some((t) => /New session/.test(t))).toBe(false);
     expect(labels.some((t) => /Continue in a new chat/.test(t))).toBe(true);
+    expect(labels.some((t) => t === "Delete")).toBe(true);
   });
 
-  it("injects New session beside Session history on a remote header", () => {
+  it("injects New session beside Session history on a remote header and leaves it out of ⋯", () => {
     const h = bootWebview({
       remote: true,
       beforeScripts: (window) => {
@@ -126,6 +131,39 @@ describe("New session in the top bar", () => {
     expect(sessionNew.hidden).toBe(false);
     expect(sessionNew.previousElementSibling).toBe(history);
     expect(sessionNew.getAttribute("aria-label")).toBe("New session");
+
+    const labels = overflowLabels(h.window, h.doc, "session-head-actions");
+    expect(labels.some((t) => /New session/.test(t))).toBe(false);
+    expect(labels.some((t) => /Continue in a new chat/.test(t))).toBe(true);
+    expect(labels.some((t) => t === "Delete")).toBe(true);
+  });
+
+  it("keeps VS Code New on the top bar; overflow stays Continue and Export", () => {
+    const h = bootWebview({ vscode: true });
+    dispatch(h.window, { type: "sessionName", sessionId: "s1", name: "Live", cwd: "/w" });
+    const newBtn = $(h.doc, "new-btn") as HTMLButtonElement;
+    expect(newBtn.hidden).toBe(false);
+    expect(newBtn.title).toBe("New session");
+
+    const labels = overflowLabels(h.window, h.doc, "vscode-session-actions");
+    expect(labels).toEqual([
+      "Continue in a new chat",
+      "Export conversation as Markdown",
+    ]);
+  });
+
+  it("does not hide the command: top-bar New still posts newSession", () => {
+    const h = bootWebview();
+    click(h.window, $(h.doc, "new-btn"));
+    expect(h.posted.some((m) => m.type === "newSession")).toBe(true);
+  });
+
+  it("drops the includeNew overflow hook so the duplicate cannot come back quietly", () => {
+    const src = readFileSync(fileURLToPath(new URL("../media/chat.js", import.meta.url)), "utf8");
+    const pkg = readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8");
+    expect(src).not.toMatch(/includeNew/);
+    expect(src).toContain("beginNewSession");
+    expect(pkg).toContain('"command": "grok.newSession"');
   });
 });
 

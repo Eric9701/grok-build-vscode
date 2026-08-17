@@ -362,10 +362,12 @@ describe("VS Code session overflow", () => {
     expect(doc.getElementById("gear-popover")!.textContent).not.toContain("Continue in a new chat");
     expect(doc.getElementById("gear-popover")!.textContent).not.toContain("Export conversation as Markdown");
     const items = openVsCodeOverflow(window, doc);
-    expect(items.map((item) => item.textContent?.trim())).toEqual([
+    const labels = items.map((item) => item.textContent?.trim());
+    expect(labels).toEqual([
       "Continue in a new chat",
       "Export conversation as Markdown",
     ]);
+    expect(labels.some((t) => t?.includes("New session"))).toBe(false);
   });
 
   it("hides the overflow until a conversation is open", () => {
