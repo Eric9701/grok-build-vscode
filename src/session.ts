@@ -189,6 +189,16 @@ export class Session {
    */
   replaying = false;
 
+  /**
+   * Next Claude/Codex `usage_update.used` is getContextUsage occupancy, not
+   * the billed per-call sum. Armed only after a compact *completed* so a
+   * leftover mid-compact usage_update cannot overwrite the conversation.
+   */
+  compactUsageArmed = false;
+
+  /** This turn is a Claude/Codex compaction — usageLog records the reset. */
+  adapterCompactThisTurn = false;
+
   /** grok's id for this session (set on session/new or session/load). */
   activeSessionId?: string;
 

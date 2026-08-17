@@ -1038,14 +1038,24 @@ export class AcpClient extends EventEmitter {
         if (model) model.totalContextTokens = normalized.contextWindow;
       }
     }
-    if (normalized.update === undefined) return;
-    u = normalized.update;
-    meta = normalized.meta;
+    if (normalized.update === undefined && normalized.usageUpdateUsed === undefined && normalized.contextWindow === undefined) {
+      return;
+    }
+    if (normalized.update !== undefined) {
+      u = normalized.update;
+      meta = normalized.meta;
+    }
     if (!foreign) {
+      // Ordinary adapter usage_update.used is billed per call (includes
+      // output) and is not occupancy. Compact's getContextUsage is the
+      // exception — sidebar adopts it only after a compact completed.
+      if (normalized.usageUpdateUsed !== undefined) {
+        this.emit("adapterUsageUpdate", normalized.usageUpdateUsed, this.lastContextWindow);
+      }
       const contextUsed = contextUsedFromUpdateEnvelope(meta);
       const usedChanged = contextUsed !== null && contextUsed !== this.lastContextUsed;
       if (usedChanged) this.lastContextUsed = contextUsed;
-      if ((usedChanged || normalized.contextWindow !== undefined) && this.lastContextUsed != null) {
+      if (usedChanged || normalized.contextWindow !== undefined) {
         this.emit("contextUsage", this.lastContextUsed, this.lastContextWindow);
       }
     }

@@ -77,7 +77,14 @@ and the webview shows grok's plan-review card plus Claude's mode options
 
 `usage_update.used` and prompt `usage.totalTokens` are the billed sum
 (`input + output + cache_read + cache_write`). Occupancy for the donut
-is `adapterContextOccupancy` (those partitions minus output). `size` is
-the window and must ride `contextUsage.window` — Claude's live id is
-often `opus[1m]`, which does not match the picker model list, so stamping
+is `adapterContextOccupancy` (those partitions minus output) — the prompt
+re-sent each turn *is* the conversation. The host persists that figure
+per session (`SessionMetaOverride.contextUsed`) and keeps it monotonic
+between compactions so a subagent or other smaller call cannot replace
+it. Ordinary `usage_update.used` is not occupancy; the adapter sends
+real occupancy via `getContextUsage` only on compact (`compact_boundary`),
+and the host adopts that `usage_update.used` after `adapterCompactSignal`
+reports completed. `size` is the window and must ride
+`contextUsage.window` — Claude's live id is often `opus[1m]`, which does
+not match the picker model list, so stamping
 `availableModels[].totalContextTokens` alone never updates the webview.

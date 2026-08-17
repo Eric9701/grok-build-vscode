@@ -2,7 +2,13 @@ import * as nodeFs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { isPrimerText, isPrimerSummary } from "./grok-primer";
-import type { PromptUsage } from "./acp-dispatch";
+import {
+  applyContextOccupancy,
+  occupancyFromUsageLog,
+  type ContextOccupancyEvent,
+  type ContextOccupancyState,
+  type PromptUsage,
+} from "./acp-dispatch";
 
 /** A session with at most this many recorded messages is cheap to confirm as empty
  *  (a primer-only session has ~4). The sweep only reads `chat_history.jsonl` for
@@ -85,7 +91,22 @@ export interface SessionMetaOverride {
    *  the extension is the only place per-turn usage exists at all (grok reports
    *  it per prompt and never persists it). Sessions predating this field keep
    *  their total uncorrected rather than losing it. */
-  usageLog?: { afterUserMessage: number; afterHistoryEvent?: number; usage?: PromptUsage }[];
+  usageLog?: {
+    afterUserMessage: number;
+    afterHistoryEvent?: number;
+    usage?: PromptUsage;
+    /** This turn's observed adapter prompt size (not the remembered max). */
+    contextUsed?: number;
+    /** Compaction reset; the next `contextUsed` is the new baseline. */
+    compacted?: boolean;
+  }[];
+  /**
+   * Remembered adapter context occupancy (Claude/Codex). The latest prompt
+   * size, monotonic between compactions. Grok still reads `signals.json`.
+   */
+  contextUsed?: number;
+  contextWindow?: number;
+  contextPendingCompact?: boolean;
   /** Last verdict the user gave to an exit_plan_mode card in this session, for the restore-card label. */
   lastPlanVerdict?: "approved" | "rejected" | "abandoned";
   /** Every plan the user resolved in this session, in chronological order. grok's plan.md only
@@ -1208,6 +1229,42 @@ export function readSessionEntries(deps: ReadEntriesDeps): SessionListEntry[] {
 export interface ContextUsage {
   used: number;
   window?: number;
+}
+
+export function persistSessionContext(
+  override: SessionMetaOverride,
+  event: ContextOccupancyEvent,
+): SessionMetaOverride {
+  const next = applyContextOccupancy({
+    used: override.contextUsed,
+    window: override.contextWindow,
+    pendingCompact: override.contextPendingCompact,
+  }, event);
+  return {
+    ...override,
+    contextUsed: next.used,
+    contextWindow: next.window,
+    contextPendingCompact: next.pendingCompact || undefined,
+  };
+}
+
+export function persistedContextUsage(override: SessionMetaOverride | undefined): ContextUsage | null {
+  const used = override?.contextUsed;
+  if (typeof used !== "number" || !Number.isFinite(used) || used <= 0) return null;
+  const window = override?.contextWindow;
+  const hasWindow = typeof window === "number" && Number.isFinite(window) && window > 0;
+  return { used, window: hasWindow ? window : undefined };
+}
+
+export function contextUsageFromLog(
+  entries: SessionMetaOverride["usageLog"],
+  window?: number,
+): ContextOccupancyState {
+  const folded = occupancyFromUsageLog(entries);
+  return {
+    ...folded,
+    window: typeof window === "number" && Number.isFinite(window) && window > 0 ? window : folded.window,
+  };
 }
 
 /** Read grok's persisted context usage from a session's `signals.json`

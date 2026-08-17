@@ -37,6 +37,12 @@ export interface BackendUpdate {
   meta?: any;
   sessionTitle?: string;
   contextWindow?: number;
+  /**
+   * Ordinary `usage_update.used` is billed per model call (includes output).
+   * Compact's getContextUsage is the exception — the host only adopts this
+   * when a compact just completed.
+   */
+  usageUpdateUsed?: number;
 }
 
 export interface BackendSessionListEntry {

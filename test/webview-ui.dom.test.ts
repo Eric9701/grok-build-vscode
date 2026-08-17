@@ -921,6 +921,13 @@ describe("context donut (token usage)", () => {
     dispatch(window, { type: "contextUsage", used: 29088 });
     expect($(doc, "donut-label").textContent).toBe("29K/100K");
   });
+
+  it("a window-only contextUsage rescales without inventing a used count", () => {
+    const { window, doc } = boot();
+    dispatch(window, { type: "contextUsage", used: 44123, window: 100000 });
+    dispatch(window, { type: "contextUsage", window: 1000000 });
+    expect($(doc, "donut-label").textContent).toBe("44K/1000K");
+  });
 });
 
 describe("gear settings lock (model + effort disabled while busy / priming)", () => {
@@ -2993,6 +3000,24 @@ describe("context popover (donut click, #39)", () => {
 
     click(window, $(doc, "messages"));
     expect((pop as any).hidden).toBe(true);
+  });
+
+  it("labels Claude and Codex occupancy as context used, not last prompt", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "session",
+      sessionId: "s1",
+      provider: "claude",
+      currentModelId: "claude-opus-4-6",
+      models: [{ modelId: "claude-opus-4-6", name: "Opus", totalContextTokens: 1000000 }],
+    });
+    dispatch(window, { type: "contextUsage", used: 389000, window: 1000000 });
+    click(window, $(doc, "donut"));
+    const text = $(doc, "context-popover").textContent!;
+    expect(text).toContain("Context used");
+    expect(text).not.toContain("Last prompt");
+    expect(text).not.toMatch(/last turn's prompt size/i);
+    expect($(doc, "donut").title).toMatch(/^Context usage —/);
   });
 
   it("offers Compact, disabled until there is context to compact", () => {

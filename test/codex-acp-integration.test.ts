@@ -88,7 +88,7 @@ describe("Codex ACP integration (real subprocess, fake adapter)", () => {
 
     const meta = await client.prompt("exercise codex wire shapes");
     expect(titles).toEqual(["Generated Codex title"]);
-    expect(contexts).toEqual([4321]);
+    expect(contexts).toEqual([undefined]);
     expect(client.availableModels.find((model) => model.modelId === client.currentModelId)?.totalContextTokens).toBe(258400);
     expect(tools.find((tool) => tool.toolCallId === "edit-1").content[0].oldText).toBe("");
     expect(updates.find((update) => update.toolCallId === "cmd-1").rawOutput).toMatchObject({ output: "ok\n", exit_code: 0 });

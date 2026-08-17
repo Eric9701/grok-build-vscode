@@ -135,8 +135,9 @@ export function normalizeClaudeUpdate(update: any, meta?: any): BackendUpdate {
     const size = finiteNumber(update.size);
     return {
       update,
-      meta: used === undefined ? meta : { ...(meta ?? {}), totalTokens: used },
+      meta,
       contextWindow: size,
+      usageUpdateUsed: used,
     };
   }
   return { update, meta };

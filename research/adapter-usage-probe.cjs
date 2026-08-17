@@ -1,4 +1,5 @@
-// Live Claude/Codex ACP usage probe: two one-word turns, log usage_update + prompt usage.
+// Live Claude/Codex ACP usage probe: several turns + /compact, log every
+// usage_update and prompt-usage partition so occupancy can be compared to billed.
 //   node research/adapter-usage-probe.cjs [codex|claude]
 const { spawn } = require("node:child_process");
 const readline = require("node:readline");
@@ -18,6 +19,20 @@ function findCodex() {
     const exe = path.join(extRoot, dir, "bin", "windows-x86_64", "codex.exe");
     if (fs.existsSync(exe)) return exe;
   }
+  return null;
+}
+
+function occupancy(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const input = n(usage.inputTokens);
+  const output = n(usage.outputTokens);
+  const billed = n(usage.totalTokens);
+  const cacheRead = n(usage.cachedReadTokens) ?? 0;
+  const cacheWrite = n(usage.cachedWriteTokens) ?? 0;
+  if (input !== undefined) return { occupancy: input + cacheRead + cacheWrite, via: "input+cache" };
+  if (billed !== undefined && output !== undefined) return { occupancy: Math.max(0, billed - output), via: "billed-output" };
+  if (billed !== undefined) return { occupancy: billed, via: "billed" };
   return null;
 }
 
@@ -61,6 +76,7 @@ proc.stderr.on("data", (d) => process.stderr.write(`[${provider}-stderr] ${d}`))
 proc.on("exit", (code) => log(`exit ${code}`));
 
 const usageUpdates = [];
+const compactSignals = [];
 const rl = readline.createInterface({ input: proc.stdout });
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -76,10 +92,19 @@ rl.on("line", (line) => {
     const kind = update?.sessionUpdate;
     if (kind === "usage_update") {
       usageUpdates.push(update);
-      log(`usage_update ${JSON.stringify({ used: update.used, size: update.size, cost: update.cost })}`);
+      log(`usage_update ${JSON.stringify({ used: update.used, size: update.size, cost: update.cost, meta: update._meta })}`);
     } else if (kind === "agent_message_chunk") {
       const text = update.content?.text;
-      if (typeof text === "string" && text.trim()) log(`text ${JSON.stringify(text.slice(0, 80))}`);
+      if (typeof text === "string" && text.trim()) {
+        log(`text ${JSON.stringify(text.slice(0, 120))}`);
+        if (/compact/i.test(text)) compactSignals.push({ kind: "text", text: text.slice(0, 160) });
+      }
+    } else if (kind === "tool_call" || kind === "tool_call_update") {
+      const title = update.title || "";
+      if (update._meta?.contextCompaction || /compact/i.test(title)) {
+        compactSignals.push({ kind, title, status: update.status, meta: update._meta });
+        log(`compact-tool ${JSON.stringify({ kind, title, status: update.status, meta: update._meta })}`);
+      }
     } else if (kind === "current_mode_update") {
       log(`mode ${update.currentModeId}`);
     }
@@ -109,10 +134,35 @@ rl.on("line", (line) => {
     const session = await send("session/new", { cwd, mcpServers: [] });
     const sessionId = session.sessionId;
     log(`session ${sessionId} currentModel=${session.models?.currentModelId || session.configOptions?.find((o) => (o.id || o.configId) === "model")?.currentValue}`);
-    for (const [i, text] of ["hi", "ok"].entries()) {
+    const turns = [
+      "Reply with the single word ping.",
+      "Reply with the single word pong.",
+      "Reply with the single word ready.",
+      "List three short words, nothing else.",
+    ];
+    const beforeCompact = usageUpdates.length;
+    for (const [i, text] of turns.entries()) {
       const result = await send("session/prompt", { sessionId, prompt: [{ type: "text", text }] });
-      log(`turn ${i + 1} usage ${JSON.stringify(result.usage || result._meta || result)}`);
+      const usage = result.usage || result._meta?.usage || null;
+      log(`turn ${i + 1} usage ${JSON.stringify(usage || result.usage || result._meta || result)}`);
+      log(`turn ${i + 1} occupancy ${JSON.stringify(occupancy(usage))}`);
     }
+    const midUpdates = usageUpdates.slice(beforeCompact).map((u) => u.used);
+    log(`pre-compact usage_update.used sequence ${JSON.stringify(midUpdates)}`);
+    const compactFrom = usageUpdates.length;
+    log("sending /compact");
+    try {
+      const compactResult = await send("session/prompt", { sessionId, prompt: [{ type: "text", text: "/compact" }] });
+      log(`compact result ${JSON.stringify(compactResult.usage || compactResult._meta || compactResult)}`);
+      log(`compact occupancy ${JSON.stringify(occupancy(compactResult.usage || compactResult._meta?.usage))}`);
+    } catch (error) {
+      log(`compact FAILED ${error && error.message ? error.message : error}`);
+    }
+    log(`compact usage_updates ${JSON.stringify(usageUpdates.slice(compactFrom).map((u) => ({ used: u.used, size: u.size, cost: u.cost })))}`);
+    log(`compact signals ${JSON.stringify(compactSignals)}`);
+    const after = await send("session/prompt", { sessionId, prompt: [{ type: "text", text: "Reply with the single word done." }] });
+    log(`post-compact usage ${JSON.stringify(after.usage || after._meta || after)}`);
+    log(`post-compact occupancy ${JSON.stringify(occupancy(after.usage || after._meta?.usage))}`);
     log(`usage_update count ${usageUpdates.length}`);
   } catch (error) {
     log(`FAILED ${error && error.message ? error.message : error}`);

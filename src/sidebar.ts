@@ -69,7 +69,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
-import { MediaRef, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
@@ -216,6 +216,9 @@ import {
   mostRecentSession,
   normalizeRepoPath,
   orderedResumeCwdCandidates,
+  persistSessionContext,
+  persistedContextUsage,
+  contextUsageFromLog,
   readContextUsage,
   relativePathWithin,
   readSessionEntries,
@@ -2181,6 +2184,7 @@ Only continue if you trust this code.`,
       usageLog,
       surviving,
     );
+    const occupancy = contextUsageFromLog(usageLog, cur.contextWindow);
     this.host.appendLine(
       `[rewind] dropped ${droppedPlans} plan card(s) + ${droppedPerms} permission card(s) + ${droppedTurns} usage turn(s) past user message ${surviving}`,
     );
@@ -2193,6 +2197,9 @@ Only continue if you trust this code.`,
         usageLog,
         usage,
         lastPlanVerdict: plans.length ? plans[plans.length - 1].verdict : undefined,
+        contextUsed: occupancy.used,
+        contextWindow: occupancy.window ?? cur.contextWindow,
+        contextPendingCompact: occupancy.pendingCompact || undefined,
       },
     });
     // Keep the live popover in step with what we just persisted. The ledger
@@ -2200,6 +2207,13 @@ Only continue if you trust this code.`,
     const live = [...this.pool].find((s) => s.activeSessionId === sessionId);
     if (live) {
       this.emit(live, { type: "usage", session: usage, afterUserMessage: surviving, afterHistoryEvent: live.historyEventCount });
+      if (occupancy.used) {
+        this.emit(live, {
+          type: "contextUsage",
+          used: occupancy.used,
+          ...(occupancy.window ? { window: occupancy.window } : {}),
+        });
+      }
     }
   }
 
@@ -2556,10 +2570,14 @@ Only continue if you trust this code.`,
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const prev = overrides[r.newSessionId] ?? {};
       const parentUploads = overrides[session.activeSessionId]?.uploadedFiles ?? [];
+      const parentMeta = overrides[session.activeSessionId] ?? {};
       const carried: SessionMetaOverrides[string] = {
         ...prev,
         customName: forkName,
         uploadedFiles: [...new Set([...(prev.uploadedFiles ?? []), ...parentUploads])],
+        contextUsed: parentMeta.contextUsed,
+        contextWindow: parentMeta.contextWindow,
+        contextPendingCompact: parentMeta.contextPendingCompact,
       };
       // A fork of a worktree session stays in that worktree — carry the binding.
       // It's a second conversation branch sharing the checkout (like the Agent
@@ -6498,6 +6516,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.titleGenerated = false;
     session.firstUserMessageForTitle = undefined;
     session.priming = true;
+    session.compactUsageArmed = false;
+    session.adapterCompactThisTurn = false;
     session.queuedSendDispatch = undefined;
     // session.authRecoveryTried deliberately NOT reset here: recoverAuthAndResend
     // calls startSession as its own retry, and a reset would let an entitlement
@@ -6719,6 +6739,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       session.inUserMessage = false;
       session.historyEventCount += 1;
       this.emit(session, { type: "messageChunk", text });
+      this.noteAdapterCompactSignal(session, text);
     });
     client.on("userMessageChunk", (text: string, meta?: any) => {
       if (gen !== session.gen) return;
@@ -6824,12 +6845,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       session.inUserMessage = false;
       session.historyEventCount += 1;
       this.emit(session, { type: "toolCall", call: u });
+      this.noteAdapterCompactSignal(session, u);
     });
     client.on("toolCallUpdate", (u) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
       session.historyEventCount += 1;
       this.emit(session, { type: "toolCallUpdate", call: u });
+      this.noteAdapterCompactSignal(session, u);
     });
     client.on("plan", (u) => {
       if (gen !== session.gen) return;
@@ -6844,7 +6867,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     });
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
-      this.emit(session, { type: "promptComplete", meta: gateZeroTokenMeta(meta) });
+      const gated = gateZeroTokenMeta(meta);
+      if (isAdapterProvider(session.provider) && !session.replaying) {
+        // Stale partitions on a zero-inference compact turn are the previous
+        // turn replayed — observing them would undo the compact reset.
+        const occupancy = usageIsRealMeasurement(meta) ? adapterContextOccupancy(meta.usage) : undefined;
+        const remembered = this.rememberAdapterContext(session, occupancy !== undefined ? { occupancy } : {});
+        this.emit(session, {
+          type: "promptComplete",
+          meta: { ...gated, totalTokens: remembered?.used ?? gated.totalTokens },
+        });
+      } else {
+        this.emit(session, { type: "promptComplete", meta: gated });
+      }
       void this.accumulateUsage(session, meta);
       // A zero report (stripped above) is /compact or /session-info; neither
       // warrants a donut update here. /session-info leaves the context
@@ -6854,13 +6889,42 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // fetch the stale pre-compact count (the CLI recomputes it only at the
       // next inference turn's end; research/signals-refresh-probe.cjs).
     });
-    client.on("contextUsage", (used: number, window?: number) => {
+    client.on("contextUsage", (used: number | undefined, window?: number) => {
       if (gen !== session.gen) return;
+      if (isAdapterProvider(session.provider)) {
+        // Window only. Occupancy is remembered from prompt size / compact,
+        // never from billed usage_update.used.
+        this.rememberAdapterContext(session, {
+          ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { window } : {}),
+        });
+        return;
+      }
       this.emit(session, {
         type: "contextUsage",
-        used,
+        ...(typeof used === "number" && Number.isFinite(used) && used > 0 ? { used } : {}),
         ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { window } : {}),
       });
+    });
+    client.on("adapterUsageUpdate", (used: number, window?: number) => {
+      if (gen !== session.gen) return;
+      if (!isAdapterProvider(session.provider) || session.replaying) {
+        if (typeof window === "number" && Number.isFinite(window) && window > 0) {
+          this.rememberAdapterContext(session, { window });
+        }
+        return;
+      }
+      if (session.compactUsageArmed) {
+        session.compactUsageArmed = false;
+        this.rememberAdapterContext(session, {
+          occupancy: used,
+          compacted: true,
+          ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { window } : {}),
+        });
+        return;
+      }
+      if (typeof window === "number" && Number.isFinite(window) && window > 0) {
+        this.rememberAdapterContext(session, { window });
+      }
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -7122,10 +7186,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           }
         }
 
-        // Seed the context donut from grok's persisted signals.json — no turn
-        // has run yet, so without this a restored session shows 0 until the
-        // first prompt completes. Emitted after loadSession so it lands after
-        // the donut-resetting `session` event in the replay buffer.
+        // Seed the context donut from grok's persisted signals.json or the
+        // remembered adapter occupancy — no turn has run yet, so without this
+        // a restored session shows 0 until the first prompt completes. Emitted
+        // after loadSession so it lands after the donut-resetting `session`
+        // event in the replay buffer.
         this.emitContextUsage(session);
         // Same reason, for the billing breakdown (#53) — but from OUR store, as
         // grok persists no per-turn usage anywhere.
@@ -11324,10 +11389,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.noteSessionActivity(session);
 
     try {
+      session.adapterCompactThisTurn = false;
+      session.compactUsageArmed = false;
       // Arm the compact-notification watch BEFORE the prompt: the live
       // auto_compact_completed / auto_compact_failed land DURING this turn.
       if (slashCommand === "compact") {
         session.sawCompactFailed = false;
+        if (isAdapterProvider(session.provider)) {
+          session.adapterCompactThisTurn = true;
+          this.rememberAdapterContext(session, { compacted: true });
+        }
       }
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) {
@@ -13068,12 +13139,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!id) return;
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const cur = overrides[id] ?? {};
+    const occupancy = measured ? adapterContextOccupancy(meta.usage) : undefined;
+    const compacted = isAdapterProvider(session.provider) && session.adapterCompactThisTurn;
     const usageLog = [
       ...(cur.usageLog ?? []),
       {
         afterUserMessage: session.userMessageCount,
         afterHistoryEvent: session.historyEventCount,
         usage: measured ? meta.usage : undefined,
+        ...(occupancy !== undefined
+          ? { contextUsed: occupancy }
+          : compacted && !cur.contextPendingCompact && cur.contextUsed
+            ? { contextUsed: cur.contextUsed }
+            : {}),
+        ...(compacted ? { compacted: true } : {}),
       },
     ];
     const sessionUsage = enforceCompleteSessionCost(
@@ -13116,12 +13195,66 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.emit(session, { type: "usage", session: stored, afterUserMessage: session.userMessageCount, afterHistoryEvent: session.historyEventCount });
   }
 
-  /** Push the context size from grok's on-disk signals.json to the webview —
-   *  chiefly the cold-restore source before any turn has run. Best-effort: no
-   *  readable count, no message (the donut keeps whatever it has). */
+  private noteAdapterCompactSignal(session: Session, update: unknown): void {
+    if (session.replaying || !isAdapterProvider(session.provider)) return;
+    const signal = adapterCompactSignal(update);
+    if (!signal) return;
+    if (signal === "failed") {
+      session.compactUsageArmed = false;
+      session.adapterCompactThisTurn = false;
+      this.rememberAdapterContext(session, { compactFailed: true });
+      return;
+    }
+    session.adapterCompactThisTurn = true;
+    session.compactUsageArmed = signal === "completed";
+    this.rememberAdapterContext(session, { compacted: true });
+  }
+
+  /**
+   * Remember adapter occupancy and push it to the donut. Prompt size is the
+   * conversation; a later smaller prompt is not, unless a compact just armed
+   * a reset. Grok never enters here.
+   */
+  private rememberAdapterContext(
+    session: Session,
+    event: Parameters<typeof persistSessionContext>[1],
+  ): { used?: number; window?: number } | undefined {
+    if (!isAdapterProvider(session.provider)) return undefined;
+    const id = session.activeSessionId;
+    if (!id) return undefined;
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const next = persistSessionContext(overrides[id] ?? {}, event);
+    void this.state.update(SESSION_META_KEY, { ...overrides, [id]: next });
+    const usage = persistedContextUsage(next);
+    if (usage) {
+      this.emit(session, {
+        type: "contextUsage",
+        used: usage.used,
+        ...(usage.window ? { window: usage.window } : {}),
+      });
+    } else if (next.contextWindow) {
+      this.emit(session, { type: "contextUsage", window: next.contextWindow });
+    }
+    return { used: next.contextUsed, window: next.contextWindow };
+  }
+
+  /** Push the context size to the webview — chiefly the cold-restore source
+   *  before any turn has run. Grok reads signals.json; Claude/Codex read the
+   *  remembered prompt occupancy. Best-effort: no readable count, no message. */
   private emitContextUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
+    if (isAdapterProvider(session.provider)) {
+      const usage = persistedContextUsage(this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]);
+      if (usage) {
+        this.emit(session, {
+          type: "contextUsage",
+          used: usage.used,
+          ...(usage.window ? { window: usage.window } : {}),
+        });
+      }
+      return;
+    }
     const cwd = this.sessionCwd(session);
     const usage = readContextUsage({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd, id });
     if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });

@@ -350,10 +350,9 @@ export type HostMsg =
   | { type: "autoCompactNotice"; text: string }
   | { type: "planBlocked"; kind: string; target: string }
   | { type: "promptComplete"; meta: PromptResultMeta }
-  // Context size read from grok's on-disk signals.json — the source that has a
-  // real count when the turn meta can't: a cold restore (no turn yet) and a
-  // /compact turn (its meta reports 0, stripped by gateZeroTokenMeta).
-  | { type: "contextUsage"; used: number; window?: number }
+  // Context occupancy for the donut. `used` is optional so an adapter can
+  // deliver `usage_update.size` (the real window) before any occupancy exists.
+  | { type: "contextUsage"; used?: number; window?: number }
   | { type: "agentReset" }
   | { type: "agentError"; text: string }
   | { type: "agentEnd"; meta?: PromptResultMeta }

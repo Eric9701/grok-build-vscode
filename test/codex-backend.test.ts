@@ -99,12 +99,13 @@ describe("Codex output and usage normalization", () => {
     expect(normalized.update.content[0].newText).toBe("export {};\n");
   });
 
-  it("feeds usage_update into the existing context envelope and records window size", () => {
+  it("feeds usage_update window without treating billed used as occupancy", () => {
     expect(normalizeCodexUpdate({ sessionUpdate: "usage_update", used: 1234, size: 258400 }, { replay: false }))
       .toEqual({
         update: { sessionUpdate: "usage_update", used: 1234, size: 258400 },
-        meta: { replay: false, totalTokens: 1234 },
+        meta: { replay: false },
         contextWindow: 258400,
+        usageUpdateUsed: 1234,
       });
   });
 

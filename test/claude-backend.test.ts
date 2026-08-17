@@ -102,12 +102,13 @@ describe("Claude session model mapping", () => {
 });
 
 describe("Claude output and usage normalization", () => {
-  it("feeds usage_update into the existing context envelope", () => {
+  it("feeds usage_update window without treating billed used as occupancy", () => {
     expect(normalizeClaudeUpdate({ sessionUpdate: "usage_update", used: 12, size: 200000 }, { replay: false }))
       .toEqual({
         update: { sessionUpdate: "usage_update", used: 12, size: 200000 },
-        meta: { replay: false, totalTokens: 12 },
+        meta: { replay: false },
         contextWindow: 200000,
+        usageUpdateUsed: 12,
       });
   });
 

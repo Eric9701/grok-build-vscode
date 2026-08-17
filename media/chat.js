@@ -1782,9 +1782,8 @@
 
     const used = state.usedTokens || 0;
     const pct = Math.min(100, Math.round((used / state.contextWindow) * 100));
-    const adapterContext = state.activeProvider === "claude" || state.activeProvider === "codex";
     info(
-      adapterContext ? "Last prompt" : "Context used",
+      "Context used",
       `${tok(used)} / ${tok(state.contextWindow)} (${pct}%)`,
     );
 
@@ -1855,9 +1854,7 @@
 
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
-    fine.textContent = adapterContext
-      ? "This adapter reports the last turn's prompt size (input plus cache), not a running conversation occupancy. The number can move down between turns with no compaction."
-      : turn || sess
+    fine.textContent = turn || sess
       ? "Context is how full the window is. Token counts are billed usage tracked here — each model call re-sends the conversation, so a turn bills far more than the context it holds."
       : "Counted by the CLI at the end of each turn.";
     contextPopover.appendChild(fine);
@@ -10783,10 +10780,7 @@
     donutArc.setAttribute("stroke", color);
     donutLabel.textContent = `${toK(used)}/${toK(max)}`;
     donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
-    const adapterContext = state.activeProvider === "claude" || state.activeProvider === "codex";
-    donutEl.title = adapterContext
-      ? `Last prompt — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`
-      : `Context usage — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
+    donutEl.title = `Context usage — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
   }
 
   // ---------- slash autocomplete ----------
@@ -12626,13 +12620,12 @@
         if (msg.meta?.totalTokens != null) updateDonut(msg.meta.totalTokens);
         break;
       case "contextUsage":
-        // Read from grok's on-disk signals.json by the host — a real count for
-        // the cases the turn meta can't cover: cold restore (donut would sit
-        // at 0 until the first turn) and zero-reporting turns where signals
-        // holds a fresher count than the last meta (e.g. /session-info right
-        // after a /compact).
+        // Host-authoritative occupancy: grok's signals.json / live envelope,
+        // or the remembered adapter prompt size. A window-only frame updates
+        // the denominator without inventing a used count.
         if (msg.window) state.contextWindow = msg.window;
-        updateDonut(msg.used);
+        if (msg.used != null) updateDonut(msg.used);
+        else updateDonut();
         break;
       case "expandCommandOutputs":
         // Live toggle (grok.expandCommandOutputs): applies to existing rows

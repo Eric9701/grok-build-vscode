@@ -541,6 +541,97 @@ export function adapterContextOccupancy(usage: {
   return billed;
 }
 
+function positiveTokens(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Per-session adapter occupancy. The prompt sent on a turn *is* the
+ * conversation at that moment (every call re-sends it). A later smaller
+ * prompt without a compact is a different-shaped call (subagent, tool
+ * follow-up) and must not replace the conversation figure — that is the
+ * 135k↔389k swing. Compaction is the only reset.
+ */
+export interface ContextOccupancyState {
+  used?: number;
+  window?: number;
+  pendingCompact?: boolean;
+}
+
+export interface ContextOccupancyEvent {
+  occupancy?: number;
+  window?: number;
+  /** Compact started or /compact — the next prompt size may be lower. */
+  compacted?: boolean;
+  /** Compaction failed; keep the stored figure and stop waiting. */
+  compactFailed?: boolean;
+}
+
+export function applyContextOccupancy(
+  state: ContextOccupancyState,
+  event: ContextOccupancyEvent,
+): ContextOccupancyState {
+  const window = positiveTokens(event.window) ?? state.window;
+  if (event.compactFailed) {
+    return { used: state.used, window, pendingCompact: false };
+  }
+  const pendingCompact = event.compacted ? true : !!state.pendingCompact;
+  const occupancy = positiveTokens(event.occupancy);
+  if (occupancy === undefined) {
+    return { used: state.used, window, pendingCompact };
+  }
+  if (pendingCompact || state.used === undefined) {
+    return { used: occupancy, window, pendingCompact: false };
+  }
+  return { used: Math.max(state.used, occupancy), window, pendingCompact: false };
+}
+
+export function occupancyFromUsageLog(
+  entries: readonly { contextUsed?: number; compacted?: boolean }[] | undefined,
+): ContextOccupancyState {
+  let state: ContextOccupancyState = {};
+  for (const entry of entries ?? []) {
+    state = applyContextOccupancy(state, {
+      occupancy: entry.contextUsed,
+      compacted: entry.compacted,
+    });
+  }
+  return state;
+}
+
+/**
+ * Claude emits exact status strings; Codex stamps `_meta.contextCompaction`.
+ * Title matching is the Codex fallback only — a grep titled "compact" is
+ * not a compaction.
+ */
+export function adapterCompactSignal(update: unknown): "started" | "completed" | "failed" | null {
+  if (typeof update === "string") {
+    const text = update.trim();
+    if (/compacting failed/i.test(text)) return "failed";
+    if (/compacting completed/i.test(text)) return "completed";
+    if (/^compacting\.\.\.$/i.test(text)) return "started";
+    return null;
+  }
+  if (!update || typeof update !== "object") return null;
+  const u = update as {
+    sessionUpdate?: unknown;
+    content?: { text?: unknown };
+    title?: unknown;
+    status?: unknown;
+    _meta?: { contextCompaction?: unknown };
+  };
+  if (typeof u.content?.text === "string") {
+    const fromText = adapterCompactSignal(u.content.text);
+    if (fromText) return fromText;
+  }
+  if (u._meta?.contextCompaction === true) {
+    if (u.status === "failed") return "failed";
+    if (u.status === "completed") return "completed";
+    return "started";
+  }
+  return null;
+}
+
 /**
  * The fresh post-compaction context size from an `_x.ai/session_notification`
  * update, or `null` when the update isn't a compaction-completed event or

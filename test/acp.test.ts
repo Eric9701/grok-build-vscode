@@ -71,15 +71,18 @@ describe("AcpClient notification metadata", () => {
 
   it("emits the adapter usage_update window even when the live model id is missing or unmatched", () => {
     const { client } = clientWithFakeProc({ backend: new ClaudeBackend() });
-    const seen: Array<{ used: number; window?: number }> = [];
+    const seen: Array<{ used?: number; window?: number }> = [];
+    const billed: number[] = [];
     client.on("contextUsage", (used, window) => seen.push({ used, window }));
+    client.on("adapterUsageUpdate", (used) => billed.push(used));
 
     (client as any).onLine(JSON.stringify({
       jsonrpc: "2.0",
       method: "session/update",
       params: { update: { sessionUpdate: "usage_update", used: 35671, size: 1000000 } },
     }));
-    expect(seen).toEqual([{ used: 35671, window: 1000000 }]);
+    expect(seen).toEqual([{ used: undefined, window: 1000000 }]);
+    expect(billed).toEqual([35671]);
 
     (client as any).currentModelId = "opus[1m]";
     (client as any).availableModels = [{ modelId: "claude-opus-4-6", name: "Opus" }];
@@ -88,7 +91,7 @@ describe("AcpClient notification metadata", () => {
       method: "session/update",
       params: { update: { sessionUpdate: "usage_update", used: 35709, size: 1000000 } },
     }));
-    expect(seen[1]).toEqual({ used: 35709, window: 1000000 });
+    expect(seen[1]).toEqual({ used: undefined, window: 1000000 });
     expect((client as any).availableModels[0].totalContextTokens).toBeUndefined();
 
     (client as any).currentModelId = "claude-opus-4-6";

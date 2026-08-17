@@ -129,8 +129,9 @@ export function normalizeCodexUpdate(update: any, meta?: any): BackendUpdate {
     const size = finiteNumber(update.size);
     return {
       update,
-      meta: used === undefined ? meta : { ...(meta ?? {}), totalTokens: used },
+      meta,
       contextWindow: size,
+      usageUpdateUsed: used,
     };
   }
   if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
