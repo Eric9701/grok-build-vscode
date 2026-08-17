@@ -401,6 +401,57 @@ describe("voice control: API-key setup hint", () => {
     expect(types(posted)).toContain("voiceStart"); // host still decides + shows guidance
   });
 
+  it("explains that voice needs Grok instead of starting when Grok is disconnected", async () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [{ id: "claude", connected: true }, { id: "grok", connected: false }],
+    });
+    dispatch(h.window, { type: "voiceConfigured", value: false });
+    h.posted.length = 0;
+
+    const mic = $(h.doc, "mic-btn");
+    expect(mic.title).toContain("Voice needs Grok");
+    click(h.window, mic);
+
+    expect(types(h.posted)).not.toContain("voiceStart");
+    const confirm = h.doc.querySelector(".confirm-overlay") as HTMLElement;
+    expect(confirm).toBeTruthy();
+    expect(confirm.textContent).toContain("Voice needs Grok");
+    expect(confirm.textContent).toContain("Connect Grok");
+
+    const go = [...confirm.querySelectorAll("button")].find((el) => el.textContent === "Connect Grok");
+    click(h.window, go!);
+    await Promise.resolve();
+    expect(h.doc.getElementById("settings-overlay")).toBeTruthy();
+    expect(h.doc.querySelector("#settings-overlay .settings-nav-item.active")?.textContent)
+      .toContain("Providers");
+  });
+
+  it("host guidance for a missing Grok account is an information prompt, not an error", () => {
+    expect(sidebarSrc).toContain("Voice needs Grok connected. It uses the same xAI account for speech-to-text.");
+    expect(sidebarSrc).toMatch(/showInformationMessage\(\s*"Voice needs Grok connected/);
+    const setup = sidebarSrc.slice(
+      sidebarSrc.indexOf("private async promptVoiceKeySetup"),
+      sidebarSrc.indexOf("private rejectVoiceStart"),
+    );
+    expect(setup).toContain('showInformationMessage');
+    expect(setup).not.toMatch(/showErrorMessage\(\s*"Voice needs Grok/);
+  });
+
+  it("still starts when a dedicated key is configured even if Grok is disconnected", () => {
+    const h = bootWebview();
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [{ id: "claude", connected: true }, { id: "grok", connected: false }],
+    });
+    dispatch(h.window, { type: "voiceConfigured", value: true });
+    h.posted.length = 0;
+    click(h.window, $(h.doc, "mic-btn"));
+    expect(types(h.posted)).toContain("voiceStart");
+    expect(h.doc.querySelector(".confirm-overlay")).toBeNull();
+  });
+
   it("clears the hint and records normally once a key is configured", () => {
     const { window, doc } = bootWebview();
     const mic = $(doc, "mic-btn");

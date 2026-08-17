@@ -34,7 +34,8 @@ describe("single-edit tool group stays expandable + reviewable (#30, #45)", () =
     expect(item.classList.contains("has-details")).toBe(true); // rides the command detail machinery
     expect(item.querySelector(".tool-chevron")).not.toBeNull();
 
-    // Always-visible +A −R on the row.
+    // Always-visible +A −R on the row, with the file name — not just "Edit".
+    expect(item.querySelector(".tool-item-label")!.textContent).toBe("Edit foo.ts");
     expect(item.querySelector(".diff-stat-add")!.textContent).toBe("+2");
     expect(item.querySelector(".diff-stat-del")!.textContent).toBe("−1");
 
@@ -62,6 +63,28 @@ describe("single-edit tool group stays expandable + reviewable (#30, #45)", () =
     const openDiffs = posted.filter((m: any) => m.type === "openDiff");
     expect(openDiffs).toHaveLength(1);
     expect(openDiffs[0]).toMatchObject({ path: "src/foo.ts", oldText: "a\nb", newText: "a\nB\nc" });
+  });
+
+  it("names a pathless Edit from the diff path and a rename from old/new paths", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "toolCall", call: { toolCallId: "p1", kind: "edit", title: "Edit" } });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: { toolCallId: "p1", content: [{ type: "diff", path: "docs/plan.md", oldText: "a", newText: "b" }] },
+    });
+    expect(doc.querySelector(".tool-item-label")!.textContent).toBe("Edit plan.md");
+
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "r1",
+        kind: "edit",
+        title: "Edit",
+        rawInput: { old_path: "src/old-name.ts", new_path: "src/new-name.ts" },
+      },
+    });
+    expect([...doc.querySelectorAll(".tool-item-label")].at(-1)!.textContent)
+      .toBe("Edit old-name.ts → new-name.ts");
   });
 
   it("collapsed by default; expanding the group then the row reveals the diff", () => {

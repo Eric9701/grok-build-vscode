@@ -9859,6 +9859,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   /** Show actionable guidance for setting up the voice API key. */
   private async promptVoiceKeySetup(): Promise<void> {
+    if (!this.connectedProviders().includes("grok")) {
+      const pick = await this.host.showInformationMessage(
+        "Voice needs Grok connected. It uses the same xAI account for speech-to-text.",
+        "Connect Grok",
+      );
+      if (pick === "Connect Grok") {
+        if (this.host.canOpenSettingsEditor) await this.openSettingsEditor("providers");
+      }
+      return;
+    }
     const pick = await this.host.showErrorMessage(
       "Voice control needs an xAI Speech-to-Text key. Sign in with `grok login` and it reuses that token automatically — or set grok.voiceApiKey, or GROK_VOICE_API_KEY / XAI_API_KEY in your workspace .env for a dedicated console.x.ai key.",
       "Open Settings",
@@ -10326,7 +10336,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.rememberVoiceConfigured(credentialCwd, false);
       this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false }, credentialCwd);
       this.sendRemoteClient(clientId, { type: "voiceError" });
-      this.sendRemoteClient(clientId, { type: "error", text: "Voice control needs an xAI Speech-to-Text key on the host." });
+      this.sendRemoteClient(clientId, {
+        type: "error",
+        text: this.connectedProviders().includes("grok")
+          ? "Voice control needs an xAI Speech-to-Text key on the host."
+          : "Voice needs Grok connected. It uses the same xAI account for speech-to-text.",
+      });
       return;
     }
     if (this.remoteVoice.has(clientId)) {
@@ -14860,8 +14875,8 @@ ${openMain}
     <button id="repo-btn" class="repo-chip" type="button" title="Choose repository"></button>
     <button id="remote-btn" class="icon-btn remote-btn" title="Continue remotely" hidden></button>
     <button id="history-btn" class="icon-btn" title="Session history"></button>
-    ${this.host.canSwitchWorkspaceFolder ? `<div id="session-head-actions"></div>` : ""}
     <button id="new-btn" class="icon-btn" title="New session"></button>
+    ${this.host.canSwitchWorkspaceFolder ? `<div id="session-head-actions"></div>` : ""}
     ${this.host.canSwitchWorkspaceFolder ? "" : `<div id="vscode-session-actions"></div>`}
     <div id="repo-popover" class="toolbar-popover repo-popover" hidden></div>
     <div id="history-popover" class="toolbar-popover history-popover" hidden></div>

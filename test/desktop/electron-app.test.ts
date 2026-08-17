@@ -1201,8 +1201,7 @@ describe("desktop multi-folder rail + isolation", () => {
     // Entering B is a separate, explicit act. Starting a conversation there is
     // where isolation begins to mean something, and the rest of this test
     // proves it: B never shows A's message, and A never shows B's.
-    await page.locator("#session-head-actions button").first().click();
-    await page.locator(".rail-menu-item", { hasText: /New session/ }).click();
+    await page.locator("#new-btn").click();
     await page
       .locator(".msg.user", { hasText: msgA })
       .waitFor({ state: "detached", timeout: 45_000 });
@@ -1223,8 +1222,7 @@ describe("desktop multi-folder rail + isolation", () => {
       ) as HTMLElement | undefined;
       head?.click();
     }, leafA);
-    await page.locator("#session-head-actions button").first().click();
-    await page.locator(".rail-menu-item", { hasText: /New session/ }).click();
+    await page.locator("#new-btn").click();
 
     await page
       .locator("#messages", { hasText: msgB })

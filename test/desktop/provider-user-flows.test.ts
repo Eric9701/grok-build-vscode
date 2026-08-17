@@ -253,11 +253,8 @@ async function currentModelLabel(page: Page): Promise<string> {
 async function newSession(page: Page): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await page.keyboard.press("Escape");
-    await page.locator("#session-head-actions button").first().click();
-    const item = page.locator(".rail-menu-item").filter({ hasText: /^New session$/ });
     try {
-      await item.waitFor({ state: "visible", timeout: 3_000 });
-      await item.click({ timeout: 3_000 });
+      await page.locator("#new-btn").click({ timeout: 3_000 });
       break;
     } catch (error) {
       if (attempt === 2) throw error;

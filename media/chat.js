@@ -263,9 +263,11 @@
   const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
   const GROK_ACTIVITY_VERB = "Grokking";
   const CODEX_ACTIVITY_VERB = "Opening AI";
+  const CLAUDE_ACTIVITY_VERB = "Clauding";
   const COMPOSER_PLACEHOLDER = {
     grok: "Ask Grok\u2026",
     codex: "Ask GPT\u2026",
+    claude: "Ask Claude\u2026",
   };
   const EFFORT_TOOLTIPS = {
     none: "None — no extra reasoning",
@@ -994,6 +996,7 @@
 
   newBtn.innerHTML = ICON.squarePen;
   historyBtn.innerHTML = ICON.clock;
+  ensureVisibleNewSession();
   // "Continue remotely", one tap from the chat instead of buried in the gear
   // menu — the desk is where someone decides to get up and keep going on
   // their phone. Local client only (a remote is already remote), and only
@@ -1010,7 +1013,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -2394,13 +2397,19 @@
   }
 
   function openAllSettings() {
-    const opener = document.getElementById("gear-btn") || document.activeElement;
+    openSettingsCategory();
+  }
+
+  function openSettingsCategory(category) {
+    const opener = appSettingsButton() || document.getElementById("gear-btn") || document.activeElement;
     closePopovers();
     if (hostOpensSettingsEditor()) {
-      vscode.postMessage({ type: "openSettingsSurface" });
+      const message = { type: "openSettingsSurface" };
+      if (category) message.category = category;
+      vscode.postMessage(message);
       return;
     }
-    openSettingsOverlay(opener);
+    openSettingsOverlay(opener, category ? { category } : undefined);
   }
 
   // Public UI service consumed by media/file-panel.js in both renderer hosts.
@@ -2910,8 +2919,16 @@
       addProviderHeading(modelProvider);
       const el = document.createElement("div");
       const active = m.modelId === state.currentModelId && (!m.provider || m.provider === state.activeProvider);
-      el.className = "toolbar-popover-item" + (active ? " active" : "");
-      el.innerHTML = `<span>${escapeHtml(truncate(m.name || m.modelId, 28))}</span>${active ? '<span class="popover-check">✓</span>' : ""}`;
+      const label = modelPickerLabel(m) || m.modelId;
+      const glyphId = providerLogoId(modelProvider);
+      el.className = "toolbar-popover-item model-picker-row";
+      if (active) el.classList.add("active");
+      el.innerHTML =
+        `<span class="gear-lead">` +
+          `<span class="provider-glyph provider-${glyphId}">${providerLogoMarkup(glyphId)}</span>` +
+          `<span class="model-picker-name">${escapeHtml(truncate(label, 28))}</span>` +
+        `</span>` +
+        (active ? '<span class="popover-check">✓</span>' : "");
       el.title = m.modelId;
       el.onclick = (e) => {
         e.stopPropagation();
@@ -2922,6 +2939,19 @@
       };
       gearPopover.appendChild(el);
     };
+    const addManageProvidersRow = () => {
+      const sep = document.createElement("div");
+      sep.className = "popover-sep";
+      gearPopover.appendChild(sep);
+      const el = document.createElement("div");
+      el.className = "toolbar-popover-item model-manage-providers";
+      el.innerHTML = `<span class="gear-lead">${ICON.settings2}<span>Manage providers</span></span>`;
+      el.onclick = (e) => {
+        e.stopPropagation();
+        openSettingsCategory("providers");
+      };
+      gearPopover.appendChild(el);
+    };
     if (grouped) {
       for (const provider of ["grok", "codex", "claude"]) {
         for (const m of models) {
@@ -2929,11 +2959,13 @@
         }
         if (signInProviders.includes(provider)) addSignInRow(provider);
       }
+      addManageProvidersRow();
       return;
     }
     for (const m of models) renderModelRow(m);
     // Ungrouped means one agent is in play: only its own gap is worth an action.
     if (signInProviders.includes(state.activeProvider)) addSignInRow(state.activeProvider);
+    addManageProvidersRow();
   }
 
   /** The trigger for the surface currently being rendered. */
@@ -5580,6 +5612,43 @@
     vscode.postMessage({ type: "newSession" });
   }
 
+  function wireSessionNewButton(btn) {
+    if (!btn || btn.dataset.railWired) return;
+    btn.dataset.railWired = "1";
+    btn.hidden = false;
+    btn.type = "button";
+    btn.title = "New session";
+    btn.setAttribute("aria-label", "New session");
+    btn.innerHTML = ICON.squarePen;
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      closePopovers();
+      beginNewSession();
+    };
+  }
+
+  // History stays a dedicated control; New sits next to it on every surface
+  // (top-bar `#new-btn`, remote `#session-new`). Older remote pages omit the
+  // latter — inject it after History rather than leaving New only in ⋯.
+  function ensureVisibleNewSession() {
+    if (newBtn) {
+      newBtn.hidden = false;
+      newBtn.title = "New session";
+    }
+    const history = document.getElementById("session-history");
+    let sessionNew = document.getElementById("session-new");
+    if (!sessionNew && history && history.parentElement) {
+      sessionNew = document.createElement("button");
+      sessionNew.id = "session-new";
+      sessionNew.className = (history.className ? history.className + " " : "") + "icon-btn";
+      history.insertAdjacentElement("afterend", sessionNew);
+    }
+    if (sessionNew) {
+      if (!sessionNew.classList.contains("icon-btn")) sessionNew.classList.add("icon-btn");
+      wireSessionNewButton(sessionNew);
+    }
+  }
+
   /** VS Code's compact top-bar overflow. Desktop and remote keep the richer
    *  session menu they already render through `#session-head-actions`. */
   function fillVsCodeSessionActions() {
@@ -5606,7 +5675,7 @@
   }
 
   /**
-   * Conversation overflow (⋯) in the top-right cluster (after Remote + History).
+   * Conversation overflow (⋯) in the top-right cluster (after Remote, History, New).
    * Present only when the host shipped `#session-head-actions` (desktop getHtml /
    * AFK Pilot page). VS Code's smaller two-item menu uses its own slot so this
    * richer desktop/remote menu stays unchanged. Capability = the slot exists,
@@ -5614,12 +5683,8 @@
    */
   function fillSessionHeadActions() {
     fillVsCodeSessionActions();
+    ensureVisibleNewSession();
     const menuSlot = document.getElementById("session-head-actions");
-    // Hide the top-bar New wherever the overflow menu exists so New is not three
-    // similar icons in a row (top-bar + rail project + menu).
-    if (newBtn) newBtn.hidden = !!menuSlot;
-    const sessionNew = document.getElementById("session-new");
-    if (sessionNew) sessionNew.hidden = !!menuSlot;
     if (!menuSlot) return;
 
     menuSlot.innerHTML = "";
@@ -5653,22 +5718,10 @@
     // reads the conversation being LEFT while the host has already moved to the
     // one being opened. railSessionMenuItems disables the id-less actions for
     // that window rather than this call site withholding them.
+    if (!record) return;
     menuSlot.appendChild(railMenuButton(
       "Session actions",
-      () => {
-        if (record) {
-          return railSessionMenuItems(record, repo, true, {
-            inlineRename: true,
-            includeNew: true,
-          });
-        }
-        // No live record yet (brand-new / still starting): still offer New.
-        return [{
-          label: "New session",
-          icon: ICON.squarePen,
-          onSelect: () => beginNewSession(),
-        }];
-      },
+      () => railSessionMenuItems(record, repo, true, { inlineRename: true }),
       "session-head",
     ));
   }
@@ -5803,24 +5856,14 @@
 
     fillSessionHeadActions();
 
-    // History stays a separate control; New lives in the overflow menu when
-    // #session-head-actions is present (fillSessionHeadActions hides session-new).
     const history = document.getElementById("session-history");
     if (history && !history.dataset.railWired) {
       history.dataset.railWired = "1";
       history.innerHTML = ICON.clock;
+      history.title = history.title || "Session history";
       history.onclick = (e) => { e.stopPropagation(); openHistoryPopover(); };
     }
-    const add = document.getElementById("session-new");
-    if (add && !add.dataset.railWired) {
-      add.dataset.railWired = "1";
-      add.innerHTML = ICON.squarePen;
-      add.onclick = (e) => {
-        e.stopPropagation();
-        closePopovers();
-        beginNewSession();
-      };
-    }
+    ensureVisibleNewSession();
   }
 
   function renderRailRepo(repo, inArchive) {
@@ -6288,9 +6331,9 @@
         onSelect: () => railRenameSession(s, cwd),
       },
     ];
-    // Header overflow only: New is folded out of the top bar on rail hosts so
-    // the bar is not three similar icons. Rail ROWS keep their own project-level
-    // New (+ on the project head) and must not gain a second one here.
+    // Header overflow used to carry New when the top-bar control was hidden.
+    // New is a first-class top-bar action now; rail ROWS still must not gain
+    // a second one — they already have + on the project head.
     if (opts?.includeNew) {
       items.unshift({
         label: "New session",
@@ -7128,18 +7171,37 @@
   function toolName(call) {
     return call.tool || call.name || call.title || "";
   }
+  function pathFromToolTitle(call) {
+    const title = String(call && call.title || "").trim();
+    if (!title) return "";
+    const tick = title.match(/`([^`]+)`/);
+    if (tick && tick[1]) return tick[1].trim();
+    const stripped = title.replace(/^(edit|write|read|delete|create|update)\s+/i, "").trim();
+    if (stripped && stripped !== title && /[\\/]|\.\w{1,8}$/.test(stripped)) return stripped;
+    return "";
+  }
   function toolFilePath(call) {
     const r = call.rawInput || call.input || {};
     // `target_directory` is list_dir's path field (verified against real sessions);
     // without it, "List" rendered with no target.
     return r.target_file || r.filePath || r.file_path || r.path ||
+      r.new_path || r.new_file || r.file || r.filename ||
       r.target_directory || r.directory || r.dir ||
-      (Array.isArray(r.paths) ? r.paths[0] : "");
+      (Array.isArray(r.paths) ? r.paths[0] : "") ||
+      pathFromToolTitle(call);
+  }
+  function toolRenamePaths(call) {
+    const r = call && (call.rawInput || call.input) || {};
+    const from = r.old_path || r.old_file || r.from;
+    const to = r.new_path || r.new_file || r.to;
+    if (from && to && from !== to) return { from, to };
+    return null;
   }
   function prettyPath(p) {
     if (!p) return "";
     if (p === "." || p === "./") return "root folder";
-    return p.split("/").pop() || p;
+    const leaf = String(p).replace(/\\/g, "/").split("/").pop();
+    return leaf || p;
   }
   // Directory target for a list_dir call. Unlike prettyPath (basename only, right
   // for files), a folder reads better as its full *relative* path with a trailing
@@ -7234,6 +7296,8 @@
     if (/^(web_fetch|webfetch)$/.test(name)) return "Fetching page";
     if (/^(grep|ripgrep|search_files)$/.test(name) || kind === "search") return "Searching";
     if (/^(write_file|file_write|write|edit_file|search_replace|str_replace)$/.test(name) || kind === "edit" || kind === "write") {
+      const renamed = toolRenamePaths(call);
+      if (renamed) return `Editing ${prettyPath(renamed.from)} → ${prettyPath(renamed.to)}`;
       return filePath ? `Editing ${prettyPath(filePath)}` : "Editing file";
     }
     if (kind === "delete") return filePath ? `Deleting ${prettyPath(filePath)}` : "Deleting file";
@@ -7266,7 +7330,10 @@
       kind === "search" || /\b(grep|glob|ripgrep|search_files|web_search|search_web)\b/i.test(name);
 
     let target = "";
-    if (isSearch && pattern) {
+    const renamed = toolRenamePaths(call);
+    if (renamed && (kind === "edit" || kind === "write" || kind === "delete" || verb === "Edit" || verb === "Write")) {
+      target = `${prettyPath(renamed.from)} → ${prettyPath(renamed.to)}`;
+    } else if (isSearch && pattern) {
       target = clamp(pattern);
     } else if (url) {
       target = clamp(url.replace(/^https?:\/\//i, ""));
@@ -7423,6 +7490,7 @@
     itemLabel.className = "tool-item-label";
     itemLabel.textContent = toolLabel(call);
     item.appendChild(itemLabel);
+    item._call = call;
     body.appendChild(item);
     if (call.toolCallId) state.toolItemsByToolCallId.set(call.toolCallId, item);
     // #41: a shell command's row carries an expandable detail — the FULL
@@ -7964,6 +8032,21 @@
       blocks.push({ diff, hunks });
     }
     item._diffStat = { added, removed, path: diffs[0] && diffs[0].path };
+    const diffPath = diffs[0] && diffs[0].path;
+    if (diffPath && item._call && !toolFilePath(item._call)) {
+      item._call.rawInput = { ...(item._call.rawInput || {}), path: diffPath };
+    }
+    const itemLabel = item.querySelector(".tool-item-label");
+    if (itemLabel && item._call) itemLabel.textContent = toolLabel(item._call);
+    const group = item.closest && item.closest(".tool-group");
+    if (group && group.classList.contains("in-progress") && item._call) {
+      const groupLabel = group.querySelector(".tool-group-label");
+      if (groupLabel) {
+        const totals = groupLabel.querySelector(".tool-group-diff-totals");
+        groupLabel.textContent = inProgressLabel(item._call);
+        if (totals) groupLabel.appendChild(totals);
+      }
+    }
 
     // Always-visible +A −R on the row (and the roll-up onto the group header).
     const stat = makeDiffStat(added, removed);
@@ -9430,9 +9513,9 @@
     el.className = "grokking";
     // No blink-dots here — the spinning orbit icon is Grokking's "waiting" motion
     // (Thinking / tools use the dots for discrete progress instead).
-    const verb = state.activeProvider === "codex" ? CODEX_ACTIVITY_VERB : GROK_ACTIVITY_VERB;
+    const verb = activityVerb();
     el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">${verb}</span>`;
-    el.setAttribute("aria-label", state.activeProvider === "codex" ? "OpenAI is working" : "Grok is working");
+    el.setAttribute("aria-label", activityAriaLabel());
     el.title = "Waiting for response";
     messagesEl.appendChild(el);
     state.grokkingEl = el;
@@ -9446,12 +9529,24 @@
     state.grokkingEl = null;
   }
 
+  function activityVerb() {
+    if (state.activeProvider === "codex") return CODEX_ACTIVITY_VERB;
+    if (state.activeProvider === "claude") return CLAUDE_ACTIVITY_VERB;
+    return GROK_ACTIVITY_VERB;
+  }
+
+  function activityAriaLabel() {
+    if (state.activeProvider === "codex") return "OpenAI is working";
+    if (state.activeProvider === "claude") return "Claude is working";
+    return "Grok is working";
+  }
+
   function syncProviderVoice() {
     input.placeholder = COMPOSER_PLACEHOLDER[state.activeProvider] || COMPOSER_PLACEHOLDER.grok;
     if (!state.grokkingEl) return;
     const label = state.grokkingEl.querySelector(".grokking-label");
-    if (label) label.textContent = state.activeProvider === "codex" ? CODEX_ACTIVITY_VERB : GROK_ACTIVITY_VERB;
-    state.grokkingEl.setAttribute("aria-label", state.activeProvider === "codex" ? "OpenAI is working" : "Grok is working");
+    if (label) label.textContent = activityVerb();
+    state.grokkingEl.setAttribute("aria-label", activityAriaLabel());
   }
 
   // "Thinking…" — the stand-in shown while thinking traces are hidden (#26, the
@@ -11015,7 +11110,7 @@
       micBtn.innerHTML = ICON.spinner;
       micBtn.title = "Transcribing…";
       micBtn.disabled = true;
-    } else if (IS_REMOTE && !state.voiceConfigured) {
+    } else if (IS_REMOTE && !state.voiceConfigured && !voiceNeedsGrokAccount()) {
       micBtn.innerHTML = ICON.mic;
       micBtn.title = "Voice dictation is unavailable because the host has no Speech-to-Text credential";
       micBtn.disabled = true;
@@ -11023,11 +11118,28 @@
       micBtn.innerHTML = ICON.mic;
       micBtn.title = state.voiceConfigured
         ? "Voice control"
-        : "Voice control — click to set up (needs an xAI API key)";
+        : voiceNeedsGrokAccount()
+          ? "Voice needs Grok connected"
+          : "Voice control — click to set up (needs an xAI API key)";
       micBtn.disabled = false;
     }
-    // "needs setup" dot only when idle and no key is configured.
-    micBtn.classList.toggle("needs-setup", !IS_REMOTE && state.mic === "idle" && !state.voiceConfigured);
+    // "needs setup" dot only when idle, clickable, and no key is configured.
+    micBtn.classList.toggle("needs-setup", !micBtn.disabled && state.mic === "idle" && !state.voiceConfigured);
+  }
+
+  function voiceNeedsGrokAccount() {
+    return !!state.providersKnown && !state.voiceConfigured
+      && !state.providers.some((provider) => provider.id === "grok" && provider.connected);
+  }
+
+  function explainVoiceNeedsGrok() {
+    return uiConfirm({
+      title: "Voice needs Grok",
+      body: "Voice uses your Grok account for speech-to-text. Connect Grok to use it.",
+      confirmLabel: "Connect Grok",
+    }).then((ok) => {
+      if (ok) openSettingsCategory("providers");
+    });
   }
 
   function setMic(event) {
@@ -11041,6 +11153,10 @@
       return;
     }
     if (state.mic === "idle") {
+      if (voiceNeedsGrokAccount()) {
+        void explainVoiceNeedsGrok();
+        return;
+      }
       // The host is the authority on whether voice is configured, but the
       // anchors must be captured before every start request it receives.
       captureVoiceInsertion();
@@ -11250,6 +11366,10 @@
       remoteMicStart.cancelled = true;
       setMic("error");
     } else if (state.mic === "idle") {
+      if (voiceNeedsGrokAccount()) {
+        void explainVoiceNeedsGrok();
+        return;
+      }
       void startBrowserMic();
     }
   }

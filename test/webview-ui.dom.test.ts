@@ -1500,6 +1500,19 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     expect(el.querySelector(".grokking-icon svg")).not.toBeNull();
   });
 
+  it("uses Clauding for Claude and Ask Claude in the composer", () => {
+    const h = bootWebview();
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    dispatch(h.window, {
+      type: "session", sessionId: "cl1", models: [], currentModelId: "claude-sonnet-4-5", provider: "claude",
+    });
+    expect(input.placeholder).toBe("Ask Claude…");
+    dispatch(h.window, { type: "agentStart" });
+    const el = grokking(h.doc)!;
+    expect(el.querySelector(".grokking-label")?.textContent).toBe("Clauding");
+    expect(el.getAttribute("aria-label")).toBe("Claude is working");
+  });
+
   it("mounts on agentStart with a spinning orbit icon, a label, and no dots or chevron", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "agentStart" });

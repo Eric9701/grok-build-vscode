@@ -2045,8 +2045,8 @@ describe("IPC sender validation helper", () => {
 });
 
 describe("file-tree panel assets", () => {
-  it("top-bar order is Remote, History, overflow, then Panel with separator on Panel only", () => {
-    // Owner preference: Remote, Session history, ⋯, |, Panel — not ⋯ first.
+  it("top-bar order is Remote, History, New, overflow, then Panel with separator on Panel only", () => {
+    // Owner preference: Remote, Session history, New, ⋯, |, Panel — not ⋯ first.
     // Separator lives on the Panel toggle so remote (no panel) has no dangling |.
     const sidebar = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
@@ -2056,10 +2056,12 @@ describe("file-tree panel assets", () => {
     expect(topBar).toBeTruthy();
     const remote = topBar.indexOf('id="remote-btn"');
     const history = topBar.indexOf('id="history-btn"');
+    const newSession = topBar.indexOf('id="new-btn"');
     const overflow = topBar.indexOf('id="session-head-actions"');
     expect(remote).toBeGreaterThan(-1);
     expect(history).toBeGreaterThan(remote);
-    expect(overflow).toBeGreaterThan(history);
+    expect(newSession).toBeGreaterThan(history);
+    expect(overflow).toBeGreaterThan(newSession);
     // Mutation: overflow before remote would fail.
     expect(overflow).toBeGreaterThan(remote);
 

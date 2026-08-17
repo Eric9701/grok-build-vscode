@@ -30,8 +30,8 @@ export const BODY = `
     <button id="repo-btn" type="button"></button>
     <button id="remote-btn" hidden></button>
     <button id="history-btn"></button>
-    <div id="session-head-actions"></div>
     <button id="new-btn"></button>
+    <div id="session-head-actions"></div>
     <div id="repo-popover" hidden></div>
     <div id="history-popover" hidden></div>
   </header>
