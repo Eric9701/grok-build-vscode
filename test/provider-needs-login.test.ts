@@ -64,7 +64,19 @@ function makeSidebar(cwd = "/repo"): any {
   sidebar.setProviderConnected = vi.fn(async () => {});
   sidebar.rememberProjectProvider = vi.fn(async () => {});
   sidebar.startSession = vi.fn(async () => {});
+  // A successful re-check now announces itself, so the re-check path reaches
+  // emit. The real one builds a remote snapshot and wants state this partial
+  // stub does not carry.
+  sidebar.emit = vi.fn();
+  sidebar.postSessionModels = vi.fn();
   return sidebar;
+}
+
+/** Onboarding states this sidebar emitted, in order. */
+function onboardingStates(sidebar: any): string[] {
+  return sidebar.emit.mock.calls
+    .map(([, msg]: [unknown, any]) => (msg?.type === "onboarding" ? msg.state : undefined))
+    .filter(Boolean);
 }
 
 function codexState(sidebar: any) {
@@ -99,6 +111,20 @@ describe("an agent that will not authenticate", () => {
     expect(warmCodexModelCache).toHaveBeenCalled();
     expect(codexState(sidebar).needsLogin).toBeUndefined();
     expect(sidebar.codexSessionCacheAt.has(projectProviderKey("/repo"))).toBe(false);
+    // Say it worked. A re-check that succeeds and shows nothing is
+    // indistinguishable from one that did nothing.
+    expect(onboardingStates(sidebar)).toContain("provider-connected");
+  });
+
+  it("stays quiet when the re-check did not actually connect anything", async () => {
+    const sidebar = makeSidebar();
+    // probe.error is set in beforeEach, so the warm-up fails and Codex is still
+    // unusable afterwards. Announcing success here would be a lie, and the
+    // confirmation is the one place it would be believed.
+    await sidebar.onMessage({ type: "recheckConnection", provider: "codex" }, "local");
+
+    expect(codexState(sidebar).needsLogin).toBe(true);
+    expect(onboardingStates(sidebar)).not.toContain("provider-connected");
   });
 
   it("does not mark Codex needs-login for an unauthorized-model warm-up failure", async () => {

@@ -6771,6 +6771,61 @@
     closePreviewOverlay();
   }
 
+  /** Acts that open a terminal we cannot observe finishing. */
+  const LAUNCH_ACTS = ["runInstall", "runLogin", "connectProvider"];
+  const launchKey = (act, provider) => act + ":" + (provider || "");
+
+  /**
+   * Remember that a terminal was launched, and re-apply that on every render.
+   *
+   * Clicking one of these re-posts the onboarding state from the host, so the
+   * panel is rebuilt immediately — a mark written straight onto the DOM node
+   * vanished on the very next frame, which is why it looked like nothing had
+   * happened even after pressing the button twice.
+   *
+   * Keyed per mode, so moving to a different panel starts clean; a re-render of
+   * the SAME panel (a failed re-check) keeps it, because the terminal really was
+   * opened and pressing it again just stacks another login on top.
+   */
+  function markOnboardingLaunched(act, provider) {
+    if (state.onboardingRanMode !== state.onboardingMode) {
+      state.onboardingRanMode = state.onboardingMode;
+      state.onboardingRan = [];
+    }
+    const key = launchKey(act, provider);
+    if (!state.onboardingRan.includes(key)) state.onboardingRan.push(key);
+    applyOnboardingLaunchState();
+  }
+
+  /**
+   * Once a terminal has been opened, the next thing to press is the re-check —
+   * so it takes the primary styling and the launch button steps back to a dim
+   * secondary with a done mark. The launch button stays clickable: re-running a
+   * login is legitimate if the terminal was closed by accident.
+   */
+  function applyOnboardingLaunchState() {
+    const onb = $("welcome-onboarding");
+    if (!onb) return;
+    if (state.onboardingRanMode !== state.onboardingMode) return;
+    const ran = state.onboardingRan || [];
+    if (!ran.length) return;
+    let anyRan = false;
+    for (const btn of onb.querySelectorAll(".onb-action")) {
+      const act = btn.dataset.act;
+      if (!LAUNCH_ACTS.includes(act)) continue;
+      if (!ran.includes(launchKey(act, btn.dataset.provider))) continue;
+      anyRan = true;
+      btn.classList.add("onb-ran", "onb-secondary");
+      if (!btn.querySelector(".onb-ran-mark")) {
+        btn.insertAdjacentHTML("afterbegin", `<span class="onb-ran-mark">${ICON.check}</span>`);
+      }
+    }
+    if (!anyRan) return;
+    for (const btn of onb.querySelectorAll('.onb-action[data-act="recheckProvider"], .onb-action[data-act="recheck"]')) {
+      btn.classList.remove("onb-secondary");
+    }
+  }
+
   function showOnboarding(mode, info) {
     info = info || {};
     state.onboardingMode = mode;
@@ -6816,18 +6871,21 @@
           `<p class="onb-heading">Connect an agent</p>` +
           `<p class="onb-desc">Choose the command-line agent that will own this conversation.</p>` +
           `<div class="onb-agent-grid">` +
+            // One row each, not a grid: three side-by-side tiles squeezed the
+            // name and the CLI into a column too narrow to read either, and the
+            // list is short enough that stacking costs nothing. Each row names
+            // the agent and the CLI it will install — "Recommended default"
+            // used to describe our ranking where the others described what the
+            // thing IS, so the row a newcomer reads first was the only one not
+            // saying what it would put on their machine.
             `<button class="onb-agent-tile primary onb-action" type="button" data-act="connectProvider" data-provider="grok">` +
-              // Name then CLI, matching the other two tiles. "Recommended default"
-              // described our ranking where the others described what the agent
-              // IS, so the one tile a newcomer reads first was the one that did
-              // not say what it would install.
-              `<span class="onb-agent-mark">${providerLogoMarkup("grok")}</span><span><strong>Grok (Recommended)</strong><small>Grok Build CLI</small></span>` +
+              `<span class="onb-agent-mark">${providerLogoMarkup("grok")}</span><span><strong>Grok Build (Recommended)</strong><small>Grok Build CLI</small></span>` +
             `</button>` +
             `<button class="onb-agent-tile onb-action" type="button" data-act="connectProvider" data-provider="codex">` +
               `<span class="onb-agent-mark">${providerLogoMarkup("codex")}</span><span><strong>Codex</strong><small>OpenAI Codex CLI</small></span>` +
             `</button>` +
             `<button class="onb-agent-tile onb-action" type="button" data-act="connectProvider" data-provider="claude">` +
-              `<span class="onb-agent-mark">${providerLogoMarkup("claude")}</span><span><strong>Claude</strong><small>Claude Code CLI</small></span>` +
+              `<span class="onb-agent-mark">${providerLogoMarkup("claude")}</span><span><strong>Claude Code</strong><small>Claude Code CLI</small></span>` +
             `</button>` +
           `</div>` +
         `</div>`;
@@ -6934,6 +6992,9 @@
     } else {
       onb.innerHTML = "";
     }
+    // Every branch above rebuilds innerHTML, so the launched-terminal state has
+    // to be re-applied here rather than living on the node.
+    applyOnboardingLaunchState();
   }
 
   function makeCollapsible(el, container) {
@@ -13554,19 +13615,7 @@
       e.preventDefault();
       e.stopPropagation();
       const act = onbAction.dataset.act;
-      // Mark a launched terminal as already run. The sign-in happens outside
-      // this window, so nothing here can observe it finishing — and without a
-      // mark the button looks untouched, so the honest reading is "that did
-      // not work, press it again", which opens a second terminal on top of a
-      // login already in progress. A failed re-check re-renders this panel from
-      // scratch, which clears the mark: it is only ever a record of THIS
-      // attempt (owner, 2026-08-17).
-      if (act === "runInstall" || act === "runLogin" || act === "connectProvider") {
-        onbAction.classList.add("onb-ran");
-        if (!onbAction.querySelector(".onb-ran-mark")) {
-          onbAction.insertAdjacentHTML("afterbegin", `<span class="onb-ran-mark">${ICON.check}</span>`);
-        }
-      }
+      if (LAUNCH_ACTS.includes(act)) markOnboardingLaunched(act, onbAction.dataset.provider);
       if (act === "runInstall") vscode.postMessage({ type: "runInstallCmd" });
       else if (act === "installCodex") vscode.postMessage({ type: "installCodex" });
       else if (act === "cancelCodexInstall") vscode.postMessage({ type: "cancelCodexInstall" });

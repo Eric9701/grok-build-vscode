@@ -8147,8 +8147,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // nothing, and this is the moment someone most wants confirmation. Only
         // on a conversation with no history — a real transcript is its own
         // evidence, and the panel would cover it.
+        // Announced once, after whichever branch ran, and only when the re-check
+        // actually succeeded. It was previously wired into two of the four
+        // outcomes and missed the most ordinary one — the session is already on
+        // this provider and simply starts — so the confirmation the owner asked
+        // for did not appear in the case he was testing.
         const confirmConnected = () => {
-          if (session.hasHistory) return;
+          if (session.hasHistory || !this.usableProviders().includes(provider)) return;
           this.emit(session, {
             type: "onboarding",
             state: "provider-connected",
@@ -8157,13 +8162,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           });
         };
         if (adopted.has(session)) {
-          confirmConnected();
           this.postSessionsList();
         } else if (strandedOnUnusable) {
           session.provider = provider;
           await this.rememberProjectProvider(this.sessionCwd(session), provider);
           await this.startSession(undefined, session);
-          confirmConnected();
         } else if (session.provider === provider && !session.client) {
           // Retry a provider whose first real session exposed a credential error.
           await this.startSession(session.hasHistory ? session.activeSessionId : undefined, session);
@@ -8178,6 +8181,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           if (!session.hasHistory) this.postSessionModels(session);
           this.postSessionsList();
         }
+        // Re-post after the branches, not just after setProviderConnected: the
+        // credential re-probe and any retarget above change what a provider row
+        // should say, and Settings → Providers reads this. Without it a freshly
+        // connected agent still showed its old state there until something else
+        // happened to refresh the panel.
+        this.postProviderState();
+        confirmConnected();
         break;
       }
       case "retryProviderSession": {
