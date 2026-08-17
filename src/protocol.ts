@@ -187,8 +187,11 @@ export type HostMsg =
    * `needsLogin` is the account that is still configured but answered an
    * auth-shaped failure: every affordance that would otherwise imply it works
    * (a selectable model row, a silently empty history) becomes the same sign-in
-   * action the connect flow uses. */
-  | { type: "providerState"; providers: { id: "grok" | "codex" | "claude"; connected: boolean; needsLogin?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean }[] }
+   * action the connect flow uses.
+   * `checking` is a re-observation in flight (Settings → Providers Refresh). It
+   * is the ONLY source of that spinner: a client must never latch it locally,
+   * or an older host that ignores `refreshProviders` would spin forever. */
+  | { type: "providerState"; providers: { id: "grok" | "codex" | "claude"; connected: boolean; needsLogin?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean }[]; checking?: boolean }
   | { type: "codexInstallProgress"; phase: "downloading" | "verifying" | "installing" | "idle"; receivedBytes?: number; totalBytes?: number; reason?: string }
   /** Plan picker gate. `recheckable` means the version probe failed (not a
    *  verified-old CLI) — the row stays clickable so a later pick re-probes. */
@@ -579,6 +582,11 @@ export type WebviewMsg =
   | { type: "checkGrokUpdate" }
   | { type: "updateGrok" }
   | { type: "recheckConnection"; provider?: "grok" | "codex" | "claude" }
+  /** Re-observe every account without asserting anything about it. Unlike
+   *  `recheckConnection` this never marks a provider connected — it re-runs the
+   *  CLI locators and re-probes the credentials of accounts already connected,
+   *  so Settings → Providers can be made to tell the truth on demand. */
+  | { type: "refreshProviders" }
   | { type: "retryProviderSession"; provider?: "grok" | "codex" | "claude" }
   | { type: "listSessions"; offset?: number; limit?: number; providerCursor?: { grokOffset: number; codexHighWater?: { updatedAt: number; id: string } }; query?: string }
   // Preview rows for a repo the client is NOT currently in — the projects rail
@@ -746,7 +754,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runGrokLogin: true,
-  logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, retryProviderSession: true,
+  logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, refreshProviders: true, retryProviderSession: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
   setRepoArchived: true, setRepoColor: true,
   resumeSession: true, renameSession: true, deleteSession: true,

@@ -307,6 +307,9 @@
     activeProvider: "grok",
     providersKnown: false,
     providers: [],
+    // Settings → Providers re-observation in flight. Host-owned; see the
+    // `providerState` case for why the client never sets it on its own.
+    providersChecking: false,
     onboardingMode: null,
     onboardingInfo: {},
     codexInstall: { phase: "idle", receivedBytes: 0, totalBytes: 0, reason: "" },
@@ -2262,6 +2265,7 @@
       voiceKeyterms: Array.isArray(state.voiceKeyterms) ? state.voiceKeyterms : [],
       telemetryEnabled: state.telemetryEnabled,
       providers: state.providers || [],
+      providersChecking: !!state.providersChecking,
       extVersion: state.extVersion,
       cliVersion: state.cliVersion,
       hostKind: state.hostKind,
@@ -11963,6 +11967,10 @@
         state.providersKnown = true;
         state.providers = Array.isArray(msg.providers) ? msg.providers.filter((provider) =>
           provider && (provider.id === "grok" || provider.id === "codex" || provider.id === "claude")) : [];
+        // Read, never latched on click: a host too old to know `refreshProviders`
+        // sends no frame at all, and a locally-set flag would spin forever.
+        // Absent means idle, which is also what every pre-refresh host means.
+        state.providersChecking = msg.checking === true;
         // Connecting an additional account happens from the gear while the
         // current transcript stays mounted. The login/recovery view temporarily
         // borrows the welcome overlay; dismiss it when the provider it was

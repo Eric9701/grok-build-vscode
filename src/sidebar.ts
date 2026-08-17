@@ -741,6 +741,7 @@ export class GrokSidebar {
     "moveView",
     "logout",
     "runGrokLogin",
+    "refreshProviders",
     "checkGrokUpdate",
     "updateGrok",
     "openRemotePortal",
@@ -748,6 +749,11 @@ export class GrokSidebar {
     "unlinkRemoteDevice",
   ]);
   private readonly loginReprobeTimers = new Map<AcpProvider, ReturnType<typeof setTimeout>>();
+  /** A Settings → Providers refresh in flight. Reported on `providerState` so
+   *  the button can say it is working, and guards re-entry: a second click (or
+   *  the page's own open-refresh landing on top of a click) must not start a
+   *  second round of CLI probes. */
+  private providerRefreshInFlight = false;
   private grokVersionProbe?: Promise<string>;
   private codexVersionProbe?: Promise<string>;
   private claudeVersionProbe?: Promise<string>;
@@ -1173,11 +1179,68 @@ export class GrokSidebar {
           ...(claudeConnected ? { adapterVersion: CLAUDE_ACP_ADAPTER_VERSION } : {}),
         },
       ],
+      ...(this.providerRefreshInFlight ? { checking: true } : {}),
     };
   }
 
+  /** Chat, the projects rail, remotes — and the VS Code settings tab, which
+   *  reads `providerState` but sits outside `post()`. Without this line that
+   *  tab's Providers page only ever showed the snapshot it booted with, so a
+   *  sign-in completed elsewhere never reached it. Same shape as
+   *  {@link postGrokUpdateStatus}. */
   private postProviderState(): void {
-    this.post(this.providerStateMessage());
+    const message = this.providerStateMessage();
+    this.post(message);
+    void this.settingsEditor?.webview.postMessage(message);
+  }
+
+  /**
+   * Re-observe every account, asserting nothing about any of them.
+   *
+   * Settings → Providers is derived from a persisted connection flag, a cached
+   * CLI path and the last credential probe — none of which re-check themselves.
+   * Sign out inside a terminal, install a CLI, let a token lapse, and the page
+   * keeps repeating what it last heard. This is the way to make it tell the
+   * truth, and it runs both from the page's Refresh button and when the page
+   * is opened.
+   *
+   * Deliberately NOT `recheckConnection`: that marks its provider connected,
+   * which is right for "I just signed in" and wrong for a refresh — it would
+   * invent an account the user never connected.
+   *
+   * Only connected accounts are probed. An account that was never connected has
+   * no credentials to observe, so probing it would spawn a CLI to learn nothing.
+   */
+  private async refreshProviderStates(): Promise<void> {
+    if (this.providerRefreshInFlight) return;
+    this.providerRefreshInFlight = true;
+    // Say it started before the slow part. The button reads `checking` off this
+    // frame, so posting it first is what makes the click feel answered.
+    this.postProviderState();
+    try {
+      // Drop the located paths so the locators genuinely re-run. `locateProvider`
+      // only invalidates a cached path when the file is gone, so a CLI installed
+      // or repointed since boot would otherwise stay invisible.
+      if (!this.testForceMissingGrokCli) this.cliPath = undefined;
+      this.codexCliPath = undefined;
+      this.claudeCliPath = undefined;
+      // Read AFTER dropping the paths, so a CLI that appeared since boot counts.
+      const connected = this.connectedProviders();
+      // Failures are the answer here, not an error: a rejected probe is how a
+      // lapsed account gets its needsLogin flag. reprobeProviderCredentials
+      // already classifies and records that, so nothing is swallowed.
+      //
+      // Versions are deliberately not re-probed. They are read once per
+      // activation by design, they do not appear on this page, and every
+      // connected account already probes its version when it connects.
+      await Promise.all(connected.map((provider) =>
+        this.reprobeProviderCredentials(provider).catch(() => false)));
+    } finally {
+      this.providerRefreshInFlight = false;
+      // Always the last word, however the probes went — a spinner that outlives
+      // its refresh is worse than a stale row, because it never resolves.
+      this.postProviderState();
+    }
   }
 
   // USABLE, not merely connected. A provider whose credentials have lapsed is
@@ -8294,6 +8357,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "logout":
         await this.logout(isAcpProvider(msg.provider) ? msg.provider : "grok");
         break;
+      case "refreshProviders":
+        await this.refreshProviderStates();
+        break;
       case "checkGrokUpdate":
         await this.checkGrokUpdate();
         break;
@@ -15029,6 +15095,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         ),
         telemetryEnabled: cfg.get("telemetry.enabled", true),
         providers: this.providerStateMessage().providers,
+        providersChecking: this.providerRefreshInFlight,
         extVersion: this.context.extensionVersion,
         cliVersion: this.providerCliVersions.grok || "",
         hostKind: "extension" as const,
@@ -15092,7 +15159,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           surface.update(next);
         }
         if (msg.type === "providerState" && Array.isArray(msg.providers)) {
-          surface.update({ providers: msg.providers });
+          surface.update({ providers: msg.providers, providersChecking: msg.checking === true });
         }
         if (msg.type === "settingsCategory" && msg.category) surface.setCategory(msg.category);
       });

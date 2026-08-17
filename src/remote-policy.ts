@@ -280,6 +280,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // Durable connection mutation is desk-only. Remote clients may only retry an
   // already-connected provider's session through retryProviderSession.
   recheckConnection: "host-local",
+  // Observation only — but it still spawns the desk's CLIs to do it, which is
+  // the same reason updateGrok/checkGrokUpdate sit here. A remote already sees
+  // every refresh: `providerState` is mirrored, so the phone's Providers page
+  // updates the moment the desk re-observes.
+  refreshProviders: "host-local",
   retryProviderSession: "propose",
   // approvals + destructive + host-CLI mutations (full only)
   permissionAnswer: "full",

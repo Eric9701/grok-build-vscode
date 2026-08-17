@@ -1,0 +1,148 @@
+/**
+ * Settings → Providers must be able to tell the truth on demand.
+ *
+ * The page is derived from a persisted connection flag, a cached CLI path and
+ * the last credential probe — none of which re-check themselves. `refreshProviders`
+ * re-observes all three. What these guard is the difference between observing
+ * and asserting: unlike `recheckConnection` it must never mark an account
+ * connected, must not spawn a CLI for an account that was never connected, and
+ * must never leave the button's spinner running after the probes are done.
+ */
+import { describe, expect, it, vi } from "vitest";
+import { GrokSidebar } from "../src/sidebar";
+import { INBOUND_DISPOSITION, allowFromRemote } from "../src/remote-policy";
+
+type AnySidebar = any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+function makeSidebar(connections: Record<string, boolean>): AnySidebar {
+  const sidebar = Object.create(GrokSidebar.prototype) as AnySidebar;
+  sidebar.providerConnectionState = { grok: false, codex: false, claude: false, ...connections };
+  sidebar.providerConnections = vi.fn(() => sidebar.providerConnectionState);
+  sidebar.providerNeedsLogin = {};
+  sidebar.providerCliVersions = {};
+  sidebar.providerRefreshInFlight = false;
+  sidebar.cliPath = "/cached/grok";
+  sidebar.codexCliPath = "/cached/codex";
+  sidebar.claudeCliPath = "/cached/claude";
+  sidebar.testForceMissingGrokCli = false;
+  sidebar.locatedProviders = vi.fn(() => ({ grok: true, codex: true, claude: true }));
+  sidebar.connectedProviders = vi.fn(() =>
+    (["grok", "codex", "claude"] as const).filter((id) => sidebar.providerConnectionState[id]));
+  sidebar.reprobeProviderCredentials = vi.fn(async () => true);
+  sidebar.host = { appendLine: vi.fn() };
+  sidebar.settingsEditor = undefined;
+  sidebar.post = vi.fn();
+  sidebar.postedChecking = [] as boolean[];
+  sidebar.postProviderState = vi.fn(function (this: AnySidebar) {
+    sidebar.postedChecking.push(sidebar.providerRefreshInFlight === true);
+  });
+  return sidebar;
+}
+
+const refresh = (sidebar: AnySidebar): Promise<void> =>
+  (GrokSidebar.prototype as AnySidebar).refreshProviderStates.call(sidebar);
+
+describe("Settings → Providers refresh", () => {
+  it("re-probes only the accounts that are actually connected", async () => {
+    const sidebar = makeSidebar({ grok: true, claude: true });
+    await refresh(sidebar);
+    const probed = sidebar.reprobeProviderCredentials.mock.calls.map(([id]: [string]) => id);
+    expect(probed.sort()).toEqual(["claude", "grok"]);
+    // Codex was never connected — there are no credentials to observe, so
+    // probing it would spawn a CLI to learn nothing.
+    expect(probed).not.toContain("codex");
+  });
+
+  it("asserts nothing about a provider — a refresh is not a connect", async () => {
+    const sidebar = makeSidebar({ grok: false, codex: false, claude: false });
+    sidebar.setProviderConnected = vi.fn(async () => {});
+    await refresh(sidebar);
+    expect(sidebar.setProviderConnected).not.toHaveBeenCalled();
+    expect(sidebar.providerConnectionState).toEqual({ grok: false, codex: false, claude: false });
+    expect(sidebar.reprobeProviderCredentials).not.toHaveBeenCalled();
+  });
+
+  it("drops the cached CLI paths so a newly installed CLI is found", async () => {
+    const sidebar = makeSidebar({ grok: true });
+    let pathsAtProbe: unknown[] = [];
+    sidebar.reprobeProviderCredentials = vi.fn(async () => {
+      pathsAtProbe = [sidebar.cliPath, sidebar.codexCliPath, sidebar.claudeCliPath];
+      return true;
+    });
+    await refresh(sidebar);
+    expect(pathsAtProbe).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("leaves a test-forced missing Grok CLI alone", async () => {
+    const sidebar = makeSidebar({ grok: true });
+    sidebar.testForceMissingGrokCli = true;
+    sidebar.cliPath = "/cached/grok";
+    await refresh(sidebar);
+    expect(sidebar.cliPath).toBe("/cached/grok");
+  });
+
+  it("reports checking while it works and idle once it is done", async () => {
+    const sidebar = makeSidebar({ grok: true });
+    let release: (() => void) | undefined;
+    sidebar.reprobeProviderCredentials = vi.fn(() => new Promise<boolean>((resolve) => {
+      release = () => resolve(true);
+    }));
+    const done = refresh(sidebar);
+    expect(sidebar.providerRefreshInFlight).toBe(true);
+    expect(sidebar.postedChecking).toEqual([true]);
+    release!();
+    await done;
+    expect(sidebar.providerRefreshInFlight).toBe(false);
+    // First frame says checking, last frame says it stopped.
+    expect(sidebar.postedChecking[0]).toBe(true);
+    expect(sidebar.postedChecking.at(-1)).toBe(false);
+  });
+
+  it("stops checking even when a probe rejects", async () => {
+    const sidebar = makeSidebar({ grok: true, codex: true });
+    sidebar.reprobeProviderCredentials = vi.fn(async () => { throw new Error("CLI exploded"); });
+    await expect(refresh(sidebar)).resolves.toBeUndefined();
+    expect(sidebar.providerRefreshInFlight).toBe(false);
+    expect(sidebar.postedChecking.at(-1)).toBe(false);
+  });
+
+  it("ignores a second request while one is in flight", async () => {
+    const sidebar = makeSidebar({ grok: true });
+    let release: (() => void) | undefined;
+    sidebar.reprobeProviderCredentials = vi.fn(() => new Promise<boolean>((resolve) => {
+      release = () => resolve(true);
+    }));
+    const first = refresh(sidebar);
+    await refresh(sidebar);
+    expect(sidebar.reprobeProviderCredentials).toHaveBeenCalledTimes(1);
+    release!();
+    await first;
+  });
+
+  it("carries checking on providerState, and omits it when idle", () => {
+    const sidebar = makeSidebar({ grok: true });
+    const idle = (GrokSidebar.prototype as AnySidebar).providerStateMessage.call(sidebar);
+    expect(idle.checking).toBeUndefined();
+    sidebar.providerRefreshInFlight = true;
+    const busy = (GrokSidebar.prototype as AnySidebar).providerStateMessage.call(sidebar);
+    expect(busy.checking).toBe(true);
+  });
+
+  it("reaches the VS Code settings tab, which sits outside post()", () => {
+    const sidebar = makeSidebar({ grok: true });
+    delete sidebar.postProviderState;
+    const tabPosts: unknown[] = [];
+    sidebar.settingsEditor = { webview: { postMessage: (msg: unknown) => { tabPosts.push(msg); } } };
+    (GrokSidebar.prototype as AnySidebar).postProviderState.call(sidebar);
+    expect(sidebar.post).toHaveBeenCalledTimes(1);
+    expect(tabPosts).toHaveLength(1);
+    expect((tabPosts[0] as { type: string }).type).toBe("providerState");
+  });
+
+  it("is host-local: a remote must not spawn the desk's CLIs", () => {
+    expect(INBOUND_DISPOSITION.refreshProviders).toBe("host-local");
+    for (const tier of ["read-only", "propose", "full"] as const) {
+      expect(allowFromRemote("refreshProviders", tier)).toBe(false);
+    }
+  });
+});

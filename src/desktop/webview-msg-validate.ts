@@ -97,6 +97,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "cancelCodexInstall":
     case "checkGrokUpdate":
     case "updateGrok":
+    case "refreshProviders":
     case "pickFile":
     case "voiceStart":
     case "remoteVoiceStart":

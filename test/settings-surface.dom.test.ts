@@ -785,6 +785,103 @@ describe("settings editor tab dispose (sidebar.ts)", () => {
   });
 });
 
+describe("Providers refresh", () => {
+  /** Mount straight onto a page and record what the surface asks the host for. */
+  function mountAt(category: string, opts: {
+    env?: Record<string, unknown>;
+    snapshot?: Record<string, unknown>;
+  } = {}) {
+    const window = new Window({ url: "https://localhost/" });
+    (window as unknown as { eval: (src: string) => void }).eval(settingsSrc);
+    const api = (window as unknown as { GrokSettings: ReturnType<typeof loadSettings> }).GrokSettings;
+    const doc = window.document as unknown as Document;
+    const root = doc.createElement("div");
+    doc.body.appendChild(root);
+    const posted: Array<{ type: string }> = [];
+    const surface = api.mount(root, {
+      snapshot: api.defaultSnapshot(opts.snapshot),
+      env: api.defaultEnv(fullEnv(opts.env)),
+      category,
+      post: (msg: { type: string }) => posted.push(msg),
+      standalone: true,
+    }) as unknown as { setCategory: (id: string) => void; update: (s: unknown) => void };
+    const types = () => posted.map((msg) => msg.type);
+    return { window, root, posted, types, surface };
+  }
+
+  it("offers Refresh above the rows and asks the host on open", () => {
+    const { root, types } = mountAt("providers");
+    const button = root.querySelector(".settings-head-actions .settings-refresh") as HTMLButtonElement;
+    expect(button).toBeTruthy();
+    expect(button.textContent).toBe("Refresh");
+    expect(button.disabled).toBe(false);
+    // Opening the page IS the request — that is the half the owner asked for
+    // alongside the button.
+    expect(types()).toEqual(["refreshProviders"]);
+  });
+
+  it("posts a refresh when the button is clicked", () => {
+    const { window, root, posted, types } = mountAt("providers");
+    posted.length = 0;
+    const button = root.querySelector(".settings-refresh") as HTMLElement;
+    button.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(types()).toEqual(["refreshProviders"]);
+  });
+
+  it("says it is checking, driven only by what the host reports", () => {
+    const { root, surface } = mountAt("providers");
+    expect((root.querySelector(".settings-refresh") as HTMLButtonElement).disabled).toBe(false);
+    surface.update({ providersChecking: true });
+    const busy = root.querySelector(".settings-refresh") as HTMLButtonElement;
+    expect(busy.textContent).toBe("Checking…");
+    expect(busy.disabled).toBe(true);
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    surface.update({ providersChecking: false });
+    const idle = root.querySelector(".settings-refresh") as HTMLButtonElement;
+    expect(idle.textContent).toBe("Refresh");
+    expect(idle.disabled).toBe(false);
+    expect(idle.getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("does not re-ask on every repaint, and asks again on a fresh visit", () => {
+    const { posted, types, surface } = mountAt("providers");
+    expect(types()).toEqual(["refreshProviders"]);
+    // Host updates repaint the surface; a latch that leaked here would loop,
+    // because the answer to a refresh is itself a providerState update.
+    surface.update({ providers: [{ id: "grok", connected: true }] });
+    surface.update({ providersChecking: true });
+    surface.update({ providersChecking: false });
+    expect(types()).toEqual(["refreshProviders"]);
+
+    posted.length = 0;
+    surface.setCategory("general");
+    expect(types()).toEqual([]);
+    surface.setCategory("providers");
+    expect(types()).toEqual(["refreshProviders"]);
+  });
+
+  it("stays off the remote, where provider probing is the desk's business", () => {
+    const { root, types } = mountAt("providers", { env: { isRemote: true } });
+    expect(root.querySelector(".settings-refresh")).toBeNull();
+    expect(types()).toEqual([]);
+    // The rows themselves still render — a phone reads provider state, it just
+    // cannot make the desk go looking.
+    expect(root.querySelector('[data-id="providerGrokStatus"]')).toBeTruthy();
+  });
+
+  it("stays off a host that never reported its providers", () => {
+    const { root, types } = mountAt("providers", { env: { providersKnown: false } });
+    expect(root.querySelector(".settings-refresh")).toBeNull();
+    expect(types()).toEqual([]);
+  });
+
+  it("belongs to the Providers page alone", () => {
+    const { root, types } = mountAt("general");
+    expect(root.querySelector(".settings-refresh")).toBeNull();
+    expect(types()).toEqual([]);
+  });
+});
+
 describe("settings switch knob theme", () => {
   it("derives the knob from theme tokens, not a raw #fff fallback", () => {
     const css = readFileSync(
