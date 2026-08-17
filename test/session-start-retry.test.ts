@@ -259,6 +259,54 @@ describe("startSession bounded spawn retry", () => {
     expect(sidebar.posted.filter((m: HostMsg) => m.type === "exit")).toEqual([]);
   });
 
+  it("does not retarget a resumed Grok conversation onto a usable Codex", async () => {
+    // openSession mints a fresh Session (hasHistory still false) then calls
+    // startSession(resumeId). The empty-session fallback used to see that as
+    // "nothing to preserve" and hand the Grok row to Codex — then blame Codex
+    // for the spawn that followed.
+    const sidebar = makeSidebar("/repo");
+    sidebar.connectedProviders = vi.fn(() => ["codex"]);
+    sidebar.usableProviders = vi.fn(() => ["codex"]);
+    sidebar.defaultProviderForProject = vi.fn(() => "codex");
+    sidebar.rememberProjectProvider = vi.fn(async () => {});
+    sidebar.locateProvider = vi.fn((provider: string) => provider === "codex" ? "codex" : undefined);
+    sidebar.focused.provider = "grok";
+    sidebar.focused.hasHistory = false;
+
+    const client = await sidebar.startSession("existing-grok-session", sidebar.focused);
+
+    expect(client).toBeUndefined();
+    expect(sidebar.focused.provider).toBe("grok");
+    expect(sidebar.defaultProviderForProject).not.toHaveBeenCalled();
+    expect(startControl.starts).toBe(0);
+    expect(startErrors(sidebar)).toEqual([]);
+    expect(onboardings(sidebar)).toEqual([
+      expect.objectContaining({ type: "onboarding", provider: "grok" }),
+    ]);
+    expect(String((onboardings(sidebar)[0] as any).state)).not.toMatch(/codex/i);
+  });
+
+  it("still retargets a brand-new empty session whose provider cannot answer", async () => {
+    const sidebar = makeSidebar("/repo");
+    sidebar.connectedProviders = vi.fn(() => ["codex"]);
+    sidebar.usableProviders = vi.fn(() => ["codex"]);
+    sidebar.defaultProviderForProject = vi.fn(() => "codex");
+    sidebar.rememberProjectProvider = vi.fn(async () => {});
+    // Refuse the spawn itself — this test only cares that the empty session
+    // moved onto Codex before anyone tried to start an agent.
+    sidebar.locateProvider = vi.fn(() => undefined);
+    sidebar.focused.provider = "grok";
+    sidebar.focused.hasHistory = false;
+
+    const client = await sidebar.startSession(undefined, sidebar.focused);
+
+    expect(sidebar.focused.provider).toBe("codex");
+    expect(sidebar.defaultProviderForProject).toHaveBeenCalled();
+    expect(sidebar.rememberProjectProvider).toHaveBeenCalled();
+    expect(client).toBeUndefined();
+    expect(startControl.starts).toBe(0);
+  });
+
   it("emits onboarding on the first credential failure and does not retry", async () => {
     startControl.failWith = "401 Unauthorized";
     startControl.failuresRemaining = 5;

@@ -2121,6 +2121,8 @@ describe("file-tree panel assets", () => {
     expect(boot).toContain("desk-ft-maximize");
     expect(boot).toContain("desk-ft-maximized");
     expect(filePanelCss).toContain("body.desk-ft-maximized .desk-ft-chat");
+    expect(filePanelCss).toContain("body.desk-ft-maximized #chat-stack");
+    expect(filePanelCss).toContain("body.desk-ft-maximized #file-panel-dock");
     expect(filePanelJs).toContain("mount.maximize");
     expect(boot).toContain("absPath: request.expectedAbsPath");
     expect(boot).toContain("__grokDeskFtOpen");

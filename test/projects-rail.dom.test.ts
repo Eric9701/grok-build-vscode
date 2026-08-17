@@ -2126,6 +2126,35 @@ describe("rail overflow menus toggle", () => {
     expect(h.doc.querySelector(".rail-menu")).toBeFalsy();
   });
 
+  it("keeps the top-right session ⋯ open across catalog refreshes", () => {
+    // The header overflow is parented to <body> but its button lives in
+    // #session-head-actions, outside the rail. renderRail used to look for
+    // that button only inside the rail, miss it, and closeRailMenu() on every
+    // repos / repoSessions / pinnedSessions frame — so Export as Markdown
+    // vanished every few seconds while projects were still loading.
+    const { window, doc } = boot();
+    dispatch(window, {
+      type: "sessionName",
+      sessionId: "s-alpha-1",
+      name: "Alpha one",
+      cwd: "/work/alpha",
+    });
+    const btn = doc.querySelector("#session-head-actions .rail-menu-btn") as HTMLButtonElement | null;
+    expect(btn, "session-head ⋯").toBeTruthy();
+    click(window, btn!);
+    const open = doc.querySelector(".rail-menu");
+    expect(open?.textContent).toContain("Export as Markdown");
+
+    dispatch(window, { type: "repoSessions", cwd: "/work/beta", entries: [row("s-beta-1", "/work/beta", "Beta")], dots: {}, total: 1 });
+    dispatch(window, { type: "pinnedSessions", entries: [], dots: {} });
+    dispatch(window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+
+    const still = doc.querySelector(".rail-menu");
+    expect(still, "menu must survive catalog frames").toBeTruthy();
+    expect(still).toBe(open);
+    expect(still!.textContent).toContain("Export as Markdown");
+  });
+
   it("keys the menu to what it acts on, not to the element", () => {
     // A key derived from the project/conversation survives a re-render; an
     // incrementing counter on a recreated node does not.

@@ -350,6 +350,8 @@ describe("capability advertisement", () => {
     const sharedAdapter = chatSrc.slice(sharedStart, sharedEnd);
     expect(sharedAdapter).toContain("if (remoteFilesEditAvailable())");
     expect(sharedAdapter).toContain('type: "writeProjectFile"');
+    expect(sharedAdapter).toContain("maximize: true");
+    expect(sharedAdapter).not.toContain("desk-ft-");
   });
 
   it("classifies list/read as view and write as propose (mutation tier)", () => {

@@ -5153,7 +5153,12 @@
     // panel on every rail rebuild, and a session load produces a burst of those.
     const filesBtn = document.getElementById("files-browse-btn");
     if (filesBtn) placeRemoteFilesButton(filesBtn);
-    if (!on) { renderSessionHead(); return; }
+    if (!on) {
+      const openMenuKey = railMenuEl ? railMenuEl.dataset.anchorId || "" : "";
+      renderSessionHead();
+      reanchorOpenRailMenu(openMenuKey);
+      return;
+    }
     wireRailSearch();
     // The rail rebuilds itself wholesale, and a session load produces a burst of
     // frames that each trigger one. Closing the menu here meant an open ⋯ was
@@ -5294,20 +5299,14 @@
       }
     }
 
-    // Re-anchor an open ⋯ to its rebuilt button, or close it if the row it
-    // belonged to is gone (deleted, filtered out, its project collapsed).
-    if (openMenuKey) {
-      const esc = window.CSS && CSS.escape ? CSS.escape(openMenuKey) : openMenuKey;
-      const anchor = root.querySelector('[data-rail-menu-key="' + esc + '"]');
-      if (anchor) {
-        railMenuAnchorEl = anchor;
-        // Re-place it. Keeping the menu open but leaving it at the old fixed
-        // coordinates is worse than closing it: rows insert and reorder as
-        // frames arrive, so the menu would end up beside whichever row moved
-        // into that spot while still acting on the one it was opened from.
-        if (railMenuEl) placeRailPopover(railMenuEl, anchor);
-      } else closeRailMenu();
-    }
+    // Re-anchor AFTER renderSessionHead: the top-right ⋯ lives in
+    // #session-head-actions (key "session-head"), which fillSessionHeadActions
+    // rebuilds. Searching only `root` here used to miss that button and slam
+    // the menu shut on every catalog frame — the thing the owner hit while
+    // projects were still loading. Search the document so both a rail-row
+    // menu and the header menu survive the wipe.
+    renderSessionHead();
+    reanchorOpenRailMenu(openMenuKey);
     // Colour picker is one-shot and short-lived — the rebuild destroys its
     // anchor button, and re-opening it mid-catalog-refresh is not worth the
     // bookkeeping. Closing avoids a fixed popover stranded over a gone row.
@@ -5320,7 +5319,23 @@
     } else {
       root.classList.remove("rail-rebuilding");
     }
-    renderSessionHead();
+  }
+
+  /** Re-hang an open ⋯ on the button that replaced its anchor, or close it
+   *  if that row/header is gone. Searches the whole document, not just the
+   *  rail: the conversation overflow is outside `#projects-rail`. */
+  function reanchorOpenRailMenu(openMenuKey) {
+    if (!openMenuKey) return;
+    const esc = window.CSS && CSS.escape ? CSS.escape(openMenuKey) : openMenuKey;
+    const anchor = document.querySelector('[data-rail-menu-key="' + esc + '"]');
+    if (anchor) {
+      railMenuAnchorEl = anchor;
+      // Re-place it. Keeping the menu open but leaving it at the old fixed
+      // coordinates is worse than closing it: rows insert and reorder as
+      // frames arrive, so the menu would end up beside whichever row moved
+      // into that spot while still acting on the one it was opened from.
+      if (railMenuEl) placeRailPopover(railMenuEl, anchor);
+    } else closeRailMenu();
   }
 
   /** Non-collapsible group label (PINNED). */
@@ -13616,6 +13631,10 @@
           toggleHost: remoteFilesButtonHost(),
           presentation: "responsive",
           id: "files-browse-panel",
+          // Same content-area maximize as desktop. The panel hides the control
+          // while it is an overlay (phone / <900) and toggles the shared body
+          // class itself.
+          maximize: true,
         },
         ui: {
           confirm: uiChoice,

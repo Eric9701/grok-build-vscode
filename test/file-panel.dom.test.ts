@@ -1207,7 +1207,7 @@ describe("desktop maximize is opt-in on the mount", () => {
   it("toggles the maximized class and restores on Escape", async () => {
     const seen: boolean[] = [];
     const h = harness({
-      mount: { maximize: true },
+      mount: { maximize: true, presentation: "dock" },
       onMaximizedChanged: (max) => { seen.push(max); },
     });
     await settle();
@@ -1218,6 +1218,7 @@ describe("desktop maximize is opt-in on the mount", () => {
     click(h.window, btn);
     expect(h.panel.isMaximized()).toBe(true);
     expect(h.panel.element.classList.contains("gfp-maximized")).toBe(true);
+    expect(h.document.body.classList.contains("desk-ft-maximized")).toBe(true);
     expect(btn!.getAttribute("aria-pressed")).toBe("true");
     expect(btn!.getAttribute("aria-label")).toBe("Restore file panel");
     expect(seen).toEqual([true]);
@@ -1225,11 +1226,12 @@ describe("desktop maximize is opt-in on the mount", () => {
     h.window.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(h.panel.isMaximized()).toBe(false);
     expect(h.panel.element.classList.contains("gfp-maximized")).toBe(false);
+    expect(h.document.body.classList.contains("desk-ft-maximized")).toBe(false);
     expect(seen).toEqual([true, false]);
   });
 
   it("closing the panel drops maximize so the next open is the split", async () => {
-    const h = harness({ mount: { maximize: true } });
+    const h = harness({ mount: { maximize: true, presentation: "dock" } });
     await settle();
     h.panel.setOpen(true);
     h.panel.setMaximized(true);
@@ -1239,6 +1241,36 @@ describe("desktop maximize is opt-in on the mount", () => {
     h.panel.setOpen(true);
     expect(h.panel.isMaximized()).toBe(false);
     expect(h.panel.element.classList.contains("gfp-maximized")).toBe(false);
+  });
+
+  it("hides the control and drops maximize when the panel is an overlay", async () => {
+    const seen: boolean[] = [];
+    const window = new Window({ url: "https://example.test/" });
+    const document = window.document;
+    const panelHost = document.createElement("main");
+    const dockHost = document.createElement("aside");
+    dockHost.style.display = "block";
+    document.body.append(panelHost, dockHost);
+    const panel = createFilePanel({
+      access: { currentScope: async () => null, list: async () => ({ ok: true, entries: [] }) },
+      document,
+      window,
+      mount: { panelHost, dockHost, presentation: "responsive", maximize: true },
+      onMaximizedChanged: (max) => { seen.push(max); },
+    });
+    panel.setOpen(true);
+    await settle();
+    expect(document.querySelector(".gfp-maximize")).toBeTruthy();
+    expect((document.querySelector(".gfp-maximize") as HTMLButtonElement).hidden).toBe(false);
+    panel.setMaximized(true);
+    expect(panel.isMaximized()).toBe(true);
+
+    dockHost.style.display = "none";
+    window.dispatchEvent(new window.Event("resize"));
+    expect(panel.element.classList.contains("gfp-overlay")).toBe(true);
+    expect(panel.isMaximized()).toBe(false);
+    expect((document.querySelector(".gfp-maximize") as HTMLButtonElement).hidden).toBe(true);
+    expect(seen).toEqual([true, false]);
   });
 });
 

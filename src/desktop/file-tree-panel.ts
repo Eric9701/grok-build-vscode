@@ -148,8 +148,8 @@ export function fileTreePanelBootSource(_iconsDir?: string): string {
           presentation: "dock",
           id: "desk-ft-panel",
           viewingBodyClass: "desk-ft-viewing",
-          // Desktop content-area maximize. Not persisted; phone/remote omit
-          // this so their overlay-fullscreen layout is unchanged.
+          // Content-area maximize. Not persisted. The shared panel hides the
+          // control itself while it is an overlay (phone / <900).
           maximize: true,
           elementIds: {
             resizer: "desk-ft-resizer",

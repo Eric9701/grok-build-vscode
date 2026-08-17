@@ -6593,7 +6593,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // finishing a codex login because the session object still said "codex".
     // A conversation WITH history is never retargeted; that would silently
     // change who is answering someone mid-thread.
-    if (!target.hasHistory && !this.usableProviders().includes(target.provider)) {
+    //
+    // `resumeId` is the other half of "has history": openSession mints a fresh
+    // Session (hasHistory still false) and then loads an existing conversation
+    // into it. Treating that as empty handed a Grok rail click to Codex, then
+    // blamed Codex for the spawn that followed.
+    if (!resumeId && !target.hasHistory && !this.usableProviders().includes(target.provider)) {
       const fallback = this.defaultProviderForProject(this.sessionCwd(target));
       if (fallback !== target.provider && this.usableProviders().includes(fallback)) {
         this.host.appendLine(
@@ -13927,6 +13932,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.dropRemoteVoice(clientId);
     this.remoteClients.setActive(clientId, session);
     this.bindSessionLoad(id, reservation, session);
+    // Opening a named conversation is not an empty session. Mark it before
+    // start so a failed spawn cannot later look "stranded" and be handed to
+    // whichever provider just signed in.
+    session.hasHistory = true;
     this.sendRemoteClient(clientId, { type: "clearMessages" });
     await this.startSession(id, session, "ensure");
     this.markRead(session);
@@ -14186,6 +14195,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     }
     await this.followSessionWorkspace(this.focused);
+    // Same as the remote open: this id already has a conversation. startSession
+    // resets hasHistory if the load actually runs; if the provider cannot
+    // answer we return first, and this bit stops a later re-check from
+    // retargeting the row onto a different agent.
+    this.focused.hasHistory = true;
     await this.startSession(id, this.focused, "ensure");
     this.markRead(this.focused); // opening a cold session clears its unread badge
     this.postRepoCatalog();
