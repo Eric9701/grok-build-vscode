@@ -137,6 +137,16 @@ export interface DesktopOpenFileContext {
   sessionCatalogDirs?: readonly string[] | undefined;
   /** Host-owned review directory for the focused conversation; not a general auth root. */
   planReviewSessionRoot?: string | undefined;
+  /**
+   * Claude Code's own plans directory (`<home>/.claude/plans`).
+   *
+   * Claude writes a plan there and then cites the path, so refusing it made the
+   * link it had just given the user dead — "path escapes authorized roots" for
+   * a file the agent authored during this conversation. Same provenance class
+   * as `planReviewSessionRoot`: a direct Markdown child, nothing else, and NOT
+   * added to `desktopAuthRoots`, so it never becomes a general read root.
+   */
+  claudePlansRoot?: string | undefined;
 }
 
 /** Deduped non-empty absolute roots from the auth context. */
@@ -289,11 +299,14 @@ export function authorizeOpenFile(
   // Plan snapshots are a separate provenance class. They are permitted only
   // as a direct Markdown child of the focused conversation's host-owned review
   // directory; globalStorage is deliberately not added to desktopAuthRoots.
-  if (ctx.planReviewSessionRoot) {
+  const planRoots = [ctx.planReviewSessionRoot, ctx.claudePlansRoot].filter(
+    (root): root is string => !!root,
+  );
+  for (const planRoot of planRoots) {
     const exists = (p: string) =>
       ctx.pathFs ? isExistingFile(p, ctx.pathFs) : isExistingFile(p);
     if (
-      isTrustedPlanReviewPath(rawPath, ctx.planReviewSessionRoot, {
+      isTrustedPlanReviewPath(rawPath, planRoot, {
         exists,
         realpath,
       }, platform)

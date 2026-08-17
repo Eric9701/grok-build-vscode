@@ -25,6 +25,7 @@ import {
   type ProtocolRequest,
 } from "electron";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { GrokSidebar } from "../sidebar";
 import { Uri } from "../host";
@@ -464,6 +465,11 @@ async function createApp(): Promise<void> {
       // Path derivation is cheap, but keep it on the same path-bearing lazy seam.
       get planReviewSessionRoot() {
         return sidebar!.desktopPlanReviewSessionRoot();
+      },
+      // Where Claude Code writes the plans it then links to. Same narrow
+      // provenance rule as above — a direct .md child, never a read root.
+      get claudePlansRoot() {
+        return path.join(os.homedir(), ".claude", "plans");
       },
     } satisfies DesktopOpenFileContext;
   };

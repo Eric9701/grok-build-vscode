@@ -190,6 +190,35 @@ describe("plan-review path fence", () => {
     }
   });
 
+  it("opens a Claude plan from its own plans directory, and nothing else there", () => {
+    // Claude writes a plan under <home>/.claude/plans and then cites the path,
+    // so refusing it left the link the agent had just handed the user dead.
+    // Same narrow rule as the review root: a direct .md child, and never a
+    // general read root.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "claude-plans-"));
+    const plansRoot = path.join(base, ".claude", "plans");
+    const repo = path.join(base, "repo");
+    const plan = path.join(plansRoot, "in-the-plan-mode-happy-cook.md");
+    const nested = path.join(plansRoot, "deeper", "nested-plan.md");
+    const notMarkdown = path.join(plansRoot, "notes.txt");
+    try {
+      fs.mkdirSync(path.dirname(nested), { recursive: true });
+      fs.mkdirSync(repo, { recursive: true });
+      fs.writeFileSync(plan, "# plan\n");
+      fs.writeFileSync(nested, "# nested\n");
+      fs.writeFileSync(notMarkdown, "not markdown");
+      const ctx = { workspaceRoot: repo, claudePlansRoot: plansRoot };
+
+      expect(authorizeOpenFile(plan, ctx)).toEqual({ ok: true, absPath: path.resolve(plan) });
+      // The directory is a provenance class, not an auth root.
+      expect(desktopAuthRoots(ctx)).toEqual([path.resolve(repo)]);
+      expect(authorizeOpenFile(nested, ctx).ok).toBe(false);
+      expect(authorizeOpenFile(notMarkdown, ctx).ok).toBe(false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("wires the focused review root lazily from the sidebar", () => {
     const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
     const main = fs.readFileSync(path.join(repoRoot, "src", "desktop", "main.ts"), "utf8");
