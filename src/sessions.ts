@@ -47,17 +47,18 @@ export interface SessionMetaOverride {
    * "This conversation was used just now", asserted by the host rather than
    * read off disk.
    *
-   * Ordering is by transcript mtime, and measured against the real CLI that
-   * file is written about **2.1 seconds** after a send (the turn itself ended
-   * at 4.5s). So between sending and that write, the row you just typed into
-   * sits wherever it was — and a brand-new conversation is not in the list at
-   * all. Waiting is the wrong answer to "I just used this".
+   * Grok ordering is by `updates.jsonl` mtime (see {@link statSessionActivity}),
+   * and measured against the real CLI that file is written about **2.1 seconds**
+   * after a send (the turn itself ended at 4.5s). So between sending and that
+   * write, the row you just typed into sits wherever it was — and a brand-new
+   * conversation is not in the list at all. Waiting is the wrong answer to
+   * "I just used this".
    *
    * Set when a message is sent and when a session is created. It is a FLOOR,
-   * never a ceiling: the transcript wins the moment it is newer, which it will
-   * be within seconds — which is also why persisting it alongside the other
-   * overrides is harmless rather than a lie that outlives the run. By the time
-   * anything reads it again the real file has overtaken it.
+   * never a ceiling: the on-disk clock wins the moment it is newer, which it
+   * will be within seconds — which is also why persisting it alongside the
+   * other overrides is harmless rather than a lie that outlives the run. By
+   * the time anything reads it again the real file has overtaken it.
    */
   activeAt?: number;
   customName?: string;
@@ -212,13 +213,14 @@ export interface TrustedSessionCwd {
  * CLI exit reports `error` down the same status path.
  *
  * Fixing the trigger was the wrong instinct. What made those reachable was the
- * EVIDENCE: session-directory mtimes move when a conversation is merely loaded,
- * so a remote could manufacture the proof. `newestActivityAt` must therefore be
- * the TRANSCRIPT and nothing else — see {@link newestTranscriptMtime}, which
- * deliberately does not fall back to `summary.json` the way `indexSessions`
- * does. A remote cannot move a transcript without running a turn, and it cannot
- * run a turn in a project it is fenced out of. With evidence that cannot be
- * forged, it stops mattering which event asks the question.
+ * EVIDENCE: session-directory mtimes — and `events.jsonl` — move when a
+ * conversation is merely loaded, so a remote could manufacture the proof.
+ * `newestActivityAt` must therefore be {@link newestTranscriptMtime}, which
+ * stats `updates.jsonl` only and never falls back to `events.jsonl` or
+ * `summary.json` the way {@link indexSessions} does. A remote cannot move that
+ * file without running a turn, and it cannot run a turn in a project it is
+ * fenced out of. With evidence that cannot be forged, it stops mattering
+ * which event asks the question.
  */
 export function expiredArchiveChoiceKeys(opts: {
   archives: RepoArchives;
@@ -879,8 +881,9 @@ function buildEntry(
   cwd: string,
   overrides: SessionMetaOverrides,
   fallbackNow: number,
-  /** Transcript mtime — last time the conversation actually MOVED. Preferred
-   *  over `updated_at`, which the CLI restamps on a mere open. */
+  /** Recency-clock mtime — last time the conversation actually MOVED
+   *  ({@link statSessionActivity}). Preferred over `updated_at`, which the
+   *  CLI restamps on a mere open. */
   activityAt?: number,
 ): SessionListEntry {
   const id = (raw?.info?.id as string) ?? dirName;
@@ -930,8 +933,10 @@ function buildEntry(
 export interface SessionIndexEntry {
   /** Directory name = grok session id. */
   id: string;
-  /** Modification time of the session's `summary.json` (ms). A cheap proxy for last activity —
-   *  grok rewrites that file (which also holds `updated_at`) on every turn. */
+  /** Recency-clock mtime (ms) from {@link statSessionActivity} — `updates.jsonl`
+   *  when present, else `events.jsonl`, else `summary.json`. Also the key the
+   *  host's `sessionCache` invalidates on, so a load (which does not touch
+   *  `updates.jsonl`) is a cache hit and a real turn is a miss. */
   mtimeMs: number;
   /** True when `events.jsonl` exists. False is a summary-only shell — created
    *  (often by a credential probe or an abandoned New session) and never spoken
@@ -1022,11 +1027,67 @@ export function findSessionCatalogCwd(deps: {
   return undefined;
 }
 
-/** Cheap ordering pass: every session id newest-first by `summary.json` mtime, WITHOUT reading or
- *  parsing any summary content. One `stat` per dir instead of a `stat` + `read` + `JSON.parse`, so
- *  it stays fast even with thousands of sessions. The caller reads (via `readSessionEntries`) only
- *  the window it actually shows. mtime is an approximate sort key; the exact `updated_at` order is
- *  re-applied within the loaded page after reading.
+const SESSION_UPDATES = "updates.jsonl";
+const SESSION_EVENTS = "events.jsonl";
+const SESSION_SUMMARY = "summary.json";
+
+/**
+ * Recency clock for one grok session directory. Stat-only (no reads).
+ *
+ * Preference:
+ *   1. `updates.jsonl` — persist/replay log. A `session/load` with no turn
+ *      leaves it alone; a real turn advances it. Measured on a fresh process:
+ *      load restamps `events.jsonl` / `chat_history.jsonl` / `summary.json`
+ *      and leaves `updates.jsonl` and `rewind_points.jsonl` untouched.
+ *   2. `events.jsonl` — spoken-to session from before the updates log
+ *      existed (~13% of dirs). A load still restamps this file, so those
+ *      rows can still jump; the next real turn grows `updates.jsonl` and
+ *      the preferred clock takes over. `rewind_points.jsonl` is also
+ *      load-stable but a conversation-only turn may not touch it, so it is
+ *      not a rank signal.
+ *   3. `summary.json` — no transcript yet. Same fallback as before, so a
+ *      brand-new conversation still lists.
+ *
+ * `hasTranscript` is still "events.jsonl exists" — the empty-session sweep
+ * keys on that, not on the rank file. A stray file that is not a session
+ * dir makes every join miss and this returns undefined.
+ */
+export function statSessionActivity(
+  fs: FsLike,
+  sessionDir: string,
+): { mtimeMs: number; hasTranscript: boolean } | undefined {
+  let eventsMtime: number | undefined;
+  try {
+    eventsMtime = fs.statSync(path.join(sessionDir, SESSION_EVENTS)).mtimeMs;
+  } catch {
+    /* no events.jsonl */
+  }
+  if (eventsMtime !== undefined) {
+    try {
+      return {
+        mtimeMs: fs.statSync(path.join(sessionDir, SESSION_UPDATES)).mtimeMs,
+        hasTranscript: true,
+      };
+    } catch {
+      return { mtimeMs: eventsMtime, hasTranscript: true };
+    }
+  }
+  try {
+    return {
+      mtimeMs: fs.statSync(path.join(sessionDir, SESSION_SUMMARY)).mtimeMs,
+      hasTranscript: false,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Cheap ordering pass: every session id newest-first by {@link statSessionActivity}
+ *  mtime, WITHOUT reading or parsing any summary content. One or two `stat`s per
+ *  dir instead of a `stat` + `read` + `JSON.parse`, so it stays fast even with
+ *  thousands of sessions. The caller reads (via `readSessionEntries`) only the
+ *  window it actually shows. mtime is an approximate sort key; the exact
+ *  `updated_at` order is re-applied within the loaded page after reading.
  *
  *  Scans **all case-aliases** of `cwd` ({@link sessionCatalogDirs}) so a Windows project split
  *  across `c:\…` and `C:\…` catalog leaves returns the union. Duplicate ids keep the higher mtime. */
@@ -1048,36 +1109,12 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
       if (!isValidSessionId(name)) continue;
       const resolvedSessionDir = path.join(dir, name);
       if (!isSessionDirChild(dir, resolvedSessionDir, platform)) continue;
-      let st: { mtimeMs: number };
-      let hasTranscript = true;
-      try {
-        // Order by the TRANSCRIPT, not by summary.json. Opening a conversation
-        // rewrites summary.json — the CLI rebuilds system_prompt.txt and
-        // prompt_context.json and restamps `updated_at` — without adding a
-        // single message, so merely visiting a conversation promoted it to the
-        // top of Recent and of its project. Measured against a real
-        // 1592-session store: 46 were sitting above their true activity for
-        // exactly that reason, which is why it read as intermittent.
-        // `events.jsonl` only moves when the conversation does.
-        //
-        // It also carries the "is this a real session dir?" check the
-        // summary.json stat used to provide: a stray file entry makes the join
-        // non-existent and statSync throws.
-        st = fs.statSync(path.join(resolvedSessionDir, "events.jsonl"));
-      } catch {
-        try {
-          // No transcript yet — created but never spoken to. Fall back so it
-          // still lists, and keep the dir-validity check for that case.
-          st = fs.statSync(path.join(resolvedSessionDir, "summary.json"));
-          hasTranscript = false;
-        } catch {
-          continue;
-        }
-      }
+      const clock = statSessionActivity(fs, resolvedSessionDir);
+      if (!clock) continue;
       const prev = byId.get(name);
-      if (!prev || st.mtimeMs > prev.mtimeMs) {
-        byId.set(name, { mtimeMs: st.mtimeMs, hasTranscript });
-      } else if (hasTranscript) {
+      if (!prev || clock.mtimeMs > prev.mtimeMs) {
+        byId.set(name, { mtimeMs: clock.mtimeMs, hasTranscript: clock.hasTranscript });
+      } else if (clock.hasTranscript) {
         prev.hasTranscript = true;
       }
     }
@@ -1092,18 +1129,18 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
 }
 
 /**
- * Newest TRANSCRIPT mtime under `cwd`'s session catalogs, or 0.
+ * Newest real-activity mtime under `cwd`'s session catalogs, or 0.
  *
- * Deliberately NOT `indexSessions`, which falls back to `summary.json` when a
- * session has no transcript yet. That fallback is right for ordering a list —
- * a brand-new conversation should still appear — and wrong for anything that
- * decides authorization, because grok rewrites `summary.json` when a session is
- * merely LOADED. A remote could therefore manufacture "this project was worked
- * in" by getting an empty session reloaded, which is exactly how the archive
- * fence was bypassed twice.
+ * Deliberately NOT `indexSessions` / {@link statSessionActivity}: those fall
+ * back to `events.jsonl` then `summary.json` so a brand-new or pre-updates
+ * conversation still lists. That fallback is right for ordering and wrong
+ * for authorization — grok restamps both files on a mere `session/load`. A
+ * remote could therefore manufacture "this project was worked in" by getting
+ * a session reloaded, which is exactly how the archive fence was bypassed.
  *
- * `events.jsonl` only moves when a turn actually runs. That is evidence a remote
- * cannot produce without already being allowed in.
+ * `updates.jsonl` is the only persist file a load leaves alone and a real
+ * turn advances. No fallback. A dir that never grew that log reports
+ * nothing, even if `events.jsonl` exists.
  */
 export function newestTranscriptMtime(deps: IndexDeps): number {
   const { fs, grokHome, cwd, log } = deps;
@@ -1122,10 +1159,10 @@ export function newestTranscriptMtime(deps: IndexDeps): number {
       const sessionDir = path.join(dir, name);
       if (!isSessionDirChild(dir, sessionDir, platform)) continue;
       try {
-        const st = fs.statSync(path.join(sessionDir, "events.jsonl"));
+        const st = fs.statSync(path.join(sessionDir, SESSION_UPDATES));
         if (st.mtimeMs > newest) newest = st.mtimeMs;
       } catch {
-        // No transcript: never spoken to, so it says nothing about activity.
+        // No updates log: a load writes events.jsonl, so that file is not evidence.
       }
     }
   }
@@ -1229,14 +1266,11 @@ export function readSessionEntries(deps: ReadEntriesDeps): SessionListEntry[] {
       log?.(`[sessions] could not read summary.json for ${id}: ${(e as Error).message}`);
       continue;
     }
-    // Last real activity, for the same reason indexSessions stats it: `updated_at`
-    // inside summary.json is restamped by merely OPENING the conversation, so
-    // sorting on it moved a session you only glanced at to the top. Undefined
-    // when there is no transcript yet, and buildEntry then keeps `updated_at`.
-    let activityAt: number | undefined;
-    try {
-      activityAt = fs.statSync(path.join(resolvedSessionDir, "events.jsonl")).mtimeMs;
-    } catch { /* no transcript yet — fall back to the recorded stamp */ }
+    // Same clock as indexSessions: `updated_at` inside summary.json is restamped
+    // by merely OPENING the conversation. Undefined when there is no transcript
+    // yet, and buildEntry then keeps `updated_at`.
+    const clock = statSessionActivity(fs, resolvedSessionDir);
+    const activityAt = clock?.hasTranscript ? clock.mtimeMs : undefined;
     out.push(buildEntry(id, raw, cwd, overrides, now, activityAt));
   }
   return out;

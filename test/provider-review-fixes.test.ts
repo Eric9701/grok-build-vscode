@@ -227,13 +227,13 @@ describe("multi-provider review regressions", () => {
     expect(body).not.toContain("entry.hasTranscript !== false");
   });
 
-  it("freezes Codex listing time on first discovery but not Claude lastModified", () => {
+  it("freezes adapter listing time on first discovery for Codex and Claude", () => {
     const body = methodBody("private async refreshAdapterHistory(");
-    expect(body).toContain('if (provider === "codex")');
     expect(body).toContain("if (typeof previous.activeAt === \"number\") continue");
-    const freeze = body.slice(body.indexOf('if (provider === "codex")'));
-    expect(freeze).toContain("activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt");
-    expect(body).toContain("...(provider === \"codex\"");
+    expect(body).toContain("activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt");
+    // No provider carve-out — Claude restamps on load, same pin Codex already had.
+    expect(body).not.toContain('if (provider === "codex")');
+    expect(body).not.toContain("...(provider === \"codex\"");
   });
 
   it("puts minimal provider state in every remote client snapshot", () => {

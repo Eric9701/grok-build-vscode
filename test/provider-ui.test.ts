@@ -286,9 +286,9 @@ describe("provider UI pure policy", () => {
     ]);
   });
 
-  it("pins Codex recency to send-time but lets Claude listing timestamps move", () => {
+  it("pins Codex and Claude recency to the host-observed clock", () => {
     expect(adapterActivityAt("codex", 900, 100)).toBe(100);
-    expect(adapterActivityAt("claude", 900, 100)).toBe(900);
+    expect(adapterActivityAt("claude", 900, 100)).toBe(100);
     expect(adapterActivityAt("claude", 200, 500)).toBe(500);
     expect(adapterActivityAt("claude", 300)).toBe(300);
 
@@ -297,7 +297,7 @@ describe("provider UI pure policy", () => {
       { c1: { provider: "claude", activeAt: 100 } },
       "claude",
     );
-    expect(claude.updatedAt).toBe(900);
+    expect(claude.updatedAt).toBe(100);
 
     const codex = adapterListEntry(
       { sessionId: "x1", cwd: "/repo", title: "Opened", updatedAt: 900 },
@@ -305,6 +305,26 @@ describe("provider UI pure policy", () => {
       "codex",
     );
     expect(codex.updatedAt).toBe(100);
+  });
+
+  it("does not promote a Claude row whose adapter stamp moved after a known activeAt", () => {
+    const raw = { sessionId: "claude-old", cwd: "/repo", title: "Old", updatedAt: 100 };
+    const first = adapterListEntry(raw, {}, "claude");
+    const opened = adapterListEntry({ ...raw, updatedAt: 900 }, {
+      "claude-old": { provider: "claude", activeAt: first.updatedAt },
+    }, "claude");
+    const other = adapterListEntry({
+      sessionId: "claude-new", cwd: "/repo", title: "New", updatedAt: 500,
+    }, {}, "claude");
+
+    expect(mergeProviderSessionEntries([], [opened, other], ["claude"]).map((entry) => entry.id))
+      .toEqual(["claude-new", "claude-old"]);
+
+    const sent = adapterListEntry(raw, {
+      "claude-old": { provider: "claude", activeAt: 1_000 },
+    }, "claude");
+    expect(mergeProviderSessionEntries([], [sent, other], ["claude"]).map((entry) => entry.id))
+      .toEqual(["claude-old", "claude-new"]);
   });
 
   it("omits adapter history that was not successfully refreshed before clear-all", () => {

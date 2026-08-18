@@ -164,16 +164,30 @@ export function modelsForConnectedProviders(
   return out;
 }
 
-/** Codex restamps listing time on load, so send-time `activeAt` is the clock.
- *  Claude reports the SDK's real lastModified — a later listing may promote.
- *  A local send still wins when it is newer than the adapter stamp. */
+/**
+ * Recency for an adapter history row.
+ *
+ * Prefer the activity this host observed (`activeAt` — first-seen listing
+ * time as a baseline, then send and turn end). The adapter's own stamp is
+ * used only when we have never seen the row.
+ *
+ * Claude restamps `updatedAt` on `session/load` (measured on a fresh
+ * process), so `Math.max(reportedAt, activeAt)` is exactly what lets an
+ * open win. Codex does not restamp (measured twice), but pinning to our
+ * clock is still what we want: opening must not promote the row.
+ *
+ * Trade-off: work done to that session outside this extension (Claude
+ * Code CLI, another host, the Codex app) stops promoting the row. Unlike
+ * grok we cannot pick a different on-disk file — there is no better
+ * signal available for either adapter.
+ */
 export function adapterActivityAt(
   provider: AcpProvider,
   reportedAt: number,
   activeAt?: number,
 ): number {
   if (typeof activeAt !== "number") return reportedAt;
-  if (provider === "codex") return activeAt;
+  if (provider === "codex" || provider === "claude") return activeAt;
   return Math.max(reportedAt, activeAt);
 }
 

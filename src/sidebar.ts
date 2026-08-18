@@ -2449,8 +2449,9 @@ Only continue if you trust this code.`,
    *
    * Called when a message is sent and when a session is created — the two
    * moments a person would expect their conversation to jump to the top. The
-   * lists order by transcript mtime, and the CLI writes that file about 2.1
-   * seconds after a send (measured), so without this the row sits still through
+   * lists order by the recency clock (`updates.jsonl` mtime for grok; host
+   * `activeAt` for adapters), and grok writes that file about 2.1 seconds
+   * after a send (measured), so without this the row sits still through
    * the whole wait and a brand-new conversation is missing entirely.
    *
    * Every project and every session is treated the same; there is no special
@@ -4380,7 +4381,7 @@ Only continue if you trust this code.`,
    * next session open, project switch or pin — all of which post a catalog.
    * Erring toward withholding is the safe direction and it self-heals.
    *
-   * The evidence is still the TRANSCRIPT and not the session directory
+   * The evidence is still `updates.jsonl` and not the session directory
    * ({@link newestTranscriptMtime}), because that part cost nothing and a
    * signal that moves when a conversation is merely loaded is simply wrong.
    * Activity in a WORKTREE counts for its project, since the rail merges those
@@ -9032,18 +9033,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const result = await client.listSessions(cwd, process.platform);
       const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const stableOverrides: SessionMetaOverrides = { ...overrides };
-      // Codex restamps listing time on `session/load`; freeze first-seen
-      // `activeAt` so an open cannot promote the row. Claude reports the SDK's
-      // real lastModified — do not pin that to the first refresh.
-      if (provider === "codex") {
-        for (const entry of result.sessions) {
-          const previous = stableOverrides[entry.sessionId] ?? {};
-          if (typeof previous.activeAt === "number") continue;
-          stableOverrides[entry.sessionId] = {
-            ...previous,
-            activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
-          };
-        }
+      // First-seen adapter listing time is a baseline only. Claude restamps
+      // `updatedAt` on `session/load` (measured). Codex does not restamp, but
+      // pinning is still what we want: an open must not promote the row.
+      // Trade-off: work done outside this extension stops promoting the row.
+      // Unlike grok, neither adapter has a load-stable on-disk file to rank by.
+      for (const entry of result.sessions) {
+        const previous = stableOverrides[entry.sessionId] ?? {};
+        if (typeof previous.activeAt === "number") continue;
+        stableOverrides[entry.sessionId] = {
+          ...previous,
+          activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
+        };
       }
       const entries = result.sessions.map((entry) => adapterListEntry(entry, stableOverrides, provider));
       this.setProviderNeedsLogin(provider, false);
@@ -9059,13 +9060,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             ...previous,
             provider,
             providerCwd: entry.cwd,
-            ...(provider === "codex"
-              ? {
-                  activeAt: typeof previous.activeAt === "number"
-                    ? previous.activeAt
-                    : stableOverrides[entry.sessionId]?.activeAt,
-                }
-              : {}),
+            activeAt: typeof previous.activeAt === "number"
+              ? previous.activeAt
+              : stableOverrides[entry.sessionId]?.activeAt,
             ...(!previous.customName && title ? { autoName: title } : {}),
           };
           if (JSON.stringify(updated) !== JSON.stringify(previous)) {

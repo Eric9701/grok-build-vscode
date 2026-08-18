@@ -429,7 +429,7 @@ The full pedagogical write-up lives in
 | [src/acp.ts](../src/acp.ts) | Provider-neutral ACP client — spawns the selected backend, manages session lifecycle, normalizes through its backend hooks, and emits the extension's established events. `interject` (#52 Steer), `forkSession` (#48), and worktree RPCs (P2-8) call the unadvertised `_x.ai/*` methods, returning `"unsupported"` on -32601 rather than throwing |
 | [src/acp-backend.ts](../src/acp-backend.ts) / [src/grok-backend.ts](../src/grok-backend.ts) / [src/codex-backend.ts](../src/codex-backend.ts) / [src/claude-backend.ts](../src/claude-backend.ts) | Backend contract, Grok identity, Codex and Claude host normalization. Codex uses `session/set_config_option`; Claude maps `configOptions` into the host model picker, lists sessions with `{ cwd }`, and maps Agent/Auto-accept onto native permission modes |
 | [src/codex-model-cache.ts](../src/codex-model-cache.ts) / [src/claude-model-cache.ts](../src/claude-model-cache.ts) | Short-lived connect warm-up that caches adapter models from a scratch `session/new`, deletes the temporary adapter-owned session, and cleans up the client/cwd |
-| [src/provider-ui.ts](../src/provider-ui.ts) | Pure provider presentation/state policy — Grok-first model grouping, empty-model default sentinel, normalized project defaults, Codex-only listing-time freeze (`adapterActivityAt`), clear-all refresh guard (`adapterEntriesEligibleForClear`), and mixed-provider recency merge |
+| [src/provider-ui.ts](../src/provider-ui.ts) | Pure provider presentation/state policy — Grok-first model grouping, empty-model default sentinel, normalized project defaults, adapter listing-time freeze (`adapterActivityAt` pins Codex and Claude to the host-observed clock), clear-all refresh guard (`adapterEntriesEligibleForClear`), and mixed-provider recency merge |
 | [src/worktree.ts](../src/worktree.ts) | Pure worktree helpers (P2-8) — parse create/list/apply/remove/status, multi-cwd history merge; wire notes in [research/worktree.md](../research/worktree.md) |
 | [src/session.ts](../src/session.ts) | Per-session state bag — one `Session` per live backend process, with immutable `provider` identity (the sidebar holds a *pool* plus one focused); carries the send queue (#37), exclusive history-load join (`runExclusiveHistoryLoad` / `loadInFlight`), and optional worktree binding (`cwd` / `worktree`), while cumulative billing stays solely in session-id-keyed metadata (#53) |
 | [src/session-pool.ts](../src/session-pool.ts) | Pure reaping policy (`selectReapable`) — idle-TTL + LRU cap over the live-session pool |
@@ -473,9 +473,10 @@ popover at scale. It now loads **one page at a time** (`SESSION_PAGE_SIZE = 100`
 newest-first), built from two pure primitives in
 [src/sessions.ts](../src/sessions.ts):
 
-- `indexSessions` does **one `stat` per session dir, no reads** — it orders every id
-  newest-first by `events.jsonl` **mtime** (falling back to `summary.json` before a
-  transcript exists). The transcript mtime ignores `session/load` restamps. We sort by mtime
+- `indexSessions` does **one or two `stat`s per session dir, no reads** — it orders every id
+  newest-first by `statSessionActivity`: `updates.jsonl` **mtime** (the persist file a
+  `session/load` leaves alone), then `events.jsonl` for older dirs, then `summary.json`
+  before a transcript exists. We sort by mtime
   *because the id is a UUIDv7 whose timestamp is creation, not last activity* — an
   id-sort would order by when the session was first opened, which is wrong.
 - `readSessionEntries` reads + parses `summary.json` for **exactly the visible page's
@@ -487,10 +488,9 @@ cache. Codex history is listed from a lazily spawned adapter client without a `c
 argument, paginated to the terminal cursor with loop guards, then filtered by
 resolved path on the host (case-insensitive on Windows). Per-project cache and
 refresh keys use the same `normalizeWorkspaceFsPath` machinery, so adapter cwd
-casing drift cannot create a second cache bucket on Windows. Codex rows keep a
-host-owned activity clock after first discovery because the adapter restamps
-`updatedAt` on load: opening never advances it, send advances it optimistically,
-and turn end reasserts/rechecks the provider lists. The cache holds the complete
+casing drift cannot create a second cache bucket on Windows. Codex and Claude rows keep a
+host-owned activity clock after first discovery: opening never advances it, send
+advances it optimistically, and turn end reasserts/rechecks the provider lists. The cache holds the complete
 Codex listing. `provider-ui.ts` treats Grok pagination as a black box: each mixed
 request consumes exactly one ordinary Grok page (including hidden-row slot
 consumption and its within-page exact sort), then merges every not-yet-emitted
