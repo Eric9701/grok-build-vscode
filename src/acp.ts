@@ -59,6 +59,12 @@ import {
   type RewindMode,
   type RewindPoint,
 } from "./rewind";
+import {
+  promptTimerDelayMs,
+  resolveAcpTimeouts,
+  type AcpTimeoutInput,
+  type AcpTimeouts,
+} from "./acp-timeout";
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -81,6 +87,11 @@ export interface AcpClientOptions {
    * an unverified banner even when the number is at the image-read floor.
    */
   grokVersionVerified?: boolean;
+  /**
+   * Client-side JSON-RPC timeouts. `session/prompt` uses idle+absolute policy
+   * (#117); other methods use `requestTimeoutMs`. Omitted keys take defaults.
+   */
+  timeouts?: AcpTimeoutInput;
 }
 
 export interface ModelInfo {
@@ -176,6 +187,11 @@ type Pending = {
   reject: (e: any) => void;
   timer?: ReturnType<typeof setTimeout>;
   onResolve?: (value: any) => void;
+  method?: string;
+  isPrompt?: boolean;
+  startedAt?: number;
+  lastActivityAt?: number;
+  armTimer?: () => void;
 };
 
 export { buildGrokAgentArgs } from "./grok-backend";
@@ -244,6 +260,7 @@ export class AcpClient extends EventEmitter {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private readonly backend: AcpBackend;
+  private readonly timeouts: AcpTimeouts;
 
   readonly provider: AcpProvider;
   readonly usesClientPlanGate: boolean;
@@ -303,6 +320,7 @@ export class AcpClient extends EventEmitter {
     this.provider = this.backend.provider;
     this.usesClientPlanGate = this.backend.usesClientPlanGate;
     this.currentReasoningEffort = this.opts.effort || undefined;
+    this.timeouts = resolveAcpTimeouts(opts.timeouts);
   }
 
   async start(): Promise<void> {
@@ -959,23 +977,60 @@ export class AcpClient extends EventEmitter {
   ): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const entry: Pending = { resolve, reject, onResolve };
+      const now = Date.now();
+      const entry: Pending = {
+        resolve,
+        reject,
+        onResolve,
+        method,
+        isPrompt: method === "session/prompt",
+        startedAt: now,
+        lastActivityAt: now,
+      };
       this.pending.set(id, entry);
       if (!this.writeLine(makeRequest(id, method, params))) {
         this.pending.delete(id);
         reject(new Error(`Grok process is not running (${method})`));
         return;
       }
-      const timeoutMs = method === "session/prompt" ? 1_800_000 : 120_000;
-      // Tracked on the pending entry so the response/exit paths can clear it —
-      // otherwise every resolved request leaves a live timer (and its closure)
-      // armed for up to 30 min.
-      entry.timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`ACP request timed out: ${method}`));
+      // Tracked on the pending entry so the response/exit paths can clear it.
+      // session/prompt uses idle+absolute policy (#117); other methods keep a
+      // fixed cap. A live timer must not outlive the request.
+      const arm = () => {
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.timer = undefined;
+        let waitMs: number;
+        if (entry.isPrompt) {
+          waitMs = promptTimerDelayMs({
+            startedAt: entry.startedAt ?? now,
+            lastActivityAt: entry.lastActivityAt ?? now,
+            now: Date.now(),
+            idleMs: this.timeouts.promptIdleTimeoutMs,
+            absoluteMs: this.timeouts.promptAbsoluteTimeoutMs,
+          });
+          if (!Number.isFinite(waitMs)) return;
+        } else {
+          waitMs = this.timeouts.requestTimeoutMs;
         }
-      }, timeoutMs);
+        entry.timer = setTimeout(() => {
+          if (this.pending.delete(id)) {
+            reject(new Error(`ACP request timed out: ${method}`));
+          }
+        }, waitMs);
+      };
+      entry.armTimer = arm;
+      arm();
     });
+  }
+
+  /** Re-arm in-flight `session/prompt` idle timers on live ACP traffic. */
+  private touchPendingPromptTimers(): void {
+    const now = Date.now();
+    for (const [, p] of this.pending) {
+      if (!p.isPrompt || typeof p.armTimer !== "function") continue;
+      p.lastActivityAt = now;
+      p.armTimer();
+    }
   }
 
   private respondOk(id: number | string, result: any = {}): boolean {
@@ -1013,9 +1068,11 @@ export class AcpClient extends EventEmitter {
       return;
     }
     if (ev.kind === "session-update") {
+      this.touchPendingPromptTimers();
       this.handleSessionUpdate(ev.update, ev.meta, ev.sessionId);
       return;
     }
+    this.touchPendingPromptTimers();
     void this.handleServerRequest({ id: ev.id, method: ev.method, params: ev.params });
   }
 
