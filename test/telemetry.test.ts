@@ -682,4 +682,34 @@ describe("sidebar session_start wiring", () => {
     expect(sidebar.lastVoiceConfiguredByCwd.get(normalizeRepoPath("/repo"))).toBe(true);
   });
 
+  it("postVoiceConfigured skips a connected client that has no project yet", () => {
+    const sidebar = Object.create(GrokSidebar.prototype) as any;
+    sidebar.focused = new Session();
+    sidebar.focused.cwd = "/desk";
+    sidebar.sessionCwd = vi.fn((session: Session) => session.cwd || "/desk");
+    sidebar.resolveVoiceApiKey = vi.fn(() => "key");
+    sidebar.voiceSetting = vi.fn((_c: string, _k: string, fb: unknown) => fb);
+    sidebar.postLocal = vi.fn();
+    sidebar.sendRemoteClient = vi.fn();
+    sidebar.remoteClients = new RemoteClientState<Session>("");
+    sidebar.lastVoiceConfiguredByCwd = new Map();
+    sidebar.remoteClients.ready("c49");
+    sidebar.remoteClients.ready("ok");
+    sidebar.remoteClients.select("ok", "/repo");
+
+    expect(() => sidebar.remoteClients.cwd("c49")).toThrow(/not ready/);
+    expect(() => sidebar.remoteSessionFor("c49")).toThrow(/not ready/);
+    expect(() => sidebar.postVoiceConfigured()).not.toThrow();
+
+    expect(sidebar.sendRemoteClient).toHaveBeenCalledTimes(1);
+    expect(sidebar.sendRemoteClient).toHaveBeenCalledWith(
+      "ok",
+      expect.objectContaining({ type: "voiceConfigured", value: true }),
+      "/repo",
+    );
+    expect(sidebar.remoteClients.active("c49")).toBeUndefined();
+    expect(sidebar.remoteClients.active("ok")).toBeUndefined();
+    expect(sidebar.lastVoiceConfiguredByCwd.get(normalizeRepoPath("/repo"))).toBe(true);
+  });
+
 });

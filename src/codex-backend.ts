@@ -117,6 +117,27 @@ function normalizeDiffContent(content: unknown): unknown {
   });
 }
 
+// Codex MCP reuses the shell mapper (`kind: "execute"` + title
+// `mcp.<server>.<tool>`). Remap to Claude's `kind: "other"` so the
+// row shows that title instead of a bare "Run".
+export function isCodexMcpToolCall(update: any): boolean {
+  if (update?._meta?.is_mcp_tool_call === true) return true;
+  const raw = update?.rawInput;
+  return !!(raw && typeof raw === "object"
+    && typeof raw.server === "string" && raw.server
+    && typeof raw.tool === "string" && raw.tool
+    && typeof raw.command !== "string");
+}
+
+function codexMcpTitle(update: any): string | undefined {
+  const raw = update?.rawInput;
+  if (raw && typeof raw.server === "string" && raw.server
+      && typeof raw.tool === "string" && raw.tool) {
+    return `mcp.${raw.server}.${raw.tool}`;
+  }
+  return undefined;
+}
+
 export function normalizeCodexUpdate(update: any, meta?: any): BackendUpdate {
   if (!update || typeof update !== "object") return { update, meta };
   if (update.sessionUpdate === "session_info_update") {
@@ -139,11 +160,18 @@ export function normalizeCodexUpdate(update: any, meta?: any): BackendUpdate {
     const normalizedRawOutput = rawOutput && typeof rawOutput === "object" && typeof rawOutput.formatted_output === "string"
       ? { ...rawOutput, output: rawOutput.formatted_output }
       : rawOutput;
+    const mcp = isCodexMcpToolCall(update);
+    const title = typeof update.title === "string" && update.title.trim()
+      ? update.title
+      : mcp && update.sessionUpdate === "tool_call" ? codexMcpTitle(update) : undefined;
+    const kind = mcp && update.kind === "execute" ? "other" : update.kind;
     return {
       update: {
         ...update,
         ...(normalizedRawOutput === undefined ? {} : { rawOutput: normalizedRawOutput }),
         ...(update.content === undefined ? {} : { content: normalizeDiffContent(update.content) }),
+        ...(kind !== update.kind ? { kind } : {}),
+        ...(title !== undefined && title !== update.title ? { title } : {}),
       },
       meta,
     };

@@ -453,6 +453,15 @@ describe("voiceSettingForRepo", () => {
       [],
     )).toEqual(["default-term"]);
   });
+
+  it("an unbound repo (no desktop project yet) does not inherit the desk workspace value", () => {
+    expect(voiceSettingForRepo(
+      ["desk-term"],
+      undefined,
+      false,
+      DEFAULT_SEND_PHRASE,
+    )).toBe(DEFAULT_SEND_PHRASE);
+  });
 });
 
 describe("voiceSettingWriteTarget", () => {

@@ -113,4 +113,14 @@ describe("desktop empty-folder startSession", () => {
       { type: "setBusy", value: false },
     ]));
   });
+
+  it("a remote handshake with no open project does not throw or adopt a session", () => {
+    const sidebar = makeDesktopSidebar();
+    sidebar.remoteClients = new RemoteClientState<Session>("");
+    sidebar.dropRemoteVoice = vi.fn();
+    expect(() => sidebar.handleRemoteClientReady("c49")).not.toThrow();
+    expect(sidebar.remoteClients.clients()).toEqual(["c49"]);
+    expect(sidebar.remoteClients.active("c49")).toBeUndefined();
+    expect(() => sidebar.remoteClients.cwd("c49")).toThrow(/not ready/);
+  });
 });

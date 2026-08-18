@@ -13,6 +13,7 @@ import {
   STRIP_COMPACT_MAX,
   STRIP_EXTREME_MAX,
 } from "../media/file-panel.js";
+import { chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
 
 type Scope = { id: string; label: string; title?: string };
 
@@ -697,6 +698,74 @@ describe("shared file-panel component", () => {
     });
 
     expect(panel.setWidth(520, false)).toBe(520);
+  });
+});
+
+describe("file panel resize drag", () => {
+  function widthOf(el: unknown, px: number) {
+    (el as { getBoundingClientRect: () => { width: number } }).getBoundingClientRect =
+      () => ({ width: px });
+  }
+
+  function drag(window: Window, resizer: Element, fromX: number, toX: number) {
+    const ev = (type: string, clientX: number) =>
+      new window.MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+    resizer.dispatchEvent(Object.assign(ev("pointerdown", fromX), { pointerId: 1 }));
+    resizer.dispatchEvent(Object.assign(ev("pointermove", toX), { pointerId: 1 }));
+    resizer.dispatchEvent(Object.assign(ev("pointerup", toX), { pointerId: 1 }));
+  }
+
+  function dockedPanel(zoom: string) {
+    const window = new Window({ url: "https://example.test/" });
+    const document = window.document;
+    document.body.style.setProperty("--chat-zoom", zoom);
+    (window as unknown as { GrokWebviewHelpers: { chatZoomFactor: typeof chatZoomFactor; unzoomClientPx: typeof unzoomClientPx } }).GrokWebviewHelpers = {
+      chatZoomFactor,
+      unzoomClientPx,
+    };
+
+    const row = document.createElement("div");
+    const dock = document.createElement("div");
+    row.appendChild(dock);
+    document.body.appendChild(row);
+    widthOf(row, 1400);
+
+    const panel = createFilePanel({
+      access: {
+        currentScope: async () => null,
+        list: async () => ({ ok: true, entries: [], truncated: false }),
+        read: async () => ({ ok: false, reason: "none" }),
+      },
+      document,
+      window,
+      mount: {
+        panelHost: document.body,
+        dockHost: dock,
+        toggleHost: document.body,
+        presentation: "dock",
+        widthBasis: row,
+      },
+      ui: { confirm: async () => "discard", renderMarkdown: (s: string) => s },
+    });
+    panel.setOpen(true);
+    return { window, document, panel };
+  }
+
+  it("dragging at zoom 1 matches the cursor delta", () => {
+    const h = dockedPanel("1");
+    widthOf(h.panel.element, 280);
+    // Panel is on the right: drag left (smaller X) → wider.
+    drag(h.window, h.panel.resizer, 1000, 900);
+    expect((h.panel.element as HTMLElement).style.getPropertyValue("--gfp-width")).toBe("380px");
+  });
+
+  it("dragging at a non-1 zoom tracks the cursor in layout px", () => {
+    // getBoundingClientRect / clientX are visual; --gfp-width is layout.
+    // A 280px panel at 1.5× reports 420 visual; 150 visual px is 100 layout px.
+    const h = dockedPanel("1.5");
+    widthOf(h.panel.element, 420);
+    drag(h.window, h.panel.resizer, 1000, 850);
+    expect((h.panel.element as HTMLElement).style.getPropertyValue("--gfp-width")).toBe("380px");
   });
 });
 

@@ -4,6 +4,7 @@ import {
   configStateFromCodexOptions,
   codexEffectiveModeId,
   isCodexCredentialError,
+  isCodexMcpToolCall,
   listAllCodexSessions,
   normalizeCodexModels,
   normalizeCodexPermissionParams,
@@ -81,6 +82,47 @@ describe("Codex composite model mapping", () => {
 });
 
 describe("Codex output and usage normalization", () => {
+  it("remaps an MCP execute call to kind other and keeps the adapter title", () => {
+    const normalized = normalizeCodexUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "mcp-1",
+      kind: "execute",
+      title: "mcp.canva.search-designs",
+      rawInput: { server: "canva", tool: "search-designs", arguments: { query: "logo" } },
+      _meta: { is_mcp_tool_call: true },
+    });
+    expect(normalized.update).toMatchObject({
+      kind: "other",
+      title: "mcp.canva.search-designs",
+      rawInput: { server: "canva", tool: "search-designs", arguments: { query: "logo" } },
+      _meta: { is_mcp_tool_call: true },
+    });
+    expect(isCodexMcpToolCall(normalized.update)).toBe(true);
+  });
+
+  it("fills a missing MCP title from structured server/tool fields", () => {
+    const normalized = normalizeCodexUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "mcp-1",
+      rawInput: { server: "canva", tool: "list-folder-items", arguments: {} },
+    });
+    expect(normalized.update.title).toBe("mcp.canva.list-folder-items");
+    expect(normalized.update.kind).toBeUndefined();
+  });
+
+  it("does not remap a real shell command that happens to mention a server", () => {
+    const update = {
+      sessionUpdate: "tool_call",
+      toolCallId: "cmd-1",
+      kind: "execute",
+      title: "node -e echo",
+      rawInput: { command: "node -e \"console.log('ok')\"", cwd: "C:\\repo" },
+    };
+    expect(isCodexMcpToolCall(update)).toBe(false);
+    expect(normalizeCodexUpdate(update).update.kind).toBe("execute");
+    expect(normalizeCodexUpdate(update).update.title).toBe("node -e echo");
+  });
+
   it("maps formatted command output without losing exit_code", () => {
     const normalized = normalizeCodexUpdate({
       sessionUpdate: "tool_call_update",

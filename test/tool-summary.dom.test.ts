@@ -8,6 +8,7 @@
 // carries only a leading-verb title and no `kind`.
 import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch } from "./webview-harness";
+import { normalizeCodexUpdate } from "../src/codex-backend";
 
 const tc = (call: any) => ({ type: "toolCall", call });
 const close = (window: Window) => dispatch(window, { type: "messageChunk", text: "done" } as any);
@@ -27,6 +28,22 @@ function flatLabel(doc: Document): string | null {
   // The label span only — a command's flat row also carries the #41 details
   // block (full command text), which is not part of the label.
   return doc.querySelector(".tool-flat .tool-label")?.textContent ?? null;
+}
+function itemLabels(doc: Document): string[] {
+  return [...doc.querySelectorAll(".tool-item-label, .tool-flat .tool-label")]
+    .map((el) => el.textContent ?? "");
+}
+
+function codexMcpCall(id: string, server: string, tool: string, extra: Record<string, unknown> = {}) {
+  const { update } = normalizeCodexUpdate({
+    sessionUpdate: "tool_call",
+    toolCallId: id,
+    kind: "execute",
+    title: `mcp.${server}.${tool}`,
+    rawInput: { server, tool, arguments: extra },
+    _meta: { is_mcp_tool_call: true },
+  });
+  return update;
 }
 
 describe("tool-call rollup categorization (live, kind present)", () => {
@@ -123,6 +140,64 @@ describe("tool-call labels (single-call flat line)", () => {
     dispatch(window, tc({ toolCallId: "1", title: "web_fetch", rawInput: { url: "https://example.com/page" } }));
     close(window);
     expect(flatLabel(doc)).toBe("Fetch example.com/page");
+  });
+});
+
+// #115: Codex MCP arrives as kind:"execute" + title "mcp.<server>.<tool>" and
+// no command. After normalizeCodexUpdate remaps kind to other, the row must
+// show that title — the same fallback Grok and Claude already use.
+describe("MCP tool names (#115)", () => {
+  it("a Codex MCP tool_call renders the adapter title, not a bare Run", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc(codexMcpCall("1", "canva", "search-designs", { query: "logo" })));
+    close(window);
+    expect(flatLabel(doc)).toBe("mcp.canva.search-designs");
+    expect(flatLabel(doc)).not.toBe("Run");
+  });
+
+  it("two Codex MCP calls keep their names under the group, not Run / Run", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc(codexMcpCall("1", "canva", "search-designs")));
+    dispatch(window, tc(codexMcpCall("2", "canva", "list-folder-items")));
+    close(window);
+    expect(groupLabel(doc)).toBe("Ran 2 commands");
+    expect(itemLabels(doc)).toEqual([
+      "mcp.canva.search-designs",
+      "mcp.canva.list-folder-items",
+    ]);
+  });
+
+  it("Grok's server__tool title still renders as the row", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", title: "canva__search-designs" }));
+    close(window);
+    expect(flatLabel(doc)).toBe("canva__search-designs");
+  });
+
+  it("Claude's mcp__server__tool title still renders as the row", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({
+      toolCallId: "1",
+      kind: "other",
+      title: "mcp__claude_ai_Gmail__list_labels",
+    }));
+    close(window);
+    expect(flatLabel(doc)).toBe("mcp__claude_ai_Gmail__list_labels");
+  });
+
+  it("a later Codex MCP update does not blank the first-call title", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc(codexMcpCall("1", "canva", "list-brand-kits")));
+    const { update } = normalizeCodexUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "1",
+      status: "completed",
+      rawInput: { server: "canva", tool: "list-brand-kits", arguments: {} },
+      rawOutput: { result: { ok: true }, error: null },
+    });
+    dispatch(window, { type: "toolCallUpdate", call: update } as any);
+    close(window);
+    expect(flatLabel(doc)).toBe("mcp.canva.list-brand-kits");
   });
 });
 

@@ -3511,6 +3511,8 @@ describe("watcher chain helpers (A4)", () => {
     expect(src).toContain("nearestExistingAncestor");
     expect(src).toContain("scheduleRebind");
     expect(src).toContain("bindChainWatcher");
+    expect(src).toContain("fs.watch listener failed");
+    expect(src).toMatch(/const notify = \(listeners: Set<\(\) => void>\): void =>/);
   });
 });
 

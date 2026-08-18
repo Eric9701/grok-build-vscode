@@ -235,6 +235,16 @@ async function runPrompt(id) {
     content: [{ type: "diff", oldText: null, newText: "export const made = true;\n", path: "src/made.ts", _meta: { kind: "create" } }],
   });
   notify({ sessionUpdate: "tool_call_update", toolCallId: "edit-1", status: "completed" });
+  notify({
+    sessionUpdate: "tool_call", toolCallId: "mcp-1", kind: "execute", title: "mcp.canva.search-designs",
+    rawInput: { server: "canva", tool: "search-designs", arguments: { query: "logo" } },
+    _meta: { is_mcp_tool_call: true },
+  });
+  notify({
+    sessionUpdate: "tool_call_update", toolCallId: "mcp-1", status: "completed",
+    rawInput: { server: "canva", tool: "search-designs", arguments: { query: "logo" } },
+    rawOutput: { result: { content: [{ type: "text", text: "ok" }] }, error: null },
+  });
   const approval = await call("session/request_permission", {
     sessionId,
     toolCall: { toolCallId: "cmd-2", kind: "execute", rawInput: { command: "npm test\nignored" } },

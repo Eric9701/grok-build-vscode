@@ -9,6 +9,7 @@
 // [Error] marker + error tint; a kill is [Cancelled], not an error.
 import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch, click } from "./webview-harness";
+import { normalizeCodexUpdate } from "../src/codex-backend";
 
 const exec = (id: string, command: string, title?: string) => ({
   type: "toolCall",
@@ -534,6 +535,24 @@ describe("command details (#41)", () => {
     close(window);
     expect(doc.querySelector(".tool-item-details")).toBeNull();
     expect(doc.querySelector(".has-details")).toBeNull();
+  });
+
+  it("a Codex MCP tool_call is not a command row — name shows, no IN/OUT", () => {
+    const { window, doc } = bootWebview();
+    const { update } = normalizeCodexUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "mcp-1",
+      kind: "execute",
+      title: "mcp.canva.search-designs",
+      rawInput: { server: "canva", tool: "search-designs", arguments: { query: "logo" } },
+      _meta: { is_mcp_tool_call: true },
+    });
+    dispatch(window, { type: "toolCall", call: update });
+    close(window);
+    expect(doc.querySelector(".tool-flat .tool-label")!.textContent).toBe("mcp.canva.search-designs");
+    expect(doc.querySelector(".tool-item-details")).toBeNull();
+    expect(doc.querySelector(".has-details")).toBeNull();
+    expect(doc.querySelector(".cmd-block")).toBeNull();
   });
 
   it("the output poller and kill tools stay plain (no details, no highlight)", () => {

@@ -97,6 +97,26 @@ describe("rail resize handle (DOM)", () => {
     expect(h.window.localStorage.getItem("rail-width")).toBe("356px".replace("px", ""));
   });
 
+  it("dragging at zoom 1 matches the cursor delta", () => {
+    const h = liveRail();
+    h.doc.body.style.setProperty("--chat-zoom", "1");
+    stubRailWidth(h, 256);
+    h.window.innerWidth = 1400;
+    drag(h, 256, 356);
+    expect(railWidthVar(h)).toBe("356px");
+  });
+
+  it("dragging at a non-1 zoom tracks the cursor in layout px", () => {
+    // getBoundingClientRect / clientX are visual; --rail-width is layout.
+    // A 256px rail at 1.5× reports 384 visual; 150 visual px is 100 layout px.
+    const h = liveRail();
+    h.doc.body.style.setProperty("--chat-zoom", "1.5");
+    stubRailWidth(h, 384);
+    h.window.innerWidth = 1400;
+    drag(h, 384, 534);
+    expect(railWidthVar(h)).toBe("356px");
+  });
+
   it("clamps to a minimum and never starves the conversation", () => {
     const h = liveRail();
     h.window.innerWidth = 1000;

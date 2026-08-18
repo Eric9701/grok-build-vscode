@@ -51,6 +51,21 @@ describe("RemoteClientState", () => {
     expect(state.clients()).toEqual([]);
   });
 
+  it("treats an empty default cwd as in the roster but not ready", () => {
+    // Desktop with no open project: ready() stores "". The client appears in
+    // clients() (a voice/catalog fan-out will see it) while cwd() still throws.
+    // currentClient is the wrong skip — it only asks whether the map has a key.
+    const state = new RemoteClientState<object>("");
+    state.ready("c49");
+
+    expect(state.clients()).toEqual(["c49"]);
+    expect(state.cwdIfPresent("c49")).toBe("");
+    expect(state.currentClient("c49")).toBe("c49");
+    expect(() => state.cwd("c49")).toThrow(/not ready/);
+    expect(() => state.select("c49", "")).not.toThrow();
+    expect(() => state.cwd("c49")).toThrow(/not ready/);
+  });
+
   it("keeps active sessions independent for clients on the same cwd", () => {
     const state = new RemoteClientState<{ id: string }>("/work/a", norm);
     state.ready("tab-a");

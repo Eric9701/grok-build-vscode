@@ -4490,7 +4490,7 @@ Only continue if you trust this code.`,
   ): HostMsg {
     const authorized = this.remoteAuthorizedSessionCwds();
     const selectedCwd =
-      authorizedListCwd(this.remoteClients.cwd(clientId), authorized, pathsEqual) ?? "";
+      authorizedListCwd(this.remoteClients.cwdIfPresent(clientId), authorized, pathsEqual) ?? "";
     const active = this.remoteClients.active(clientId);
     let activeCwd = selectedCwd;
     if (active) {
@@ -8856,7 +8856,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     for (const clientId of this.remoteClients.clients()) {
       // Per-tab cwd may still name a closed project after revoke leaves it for
       // selectRepo — buildSessionsList enforces the live authorized set.
-      const cwd = this.remoteClients.cwd(clientId);
+      // Same landmine as the voice-config refresh: a mid-handshake tab is in
+      // the roster with no project, and this list rebuild is not a request
+      // from that tab.
+      const cwd = this.remoteClients.cwdIfPresent(clientId);
+      if (!cwd) continue;
       const activeId = this.remoteActiveSessionId(clientId);
       this.sendRemoteClient(clientId, this.buildSessionsList(cwd, undefined, activeId));
       const active = this.remoteClients.active(clientId);
@@ -9547,7 +9551,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const repoCwd = this.repoCatalog().find((r) => pathsEqual(r.cwd, cwd))?.cwd
       ?? this.repoOwningSessionCwd(cwd, overrides);
     if (!repoCwd) return;
-    if (pathsEqual(repoCwd, this.remoteClients.cwd(clientId))) return;
+    const clientCwd = this.remoteClients.cwdIfPresent(clientId);
+    if (!clientCwd || pathsEqual(repoCwd, clientCwd)) return;
     // The rail's expanded cap — matches what its own probe asks for, so a
     // refresh never returns fewer rows than the client already had.
     this.sendRepoSessionsPreview(clientId, repoCwd, 20);
@@ -10242,7 +10247,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     for (const clientId of this.remoteClients.clients()) {
       // Scope = the project whose config we resolved. Classification is "scope"
       // so a closed/re-homed tab cannot receive the prior project's prefs.
-      const remoteCwd = this.sessionCwd(this.remoteSessionFor(clientId));
+      //
+      // This refresh is a host-wide watcher/config event, not a request from
+      // this tab. A connected client can still have no project (desktop
+      // empty-workspace ready() stores ""). The strict cwd accessor throws
+      // for that state and would take down the desktop main process. Skip —
+      // the next snapshot carries voiceConfigured.
+      const active = this.remoteClients.active(clientId);
+      const remoteCwd = active
+        ? this.sessionCwd(active)
+        : this.remoteClients.cwdIfPresent(clientId);
+      if (!remoteCwd) continue;
       const remoteConfigured = !!this.resolveVoiceApiKey(remoteCwd);
       this.rememberVoiceConfigured(remoteCwd, remoteConfigured);
       this.sendRemoteClient(clientId, {
@@ -13440,7 +13455,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const sent = new Set<string>();
     for (const clientId of this.remoteClients.clients()) {
-      const repoCwd = this.remoteClients.cwd(clientId);
+      const repoCwd = this.remoteClients.cwdIfPresent(clientId);
+      if (!repoCwd) continue;
       const key = normalizeRepoPath(repoCwd);
       if (sent.has(key)) continue;
       if (!this.sessionCwdsForRepo(repoCwd, overrides).some((cwd) => pathsEqual(cwd, this.sessionCwd(session)))) continue;
@@ -14729,6 +14745,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // remoteVoice, so reconnect cannot resurrect a host-only listening state.
     this.dropRemoteVoice(clientId);
     this.remoteClients.ready(clientId);
+    // Empty default cwd (no desktop project yet) is not a bound repo. The
+    // snapshot still goes out unbound; adopting/starting here would throw.
+    if (!this.remoteClients.cwdIfPresent(clientId)) return;
     const session = this.remoteSessionFor(clientId);
     if (session.client && !session.needsProvider) {
       this.restorePersistedDraft(session);
@@ -14812,7 +14831,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         scopeCwdForClient: (clientId) => {
           const active = this.remoteClients.active(clientId);
           if (active) return this.sessionCwd(active);
-          return this.remoteClients.cwd(clientId);
+          return this.remoteClients.cwdIfPresent(clientId);
         },
         // Repo fan-out uses selected cwd; session fan-out uses active session
         // cwd. Either counts as ownership of that scope (default ownership
@@ -15036,19 +15055,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   /** Ordered catch-up built from this client's cwd and active remote session. */
   private buildRemoteSnapshot(clientId: string): HostMsg[] {
-    const cwd = this.remoteClients.cwd(clientId);
+    const cwd = this.remoteClients.cwdIfPresent(clientId) ?? "";
     // Live authorized set for this host — not "whatever the tab last selected".
     // Remote-narrowed, so a tab reconnecting into a project archived while it
     // was away comes back unbound rather than resuming inside it.
     const authorized = this.remoteAuthorizedSessionCwds();
     const listCwd = authorizedListCwd(cwd, authorized, pathsEqual);
-    const session = this.remoteSessionFor(clientId);
+    const session = cwd ? this.remoteSessionFor(clientId) : this.remoteClients.active(clientId);
     // Catalog is already open-folder-filtered on desktop; still the sole source.
     const entries = this.localRepoCatalogEntries();
     // Never put a closed cwd on the wire (choke point rejects it); empty = unbound.
     const initial = this.messageForRemote({ ...this.buildInitialStateMsg(), cwd: listCwd ?? "" });
-    const sessionCwd = this.sessionCwd(session);
-    const sessionCwdOk = !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
+    const sessionCwd = session ? this.sessionCwd(session) : "";
+    const sessionCwdOk = !!session && !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
     const phrase = this.voiceSetting(
       sessionCwdOk ? sessionCwd : this.workspaceRoot(),
       "voiceSendPhrase",
@@ -15060,17 +15079,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
-    if (sessionCwdOk && !session.replaying) {
+    if (session && sessionCwdOk && !session.replaying) {
       snap.push(...bracketRemoteSnapshot(session.buffer));
     }
-    if (sessionCwdOk) {
+    if (session && sessionCwdOk) {
       snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
     }
-    if (sessionCwdOk && session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
+    if (session && sessionCwdOk && session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
       const text = this.queuedSendReadyText(session);
       if (text) session.queuedSendDispatch = { id: randomUUID(), text };
     }
-    if (sessionCwdOk && session.queuedSendDispatch) {
+    if (session && sessionCwdOk && session.queuedSendDispatch) {
       snap.push({ type: "submitQueuedSend", ...session.queuedSendDispatch });
     }
     const voiceCwd = sessionCwdOk ? sessionCwd : this.workspaceRoot();
@@ -15100,7 +15119,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         sessionCwdOk ? this.remoteActiveSessionId(clientId) : null,
       ),
     );
-    if (sessionCwdOk && session.activeSessionId) {
+    if (session && sessionCwdOk && session.activeSessionId) {
       snap.push({
         type: "sessionName",
         sessionId: session.activeSessionId,

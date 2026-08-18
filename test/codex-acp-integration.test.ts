@@ -91,6 +91,11 @@ describe("Codex ACP integration (real subprocess, fake adapter)", () => {
     expect(contexts).toEqual([undefined]);
     expect(client.availableModels.find((model) => model.modelId === client.currentModelId)?.totalContextTokens).toBe(258400);
     expect(tools.find((tool) => tool.toolCallId === "edit-1").content[0].oldText).toBe("");
+    expect(tools.find((tool) => tool.toolCallId === "mcp-1")).toMatchObject({
+      kind: "other",
+      title: "mcp.canva.search-designs",
+      rawInput: { server: "canva", tool: "search-designs" },
+    });
     expect(updates.find((update) => update.toolCallId === "cmd-1").rawOutput).toMatchObject({ output: "ok\n", exit_code: 0 });
     expect(permissions[0].toolCall.title).toBe("npm test");
     expect(permissions[0].options.map((option: any) => option.optionId)).toEqual(["allow_once", "allow_always", "reject_once"]);

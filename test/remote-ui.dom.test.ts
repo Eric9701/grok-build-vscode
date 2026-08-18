@@ -132,6 +132,16 @@ describe("AFK Pilot shared webview controls", () => {
     expect(text).not.toContain("Cost");
   });
 
+  it("voice-config refresh skips a tab that has no cwd yet", () => {
+    const body = sidebarSrc.slice(
+      sidebarSrc.indexOf("private postVoiceConfigured("),
+      sidebarSrc.indexOf("private voiceSetting<"),
+    );
+    expect(body).toContain("cwdIfPresent");
+    expect(body).not.toContain("remoteSessionFor");
+    expect(body).not.toMatch(/remoteClients\.cwd\(/);
+  });
+
   it("keeps remote voice completion out of the host prompt path", () => {
     const continuous = sidebarSrc.slice(
       sidebarSrc.indexOf("private async commitRemoteVoice"),

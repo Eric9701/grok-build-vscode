@@ -478,6 +478,25 @@ describe("sidebar close-revocation wiring (source)", () => {
     expect(body).toMatch(
       /sendRemoteClient\(\s*clientId\s*,\s*\{[\s\S]*?type:\s*"voiceConfigured"[\s\S]*?\}\s*,\s*remoteCwd\s*\)/,
     );
+    expect(body).toContain("cwdIfPresent");
+    expect(body).not.toContain("remoteSessionFor");
+    expect(body).not.toMatch(/remoteClients\.cwd\(/);
+  });
+
+  it("host-wide remote fan-out skips a tab with no project instead of throwing", () => {
+    const src = sidebarSrc();
+    const slices = [
+      src.slice(src.indexOf("private postSessionsList("), src.indexOf("private buildSessionsList(")),
+      src.slice(src.indexOf("private buildRemoteReposMsg("), src.indexOf("private sendRemoteRepoCatalog(")),
+      src.slice(src.indexOf("private refreshRemoteRepoPreview("), src.indexOf("private sessionHasLiveOwner(")),
+      src.slice(src.indexOf("private pushDot("), src.indexOf("private dotForId(")),
+    ];
+    for (const body of slices) {
+      expect(body.length).toBeGreaterThan(40);
+      expect(body).toContain("cwdIfPresent");
+      expect(body).not.toMatch(/remoteClients\.cwd\(/);
+    }
+    expect(src).toMatch(/scopeCwdForClient:[\s\S]*?cwdIfPresent\(clientId\)/);
   });
 
   it("revokeClosedProjectFolder cancels local and remote voice for the closed folder", () => {

@@ -408,18 +408,30 @@ export function createBoundFileSystemWatcher(
     }, 50);
   };
 
+  // A listener throw is a degraded refresh, not a dead desktop. Electron
+  // surfaces uncaught FSWatcher errors as a main-process modal.
+  const notify = (listeners: Set<() => void>): void => {
+    for (const l of listeners) {
+      try {
+        l();
+      } catch (e) {
+        log(`[desktop] fs.watch listener failed: ${(e as Error).message}`);
+      }
+    }
+  };
+
   const emitForEvent = (event: string, filename: string | null, watchTarget: string) => {
     const full = filename ? path.join(watchTarget, filename.toString()) : target;
     if (event === "rename") {
       try {
         if (fs.existsSync(full)) {
-          for (const l of createListeners) l();
-          for (const l of changeListeners) l();
+          notify(createListeners);
+          notify(changeListeners);
         } else {
-          for (const l of deleteListeners) l();
+          notify(deleteListeners);
         }
       } catch {
-        for (const l of changeListeners) l();
+        notify(changeListeners);
       }
       // Base itself may have been deleted — re-supervise the chain.
       if (!fs.existsSync(base)) {
@@ -427,7 +439,7 @@ export function createBoundFileSystemWatcher(
       }
       return;
     }
-    for (const l of changeListeners) l();
+    notify(changeListeners);
   };
 
   const bindBaseWatcher = () => {
@@ -496,7 +508,7 @@ export function createBoundFileSystemWatcher(
       // If auth.json already exists when we first bind, fire create so voice
       // config refreshes without waiting for a later change event.
       if (!pattern.includes("*") && fs.existsSync(target)) {
-        for (const l of createListeners) l();
+        notify(createListeners);
       }
       return;
     }
