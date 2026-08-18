@@ -42,8 +42,10 @@ wrappers — a `search_tool` call to locate the tool, then `use_tool` to invoke 
     tool_call_update title="everything__echo"  kind="other"  rawInput={"variant":"UseTool",…}
     tool_call_update status="completed"  rawOutput={"type":"MCP","tool_name":"echo","server_name":"everything","output":{"OkayOutput":"Echo: MCPSHAPE_9931"}}
 
-A client that renders every tool row shows a tool-search row the user did not ask
-for. The real call is the `use_tool` one; its update title carries the readable name.
+A client that renders every tool row as a standalone command shows a tool-search
+row the user did not ask for. The host folds `search_tool` into the existing
+explore group (`kind:"search"`) so the sequence still reads; the real call is
+the `use_tool` one, whose update title carries the readable name.
 
 ## codex
 
@@ -60,8 +62,10 @@ remaps it (#115): an execute row short-circuits before the title is read.
 
 Also observed: a `mcp__everything__startup` row with `status:"failed"` and
 `"[codex-acp forwarded startup error] MCP server \`everything\` startup was
-cancelled."` — emitted even though the subsequent call succeeded. A client that
-surfaces failed tool rows will show a spurious error.
+cancelled."` — emitted even though the subsequent call succeeded. The host
+emits every `mcp__<server>__startup` row (including this cancelled one) so a
+genuine misconfigured/unreachable server cannot vanish; the failed status and
+error text stay on the row.
 
 ## claude
 
