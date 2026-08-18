@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MAX_COMMAND_OUTPUT_CHARS } from "../src/acp-dispatch";
 import {
   EMPTY_MCP_ARGS,
@@ -326,20 +326,29 @@ describe("complete MCP result OUT", () => {
     });
   });
 
-  it("pretty-prints Claude string rawOutput when it is JSON", () => {
+  it("shows Claude string rawOutput verbatim when it is JSON", () => {
     const compact = JSON.stringify(gmailStructured);
     const extracted = extractMcpOutput({
       ...claudeDone,
       rawOutput: compact,
       content: [{ type: "content", content: { type: "text", text: compact } }],
     });
-    expect(extracted).toEqual({
-      output: JSON.stringify(gmailStructured, null, 2),
-      truncated: false,
-    });
+    expect(extracted).toEqual({ output: compact, truncated: false });
     expect(extracted?.output).toContain("STRUCTPAYLOAD_ONE");
     expect(extracted?.output).toContain("STRUCTPAYLOAD_TWO");
-    expect(extracted?.output).not.toBe(compact);
+  });
+
+  it("does not reparse Claude string rawOutput so 64-bit integers stay exact", () => {
+    const raw = '{"id":9223372036854775807,"n":9007199254740993}';
+    const extracted = extractMcpOutput({
+      ...claudeDone,
+      rawOutput: raw,
+    });
+    expect(extracted).toEqual({ output: raw, truncated: false });
+    expect(extracted?.output).toContain("9223372036854775807");
+    expect(extracted?.output).toContain("9007199254740993");
+    expect(extracted?.output).not.toContain("9223372036854776000");
+    expect(extracted?.output).not.toContain("9007199254740992");
   });
 
   it("shows Claude string rawOutput verbatim when it is not JSON", () => {
@@ -419,6 +428,67 @@ describe("complete MCP result OUT", () => {
 });
 
 describe("100K display cap", () => {
+  it("does not expand a nested MCP payload past the display cap in memory", () => {
+    // Compact form of this spine is a few KB; indent-2 is ~1MB. The bug is
+    // the intermediate allocation, not the final capped string.
+    const depth = 700;
+    let eager: unknown = 1;
+    for (let i = 0; i < depth; i++) eager = { a: eager };
+    expect(JSON.stringify(eager, null, 2).length).toBeGreaterThan(MAX_COMMAND_OUTPUT_CHARS);
+
+    let walks = 0;
+    function nest(n: number): object {
+      return {
+        get a() {
+          walks += 1;
+          return n <= 1 ? 1 : nest(n - 1);
+        },
+      };
+    }
+    const nested = nest(depth);
+
+    const orig = JSON.stringify;
+    let longest = 0;
+    const spy = vi.spyOn(JSON, "stringify").mockImplementation(((
+      value: unknown,
+      replacer?: unknown,
+      space?: unknown,
+    ) => {
+      const result = orig(value as never, replacer as never, space as never);
+      if (typeof result === "string" && result.length > longest) longest = result.length;
+      return result;
+    }) as typeof JSON.stringify);
+
+    let extracted: ReturnType<typeof extractMcpOutput>;
+    try {
+      extracted = extractMcpOutput({
+        ...codexDone,
+        rawOutput: {
+          result: { content: [], structuredContent: nested, _meta: null },
+          error: null,
+        },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(longest).toBeLessThanOrEqual(MAX_COMMAND_OUTPUT_CHARS);
+    expect(walks).toBeLessThan(depth);
+    expect(extracted?.output.length).toBeLessThanOrEqual(MAX_COMMAND_OUTPUT_CHARS);
+    expect(extracted?.output).toContain("\"a\"");
+    expect(extracted?.truncated).toBe(true);
+    expect(mcpCommandOutput({
+      ...codexDone,
+      rawOutput: {
+        result: { content: [], structuredContent: eager, _meta: null },
+        error: null,
+      },
+    }, IN, "exec-mcp-1")).toMatchObject({
+      truncated: true,
+      agentSawCut: false,
+    });
+  });
+
   it("caps MCP OUT the same way as shell commandOutput", () => {
     const huge = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
     const capped = extractMcpOutput({
@@ -530,7 +600,7 @@ describe("prepareMcpToolCall", () => {
     expect(done.commandOutput).toEqual({
       command: IN,
       toolCallId: "toolu_mcp_1",
-      output: JSON.stringify(gmailStructured, null, 2),
+      output: compact,
       exitCode: null,
       truncated: false,
       agentSawCut: false,

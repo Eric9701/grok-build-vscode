@@ -11,7 +11,7 @@
  * `toolCallId`.
  */
 
-import { capCommandOutput, type CommandOutputPayload } from "./acp-dispatch";
+import { capCommandOutput, MAX_COMMAND_OUTPUT_CHARS, type CommandOutputPayload } from "./acp-dispatch";
 
 /** Pretty-printed empty-object IN. A no-argument call still gets a row. */
 export const EMPTY_MCP_ARGS = "{}";
@@ -203,89 +203,304 @@ export function extractMcpInput(call: unknown): string | null {
   return null;
 }
 
-/** Pretty-print structured MCP values. Strings stay raw so a JSON payload is not re-quoted. */
-function formatStructured(value: unknown): string | null {
-  if (value == null) return null;
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value !== "object") return null;
+type CappedBuf = {
+  chunks: string[];
+  used: number;
+  max: number;
+  truncated: boolean;
+};
+
+function createCappedBuf(max: number): CappedBuf {
+  return { chunks: [], used: 0, max, truncated: false };
+}
+
+function writeBuf(buf: CappedBuf, s: string): boolean {
+  if (buf.truncated) return false;
+  if (!s) return true;
+  const remain = buf.max - buf.used;
+  if (s.length <= remain) {
+    buf.chunks.push(s);
+    buf.used += s.length;
+    return true;
+  }
+  if (remain > 0) {
+    buf.chunks.push(s.slice(0, remain));
+    buf.used = buf.max;
+  }
+  buf.truncated = true;
+  return false;
+}
+
+function bufText(buf: CappedBuf): string {
+  return buf.chunks.join("");
+}
+
+function writeJsonString(buf: CappedBuf, s: string): boolean {
+  if (!writeBuf(buf, "\"")) return false;
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    if (buf.truncated) return false;
+    const c = s.charCodeAt(i);
+    if (c === 34) {
+      if (!writeBuf(buf, "\\\"")) return false;
+      i++;
+      continue;
+    }
+    if (c === 92) {
+      if (!writeBuf(buf, "\\\\")) return false;
+      i++;
+      continue;
+    }
+    if (c === 8) {
+      if (!writeBuf(buf, "\\b")) return false;
+      i++;
+      continue;
+    }
+    if (c === 12) {
+      if (!writeBuf(buf, "\\f")) return false;
+      i++;
+      continue;
+    }
+    if (c === 10) {
+      if (!writeBuf(buf, "\\n")) return false;
+      i++;
+      continue;
+    }
+    if (c === 13) {
+      if (!writeBuf(buf, "\\r")) return false;
+      i++;
+      continue;
+    }
+    if (c === 9) {
+      if (!writeBuf(buf, "\\t")) return false;
+      i++;
+      continue;
+    }
+    if (c < 32) {
+      const hex = c.toString(16);
+      if (!writeBuf(buf, "\\u" + "0000".slice(hex.length) + hex)) return false;
+      i++;
+      continue;
+    }
+    const remain = buf.max - buf.used;
+    if (remain <= 0) {
+      buf.truncated = true;
+      return false;
+    }
+    let j = i + 1;
+    const limit = i + remain < n ? i + remain : n;
+    while (j < limit) {
+      const d = s.charCodeAt(j);
+      if (d < 32 || d === 34 || d === 92) break;
+      j++;
+    }
+    if (!writeBuf(buf, s.slice(i, j))) return false;
+    i = j;
+  }
+  return writeBuf(buf, "\"");
+}
+
+/**
+ * Pretty-print already-parsed JSON into `buf`, stopping at the remaining
+ * budget. Work is proportional to characters written, never to the
+ * indented expansion. Throws on the same inputs `JSON.stringify` throws
+ * (cycles, BigInt) so the caller can drop the part.
+ */
+function writePrettyJson(buf: CappedBuf, value: unknown, depth: number, stack: Set<object>): boolean {
+  if (value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") {
+    value = (value as { toJSON: () => unknown }).toJSON();
+  }
+  if (typeof value === "number") {
+    return writeBuf(buf, Number.isFinite(value) ? String(value) : "null");
+  }
+  if (typeof value === "boolean") return writeBuf(buf, value ? "true" : "false");
+  if (value === null) return writeBuf(buf, "null");
+  if (typeof value === "string") return writeJsonString(buf, value);
+  if (typeof value === "bigint") {
+    throw new TypeError("Do not know how to serialize a BigInt");
+  }
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+    return writeBuf(buf, "null");
+  }
+  if (typeof value !== "object") return writeBuf(buf, "null");
+  if (value instanceof Number) {
+    const n = Number(value);
+    return writeBuf(buf, Number.isFinite(n) ? String(n) : "null");
+  }
+  if (value instanceof String) return writeJsonString(buf, String(value));
+  if (value instanceof Boolean) return writeBuf(buf, value.valueOf() ? "true" : "false");
+
+  if (stack.has(value)) throw new TypeError("Converting circular structure to JSON");
+  stack.add(value);
   try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return null;
+    return Array.isArray(value)
+      ? writeJsonArray(buf, value, depth, stack)
+      : writeJsonObject(buf, value as Record<string, unknown>, depth, stack);
+  } finally {
+    stack.delete(value);
   }
 }
 
-function joinOutputParts(parts: string[]): string | null {
-  const nonempty = parts.filter((part) => part.length > 0);
-  return nonempty.length ? nonempty.join("\n") : null;
+function writeJsonArray(buf: CappedBuf, arr: unknown[], depth: number, stack: Set<object>): boolean {
+  if (!writeBuf(buf, "[")) return false;
+  if (arr.length === 0) return writeBuf(buf, "]");
+  const gap = "  ".repeat(depth + 1);
+  const closeGap = "  ".repeat(depth);
+  if (!writeBuf(buf, "\n")) return false;
+  for (let i = 0; i < arr.length; i++) {
+    if (i > 0 && !writeBuf(buf, ",\n")) return false;
+    if (!writeBuf(buf, gap)) return false;
+    const item = arr[i];
+    if (item === undefined || typeof item === "function" || typeof item === "symbol") {
+      if (!writeBuf(buf, "null")) return false;
+    } else if (!writePrettyJson(buf, item, depth + 1, stack)) {
+      return false;
+    }
+  }
+  return writeBuf(buf, "\n") && writeBuf(buf, closeGap) && writeBuf(buf, "]");
+}
+
+function writeJsonObject(
+  buf: CappedBuf,
+  rec: Record<string, unknown>,
+  depth: number,
+  stack: Set<object>,
+): boolean {
+  if (!writeBuf(buf, "{")) return false;
+  const keys = Object.keys(rec);
+  const gap = "  ".repeat(depth + 1);
+  const closeGap = "  ".repeat(depth);
+  let first = true;
+  for (const key of keys) {
+    const val = rec[key];
+    if (val === undefined || typeof val === "function" || typeof val === "symbol") continue;
+    if (first) {
+      if (!writeBuf(buf, "\n")) return false;
+      first = false;
+    } else if (!writeBuf(buf, ",\n")) {
+      return false;
+    }
+    if (!writeBuf(buf, gap)) return false;
+    if (!writeJsonString(buf, key)) return false;
+    if (!writeBuf(buf, ": ")) return false;
+    if (!writePrettyJson(buf, val, depth + 1, stack)) return false;
+  }
+  if (!first && !(writeBuf(buf, "\n") && writeBuf(buf, closeGap))) return false;
+  return writeBuf(buf, "}");
+}
+
+/**
+ * Pretty-print structured MCP values under `maxChars`. Strings stay raw so
+ * a JSON payload is not re-quoted. Never calls `JSON.stringify` with
+ * indent — a hostile nest cannot expand past the budget in memory.
+ */
+function formatStructured(value: unknown, maxChars: number): { text: string; truncated: boolean } | null {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    return value.length <= maxChars
+      ? { text: value, truncated: false }
+      : { text: value.slice(0, maxChars), truncated: true };
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    return text.length <= maxChars
+      ? { text, truncated: false }
+      : { text: text.slice(0, maxChars), truncated: true };
+  }
+  if (typeof value !== "object") return null;
+  const buf = createCappedBuf(maxChars);
+  try {
+    writePrettyJson(buf, value, 0, new Set());
+  } catch {
+    return null;
+  }
+  if (buf.used === 0) return null;
+  return { text: bufText(buf), truncated: buf.truncated };
+}
+
+function appendFormatted(
+  buf: CappedBuf,
+  started: { value: boolean },
+  formatted: { text: string; truncated: boolean } | null,
+): void {
+  if (!formatted || !formatted.text) {
+    if (formatted?.truncated) buf.truncated = true;
+    return;
+  }
+  if (started.value) writeBuf(buf, "\n");
+  writeBuf(buf, formatted.text);
+  if (formatted.truncated) buf.truncated = true;
+  started.value = true;
+}
+
+function remainingForPart(buf: CappedBuf, started: { value: boolean }): number {
+  const extra = started.value ? 1 : 0;
+  return buf.max - buf.used - extra;
 }
 
 /**
  * MCP content blocks: text as text, everything else as indented JSON so an
  * image/resource block cannot vanish. Unrecognized non-objects are skipped.
  */
-function partsFromContentBlocks(content: unknown): string[] {
-  if (!Array.isArray(content)) return [];
-  const parts: string[] = [];
+function writeContentBlocks(buf: CappedBuf, content: unknown, started: { value: boolean }): boolean {
+  if (!Array.isArray(content)) return started.value;
   for (const item of content) {
     const rec = asRecord(item);
     if (!rec) continue;
     if (rec.type === "text" && typeof rec.text === "string") {
-      parts.push(rec.text);
+      appendFormatted(buf, started, rec.text ? { text: rec.text, truncated: false } : null);
       continue;
     }
-    const formatted = formatStructured(rec);
-    if (formatted) parts.push(formatted);
+    const remain = remainingForPart(buf, started);
+    if (remain <= 0) {
+      buf.truncated = true;
+      break;
+    }
+    appendFormatted(buf, started, formatStructured(rec, remain));
   }
-  return parts;
+  return started.value;
 }
 
-function extractGrokMcpOutput(rec: Record<string, unknown>): string | null {
+function writeGrokMcpOutput(buf: CappedBuf, rec: Record<string, unknown>): boolean {
   const out = asRecord(rec.output);
-  if (!out || typeof out.OkayOutput !== "string") return null;
-  const parts = [out.OkayOutput];
+  if (!out || typeof out.OkayOutput !== "string") return false;
+  const started = { value: false };
+  appendFormatted(buf, started, out.OkayOutput ? { text: out.OkayOutput, truncated: false } : null);
   for (const [key, value] of Object.entries(out)) {
     if (key === "OkayOutput") continue;
-    const formatted = formatStructured(value);
-    if (formatted) parts.push(formatted);
+    const remain = remainingForPart(buf, started);
+    if (remain <= 0) {
+      buf.truncated = true;
+      break;
+    }
+    appendFormatted(buf, started, formatStructured(value, remain));
   }
-  return joinOutputParts(parts);
+  return started.value;
 }
 
-function extractCodexMcpOutput(rec: Record<string, unknown>): string | null {
-  const parts: string[] = [];
+function writeCodexMcpOutput(buf: CappedBuf, rec: Record<string, unknown>): boolean {
+  const started = { value: false };
   const result = asRecord(rec.result);
   if (result) {
-    parts.push(...partsFromContentBlocks(result.content));
+    writeContentBlocks(buf, result.content, started);
     if (result.structuredContent != null) {
-      const structured = formatStructured(result.structuredContent);
-      if (structured) parts.push(structured);
+      const remain = remainingForPart(buf, started);
+      if (remain <= 0) buf.truncated = true;
+      else appendFormatted(buf, started, formatStructured(result.structuredContent, remain));
     }
   }
   if (rec.error != null) {
-    const error = formatStructured(rec.error);
-    if (error) parts.push(error);
+    const remain = remainingForPart(buf, started);
+    if (remain <= 0) buf.truncated = true;
+    else appendFormatted(buf, started, formatStructured(rec.error, remain));
   }
-  return joinOutputParts(parts);
+  return started.value;
 }
 
-/**
- * Claude structured results arrive as a JSON string (the serialized
- * structuredContent). Pretty-print objects/arrays the same way as Codex
- * structuredContent; anything else — including a non-JSON string — is
- * already the whole payload and is shown verbatim.
- */
-function formatStringRawOutput(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed !== null && typeof parsed === "object") {
-      return formatStructured(parsed) ?? raw;
-    }
-  } catch {
-    /* not a JSON object / array */
-  }
-  return raw;
+function finishBuf(buf: CappedBuf, wrote: boolean): { output: string; truncated: boolean } | null {
+  if (!wrote || buf.used === 0) return null;
+  return { output: bufText(buf), truncated: buf.truncated };
 }
 
 /**
@@ -298,8 +513,8 @@ function formatStringRawOutput(raw: string): string {
  * Codex: every `result.content` block plus `structuredContent`; a non-null
  * `error` is shown (a failed call must not look empty). grok: `OkayOutput`
  * and any sibling keys on `output`. Claude: `rawOutput` is polymorphic —
- * a content-block array (plain text; non-text as JSON) or a string
- * (structured: pretty-printed when it is JSON, otherwise verbatim).
+ * a content-block array (plain text; non-text as JSON) or a string shown
+ * verbatim (never JSON.parse — integers past 2^53 must survive).
  * Claude has no measured `result`/`structuredContent` envelope — do not
  * invent one.
  */
@@ -307,26 +522,27 @@ export function extractMcpOutput(call: unknown): { output: string; truncated: bo
   if (!isMcpToolCall(call)) return null;
   const rawOut = asRecord(call)?.rawOutput;
 
+  // Claude structured results arrive as a JSON string. Showing it verbatim
+  // is the complete payload; parse-then-stringify would round 64-bit ids.
   if (typeof rawOut === "string") {
-    return capCommandOutput(formatStringRawOutput(rawOut), false);
+    return capCommandOutput(rawOut, false);
   }
 
+  const buf = createCappedBuf(MAX_COMMAND_OUTPUT_CHARS);
+
   if (Array.isArray(rawOut)) {
-    const text = joinOutputParts(partsFromContentBlocks(rawOut));
-    return text === null ? null : capCommandOutput(text, false);
+    return finishBuf(buf, writeContentBlocks(buf, rawOut, { value: false }));
   }
 
   const rec = asRecord(rawOut);
   if (!rec) return null;
 
   if (rec.type === "MCP") {
-    const text = extractGrokMcpOutput(rec);
-    return text === null ? null : capCommandOutput(text, false);
+    return finishBuf(buf, writeGrokMcpOutput(buf, rec));
   }
 
   if ("result" in rec || rec.error != null) {
-    const text = extractCodexMcpOutput(rec);
-    return text === null ? null : capCommandOutput(text, false);
+    return finishBuf(buf, writeCodexMcpOutput(buf, rec));
   }
 
   return null;
