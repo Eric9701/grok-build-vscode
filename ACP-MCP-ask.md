@@ -3,112 +3,109 @@
 **For:** the Grok Build CLI team
 **From:** the maintainer of *Grok Build for VS Code (Community)* — an ACP client
 built on `grok agent stdio`
-**Measured against:** `grok 1.0.0 (3cd0d0cbce)` on Windows 11
+**Originally measured against:** `grok 1.0.0 (3cd0d0cbce)` on Windows 11
+**Re-measured 2026-08-18 against:** `grok 1.0.5 (5115b46bc9)`, same machine, same
+account, the same Canva connector still active
 
-Two requests, both about MCP. The first is the one that changes what users can
-do; the second is smaller and independent.
+> **Ask 1 is substantially resolved — thank you.** Managed connectors now reach
+> ACP sessions and are callable there. What remains is much narrower and is
+> written up below: every discovery signal a client can read still reports that
+> there are no MCP tools, while the tools work. Ask 2 has **not** been re-tested
+> on 1.0.5 and is left as originally written.
 
 ---
 
-# Ask 1 — managed connectors never reach ACP or headless sessions
+# Ask 1 — RESOLVED for capability, open for discovery
 
-**A connector activated on grok.com works in the TUI and is invisible to every
-embedded client**, in the same directory, on the same account, at the same
-moment.
+## What changed
 
-## What we observed
+On 1.0.0 a connector activated at `grok.com/connectors` was visible to the TUI
+and invisible to every embedded client. On 1.0.5 an ACP session can **use** it.
 
-Connecting **Canva** at `grok.com/connectors` (one click, OAuth handled entirely
-on your side) produced this split:
+Measured on a plain `grok agent stdio` session, `session/new {cwd, mcpServers: []}`
+— no client-supplied servers, nothing in `~/.grok/config.toml` for Canva:
 
-| Client | Sees the connector? |
-|---|---|
-| **TUI** (`grok`, `/mcps`) | ✅ *"Managed by grok.com (3)"* — Automations, Canva, Voice, each `[ready] (managed)`. Canva expands to **32 tools**, and a prompt successfully ran `(Canva) List-folder-items`. |
-| **Headless** (`grok -p`) | ❌ replies `NO_CANVA_TOOLS` |
-| **ACP** (`grok agent stdio`) | ❌ `_x.ai/mcp/servers_updated → {"mcpServers":[]}`, `_x.ai/mcp_initialized → {"mcpToolCount":0}` |
-| `grok mcp doctor --json` | ✅ healthy — see below |
-| `grok mcp list` | ❌ *"No MCP servers configured"* |
-| `grok inspect` | ❌ lists only the project-scoped server from `.mcp.json` |
-
-The headless and ACP runs were executed **after** the TUI session, in the **same
-working directory** the TUI used, so neither ordering nor `cwd` explains it.
-
-`doctor` reports the connector as fully working:
-
-```json
-{
-  "sources": [ … { "path": "grok.com", "status": { "status": "found", "server_count": 1 } } ],
-  "servers": [{
-    "name": "grok_com_canva",
-    "transport": "http",
-    "target": "https://mcp.canva.com/mcp",
-    "source": "managed",
-    "checks": [
-      { "label": "server started",  "passed": true, "detail": "0.0s" },
-      { "label": "handshake OK",    "passed": true, "detail": "protocol 2025-06-18" },
-      { "label": "33 tools discovered", "passed": true }
-    ],
-    "healthy": true
-  }]
-}
+```
+tool_call        use_tool  rawInput={"tool_name":"canva__search-designs", …}
+tool_call_update status="completed"
+                 rawOutput={"type":"MCP","tool_name":"canva__search-designs",
+                            "server_name":"Canva","output":{"OkayOutput":"{\"items\":[…"}}
 ```
 
-And `grok mcp enable grok_com_canva` answers **"already enabled"**.
+It returned real designs and folders from the account, and each call raised a
+normal `session/request_permission`. There is also now an undocumented RPC that
+reports the truth:
 
-So the connector is enabled, reachable, handshakes successfully and exposes its
-tools — to a diagnostic and to the TUI. An embedded client gets nothing, with no
-error and no signal that anything is missing.
+```
+_x.ai/mcp/list → {"servers":[{"name":"managed_gateway:canva","displayName":"Canva",
+                              "source":"managed","type":"managedGateway",
+                              "session":{"enabled":true,"status":"ready","tools":[ … ]}}]}
+```
 
-## Ruled out
+That is the capability the original ask was for, and it works.
 
-- **Stale state.** No leader process was running (`grok leader list` → *"No
-  leader candidates found"*), and every test used a fresh process with a new
-  `session/new`.
-- **A local cache.** There is no file under `~/.grok` holding the account's
-  connector list — `doctor` fetches it live at probe time.
-- **Working directory.** Reproduced from the same `cwd` as the working TUI
-  session.
-- **Discovery framing.** `search_tool` *is* available in headless mode and
-  returns nothing; and in the TUI the connector's tools are called **directly**
-  (`(Canva) List-folder-items`), not via `search_tool`/`use_tool` — so this is
-  not a lazy-discovery artifact.
+## What is still wrong — every discovery signal denies it
+
+The account has **three managed gateways, all `status: "ready"`, carrying 42 tools
+between them**:
+
+| `_x.ai/mcp/list` says | source | status | tools |
+|---|---|---|---|
+| Canva | managed | ready | 32 |
+| Automations | managed | ready | 9 |
+| Voice | managed | ready | 1 |
+| linear | local (stdio) | initializing | — |
+
+In the same session, at the same moment, while those Canva calls were succeeding
+and those 42 tools were reachable:
+
+| Signal a client can read | Reports |
+|---|---|
+| `_x.ai/mcp/list` | ✅ Canva, `source: managed`, `status: ready`, full tool list |
+| **actually calling a Canva tool** | ✅ works |
+| `_x.ai/mcp/servers_updated` | ❌ local (config-file) servers only |
+| `_x.ai/mcp_initialized` | ❌ `mcpToolCount: 0` |
+| `initialize._meta.mcpApps` | ❌ `false` |
+| `grok mcp list` | ❌ absent |
+| `grok mcp doctor --json` | ❌ absent — **this changed since 1.0.0**, where it reported the connector healthy with a tool count |
+| `grok inspect` | ❌ absent |
+
+So a client that does the reasonable thing — read the advertised rails, see
+`mcpToolCount: 0` and an empty `servers_updated`, and conclude there are no MCP
+tools — is wrong, and has no way to know it. The one surface that tells the
+truth, `_x.ai/mcp/list`, is advertised nowhere.
+
+`initialize._meta.mcpApps: false` is the most actively misleading of these: it
+reads exactly like the capability flag a client should gate on, and it is false
+while the capability works.
+
+## The ask, restated
+
+1. Report managed connectors on `_x.ai/mcp/servers_updated` and count their tools
+   in `_x.ai/mcp_initialized`, so the rails match reality.
+2. Document `_x.ai/mcp/list`, or fold its contents into the rails above.
+3. Make `initialize._meta.mcpApps` mean something a client can gate on — or
+   remove it. A false flag beside a working capability is worse than no flag.
+4. Decide what `grok mcp list` / `doctor` / `inspect` should show, and make the
+   three agree. On 1.0.0 `doctor` showed managed connectors and the other two did
+   not; on 1.0.5 none of them do, while an ACP session can use them.
 
 ## Reproduction
 
 1. Activate any connector at `grok.com/connectors`.
-2. `grok mcp doctor --json` → the `grok.com` source reports 1 server, healthy,
-   with a tool count.
-3. `grok` → `/mcps` → the connector is listed `[ready] (managed)` and its tools
-   are callable.
-4. In the **same directory**: `grok -p "List my <connector> items. If you have
-   no <connector> tools available at all, reply exactly NONE."` → `NONE`.
-5. In the **same directory**, drive an ACP session — `grok agent stdio`,
-   `initialize`, `session/new {cwd, mcpServers: []}` → `_x.ai/mcp/servers_updated`
-   carries an empty list and `_x.ai/mcp_initialized` reports `mcpToolCount: 0`.
+2. Drive an ACP session: `grok agent stdio`, `initialize`,
+   `session/new {cwd, mcpServers: []}`.
+3. Call `_x.ai/mcp/list` → the managed connector is there, `status: ready`.
+4. Observe `_x.ai/mcp/servers_updated` (local only) and `_x.ai/mcp_initialized`
+   (`mcpToolCount: 0`) on the same session.
+5. Prompt the model to use one of that connector's tools → it succeeds.
 
-## The ask
+## Consistency note, same area
 
-**Deliver managed connectors to `grok agent stdio` and `grok -p` the same way
-the TUI receives them.** The capability plainly exists — the TUI has the code
-path, `doctor` fetches and validates the same list — it just isn't in the shared
-session-construction path that embedded clients use.
-
-If that is deliberate — the connector's credential lives on your side, and
-handing it to an arbitrary local agent process is a different security posture
-than using it inside grok.com — then please say so in the docs, and **stop
-reporting these connectors as healthy in `grok mcp doctor`**. Today the only
-signals a client can see all say the connector is working, so the gap reads as a
-defect in the client rather than a boundary in the product.
-
-Either answer is fine. The current state is the problem: it is indistinguishable
-from a bug, and every IDE integration built on the documented ACP surface hits it.
-
-## Consistency notes, same area
-
-- `grok mcp list` and `grok inspect` both omit managed connectors while `doctor`
-  includes them. One of the three is wrong.
-- `doctor` counts **33** tools where the TUI shows **32** — a small thing, but it
-  suggests two separate code paths reading the same connector.
+`grok mcp doctor` no longer lists managed connectors. On 1.0.0 it did, and the
+inconsistency ran the other way. Whichever behaviour is intended, `list`,
+`doctor` and `inspect` should agree with each other and with what a session can
+actually call.
 
 ---
 

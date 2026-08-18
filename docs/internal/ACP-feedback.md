@@ -12,6 +12,12 @@ sub-claims keep an older build: the 429 retry delay in §5 and the cross-product
 §9. Everything unconfirmed on this build is labelled in place and summarized under *Coverage of
 this pass*; nothing here is asserted as current on evidence we did not actually take.
 
+**A 1.0.5 pass ran on 2026-08-18** (grok CLI **1.0.5** `5115b46bc9`, one Windows 11 host):
+§14 and §15 are new and entirely 1.0.5; §4 gained three findings and had its method sweep re-run in
+full; §1's Plan passthrough was re-observed on a weaker sample; §9's reporting gap was re-confirmed.
+Permission behaviour is known to vary by machine (§9), so §14's two enforcement claims are scoped to
+that host until a second one confirms them. Everything not named here is still 0.2.117 evidence.
+
 **§2 supersedes that basis (2026-08-15):** it was re-probed in full on grok CLI **1.0.4**
 (`d846eb93d9`) after a user report, and its finding changed shape — the image-aware `read_file`
 has shipped, but delegating clients cannot reach it. No other section has been re-run on 1.0.4, so
@@ -43,6 +49,12 @@ passed **five `terminal/create` requests** to the client. A normal ACP client ex
 Plan can mutate the workspace through the terminal while claiming edits are forbidden. This is the
 **fourth consecutive build** we have measured it on. Published source explains the split:
 `plan_mode_edit_gate` gates `AccessKind::Edit`, while bash, MCP and web fall through.
+
+**Re-run on 1.0.5 (2026-08-18).** The passthrough itself is unchanged — a plan turn still delivered
+`terminal/create` to the client, now on a **fifth consecutive build**. This sample was weaker than
+0.2.117's: two requests, both read-only directory listings, so the *mutating* case was not
+reproduced this time. We are not claiming the five-mutations measurement as current; we are claiming
+the boundary still isn't server-side, which is what the ask below is about.
 
 **Client cost/workaround:** we keep a plan-policy engine at `terminal/create` (load-bearing: Plan
 still hands mutating shells to the client) and at `fs/write_text_file` (kept for 0.2.x delegated
@@ -171,10 +183,20 @@ to guess exists).
 
 Push rails nothing announces: `_x.ai/settings/update`, `_x.ai/announcements/update`,
 `_x.ai/models/update`, `_x.ai/sessions/changed`, `_x.ai/queue/changed`,
-`_x.ai/mcp/servers_updated`, `_x.ai/mcp_initialized`, `_x.ai/session/prompt_complete`, plus the two
+`_x.ai/mcp/servers_updated`, `_x.ai/mcp_initialized`, `_x.ai/mcp/init_progress`,
+`_x.ai/mcp/server_status`, `_x.ai/session/prompt_complete`, plus the two
 lifecycle rails — `_x.ai/session_notification` live and `_x.ai/session/update` on replay — whose
 0.2.117 kinds include `tool_call_delta_chunk`, `response_completed`, `hook_execution`,
 `pending_interaction`, `interaction_resolved`, `session_summary_generated` and `turn_completed`.
+
+**Method sweep re-run on 1.0.5 (2026-08-18).** Everything previously found still exists —
+`_x.ai/session/list`, `/info`, `/usage`, `/state`, `/import`, `/updates`, `_x.ai/rewind/points`,
+`_x.ai/hooks/list`, `_x.ai/compact_conversation` — plus `_x.ai/session/fork`, `_x.ai/interject` and
+`_x.ai/rewind/execute`, none of which regressed. **Three more turned up that we had never probed:**
+`_x.ai/models/list`, `_x.ai/session/close`, and `_x.ai/mcp/list` — the last of which is the only
+surface that reports managed connectors truthfully (§15). `_x.ai/session_notification` also carries a
+`model_changed` kind not in the list above. The point is not the individual names; it is that a
+routine re-probe of a *documented-nowhere* surface keeps finding load-bearing methods by accident.
 
 `initialize` does advertise more than it used to (`x.ai/hooks`, `x.ai/fs_notify`,
 `x.ai/capabilities.toolOverrides`, `modelState`, `defaultAuthMethodId`, `sessionCapabilities.list`,
@@ -189,6 +211,30 @@ SOURCE-VERIFIED 2026-07-16 for the mechanism). There is still no TUI-only or uns
 advertised command, so every client ships its own denylist. Dispatch also still requires position 0:
 sending `"Some editor-injected context.\n/session-info"` did not dispatch — the text went to the
 model instead, taking the session from 5 472 to 16 047 context tokens.
+
+**LIVE-VERIFIED 1.0.5 — the leader is a multi-client live-session transport, and nothing says so.**
+`--leader` is documented as one row in a flags table ("Connect to a shared leader process"). Measured,
+it does considerably more: two `grok agent --leader stdio` clients in the same `cwd`, the second
+attaching mid-turn via `session/load`, **both stream the same live turn**. Matched pair, same prompt,
+first client mid-turn in both arms: the second client received **107** `session/update` in 8s with
+`--leader` against **1** with `--no-leader`. Either client can also drive — a prompt sent by the
+second arrived at the first as a full turn including the second's own `user_message_chunk`. That is
+the "two surfaces, one live session" capability clients have been asking for, shipped and unadvertised.
+`grok agent serve` (WebSocket, `--bind`/`--secret`) exists on the same build and was not probed.
+
+**LIVE-VERIFIED 1.0.5 — a completed `tool_call_update` drops its own identity.** Across `read`,
+`search` and `execute` kinds, the initial `tool_call` carries `rawInput` + `title` + `_meta` (with
+`kind` unset), the mid update carries a richer `rawInput`, and the **completed** update carries only
+`sessionUpdate`, `toolCallId`, `status`, `content`, `rawOutput` — `title`, `kind` and `_meta` are all
+absent, so a client must join on `toolCallId` to know what finished. Worth documenting rather than
+changing; a client that filters updates on `kind` silently loses every completion.
+
+Positive, and worth recording because our client was built against the opposite: **`session/load`
+replays terminal output.** On 1.0.5 the replayed `tool_call` carries the command in `rawInput`, the
+stdout in `content`, and the full result in `rawOutput` (`output_for_prompt`, `exit_code`,
+`output_file`) — and the CLI persists it on disk under
+`sessions/<cwd>/<id>/terminal/call-*.log`. Measured on 0.2.x this did not survive a load, which sent
+us toward a bespoke client-side output store we no longer need.
 
 **Client cost/workaround:** private method-name knowledge, `-32601` feature gates, payload probes,
 send-reordering so commands land at position 0, and denylists for advertised commands. A rename or
@@ -308,7 +354,9 @@ during `initialize`.
 
 ## 9. Effective permission policy is visible only in fragments (archive §2.11, §2.7)
 
-**LIVE-VERIFIED 0.2.117 for the reporting gap.** `_x.ai/settings/update` carries `permission_mode`
+**LIVE-VERIFIED 0.2.117, re-confirmed 1.0.5** (`permission_mode` and
+`auto_permission_mode_enabled` both still `null` on a default config on 2026-08-18).
+`_x.ai/settings/update` carries `permission_mode`
 and `auto_permission_mode_enabled`, both `null` on a default config, so a client cannot distinguish
 "not set" from "not reported" — and neither field names the winning rule or its source file. There
 is no getter: `_x.ai/settings`, `_x.ai/settings/get`, `_x.ai/settings/list`, `_x.ai/permissions/get`,
@@ -413,6 +461,107 @@ same issue link).
 
 ---
 
+## 14. Permission rules are enforced inconsistently (new)
+
+**LIVE-VERIFIED 1.0.5 on one Windows 11 host.** Two measured gaps, both silent. Neither affects our
+shipped client — we pass no permission flags and rely on the CLI's own policy — but both mislead
+anyone following the documented guidance.
+
+**The `--deny` flag is accepted by `grok agent` and does nothing.** Same trusted repository, same
+prompt, same flag:
+
+| invocation | result |
+|---|---|
+| `grok --deny 'Bash(node *)' -p "<run node -e …>"` | blocked — *"the shell blocked it with a deny rule matching `node *`"* |
+| `grok --deny 'Bash(node *)' agent --no-leader stdio` | **ran** — the command executed and wrote its file |
+
+The policy engine itself is fine over stdio: the identical rule written into that repository's
+`.grok/config.toml` as `[permission] deny` **is** honoured in `agent stdio`. So this is the flag not
+reaching the agent transport, not policy being absent from it. It reproduced with the client's
+`terminal` capability both advertised and withheld, and with `--leader` and `--no-leader`. The flag
+parses and is accepted; nothing reports that it was dropped. `22-permissions-and-safety.md` states
+that behaviour is the same for `grok -p`, `agent stdio` and `agent serve`, and that `deny` always
+wins.
+
+**An untrusted folder silently discards the project's permission rules, `deny` included.** A
+`.grok/config.toml` carrying `[permission] deny` in a git repository that is not in
+`trusted_folders.toml` has no effect in any mode, `grok inspect` does not list the file among its
+permission sources, and nothing warns. Trusting the same folder makes it load (`inspect` then names
+it, and the rule blocks). Ignoring an untrusted project's `allow` is the right call — a checkout
+should not be able to grant itself capability. Ignoring its `deny` inverts that: the failure is
+toward *more* permission, and it is invisible at exactly the moment a user is working in unfamiliar
+code.
+
+**Per-command "Always allow" never reaches ACP, and neither does `allow_always`.** 1.0.5 added
+`[ui] remember_tool_approvals`, which gives TUI prompts an `Always allow: <command>` row and a
+matching never-allow row, remembered per project. Over ACP it changes nothing. Forcing a card with a
+trusted `[permission] ask` rule and running both arms of the flag, `session/request_permission`
+offered exactly the same two options each time:
+
+    kind=allow_once   name="Yes, proceed"
+    kind=reject_once  name="No, and tell Grok what to do differently"
+
+No per-command row, and no `allow_always` option at all — so on this build an ACP client cannot
+offer *any* durable grant, only one-shot approval. Two user requests for scoped auto-approval
+(grok-build-vscode#17, #61) are answered in the TUI and unanswerable in an ACP client, and a client
+cannot invent the scope without auto-answering permission cards on the CLI's behalf.
+
+**Ask:** three things, in severity order. Apply `--allow` / `--deny` / `--permission-mode` in the
+`agent` subcommand, or reject them there rather than accepting a safety flag that does nothing. Keep
+honouring `deny` from untrusted project configs even while `allow` is withheld, and surface which
+sources were skipped in `grok inspect`. And send the remembered-grant options over ACP when
+`remember_tool_approvals` is on, including `allow_always` in `session/request_permission`, so
+durable grants exist for non-TUI clients at all.
+
+## 15. MCP availability signals contradict what the session can actually do (new)
+
+**LIVE-VERIFIED 1.0.5** (2026-08-18, Windows 11, authenticated account with
+connectors active at grok.com). This supersedes the central claim of our public
+`ACP-MCP-ask.md`, which was measured on 1.0.0 and said managed connectors never
+reach an embedded client. **They do now — thank you.** The remaining problem is
+that nothing a client can read admits it.
+
+On a plain `grok agent stdio` session with `session/new {cwd, mcpServers: []}` —
+nothing client-supplied, nothing in `config.toml` for these servers —
+`_x.ai/mcp/list` reports three managed gateways, all ready, carrying **42 tools**:
+
+| server | source | status | tools |
+|---|---|---|---|
+| Canva | managed | ready | 32 |
+| Automations | managed | ready | 9 |
+| Voice | managed | ready | 1 |
+
+And they work: the model called `canva__search-designs` and `canva__get-design`
+and returned real designs, raising an ordinary `session/request_permission` for
+each. At that same moment, in that same session:
+
+| signal | reports |
+|---|---|
+| `_x.ai/mcp/servers_updated` | local (config-file) servers only |
+| `_x.ai/mcp_initialized` | `mcpToolCount: 0` |
+| `initialize._meta.mcpApps` | `false` |
+| `grok mcp list` / `doctor` / `inspect` | absent from all three |
+
+A client that trusts the advertised rails concludes the session has no MCP tools,
+and is wrong by 42. `mcpApps: false` is the most actively harmful of these,
+because it reads exactly like the capability flag a client should gate a
+connectors UI on.
+
+`_x.ai/mcp/list` — the one surface telling the truth — is advertised nowhere,
+which makes this a §4 problem as well: the correct behaviour is reachable only
+through private method knowledge.
+
+**Client cost/workaround:** to show a truthful connector list we must call an
+undocumented method and ignore three documented signals that disagree with it.
+Everything needed for a good UI is in that payload (`displayName`, `source`,
+`type`, per-session `enabled`/`status`, and per-tool `name`/`displayName`/
+`description`/`enabled`), so this is purely a discovery problem, not a data one.
+
+**Ask:** count managed tools in `_x.ai/mcp_initialized` and list managed servers
+on `_x.ai/mcp/servers_updated`; document `_x.ai/mcp/list` or fold it into those
+rails; and make `initialize._meta.mcpApps` mean something a client can gate on,
+or remove it. Full evidence and reproduction: `ACP-MCP-ask.md`.
+
 ## Closed since the archive
 
 Recorded so the list above is not read as static. Both are LIVE-VERIFIED on 0.2.117, not merely
@@ -431,6 +580,19 @@ not re-run here: reasoning effort is session-settable via `set_model` `_meta` (0
 advertises `reasoningEfforts` in `initialize._meta.modelState`).
 
 ## Coverage of this pass
+
+Added or re-run on **1.0.5** (2026-08-18, one Windows 11 host): §14 and §15 in full; §1's
+passthrough re-observed (weaker sample — two read-only requests, mutating case not reproduced); §4's
+method sweep re-run in full, finding three previously unprobed methods; §9's reporting gap
+re-confirmed (`permission_mode` still `null`); and three §4 additions — the
+leader multi-client live-session measurement, the completed-`tool_call_update` shape across three
+tool kinds, and the `session/load` terminal-output replay. Also probed: the permission-option set on
+a forced `session/request_permission` under both `remember_tool_approvals` arms, and MCP tool-call
+shape via `session/new` `mcpServers` (see `research/mcp-shapes.md`, which covers codex and claude
+too and is outside this file's scope), and the managed-connector surface in §15 — `_x.ai/mcp/list`,
+a live managed tool call, and the three rails that disagree with it. `grok agent serve` was not probed, and permission-request
+routing between two leader clients was not probed — this host emits no permission requests without a
+forcing `ask` rule. No other section was re-run on 1.0.5.
 
 Re-probed live on **1.0.4** (2026-08-15): §2 only, in full — the capability A/B, three attempted
 content-level workarounds, and a Plan-mode hook comparison under both capability configurations
