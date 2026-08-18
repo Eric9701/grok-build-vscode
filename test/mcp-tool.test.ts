@@ -16,6 +16,14 @@ import {
 const ARGS = { message: "MCPSHAPE_9931" };
 const IN = JSON.stringify(ARGS, null, 2);
 const OUT = "Echo: MCPSHAPE_9931";
+const gmailStructured = {
+  query: "after:2026/08/18",
+  messages: [
+    { id: "m1", subject: "STRUCTPAYLOAD_ONE", from: "a@example.com" },
+    { id: "m2", subject: "STRUCTPAYLOAD_TWO", from: "b@example.com" },
+  ],
+  total: 2,
+};
 
 const grokSearch = {
   sessionUpdate: "tool_call",
@@ -205,23 +213,26 @@ describe("grok use_tool IN/OUT", () => {
       ...grokUseDone,
       rawOutput: { type: "MCP", output: { ErrorOutput: "nope" } },
     })).toBeNull();
+    expect(extractMcpOutput({
+      ...grokUseDone,
+      rawOutput: { type: "MCP", output: { OkayOutput: OUT, ExtraVariant: "also-here" } },
+    })).toEqual({ output: `${OUT}\nalso-here`, truncated: false });
   });
 });
 
 describe("codex MCP IN/OUT", () => {
-  it("reads arguments and result.content[].text", () => {
+  it("reads arguments and result.content[].text when structuredContent is null", () => {
     expect(isMcpToolCall(codexCall)).toBe(true);
     expect(extractMcpInput(codexCall)).toBe(IN);
     expect(extractMcpOutput(codexCall)).toBeNull();
     expect(extractMcpOutput(codexDone)).toEqual({ output: OUT, truncated: false });
     expect(extractMcpOutput({
       ...codexDone,
-      rawOutput: { result: { content: [{ type: "text", text: OUT }] }, error: "boom" },
-    })).toBeNull();
-    expect(extractMcpOutput({
-      ...codexDone,
       rawOutput: { result: { content: [{ type: "image", data: "x" }] }, error: null },
-    })).toBeNull();
+    })).toEqual({
+      output: JSON.stringify({ type: "image", data: "x" }, null, 2),
+      truncated: false,
+    });
   });
 });
 
@@ -254,6 +265,156 @@ describe("shell rows stay untouched", () => {
       ...shell,
       rawOutput: { type: "Bash", output: "hi\n", exit_code: 0 },
     })).toBeNull();
+  });
+});
+
+describe("complete MCP result OUT", () => {
+  it("shows Codex text content and structuredContent together", () => {
+    const extracted = extractMcpOutput({
+      ...codexDone,
+      rawOutput: {
+        result: {
+          content: [{ type: "text", text: "Action completed." }],
+          structuredContent: gmailStructured,
+          _meta: null,
+        },
+        error: null,
+      },
+    });
+    expect(extracted).toEqual({
+      output: `Action completed.\n${JSON.stringify(gmailStructured, null, 2)}`,
+      truncated: false,
+    });
+    expect(extracted?.output).toContain("STRUCTPAYLOAD_ONE");
+    expect(extracted?.output).toContain("STRUCTPAYLOAD_TWO");
+  });
+
+  it("shows a non-null Codex error instead of dropping OUT", () => {
+    const error = { code: -32000, message: "MCP error -32000: search failed" };
+    expect(extractMcpOutput({
+      ...codexDone,
+      rawOutput: { result: null, error },
+    })).toEqual({
+      output: JSON.stringify(error, null, 2),
+      truncated: false,
+    });
+    expect(extractMcpOutput({
+      ...codexDone,
+      rawOutput: { result: { content: [{ type: "text", text: OUT }] }, error: "boom" },
+    })?.output).toContain("boom");
+  });
+
+  it("renders every Claude content block, including a non-text trace", () => {
+    const image = { type: "image", mimeType: "image/png", data: "xxxx" };
+    const resource = { type: "resource", resource: { uri: "file://messages/1" } };
+    expect(extractMcpOutput({
+      ...claudeDone,
+      rawOutput: [
+        { type: "text", text: "first block" },
+        image,
+        resource,
+        { type: "text", text: "last block" },
+      ],
+    })).toEqual({
+      output: [
+        "first block",
+        JSON.stringify(image, null, 2),
+        JSON.stringify(resource, null, 2),
+        "last block",
+      ].join("\n"),
+      truncated: false,
+    });
+  });
+
+  it("pretty-prints Claude string rawOutput when it is JSON", () => {
+    const compact = JSON.stringify(gmailStructured);
+    const extracted = extractMcpOutput({
+      ...claudeDone,
+      rawOutput: compact,
+      content: [{ type: "content", content: { type: "text", text: compact } }],
+    });
+    expect(extracted).toEqual({
+      output: JSON.stringify(gmailStructured, null, 2),
+      truncated: false,
+    });
+    expect(extracted?.output).toContain("STRUCTPAYLOAD_ONE");
+    expect(extracted?.output).toContain("STRUCTPAYLOAD_TWO");
+    expect(extracted?.output).not.toBe(compact);
+  });
+
+  it("shows Claude string rawOutput verbatim when it is not JSON", () => {
+    const text = "Action completed. not-json {broken";
+    expect(extractMcpOutput({
+      ...claudeDone,
+      rawOutput: text,
+    })).toEqual({ output: text, truncated: false });
+  });
+
+  it("does not read Claude _meta.claudeCode.toolResponse as OUT", () => {
+    expect(extractMcpOutput({
+      ...claudeArgs,
+      _meta: {
+        claudeCode: {
+          toolName: "mcp__everything__echo",
+          toolResponse: JSON.stringify(gmailStructured),
+        },
+      },
+    })).toBeNull();
+    expect(extractMcpOutput({
+      ...claudeDone,
+      rawOutput: undefined,
+      _meta: {
+        claudeCode: {
+          toolName: "mcp__everything__echo",
+          toolResponse: [{ type: "text", text: OUT }],
+        },
+      },
+    })).toBeNull();
+  });
+
+  it("applies the 100K display cap to a large structured payload", () => {
+    const huge = { blob: "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 50) };
+    const capped = extractMcpOutput({
+      ...codexDone,
+      rawOutput: {
+        result: {
+          content: [{ type: "text", text: "Action completed." }],
+          structuredContent: huge,
+          _meta: null,
+        },
+        error: null,
+      },
+    });
+    expect(capped?.output).toHaveLength(MAX_COMMAND_OUTPUT_CHARS);
+    expect(capped?.truncated).toBe(true);
+    expect(capped?.output.startsWith("Action completed.")).toBe(true);
+    expect(mcpCommandOutput({
+      ...codexDone,
+      rawOutput: {
+        result: {
+          content: [{ type: "text", text: "ok" }],
+          structuredContent: huge,
+          _meta: null,
+        },
+        error: null,
+      },
+    }, IN, "exec-mcp-1")).toMatchObject({
+      truncated: true,
+      agentSawCut: false,
+    });
+    const stringCapped = extractMcpOutput({
+      ...claudeDone,
+      rawOutput: JSON.stringify(huge),
+    });
+    expect(stringCapped?.output).toHaveLength(MAX_COMMAND_OUTPUT_CHARS);
+    expect(stringCapped?.truncated).toBe(true);
+    expect(mcpCommandOutput({
+      ...claudeDone,
+      rawOutput: JSON.stringify(huge),
+    }, IN, "toolu_mcp_1")).toMatchObject({
+      truncated: true,
+      agentSawCut: false,
+    });
   });
 });
 
@@ -339,6 +500,49 @@ describe("prepareMcpToolCall", () => {
     expect(prepared.call.kind).toBe("other");
     expect(JSON.stringify(prepared.call.content)).toContain("ECONNREFUSED");
     expect(prepared.commandOutput).toBeNull();
+  });
+
+  it("emits Claude string rawOutput once from the completed update, not from toolResponse", () => {
+    const state = createMcpPrepareState();
+    expect(prepareMcpToolCall(claudePending, state).commandOutput).toBeNull();
+    expect(prepareMcpToolCall(claudeArgs, state).commandOutput).toBeNull();
+    const preview = prepareMcpToolCall({
+      ...claudeArgs,
+      _meta: {
+        claudeCode: {
+          toolName: "mcp__everything__echo",
+          toolResponse: JSON.stringify(gmailStructured),
+        },
+      },
+    }, state);
+    expect(preview.action).toBe("emit");
+    if (preview.action !== "emit") return;
+    expect(preview.commandOutput).toBeNull();
+    const compact = JSON.stringify(gmailStructured);
+    const done = prepareMcpToolCall({
+      ...claudeDone,
+      rawOutput: compact,
+      content: [{ type: "content", content: { type: "text", text: compact } }],
+    }, state);
+    expect(done.action).toBe("emit");
+    if (done.action !== "emit") return;
+    expect(done.call.detailInput).toBe(IN);
+    expect(done.commandOutput).toEqual({
+      command: IN,
+      toolCallId: "toolu_mcp_1",
+      output: JSON.stringify(gmailStructured, null, 2),
+      exitCode: null,
+      truncated: false,
+      agentSawCut: false,
+      cancelled: false,
+    });
+    const again = prepareMcpToolCall({
+      ...claudeDone,
+      rawOutput: compact,
+    }, state);
+    expect(again.action).toBe("emit");
+    if (again.action !== "emit") return;
+    expect(again.commandOutput).toBeNull();
   });
 
   it("states detailInput: null on Claude's pending row, then fills IN and OUT", () => {

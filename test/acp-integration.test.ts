@@ -75,9 +75,15 @@ async function waitForStderr(arr: string[], re: RegExp, timeoutMs = 3000): Promi
 
 /** Bounded temp-dir removal. Windows refuses rmdir while a child still has
  *  the path as cwd; `kill()` does not wait for that, so a swallowed `rmSync`
- *  leaves an empty `grok-int-ws-*` behind. Retry briefly after the process
- *  has exited, then fail visibly rather than leak. */
-async function removeTempDir(dir: string | undefined, timeoutMs = 2000): Promise<void> {
+ *  leaves an empty `grok-int-ws-*` behind (34,175 of them had accumulated).
+ *  Retry after the process has exited, then fail visibly rather than leak.
+ *
+ *  The bound is generous on purpose. Failing loudly is the point — a silent
+ *  catch is what let the leak grow — but the OS can hold the handle for
+ *  seconds when the machine is busy running other agents, and a test that
+ *  fails because the box was loaded is worse than the leak it prevents. At
+ *  15s this throws only when removal is genuinely stuck. */
+async function removeTempDir(dir: string | undefined, timeoutMs = 15000): Promise<void> {
   if (!dir) return;
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;

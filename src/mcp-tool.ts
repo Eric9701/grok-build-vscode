@@ -203,27 +203,116 @@ export function extractMcpInput(call: unknown): string | null {
   return null;
 }
 
-function textPartsFromContent(content: unknown): string | null {
-  if (!Array.isArray(content)) return null;
-  const parts: string[] = [];
-  for (const item of content) {
-    const rec = asRecord(item);
-    if (rec?.type === "text" && typeof rec.text === "string") parts.push(rec.text);
+/** Pretty-print structured MCP values. Strings stay raw so a JSON payload is not re-quoted. */
+function formatStructured(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value !== "object") return null;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return null;
   }
-  return parts.length ? parts.join("\n") : null;
+}
+
+function joinOutputParts(parts: string[]): string | null {
+  const nonempty = parts.filter((part) => part.length > 0);
+  return nonempty.length ? nonempty.join("\n") : null;
 }
 
 /**
- * Provider-specific OUT. Unrecognized envelopes return null rather than
- * guessing. Does not read `content` — grok/codex omit it on the completed
- * MCP update, and Claude's copy there is a duplicate of `rawOutput`.
+ * MCP content blocks: text as text, everything else as indented JSON so an
+ * image/resource block cannot vanish. Unrecognized non-objects are skipped.
+ */
+function partsFromContentBlocks(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const parts: string[] = [];
+  for (const item of content) {
+    const rec = asRecord(item);
+    if (!rec) continue;
+    if (rec.type === "text" && typeof rec.text === "string") {
+      parts.push(rec.text);
+      continue;
+    }
+    const formatted = formatStructured(rec);
+    if (formatted) parts.push(formatted);
+  }
+  return parts;
+}
+
+function extractGrokMcpOutput(rec: Record<string, unknown>): string | null {
+  const out = asRecord(rec.output);
+  if (!out || typeof out.OkayOutput !== "string") return null;
+  const parts = [out.OkayOutput];
+  for (const [key, value] of Object.entries(out)) {
+    if (key === "OkayOutput") continue;
+    const formatted = formatStructured(value);
+    if (formatted) parts.push(formatted);
+  }
+  return joinOutputParts(parts);
+}
+
+function extractCodexMcpOutput(rec: Record<string, unknown>): string | null {
+  const parts: string[] = [];
+  const result = asRecord(rec.result);
+  if (result) {
+    parts.push(...partsFromContentBlocks(result.content));
+    if (result.structuredContent != null) {
+      const structured = formatStructured(result.structuredContent);
+      if (structured) parts.push(structured);
+    }
+  }
+  if (rec.error != null) {
+    const error = formatStructured(rec.error);
+    if (error) parts.push(error);
+  }
+  return joinOutputParts(parts);
+}
+
+/**
+ * Claude structured results arrive as a JSON string (the serialized
+ * structuredContent). Pretty-print objects/arrays the same way as Codex
+ * structuredContent; anything else — including a non-JSON string — is
+ * already the whole payload and is shown verbatim.
+ */
+function formatStringRawOutput(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === "object") {
+      return formatStructured(parsed) ?? raw;
+    }
+  } catch {
+    /* not a JSON object / array */
+  }
+  return raw;
+}
+
+/**
+ * Provider-specific OUT — the complete measured result, not a chosen field.
+ * Unrecognized envelopes return null rather than guessing. Does not read
+ * ACP `content` — grok/codex omit it on the completed MCP update, and
+ * Claude's copy there is a duplicate of `rawOutput`. Does not read
+ * `_meta.claudeCode.toolResponse` (same payload one update earlier).
+ *
+ * Codex: every `result.content` block plus `structuredContent`; a non-null
+ * `error` is shown (a failed call must not look empty). grok: `OkayOutput`
+ * and any sibling keys on `output`. Claude: `rawOutput` is polymorphic —
+ * a content-block array (plain text; non-text as JSON) or a string
+ * (structured: pretty-printed when it is JSON, otherwise verbatim).
+ * Claude has no measured `result`/`structuredContent` envelope — do not
+ * invent one.
  */
 export function extractMcpOutput(call: unknown): { output: string; truncated: boolean } | null {
   if (!isMcpToolCall(call)) return null;
   const rawOut = asRecord(call)?.rawOutput;
 
+  if (typeof rawOut === "string") {
+    return capCommandOutput(formatStringRawOutput(rawOut), false);
+  }
+
   if (Array.isArray(rawOut)) {
-    const text = textPartsFromContent(rawOut);
+    const text = joinOutputParts(partsFromContentBlocks(rawOut));
     return text === null ? null : capCommandOutput(text, false);
   }
 
@@ -231,15 +320,12 @@ export function extractMcpOutput(call: unknown): { output: string; truncated: bo
   if (!rec) return null;
 
   if (rec.type === "MCP") {
-    const out = asRecord(rec.output);
-    return typeof out?.OkayOutput === "string"
-      ? capCommandOutput(out.OkayOutput, false)
-      : null;
+    const text = extractGrokMcpOutput(rec);
+    return text === null ? null : capCommandOutput(text, false);
   }
 
-  if ("result" in rec) {
-    if (rec.error != null) return null;
-    const text = textPartsFromContent(asRecord(rec.result)?.content);
+  if ("result" in rec || rec.error != null) {
+    const text = extractCodexMcpOutput(rec);
     return text === null ? null : capCommandOutput(text, false);
   }
 

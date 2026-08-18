@@ -4,6 +4,11 @@ Measured 2026-08-18 with the official `@modelcontextprotocol/server-everything`
 passed through ACP's own `session/new` `mcpServers` parameter, so every provider
 got an identical server and an identical prompt (`echo`, `message=MCPSHAPE_9931`).
 
+A structured follow-up the same day used `scratchpad/structured-mcp-server.cjs`
+(terse `content` text plus a `structuredContent` payload) through the Claude ACP
+adapter (`ANTHROPIC_MODEL=claude-opus-5`) and Codex — that is the string-
+`rawOutput` / `structuredContent` case below.
+
 Probe: `research/mcp-shape-per-provider-probe.cjs <grok|codex|claude>`.
 Full dumps: `%TEMP%/mcp-shape-<provider>.json`.
 
@@ -20,8 +25,8 @@ different per provider, so any IN/OUT row for MCP needs a per-provider normalize
 |---|---|---|---|
 | tool name | `rawInput.tool_name` (`everything__echo`) | `title` (`mcp.everything.echo`) + `rawInput.server`/`.tool` | `title` / `_meta.claudeCode.toolName` (`mcp__everything__echo`) |
 | IN args | `rawInput.tool_input` | `rawInput.arguments` | `rawInput` **flat** |
-| OUT | `rawOutput.output.OkayOutput` (string) | `rawOutput.result.content[].text` | `rawOutput` **is** the content array |
-| error channel | — (not probed) | `rawOutput.error` (null on success) | — (not probed) |
+| OUT | `rawOutput.output.OkayOutput` (string; sibling keys on `output` included) | `rawOutput.result.content` blocks **and** `structuredContent`; non-null `error` | `rawOutput` is **polymorphic**: content-block **array** (plain text) **or** a JSON **string** (structured) |
+| error channel | — (not probed) | `rawOutput.error` (null on success; shown when non-null) | — (not probed) |
 | `content` on the completed update | **absent** | **absent** | present |
 | MCP marker | `_meta["x.ai/tool"].name === "use_tool"` | `_meta.is_mcp_tool_call === true` | `_meta.claudeCode.toolName` starts `mcp__` |
 | `kind` on the call | `other` | `execute` | `other` |
@@ -60,6 +65,21 @@ the `use_tool` one, whose update title carries the readable name.
 gives one directly. Note `kind: "execute"`, which is why `normalizeCodexUpdate`
 remaps it (#115): an execute row short-circuits before the title is read.
 
+**`structuredContent` is the real payload on many servers.** `echo` returned
+plain text and `structuredContent: null`, so the first measurement never saw
+this. A Gmail search (and a purpose-built probe, same envelope) arrives as:
+
+    rawOutput = {"result":{
+        "content":[{"type":"text","text":"Action completed."}],
+        "structuredContent":{"query":"after:2026/08/18",
+            "messages":[{"id":"m1","subject":"STRUCTPAYLOAD_ONE",…},…],
+            "total":2},
+        "_meta":null},"error":null}
+
+`extractMcpOutput` therefore renders **both** the text blocks and a
+pretty-printed `structuredContent`, and a non-null `error` (instead of
+dropping OUT so a failed call looks like a call that returned nothing).
+
 Also observed: a `mcp__everything__startup` row with `status:"failed"` and
 `"[codex-acp forwarded startup error] MCP server \`everything\` startup was
 cancelled."` — emitted even though the subsequent call succeeded. The host
@@ -69,6 +89,11 @@ error text stay on the row.
 
 ## claude
 
+`rawOutput` is **polymorphic**. Both shapes are measured; a client that only
+handles the array drops structured results as if the tool returned nothing.
+
+Plain-text result (`echo`):
+
     tool_call        title="mcp__everything__echo"  kind="other"  status="pending"  rawInput={}
     tool_call_update rawInput={"message":"MCPSHAPE_9931"}          (args arrive on the update, not the call)
     tool_call_update _meta.claudeCode.toolResponse=[{"type":"text","text":"Echo: MCPSHAPE_9931"}]
@@ -76,6 +101,22 @@ error text stay on the row.
                      rawOutput=[{"type":"text","text":"Echo: MCPSHAPE_9931"}]
                      content=[{"type":"content","content":{"type":"text","text":"Echo: MCPSHAPE_9931"}}]
 
+Structured result (same server as the Codex Gmail / `structured-mcp-server.cjs`
+case — terse `content` plus a `structuredContent` object):
+
+    keys = ["_meta","toolCallId","sessionUpdate","status","rawOutput","content"]
+    rawOutput = "{\"query\":\"after:2026/08/18\",\"messages\":[{\"id\":\"m1\",\"subject\":\"STRUCTPAYLOAD_ONE\",…}],\"total\":2}"
+    content   = [{"type":"content","content":{"type":"text","text":"<the same JSON string>"}}]
+
+Claude serialises `structuredContent` to a JSON **string** and puts that string
+in `rawOutput`. It does **not** wrap it in a Codex-style
+`{result:{content, structuredContent}}` envelope, and it is not an array of
+blocks. `content` repeats the same string inside a text block.
+
 `rawInput` is `{}` on the initial call and filled on a later update, so a client
 reading args at call time gets nothing. The response also appears twice — once in
-`_meta.claudeCode.toolResponse` before completion, then in `rawOutput`/`content`.
+`_meta.claudeCode.toolResponse` one update before completion, then in
+`rawOutput`/`content`. `extractMcpOutput` reads only the completed `rawOutput`:
+every array block (text as text, non-text as indented JSON), or a string shown
+as-is and pretty-printed when it parses as JSON. Do **not** also read
+`toolResponse` — two sources is how a double-render happens.
