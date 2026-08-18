@@ -8203,12 +8203,16 @@
         const group = row.closest && row.closest(".tool-group");
         if (group) group.classList.add("has-error");
       }
-    } else if (msg.exitCode == null) {
+    } else if (msg.cancelled === true) {
+      // Host-asserted live kill (`commandDone` with no exit). Absent/false means
+      // the exit was never reported (Claude session/load, live Claude string
+      // rawOutput) — not a cancel, and not a synthesised 0. Do not infer this
+      // from state.replaying: historyReplay also wraps buffer rebuilds.
       const mark = document.createElement("div");
       mark.className = "cmd-out-marker muted";
       mark.textContent = "[Cancelled] no exit code";
       body.appendChild(mark);
-    } else if (!hasOutput) {
+    } else if (msg.exitCode === 0 && !hasOutput) {
       // exit 0 with nothing on stdout: a bare "(no output)" pre read as broken.
       // A muted "done" marker (process success, not a claim about the task) is
       // clearer, and there's no empty <pre> to feel like a gap.
@@ -8249,6 +8253,12 @@
     if (!entry) return false;
     const block = entry.details.querySelector(".cmd-block");
     if (!block || block.querySelector(".cmd-out")) return false; // OUT already present (grok-build)
+    // Live Claude/Composer have no commandDone, so this is the only OUT source.
+    // extractToolResultOutput already prefers the unfenced string and applies
+    // the same 100K cap as the host commandOutput path — first arriver is
+    // correct; attachCommandOutput is idempotent if both land. Do not gate on
+    // state.replaying: historyReplay also wraps in-memory buffer rebuilds
+    // (focusSession / rehydrateWebviewFromFocused), which have no commandOutput.
     const res = extractToolResultOutput(call);
     if (!res) return false;
     attachCommandOutput(entry.details, res);

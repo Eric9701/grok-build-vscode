@@ -70,7 +70,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
-import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
@@ -7103,12 +7103,29 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (choice === "Show Logs") this.host.showOutput();
       });
     });
+    const replayedCommandOutputs = new Set<string>();
+    const replayedCommandsByToolCallId = new Map<string, string>();
+    const emitReplayedCommandOutput = (call: unknown) => {
+      const replayed = commandOutputForToolCall(call, {
+        replaying: session.replaying,
+        rememberedCommands: replayedCommandsByToolCallId,
+      });
+      if (!replayed) return;
+      const id = typeof (call as { toolCallId?: unknown })?.toolCallId === "string"
+        && (call as { toolCallId: string }).toolCallId
+        ? (call as { toolCallId: string }).toolCallId
+        : replayed.command;
+      if (replayedCommandOutputs.has(id)) return;
+      replayedCommandOutputs.add(id);
+      this.emit(session, { type: "commandOutput", ...replayed });
+    };
     client.on("toolCall", (u) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
       session.historyEventCount += 1;
       this.emit(session, { type: "toolCall", call: u });
       this.noteAdapterCompactSignal(session, u);
+      emitReplayedCommandOutput(u);
     });
     client.on("toolCallUpdate", (u) => {
       if (gen !== session.gen) return;
@@ -7116,6 +7133,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       session.historyEventCount += 1;
       this.emit(session, { type: "toolCallUpdate", call: u });
       this.noteAdapterCompactSignal(session, u);
+      emitReplayedCommandOutput(u);
     });
     client.on("plan", (u) => {
       if (gen !== session.gen) return;
@@ -7257,16 +7275,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (gen !== session.gen) return;
       // Defensive display cap on top of the terminal's own byte limit — a huge
       // buffer must not stall postMessage/DOM (#41). Grok saw the same capped
-      // buffer, so the cut is honest either way.
-      const MAX_OUTPUT_CHARS = 100_000;
-      const over = info.output.length > MAX_OUTPUT_CHARS;
-      this.emit(session, {
-        type: "commandOutput",
-        command: info.command,
-        output: over ? info.output.slice(0, MAX_OUTPUT_CHARS) : info.output,
-        exitCode: info.exitCode,
-        truncated: info.truncated || over,
-      });
+      // buffer, so the cut is honest either way. Shared with session/load restore.
+      // Null exit here is a real kill; `cancelled` rides the buffered message
+      // so a later historyReplay rebuild still paints [Cancelled].
+      this.emit(session, { type: "commandOutput", ...commandOutputFromLiveTerminal(info) });
     });
     client.on("permissionRequest", (req: PermissionRequest) => {
       if (gen !== session.gen) return;

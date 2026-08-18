@@ -10,6 +10,7 @@
 import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch, click } from "./webview-harness";
 import { normalizeCodexUpdate } from "../src/codex-backend";
+import { commandOutputForToolCall } from "../src/acp-dispatch";
 
 const exec = (id: string, command: string, title?: string) => ({
   type: "toolCall",
@@ -20,12 +21,19 @@ const exec = (id: string, command: string, title?: string) => ({
     rawInput: { variant: "Bash", command, is_background: false },
   },
 });
-const out = (command: string, output: string, exitCode: number | null = 0, truncated = false) => ({
-  type: "commandOutput",
+const out = (
+  command: string,
+  output: string,
+  exitCode: number | null = 0,
+  truncated = false,
+  cancelled?: boolean,
+) => ({
+  type: "commandOutput" as const,
   command,
   output,
   exitCode,
   truncated,
+  ...(cancelled ? { cancelled } : {}),
 });
 const read = (id: string, path: string) => ({
   type: "toolCall",
@@ -384,6 +392,152 @@ describe("command details (#41)", () => {
     },
   });
 
+  it("a replayed completed execute tool_call has IN but no OUT until commandOutput arrives", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "call-restore-1",
+        kind: "execute",
+        status: "completed",
+        title: "Execute `echo MARKER`",
+        rawInput: { variant: "Bash", command: "echo MARKER", is_background: false },
+        content: [{ type: "content", content: { type: "text", text: "MARKER\r\n" } }],
+        rawOutput: {
+          type: "Bash",
+          output: [...Buffer.from("MARKER\r\n", "utf8")],
+          output_for_prompt: "exit: 0\nMARKER\n",
+          exit_code: 0,
+          command: "echo MARKER",
+          truncated: false,
+        },
+      },
+    });
+    close(window);
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe("echo MARKER");
+    expect(doc.querySelector(".cmd-out")).toBeNull();
+  });
+
+  it("session/load restore fills OUT from the host commandOutput (same message as live)", () => {
+    const { window, doc } = bootWebview();
+    const call = {
+      toolCallId: "call-restore-2",
+      kind: "execute",
+      status: "completed",
+      title: "Execute `echo MARKER`",
+      rawInput: { variant: "Bash", command: "echo MARKER", is_background: false },
+      content: [{ type: "content", content: { type: "text", text: "MARKER\r\n" } }],
+      rawOutput: {
+        type: "Bash",
+        output: [...Buffer.from("MARKER\r\n", "utf8")],
+        output_for_prompt: "exit: 0\nMARKER\n",
+        exit_code: 0,
+        command: "echo MARKER",
+        truncated: false,
+      },
+    };
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "toolCall", call });
+    const replayed = commandOutputForToolCall(call, { replaying: true });
+    expect(replayed).not.toBeNull();
+    dispatch(window, { type: "commandOutput", ...replayed! });
+    dispatch(window, { type: "historyReplay", active: false });
+    close(window);
+
+    expect(doc.querySelectorAll(".has-details")).toHaveLength(1);
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe("echo MARKER");
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("MARKER\r\n");
+    expect(doc.querySelector(".cmd-out-marker")).toBeNull();
+  });
+
+  it("Claude session/load fills OUT from string rawOutput, not the fenced content or description", () => {
+    const { window, doc } = bootWebview();
+    const remembered = new Map<string, string>();
+    const pending = {
+      toolCallId: "toolu_01AnGmToxGM69P1ovvsNgk4F",
+      kind: "execute",
+      status: "pending",
+      title: "echo REPLAY_MARKER_4b7c",
+      rawInput: { command: "echo REPLAY_MARKER_4b7c", description: "Echo replay marker string" },
+      content: [{ type: "content", content: { type: "text", text: "Echo replay marker string" } }],
+    };
+    const completed = {
+      toolCallId: "toolu_01AnGmToxGM69P1ovvsNgk4F",
+      status: "completed",
+      rawOutput: "REPLAY_MARKER_4b7c",
+      content: [{ type: "content", content: { type: "text", text: "```console\nREPLAY_MARKER_4b7c\n```" } }],
+    };
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "toolCall", call: pending });
+    expect(commandOutputForToolCall(pending, { replaying: true, rememberedCommands: remembered })).toBeNull();
+    dispatch(window, { type: "toolCallUpdate", call: completed });
+    const replayed = commandOutputForToolCall(completed, { replaying: true, rememberedCommands: remembered });
+    expect(replayed).toEqual({
+      command: "echo REPLAY_MARKER_4b7c",
+      output: "REPLAY_MARKER_4b7c",
+      exitCode: null,
+      truncated: false,
+    });
+    dispatch(window, { type: "commandOutput", ...replayed! });
+    dispatch(window, { type: "historyReplay", active: false });
+    close(window);
+
+    expect(doc.querySelectorAll(".has-details")).toHaveLength(1);
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe("echo REPLAY_MARKER_4b7c");
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("REPLAY_MARKER_4b7c");
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).not.toContain("```");
+    expect(doc.querySelector(".cmd-out")!.textContent).not.toContain("Echo replay marker string");
+    expect(doc.querySelector(".cmd-out-marker")).toBeNull();
+    expect(replayed).not.toHaveProperty("cancelled");
+  });
+
+  it("a live Claude command keeps OUT after a buffer rebuild (conversation switch)", () => {
+    const { window, doc } = bootWebview();
+    const pending = {
+      type: "toolCall" as const,
+      call: {
+        toolCallId: "toolu_live_1",
+        kind: "execute",
+        status: "pending",
+        title: "echo LIVE_CLAUDE_OUT",
+        rawInput: { command: "echo LIVE_CLAUDE_OUT", description: "Echo live marker" },
+        content: [{ type: "content", content: { type: "text", text: "Echo live marker" } }],
+      },
+    };
+    const completed = {
+      type: "toolCallUpdate" as const,
+      call: {
+        toolCallId: "toolu_live_1",
+        status: "completed",
+        rawOutput: "LIVE_CLAUDE_OUT",
+        content: [{ type: "content", content: { type: "text", text: "```console\nLIVE_CLAUDE_OUT\n```" } }],
+      },
+    };
+    dispatch(window, pending);
+    dispatch(window, completed);
+    close(window);
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("LIVE_CLAUDE_OUT");
+    expect(doc.querySelector(".cmd-out-marker")).toBeNull();
+
+    // focusSession / rehydrateWebviewFromFocused: clear + historyReplay + the
+    // live buffer. Claude has no commandDone, so the buffer has no commandOutput.
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, pending);
+    dispatch(window, completed);
+    dispatch(window, { type: "historyReplay", active: false });
+    close(window);
+
+    expect(doc.querySelectorAll(".has-details")).toHaveLength(1);
+    expect(doc.querySelectorAll(".cmd-out")).toHaveLength(1);
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe("echo LIVE_CLAUDE_OUT");
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("LIVE_CLAUDE_OUT");
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).not.toContain("```");
+    expect(doc.querySelector(".cmd-out")!.textContent).not.toContain("Echo live marker");
+    expect(doc.querySelector(".cmd-out-marker")).toBeNull();
+  });
+
   it("fills a self-executed (Composer) command's OUT from the completed update, no terminal/create", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("c1", "git status --short"));
@@ -433,7 +587,7 @@ describe("command details (#41)", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("k", "sleep 999"));
     close(window);
-    dispatch(window, out("sleep 999", "partial", null, true));
+    dispatch(window, out("sleep 999", "partial", null, true, true));
 
     const outRow = doc.querySelector(".cmd-out") as HTMLElement;
     expect(outRow.classList.contains("failed")).toBe(false);
@@ -441,6 +595,50 @@ describe("command details (#41)", () => {
     expect(markers[0].textContent).toBe("[Cancelled] no exit code");
     expect(markers[0].classList.contains("muted")).toBe(true);
     expect(markers[1].textContent).toContain("output truncated");
+  });
+
+  it("a cancelled live command still shows [Cancelled] after a buffer rebuild", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("k", "sleep 999"));
+    close(window);
+    dispatch(window, out("sleep 999", "partial", null, true, true));
+    expect(doc.querySelector(".cmd-out-marker")!.textContent).toBe("[Cancelled] no exit code");
+
+    // focusSession / rehydrateWebviewFromFocused: clear + historyReplay + the
+    // live buffer, which still carries the host-asserted cancelled field.
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, exec("k", "sleep 999"));
+    close(window);
+    dispatch(window, out("sleep 999", "partial", null, true, true));
+    dispatch(window, { type: "historyReplay", active: false });
+
+    expect(doc.querySelectorAll(".has-details")).toHaveLength(1);
+    const markers = [...doc.querySelectorAll(".cmd-out-marker")];
+    expect(markers[0].textContent).toBe("[Cancelled] no exit code");
+    expect(markers[0].classList.contains("muted")).toBe(true);
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("partial");
+  });
+
+  it("null exit without cancelled is not reported, not a kill, even live", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("c", "echo hi"));
+    close(window);
+    dispatch(window, out("echo hi", "hi\n", null));
+
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("hi\n");
+    expect(doc.querySelector(".cmd-out-marker")).toBeNull();
+    expect(doc.querySelector(".cmd-out")!.classList.contains("failed")).toBe(false);
+  });
+
+  it("null exit without cancelled and no output does not synthesise success", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("c", "true"));
+    close(window);
+    dispatch(window, out("true", "", null));
+
+    expect(doc.querySelector(".tool-cmd-output")).toBeNull();
+    expect(doc.querySelector(".cmd-out-marker")).toBeNull();
   });
 
   it("an exit-0 command with no output shows a done marker, not an empty (no output) pre", () => {

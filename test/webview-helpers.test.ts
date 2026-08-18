@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -1363,6 +1363,36 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
     expect(extractToolResultOutput(null as unknown as object)).toBeNull();
     expect(extractToolResultOutput({})).toBeNull();
     expect(extractToolResultOutput({ rawOutput: {} })).toBeNull(); // no output, no exit code
+  });
+
+  it("prefers Claude's string rawOutput over fenced content and leaves exitCode null", () => {
+    expect(extractToolResultOutput({
+      status: "completed",
+      rawOutput: "REPLAY_MARKER_4b7c",
+      content: [{ type: "content", content: { type: "text", text: "```console\nREPLAY_MARKER_4b7c\n```" } }],
+    })).toEqual({ output: "REPLAY_MARKER_4b7c", exitCode: null, truncated: false });
+  });
+
+  it("applies the same 100K display cap as the host restore path", () => {
+    const huge = "x".repeat(MAX_COMMAND_OUTPUT_CHARS + 25);
+    const fromString = extractToolResultOutput({
+      rawOutput: huge,
+      content: [{ type: "content", content: { type: "text", text: "```console\n" + huge + "\n```" } }],
+    });
+    expect(fromString).toEqual({
+      output: "x".repeat(MAX_COMMAND_OUTPUT_CHARS),
+      exitCode: null,
+      truncated: true,
+    });
+    expect(fromString!.output).not.toContain("```");
+    const fromContent = extractToolResultOutput({
+      rawOutput: { type: "Bash", exit_code: 0, truncated: false },
+      content: [{ type: "content", content: { type: "text", text: huge } }],
+    });
+    expect(fromContent?.output).toHaveLength(MAX_COMMAND_OUTPUT_CHARS);
+    expect(fromContent?.truncated).toBe(true);
+    expect(capCommandOutput("short", false)).toEqual({ output: "short", truncated: false });
+    expect(capCommandOutput("already", true)).toEqual({ output: "already", truncated: true });
   });
 });
 

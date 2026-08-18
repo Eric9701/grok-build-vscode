@@ -813,6 +813,188 @@ export function summarizeBackgroundCommand(cmd: string, max = 80): string {
   return flat.slice(0, max - 1).trimEnd() + "…";
 }
 
+/** Display cap shared by the live terminal snapshot and session/load restore. */
+export const MAX_COMMAND_OUTPUT_CHARS = 100_000;
+
+export type CommandOutputPayload = {
+  command: string;
+  output: string;
+  exitCode: number | null;
+  truncated: boolean;
+  /** Live terminal kill. Omitted on session/load hydration — null exit there is "not reported". */
+  cancelled?: boolean;
+};
+
+export function capCommandOutput(
+  output: string,
+  truncated: boolean,
+  maxChars = MAX_COMMAND_OUTPUT_CHARS,
+): { output: string; truncated: boolean } {
+  const over = output.length > maxChars;
+  return {
+    output: over ? output.slice(0, maxChars) : output,
+    truncated: truncated || over,
+  };
+}
+
+/** Live `terminal/release` snapshot. Null exit is a real cancel, not a missing report. */
+export function commandOutputFromLiveTerminal(info: {
+  command: string;
+  output: string;
+  exitCode: number | null;
+  truncated: boolean;
+}): CommandOutputPayload {
+  const capped = capCommandOutput(info.output, info.truncated);
+  return {
+    command: info.command,
+    output: capped.output,
+    exitCode: info.exitCode,
+    truncated: capped.truncated,
+    ...(info.exitCode == null ? { cancelled: true } : {}),
+  };
+}
+
+function commandStringFromToolCall(call: any): string {
+  const rawIn = call?.rawInput;
+  if (rawIn && typeof rawIn === "object") {
+    if (typeof rawIn.command === "string" && rawIn.command.trim()) return rawIn.command.trim();
+    if (typeof rawIn.cmd === "string" && rawIn.cmd.trim()) return rawIn.cmd.trim();
+  }
+  const rawOut = call?.rawOutput;
+  if (rawOut && typeof rawOut === "object" && typeof rawOut.command === "string" && rawOut.command.trim()) {
+    return rawOut.command.trim();
+  }
+  return "";
+}
+
+function toolCallIdOf(call: unknown): string {
+  const id = (call as { toolCallId?: unknown } | null | undefined)?.toolCallId;
+  return typeof id === "string" ? id : "";
+}
+
+function executeKindOf(call: unknown): string {
+  const kind = (call as { kind?: unknown } | null | undefined)?.kind;
+  return typeof kind === "string" ? kind.toLowerCase() : "";
+}
+
+/** Claude's completed update has no rawInput; the command lives on the earlier tool_call. */
+function rememberReplayedExecuteCommand(
+  remembered: Map<string, string>,
+  call: unknown,
+): void {
+  if (!call || typeof call !== "object") return;
+  const kind = executeKindOf(call);
+  if (kind && kind !== "execute") return;
+  const id = toolCallIdOf(call);
+  if (!id) return;
+  const title = typeof (call as { title?: unknown }).title === "string"
+    ? (call as { title: string }).title.trim()
+    : "";
+  const command = commandStringFromToolCall(call) || title;
+  if (command) remembered.set(id, command);
+}
+
+function recognizedRawOutput(ro: unknown): {
+  output: unknown;
+  formatted: unknown;
+  exitCode: number | null;
+  truncated: boolean;
+} | null {
+  if (!ro || typeof ro !== "object") return null;
+  const rec = ro as Record<string, unknown>;
+  const exitCode =
+    typeof rec.exit_code === "number" ? rec.exit_code
+    : typeof rec.exitCode === "number" ? rec.exitCode
+    : null;
+  const hasOutput =
+    typeof rec.output === "string"
+    || Array.isArray(rec.output)
+    || ArrayBuffer.isView(rec.output)
+    || typeof rec.formatted_output === "string";
+  if (exitCode == null && !hasOutput) return null;
+  return {
+    output: rec.output,
+    formatted: rec.formatted_output,
+    exitCode,
+    truncated: rec.truncated === true,
+  };
+}
+
+function textFromToolContent(call: any): string | undefined {
+  if (!Array.isArray(call?.content)) return undefined;
+  const block = call.content.find((b: any) => b && b.content && typeof b.content.text === "string");
+  return block ? block.content.text as string : undefined;
+}
+
+function decodeCommandOutputBytes(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  try {
+    if (value instanceof Uint8Array) return new TextDecoder().decode(value);
+    if (ArrayBuffer.isView(value)) {
+      const view = value as ArrayBufferView;
+      return new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    }
+    if (Array.isArray(value)) return new TextDecoder().decode(Uint8Array.from(value));
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Hydrate a `commandOutput` payload from a replayed execute tool_call.
+ *
+ * Provider fields are inverted (research/replay-shapes.md):
+ * - grok: `content` is raw stdout; never read `rawOutput.output_for_prompt`
+ *   (it prefixes `exit: N`).
+ * - claude: `rawOutput` is a plain string; `content` is either the tool
+ *   description (first row) or stdout wrapped in a ```console fence
+ *   (completed update). Prefer the string. No exit code is reported.
+ * - A completed Claude update has no `rawInput`; pass the command remembered
+ *   from the earlier `tool_call` by `toolCallId`.
+ * Unknown / unmeasured shapes return null. Never sets `cancelled` — a
+ * hydrated null exit is "not reported", not a live kill.
+ */
+export function commandOutputFromReplayedToolCall(
+  call: unknown,
+  rememberedCommands?: ReadonlyMap<string, string>,
+): CommandOutputPayload | null {
+  if (!call || typeof call !== "object") return null;
+  const kind = executeKindOf(call);
+  if (kind && kind !== "execute") return null;
+  const id = toolCallIdOf(call);
+  const command = commandStringFromToolCall(call)
+    || (id && rememberedCommands ? rememberedCommands.get(id) ?? "" : "");
+  if (!command) return null;
+  const rawOutput = (call as { rawOutput?: unknown }).rawOutput;
+  // Measured Claude restore: stdout is the string itself. Do not fall through
+  // to content (fenced on the completed row, a description on the first).
+  if (typeof rawOutput === "string") {
+    const capped = capCommandOutput(rawOutput, false);
+    return { command, exitCode: null, ...capped };
+  }
+  const raw = recognizedRawOutput(rawOutput);
+  if (!raw) return null;
+  const fromContent = textFromToolContent(call);
+  const output =
+    fromContent !== undefined ? fromContent
+    : typeof raw.output === "string" ? raw.output
+    : typeof raw.formatted === "string" ? raw.formatted
+    : decodeCommandOutputBytes(raw.output) ?? "";
+  const capped = capCommandOutput(output, raw.truncated);
+  return { command, exitCode: raw.exitCode, ...capped };
+}
+
+/** Live turns must not emit from the tool_call — only session/load replay. */
+export function commandOutputForToolCall(
+  call: unknown,
+  opts: { replaying: boolean; rememberedCommands?: Map<string, string> },
+): CommandOutputPayload | null {
+  if (!opts.replaying) return null;
+  if (opts.rememberedCommands) rememberReplayedExecuteCommand(opts.rememberedCommands, call);
+  return commandOutputFromReplayedToolCall(call, opts.rememberedCommands);
+}
+
 /**
  * True when `session/set_model` was rejected because the target model belongs
  * to a different agent than the one this session is bound to. The CLI binds the

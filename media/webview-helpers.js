@@ -632,6 +632,22 @@
     return sibling.href;
   }
 
+  // Same 100K display cap the host applies in `capCommandOutput` (acp-dispatch).
+  // The webview attach path must produce the identical payload so a live Claude
+  // row and an ACP session/load restore cannot disagree, and so the first
+  // arriver is already correct.
+  const MAX_COMMAND_OUTPUT_CHARS = 100000;
+
+  function capCommandOutput(output, truncated, maxChars) {
+    const cap = typeof maxChars === "number" ? maxChars : MAX_COMMAND_OUTPUT_CHARS;
+    const text = typeof output === "string" ? output : "";
+    const over = text.length > cap;
+    return {
+      output: over ? text.slice(0, cap) : text,
+      truncated: !!(truncated || over),
+    };
+  }
+
   // Pull a self-executed shell command's result off a completed `tool_call_update`.
   // The cursor/Composer agent runs commands in its OWN CLI-side persistent shell
   // and reports the result on the completed update (keyed by `toolCallId`) instead
@@ -640,10 +656,18 @@
   // output + exit code here so the box can render it, matched reliably by
   // `toolCallId` (Composer completes commands OUT of issue order, so no order-based
   // guess is safe). Returns `{output, exitCode, truncated}` or null when the update
-  // carries no command result. Pure.
+  // carries no command result. Pure. Claude's string rawOutput is preferred over
+  // fenced `content`; the 100K cap matches the host restore path.
   function extractToolResultOutput(call) {
     if (!call || typeof call !== "object") return null;
     const ro = call.rawOutput;
+    // Claude session/load (and the same live shape): rawOutput is the bare
+    // stdout string; content is that stdout wrapped in a ```console fence, or
+    // the tool description on the first row. Prefer the string.
+    if (typeof ro === "string") {
+      const capped = capCommandOutput(ro, false);
+      return { output: capped.output, exitCode: null, truncated: capped.truncated };
+    }
     // Output text: the decoded `content` text is cleanest; else decode rawOutput.output
     // (a byte array on the wire), else a plain string.
     let output = "";
@@ -663,7 +687,8 @@
       : ro && typeof ro.exitCode === "number" ? ro.exitCode
       : null;
     if (!output && exitCode == null) return null; // nothing to show
-    return { output, exitCode, truncated: !!(ro && ro.truncated) };
+    const capped = capCommandOutput(output, !!(ro && ro.truncated));
+    return { output: capped.output, exitCode, truncated: capped.truncated };
   }
 
   // Parse the <vscode-context> envelope that prompt-builder.ts wraps around the
@@ -1442,7 +1467,7 @@
     return header.join("\n") + (body ? body + "\n" : "");
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

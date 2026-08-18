@@ -398,10 +398,14 @@ export type HostMsg =
   // live `_x.ai/session_notification` rail (`workflow_updated` / `goal_updated`).
   // Cards update in place by `id`; terminal phases stop the live dots.
   | { type: "runProgress"; update: RunProgressUpdate }
-  // A finished shell command's full text + captured output (#41) — snapshotted
-  // host-side at terminal/release (the extension runs the commands, so the
-  // buffer is exactly what grok received). exitCode null = killed/cancelled.
-  | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean }
+  // A finished shell command's full text + captured output (#41). Live grok
+  // snapshots at terminal/release; session/load hydrates the same message from
+  // the replayed tool_call (`commandOutputForToolCall`). exitCode null is not
+  // enough to paint [Cancelled]: only `cancelled: true` (live `commandDone`
+  // with no exit) means the user killed it. Hydrated / Claude payloads omit
+  // the field — older clients ignore it and keep their previous null-exit
+  // behaviour, so they cannot start showing a marker the host did not assert.
+  | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean; cancelled?: boolean }
   // grok.expandCommandOutputs — pre-expand every command's IN/OUT detail.
   | { type: "expandCommandOutputs"; value: boolean }
   // grok.steerByDefault — send-while-busy skips the queue and steers (#52).
