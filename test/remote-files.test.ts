@@ -373,7 +373,7 @@ describe("capability advertisement", () => {
 // untrusted. The host must refuse a crafted write on its own.
 describe("remote writes are text-only, enforced host-side", () => {
   it("refuses a non-text file even with a valid stamp and path", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    const root = mkTmp();
     const rel = "logo.png";
     const abs = path.join(root, rel);
     fs.writeFileSync(abs, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -393,7 +393,7 @@ describe("remote writes are text-only, enforced host-side", () => {
   });
 
   it("still allows the text kinds", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    const root = mkTmp();
     for (const rel of ["notes.md", "data.json", "plain.txt"]) {
       const abs = path.join(root, rel);
       fs.writeFileSync(abs, "before");
@@ -413,7 +413,7 @@ describe("remote writes are text-only, enforced host-side", () => {
 // untrusted — the host has to refuse a crafted write on its own.
 describe("remote writes are text-only, enforced host-side", () => {
   it("refuses a non-text file even with a valid stamp and path", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    const root = mkTmp();
     const rel = "logo.png";
     const abs = path.join(root, rel);
     fs.writeFileSync(abs, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
@@ -433,7 +433,7 @@ describe("remote writes are text-only, enforced host-side", () => {
   });
 
   it("still allows the text kinds", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-rfiles-"));
+    const root = mkTmp();
     for (const rel of ["notes.md", "data.json", "plain.txt"]) {
       const abs = path.join(root, rel);
       fs.writeFileSync(abs, "before");

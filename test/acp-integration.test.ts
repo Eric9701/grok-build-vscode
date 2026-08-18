@@ -73,6 +73,30 @@ async function waitForStderr(arr: string[], re: RegExp, timeoutMs = 3000): Promi
   }
 }
 
+/** Bounded temp-dir removal. Windows refuses rmdir while a child still has
+ *  the path as cwd; `kill()` does not wait for that, so a swallowed `rmSync`
+ *  leaves an empty `grok-int-ws-*` behind. Retry briefly after the process
+ *  has exited, then fail visibly rather than leak. */
+async function removeTempDir(dir: string | undefined, timeoutMs = 2000): Promise<void> {
+  if (!dir) return;
+  const deadline = Date.now() + timeoutMs;
+  let lastErr: unknown;
+  for (;;) {
+    try {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      if (!fs.existsSync(dir)) return;
+      lastErr = new Error("directory still exists");
+    } catch (err) {
+      lastErr = err;
+      if (!fs.existsSync(dir)) return;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  throw new Error(`failed to remove temp dir ${dir}: ${detail}`);
+}
+
 describe("ACP integration (real subprocess, fake CLI)", () => {
   let client: AcpClient;
   let workspace: string;
@@ -130,12 +154,18 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     await client.newSession();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Stop the old client emitting into anything before the next test starts.
-    try { client.removeAllListeners(); } catch { /* */ }
-    try { (client as any).proc?.kill(); } catch { /* best-effort */ }
-    try { fs.rmSync(workspace, { recursive: true, force: true }); } catch { /* */ }
-    try { fs.rmSync(planHome, { recursive: true, force: true }); } catch { /* */ }
+    // `client` / dirs may be unset if beforeEach failed before assignment.
+    const toStop = client as AcpClient | undefined;
+    const ws = workspace as string | undefined;
+    const home = planHome as string | undefined;
+    try { toStop?.removeAllListeners(); } catch { /* */ }
+    // Await the real exit (bounded). `kill()` only signals; on Windows the
+    // workspace stays the live cwd until the process actually goes away.
+    try { await toStop?.dispose(); } catch { /* process already gone */ }
+    await removeTempDir(ws);
+    await removeTempDir(home);
   });
 
   it("lifecycle: spawn → initialize → session/new succeeds and a basic prompt round-trips", async () => {

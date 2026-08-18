@@ -1,0 +1,77 @@
+# MCP tool calls on the ACP wire — all three providers
+
+Measured 2026-08-18 with the official `@modelcontextprotocol/server-everything`
+passed through ACP's own `session/new` `mcpServers` parameter, so every provider
+got an identical server and an identical prompt (`echo`, `message=MCPSHAPE_9931`).
+
+Probe: `research/mcp-shape-per-provider-probe.cjs <grok|codex|claude>`.
+Full dumps: `%TEMP%/mcp-shape-<provider>.json`.
+
+Builds: grok CLI 1.0.5; `@agentclientprotocol/codex-acp` and
+`@agentclientprotocol/claude-agent-acp` as vendored in this repo's `node_modules`.
+
+## The short version
+
+**There is no common field.** IN, OUT and the tool's own name each live somewhere
+different per provider, so any IN/OUT row for MCP needs a per-provider normalizer
+— the same shape of work `normalizeCodexUpdate` already does for tool names.
+
+| | grok | codex | claude |
+|---|---|---|---|
+| tool name | `rawInput.tool_name` (`everything__echo`) | `title` (`mcp.everything.echo`) + `rawInput.server`/`.tool` | `title` / `_meta.claudeCode.toolName` (`mcp__everything__echo`) |
+| IN args | `rawInput.tool_input` | `rawInput.arguments` | `rawInput` **flat** |
+| OUT | `rawOutput.output.OkayOutput` (string) | `rawOutput.result.content[].text` | `rawOutput` **is** the content array |
+| error channel | — (not probed) | `rawOutput.error` (null on success) | — (not probed) |
+| `content` on the completed update | **absent** | **absent** | present |
+| MCP marker | `_meta["x.ai/tool"].name === "use_tool"` | `_meta.is_mcp_tool_call === true` | `_meta.claudeCode.toolName` starts `mcp__` |
+| `kind` on the call | `other` | `execute` | `other` |
+
+**The trap:** two of three providers send **no `content`** on the completed MCP
+update. The shell IN/OUT block reads `content`, so reusing that path unchanged
+renders output for Claude and blank for grok and codex.
+
+## grok
+
+One MCP call produces **three** tool rows, because grok routes MCP through its own
+wrappers — a `search_tool` call to locate the tool, then `use_tool` to invoke it:
+
+    tool_call        title="search_tool"  rawInput={"query":"everything echo","limit":5}
+    tool_call_update title="Search tools: \"everything echo\""  kind="other"
+    tool_call_update status="completed"  rawOutput={"type":"SearchTool","result_count":5,…}
+    tool_call        title="use_tool"     rawInput={"tool_name":"everything__echo","tool_input":{"message":"MCPSHAPE_9931"}}
+    tool_call_update title="everything__echo"  kind="other"  rawInput={"variant":"UseTool",…}
+    tool_call_update status="completed"  rawOutput={"type":"MCP","tool_name":"echo","server_name":"everything","output":{"OkayOutput":"Echo: MCPSHAPE_9931"}}
+
+A client that renders every tool row shows a tool-search row the user did not ask
+for. The real call is the `use_tool` one; its update title carries the readable name.
+
+## codex
+
+    tool_call        title="mcp.everything.echo"  kind="execute"  status="in_progress"
+                     rawInput={"server":"everything","tool":"echo","arguments":{"message":"MCPSHAPE_9931"}}
+                     _meta={"is_mcp_tool_call":true}
+    tool_call_update status="completed"
+                     rawOutput={"result":{"content":[{"type":"text","text":"Echo: MCPSHAPE_9931"}],
+                                          "structuredContent":null,"_meta":null},"error":null}
+
+`_meta.is_mcp_tool_call` is an explicit, reliable marker — the only provider that
+gives one directly. Note `kind: "execute"`, which is why `normalizeCodexUpdate`
+remaps it (#115): an execute row short-circuits before the title is read.
+
+Also observed: a `mcp__everything__startup` row with `status:"failed"` and
+`"[codex-acp forwarded startup error] MCP server \`everything\` startup was
+cancelled."` — emitted even though the subsequent call succeeded. A client that
+surfaces failed tool rows will show a spurious error.
+
+## claude
+
+    tool_call        title="mcp__everything__echo"  kind="other"  status="pending"  rawInput={}
+    tool_call_update rawInput={"message":"MCPSHAPE_9931"}          (args arrive on the update, not the call)
+    tool_call_update _meta.claudeCode.toolResponse=[{"type":"text","text":"Echo: MCPSHAPE_9931"}]
+    tool_call_update status="completed"
+                     rawOutput=[{"type":"text","text":"Echo: MCPSHAPE_9931"}]
+                     content=[{"type":"content","content":{"type":"text","text":"Echo: MCPSHAPE_9931"}}]
+
+`rawInput` is `{}` on the initial call and filled on a later update, so a client
+reading args at call time gets nothing. The response also appears twice — once in
+`_meta.claudeCode.toolResponse` before completion, then in `rawOutput`/`content`.
