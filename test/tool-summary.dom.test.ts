@@ -9,6 +9,7 @@
 import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch } from "./webview-harness";
 import { normalizeCodexUpdate } from "../src/codex-backend";
+import { createMcpPrepareState, prepareMcpToolCall } from "../src/mcp-tool";
 
 const tc = (call: any) => ({ type: "toolCall", call });
 const close = (window: Window) => dispatch(window, { type: "messageChunk", text: "done" } as any);
@@ -198,6 +199,65 @@ describe("MCP tool names (#115)", () => {
     dispatch(window, { type: "toolCallUpdate", call: update } as any);
     close(window);
     expect(flatLabel(doc)).toBe("mcp.canva.list-brand-kits");
+  });
+});
+
+describe("folded MCP machinery stays in the transcript", () => {
+  it("a grok search_tool run is still present in the explore group", () => {
+    const { window, doc } = bootWebview();
+    const state = createMcpPrepareState();
+    const searchA = prepareMcpToolCall({
+      toolCallId: "call-search-0",
+      title: "search_tool",
+      rawInput: { query: "canva design titles", limit: 5 },
+      _meta: { "x.ai/tool": { name: "search_tool", kind: "search_tool" } },
+    }, state);
+    const searchB = prepareMcpToolCall({
+      toolCallId: "call-search-1",
+      title: "search_tool",
+      rawInput: { query: "untitled design", limit: 5 },
+      _meta: { "x.ai/tool": { name: "search_tool", kind: "search_tool" } },
+    }, state);
+    const use = prepareMcpToolCall({
+      toolCallId: "call-use-1",
+      title: "use_tool",
+      rawInput: { tool_name: "canva__search-designs", tool_input: { query: "logo" } },
+      _meta: { "x.ai/tool": { name: "use_tool", kind: "use_tool" } },
+    }, state);
+    dispatch(window, tc(searchA.call));
+    dispatch(window, tc(searchB.call));
+    dispatch(window, tc(use.call));
+    close(window);
+    expect(groupLabel(doc)).toBe("Explored 2 items, ran 1 command");
+    expect(itemLabels(doc)).toEqual([
+      "Search canva design titles",
+      "Search untitled design",
+      "use_tool",
+    ]);
+  });
+
+  it("a genuine Codex MCP startup failure stays reachable", () => {
+    const { window, doc } = bootWebview();
+    const prepared = prepareMcpToolCall({
+      toolCallId: "mcp_startup.canva",
+      kind: "other",
+      title: "mcp__canva__startup",
+      status: "failed",
+      content: [{
+        type: "content",
+        content: {
+          type: "text",
+          text: "MCP server `canva` failed to start: connect ECONNREFUSED 127.0.0.1:3001",
+        },
+      }],
+    }, createMcpPrepareState());
+    dispatch(window, tc(prepared.call));
+    close(window);
+    const err = doc.querySelector(".tool-error");
+    expect(err).not.toBeNull();
+    expect(err!.textContent).toContain("ECONNREFUSED");
+    expect(doc.querySelector(".tool-failed, .has-error")).not.toBeNull();
+    expect(doc.body.textContent).toContain("mcp__canva__startup");
   });
 });
 

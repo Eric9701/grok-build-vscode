@@ -1296,6 +1296,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
       exitCode: 0,
       truncated: false,
       cancelled: false,
+      agentSawCut: true,
     });
   });
 
@@ -1305,7 +1306,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
       kind: "execute",
       rawInput: { command: "printf hi" },
       rawOutput: { type: "Bash", output: bytes, exit_code: 0, truncated: false },
-    })).toEqual({ command: "printf hi", output: "hi ✓", exitCode: 0, truncated: false, cancelled: false });
+    })).toEqual({ command: "printf hi", output: "hi ✓", exitCode: 0, truncated: false, cancelled: false, agentSawCut: true });
   });
 
   it("never treats output_for_prompt as the shown output", () => {
@@ -1318,7 +1319,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
         exit_code: 0,
         truncated: false,
       },
-    })).toEqual({ command: "echo MARKER", output: "", exitCode: 0, truncated: false, cancelled: false });
+    })).toEqual({ command: "echo MARKER", output: "", exitCode: 0, truncated: false, cancelled: false, agentSawCut: true });
   });
 
   it("accepts Codex formatted_output (and the remapped output string)", () => {
@@ -1326,12 +1327,12 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
       kind: "execute",
       rawInput: { command: "ls" },
       rawOutput: { formatted_output: "ok\n", exit_code: 0 },
-    })).toEqual({ command: "ls", output: "ok\n", exitCode: 0, truncated: false, cancelled: false });
+    })).toEqual({ command: "ls", output: "ok\n", exitCode: 0, truncated: false, cancelled: false, agentSawCut: true });
     expect(commandOutputFromReplayedToolCall({
       kind: "execute",
       rawInput: { command: "ls" },
       rawOutput: { formatted_output: "ok\n", output: "ok\n", exit_code: 7 },
-    })).toEqual({ command: "ls", output: "ok\n", exitCode: 7, truncated: false, cancelled: false });
+    })).toEqual({ command: "ls", output: "ok\n", exitCode: 7, truncated: false, cancelled: false, agentSawCut: true });
   });
 
   it("returns null when there is no rawOutput (no invented OUT)", () => {
@@ -1397,6 +1398,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
       exitCode: null,
       truncated: false,
       cancelled: false,
+      agentSawCut: true,
     });
   });
 
@@ -1427,6 +1429,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
       exitCode: null,
       truncated: false,
       cancelled: false,
+      agentSawCut: true,
     });
     expect(commandOutputForToolCall(claudeCompleted, {
       replaying: true,
@@ -1447,6 +1450,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
     expect(r?.exitCode).toBeNull();
     expect(r?.truncated).toBe(true);
     expect(r?.cancelled).toBe(false);
+    expect(r?.agentSawCut).toBe(true);
   });
 
   it("applies the same 100K display cap as the live terminal path", () => {
@@ -1460,6 +1464,7 @@ describe("commandOutputFromReplayedToolCall (#44 session/load restore)", () => {
     expect(r?.output).toHaveLength(MAX_COMMAND_OUTPUT_CHARS);
     expect(r?.truncated).toBe(true);
     expect(r?.cancelled).toBe(false);
+    expect(r?.agentSawCut).toBe(true);
     expect(capCommandOutput("short", false)).toEqual({ output: "short", truncated: false });
     expect(capCommandOutput("already", true)).toEqual({ output: "already", truncated: true });
   });
@@ -1478,6 +1483,7 @@ describe("commandOutputFromLiveTerminal", () => {
       exitCode: null,
       truncated: true,
       cancelled: true,
+      agentSawCut: true,
     });
   });
 
@@ -1493,6 +1499,7 @@ describe("commandOutputFromLiveTerminal", () => {
       exitCode: 0,
       truncated: false,
       cancelled: false,
+      agentSawCut: true,
     });
     expect(commandOutputFromLiveTerminal({
       command: "false",
@@ -1522,6 +1529,7 @@ describe("commandOutputForToolCall (replay gate)", () => {
       exitCode: 0,
       truncated: false,
       cancelled: false,
+      agentSawCut: true,
     });
   });
 

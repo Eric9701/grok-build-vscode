@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -1342,7 +1342,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       rawOutput: { type: "Bash", output: [1, 2, 3], exit_code: 0, truncated: false },
       content: [{ type: "content", content: { type: "text", text: "v20.19.0\n10.8.2" } }],
     });
-    expect(r).toEqual({ output: "v20.19.0\n10.8.2", exitCode: 0, truncated: false, cancelled: false });
+    expect(r).toEqual({ output: "v20.19.0\n10.8.2", exitCode: 0, truncated: false, cancelled: false, agentSawCut: true });
   });
 
   it("decodes rawOutput.output bytes when there's no content text", () => {
@@ -1356,7 +1356,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       rawOutput: { type: "Bash", exit_code: 1, truncated: true },
       content: [{ type: "content", content: { type: "text", text: "boom" } }],
     });
-    expect(r).toEqual({ output: "boom", exitCode: 1, truncated: true, cancelled: false });
+    expect(r).toEqual({ output: "boom", exitCode: 1, truncated: true, cancelled: false, agentSawCut: true });
   });
 
   it("returns null when there's no command result to show", () => {
@@ -1370,7 +1370,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       status: "completed",
       rawOutput: "REPLAY_MARKER_4b7c",
       content: [{ type: "content", content: { type: "text", text: "```console\nREPLAY_MARKER_4b7c\n```" } }],
-    })).toEqual({ output: "REPLAY_MARKER_4b7c", exitCode: null, truncated: false, cancelled: false });
+    })).toEqual({ output: "REPLAY_MARKER_4b7c", exitCode: null, truncated: false, cancelled: false, agentSawCut: true });
   });
 
   it("applies the same 100K display cap as the host restore path", () => {
@@ -1384,6 +1384,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       exitCode: null,
       truncated: true,
       cancelled: false,
+      agentSawCut: true,
     });
     expect(fromString!.output).not.toContain("```");
     const fromContent = extractToolResultOutput({
@@ -1394,6 +1395,18 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
     expect(fromContent?.truncated).toBe(true);
     expect(capCommandOutput("short", false)).toEqual({ output: "short", truncated: false });
     expect(capCommandOutput("already", true)).toEqual({ output: "already", truncated: true });
+  });
+
+  it("does not invent shell output for a host-normalized MCP row", () => {
+    expect(extractToolResultOutput({
+      detailInput: JSON.stringify({ message: "x" }, null, 2),
+      rawOutput: [{ type: "text", text: "Echo: x" }],
+      content: [{ type: "content", content: { type: "text", text: "Echo: x" } }],
+    })).toBeNull();
+    expect(extractToolResultOutput({
+      detailInput: null,
+      rawOutput: "REPLAY_MARKER_4b7c",
+    })).toBeNull();
   });
 });
 
@@ -1416,6 +1429,30 @@ describe("commandOutputWasCancelled", () => {
     expect(commandOutputWasCancelled(null)).toBe(false);
     expect(commandOutputWasCancelled(undefined)).toBe(false);
     expect(commandOutputWasCancelled({})).toBe(false);
+  });
+});
+
+describe("commandOutputTruncationNote", () => {
+  it("states the agent saw a shell cut when this host says so", () => {
+    expect(commandOutputTruncationNote({ truncated: true, agentSawCut: true }))
+      .toBe("output truncated — grok saw the same cut");
+  });
+
+  it("does not claim the agent saw an MCP display cut", () => {
+    expect(commandOutputTruncationNote({ truncated: true, agentSawCut: false }))
+      .toBe("output truncated — display only; the agent saw the full result");
+  });
+
+  it("does not attribute a cut when an older host omitted agentSawCut", () => {
+    expect(commandOutputTruncationNote({ truncated: true })).toBe("output truncated");
+    expect(commandOutputTruncationNote({ truncated: true, command: "x", output: "y" }))
+      .toBe("output truncated");
+  });
+
+  it("is empty when nothing was truncated", () => {
+    expect(commandOutputTruncationNote({ truncated: false, agentSawCut: true })).toBe("");
+    expect(commandOutputTruncationNote(null)).toBe("");
+    expect(commandOutputTruncationNote({})).toBe("");
   });
 });
 

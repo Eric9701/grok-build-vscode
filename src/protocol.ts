@@ -416,7 +416,13 @@ export type HostMsg =
   // `toolCallId` is always stated on MCP commandOutput (the ACP id the
   // webview joins IN to OUT by). Shell output omits it — absence means join
   // by `command` (this host's shell path, or an older host).
-  | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean; cancelled?: boolean; toolCallId?: string }
+  // `agentSawCut` is always stated by this host. `true` is a cut the agent
+  // already saw (terminal byte cap / CLI `truncated` on a replayed execute).
+  // `false` is this host's 100K display cap on an MCP result the provider
+  // returned in full. Older hosts omit the field; the client must not
+  // attribute that cut either way (do not claim the agent saw it, and do
+  // not claim this is display-only).
+  | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean; cancelled?: boolean; toolCallId?: string; agentSawCut?: boolean }
   // grok.expandCommandOutputs — pre-expand every command's IN/OUT detail.
   | { type: "expandCommandOutputs"; value: boolean }
   // grok.steerByDefault — send-while-busy skips the queue and steers (#52).

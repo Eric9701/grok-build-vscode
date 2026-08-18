@@ -834,6 +834,14 @@ export type CommandOutputPayload = {
    * absence means join by `command`.
    */
   toolCallId?: string;
+  /**
+   * Always stated by this host. `true` is a cut the agent already saw
+   * (terminal byte cap, or the CLI's own `truncated` on a replayed
+   * execute). `false` is this host's 100K display cap applied after the
+   * provider returned the full result (MCP). Older hosts omit the field;
+   * the client must not attribute that cut either way.
+   */
+  agentSawCut?: boolean;
 };
 
 export function capCommandOutput(
@@ -862,6 +870,7 @@ export function commandOutputFromLiveTerminal(info: {
     exitCode: info.exitCode,
     truncated: capped.truncated,
     cancelled: info.exitCode == null,
+    agentSawCut: true,
   };
 }
 
@@ -983,7 +992,7 @@ export function commandOutputFromReplayedToolCall(
   // to content (fenced on the completed row, a description on the first).
   if (typeof rawOutput === "string") {
     const capped = capCommandOutput(rawOutput, false);
-    return { command, exitCode: null, ...capped, cancelled: false };
+    return { command, exitCode: null, ...capped, cancelled: false, agentSawCut: true };
   }
   const raw = recognizedRawOutput(rawOutput);
   if (!raw) return null;
@@ -994,7 +1003,7 @@ export function commandOutputFromReplayedToolCall(
     : typeof raw.formatted === "string" ? raw.formatted
     : decodeCommandOutputBytes(raw.output) ?? "";
   const capped = capCommandOutput(output, raw.truncated);
-  return { command, exitCode: raw.exitCode, ...capped, cancelled: false };
+  return { command, exitCode: raw.exitCode, ...capped, cancelled: false, agentSawCut: true };
 }
 
 /** Live turns must not emit from the tool_call — only session/load replay. */

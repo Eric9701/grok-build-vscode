@@ -5,8 +5,10 @@
  * tool's own name each live in a different field, and grok/codex send no
  * `content` on the completed update — so the shell IN/OUT path cannot
  * reuse `content` unchanged. This module is the host-side normalizer:
- * hide machinery rows, stamp `detailInput` (always, on recognized MCP
- * rows), and emit `commandOutput` joined by `toolCallId`.
+ * fold grok `search_tool` into the explore group (stamp `kind:"search"`),
+ * emit Codex startup rows instead of dropping them, stamp `detailInput`
+ * (always, on recognized MCP rows), and emit `commandOutput` joined by
+ * `toolCallId`.
  */
 
 import { capCommandOutput, type CommandOutputPayload } from "./acp-dispatch";
@@ -14,8 +16,12 @@ import { capCommandOutput, type CommandOutputPayload } from "./acp-dispatch";
 /** Pretty-printed empty-object IN. A no-argument call still gets a row. */
 export const EMPTY_MCP_ARGS = "{}";
 
+/** ACP kind that `categorize` in chat.js rolls up as "Explored N items". */
+export const MCP_MACHINERY_KIND = "search";
+
 export type McpPrepareState = {
-  hiddenIds: Set<string>;
+  machineryIds: Set<string>;
+  searchIds: Set<string>;
   mcpIds: Set<string>;
   inputById: Map<string, string>;
   emittedOutputIds: Set<string>;
@@ -23,7 +29,8 @@ export type McpPrepareState = {
 
 export function createMcpPrepareState(): McpPrepareState {
   return {
-    hiddenIds: new Set(),
+    machineryIds: new Set(),
+    searchIds: new Set(),
     mcpIds: new Set(),
     inputById: new Map(),
     emittedOutputIds: new Set(),
@@ -31,8 +38,7 @@ export function createMcpPrepareState(): McpPrepareState {
 }
 
 export type PreparedMcpToolCall =
-  | { action: "hide" }
-  | { action: "emit"; call: Record<string, unknown>; commandOutput: CommandOutputPayload | null };
+  { action: "emit"; call: Record<string, unknown>; commandOutput: CommandOutputPayload | null };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -88,33 +94,7 @@ function isCodexStartupTitle(title: string): boolean {
   return /^mcp__.+__startup$/i.test(title);
 }
 
-function contentTexts(call: unknown): string[] {
-  const content = asRecord(call)?.content;
-  if (!Array.isArray(content)) return [];
-  const texts: string[] = [];
-  for (const block of content) {
-    const rec = asRecord(block);
-    const inner = asRecord(rec?.content);
-    if (typeof inner?.text === "string") texts.push(inner.text);
-  }
-  return texts;
-}
-
-function isFailedCodexStartup(call: unknown): boolean {
-  if (!isCodexStartupTitle(titleOf(call))) return false;
-  if (statusOf(call) === "failed") return true;
-  return contentTexts(call).some((text) => /startup was cancelled/i.test(text));
-}
-
-/** Machinery the user did not ask to see. */
-export function isHiddenMcpRow(call: unknown): boolean {
-  if (!asRecord(call)) return false;
-  // Explicit invocation metadata is not machinery. Consult it before any
-  // title / argument-key hide so a real tool cannot be swallowed.
-  if (hasClaudeMcpMeta(call) || hasGrokUseToolMeta(call)) return false;
-  if (isFailedCodexStartup(call)) return true;
-  if (hasCodexMcpMeta(call)) return false;
-
+function isGrokSearchToolRow(call: unknown): boolean {
   if (grokToolName(call) === "search_tool") return true;
   if (titleOf(call) === "search_tool") return true;
   const rawOut = asRecord(asRecord(call)?.rawOutput);
@@ -122,6 +102,27 @@ export function isHiddenMcpRow(call: unknown): boolean {
   const rawIn = asRecord(asRecord(call)?.rawInput);
   if (rawIn?.variant === "SearchTool") return true;
   return false;
+}
+
+/**
+ * grok `search_tool` wrappers and Codex `mcp__<server>__startup` rows.
+ * These stay in the transcript, folded into the explore tool-group —
+ * they are not real MCP invocations and must not be dropped.
+ */
+export function isMcpMachineryRow(call: unknown): boolean {
+  if (!asRecord(call)) return false;
+  // Explicit invocation metadata is not machinery. Consult it before any
+  // title / argument-key fold so a real tool cannot be re-categorized.
+  if (hasClaudeMcpMeta(call) || hasGrokUseToolMeta(call)) return false;
+  if (isCodexStartupTitle(titleOf(call))) return true;
+  if (hasCodexMcpMeta(call)) return false;
+  return isGrokSearchToolRow(call);
+}
+
+function foldSearchKind(call: Record<string, unknown>): Record<string, unknown> {
+  const kind = typeof call.kind === "string" ? call.kind : "";
+  if (kind && kind !== "other") return call;
+  return { ...call, kind: MCP_MACHINERY_KIND };
 }
 
 function isClaudeMcpTitle(call: unknown): boolean {
@@ -149,7 +150,7 @@ function grokMcpOutput(call: unknown): boolean {
 
 /** Recognized MCP invocation — not search/startup machinery. */
 export function isMcpToolCall(call: unknown): boolean {
-  if (!asRecord(call) || isHiddenMcpRow(call)) return false;
+  if (!asRecord(call) || isMcpMachineryRow(call)) return false;
   if (hasClaudeMcpMeta(call) || hasCodexMcpMeta(call) || hasGrokUseToolMeta(call)) return true;
   if (grokMcpOutput(call)) return true;
   if (isClaudeMcpTitle(call) || isCodexMcpArgs(call) || isGrokUseToolArgs(call)) return true;
@@ -259,6 +260,8 @@ export function mcpCommandOutput(
     output: extracted.output,
     exitCode: null,
     truncated: extracted.truncated,
+    // Display cap only — the provider already returned the full result.
+    agentSawCut: false,
     cancelled: false,
   };
 }
@@ -266,20 +269,29 @@ export function mcpCommandOutput(
 /**
  * Host emit decision for one tool_call / tool_call_update.
  *
- * Hidden machinery is dropped (and remembered by id so a later update
- * without the marker stays dropped). Recognized MCP rows always state
- * `detailInput` (`string` or `null`). OUT becomes a `commandOutput`
- * joined by `toolCallId`, never by argument text.
+ * Machinery (grok `search_tool`, Codex `mcp__<server>__startup`) is
+ * emitted, not dropped. grok `search_tool` is stamped `kind:"search"`
+ * so the existing explore group folds it; a later update without the
+ * marker stays folded by id. Codex startup keeps its title and failed
+ * status so a broken server stays reachable. Recognized MCP rows always
+ * state `detailInput` (`string` or `null`). OUT becomes a
+ * `commandOutput` joined by `toolCallId`, never by argument text.
  */
 export function prepareMcpToolCall(call: unknown, state: McpPrepareState): PreparedMcpToolCall {
   const rec = asRecord(call);
   if (!rec) return { action: "emit", call: {}, commandOutput: null };
 
   const id = toolCallIdOf(call);
-  if (id && state.hiddenIds.has(id)) return { action: "hide" };
-  if (isHiddenMcpRow(call)) {
-    if (id) state.hiddenIds.add(id);
-    return { action: "hide" };
+  const machinery = !!(id && state.machineryIds.has(id)) || isMcpMachineryRow(call);
+  if (machinery) {
+    if (id) state.machineryIds.add(id);
+    const asSearch = isGrokSearchToolRow(call) || !!(id && state.searchIds.has(id));
+    if (asSearch && id) state.searchIds.add(id);
+    return {
+      action: "emit",
+      call: asSearch ? foldSearchKind(rec) : rec,
+      commandOutput: null,
+    };
   }
 
   const recognized = isMcpToolCall(call) || !!(id && state.mcpIds.has(id));

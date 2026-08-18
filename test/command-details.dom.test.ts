@@ -479,6 +479,7 @@ describe("command details (#41)", () => {
       exitCode: null,
       truncated: false,
       cancelled: false,
+      agentSawCut: true,
     });
     dispatch(window, { type: "commandOutput", ...replayed! });
     dispatch(window, { type: "historyReplay", active: false });
@@ -588,14 +589,61 @@ describe("command details (#41)", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("k", "sleep 999"));
     close(window);
-    dispatch(window, out("sleep 999", "partial", null, true, true));
+    dispatch(window, { ...out("sleep 999", "partial", null, true, true), agentSawCut: true });
 
     const outRow = doc.querySelector(".cmd-out") as HTMLElement;
     expect(outRow.classList.contains("failed")).toBe(false);
     const markers = [...outRow.querySelectorAll(".cmd-out-marker")];
     expect(markers[0].textContent).toBe("[Cancelled] no exit code");
     expect(markers[0].classList.contains("muted")).toBe(true);
-    expect(markers[1].textContent).toContain("output truncated");
+    expect(markers[1].textContent).toBe("output truncated — grok saw the same cut");
+  });
+
+  it("an over-cap shell result still says the agent saw the same cut", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("t", "cat big"));
+    close(window);
+    dispatch(window, { ...out("cat big", "x".repeat(80), 0, true, false), agentSawCut: true });
+    expect(doc.querySelector(".cmd-out-marker")!.textContent)
+      .toBe("output truncated — grok saw the same cut");
+  });
+
+  it("an over-cap MCP result does not claim the agent saw the cut", () => {
+    const { window, doc } = bootWebview();
+    const mcpIn = JSON.stringify({ query: "titles" }, null, 2);
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "call-use-huge",
+        title: "canva__search-designs",
+        kind: "other",
+        detailInput: mcpIn,
+      },
+    });
+    close(window);
+    dispatch(window, {
+      type: "commandOutput",
+      command: mcpIn,
+      toolCallId: "call-use-huge",
+      output: "x".repeat(80),
+      exitCode: null,
+      truncated: true,
+      cancelled: false,
+      agentSawCut: false,
+    });
+    const note = doc.querySelector(".cmd-out-marker")!.textContent ?? "";
+    expect(note).toBe("output truncated — display only; the agent saw the full result");
+    expect(note).not.toContain("grok saw the same cut");
+  });
+
+  it("a truncated commandOutput with no agentSawCut does not attribute the cut", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("t", "cat big"));
+    close(window);
+    dispatch(window, out("cat big", "partial", 0, true));
+    expect(doc.querySelector(".cmd-out-marker")!.textContent).toBe("output truncated");
+    expect(doc.querySelector(".cmd-out")!.textContent).not.toContain("grok saw");
+    expect(doc.querySelector(".cmd-out")!.textContent).not.toContain("display only");
   });
 
   it("a cancelled live command still shows [Cancelled] after a buffer rebuild", () => {

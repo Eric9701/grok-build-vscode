@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { MAX_COMMAND_OUTPUT_CHARS } from "../src/acp-dispatch";
 import {
   EMPTY_MCP_ARGS,
+  MCP_MACHINERY_KIND,
   createMcpPrepareState,
   extractMcpInput,
   extractMcpOutput,
   formatMcpArgs,
-  isHiddenMcpRow,
+  isMcpMachineryRow,
   isMcpToolCall,
   mcpCommandOutput,
   prepareMcpToolCall,
@@ -84,6 +85,21 @@ const codexStartup = {
   }],
 };
 
+const codexStartupBroken = {
+  sessionUpdate: "tool_call",
+  toolCallId: "mcp_startup.canva",
+  kind: "other",
+  title: "mcp__canva__startup",
+  status: "failed",
+  content: [{
+    type: "content",
+    content: {
+      type: "text",
+      text: "MCP server `canva` failed to start: connect ECONNREFUSED 127.0.0.1:3001",
+    },
+  }],
+};
+
 const codexCall = {
   sessionUpdate: "tool_call",
   toolCallId: "exec-mcp-1",
@@ -155,24 +171,26 @@ describe("formatMcpArgs", () => {
   });
 });
 
-describe("hidden MCP rows", () => {
-  it("hides grok search_tool on the initial call, the titled update, and the SearchTool result", () => {
-    expect(isHiddenMcpRow(grokSearch)).toBe(true);
-    expect(isHiddenMcpRow(grokSearchUpdate)).toBe(true);
-    expect(isHiddenMcpRow(grokSearchDone)).toBe(true);
+describe("MCP machinery rows", () => {
+  it("classifies grok search_tool on the initial call, the titled update, and the SearchTool result", () => {
+    expect(isMcpMachineryRow(grokSearch)).toBe(true);
+    expect(isMcpMachineryRow(grokSearchUpdate)).toBe(true);
+    expect(isMcpMachineryRow(grokSearchDone)).toBe(true);
     expect(isMcpToolCall(grokSearch)).toBe(false);
   });
 
-  it("hides Codex's failed mcp__<server>__startup row", () => {
-    expect(isHiddenMcpRow(codexStartup)).toBe(true);
+  it("classifies every Codex mcp__<server>__startup row, not only the cancelled one", () => {
+    expect(isMcpMachineryRow(codexStartup)).toBe(true);
     expect(isMcpToolCall(codexStartup)).toBe(false);
+    expect(isMcpMachineryRow(codexStartupBroken)).toBe(true);
+    expect(isMcpToolCall(codexStartupBroken)).toBe(false);
   });
 
-  it("does not hide a successful MCP call or a shell command", () => {
-    expect(isHiddenMcpRow(grokUse)).toBe(false);
-    expect(isHiddenMcpRow(codexCall)).toBe(false);
-    expect(isHiddenMcpRow(claudePending)).toBe(false);
-    expect(isHiddenMcpRow(shell)).toBe(false);
+  it("does not treat a successful MCP call or a shell command as machinery", () => {
+    expect(isMcpMachineryRow(grokUse)).toBe(false);
+    expect(isMcpMachineryRow(codexCall)).toBe(false);
+    expect(isMcpMachineryRow(claudePending)).toBe(false);
+    expect(isMcpMachineryRow(shell)).toBe(false);
   });
 });
 
@@ -223,7 +241,7 @@ describe("claude MCP pending-then-filled", () => {
       _meta: { claudeCode: { toolName: "ToolSearch" } },
     };
     expect(isMcpToolCall(search)).toBe(false);
-    expect(isHiddenMcpRow(search)).toBe(false);
+    expect(isMcpMachineryRow(search)).toBe(false);
     expect(extractMcpInput(search)).toBeNull();
   });
 });
@@ -257,6 +275,7 @@ describe("100K display cap", () => {
       output: huge.slice(0, MAX_COMMAND_OUTPUT_CHARS),
       exitCode: null,
       truncated: true,
+      agentSawCut: false,
       cancelled: false,
     });
     expect(mcpCommandOutput(claudeDone, IN, "")).toBeNull();
@@ -264,16 +283,34 @@ describe("100K display cap", () => {
 });
 
 describe("prepareMcpToolCall", () => {
-  it("drops grok search_tool for the whole id, including a later update without the name", () => {
+  it("folds grok search_tool as kind:search for the whole id, including a later update without the name", () => {
     const state = createMcpPrepareState();
-    expect(prepareMcpToolCall(grokSearch, state)).toEqual({ action: "hide" });
-    expect(prepareMcpToolCall(grokSearchUpdate, state).action).toBe("hide");
-    expect(prepareMcpToolCall(grokSearchDone, state).action).toBe("hide");
+    const first = prepareMcpToolCall(grokSearch, state);
+    expect(first.action).toBe("emit");
+    expect(first.call).toMatchObject({
+      toolCallId: "call-search-0",
+      title: "search_tool",
+      kind: MCP_MACHINERY_KIND,
+    });
+    expect(first.call).not.toHaveProperty("detailInput");
+    expect(first.commandOutput).toBeNull();
+    expect(prepareMcpToolCall(grokSearchUpdate, state).call.kind).toBe(MCP_MACHINERY_KIND);
+    const nameless = { sessionUpdate: "tool_call_update", toolCallId: "call-search-0", status: "completed" };
+    expect(prepareMcpToolCall(nameless, state).call.kind).toBe(MCP_MACHINERY_KIND);
+    expect(prepareMcpToolCall(grokSearchDone, state).call.kind).toBe(MCP_MACHINERY_KIND);
   });
 
-  it("drops the Codex startup-failure row and still emits the real call", () => {
+  it("emits a cancelled Codex startup as a folded row and still emits the real call", () => {
     const state = createMcpPrepareState();
-    expect(prepareMcpToolCall(codexStartup, state)).toEqual({ action: "hide" });
+    const startup = prepareMcpToolCall(codexStartup, state);
+    expect(startup.action).toBe("emit");
+    expect(startup.call).toMatchObject({
+      toolCallId: "mcp_startup.everything",
+      title: "mcp__everything__startup",
+      kind: "other",
+      status: "failed",
+    });
+    expect(startup.call.content).toEqual(codexStartup.content);
     const first = prepareMcpToolCall(codexCall, state);
     expect(first.action).toBe("emit");
     if (first.action !== "emit") return;
@@ -288,8 +325,20 @@ describe("prepareMcpToolCall", () => {
       output: OUT,
       exitCode: null,
       truncated: false,
+      agentSawCut: false,
       cancelled: false,
     });
+  });
+
+  it("emits a genuine Codex MCP startup failure so the user can still reach it", () => {
+    const state = createMcpPrepareState();
+    const prepared = prepareMcpToolCall(codexStartupBroken, state);
+    expect(prepared.action).toBe("emit");
+    expect(prepared.call.status).toBe("failed");
+    expect(prepared.call.title).toBe("mcp__canva__startup");
+    expect(prepared.call.kind).toBe("other");
+    expect(JSON.stringify(prepared.call.content)).toContain("ECONNREFUSED");
+    expect(prepared.commandOutput).toBeNull();
   });
 
   it("states detailInput: null on Claude's pending row, then fills IN and OUT", () => {
@@ -315,6 +364,7 @@ describe("prepareMcpToolCall", () => {
       output: OUT,
       exitCode: null,
       truncated: false,
+      agentSawCut: false,
       cancelled: false,
     });
   });
@@ -415,6 +465,7 @@ describe("zero-argument MCP keeps IN and OUT", () => {
       output: "[]",
       exitCode: null,
       truncated: false,
+      agentSawCut: false,
       cancelled: false,
     });
 
@@ -524,7 +575,7 @@ describe("provider metadata wins over argument-key heuristics", () => {
       rawInput: { variant: "SearchTool", query: "x" },
       _meta: { claudeCode: { toolName: "mcp__everything__echo" } },
     };
-    expect(isHiddenMcpRow(call)).toBe(false);
+    expect(isMcpMachineryRow(call)).toBe(false);
     expect(isMcpToolCall(call)).toBe(true);
     expect(extractMcpInput(call)).toContain("SearchTool");
   });
