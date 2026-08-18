@@ -45,3 +45,7 @@ src/**/*.js.map
 
 # Local electron-updater feed override (see docs/desktop-update-spec.md).
 dev-app-update.yml
+
+# Release signing runbook — names the Apple Team ID, the enrolled identity and the
+# full signing pipeline. Private: this repo's docs/internal/ is otherwise public.
+docs/internal/macos-code-signing.md
