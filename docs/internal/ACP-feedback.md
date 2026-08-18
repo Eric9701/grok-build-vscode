@@ -12,16 +12,20 @@ sub-claims keep an older build: the 429 retry delay in §5 and the cross-product
 §9. Everything unconfirmed on this build is labelled in place and summarized under *Coverage of
 this pass*; nothing here is asserted as current on evidence we did not actually take.
 
-**A 1.0.5 pass ran on 2026-08-18** (grok CLI **1.0.5** `5115b46bc9`, one Windows 11 host):
-§14 and §15 are new and entirely 1.0.5; §4 gained three findings and had its method sweep re-run in
-full; §1's Plan passthrough was re-observed on a weaker sample; §9's reporting gap was re-confirmed.
-Permission behaviour is known to vary by machine (§9), so §14's two enforcement claims are scoped to
-that host until a second one confirms them. Everything not named here is still 0.2.117 evidence.
+**A 1.0.5 pass ran on 2026-08-18** (grok CLI **1.0.5** `5115b46bc9`, one Windows 11 host).
+§14 and §15 are new and entirely 1.0.5. **§2, §3, §6 and §7 were re-run in full and all still hold**
+— §7's fixed headline has not regressed, though its illustrative counts moved and are corrected.
+**§5, §8, §10 (partly), §11, §12 and §13 were also re-run** — and three sub-claims turned out to be
+fixed and have been withdrawn: `session/load` no longer replays internal turns as user content,
+child sessions no longer appear as top-level rows in `_x.ai/session/list`, and auto-titles now
+refresh after substantive work. §4 gained three findings and had its method sweep re-run in full;
+§1's Plan passthrough was re-observed on a weaker sample; §9's reporting gap was re-confirmed. Permission behaviour is known to
+vary by machine (§9), so §14's two enforcement claims are scoped to that host until a second one
+confirms them. Everything not named here is still 0.2.117 evidence.
 
-**§2 supersedes that basis (2026-08-15):** it was re-probed in full on grok CLI **1.0.4**
-(`d846eb93d9`) after a user report, and its finding changed shape — the image-aware `read_file`
-has shipped, but delegating clients cannot reach it. No other section has been re-run on 1.0.4, so
-treat the rest as 0.2.117 evidence until it is.
+**§2's finding first changed shape on 1.0.4 (2026-08-15)**, after a user report: the image-aware
+`read_file` had shipped, but delegating clients could not reach it. That remains true on 1.0.5,
+where it was re-run in full.
 
 ## Evidence discipline
 
@@ -72,7 +76,9 @@ one turn, so a client cannot treat a re-ask as a lifecycle guarantee.
 
 ## 2. Image `read_file` works only when the client does NOT delegate reads (archive §2.5)
 
-**LIVE-VERIFIED 1.0.4** (2026-08-15, Windows 11, authenticated account). Two things changed since
+**LIVE-VERIFIED 1.0.5** (2026-08-18) — re-run in full: the capability A/B, the write-delegation
+column, all three content-level escape hatches, the inline-image size floor and the Plan-mode edit
+refusal. First established on 1.0.4 (2026-08-15). Two things changed since
 0.2.117: the image-aware `read_file` branch has **shipped**, and we have isolated why ACP clients
 still cannot reach it. This section is no longer "the fix has not landed" — it is "the fix is
 unreachable by delegation".
@@ -141,6 +147,12 @@ handshake. User-attached images still go as inline pixel blocks. The "do not Rea
 that send path to cut transcript noise. Terminal plan-gating is untouched. This remains a
 coin-flip between two documented capabilities, not a design — §1's shell hole is still open.
 
+**New on 1.0.5, and it sharpens this ask.** With `fs` omitted entirely, the shipped branch returns a
+real ACP `image` content block — `content:[{type:"image",data:"iVBORw0…",mimeType:"image/png"}]`,
+with `rawOutput.ReadFile.ImageContent` beside it. So the shape a delegating client needs already
+exists and is already correct; what is missing is routing that same block through the delegated
+path. This is not "add an image format", it is "stop suppressing the one you already emit".
+
 **Ask:** route a binary/image path through the shipped image branch **even when the read is
 delegated** — a client advertising `fs.readTextFile` is offering to resolve text, not asking to
 disable vision. Failing that, either honor `writeTextFile` independently of `readTextFile`, or add a
@@ -155,7 +167,8 @@ the model is left hunting for an attachment it never received (*"the image wasn'
 
 ## 3. Rewind reports files it did not revert (archive §2.15)
 
-**LIVE-VERIFIED 0.2.117.** `_x.ai/rewind/execute` with `mode:"all"` can return a newly created path
+**LIVE-VERIFIED 1.0.5** (2026-08-18); first seen 0.2.117, so this has now stood for three minor
+versions with the fix present in published source. `_x.ai/rewind/execute` with `mode:"all"` can return a newly created path
 in `reverted_files` while leaving that file on disk, so the response tells a client that more was
 restored than actually was.
 
@@ -247,21 +260,36 @@ provide a structured command field).
 
 ## 5. Context and usage numbers have misleading scopes (archive §2.3, §2.13)
 
-**LIVE-VERIFIED 0.2.117.** The prompt **result**'s `_meta.totalTokens` is still a placeholder: a
-`/session-info` turn returned `{"totalTokens":0,"modelId":"grok-4.5",…}` while its own reply prose
-reported the true 5 474. The `session/update` **envelope** `_meta.totalTokens` is the trustworthy
-one — in a second 0.2.117 capture it carried 5 473, matching that run's prose exactly, and it
-climbs truthfully during a turn. The result value never does.
+**LIVE-VERIFIED 1.0.5 (2026-08-18); first established on 0.2.117.** The prompt **result**'s
+`_meta.totalTokens` is a placeholder zero on commands that run no inference: a `/session-info` turn
+returned `{"totalTokens":0,"modelId":"grok-4.6",…}` while its own prose reported
+`16995 / 500000 tokens`. On a **real inference turn** 1.0.5 now populates it — but with the *turn's
+usage total*, not the post-operation context size, alongside a new nested `usage` object
+(`modelCalls`, `apiDurationMs`, `costUsdTicks`, `modelUsage`, `numTurns`). So the field is no longer
+always-zero; it is now two different quantities depending on the turn.
 
-Not re-checked on 0.2.117 and **last LIVE-VERIFIED 0.2.112 / SOURCE-VERIFIED 2026-07-29**: the same
-placeholder zero on `/compact` (where the sibling `_meta` usage fields are a stale echo of the
-*previous* inference turn), a native `/compact` streaming no content at all, and the absence of any
-standard ACP `usage_update` notification.
+**Also re-confirmed on 1.0.5**, and no longer at their older labels: the stale echo (the sibling
+`_meta` usage fields repeat the *previous* inference turn byte-for-byte — now observed on
+`/session-info` as well as `/compact`), a native `/compact` streaming **no content at all** while
+compaction happens asynchronously afterwards (`chat_history.jsonl` 11 lines → 5 lines after the
+wait), and the absence of any standard ACP `usage_update` notification.
 
-`_x.ai/session/usage` is scoped to the agent **process**, not the session. Measured on 0.2.117:
-`totalTokens 31828, numTurns 2, costUsdTicks 180384000` (now with a welcome per-model `modelUsage`
-breakdown), then **all zeros** on the next call after `session/load` in a fresh process, and
-`numTurns: 1` after one further turn in a session that had had three. A cumulative-looking counter
+**Two hazards measured on 1.0.5 that the old wording gets wrong.** The envelope is no longer simply
+"the trustworthy one":
+
+- **`_meta.totalTokens` carries two different quantities on different update kinds inside one
+  turn** — `agent_thought_chunk` and `agent_message_chunk` reported 6753 (context) while
+  `available_commands_update` reported 16909 (turn usage), in the same turn. A client reading
+  "the latest envelope" gets whichever arrived last.
+- **The context figure resets on `session/load`** and understates until a turn completes in that
+  process: a session reporting 16995 reported 6839 after reload, then billed `inputTokens: 16995` on
+  the very next turn. Within a turn it also lags by one model call.
+
+`_x.ai/session/usage` is scoped to the agent **process**, not the session. Re-measured on 1.0.5
+(2026-08-18), identical in shape to 0.2.117: `totalTokens 33941, numTurns 2, costUsdTicks 72709000`
+(with a welcome per-model `modelUsage` breakdown), then **all zeros** on the next call after
+`session/load` in a fresh process, and `numTurns: 1` after one further turn in a session that had had
+three. A cumulative-looking counter
 that silently resets under-reports while still looking authoritative. Published source defines the
 fixed-point scale as **10^10 ticks per USD**, so that captured cost is `$0.0180384`.
 
@@ -284,7 +312,7 @@ error data and expose account quota independently of per-process token accountin
 
 ## 6. Edit diff delivery is inconsistent, and `old_line` is a post-edit coordinate (archive §2.10)
 
-**LIVE-VERIFIED 0.2.117** across five edit shapes (single replace, multi-line region replace,
+**LIVE-VERIFIED 1.0.5** (2026-08-18), first established on 0.2.117, across five edit shapes (single replace, multi-line region replace,
 whole-file overwrite, new file, and a replace-all whose replacement grows each site).
 
 - **The three delivery paths carry different metadata, never the same.** The pre-write echo carries
@@ -293,7 +321,7 @@ whole-file overwrite, new file, and a replace-all whose replacement grows each s
   `details[]`. A client seeding from the echo's shape gets nothing on replay, and vice versa.
 - **The first diff is wrong for whole-file writes.** On an overwrite the echo's diff block has
   `oldText: ""` while the completed update carries the real 58-byte prior content — and the echo's
-  `_meta` is `{}`, with no line numbers at all. A client painting the earliest diff paints a false
+  `_meta` key is absent entirely, so there are no line numbers at all. A client painting the earliest diff paints a false
   "new file".
 - **`details[].old_line` is located in post-edit text.** For a replace-all where each replacement
   adds two lines, the ground-truth pre-edit occurrences are lines 2, 4, 6, but `details[]` reports
@@ -313,16 +341,16 @@ the coordinate space — if `old_line` is post-edit, say so, or add a genuine pr
 
 ## 7. Fork's cut point is undocumented and moved between builds (archive §2.12)
 
-**LIVE-VERIFIED FIXED on 0.2.117 — the headline is a thank-you.** `_x.ai/session/fork` with
+**LIVE-VERIFIED FIXED, re-confirmed 1.0.5 (2026-08-18) — the headline is a thank-you.** `_x.ai/session/fork` with
 `targetPromptIndex` now truncates **both** logs at the same boundary. On a 2-prompt session a full
-fork copied 17 chat messages / 24 updates; `targetPromptIndex: 0` copied 10 / 10, and the second
+fork copied 11 chat messages / 10 updates; `targetPromptIndex: 0` copied 8 / 5, and the second
 prompt's text is absent from `chat_history.jsonl` **and** `updates.jsonl` on disk. The 0.2.101
 failure — the model forgetting turns that `session/load` still replayed to the user — is gone.
 
 Two residual issues stop us from shipping per-message branching:
 
 - **The index base changed with no signal.** On 0.2.101, `targetPromptIndex: 1` against a 2-prompt
-  session cut to the first prompt. On 0.2.117 the identical call copies the *whole* session, and `0`
+  session cut to the first prompt. On 0.2.117 and again on 1.0.5 the identical call copies the *whole* session, and `0`
   is the value that cuts there. Same wire call, different cut point, nothing on the wire
   distinguishes them.
 - **Out-of-range is silent.** `targetPromptIndex: 99` returns a successful **full** copy rather than
@@ -337,7 +365,9 @@ everything.
 
 ## 8. The shell dialect comes from the agent's environment, not the client (archive §2.9)
 
-**LIVE-VERIFIED 0.2.117.** In ACP mode grok hands raw commands to the client to execute, but every
+**LIVE-VERIFIED 0.2.117, re-confirmed 1.0.5** (2026-08-18: with `GROK_SHELL` unset the model's first
+user message carried `<user_info> … Shell: powershell`; set to `bash` it carried `Shell: bash`, same
+host, nothing in `clientCapabilities` consulted). In ACP mode grok hands raw commands to the client to execute, but every
 model-facing shell signal is derived from the grok host process. Measured: with `GROK_SHELL` unset
 the model's first user message carries `Shell: powershell`; with `GROK_SHELL=bash` it carries
 `Shell: bash`. Nothing in `clientCapabilities` is consulted, so detection and execution can diverge
@@ -385,42 +415,74 @@ discriminator is mutable prose.
 
 Subscription *state* is observable — `initialize._meta.defaultAuthMethodId` settled "which credential
 won?" on 0.2.112, and `_x.ai/settings/update` carries `subscription_tier_display`, `allow_access` and
-`gate_message`/`gate_url`/`gate_label` (all still present on 0.2.117). None of that classifies the
-error that ended a turn.
+`gate_message`/`gate_url`/`gate_label` (all re-confirmed present on 1.0.5, 2026-08-18). None of that
+classifies the error that ended a turn.
+
+**The mechanism this ask wants already exists on 1.0.5 — for one family.** Error envelopes now carry
+`data`, and the filesystem family is fully structured:
+`session/load` → `{"code":-32603,"message":"Path not found.","data":{"code":"FS_NOT_FOUND","detail":"…(os error 3)"}}`.
+Other families still carry `data` as a bare string (`"unknown session id"`, `"unknown model id"`).
+So the ask below is no longer "invent a convention" but "extend the one you already ship".
 
 **Client cost/workaround:** conservative text heuristics, to keep a subscription failure in chat
 instead of dropping the user into an unfixable login loop.
 
-**Ask:** put a stable machine-readable code in the error's `data` for the entitlement, policy and
-server-fault families.
+**Ask:** extend the structured `data: {code, detail}` convention you already ship for the filesystem
+family to the entitlement, policy and server-fault families.
+
+The 403 shape itself stays at its 0.2.101 label: we have never been able to provoke a 403 on an
+entitled account, and will not manufacture one by abusing quota.
 
 ## 11. Restore and subagent normalization remain client work (archive §2.6, §2.4)
 
-**Last LIVE-VERIFIED 0.2.112 (restore) and 0.2.101 (subagents); not re-checked on 0.2.117** —
-reproducing the subagent dialects costs several long delegated turns, so we left these labelled
-rather than re-assert them. `session/load` can replay `<system-reminder>` and protocol-marker turns
-as user content and cannot replay resolved permission requests. Subagent completion has foreground,
-Composer and background-poller dialects; a background start ack is marked completed before the real
-result arrives; result text duplicates structured output inside wrappers; child sessions appear as
-top-level rows and must be filtered by `sessionKind`.
+**LIVE-VERIFIED 1.0.5 (2026-08-18)** — re-probed in full, both halves. The subagent half cost about
+fifty seconds of wall clock, not the several long delegated turns we had assumed, so the old excuse
+for leaving it unverified is withdrawn.
 
-What we did re-confirm on 0.2.117 is the part that is genuinely fine: lifecycle events do ship, on
-both rails — `_x.ai/session_notification` live and `_x.ai/session/update` on replay, observed
-together in a single session. The remaining issue is that this two-rail contract and its payload
-kinds are undocumented.
+**Two things we used to report here are fixed — thank you.** `session/load` no longer replays
+internal turns as user content: a session whose `chat_history.jsonl` held an environment preamble,
+three `<system-reminder>` turns and a `<user_query>`-wrapped prompt replayed **exactly one**
+`user_message_chunk`, unwrapped, with zero hits for any of those markers in a full dump of the
+replay. And child sessions no longer appear as top-level rows: `_x.ai/session/list` for a cwd
+containing a spawned subagent returned **one** row, the parent. The child is still persisted as a
+sibling directory on disk (`summary.json` carries `session_kind: "subagent"`), so only a
+disk-scraping client still needs a filter — the RPC is clean.
 
-**Client cost/workaround:** replay filters, persisted and re-injected interaction state, wrapper
-stripping, task-id correlation, and separate live/replay lifecycle routing.
+What still stands:
 
-**Ask:** keep internal reminders out of user replay; persist resolved interactions; make a
-background "completed" mean completed; stop duplicating structured output in text; document both
-lifecycle rails.
+- **Resolved permissions do not replay.** Two permission requests answered `allow-once` in a live
+  session; after `session/load` in a fresh process, zero replayed. (Reproducing this on 1.0.5 needs a
+  *mutating* command — read-only shell like `echo` raises no permission request at all.)
+- **Result text duplicates structured output.** The completing `tool_call_update` carries the answer
+  as wrapped text (`<subagent_meta>`, `<subagent_result>` blocks), again in `rawOutput`, and a third
+  time on `subagent_finished`.
+- **A background start ack is marked completed before the result exists.** At t+4.5s:
+  `{"status":"completed","rawOutput":{"type":"Text","text":"Subagent started in background…"}}`. The
+  real output arrived at t+11.4s on `subagent_finished`.
+
+**New on 1.0.5, and it looks unintended:** a `session/update [available_commands_update]` arrives on
+the *parent's* connection carrying the **child's** `sessionId` — a session the client never opened
+and has no way to route.
+
+The lifecycle rails are richer than the archive records: `subagent_spawned` now carries
+`parent_prompt_id`, `capability_mode` and `role`; there is a new `subagent_progress` kind
+(`duration_ms`, `turn_count`, `tool_call_count`, `tokens_used`, `context_usage_pct`, `tools_used`);
+and `subagent_finished` gained `will_wake`. All still undocumented.
+
+**Client cost/workaround:** persisted and re-injected interaction state, wrapper stripping, task-id
+correlation, and separate live/replay lifecycle routing. The replay filter and the `sessionKind`
+filter are both retirable on 1.0.5.
+
+**Ask:** persist resolved interactions across `session/load`; make a background "completed" mean
+completed; stop duplicating structured output in text; do not push a child session's updates down the
+parent's connection; and document the `_x.ai/session_notification` lifecycle kinds, including the new
+`subagent_progress` and `will_wake`.
 
 ---
 
 ## 12. `ask_user_question` promises a free-text "Other" that never arrives (new)
 
-**LIVE-VERIFIED 0.2.117.** The agent-facing description of `ask_user_question` tells the model that
+**LIVE-VERIFIED 0.2.117, re-confirmed 1.0.5** (2026-08-18). The agent-facing description of `ask_user_question` tells the model that
 every question automatically carries an "Other" choice accepting free text, and that the typed text —
 not the literal label — is what comes back. Over ACP, `x.ai/ask_user_question` requests carry only
 the options the model itself supplied. A user therefore has no way to answer anything the listed
@@ -436,6 +498,11 @@ undocumented enough that neither reads as the sanctioned channel.
 place of the label. That leaves us guessing at a wording the CLI might one day use — the day grok
 starts sending its own, under any label we do not recognise, the user sees two of them.
 
+**New on 1.0.5:** the request gained a `toolCallId` (so a client no longer correlates by question
+text) and an undocumented `mode` field (`"default"` observed). `mode` is the obvious home for the
+structural marker this ask wants. The description also now instructs the model to append
+"(Recommended)" to a label, so CLI-authored labels can carry suffixes a client must not collide with.
+
 **Ask:** inject the promised "Other" server-side so it reaches clients with the request; failing
 that, document which of `answers`, `annotations.notes` and `chat_about_this` a free-text answer is
 supposed to travel in, and mark the option in the payload so clients can recognise it by structure
@@ -443,19 +510,36 @@ rather than by label.
 
 ## 13. Auto session titles track the opener's shape, not the work (new)
 
-**FIELD-REPORT** ([#98](https://github.com/phuryn/grok-build-vscode/issues/98)) — user-observed,
-not probed by us, on extension builds that already prefer the CLI's `session_summary` / generated
-title over the raw first prompt. The generated titles paraphrase the first message rather than the
-work: one multi-day effort produced "Wayfinder Continue Session", "Wayfinder Continue Development
-Session", "Wayfinder Continue Command Session" — and three distinct sessions all titled "Wayfinder
-Agent-Home GitHub Issue 4". Resume and history search by title are not usable in that state.
+**LIVE-VERIFIED 1.0.5 (2026-08-18)** — promoted from a field report
+([#98](https://github.com/phuryn/grok-build-vscode/issues/98)) and reproduced first-hand. Three
+sessions in one cwd, one turn each:
 
-**Client cost/workaround:** none available. The title text is generated by the CLI; the client
-already shows the best field there is and lets a manual rename win, but it cannot regenerate titles
-without a model call it has no business making.
+| opener | generated `session_summary` |
+|---|---|
+| "Continue working on the Wayfinder agent-home GitHub issue 4." | `Wayfinder agent-home GitHub issue 4` |
+| "Continue working on the Wayfinder agent-home GitHub issue 4." | `Continue Wayfinder agent-home GitHub issue 4` |
+| "Continue where we left off on the Wayfinder agent-home GitHub issue 4." | `Wayfinder agent-home GitHub issue 4` |
 
-**Ask:** bias summary/title generation toward topic + outcome rather than a Title-Case echo of the
-opener; refresh the auto-title after substantive work when the first-turn title stayed generic; and
+Two sessions with *different* openers got the *identical* title, and all three are echoes of the
+opener carrying nothing about the work. Resume and history search by title are not usable in that
+state. (Titles are no longer Title-Case on 1.0.5, so that detail of the original report is stale.)
+
+**One of the three asks shipped — thank you.** The auto-title now refreshes after substantive work:
+resuming the first session and doing three turns regenerated `Wayfinder agent-home GitHub issue 4`
+into `HTTP caching notes.md bullet points`, with `title_refresh_idx` stepping `"0"` → `"1"` and
+`_x.ai/session/list` reflecting it. There is a wire rail for it too —
+`_x.ai/session_notification [session_summary_generated]` and
+`session/update [session_info_update] {"title": …}` — so a client can follow a regenerated title live
+instead of polling `summary.json`. That part of the client-cost note below is obsolete.
+
+One inconsistency worth a line: the incremental catalog rail `_x.ai/sessions/changed` pushed
+`"title": null` for a session whose `summary.json` and `_x.ai/session/list` both carried a title.
+
+**Client cost/workaround:** none available for the title text itself. The client shows the best field
+there is and lets a manual rename win, but it cannot regenerate titles without a model call it has no
+business making.
+
+**Ask:** bias summary/title generation toward topic + outcome rather than an echo of the opener; and
 avoid emitting identical titles for distinct sessions started the same way (same continue command,
 same issue link).
 
@@ -581,7 +665,11 @@ advertises `reasoningEfforts` in `initialize._meta.modelState`).
 
 ## Coverage of this pass
 
-Added or re-run on **1.0.5** (2026-08-18, one Windows 11 host): §14 and §15 in full; §1's
+Added or re-run on **1.0.5** (2026-08-18, one Windows 11 host): §14 and §15 in full; §2, §3, §6 and
+§7 re-run in full against their original probes (two gaps in §2's re-run: the Plan-mode
+`terminal/create` and `session/request_permission` cells were not re-observed because the model
+attempted no shell in that turn, and `exit_plan_mode`/`planContent` was not exercised — both stay
+1.0.4 evidence); §1's
 passthrough re-observed (weaker sample — two read-only requests, mutating case not reproduced); §4's
 method sweep re-run in full, finding three previously unprobed methods; §9's reporting gap
 re-confirmed (`permission_mode` still `null`); and three §4 additions — the
@@ -599,6 +687,9 @@ content-level workarounds, and a Plan-mode hook comparison under both capability
 (which corrected our own first reading; see the note in that section). §1's Plan-mode claims were
 NOT re-run on 1.0.4 beyond what that comparison touched: the `terminal/create` passthrough was
 re-observed, but the five-requests-per-turn measurement stays at 0.2.117.
+
+Not verifiable on any pass, and deliberately not manufactured: §5's 429 retry delay and §10's 403
+shape, both of which need an account failure we will not provoke.
 
 Re-observed live on 0.2.117: §1, §2, §3, §4, §5 (except the 429), §6, §7, §8, §9 (the reporting
 gap). Left at an older named build because the trigger cannot be produced without abusing an
