@@ -3381,20 +3381,16 @@ textarea#input {
    the glyphs on the row's own foreground, so it survives a light theme where a
    solid fill would put near-black text on blue.
 
-   The active/hovered row is the awkward case: its background is
-   list-activeSelectionBackground, which is itself blue in most themes, so a blue
-   wash on top can disappear. There the highlight switches to a ring plus a
-   barely-there fill — visible against a blue selection without fighting it. */
+   The same treatment on the active/hovered row, deliberately. That row is
+   painted list-activeSelectionBackground, which is itself blue in most themes,
+   so this was first written with a separate currentColor ring in case the wash
+   vanished into it. Tested in both light and dark: it does not, and one rule
+   reads better than two. */
 .slash-hl {
   background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 30%, transparent);
   color: inherit;
   border-radius: 2px;
   font-weight: inherit;
-}
-.slash-item:hover .slash-hl,
-.slash-item.active .slash-hl {
-  background: color-mix(in srgb, currentColor 16%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent);
 }
 
 /* ---- "@" file-mention popover ---- */
