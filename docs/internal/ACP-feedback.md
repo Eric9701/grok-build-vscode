@@ -12,10 +12,11 @@ sub-claims keep an older build: the 429 retry delay in §5 and the cross-product
 §9. Everything unconfirmed on this build is labelled in place and summarized under *Coverage of
 this pass*; nothing here is asserted as current on evidence we did not actually take.
 
-**§14 and two §4 additions are 1.0.5 (2026-08-18):** the permission-rule gaps in §14, the
-leader multi-client finding and the completed-`tool_call_update` shape in §4 were measured on grok
-CLI **1.0.5** (`5115b46bc9`) on one Windows 11 host. Permission behaviour is known to vary by
-machine (§9), so those two §14 claims are scoped to that host until a second one confirms them.
+**A 1.0.5 pass ran on 2026-08-18** (grok CLI **1.0.5** `5115b46bc9`, one Windows 11 host):
+§14 and §15 are new and entirely 1.0.5; §4 gained three findings and had its method sweep re-run in
+full; §1's Plan passthrough was re-observed on a weaker sample; §9's reporting gap was re-confirmed.
+Permission behaviour is known to vary by machine (§9), so §14's two enforcement claims are scoped to
+that host until a second one confirms them. Everything not named here is still 0.2.117 evidence.
 
 **§2 supersedes that basis (2026-08-15):** it was re-probed in full on grok CLI **1.0.4**
 (`d846eb93d9`) after a user report, and its finding changed shape — the image-aware `read_file`
@@ -48,6 +49,12 @@ passed **five `terminal/create` requests** to the client. A normal ACP client ex
 Plan can mutate the workspace through the terminal while claiming edits are forbidden. This is the
 **fourth consecutive build** we have measured it on. Published source explains the split:
 `plan_mode_edit_gate` gates `AccessKind::Edit`, while bash, MCP and web fall through.
+
+**Re-run on 1.0.5 (2026-08-18).** The passthrough itself is unchanged — a plan turn still delivered
+`terminal/create` to the client, now on a **fifth consecutive build**. This sample was weaker than
+0.2.117's: two requests, both read-only directory listings, so the *mutating* case was not
+reproduced this time. We are not claiming the five-mutations measurement as current; we are claiming
+the boundary still isn't server-side, which is what the ask below is about.
 
 **Client cost/workaround:** we keep a plan-policy engine at `terminal/create` (load-bearing: Plan
 still hands mutating shells to the client) and at `fs/write_text_file` (kept for 0.2.x delegated
@@ -176,10 +183,20 @@ to guess exists).
 
 Push rails nothing announces: `_x.ai/settings/update`, `_x.ai/announcements/update`,
 `_x.ai/models/update`, `_x.ai/sessions/changed`, `_x.ai/queue/changed`,
-`_x.ai/mcp/servers_updated`, `_x.ai/mcp_initialized`, `_x.ai/session/prompt_complete`, plus the two
+`_x.ai/mcp/servers_updated`, `_x.ai/mcp_initialized`, `_x.ai/mcp/init_progress`,
+`_x.ai/mcp/server_status`, `_x.ai/session/prompt_complete`, plus the two
 lifecycle rails — `_x.ai/session_notification` live and `_x.ai/session/update` on replay — whose
 0.2.117 kinds include `tool_call_delta_chunk`, `response_completed`, `hook_execution`,
 `pending_interaction`, `interaction_resolved`, `session_summary_generated` and `turn_completed`.
+
+**Method sweep re-run on 1.0.5 (2026-08-18).** Everything previously found still exists —
+`_x.ai/session/list`, `/info`, `/usage`, `/state`, `/import`, `/updates`, `_x.ai/rewind/points`,
+`_x.ai/hooks/list`, `_x.ai/compact_conversation` — plus `_x.ai/session/fork`, `_x.ai/interject` and
+`_x.ai/rewind/execute`, none of which regressed. **Three more turned up that we had never probed:**
+`_x.ai/models/list`, `_x.ai/session/close`, and `_x.ai/mcp/list` — the last of which is the only
+surface that reports managed connectors truthfully (§15). `_x.ai/session_notification` also carries a
+`model_changed` kind not in the list above. The point is not the individual names; it is that a
+routine re-probe of a *documented-nowhere* surface keeps finding load-bearing methods by accident.
 
 `initialize` does advertise more than it used to (`x.ai/hooks`, `x.ai/fs_notify`,
 `x.ai/capabilities.toolOverrides`, `modelState`, `defaultAuthMethodId`, `sessionCapabilities.list`,
@@ -337,7 +354,9 @@ during `initialize`.
 
 ## 9. Effective permission policy is visible only in fragments (archive §2.11, §2.7)
 
-**LIVE-VERIFIED 0.2.117 for the reporting gap.** `_x.ai/settings/update` carries `permission_mode`
+**LIVE-VERIFIED 0.2.117, re-confirmed 1.0.5** (`permission_mode` and
+`auto_permission_mode_enabled` both still `null` on a default config on 2026-08-18).
+`_x.ai/settings/update` carries `permission_mode`
 and `auto_permission_mode_enabled`, both `null` on a default config, so a client cannot distinguish
 "not set" from "not reported" — and neither field names the winning rule or its source file. There
 is no getter: `_x.ai/settings`, `_x.ai/settings/get`, `_x.ai/settings/list`, `_x.ai/permissions/get`,
@@ -562,7 +581,10 @@ advertises `reasoningEfforts` in `initialize._meta.modelState`).
 
 ## Coverage of this pass
 
-Added on **1.0.5** (2026-08-18, one Windows 11 host): §14 in full, and three §4 additions — the
+Added or re-run on **1.0.5** (2026-08-18, one Windows 11 host): §14 and §15 in full; §1's
+passthrough re-observed (weaker sample — two read-only requests, mutating case not reproduced); §4's
+method sweep re-run in full, finding three previously unprobed methods; §9's reporting gap
+re-confirmed (`permission_mode` still `null`); and three §4 additions — the
 leader multi-client live-session measurement, the completed-`tool_call_update` shape across three
 tool kinds, and the `session/load` terminal-output replay. Also probed: the permission-option set on
 a forced `session/request_permission` under both `remember_tool_approvals` arms, and MCP tool-call
