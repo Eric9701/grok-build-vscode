@@ -56,6 +56,7 @@ import {
   decideSessionStart,
   endTurn,
   finishQueuedSendCommit,
+  runExclusiveHistoryLoad,
   pendingPermissionOptions,
   preferredPermissionAllowOption,
   rehydrateBusyChrome,
@@ -12892,15 +12893,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private async replayLoadedHistory(session: Session, load: () => Promise<void>): Promise<void> {
-    session.replaying = true;
-    this.emit(session, { type: "historyReplay", active: true });
-    try {
-      await load();
-    } finally {
-      this.emit(session, { type: "historyReplay", active: false });
-      session.replaying = false;
-      this.sendRemoteHistorySnapshot(session);
-    }
+    // Join an in-flight load rather than superseding it: session/load cannot
+    // be aborted, and a second stream would interleave into the same buffer.
+    // `replaying` stays a boolean so remotes still see "any replay in progress".
+    await runExclusiveHistoryLoad(session, load, {
+      onStart: () => this.emit(session, { type: "historyReplay", active: true }),
+      onFinish: () => {
+        this.emit(session, { type: "historyReplay", active: false });
+        this.sendRemoteHistorySnapshot(session);
+      },
+    });
   }
 
   // ---------- session pool ----------

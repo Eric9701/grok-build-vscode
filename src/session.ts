@@ -186,8 +186,18 @@ export class Session {
    * True only while replaying a resumed session (session/load). grok ≥0.2.33
    * echoes the *live* prompt back as user_message_chunk too, so this gates the
    * handler to replay-only — the live bubble already comes from send().
+   * Boolean on purpose: remotes must not see a partial transcript whenever
+   * *any* load is in progress (`runExclusiveHistoryLoad`).
    */
   replaying = false;
+
+  /**
+   * Exclusive in-flight history load (`replayLoadedHistory`). A second load on
+   * this session joins this promise instead of starting another `session/load`,
+   * so the first-to-finish cannot clear `replaying` while the other is still
+   * going.
+   */
+  loadInFlight?: Promise<void>;
 
   /**
    * Next Claude/Codex `usage_update.used` is getContextUsage occupancy, not
@@ -401,6 +411,45 @@ export type SessionStartDecision = "proceed" | "reuse" | "refuse-turn" | "refuse
 
 export const INTERRUPTED_SEND_TEXT =
   "The session restarted while this message was being sent, so delivery is uncertain. Check the conversation and send it again if needed.";
+
+/**
+ * One history load at a time per session. A second caller joins the in-flight
+ * load (does not run `load`) rather than superseding it: `session/load` cannot
+ * be aborted, and a second stream would interleave into the same buffer and
+ * leak a partial transcript through `emit`'s `!session.replaying` remote gate.
+ *
+ * `replaying` stays a boolean ("is any replay in progress") for that gate;
+ * `loadInFlight` is the exclusive token.
+ */
+export async function runExclusiveHistoryLoad(
+  session: { replaying: boolean; loadInFlight?: Promise<void> },
+  load: () => Promise<void>,
+  hooks: { onStart(): void; onFinish(): void },
+): Promise<"ran" | "joined"> {
+  if (session.loadInFlight) {
+    await session.loadInFlight;
+    return "joined";
+  }
+
+  let release!: () => void;
+  session.loadInFlight = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  session.replaying = true;
+  try {
+    hooks.onStart();
+    await load();
+    return "ran";
+  } finally {
+    try {
+      hooks.onFinish();
+    } finally {
+      session.replaying = false;
+      session.loadInFlight = undefined;
+      release();
+    }
+  }
+}
 
 export function decideSessionStart(
   session: {

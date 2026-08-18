@@ -10049,8 +10049,12 @@
   // Follow streaming output only while the user is pinned to the bottom. Once
   // they gesture away (the listener below clears state.stickToBottom) this
   // becomes a no-op, so they can read history while grok keeps thinking (#16).
+  // Replay (ACP session/load *and* in-memory buffer rebuilds) must not do this
+  // per element: each assignment forces layout, and a large load looks like
+  // infinite scroll. historyReplay end force-scrolls once.
   function scrollToBottom() {
-    if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (state.replaying || !state.stickToBottom) return;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
   // The floating "Scroll to bottom" button (#28) shows exactly when we've stopped
@@ -10064,8 +10068,10 @@
 
   // Always pull the view to the bottom and re-pin. For interactive activity the
   // user needs to see regardless of where they've scrolled: permission/question
-  // cards and their own just-sent message.
+  // cards and their own just-sent message. No-op during replay — the closing
+  // historyReplay frame is what lands the loaded conversation at the bottom.
   function forceScrollToBottom() {
+    if (state.replaying) return;
     setStickToBottom(true);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     updateScrollBtn();
@@ -10094,7 +10100,7 @@
     const h = messagesEl.clientHeight;
     if (h === lastScrollportHeight) return;
     lastScrollportHeight = h;
-    if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (state.stickToBottom && !state.replaying) messagesEl.scrollTop = messagesEl.scrollHeight;
   }).observe(messagesEl);
 
   // The scrollport's own border-box does not resize when content inside an
@@ -10103,10 +10109,10 @@
   // pinned; a deliberate scroll-up has cleared stickToBottom and is untouched.
   let contentFollowFrame = 0;
   new MutationObserver(() => {
-    if (!state.stickToBottom || contentFollowFrame) return;
+    if (state.replaying || !state.stickToBottom || contentFollowFrame) return;
     contentFollowFrame = requestAnimationFrame(() => {
       contentFollowFrame = 0;
-      if (state.stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (state.stickToBottom && !state.replaying) messagesEl.scrollTop = messagesEl.scrollHeight;
     });
   }).observe(messagesEl, {
     childList: true,
@@ -12715,6 +12721,8 @@
       case "historyReplay":
         if (msg.active) {
           if (state.replayDepth === 0) {
+            // Raise before any veil DOM so MutationObserver cannot pin-scroll.
+            state.replaying = true;
             state.suppressReplayTurn = false; // fresh outer replay starts unsuppressed
             state.skipUserBubble = false;
             state.repoSwitchPending = true;
@@ -12763,6 +12771,9 @@
           // Remote reconnect/cold-load delivers only a recent window. Label
           // the export so it cannot be read as the whole transcript.
           if (IS_REMOTE) state.exportWindowed = true;
+          // One layout after the whole transcript is in the DOM — not one per
+          // replayed row. Live streaming keeps using scrollToBottom per chunk.
+          forceScrollToBottom();
         }
         break;
       case "historyBatch":
