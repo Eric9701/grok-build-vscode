@@ -299,6 +299,24 @@
           "minimum": 100,
           "markdownDescription": "Max workspace files indexed for composer **@** file autocomplete. Default 5000 keeps a cold index build bounded; raise it (no upper limit) if files are missing from the `@` list in large repos. Applies on the next `@` after the setting changes. Very large values cost more time on the first rebuild."
         },
+        "grok.acp.promptIdleTimeoutMs": {
+          "type": "number",
+          "default": 1800000,
+          "minimum": 0,
+          "markdownDescription": "How long a live `session/prompt` may stay silent before the extension reports **ACP request timed out**. Any `session/update` or in-turn server request (permission, terminal, …) resets this idle clock. Default 1800000 (30 minutes). `0` disables the idle cap. Applies to newly started sessions (#117)."
+        },
+        "grok.acp.promptAbsoluteTimeoutMs": {
+          "type": "number",
+          "default": 86400000,
+          "minimum": 0,
+          "markdownDescription": "Hard wall-clock cap for one `session/prompt`, even while the turn is still streaming. Default 86400000 (24 hours). `0` disables the absolute cap. Applies to newly started sessions (#117)."
+        },
+        "grok.acp.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "markdownDescription": "Timeout for ACP methods other than `session/prompt` (`initialize`, `session/new`, `session/set_model`, …). Default 120000 (2 minutes). Applies to newly started sessions."
+        },
         "grok.defaultEffort": {
           "type": "string",
           "enum": [

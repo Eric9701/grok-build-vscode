@@ -18,6 +18,11 @@ import { CodexBackend } from "../src/codex-backend";
 function clientWithFakeProc(opts?: {
   backend?: AcpBackend;
   effort?: "high";
+  timeouts?: {
+    promptIdleTimeoutMs?: number;
+    promptAbsoluteTimeoutMs?: number;
+    requestTimeoutMs?: number;
+  };
 }): { client: AcpClient; written: string[] } {
   const client = new AcpClient({
     cliPath: "x",
@@ -25,6 +30,7 @@ function clientWithFakeProc(opts?: {
     log: () => {},
     ...(opts?.backend ? { backend: opts.backend } : {}),
     ...(opts?.effort ? { effort: opts.effort } : {}),
+    ...(opts?.timeouts ? { timeouts: opts.timeouts } : {}),
   });
   const written: string[] = [];
   (client as any).proc = {
@@ -374,6 +380,72 @@ describe("AcpClient.request timer lifecycle", () => {
       await p;
 
       expect(vi.getTimerCount()).toBe(before); // timeout cleared on response
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a silent session/prompt on the idle cap (#117)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientWithFakeProc({
+        timeouts: { promptIdleTimeoutMs: 1_000, promptAbsoluteTimeoutMs: 10_000 },
+      });
+      const p = (client as any).request("session/prompt", { sessionId: "s", prompt: [] });
+      const timedOut = expect(p).rejects.toThrow(/ACP request timed out: session\/prompt/);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await timedOut;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not time out a session/prompt that still receives session/update (#117)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientWithFakeProc({
+        timeouts: { promptIdleTimeoutMs: 1_000, promptAbsoluteTimeoutMs: 10_000 },
+      });
+      let settled = false;
+      const p = (client as any).request("session/prompt", { sessionId: "s", prompt: [] });
+      void p.then(() => { settled = true; }, () => { settled = true; });
+
+      await vi.advanceTimersByTimeAsync(800);
+      (client as any).onLine(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }));
+      await vi.advanceTimersByTimeAsync(800);
+      expect(settled).toBe(false);
+
+      (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+      await p;
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still enforces the absolute cap even when updates keep arriving (#117)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client } = clientWithFakeProc({
+        timeouts: { promptIdleTimeoutMs: 10_000, promptAbsoluteTimeoutMs: 1_000 },
+      });
+      const p = (client as any).request("session/prompt", { sessionId: "s", prompt: [] });
+      (client as any).onLine(JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "x" } },
+        },
+      }));
+      const timedOut = expect(p).rejects.toThrow(/ACP request timed out: session\/prompt/);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await timedOut;
     } finally {
       vi.useRealTimers();
     }

@@ -834,6 +834,16 @@ export class GrokSidebar {
     return this.providerConnectionState;
   }
 
+  /** Session-start snapshot of `grok.acp.*` timeouts (#117). */
+  private acpClientTimeouts() {
+    const cfg = this.host.getConfiguration("grok");
+    return {
+      promptIdleTimeoutMs: cfg.get<number>("acp.promptIdleTimeoutMs"),
+      promptAbsoluteTimeoutMs: cfg.get<number>("acp.promptAbsoluteTimeoutMs"),
+      requestTimeoutMs: cfg.get<number>("acp.requestTimeoutMs"),
+    };
+  }
+
   private locateProvider(provider: AcpProvider): string | undefined {
     if (provider === "grok") {
       if (this.cliPath && fs.existsSync(this.cliPath)) return this.cliPath;
@@ -6873,6 +6883,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       env,
       effort,
       log: (msg) => this.host.appendLine(msg),
+      timeouts: this.acpClientTimeouts(),
       ...(session.provider === "grok"
         ? { grokVersion: grokHandshakeVersion, grokVersionVerified }
         : { backend: this.createProviderBackend(session.provider) }),
