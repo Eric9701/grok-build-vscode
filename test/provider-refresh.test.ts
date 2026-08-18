@@ -8,6 +8,9 @@
  * connected, must not spawn a CLI for an account that was never connected, and
  * must never leave the button's spinner running after the probes are done.
  */
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { GrokSidebar } from "../src/sidebar";
 import { INBOUND_DISPOSITION, allowFromRemote } from "../src/remote-policy";
@@ -171,5 +174,49 @@ describe("Settings → Providers refresh", () => {
     for (const tier of ["read-only", "propose", "full"] as const) {
       expect(allowFromRemote("refreshProviders", tier)).toBe(false);
     }
+  });
+});
+
+/**
+ * Grok has no ACP session/delete — AcpClient.deleteSession throws for that
+ * provider — so a credential probe that calls newSession() in the workspace
+ * and then "best-effort" ACP-deletes leaves a summary-only shell in the
+ * project catalog. Cleanup is a scratch cwd plus a filesystem delete after
+ * the process exits.
+ */
+describe("Grok credential probe does not leave a project-catalog shell", () => {
+  const src = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+    "utf8",
+  );
+
+  const reprobe = (() => {
+    const start = src.indexOf("private async reprobeProviderCredentials(");
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf("\n  private ", start + 1);
+    return src.slice(start, end);
+  })();
+
+  it("still opens a session — that is the credential observation", () => {
+    expect(reprobe).toContain("await client.newSession()");
+    expect(reprobe).toContain("this.setProviderNeedsLogin(\"grok\", false)");
+  });
+
+  it("does not call Grok ACP deleteSession, which always throws", () => {
+    expect(reprobe).not.toContain("client.deleteSession");
+  });
+
+  it("probes in a scratch cwd so a leftover cannot land in the user's project", () => {
+    expect(reprobe).toContain("mkdtempSync");
+    expect(reprobe).toContain("grok-cred-probe-");
+    expect(reprobe).toContain("cwd: scratch");
+    expect(reprobe).not.toContain("cwd: this.workspaceRoot()");
+  });
+
+  it("deletes the session directory after the process exits", () => {
+    const dispose = reprobe.indexOf("await client.dispose()");
+    const remove = reprobe.indexOf("this.removeSessionFromDisk(probeId, scratch)");
+    expect(dispose).toBeGreaterThan(-1);
+    expect(remove).toBeGreaterThan(dispose);
   });
 });

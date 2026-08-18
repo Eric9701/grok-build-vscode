@@ -865,6 +865,51 @@ describe("indexSessions", () => {
     });
     expect(indexSessions({ fs, grokHome, cwd }).map((e) => e.id)).toEqual(["real"]);
   });
+
+  it("indexes a summary-only shell (no chat_history, no events) and marks it transcript-less", () => {
+    // The catalog must still list it — that is how a credential-probe leftover
+    // becomes an "Untitled" row — and the sweep needs hasTranscript === false
+    // so it can find the shell after it ages out of the newest-N window.
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor("019f0000-0000-7000-8000-000000000001")]: { isDir: true },
+      [path.join(dirFor("019f0000-0000-7000-8000-000000000001"), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id: "019f0000-0000-7000-8000-000000000001", cwd },
+          session_summary: "",
+          generated_title: "",
+          num_messages: 0,
+          updated_at: "2026-08-17T12:00:00Z",
+        }),
+        mtimeMs: 50,
+      },
+    });
+    const index = indexSessions({ fs, grokHome, cwd });
+    expect(index).toEqual([{
+      id: "019f0000-0000-7000-8000-000000000001",
+      mtimeMs: 50,
+      hasTranscript: false,
+    }]);
+    const [entry] = listSessions({ fs, grokHome, cwd, overrides: {} });
+    expect(entry.id).toBe("019f0000-0000-7000-8000-000000000001");
+    expect(entry.displayName.startsWith("Untitled (")).toBe(true);
+    expect(entry.numMessages).toBe(0);
+  });
+
+  it("marks a conversation with events.jsonl as having a transcript", () => {
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor("spoken")]: { isDir: true },
+      [path.join(dirFor("spoken"), "events.jsonl")]: { isDir: false, content: "{}\n", mtimeMs: 80 },
+      [path.join(dirFor("spoken"), "summary.json")]: { isDir: false, content: "{}", mtimeMs: 10 },
+    });
+    expect(indexSessions({ fs, grokHome, cwd })[0]).toMatchObject({
+      id: "spoken",
+      mtimeMs: 80,
+      hasTranscript: true,
+    });
+  });
 });
 
 describe("readSessionEntries", () => {
@@ -1065,6 +1110,26 @@ describe("clearSessions", () => {
     });
     const removed = clearSessions({ fs, grokHome, cwd });
     expect(removed).toEqual(["a"]);
+  });
+
+  it("removes a summary-only shell so it no longer reaches the catalog", () => {
+    const id = "019f0000-0000-7000-8000-000000000002";
+    const fs = buildFs({
+      [dir]: { isDir: true },
+      [dirFor(id)]: { isDir: true },
+      [path.join(dirFor(id), "summary.json")]: {
+        isDir: false,
+        content: JSON.stringify({
+          info: { id, cwd },
+          session_summary: "",
+          num_messages: 0,
+        }),
+      },
+    });
+    expect(indexSessions({ fs, grokHome, cwd }).map((e) => e.id)).toEqual([id]);
+    expect(clearSessions({ fs, grokHome, cwd })).toEqual([id]);
+    expect(indexSessions({ fs, grokHome, cwd })).toEqual([]);
+    expect(listSessions({ fs, grokHome, cwd, overrides: {} })).toEqual([]);
   });
 });
 

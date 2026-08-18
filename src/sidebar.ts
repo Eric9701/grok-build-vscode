@@ -1060,10 +1060,18 @@ export class GrokSidebar {
     if (provider === "claude") return this.warmConnectedClaudeModels();
     const cliPath = this.locateProvider("grok");
     if (!cliPath) return false;
+    // session/new is what actually proves the account, but grok has no ACP
+    // session/delete (AcpClient.deleteSession always throws for this provider).
+    // A leftover lands in ~/.grok/sessions/<urlencoded-cwd>/ as a summary-only
+    // directory the catalog lists as "Untitled" and the CLI cannot load.
+    // Probe in a scratch cwd so a failed cleanup cannot appear in the user's
+    // project; still delete the dir after the process exits.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "grok-cred-probe-"));
+    const envCwd = this.workspaceRoot() || scratch;
     const client = new AcpClient({
       cliPath,
-      cwd: this.workspaceRoot(),
-      env: this.buildEnv(this.workspaceRoot()),
+      cwd: scratch,
+      env: this.buildEnv(envCwd),
       log: (message) => this.host.appendLine(message),
       grokVersion: this.providerCliVersions.grok,
     });
@@ -1071,9 +1079,6 @@ export class GrokSidebar {
       await client.start();
       await client.newSession();
       this.setProviderNeedsLogin("grok", false);
-      if (client.sessionId) {
-        try { await client.deleteSession(client.sessionId); } catch { /* probe cleanup is best-effort */ }
-      }
       return true;
     } catch (error) {
       this.host.appendLine(`[grok] credential re-probe failed: ${errorDetail(error)}`);
@@ -1082,7 +1087,10 @@ export class GrokSidebar {
       }
       return false;
     } finally {
+      const probeId = client.sessionId;
       await client.dispose();
+      if (probeId) this.removeSessionFromDisk(probeId, scratch);
+      try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* leftover temp dir is harmless */ }
     }
   }
 
@@ -3247,7 +3255,9 @@ Only continue if you trust this code.`,
           const releaseCreator = async () => {
             if (creatorDisposed || !disposeAfter) return;
             creatorDisposed = true;
+            const probeId = client.sessionId;
             await client.dispose();
+            if (probeId) this.removeSessionFromDisk(probeId, sourcePath);
           };
           try {
             // The authoritative set BEFORE creating anything. Without it,
@@ -3818,7 +3828,11 @@ Only continue if you trust this code.`,
           r = { removed: true };
         }
       } finally {
-        if (disposeAfter) await client.dispose();
+        if (disposeAfter) {
+          const probeId = client.sessionId;
+          await client.dispose();
+          if (probeId) this.removeSessionFromDisk(probeId, this.workspaceRoot());
+        }
       }
       if (r === "unsupported") {
         return void this.host.showWarningMessage(
@@ -9797,6 +9811,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const grokHome = resolveGrokHome(process.env);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
+    // Tear ownerless live processes down BEFORE touching disk. deleteSession
+    // already does this: a grok process that still holds the directory makes
+    // the Windows delete fail (or the CLI re-persists the shell), and the row
+    // comes back as a live-empty "New session". Ownerless parked empties —
+    // New session clicks while the previous one was still priming — are the
+    // usual leftovers. Live-owned conversations stay protected below.
+    const repoCwdKeys = new Set(repoCwds.map(normalizeFsPath));
+    const exiting: Promise<void>[] = [];
+    for (const s of [...this.pool]) {
+      if (this.sessionHasLiveOwner(s)) continue;
+      if (!repoCwdKeys.has(normalizeFsPath(this.sessionCwd(s)))) continue;
+      exiting.push(this.disposeSession(s));
+    }
+    // AWAIT the exits. Firing dispose and moving on leaves `clearSessions`
+    // racing a Windows taskkill that still holds the directory — the delete
+    // then fails, or the CLI re-persists the shell, and the row returns as a
+    // live-empty "New session". That is the precise failure this block exists
+    // to prevent, so not waiting made it a no-op on the first clear.
+    if (exiting.length) await Promise.allSettled(exiting);
     // Adapter history is provider-owned, so make the cache authoritative before
     // a destructive combined-history action. Grok-only installs skip this.
     // A failed refresh must not fall through to the stale cache — that is how
@@ -9856,6 +9889,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         "info",
         "No history to clear.",
       );
+      // Ownerless live empties may have been disposed above without a catalog
+      // row. The rail still has to drop them.
+      this.postSessionsList();
+      this.sendLocalRepoSessionsPreview(cwd);
       this.refreshRemoteRepoPreview(clientId, cwd);
       return;
     }
@@ -9963,6 +10000,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // clearing any other one left the rail showing every row it had just deleted
     // — no confirmation, and a later delete on one of those ghosts failed with a
     // permissions error that was really "this is not there any more".
+    this.sendLocalRepoSessionsPreview(cwd);
     this.refreshRemoteRepoPreview(clientId, cwd);
     if (keptForAnotherOwner) this.reportProtectedSession(origin, clientId, "clear");
   }
@@ -13124,11 +13162,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  Runs on activation and after every new/opened session, so at most one empty
    *  session — the live one you are looking at — survives in the repo you are
    *  working in. Scans the newest slice by mtime so it stays bounded on a large
-   *  store, and reads content only for directories it has not already cleared.
-   *  Never touches a live session, one being loaded right now, one younger than
-   *  {@link SWEEP_MIN_AGE_MS}, a renamed or pinned one, a worktree session, or a
-   *  subagent's transcript. Best-effort throughout: a locked directory is logged
-   *  and skipped. */
+   *  store, plus every summary-only (`hasTranscript === false`) entry even when
+   *  it has aged out of that slice, and reads content only for directories it
+   *  has not already cleared. Never touches a live session, one being loaded
+   *  right now, one younger than {@link SWEEP_MIN_AGE_MS}, a renamed or pinned
+   *  one, a worktree session, or a subagent's transcript. Best-effort
+   *  throughout: a locked directory is logged and skipped. */
   private sweepEmptySessions(cwd: string = this.workspaceRoot()): void {
     if (!cwd) return;
     const grokHome = resolveGrokHome(process.env);
@@ -13159,7 +13198,27 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const index = indexSessions({ fs: defaultFs, grokHome, cwd, log });
     const removed: string[] = [];
     const now = Date.now();
-    for (const { id, mtimeMs } of index.slice(0, GrokSidebar.SWEEP_SCAN_LIMIT)) {
+    // Newest-N as before, PLUS every summary-only shell even when it has aged
+    // out of that window. The 300 cap is what let 312 transcript-less
+    // directories accumulate on a large store: they fall off the slice and
+    // are never looked at again. A dir with no events.jsonl is cheap to
+    // judge and is the shape a credential probe leaves behind.
+    const considered = new Set<string>();
+    const candidates: typeof index = [];
+    for (const entry of index.slice(0, GrokSidebar.SWEEP_SCAN_LIMIT)) {
+      considered.add(entry.id);
+      candidates.push(entry);
+    }
+    // DELIBERATELY not extended past that slice. Walking every
+    // `hasTranscript === false` entry would reach the shells that already fell
+    // off the scan — but `hasTranscript` is a snapshot, and another window can
+    // begin a session's first prompt after it was taken. The age gate does not
+    // help there: an OLD session that stayed open still looks stale, so an
+    // in-progress first write could be deleted, unrecoverably, from a second
+    // window. Historical shells are inert; a deleted conversation is not.
+    // Stopping their creation (see the probe's scratch cwd) is the fix that
+    // does not risk data to collect a tidier directory listing.
+    for (const { id, mtimeMs } of candidates) {
       if (liveIds.has(id) || proven.has(id)) continue;
       // The index is already sorted newest-first, so this could break — but a
       // clock skew or a touched file would then silently end the scan early.
@@ -13251,12 +13310,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  generation so any in-flight handlers/awaits bound to the old client bail.
    *  Recomputes the dot after removal — a reaped session that's still unread stays
    *  green; an idle/read one goes gray. */
-  private disposeSession(session: Session): void {
+  private disposeSession(session: Session): Promise<void> {
     const id = session.activeSessionId;
-    this.detachClient(session)?.dispose();
+    // Returned, not dropped. `dispose()` resolves when the process is actually
+    // gone — on Windows that is a `taskkill` still running — and a caller about
+    // to DELETE the session's directory must wait for it. Callers that only
+    // want the pool entry gone can keep ignoring this, exactly as before.
+    const exited = this.detachClient(session)?.dispose();
     this.pool.delete(session);
     this.remoteClients.deleteActiveValue(session);
     if (id) this.post({ type: "sessionDot", id, dot: this.dotForId(id) });
+    return exited ?? Promise.resolve();
   }
 
   /** Stamp a session's recency for LRU/TTL reaping (created / focused / made busy). */

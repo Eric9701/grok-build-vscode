@@ -192,6 +192,24 @@ describe("VS Code projects rail renderer", () => {
     expect(posted.some((p) => p.type === "selectRepo")).toBe(false);
   });
 
+  it("selects duplicate-titled New session rows by id and drops an empty-id entry", () => {
+    const { window, doc, posted } = h;
+    const api = railApi(window);
+    loadCatalog(api, "/work/alpha");
+    loadSessions(api, [
+      row("", "/work/alpha", "New session", 12),
+      row("live-a", "/work/alpha", "New session", 11),
+      row("live-b", "/work/alpha", "New session", 10),
+    ], "live-a");
+    const projectRows = [...doc.querySelectorAll(".rail-projects .rail-session")] as HTMLElement[];
+    expect(projectRows.map((el) => el.dataset.sessionId)).toEqual(["live-a", "live-b"]);
+    posted.length = 0;
+    projectRows[1].click();
+    expect(posted).toEqual([
+      { type: "resumeSession", id: "live-b", cwd: "/work/alpha" },
+    ]);
+  });
+
   it("highlights the clicked conversation immediately, before the host answers", () => {
     // The desktop rail shares a document with the chat, so its click can move
     // the highlight and be right. Here the rail is a separate webview and the

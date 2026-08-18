@@ -2153,6 +2153,34 @@ describe("rail transition (optimistic highlight)", () => {
     expect(activeName(doc, "alpha")).toBe("alpha one");
   });
 
+  it("selects duplicate-titled rows by id, and drops a row that has none", () => {
+    // "I can't select the other New session as titles are not unique" is the
+    // reported symptom. Selection has been id-keyed for a while; this pins that
+    // two "New session" rows with distinct ids are independently openable, and
+    // that a host entry with an empty id never becomes a clickable row (every
+    // such row would share dataset.sessionId === "" and steal each other's click).
+    const { doc, window, posted } = boot("/work/alpha");
+    dispatch(window, {
+      ...sessionsFrame([
+        { ...row("", "/work/alpha", "New session", 12) },
+        row("live-a", "/work/alpha", "New session", 11),
+        row("live-b", "/work/alpha", "New session", 10),
+        row("real", "/work/alpha", "Untitled (2026-08-17)", 9),
+      ]),
+      activeId: "live-a",
+    });
+    const names = sessionNames(doc, repoNames(doc).indexOf("alpha"));
+    expect(names.filter((n) => n === "New session")).toHaveLength(2);
+    expect(names).toContain("Untitled (2026-08-17)");
+    const rows = [...doc.querySelectorAll(".rail-session")] as HTMLElement[];
+    expect(rows.map((el) => el.dataset.sessionId)).toEqual(["live-a", "live-b", "real"]);
+
+    click(window, rows[1]);
+    expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
+      { type: "resumeSession", id: "live-b", cwd: "/work/alpha" },
+    ]);
+  });
+
   it("shows a new-conversation placeholder and replaces it without duplicating", () => {
     const { doc, window, posted } = boot("/work/alpha");
     dispatch(window, {

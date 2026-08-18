@@ -933,6 +933,12 @@ export interface SessionIndexEntry {
   /** Modification time of the session's `summary.json` (ms). A cheap proxy for last activity —
    *  grok rewrites that file (which also holds `updated_at`) on every turn. */
   mtimeMs: number;
+  /** True when `events.jsonl` exists. False is a summary-only shell — created
+   *  (often by a credential probe or an abandoned New session) and never spoken
+   *  to. The sweep uses this to find those shells even when they have fallen
+   *  outside the newest-N window. Set by {@link indexSessions}; omitted by
+   *  callers that only need identity + mtime. */
+  hasTranscript?: boolean;
 }
 
 export interface IndexDeps {
@@ -1029,7 +1035,7 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
   const platform = deps.platform ?? process.platform;
   const catalogs = sessionCatalogDirs({ fs, grokHome, cwd, platform });
   if (!catalogs.length) return [];
-  const byId = new Map<string, number>();
+  const byId = new Map<string, { mtimeMs: number; hasTranscript: boolean }>();
   for (const dir of catalogs) {
     let names: string[];
     try {
@@ -1043,6 +1049,7 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
       const resolvedSessionDir = path.join(dir, name);
       if (!isSessionDirChild(dir, resolvedSessionDir, platform)) continue;
       let st: { mtimeMs: number };
+      let hasTranscript = true;
       try {
         // Order by the TRANSCRIPT, not by summary.json. Opening a conversation
         // rewrites summary.json — the CLI rebuilds system_prompt.txt and
@@ -1062,15 +1069,24 @@ export function indexSessions(deps: IndexDeps): SessionIndexEntry[] {
           // No transcript yet — created but never spoken to. Fall back so it
           // still lists, and keep the dir-validity check for that case.
           st = fs.statSync(path.join(resolvedSessionDir, "summary.json"));
+          hasTranscript = false;
         } catch {
           continue;
         }
       }
       const prev = byId.get(name);
-      if (prev === undefined || st.mtimeMs > prev) byId.set(name, st.mtimeMs);
+      if (!prev || st.mtimeMs > prev.mtimeMs) {
+        byId.set(name, { mtimeMs: st.mtimeMs, hasTranscript });
+      } else if (hasTranscript) {
+        prev.hasTranscript = true;
+      }
     }
   }
-  const out: SessionIndexEntry[] = [...byId.entries()].map(([id, mtimeMs]) => ({ id, mtimeMs }));
+  const out: SessionIndexEntry[] = [...byId.entries()].map(([id, rec]) => ({
+    id,
+    mtimeMs: rec.mtimeMs,
+    hasTranscript: rec.hasTranscript,
+  }));
   out.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return out;
 }
