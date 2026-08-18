@@ -1053,6 +1053,13 @@ export class AcpClient extends EventEmitter {
       if (p) {
         this.pending.delete(ev.id as number);
         if (p.timer) clearTimeout(p.timer);
+        // A response is ACP traffic too, and the idle policy (#117) is "fire
+        // only if nothing has been heard". Concurrent in-turn calls answer
+        // during a long prompt — `_x.ai/interject`, `session/set_mode` — and
+        // each reply proves the peer is alive. Re-arm AFTER this entry is out
+        // of `pending`, so a prompt's own response doesn't arm a timer for a
+        // request that just finished.
+        this.touchPendingPromptTimers();
         if (ev.error) {
           if (this.provider !== "grok" && this.backend.isCredentialError(ev.error)) {
             this.emit("credentialError", ev.error);

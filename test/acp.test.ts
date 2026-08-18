@@ -429,6 +429,39 @@ describe("AcpClient.request timer lifecycle", () => {
     }
   });
 
+  it("does not time out a session/prompt when a concurrent request gets a response (#117)", async () => {
+    // A response is ACP traffic. During a long silent turn the only proof of
+    // life can be a reply to an in-turn call (`_x.ai/interject`,
+    // `session/set_mode`) — that must extend the prompt's idle window.
+    vi.useFakeTimers();
+    try {
+      const { client } = clientWithFakeProc({
+        timeouts: { promptIdleTimeoutMs: 1_000, promptAbsoluteTimeoutMs: 10_000 },
+      });
+      let settled = false;
+      const prompt = (client as any).request("session/prompt", { sessionId: "s", prompt: [] });
+      void prompt.then(() => { settled = true; }, () => { settled = true; });
+
+      // A second, concurrent call while the prompt is still open.
+      const other = (client as any).request("_x.ai/interject", { sessionId: "s", text: "hi" });
+      void other.catch(() => undefined);
+
+      await vi.advanceTimersByTimeAsync(800);
+      // Only the concurrent call answers — no session/update at all.
+      (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: 2, result: {} }));
+      await other;
+
+      await vi.advanceTimersByTimeAsync(800);
+      expect(settled).toBe(false); // would already have timed out without the re-arm
+
+      (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { stopReason: "end_turn" } }));
+      await prompt;
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("still enforces the absolute cap even when updates keep arriving (#117)", async () => {
     vi.useFakeTimers();
     try {
