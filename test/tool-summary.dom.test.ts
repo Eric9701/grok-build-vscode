@@ -10,6 +10,8 @@ import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch } from "./webview-harness";
 import { normalizeCodexUpdate } from "../src/codex-backend";
 import { createMcpPrepareState, prepareMcpToolCall } from "../src/mcp-tool";
+// @ts-expect-error — plain JS module, no types
+import { middleElide, TOOL_LABEL_MAX } from "../media/webview-helpers.js";
 
 const tc = (call: any) => ({ type: "toolCall", call });
 const close = (window: Window) => dispatch(window, { type: "messageChunk", text: "done" } as any);
@@ -166,6 +168,37 @@ describe("MCP tool names (#115)", () => {
       "mcp.canva.search-designs",
       "mcp.canva.list-folder-items",
     ]);
+  });
+
+  it("middle-elides a long MCP title and puts the full string on the label title", () => {
+    const title = "mcp.codex_apps.codex_document_control.list_documents";
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", kind: "other", title }));
+    close(window);
+    const lbl = doc.querySelector(".tool-flat .tool-label") as HTMLElement | null;
+    expect(lbl).not.toBeNull();
+    const shown = middleElide(title, TOOL_LABEL_MAX);
+    expect(lbl!.textContent).toBe(shown);
+    expect(lbl!.textContent).toContain("…");
+    expect(lbl!.textContent!.startsWith("mcp.")).toBe(true);
+    expect(lbl!.textContent!.endsWith("list_documents")).toBe(true);
+    expect(lbl!.title).toBe(title);
+  });
+
+  it("keeps the full title on grouped rows after flatten does not apply", () => {
+    const a = "mcp.codex_apps.codex_document_control.list_documents";
+    const b = "mcp.codex_apps.codex_document_control.create_document";
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", kind: "other", title: a }));
+    dispatch(window, tc({ toolCallId: "2", kind: "other", title: b }));
+    close(window);
+    const labels = [...doc.querySelectorAll(".tool-item-label")] as HTMLElement[];
+    expect(labels).toHaveLength(2);
+    expect(labels[0].textContent).toBe(middleElide(a, TOOL_LABEL_MAX));
+    expect(labels[0].title).toBe(a);
+    expect(labels[1].textContent).toBe(middleElide(b, TOOL_LABEL_MAX));
+    expect(labels[1].title).toBe(b);
+    expect(labels[0].textContent).not.toEqual(labels[1].textContent);
   });
 
   it("Grok's server__tool title still renders as the row", () => {

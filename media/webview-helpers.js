@@ -565,6 +565,78 @@
     return "Grok CLI /settings → Privacy → Coding data, retention, and training → Opt in.";
   }
 
+  // Unpredicted tool titles (MCP dotted names especially) share a long prefix,
+  // so tail-truncating them leaves a column of indistinguishable rows. Budget
+  // includes the ellipsis; an odd remainder goes to the tail (the distinguisher).
+  const TOOL_LABEL_MAX = 50;
+  function middleElide(text, max) {
+    const s = text == null ? "" : String(text);
+    const limit = Number(max);
+    if (!Number.isFinite(limit) || limit <= 0) return s;
+    if (s.length <= limit) return s;
+    if (limit === 1) return "…";
+    const keep = limit - 1;
+    const head = Math.floor(keep / 2);
+    const tail = keep - head;
+    return s.slice(0, head) + "…" + s.slice(s.length - tail);
+  }
+
+  // KEEP IN STEP with src/slash-filter.ts filterCommands: name prefix, then
+  // mid-name, then description-only; advertised order inside each tier (#110).
+  function filterCommands(commands, query) {
+    const list = Array.isArray(commands) ? commands : [];
+    const q = String(query || "").toLowerCase();
+    if (!q) return list;
+    const prefix = [];
+    const substring = [];
+    const description = [];
+    for (const c of list) {
+      if (!c || typeof c.name !== "string") continue;
+      const name = c.name.toLowerCase();
+      if (name.startsWith(q)) prefix.push(c);
+      else if (name.includes(q)) substring.push(c);
+      else if (String(c.description || "").toLowerCase().includes(q)) description.push(c);
+    }
+    return prefix.concat(substring, description);
+  }
+
+  // First case-insensitive run of `query` in `text`, as text parts. Never
+  // markup — the caller turns `hit` parts into a textContent span.
+  function highlightQueryParts(text, query) {
+    const src = text == null ? "" : String(text);
+    const q = query == null ? "" : String(query);
+    if (!src) return [];
+    if (!q) return [{ text: src, hit: false }];
+    const i = src.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return [{ text: src, hit: false }];
+    const parts = [];
+    if (i > 0) parts.push({ text: src.slice(0, i), hit: false });
+    parts.push({ text: src.slice(i, i + q.length), hit: true });
+    if (i + q.length < src.length) parts.push({ text: src.slice(i + q.length), hit: false });
+    return parts;
+  }
+
+  function appendHighlightedText(el, text, query) {
+    if (!el) return;
+    const doc = el.ownerDocument;
+    el.textContent = "";
+    if (!doc) {
+      el.textContent = text == null ? "" : String(text);
+      return;
+    }
+    for (const part of highlightQueryParts(text, query)) {
+      if (!part.text) continue;
+      if (part.hit) {
+        const mark = doc.createElement("span");
+        mark.className = "slash-hl";
+        mark.textContent = part.text;
+        el.appendChild(mark);
+      } else {
+        el.appendChild(doc.createTextNode(part.text));
+      }
+    }
+  }
+
   // Scannable program label for a command tool row: the executable (first token,
   // path-stripped, de-quoted) plus one following BARE word when it isn't a flag —
   // so `git status` / `npm test` stay distinguishable while a long `node -e "…"`
@@ -1516,7 +1588,7 @@
     return header.join("\n") + (body ? body + "\n" : "");
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

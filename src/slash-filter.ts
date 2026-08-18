@@ -34,16 +34,19 @@ export function getSlashQuery(text: string, caret: number): string | null {
 export function filterCommands(commands: SlashCmd[], query: string): SlashCmd[] {
   const q = query.toLowerCase();
   if (!q) return commands;
-  // Prefix first, then mid-name substring; both case-insensitive. Walk the
-  // advertised list once so each tier keeps its original order (#110).
+  // Name prefix, then mid-name, then description-only. Name hits always beat
+  // a description-only hit. Walk once so each tier keeps advertised order (#110).
+  // KEEP IN STEP with media/webview-helpers.js filterCommands.
   const prefix: SlashCmd[] = [];
   const substring: SlashCmd[] = [];
+  const description: SlashCmd[] = [];
   for (const c of commands) {
     const name = c.name.toLowerCase();
     if (name.startsWith(q)) prefix.push(c);
     else if (name.includes(q)) substring.push(c);
+    else if ((c.description || "").toLowerCase().includes(q)) description.push(c);
   }
-  return prefix.concat(substring);
+  return prefix.concat(substring, description);
 }
 
 /** Replace the partial `/q` token with `/<name> ` and return the new text + caret. */

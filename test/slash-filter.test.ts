@@ -88,6 +88,48 @@ describe("filterCommands", () => {
   it("returns empty when no matches", () => {
     expect(filterCommands(cmds, "zzz")).toEqual([]);
   });
+
+  it("includes a description-only match after every name match", () => {
+    const skills = [
+      { name: "web-design", description: "layout kit" },
+      { name: "compact", description: "Compress conversation" },
+      { name: "context", description: "Show tokens" },
+    ];
+    expect(filterCommands(skills, "compress").map((c) => c.name)).toEqual(["compact"]);
+    expect(filterCommands(skills, "kit").map((c) => c.name)).toEqual(["web-design"]);
+  });
+
+  it("ranks name matches above description-only matches", () => {
+    const skills = [
+      { name: "web-design", description: "UI components" },
+      { name: "ui-kit", description: "buttons" },
+      { name: "fluid", description: "contains ui" },
+      { name: "notes", description: "quick ui tips" },
+    ];
+    expect(filterCommands(skills, "ui").map((c) => c.name)).toEqual([
+      "ui-kit",
+      "fluid",
+      "web-design",
+      "notes",
+    ]);
+  });
+
+  it("keeps advertised order inside the description-only tier", () => {
+    const skills = [
+      { name: "alpha", description: "handles widgets" },
+      { name: "beta", description: "other" },
+      { name: "gamma", description: "more widgets" },
+    ];
+    expect(filterCommands(skills, "widgets").map((c) => c.name)).toEqual(["alpha", "gamma"]);
+  });
+
+  it("does not double-count a name hit that also matches the description", () => {
+    const skills = [
+      { name: "compact", description: "compact the conversation" },
+      { name: "notes", description: "compact leftovers" },
+    ];
+    expect(filterCommands(skills, "compact").map((c) => c.name)).toEqual(["compact", "notes"]);
+  });
 });
 
 describe("applySlashPick", () => {

@@ -3371,6 +3371,12 @@ textarea#input {
 }
 .slash-name { font-family: var(--vscode-editor-font-family); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .slash-desc { font-size: 11px; color: var(--vscode-descriptionForeground); overflow-wrap: anywhere; }
+.slash-hl {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 179, 8, 0.35));
+  color: inherit;
+  border-radius: 2px;
+  font-weight: inherit;
+}
 
 /* ---- "@" file-mention popover ---- */
 /* Container reuses .slash-popover (same anchor/box); rows are one-line

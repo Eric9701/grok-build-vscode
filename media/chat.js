@@ -411,6 +411,7 @@
     thoughtStartTime: null,
     activeToolGroupEl: null,
     slashFiltered: [],
+    slashQuery: "",
     slashActive: 0,
     // "@" file popover: the rows the host sent for the current token
     // (mentionResults), the highlighted row, and the token the rows answer —
@@ -1023,7 +1024,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -7655,7 +7656,7 @@
     return name && name.length < 30 ? `Running ${name}` : "Running tool";
   }
 
-  function toolLabel(call) {
+  function toolLabel(call, opts) {
     const name = toolName(call);
     const kind = toolKind(call);
     const verb = TOOL_VERB[name] || KIND_VERB[kind] || null;
@@ -7709,8 +7710,16 @@
     if (verb && target) return `${verb} ${target}`;
     if (verb) return verb;
     const title = (call.title || "").trim();
-    if (title) return title.length > 50 ? title.slice(0, 47) + "…" : title;
+    if (title) return opts && opts.full ? title : middleElide(title, TOOL_LABEL_MAX);
     return name || "tool";
+  }
+
+  // Flatten rebuilds the label span (details/chevron nodes move; the label
+  // does not), so title has to be painted wherever textContent is set.
+  function applyToolLabel(el, call) {
+    if (!el) return;
+    el.textContent = toolLabel(call);
+    el.title = toolLabel(call, { full: true });
   }
 
   // Category icon for a tool row (lucide outline; sized + colored by CSS via
@@ -7758,7 +7767,7 @@
       flat.innerHTML = toolIconFor(calls); // icon first
       const lbl = document.createElement("span");
       lbl.className = "tool-label";
-      lbl.textContent = toolLabel(calls[0]);
+      applyToolLabel(lbl, calls[0]);
       flat.appendChild(lbl);
       // #41: a lone command's expandable detail (full command + output) moves
       // into the flat row — moving the NODES keeps the pendingCommandDetails
@@ -7834,7 +7843,7 @@
     // still breaks onto its own full-width row.
     const itemLabel = document.createElement("span");
     itemLabel.className = "tool-item-label";
-    itemLabel.textContent = toolLabel(call);
+    applyToolLabel(itemLabel, call);
     item.appendChild(itemLabel);
     item._call = call;
     body.appendChild(item);
@@ -8183,10 +8192,7 @@
       if (idx >= 0) groupCalls._calls[idx] = merged;
     }
     const labelEl = item.querySelector(".tool-item-label");
-    if (labelEl) {
-      const next = toolLabel(merged);
-      if (next && next !== labelEl.textContent) labelEl.textContent = next;
-    }
+    if (labelEl) applyToolLabel(labelEl, merged);
     // A shell command that only shows up on the update still earns its IN/OUT
     // box; attachCommandDetails is a no-op once the row already has one.
     // MCP args that arrive after a pending row use the same attach.
@@ -8466,7 +8472,7 @@
       item._call.rawInput = { ...(item._call.rawInput || {}), path: diffPath };
     }
     const itemLabel = item.querySelector(".tool-item-label");
-    if (itemLabel && item._call) itemLabel.textContent = toolLabel(item._call);
+    if (itemLabel && item._call) applyToolLabel(itemLabel, item._call);
     const group = item.closest && item.closest(".tool-group");
     if (group && group.classList.contains("in-progress") && item._call) {
       const groupLabel = group.querySelector(".tool-group-label");
@@ -9113,7 +9119,7 @@
     const row = document.createElement("div");
     row.className = "subagent-tool";
     if (id) row.dataset.toolCallId = id;
-    row.textContent = toolLabel(call);
+    applyToolLabel(row, call);
     stream.appendChild(row);
     if (id) el._childTools.set(id, row);
     setSubagentLiveStatus(el, toolLabel(call));
@@ -9127,7 +9133,7 @@
       return;
     }
     const label = toolLabel(call);
-    if (label && label !== "tool") row.textContent = label;
+    if (label && label !== "tool") applyToolLabel(row, call);
     const status = String(call && call.status || "").toLowerCase();
     if (status === "failed") row.classList.add("subagent-tool-failed");
   }
@@ -11218,21 +11224,10 @@
 
   function updateSlash() {
     const m = (input.value.slice(0, input.selectionStart || 0)).match(/(?:^|\n)\/(\S*)$/);
-    if (!m) { slashPopover.hidden = true; state.slashFiltered = []; return; }
-    const q = m[1].toLowerCase();
-    // Prefix first, then mid-name substring; advertised order within each tier.
-    if (!q) {
-      state.slashFiltered = state.commands;
-    } else {
-      const prefix = [];
-      const substring = [];
-      for (const c of state.commands) {
-        const name = c.name.toLowerCase();
-        if (name.startsWith(q)) prefix.push(c);
-        else if (name.includes(q)) substring.push(c);
-      }
-      state.slashFiltered = prefix.concat(substring);
-    }
+    if (!m) { slashPopover.hidden = true; state.slashFiltered = []; state.slashQuery = ""; return; }
+    const q = m[1];
+    state.slashQuery = q;
+    state.slashFiltered = filterCommands(state.commands, q);
     if (!state.slashFiltered.length) { slashPopover.hidden = true; return; }
     state.slashActive = 0;
     renderSlash();
@@ -11242,18 +11237,19 @@
   function renderSlash() {
     slashPopover.innerHTML = "";
     let activeEl = null;
+    const q = state.slashQuery || "";
     state.slashFiltered.forEach((cmd, i) => {
       const el = document.createElement("div");
       el.className = `slash-item${i === state.slashActive ? " active" : ""}`;
       if (i === state.slashActive) activeEl = el;
       const name = document.createElement("div");
       name.className = "slash-name";
-      name.textContent = `/${cmd.name}`;
+      appendHighlightedText(name, `/${cmd.name}`, q);
       el.appendChild(name);
       if (cmd.description) {
         const d = document.createElement("div");
         d.className = "slash-desc";
-        d.textContent = cmd.description;
+        appendHighlightedText(d, cmd.description, q);
         el.appendChild(d);
       }
       el.onclick = () => pickSlash(cmd);

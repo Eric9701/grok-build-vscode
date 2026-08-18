@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
+import { Window } from "happy-dom";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -1525,5 +1526,80 @@ describe("computeLineDiff", () => {
     expect(r.truncated).toBe(true);
     expect(r.removed).toBe(40);
     expect(r.added).toBe(40);
+  });
+});
+
+describe("middleElide", () => {
+  const title = "mcp.codex_apps.codex_document_control.list_documents";
+
+  it("keeps a short string untouched", () => {
+    expect(middleElide("mcp.canva.search-designs", TOOL_LABEL_MAX)).toBe("mcp.canva.search-designs");
+  });
+
+  it("keeps both ends of a long MCP title", () => {
+    const shown = middleElide(title, TOOL_LABEL_MAX);
+    expect(shown.length).toBe(TOOL_LABEL_MAX);
+    expect(shown).toContain("…");
+    expect(shown.startsWith("mcp.codex")).toBe(true);
+    expect(shown.endsWith("list_documents")).toBe(true);
+    expect(shown).not.toBe(title);
+    // Tail-only cut was "mcp.codex_apps.codex_document_control.list_docu…"
+    expect(shown.endsWith("…")).toBe(false);
+  });
+
+  it("gives an odd leftover character to the tail", () => {
+    expect(middleElide("abcdefghijklmnopqrstuvwxyz", 9)).toBe("abcd…wxyz");
+  });
+});
+
+describe("filterCommands (webview copy)", () => {
+  it("includes description-only matches after name matches", () => {
+    const skills = [
+      { name: "web-design", description: "UI components" },
+      { name: "ui-kit", description: "buttons" },
+      { name: "notes", description: "quick ui tips" },
+    ];
+    expect(filterCommands(skills, "ui").map((c: { name: string }) => c.name)).toEqual([
+      "ui-kit",
+      "web-design",
+      "notes",
+    ]);
+  });
+});
+
+describe("highlightQueryParts", () => {
+  it("splits on the first case-insensitive run", () => {
+    expect(highlightQueryParts("Compress conversation", "con")).toEqual([
+      { text: "Compress ", hit: false },
+      { text: "con", hit: true },
+      { text: "versation", hit: false },
+    ]);
+    expect(highlightQueryParts("/ui-kit", "UI")).toEqual([
+      { text: "/", hit: false },
+      { text: "ui", hit: true },
+      { text: "-kit", hit: false },
+    ]);
+  });
+
+  it("leaves angle brackets as text parts, not markup", () => {
+    expect(highlightQueryParts("<img src=x onerror=alert(1)> design", "design")).toEqual([
+      { text: "<img src=x onerror=alert(1)> ", hit: false },
+      { text: "design", hit: true },
+    ]);
+  });
+});
+
+describe("appendHighlightedText", () => {
+  it("paints a match with text nodes so markup in the source stays inert", () => {
+    const win = new Window();
+    const el = win.document.createElement("div");
+    appendHighlightedText(el, "<img src=x onerror=alert(1)> design", "design");
+    expect(el.querySelector("img")).toBeNull();
+    expect(el.textContent).toBe("<img src=x onerror=alert(1)> design");
+    const hit = el.querySelector(".slash-hl");
+    expect(hit).not.toBeNull();
+    expect(hit!.textContent).toBe("design");
+    expect(el.childNodes.length).toBe(2);
+    expect(el.childNodes[0].nodeType).toBe(win.document.TEXT_NODE);
   });
 });
