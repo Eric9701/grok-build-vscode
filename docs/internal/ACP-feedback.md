@@ -494,6 +494,55 @@ sources were skipped in `grok inspect`. And send the remembered-grant options ov
 `remember_tool_approvals` is on, including `allow_always` in `session/request_permission`, so
 durable grants exist for non-TUI clients at all.
 
+## 15. MCP availability signals contradict what the session can actually do (new)
+
+**LIVE-VERIFIED 1.0.5** (2026-08-18, Windows 11, authenticated account with
+connectors active at grok.com). This supersedes the central claim of our public
+`ACP-MCP-ask.md`, which was measured on 1.0.0 and said managed connectors never
+reach an embedded client. **They do now — thank you.** The remaining problem is
+that nothing a client can read admits it.
+
+On a plain `grok agent stdio` session with `session/new {cwd, mcpServers: []}` —
+nothing client-supplied, nothing in `config.toml` for these servers —
+`_x.ai/mcp/list` reports three managed gateways, all ready, carrying **42 tools**:
+
+| server | source | status | tools |
+|---|---|---|---|
+| Canva | managed | ready | 32 |
+| Automations | managed | ready | 9 |
+| Voice | managed | ready | 1 |
+
+And they work: the model called `canva__search-designs` and `canva__get-design`
+and returned real designs, raising an ordinary `session/request_permission` for
+each. At that same moment, in that same session:
+
+| signal | reports |
+|---|---|
+| `_x.ai/mcp/servers_updated` | local (config-file) servers only |
+| `_x.ai/mcp_initialized` | `mcpToolCount: 0` |
+| `initialize._meta.mcpApps` | `false` |
+| `grok mcp list` / `doctor` / `inspect` | absent from all three |
+
+A client that trusts the advertised rails concludes the session has no MCP tools,
+and is wrong by 42. `mcpApps: false` is the most actively harmful of these,
+because it reads exactly like the capability flag a client should gate a
+connectors UI on.
+
+`_x.ai/mcp/list` — the one surface telling the truth — is advertised nowhere,
+which makes this a §4 problem as well: the correct behaviour is reachable only
+through private method knowledge.
+
+**Client cost/workaround:** to show a truthful connector list we must call an
+undocumented method and ignore three documented signals that disagree with it.
+Everything needed for a good UI is in that payload (`displayName`, `source`,
+`type`, per-session `enabled`/`status`, and per-tool `name`/`displayName`/
+`description`/`enabled`), so this is purely a discovery problem, not a data one.
+
+**Ask:** count managed tools in `_x.ai/mcp_initialized` and list managed servers
+on `_x.ai/mcp/servers_updated`; document `_x.ai/mcp/list` or fold it into those
+rails; and make `initialize._meta.mcpApps` mean something a client can gate on,
+or remove it. Full evidence and reproduction: `ACP-MCP-ask.md`.
+
 ## Closed since the archive
 
 Recorded so the list above is not read as static. Both are LIVE-VERIFIED on 0.2.117, not merely
@@ -518,7 +567,8 @@ leader multi-client live-session measurement, the completed-`tool_call_update` s
 tool kinds, and the `session/load` terminal-output replay. Also probed: the permission-option set on
 a forced `session/request_permission` under both `remember_tool_approvals` arms, and MCP tool-call
 shape via `session/new` `mcpServers` (see `research/mcp-shapes.md`, which covers codex and claude
-too and is outside this file's scope). `grok agent serve` was not probed, and permission-request
+too and is outside this file's scope), and the managed-connector surface in §15 — `_x.ai/mcp/list`,
+a live managed tool call, and the three rails that disagree with it. `grok agent serve` was not probed, and permission-request
 routing between two leader clients was not probed — this host emits no permission requests without a
 forcing `ask` rule. No other section was re-run on 1.0.5.
 

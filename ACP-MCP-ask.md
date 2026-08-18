@@ -46,7 +46,18 @@ That is the capability the original ask was for, and it works.
 
 ## What is still wrong — every discovery signal denies it
 
-In the same session, at the same moment, while those Canva calls were succeeding:
+The account has **three managed gateways, all `status: "ready"`, carrying 42 tools
+between them**:
+
+| `_x.ai/mcp/list` says | source | status | tools |
+|---|---|---|---|
+| Canva | managed | ready | 32 |
+| Automations | managed | ready | 9 |
+| Voice | managed | ready | 1 |
+| linear | local (stdio) | initializing | — |
+
+In the same session, at the same moment, while those Canva calls were succeeding
+and those 42 tools were reachable:
 
 | Signal a client can read | Reports |
 |---|---|
