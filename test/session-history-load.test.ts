@@ -114,6 +114,78 @@ describe("runExclusiveHistoryLoad", () => {
     expect(session.replaying).toBe(false);
     expect(session.loadInFlight).toBeUndefined();
   });
+
+  it("propagates the owner's failure to a joiner and clears the exclusive flags", async () => {
+    const session = new Session();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const boom = new Error("synthetic session/load failure");
+
+    const owner = runExclusiveHistoryLoad(session, async () => {
+      await gate;
+      throw boom;
+    }, { onStart() {}, onFinish() {} });
+
+    const joiner = runExclusiveHistoryLoad(session, async () => {
+      throw new Error("joiner load must not run");
+    }, {
+      onStart() { throw new Error("joiner onStart must not run"); },
+      onFinish() { throw new Error("joiner onFinish must not run"); },
+    });
+
+    expect(session.replaying).toBe(true);
+    expect(session.loadInFlight).toBeDefined();
+    release();
+
+    await expect(owner).rejects.toBe(boom);
+    await expect(joiner).rejects.toBe(boom);
+    expect(session.replaying).toBe(false);
+    expect(session.loadInFlight).toBeUndefined();
+  });
+
+  it("propagates an onFinish failure to a joiner", async () => {
+    const session = new Session();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const boom = new Error("snapshot failed");
+
+    const owner = runExclusiveHistoryLoad(session, async () => {
+      await gate;
+    }, {
+      onStart() {},
+      onFinish() { throw boom; },
+    });
+    const joiner = runExclusiveHistoryLoad(session, async () => {}, {
+      onStart() {},
+      onFinish() {},
+    });
+
+    release();
+    await expect(owner).rejects.toBe(boom);
+    await expect(joiner).rejects.toBe(boom);
+    expect(session.replaying).toBe(false);
+    expect(session.loadInFlight).toBeUndefined();
+  });
+
+  it("does not emit an unhandled rejection when a failed load has no joiner", async () => {
+    const session = new Session();
+    const seen: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { seen.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const owner = runExclusiveHistoryLoad(session, async () => {
+        throw new Error("synthetic session/load failure");
+      }, { onStart() {}, onFinish() {} });
+      await Promise.resolve();
+      await expect(owner).rejects.toThrow("synthetic session/load failure");
+      await Promise.resolve();
+      expect(seen).toEqual([]);
+      expect(session.replaying).toBe(false);
+      expect(session.loadInFlight).toBeUndefined();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });
 
 describe("replayLoadedHistory exclusive join", () => {

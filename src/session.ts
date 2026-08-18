@@ -195,7 +195,7 @@ export class Session {
    * Exclusive in-flight history load (`replayLoadedHistory`). A second load on
    * this session joins this promise instead of starting another `session/load`,
    * so the first-to-finish cannot clear `replaying` while the other is still
-   * going.
+   * going. Settles with the owner's outcome (rejects on failure).
    */
   loadInFlight?: Promise<void>;
 
@@ -418,6 +418,11 @@ export const INTERRUPTED_SEND_TEXT =
  * be aborted, and a second stream would interleave into the same buffer and
  * leak a partial transcript through `emit`'s `!session.replaying` remote gate.
  *
+ * The barrier settles with the owner's outcome: joiners return `"joined"` only
+ * after a successful load, and reject with the same reason the owner threw. A
+ * permanently attached no-op catch keeps a reject with no waiter from becoming
+ * unhandled.
+ *
  * `replaying` stays a boolean ("is any replay in progress") for that gate;
  * `loadInFlight` is the exclusive token.
  */
@@ -431,22 +436,35 @@ export async function runExclusiveHistoryLoad(
     return "joined";
   }
 
-  let release!: () => void;
-  session.loadInFlight = new Promise<void>((resolve) => {
-    release = resolve;
+  let resolveLoad!: () => void;
+  let rejectLoad!: (reason: unknown) => void;
+  const barrier = new Promise<void>((resolve, reject) => {
+    resolveLoad = resolve;
+    rejectLoad = reject;
   });
+  // A reject with no joiner must not become an unhandled rejection.
+  void barrier.catch(() => undefined);
+  session.loadInFlight = barrier;
   session.replaying = true;
+  let failure: { reason: unknown } | undefined;
   try {
     hooks.onStart();
     await load();
     return "ran";
+  } catch (reason) {
+    failure = { reason };
+    throw reason;
   } finally {
     try {
       hooks.onFinish();
+    } catch (reason) {
+      failure = { reason };
+      throw reason;
     } finally {
       session.replaying = false;
       session.loadInFlight = undefined;
-      release();
+      if (failure) rejectLoad(failure.reason);
+      else resolveLoad();
     }
   }
 }
