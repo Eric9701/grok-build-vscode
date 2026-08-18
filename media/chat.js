@@ -7841,8 +7841,9 @@
     if (call.toolCallId) state.toolItemsByToolCallId.set(call.toolCallId, item);
     // #41: a shell command's row carries an expandable detail — the FULL
     // command text immediately (grok truncates its titles), and the complete
-    // captured output once the terminal finishes.
-    const cmd = call.rawInput && typeof call.rawInput.command === "string" ? call.rawInput.command.trim() : "";
+    // captured output once the terminal finishes. MCP rows reuse this
+    // shell via host-normalized `detailInput` (never an empty pending block).
+    const cmd = commandDetailText(call);
     if (cmd) attachCommandDetails(item, cmd, call.toolCallId);
 
     hdr.innerHTML =
@@ -7860,7 +7861,7 @@
     // full command mid-run.
     el.classList.toggle(
       "cmd-single",
-      el._calls.length === 1 && !!(call.rawInput && (call.rawInput.command || call.rawInput.cmd)),
+      el._calls.length === 1 && !!commandDetailText(call),
     );
     hdr.onclick = () => {
       const expanded = !body.hidden;
@@ -8141,6 +8142,17 @@
    * sends an update carrying ONLY a toolCallId and `_meta` (the tool response),
    * which would erase everything gathered so far.
    */
+  // IN text for the shared command-detail shell. Shell rows use
+  // `rawInput.command` / `.cmd`. MCP rows use the host-stamped `detailInput`
+  // (`null` / absent = pending or not MCP; `{}` is a no-argument call).
+  function commandDetailText(call) {
+    const raw = (call && (call.rawInput || call.input)) || {};
+    if (typeof raw.command === "string" && raw.command.trim()) return raw.command.trim();
+    if (typeof raw.cmd === "string" && raw.cmd.trim()) return raw.cmd.trim();
+    if (typeof call.detailInput === "string" && call.detailInput.trim()) return call.detailInput.trim();
+    return "";
+  }
+
   function refreshToolRowFromUpdate(update) {
     const id = update && update.toolCallId;
     if (!id) return;
@@ -8158,7 +8170,18 @@
         merged[key] = { ...(item._call[key] || {}), ...update[key] };
       }
     }
+    if (Object.prototype.hasOwnProperty.call(update, "detailInput")) {
+      merged.detailInput = update.detailInput;
+    }
     item._call = merged;
+    // Flatten / summarize read `_calls`, not `item._call`. Grok's first
+    // use_tool row is titled "use_tool" until this update; leave the
+    // group's copy stale and the flat label stays the wrapper name.
+    const groupCalls = item.closest(".tool-group");
+    if (groupCalls && Array.isArray(groupCalls._calls)) {
+      const idx = groupCalls._calls.findIndex((c) => c && c.toolCallId === id);
+      if (idx >= 0) groupCalls._calls[idx] = merged;
+    }
     const labelEl = item.querySelector(".tool-item-label");
     if (labelEl) {
       const next = toolLabel(merged);
@@ -8166,10 +8189,12 @@
     }
     // A shell command that only shows up on the update still earns its IN/OUT
     // box; attachCommandDetails is a no-op once the row already has one.
-    const args = merged.rawInput || merged.input || {};
-    const cmd = typeof args.command === "string" ? args.command.trim()
-      : typeof args.cmd === "string" ? args.cmd.trim() : "";
+    // MCP args that arrive after a pending row use the same attach.
+    const cmd = commandDetailText(merged);
     if (cmd && !item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, id);
+    if (groupCalls && groupCalls.classList.contains("in-progress") && groupCalls._calls && groupCalls._calls.length === 1) {
+      groupCalls.classList.toggle("cmd-single", !!cmd);
+    }
   }
 
   function attachCommandOutput(details, msg) {
@@ -13071,6 +13096,28 @@
         setAllToolDetails(!!msg.open);
         break;
       case "commandOutput": {
+        // MCP output is keyed by toolCallId (always stated on that path).
+        // Do not fall back to a fabricated "Run …" shell row — the tool_call
+        // already owns the row, and argument text is not a correlation key.
+        const wantedId = typeof msg.toolCallId === "string" ? msg.toolCallId.trim() : "";
+        if (wantedId) {
+          let pending = state.pendingCommandDetails.find((p) => !p.done && p.toolCallId === wantedId);
+          if (!pending) {
+            const item = state.toolItemsByToolCallId.get(wantedId);
+            if (item) {
+              const cmd = commandDetailText(item._call)
+                || (typeof msg.command === "string" && msg.command.trim())
+                || "{}";
+              if (!item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, wantedId);
+              pending = state.pendingCommandDetails.find((p) => p.toolCallId === wantedId);
+            }
+          }
+          if (pending) {
+            pending.done = true;
+            attachCommandOutput(pending.details, msg);
+          }
+          break;
+        }
         // A finished shell command's captured output (#41). grok-build delegates
         // commands via terminal/create, so this path fires for it — attach to the
         // oldest un-served row with the exact same command; if none matches

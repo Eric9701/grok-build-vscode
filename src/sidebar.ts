@@ -71,6 +71,7 @@ import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
 import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import { createMcpPrepareState, prepareMcpToolCall } from "./mcp-tool";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
@@ -7070,10 +7071,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       session.historyEventCount += 1;
       this.emit(session, { type: "thoughtChunk", text });
     });
+    const mcpState = createMcpPrepareState();
     client.on("childStream", (ev: { childSessionId: string; route: UpdateRoute }) => {
       if (gen !== session.gen) return;
       const payload = childStreamFromRoute(ev.childSessionId, ev.route);
       if (!payload) return;
+      if (payload.event === "toolCall" || payload.event === "toolCallUpdate") {
+        const prepared = prepareMcpToolCall(payload.call, mcpState);
+        if (prepared.action === "hide") return;
+        this.emit(session, { type: "childStream", ...payload, call: prepared.call });
+        return;
+      }
       this.emit(session, { type: "childStream", ...payload });
     });
     client.on("mediaContent", (m: MediaRef) => {
@@ -7119,21 +7127,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       replayedCommandOutputs.add(id);
       this.emit(session, { type: "commandOutput", ...replayed });
     };
-    client.on("toolCall", (u) => {
-      if (gen !== session.gen) return;
+    const emitToolCallEvent = (type: "toolCall" | "toolCallUpdate", u: unknown) => {
+      const prepared = prepareMcpToolCall(u, mcpState);
+      if (prepared.action === "hide") return;
       session.inUserMessage = false;
       session.historyEventCount += 1;
-      this.emit(session, { type: "toolCall", call: u });
-      this.noteAdapterCompactSignal(session, u);
-      emitReplayedCommandOutput(u);
+      this.emit(session, { type, call: prepared.call });
+      this.noteAdapterCompactSignal(session, prepared.call);
+      if (prepared.commandOutput) {
+        this.emit(session, { type: "commandOutput", ...prepared.commandOutput });
+      }
+      emitReplayedCommandOutput(prepared.call);
+    };
+    client.on("toolCall", (u) => {
+      if (gen !== session.gen) return;
+      emitToolCallEvent("toolCall", u);
     });
     client.on("toolCallUpdate", (u) => {
       if (gen !== session.gen) return;
-      session.inUserMessage = false;
-      session.historyEventCount += 1;
-      this.emit(session, { type: "toolCallUpdate", call: u });
-      this.noteAdapterCompactSignal(session, u);
-      emitReplayedCommandOutput(u);
+      emitToolCallEvent("toolCallUpdate", u);
     });
     client.on("plan", (u) => {
       if (gen !== session.gen) return;

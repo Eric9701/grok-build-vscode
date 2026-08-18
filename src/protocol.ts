@@ -37,6 +37,13 @@ export interface ToolCallPayload {
   kind?: string;
   rawInput?: unknown;
   content?: unknown;
+  /**
+   * Host-normalized MCP argument text (`prepareMcpToolCall`). Always stated
+   * on recognized MCP rows: a string shows IN (`{}` is a no-argument call);
+   * `null` means pending (do not render an empty IN). Absent on non-MCP
+   * rows and older hosts — the client must not invent IN from that absence.
+   */
+  detailInput?: string | null;
   [k: string]: unknown;
 }
 
@@ -406,7 +413,10 @@ export type HostMsg =
   // optional on the wire because older hosts omit it; the client treats
   // absence as that older rule (`exitCode == null` → [Cancelled]), which was
   // correct then — those hosts never emitted replay-hydrated commandOutput.
-  | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean; cancelled?: boolean }
+  // `toolCallId` is always stated on MCP commandOutput (the ACP id the
+  // webview joins IN to OUT by). Shell output omits it — absence means join
+  // by `command` (this host's shell path, or an older host).
+  | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean; cancelled?: boolean; toolCallId?: string }
   // grok.expandCommandOutputs — pre-expand every command's IN/OUT detail.
   | { type: "expandCommandOutputs"; value: boolean }
   // grok.steerByDefault — send-while-busy skips the queue and steers (#52).

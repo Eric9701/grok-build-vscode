@@ -147,6 +147,40 @@ describe("exportSessionMarkdown", () => {
     expect(md).toContain("two");
   });
 
+  it("does not present an MCP row as a shell command", () => {
+    const mcpIn = JSON.stringify({ message: "MCPSHAPE_9931" }, null, 2);
+    const md = exportSessionMarkdown([
+      { type: "userMessage", text: "echo please", chips: [] },
+      {
+        type: "toolCall",
+        call: {
+          toolCallId: "exec-mcp-1",
+          kind: "other",
+          title: "mcp.everything.echo",
+          rawInput: { server: "everything", tool: "echo", arguments: { message: "MCPSHAPE_9931" } },
+          detailInput: mcpIn,
+        },
+      },
+      {
+        type: "commandOutput",
+        command: mcpIn,
+        toolCallId: "exec-mcp-1",
+        output: "Echo: MCPSHAPE_9931",
+        exitCode: null,
+        truncated: false,
+        cancelled: false,
+      },
+      { type: "agentEnd" },
+    ]);
+
+    expect(md).toContain("- mcp.everything.echo");
+    expect(md).toContain("Echo: MCPSHAPE_9931");
+    expect(md).toContain(mcpIn);
+    expect(md).not.toMatch(/^- Run `/m);
+    expect(md).not.toContain("$ {");
+    expect(md).not.toContain("Run `{`");
+  });
+
   it("flattens a historyBatch the same way a remote snapshot arrives", () => {
     const md = exportSessionMarkdown([
       {

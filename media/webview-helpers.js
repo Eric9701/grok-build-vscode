@@ -1324,9 +1324,15 @@
     const title = (typeof call.title === "string" && call.title.trim())
       || (typeof rec.kind === "string" && rec.kind)
       || "tool";
+    const detailInput = typeof call.detailInput === "string" && call.detailInput.trim()
+      ? call.detailInput.trim()
+      : "";
+    const parts = [];
+    if (detailInput) parts.push(detailInput);
+    if (rec.output) parts.push(rec.output);
     lines.push(`- ${title}`);
-    if (rec.output) {
-      lines.push("", exportFence(exportTrimmed(rec.output)));
+    if (parts.length) {
+      lines.push("", exportFence(exportTrimmed(parts.join("\n\n"))));
     }
     return lines;
   }
@@ -1365,6 +1371,19 @@
     };
 
     const attachCommand = (msg) => {
+      const id = typeof msg.toolCallId === "string" && msg.toolCallId.trim()
+        ? msg.toolCallId.trim()
+        : "";
+      if (id) {
+        let rec = tools.get(id);
+        if (!rec) {
+          rec = newToolRec(id);
+          tools.set(id, rec);
+          toolOrder.push(id);
+        }
+        if (typeof msg.output === "string") rec.output = msg.output;
+        return;
+      }
       const command = typeof msg.command === "string" ? msg.command : "";
       for (let i = toolOrder.length - 1; i >= 0; i--) {
         const rec = tools.get(toolOrder[i]);
@@ -1373,13 +1392,13 @@
           return;
         }
       }
-      const id = `cmd-${toolOrder.length}`;
-      const rec = newToolRec(id);
+      const fallbackId = `cmd-${toolOrder.length}`;
+      const rec = newToolRec(fallbackId);
       rec.command = command;
       rec.output = typeof msg.output === "string" ? msg.output : "";
       rec.kind = "execute";
-      tools.set(id, rec);
-      toolOrder.push(id);
+      tools.set(fallbackId, rec);
+      toolOrder.push(fallbackId);
     };
 
     const flushUser = () => {

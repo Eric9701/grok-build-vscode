@@ -19,14 +19,14 @@ describe("session/load commandOutput restore wiring (#44)", () => {
     expect(replayHook).toContain("replaying: session.replaying");
     expect(replayHook).toContain("rememberedCommands: replayedCommandsByToolCallId");
     expect(replayHook).toContain('this.emit(session, { type: "commandOutput", ...replayed })');
-    expect(replayHook).toContain("emitReplayedCommandOutput(u)");
+    expect(replayHook).toContain("prepareMcpToolCall");
+    expect(replayHook).toContain("emitReplayedCommandOutput(prepared.call)");
     expect(replayHook.indexOf('client.on("toolCall"')).toBeGreaterThan(-1);
-    expect(replayHook.indexOf("emitReplayedCommandOutput(u)")).toBeGreaterThan(
-      replayHook.indexOf('this.emit(session, { type: "toolCall", call: u })'),
+    expect(replayHook.indexOf("emitReplayedCommandOutput(prepared.call)")).toBeGreaterThan(
+      replayHook.indexOf("emitToolCallEvent"),
     );
     expect(replayHook.indexOf('client.on("toolCallUpdate"')).toBeGreaterThan(-1);
-    const updateEmit = replayHook.indexOf('this.emit(session, { type: "toolCallUpdate", call: u })');
-    expect(replayHook.indexOf("emitReplayedCommandOutput(u)", updateEmit)).toBeGreaterThan(updateEmit);
+    expect(replayHook).toContain('this.emit(session, { type, call: prepared.call })');
   });
 
   it("leaves the live terminal commandDone path on the same cap, not the replay helper", () => {

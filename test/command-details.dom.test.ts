@@ -749,7 +749,7 @@ describe("command details (#41)", () => {
     expect(doc.querySelector(".has-details")).toBeNull();
   });
 
-  it("a Codex MCP tool_call is not a command row — name shows, no IN/OUT", () => {
+  it("a Codex MCP tool_call without detailInput is not a command row — name shows, no IN/OUT", () => {
     const { window, doc } = bootWebview();
     const { update } = normalizeCodexUpdate({
       sessionUpdate: "tool_call",
@@ -780,6 +780,205 @@ describe("command details (#41)", () => {
     close(window);
     expect(doc.querySelector(".has-details")).toBeNull();
     expect(doc.querySelector(".tool-item-details")).toBeNull();
+  });
+});
+
+describe("MCP tool details (host-normalized detailInput + commandOutput)", () => {
+  const mcpIn = JSON.stringify({ message: "MCPSHAPE_9931" }, null, 2);
+  const mcpOut = (command: string, output: string) => ({
+    type: "commandOutput" as const,
+    command,
+    output,
+    exitCode: null,
+    truncated: false,
+    cancelled: false,
+  });
+
+  it("a decorated grok use_tool row shows IN immediately and OUT from commandOutput", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "call-use-1",
+        title: "use_tool",
+        kind: "other",
+        rawInput: { tool_name: "everything__echo", tool_input: { message: "MCPSHAPE_9931" } },
+        detailInput: mcpIn,
+      },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: { toolCallId: "call-use-1", title: "everything__echo", detailInput: mcpIn },
+    });
+    close(window);
+    dispatch(window, mcpOut(mcpIn, "Echo: MCPSHAPE_9931"));
+
+    const flat = doc.querySelector(".tool-flat.has-details") as HTMLElement;
+    expect(flat).not.toBeNull();
+    expect(flat.querySelector(".tool-label")!.textContent).toBe("everything__echo");
+    expect(flat.querySelector(".tool-cmd")!.textContent).toBe(mcpIn);
+    expect(flat.querySelector(".tool-cmd-output")!.textContent).toBe("Echo: MCPSHAPE_9931");
+  });
+
+  it("a decorated Codex MCP row uses the same IN/OUT shell, not a Run <program> label", () => {
+    const { window, doc } = bootWebview();
+    const { update } = normalizeCodexUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "exec-mcp-1",
+      kind: "execute",
+      title: "mcp.everything.echo",
+      rawInput: { server: "everything", tool: "echo", arguments: { message: "MCPSHAPE_9931" } },
+      _meta: { is_mcp_tool_call: true },
+    });
+    dispatch(window, { type: "toolCall", call: { ...update, detailInput: mcpIn } });
+    close(window);
+    dispatch(window, mcpOut(mcpIn, "Echo: MCPSHAPE_9931"));
+
+    expect(doc.querySelector(".tool-flat .tool-label")!.textContent).toBe("mcp.everything.echo");
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe(mcpIn);
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("Echo: MCPSHAPE_9931");
+  });
+
+  it("Claude pending MCP renders the title with no empty IN, then fills IN when args arrive", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "toolu_mcp_1",
+        title: "mcp__everything__echo",
+        kind: "other",
+        rawInput: {},
+        detailInput: null,
+      },
+    });
+    expect(doc.querySelector(".tool-item-label")!.textContent).toBe("mcp__everything__echo");
+    expect(doc.querySelector(".cmd-block")).toBeNull();
+    expect(doc.querySelector(".cmd-in-body")).toBeNull();
+
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "toolu_mcp_1",
+        title: "mcp__everything__echo",
+        rawInput: { message: "MCPSHAPE_9931" },
+        detailInput: mcpIn,
+      },
+    });
+    expect(doc.querySelector(".cmd-block")).not.toBeNull();
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe(mcpIn);
+    expect(doc.querySelector(".cmd-out")).toBeNull();
+
+    close(window);
+    dispatch(window, mcpOut(mcpIn, "Echo: MCPSHAPE_9931"));
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("Echo: MCPSHAPE_9931");
+  });
+
+  it("grok.expandCommandOutputs pre-expands a decorated MCP row", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
+    });
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "mcp-exp",
+        title: "mcp__everything__echo",
+        kind: "other",
+        detailInput: mcpIn,
+      },
+    });
+    close(window);
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    expect(details.hidden).toBe(false);
+    expect((doc.querySelector(".tool-flat") as HTMLElement).classList.contains("expanded")).toBe(true);
+  });
+
+  it("a zero-argument MCP row keeps IN {} and OUT joined by toolCallId", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "exec-mcp-empty",
+        title: "mcp.everything.list_folders",
+        kind: "other",
+        rawInput: { server: "everything", tool: "list_folders", arguments: {} },
+        detailInput: "{}",
+      },
+    });
+    close(window);
+    dispatch(window, {
+      type: "commandOutput",
+      command: "{}",
+      toolCallId: "exec-mcp-empty",
+      output: "[]",
+      exitCode: null,
+      truncated: false,
+      cancelled: false,
+    });
+    expect(doc.querySelector(".tool-flat .tool-label")!.textContent).toBe("mcp.everything.list_folders");
+    expect(doc.querySelector(".tool-cmd")!.textContent).toBe("{}");
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("[]");
+    expect(doc.querySelector(".tool-flat")!.textContent).not.toMatch(/Run /);
+  });
+
+  it("two same-argument MCP rows completing out of order keep their own OUT", () => {
+    const { window, doc } = bootWebview();
+    for (const id of ["exec-mcp-a", "exec-mcp-b"]) {
+      dispatch(window, {
+        type: "toolCall",
+        call: {
+          toolCallId: id,
+          title: id === "exec-mcp-a" ? "mcp.everything.echo-a" : "mcp.everything.echo-b",
+          kind: "other",
+          detailInput: mcpIn,
+        },
+      });
+    }
+    close(window);
+    dispatch(window, {
+      type: "commandOutput",
+      command: mcpIn,
+      toolCallId: "exec-mcp-b",
+      output: "out-b",
+      exitCode: null,
+      truncated: false,
+      cancelled: false,
+    });
+    dispatch(window, {
+      type: "commandOutput",
+      command: mcpIn,
+      toolCallId: "exec-mcp-a",
+      output: "out-a",
+      exitCode: null,
+      truncated: false,
+      cancelled: false,
+    });
+    const rows = [...doc.querySelectorAll(".tool-item")] as HTMLElement[];
+    expect(rows).toHaveLength(2);
+    const rowA = rows.find((row) => row.textContent?.includes("echo-a"));
+    const rowB = rows.find((row) => row.textContent?.includes("echo-b"));
+    expect(rowA?.querySelector(".tool-cmd-output")!.textContent).toBe("out-a");
+    expect(rowB?.querySelector(".tool-cmd-output")!.textContent).toBe("out-b");
+  });
+
+  it("does not invent IN from a null detailInput or from Claude content alone", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "toolu_empty",
+        title: "mcp__everything__echo",
+        kind: "other",
+        rawInput: {},
+        detailInput: null,
+        content: [{ type: "content", content: { type: "text", text: "Echo: MCPSHAPE_9931" } }],
+      },
+    });
+    close(window);
+    expect(doc.querySelector(".cmd-block")).toBeNull();
+    expect(doc.querySelector(".tool-cmd-output")).toBeNull();
   });
 });
 

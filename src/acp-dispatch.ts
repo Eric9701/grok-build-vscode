@@ -828,6 +828,12 @@ export type CommandOutputPayload = {
    * field; the client treats that absence as the previous null-exit rule.
    */
   cancelled: boolean;
+  /**
+   * Always stated on MCP `commandOutput` (the ACP `toolCallId`). The webview
+   * joins IN to OUT by this id. Shell `commandOutput` omits the field —
+   * absence means join by `command`.
+   */
+  toolCallId?: string;
 };
 
 export function capCommandOutput(
