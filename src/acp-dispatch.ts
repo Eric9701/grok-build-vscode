@@ -821,8 +821,13 @@ export type CommandOutputPayload = {
   output: string;
   exitCode: number | null;
   truncated: boolean;
-  /** Live terminal kill. Omitted on session/load hydration — null exit there is "not reported". */
-  cancelled?: boolean;
+  /**
+   * Always stated by this host. `true` is a live terminal kill (`commandDone`
+   * with no exit). `false` is everything else, including session/load
+   * hydration whose null exit means "not reported". Older hosts omit the
+   * field; the client treats that absence as the previous null-exit rule.
+   */
+  cancelled: boolean;
 };
 
 export function capCommandOutput(
@@ -850,7 +855,7 @@ export function commandOutputFromLiveTerminal(info: {
     output: capped.output,
     exitCode: info.exitCode,
     truncated: capped.truncated,
-    ...(info.exitCode == null ? { cancelled: true } : {}),
+    cancelled: info.exitCode == null,
   };
 }
 
@@ -952,8 +957,9 @@ function decodeCommandOutputBytes(value: unknown): string | undefined {
  *   (completed update). Prefer the string. No exit code is reported.
  * - A completed Claude update has no `rawInput`; pass the command remembered
  *   from the earlier `tool_call` by `toolCallId`.
- * Unknown / unmeasured shapes return null. Never sets `cancelled` — a
- * hydrated null exit is "not reported", not a live kill.
+ * Unknown / unmeasured shapes return null. Always states `cancelled: false`
+ * — a hydrated null exit is "not reported", not a live kill. Omitting the
+ * field would be indistinguishable from an older host's live kill.
  */
 export function commandOutputFromReplayedToolCall(
   call: unknown,
@@ -971,7 +977,7 @@ export function commandOutputFromReplayedToolCall(
   // to content (fenced on the completed row, a description on the first).
   if (typeof rawOutput === "string") {
     const capped = capCommandOutput(rawOutput, false);
-    return { command, exitCode: null, ...capped };
+    return { command, exitCode: null, ...capped, cancelled: false };
   }
   const raw = recognizedRawOutput(rawOutput);
   if (!raw) return null;
@@ -982,7 +988,7 @@ export function commandOutputFromReplayedToolCall(
     : typeof raw.formatted === "string" ? raw.formatted
     : decodeCommandOutputBytes(raw.output) ?? "";
   const capped = capCommandOutput(output, raw.truncated);
-  return { command, exitCode: raw.exitCode, ...capped };
+  return { command, exitCode: raw.exitCode, ...capped, cancelled: false };
 }
 
 /** Live turns must not emit from the tool_call — only session/load replay. */

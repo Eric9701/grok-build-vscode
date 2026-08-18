@@ -33,7 +33,7 @@ const out = (
   output,
   exitCode,
   truncated,
-  ...(cancelled ? { cancelled } : {}),
+  ...(cancelled !== undefined ? { cancelled } : {}),
 });
 const read = (id: string, path: string) => ({
   type: "toolCall",
@@ -478,6 +478,7 @@ describe("command details (#41)", () => {
       output: "REPLAY_MARKER_4b7c",
       exitCode: null,
       truncated: false,
+      cancelled: false,
     });
     dispatch(window, { type: "commandOutput", ...replayed! });
     dispatch(window, { type: "historyReplay", active: false });
@@ -489,7 +490,7 @@ describe("command details (#41)", () => {
     expect(doc.querySelector(".tool-cmd-output")!.textContent).not.toContain("```");
     expect(doc.querySelector(".cmd-out")!.textContent).not.toContain("Echo replay marker string");
     expect(doc.querySelector(".cmd-out-marker")).toBeNull();
-    expect(replayed).not.toHaveProperty("cancelled");
+    expect(replayed).toEqual(expect.objectContaining({ cancelled: false }));
   });
 
   it("a live Claude command keeps OUT after a buffer rebuild (conversation switch)", () => {
@@ -620,22 +621,35 @@ describe("command details (#41)", () => {
     expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("partial");
   });
 
-  it("null exit without cancelled is not reported, not a kill, even live", () => {
+  it("new-client / old-host: null exit with no cancellation field still shows [Cancelled]", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, exec("k", "sleep 999"));
+    close(window);
+    dispatch(window, out("sleep 999", "partial", null));
+
+    const outRow = doc.querySelector(".cmd-out") as HTMLElement;
+    expect(outRow.classList.contains("failed")).toBe(false);
+    expect(outRow.querySelector(".cmd-out-marker")!.textContent).toBe("[Cancelled] no exit code");
+    expect(outRow.querySelector(".cmd-out-marker")!.classList.contains("muted")).toBe(true);
+    expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("partial");
+  });
+
+  it("null exit with cancelled: false is not reported, not a kill", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("c", "echo hi"));
     close(window);
-    dispatch(window, out("echo hi", "hi\n", null));
+    dispatch(window, out("echo hi", "hi\n", null, false, false));
 
     expect(doc.querySelector(".tool-cmd-output")!.textContent).toBe("hi\n");
     expect(doc.querySelector(".cmd-out-marker")).toBeNull();
     expect(doc.querySelector(".cmd-out")!.classList.contains("failed")).toBe(false);
   });
 
-  it("null exit without cancelled and no output does not synthesise success", () => {
+  it("null exit with cancelled: false and no output does not synthesise success", () => {
     const { window, doc } = bootWebview();
     dispatch(window, exec("c", "true"));
     close(window);
-    dispatch(window, out("true", "", null));
+    dispatch(window, out("true", "", null, false, false));
 
     expect(doc.querySelector(".tool-cmd-output")).toBeNull();
     expect(doc.querySelector(".cmd-out-marker")).toBeNull();

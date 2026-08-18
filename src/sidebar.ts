@@ -7276,8 +7276,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Defensive display cap on top of the terminal's own byte limit — a huge
       // buffer must not stall postMessage/DOM (#41). Grok saw the same capped
       // buffer, so the cut is honest either way. Shared with session/load restore.
-      // Null exit here is a real kill; `cancelled` rides the buffered message
-      // so a later historyReplay rebuild still paints [Cancelled].
+      // Null exit here is a real kill; `cancelled` is always stated so a later
+      // historyReplay rebuild still paints [Cancelled], and so absence can only
+      // mean an older host.
       this.emit(session, { type: "commandOutput", ...commandOutputFromLiveTerminal(info) });
     });
     client.on("permissionRequest", (req: PermissionRequest) => {

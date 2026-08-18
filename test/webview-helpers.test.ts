@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -1342,7 +1342,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       rawOutput: { type: "Bash", output: [1, 2, 3], exit_code: 0, truncated: false },
       content: [{ type: "content", content: { type: "text", text: "v20.19.0\n10.8.2" } }],
     });
-    expect(r).toEqual({ output: "v20.19.0\n10.8.2", exitCode: 0, truncated: false });
+    expect(r).toEqual({ output: "v20.19.0\n10.8.2", exitCode: 0, truncated: false, cancelled: false });
   });
 
   it("decodes rawOutput.output bytes when there's no content text", () => {
@@ -1356,7 +1356,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       rawOutput: { type: "Bash", exit_code: 1, truncated: true },
       content: [{ type: "content", content: { type: "text", text: "boom" } }],
     });
-    expect(r).toEqual({ output: "boom", exitCode: 1, truncated: true });
+    expect(r).toEqual({ output: "boom", exitCode: 1, truncated: true, cancelled: false });
   });
 
   it("returns null when there's no command result to show", () => {
@@ -1370,7 +1370,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       status: "completed",
       rawOutput: "REPLAY_MARKER_4b7c",
       content: [{ type: "content", content: { type: "text", text: "```console\nREPLAY_MARKER_4b7c\n```" } }],
-    })).toEqual({ output: "REPLAY_MARKER_4b7c", exitCode: null, truncated: false });
+    })).toEqual({ output: "REPLAY_MARKER_4b7c", exitCode: null, truncated: false, cancelled: false });
   });
 
   it("applies the same 100K display cap as the host restore path", () => {
@@ -1383,6 +1383,7 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
       output: "x".repeat(MAX_COMMAND_OUTPUT_CHARS),
       exitCode: null,
       truncated: true,
+      cancelled: false,
     });
     expect(fromString!.output).not.toContain("```");
     const fromContent = extractToolResultOutput({
@@ -1393,6 +1394,28 @@ describe("extractToolResultOutput (cursor/Composer self-executed command result)
     expect(fromContent?.truncated).toBe(true);
     expect(capCommandOutput("short", false)).toEqual({ output: "short", truncated: false });
     expect(capCommandOutput("already", true)).toEqual({ output: "already", truncated: true });
+  });
+});
+
+describe("commandOutputWasCancelled", () => {
+  it("trusts an explicit cancelled flag from a host that states it", () => {
+    expect(commandOutputWasCancelled({ exitCode: null, cancelled: true })).toBe(true);
+    expect(commandOutputWasCancelled({ exitCode: null, cancelled: false })).toBe(false);
+    expect(commandOutputWasCancelled({ exitCode: 0, cancelled: false })).toBe(false);
+    expect(commandOutputWasCancelled({ exitCode: 1, cancelled: true })).toBe(true);
+  });
+
+  it("falls back to null exit when an older host omitted the field", () => {
+    expect(commandOutputWasCancelled({ exitCode: null })).toBe(true);
+    expect(commandOutputWasCancelled({ command: "sleep 999", output: "partial", exitCode: null, truncated: true })).toBe(true);
+    expect(commandOutputWasCancelled({ exitCode: 0 })).toBe(false);
+    expect(commandOutputWasCancelled({ exitCode: 1 })).toBe(false);
+  });
+
+  it("does not treat a missing payload as cancelled", () => {
+    expect(commandOutputWasCancelled(null)).toBe(false);
+    expect(commandOutputWasCancelled(undefined)).toBe(false);
+    expect(commandOutputWasCancelled({})).toBe(false);
   });
 });
 

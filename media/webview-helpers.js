@@ -655,9 +655,11 @@
   // terminal `commandOutput` path, never gets output for those rows. Recover the
   // output + exit code here so the box can render it, matched reliably by
   // `toolCallId` (Composer completes commands OUT of issue order, so no order-based
-  // guess is safe). Returns `{output, exitCode, truncated}` or null when the update
-  // carries no command result. Pure. Claude's string rawOutput is preferred over
-  // fenced `content`; the 100K cap matches the host restore path.
+  // guess is safe). Returns `{output, exitCode, truncated, cancelled}` or null
+  // when the update carries no command result. Pure. Claude's string rawOutput
+  // is preferred over fenced `content`; the 100K cap matches the host restore
+  // path. Always states `cancelled: false` — this path is never a live
+  // terminal kill, and omitting the field would trip the old-host fallback.
   function extractToolResultOutput(call) {
     if (!call || typeof call !== "object") return null;
     const ro = call.rawOutput;
@@ -666,7 +668,7 @@
     // the tool description on the first row. Prefer the string.
     if (typeof ro === "string") {
       const capped = capCommandOutput(ro, false);
-      return { output: capped.output, exitCode: null, truncated: capped.truncated };
+      return { output: capped.output, exitCode: null, truncated: capped.truncated, cancelled: false };
     }
     // Output text: the decoded `content` text is cleanest; else decode rawOutput.output
     // (a byte array on the wire), else a plain string.
@@ -688,7 +690,17 @@
       : null;
     if (!output && exitCode == null) return null; // nothing to show
     const capped = capCommandOutput(output, !!(ro && ro.truncated));
-    return { output: capped.output, exitCode, truncated: capped.truncated };
+    return { output: capped.output, exitCode, truncated: capped.truncated, cancelled: false };
+  }
+
+  // Paint [Cancelled] only for a live kill. A host that distinguishes kill from
+  // "exit not reported" always includes `cancelled` (true or false) on every
+  // commandOutput. Absence is an older host, which never hydrated replay
+  // commandOutput, so null exit was a kill.
+  function commandOutputWasCancelled(msg) {
+    if (!msg || typeof msg !== "object") return false;
+    if (Object.prototype.hasOwnProperty.call(msg, "cancelled")) return msg.cancelled === true;
+    return msg.exitCode === null;
   }
 
   // Parse the <vscode-context> envelope that prompt-builder.ts wraps around the
@@ -1467,7 +1479,7 @@
     return header.join("\n") + (body ? body + "\n" : "");
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

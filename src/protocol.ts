@@ -400,11 +400,12 @@ export type HostMsg =
   | { type: "runProgress"; update: RunProgressUpdate }
   // A finished shell command's full text + captured output (#41). Live grok
   // snapshots at terminal/release; session/load hydrates the same message from
-  // the replayed tool_call (`commandOutputForToolCall`). exitCode null is not
-  // enough to paint [Cancelled]: only `cancelled: true` (live `commandDone`
-  // with no exit) means the user killed it. Hydrated / Claude payloads omit
-  // the field — older clients ignore it and keep their previous null-exit
-  // behaviour, so they cannot start showing a marker the host did not assert.
+  // the replayed tool_call (`commandOutputForToolCall`). This host always
+  // states `cancelled` (true = live `commandDone` with no exit; false = not a
+  // kill, including hydrated / Claude "exit not reported"). The field stays
+  // optional on the wire because older hosts omit it; the client treats
+  // absence as that older rule (`exitCode == null` → [Cancelled]), which was
+  // correct then — those hosts never emitted replay-hydrated commandOutput.
   | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean; cancelled?: boolean }
   // grok.expandCommandOutputs — pre-expand every command's IN/OUT detail.
   | { type: "expandCommandOutputs"; value: boolean }

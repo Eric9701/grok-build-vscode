@@ -44,7 +44,7 @@ describe("session/load commandOutput restore wiring (#44)", () => {
     expect(end).toBeGreaterThan(start);
     const attach = chat.slice(start, end);
     expect(attach).not.toContain("if (!state.replaying)");
-    expect(attach).toContain("msg.cancelled");
+    expect(attach).toContain("commandOutputWasCancelled(msg)");
   });
 
   it("does not suppress Claude string rawOutput just because historyReplay is on", () => {
