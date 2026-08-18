@@ -118,5 +118,5 @@ reading args at call time gets nothing. The response also appears twice — once
 `_meta.claudeCode.toolResponse` one update before completion, then in
 `rawOutput`/`content`. `extractMcpOutput` reads only the completed `rawOutput`:
 every array block (text as text, non-text as indented JSON), or a string shown
-as-is and pretty-printed when it parses as JSON. Do **not** also read
+verbatim — do not `JSON.parse` it, or integers past 2^53 are rounded. Do **not** also read
 `toolResponse` — two sources is how a double-render happens.
