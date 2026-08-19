@@ -630,6 +630,10 @@
     // Latest `grok update --check` result for Settings → About: { checking } while
     // in flight, then { current, latest, updateAvailable, error }.
     grokUpdate: null,
+    mcpServers: [],
+    mcpLoading: false,
+    mcpError: "",
+    mcpWarning: "",
     // While replaying an older session, suppress a legacy primer user turn and
     // grok's response until the next user message starts.
     suppressReplayTurn: false,
@@ -2309,6 +2313,10 @@
       hostKind: state.hostKind,
       hostName: state.hostName,
       grokUpdate: state.grokUpdate,
+      mcpServers: state.mcpServers,
+      mcpLoading: state.mcpLoading,
+      mcpError: state.mcpError,
+      mcpWarning: state.mcpWarning,
     };
   }
 
@@ -13019,7 +13027,7 @@
     "initialState", "showThinking", "appPurpose", "expandCommandOutputs",
     "steerByDefault", "steerUnavailable", "soundNotifications", "processingSound",
     "readRepliesAloud", "summarizeRepliesAloud", "fontScale", "voiceConfigured",
-    "providerState", "remoteStatus", "telemetryEnabled", "grokUpdateStatus", "initialized",
+    "providerState", "mcpServers", "remoteStatus", "telemetryEnabled", "grokUpdateStatus", "initialized",
   ]);
 
   function handleHostMessage(msg) {
@@ -13098,6 +13106,13 @@
         if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
         if (!historyPopover.hidden) renderSessionRows();
         renderRail();
+        break;
+      case "mcpServers":
+        state.mcpServers = Array.isArray(msg.servers) ? msg.servers : [];
+        state.mcpLoading = msg.loading === true;
+        state.mcpError = msg.error || "";
+        state.mcpWarning = msg.warning || "";
+        refreshSettingsOverlay();
         break;
       case "codexInstallProgress":
         state.codexInstall = {

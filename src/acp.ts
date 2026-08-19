@@ -630,6 +630,23 @@ export class AcpClient extends EventEmitter {
     };
   }
 
+  /** Read Grok's MCP inventory from the same ACP session as the conversation. */
+  async listMcpServers(): Promise<unknown[] | { servers?: unknown[]; result?: unknown } | "unsupported"> {
+    if (this.provider !== "grok") return "unsupported";
+    if (!this.sessionId) throw new Error("no session");
+    try {
+      // The method is scoped to the active ACP session; unlike ordinary ACP
+      // methods it accepts an empty parameter object rather than sessionId.
+      return await this.request("_x.ai/mcp/list", {});
+    } catch (error) {
+      if (isMethodNotFoundError(error)) {
+        this.opts.log("[mcp] CLI does not support _x.ai/mcp/list");
+        return "unsupported";
+      }
+      throw error;
+    }
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     if (this.provider === "grok") throw new Error("This backend does not support ACP session deletion.");
     await this.request("session/delete", { sessionId });
@@ -1234,6 +1251,16 @@ export class AcpClient extends EventEmitter {
   private async handleServerRequest(msg: any): Promise<void> {
     const { method, id, params } = msg;
     try {
+      if (
+        method === "_x.ai/mcp/servers_updated" ||
+        method === "_x.ai/mcp/init_progress" ||
+        method === "_x.ai/mcp_initialized" ||
+        method === "_x.ai/mcp/server_status"
+      ) {
+        this.emit("mcpNotification", method, params);
+        if (id != null) this.respondOk(id, {});
+        return;
+      }
       if (method === "fs/read_text_file") {
         if (!this.fsRead) throw new Error("fsRead handler not registered");
         const content = await this.fsRead(params.path);
