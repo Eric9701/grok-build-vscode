@@ -796,6 +796,7 @@ export class AcpClient extends EventEmitter {
    */
   async getSessionInfo(): Promise<SessionInfoContext | "unsupported"> {
     if (!this.sessionId) throw new Error("no session");
+    if (this.provider !== "grok") return "unsupported";
     try {
       const r = await this.request("_x.ai/session/info", { sessionId: this.sessionId });
       const parsed = parseSessionInfoRpcResult(r);

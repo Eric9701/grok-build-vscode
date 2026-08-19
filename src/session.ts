@@ -123,6 +123,18 @@ export class Session {
   /** Drop streaming content from hidden summary/context-injection turns. */
   suppressContent = false;
 
+  /** Captures the legacy hidden `/session-info` reply without rendering it. */
+  captureAgentText?: string;
+
+  /** Last successful `_x.ai/session/info` snapshot, for the popover TTL. */
+  lastSessionInfoAt = 0;
+
+  /** Latched after this process returns -32601 for `_x.ai/session/info`. */
+  sessionInfoUnsupported = false;
+
+  /** A live compact notification already supplied this manual compact's count. */
+  sawCompactNotification = false;
+
   /**
    * True when an `auto_compact_failed` notification arrived for the CURRENT
    * manual /compact (reset before each). Gates the

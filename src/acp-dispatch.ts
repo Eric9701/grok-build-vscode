@@ -725,6 +725,98 @@ export function autoCompactStartedNote(update: unknown): string | null {
     : `Auto-compacting context…`;
 }
 
+/** Parse the context line returned by the legacy `/session-info` command. */
+export function parseSessionInfoContext(text: string): { used: number; window: number } | null {
+  const match = /context:\*{0,2}\s*([\d][\d,]*)\s*\/\s*([\d][\d,]*)\s*tokens/i.exec(text ?? "");
+  if (!match) return null;
+  const number = (value: string) => Number(value.replace(/,/g, ""));
+  const used = number(match[1]);
+  const window = number(match[2]);
+  if (!Number.isFinite(used) || used < 0 || !Number.isFinite(window) || window <= 0) return null;
+  return { used, window };
+}
+
+export interface ContextUsageCategory {
+  label: string;
+  tokens: number;
+  detail?: string;
+}
+
+/** Structured context snapshot returned by `_x.ai/session/info`. */
+export interface SessionInfoContext {
+  used: number;
+  window: number;
+  categories?: ContextUsageCategory[];
+  systemPromptTokens?: number;
+  toolDefinitionsTokens?: number;
+  messageTokens?: number;
+  freeTokens?: number;
+  autoCompactThresholdPercent?: number;
+}
+
+/** Keep a popover re-open from issuing another control-plane RPC immediately. */
+export const SESSION_INFO_TTL_MS = 3000;
+
+function finiteNonNegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parseSessionInfoCategories(raw: unknown): ContextUsageCategory[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const categories: ContextUsageCategory[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const category = row as { label?: unknown; tokens?: unknown; detail?: unknown };
+    if (typeof category.label !== "string" || !category.label.trim()) continue;
+    if (typeof category.tokens !== "number" || !Number.isFinite(category.tokens) || category.tokens < 0) continue;
+    const parsed: ContextUsageCategory = { label: category.label.trim(), tokens: category.tokens };
+    if (typeof category.detail === "string" && category.detail.trim()) parsed.detail = category.detail.trim();
+    categories.push(parsed);
+  }
+  return categories.length ? categories : undefined;
+}
+
+/**
+ * Normalize `_x.ai/session/info` into the context snapshot consumed by the
+ * donut and popover. Unlike a prompt result's `totalTokens: 0`, an RPC
+ * `context.used: 0` is a valid authoritative reading.
+ */
+export function parseSessionInfoRpcResult(raw: unknown): SessionInfoContext | null {
+  if (!raw || typeof raw !== "object") return null;
+  let body = raw as Record<string, unknown>;
+  const nested = body.result;
+  if (nested && typeof nested === "object" && (nested as { context?: unknown }).context != null && body.context == null) {
+    body = nested as Record<string, unknown>;
+  }
+  const context = body.context;
+  if (!context || typeof context !== "object") return null;
+  const values = context as Record<string, unknown>;
+  const used = finiteNonNegative(values.used);
+  const window = values.total;
+  if (used === undefined || typeof window !== "number" || !Number.isFinite(window) || window <= 0) return null;
+
+  const parsed: SessionInfoContext = { used, window };
+  const categories = parseSessionInfoCategories(values.usageCategories);
+  if (categories) parsed.categories = categories;
+  const system = finiteNonNegative(values.systemPromptTokens);
+  if (system !== undefined) parsed.systemPromptTokens = system;
+  const tools = finiteNonNegative(values.toolDefinitionsTokens);
+  if (tools !== undefined) parsed.toolDefinitionsTokens = tools;
+  const messages = finiteNonNegative(values.messageTokens);
+  if (messages !== undefined) parsed.messageTokens = messages;
+  const free = finiteNonNegative(values.freeTokens);
+  if (free !== undefined) parsed.freeTokens = free;
+  const threshold = values.autoCompactThresholdPercent;
+  if (typeof threshold === "number" && Number.isFinite(threshold) && threshold > 0) {
+    parsed.autoCompactThresholdPercent = threshold;
+  }
+  return parsed;
+}
+
+export function sessionInfoCacheFresh(fetchedAt: number, now: number, ttlMs = SESSION_INFO_TTL_MS): boolean {
+  return fetchedAt > 0 && now - fetchedAt < ttlMs;
+}
+
 export function makePermissionResponse(id: number | string, optionId: string) {
   return {
     jsonrpc: "2.0",

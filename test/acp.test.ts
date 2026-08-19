@@ -153,6 +153,37 @@ describe("AcpClient notification metadata", () => {
   });
 });
 
+describe("AcpClient session/info", () => {
+  it("returns the structured control-plane context without prompting", async () => {
+    const { client } = clientWithFakeProc();
+    client.sessionId = "s1";
+    const request = vi.fn().mockResolvedValue({ context: { used: 16017, total: 512000 } });
+    (client as any).request = request;
+
+    await expect(client.getSessionInfo()).resolves.toEqual({ used: 16017, window: 512000 });
+    expect(request).toHaveBeenCalledWith("_x.ai/session/info", { sessionId: "s1" });
+  });
+
+  it("degrades only a JSON-RPC method-not-found response to unsupported", async () => {
+    const { client } = clientWithFakeProc();
+    client.sessionId = "s1";
+    (client as any).request = vi.fn().mockRejectedValue({ code: -32601, message: "Method not found" });
+    await expect(client.getSessionInfo()).resolves.toBe("unsupported");
+
+    (client as any).request = vi.fn().mockRejectedValue({ code: -32602, message: "Invalid params" });
+    await expect(client.getSessionInfo()).rejects.toMatchObject({ code: -32602 });
+  });
+
+  it("does not probe Grok's private RPC for an adapter session", async () => {
+    const { client } = clientWithFakeProc({ backend: new ClaudeBackend() });
+    client.sessionId = "s1";
+    const request = vi.fn();
+    (client as any).request = request;
+    await expect(client.getSessionInfo()).resolves.toBe("unsupported");
+    expect(request).not.toHaveBeenCalled();
+  });
+});
+
 describe("AcpClient child-stream demux", () => {
   const parentId = "sess-parent";
   const childId = "sess-child";
