@@ -251,6 +251,20 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(contextUsedFromCompactNotification(compact)).toBe(12345);
   });
 
+  it("reads the structured session/info meter without sending a prompt", async () => {
+    const info = await client.getSessionInfo();
+    expect(info).toEqual({
+      used: 16017,
+      window: 512000,
+      systemPromptTokens: 1039,
+      toolDefinitionsTokens: 812,
+      messageTokens: 12166,
+      freeTokens: 495983,
+      autoCompactThresholdPercent: 92,
+      categories: [{ label: "Skills", tokens: 1200 }],
+    });
+  });
+
   it("effort: setReasoningEffort sends set_model with _meta.reasoningEffort live (no restart), gated on the advertised capability", async () => {
     expect(client.currentModelSupportsEffort()).toBe(true); // fake model advertises it
     // Seeded from the advertised ACTIVE session effort (not the spawn default).

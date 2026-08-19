@@ -38,6 +38,8 @@ import {
   makeQuestionResponse,
   makeRequest,
   parseAcpLine,
+  parseSessionInfoContext,
+  parseSessionInfoRpcResult,
   permissionOutcomeFor,
   resolveModelId,
   routeSessionUpdate,
@@ -50,6 +52,8 @@ import {
   commandOutputFromReplayedToolCall,
   commandOutputForToolCall,
   commandOutputFromLiveTerminal,
+  SESSION_INFO_TTL_MS,
+  sessionInfoCacheFresh,
 } from "../src/acp-dispatch";
 
 describe("parseAcpLine", () => {
@@ -325,6 +329,61 @@ describe("gateZeroTokenMeta (#39)", () => {
   it("passes absent totalTokens through unchanged", () => {
     const meta = { inputTokens: 80 };
     expect(gateZeroTokenMeta(meta)).toBe(meta);
+  });
+});
+
+describe("session/info context helpers", () => {
+  const snapshot = {
+    sessionId: "s1",
+    context: {
+      used: 16017,
+      total: 512000,
+      systemPromptTokens: 1039,
+      toolDefinitionsTokens: 812,
+      messageTokens: 12166,
+      freeTokens: 495983,
+      autoCompactThresholdPercent: 92,
+      usageCategories: [
+        { label: "Skills", tokens: 1200 },
+        { label: "MCP", tokens: 800, detail: "2 servers" },
+      ],
+    },
+  };
+
+  it("normalizes the structured control-plane snapshot", () => {
+    expect(parseSessionInfoRpcResult(snapshot)).toEqual({
+      used: 16017,
+      window: 512000,
+      systemPromptTokens: 1039,
+      toolDefinitionsTokens: 812,
+      messageTokens: 12166,
+      freeTokens: 495983,
+      autoCompactThresholdPercent: 92,
+      categories: [
+        { label: "Skills", tokens: 1200 },
+        { label: "MCP", tokens: 800, detail: "2 servers" },
+      ],
+    });
+    expect(parseSessionInfoRpcResult({ result: snapshot })).toMatchObject({ used: 16017, window: 512000 });
+  });
+
+  it("accepts a zero RPC reading but rejects malformed shapes", () => {
+    expect(parseSessionInfoRpcResult({ context: { used: 0, total: 200000 } })).toEqual({ used: 0, window: 200000 });
+    expect(parseSessionInfoRpcResult({ context: { used: -1, total: 200000 } })).toBeNull();
+    expect(parseSessionInfoRpcResult({ context: { used: 1, total: 0 } })).toBeNull();
+    expect(parseSessionInfoRpcResult({ context: { used: 1 } })).toBeNull();
+  });
+
+  it("parses the advertised legacy prompt including an authoritative zero reading", () => {
+    expect(parseSessionInfoContext("**Context:** 16,017 / 512,000 tokens (3%)")).toEqual({ used: 16017, window: 512000 });
+    expect(parseSessionInfoContext("Context: 0 / 512000 tokens")).toEqual({ used: 0, window: 512000 });
+    expect(parseSessionInfoContext("no context here")).toBeNull();
+  });
+
+  it("expires the popover cache exactly at three seconds", () => {
+    expect(sessionInfoCacheFresh(1000, 1000 + SESSION_INFO_TTL_MS - 1)).toBe(true);
+    expect(sessionInfoCacheFresh(1000, 1000 + SESSION_INFO_TTL_MS)).toBe(false);
+    expect(sessionInfoCacheFresh(0, 1000)).toBe(false);
   });
 });
 

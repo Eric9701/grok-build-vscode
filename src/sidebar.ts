@@ -70,8 +70,8 @@ import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterm
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
-import type { PromptResultMeta, PromptUsage } from "./acp-dispatch";
-import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import type { PromptResultMeta, PromptUsage, SessionInfoContext } from "./acp-dispatch";
+import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { createMcpPrepareState, prepareMcpToolCall } from "./mcp-tool";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
@@ -6775,6 +6775,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.planActive = false;
     session.hasHistory = false;
     session.suppressContent = false;
+    session.captureAgentText = undefined;
+    session.lastSessionInfoAt = 0;
+    session.sessionInfoUnsupported = false;
+    session.sawCompactNotification = false;
     session.lastPlanText = "";
     session.pendingExitPlans.clear();
     session.inFlightPlanComments.clear();
@@ -6890,6 +6894,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         : { backend: this.createProviderBackend(session.provider) }),
     });
     session.client = client;
+    // A replacement process may have gained the capability after a CLI update.
+    session.lastSessionInfoAt = 0;
+    session.sessionInfoUnsupported = false;
 
     // fs handlers. Still wired on every session: 0.2.x, unverified, and Codex
     // advertise readTextFile and will call them. A live-verified grok >= 1.0.4
@@ -7013,6 +7020,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     });
     client.on("messageChunk", (text: string) => {
       if (gen !== session.gen) return;
+      if (session.captureAgentText !== undefined) {
+        session.captureAgentText += text;
+        return;
+      }
       session.inUserMessage = false;
       session.historyEventCount += 1;
       this.emit(session, { type: "messageChunk", text });
@@ -7185,7 +7196,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       } else {
         this.emit(session, { type: "promptComplete", meta: gated });
       }
-      void this.accumulateUsage(session, meta);
+      // The hidden legacy `/session-info` fallback is a CLI-local meter, not a
+      // user turn. Do not add its zero-inference response to the billing ledger.
+      if (session.captureAgentText === undefined) void this.accumulateUsage(session, meta);
       session.adapterTurnCallUsed = [];
       // A zero report (stripped above) is /compact or /session-info; neither
       // warrants a donut update here. /session-info leaves the context
@@ -7248,12 +7261,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const compactUsed = contextUsedFromCompactNotification(u);
       if (compactUsed !== null) {
         this.emit(session, { type: "contextUsage", used: compactUsed });
+        session.sawCompactNotification = true;
       }
       // Compaction FAILED (either path — compaction.rs emits it on both). The
       // context is unchanged, so the donut needs no refresh; flag it so a manual
       // /compact paints the failure instead of a false "Compacted.", and surface
       // a note.
       if (kind === "auto_compact_failed") {
+        session.sawCompactNotification = true;
         session.sawCompactFailed = true;
         const err = (u as { error?: unknown })?.error;
         this.emit(session, {
@@ -7496,6 +7511,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // after loadSession so it lands after the donut-resetting `session`
         // event in the replay buffer.
         this.emitContextUsage(session);
+        if (session.provider === "grok") void this.refreshContextFromSessionInfo(session, gen, { force: true });
         // Same reason, for the billing breakdown (#53) — but from OUR store, as
         // grok persists no per-turn usage anywhere.
         this.restoreUsage(session);
@@ -7927,6 +7943,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "workflowControl":
         await this.controlWorkflow(msg.action, msg.displayName, session);
+        break;
+      case "refreshContextDetails":
+        if (session.provider === "grok") {
+          void this.refreshContextFromSessionInfo(session, session.gen);
+        }
         break;
       case "clearQueuedSends": {
         // Posted by the webview's Stop flow BEFORE the cancel — a halt must not
@@ -11818,6 +11839,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // auto_compact_completed / auto_compact_failed land DURING this turn.
       if (slashCommand === "compact") {
         session.sawCompactFailed = false;
+        session.sawCompactNotification = false;
         if (isAdapterProvider(session.provider)) {
           session.adapterCompactThisTurn = true;
           this.rememberAdapterContext(session, { compacted: true });
@@ -11840,6 +11862,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // not persisted: grok's own history has no such message, so re-focus keeps
         // it but a disk restore won't.
         if (!session.sawCompactFailed) this.emit(session, { type: "messageChunk", text: "Compacted." });
+        // The live compact rail is exact and wins. Older Grok CLIs fall through
+        // to the control-plane meter; only an explicit -32601 may use the hidden
+        // legacy prompt fallback.
+        if (session.provider === "grok" && !session.sawCompactNotification) {
+          await this.refreshContextAfterCompact(client, session, gen);
+          if (gen !== session.gen) return;
+        }
       }
       this.emit(session, { type: "agentEnd", meta });
       this.setStatus(session, "done");
@@ -13722,6 +13751,76 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const cwd = this.sessionCwd(session);
     const usage = readContextUsage({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd, id });
     if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });
+  }
+
+  /** Publish a control-plane session/info snapshot without touching accounting. */
+  private emitSessionInfoContext(session: Session, info: SessionInfoContext): void {
+    session.lastSessionInfoAt = Date.now();
+    this.emit(session, {
+      type: "contextUsage",
+      used: info.used,
+      window: info.window,
+      categories: info.categories,
+      systemPromptTokens: info.systemPromptTokens,
+      toolDefinitionsTokens: info.toolDefinitionsTokens,
+      messageTokens: info.messageTokens,
+      freeTokens: info.freeTokens,
+      autoCompactThresholdPercent: info.autoCompactThresholdPercent,
+    });
+  }
+
+  /**
+   * Read Grok's structured context meter. This is intentionally separate from
+   * the adapter usageLog/contextUsageFromLog seam: those entries reconstruct
+   * Claude/Codex occupancy and never describe Grok's live categories.
+   */
+  private async refreshContextFromSessionInfo(
+    session: Session,
+    gen: number,
+    opts: { force?: boolean } = {},
+  ): Promise<boolean> {
+    if (session.provider !== "grok" || gen !== session.gen || session.sessionInfoUnsupported) return false;
+    const client = session.client;
+    if (!client?.sessionId) return false;
+    if (!opts.force && sessionInfoCacheFresh(session.lastSessionInfoAt, Date.now())) return false;
+    try {
+      const info = await client.getSessionInfo();
+      if (gen !== session.gen) return false;
+      if (info === "unsupported") {
+        session.sessionInfoUnsupported = true;
+        return false;
+      }
+      this.emitSessionInfoContext(session, info);
+      return true;
+    } catch (error) {
+      this.host.appendLine(`[context] session/info failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Post-compact compatibility chain: live notification → session/info →
+   * legacy `/session-info`. The prompt fallback is only permitted after the
+   * RPC explicitly returned -32601; a transient RPC error must not manufacture
+   * a hidden model turn.
+   */
+  private async refreshContextAfterCompact(client: AcpClient, session: Session, gen: number): Promise<void> {
+    if (await this.refreshContextFromSessionInfo(session, gen, { force: true })) return;
+    if (gen !== session.gen || !session.sessionInfoUnsupported) return;
+    if (!client.availableCommands.some((command) => command?.name === "session-info")) return;
+    session.suppressContent = true;
+    session.captureAgentText = "";
+    try {
+      await client.prompt("/session-info");
+      if (gen !== session.gen) return;
+      const info = parseSessionInfoContext(session.captureAgentText);
+      if (info) this.emit(session, { type: "contextUsage", used: info.used, window: info.window });
+    } catch (error) {
+      this.host.appendLine(`[compact] hidden /session-info failed: ${(error as Error).message}`);
+    } finally {
+      if (gen === session.gen) session.suppressContent = false;
+      session.captureAgentText = undefined;
+    }
   }
 
   /** Clear a session's unread badge (it's being opened/viewed) and refresh its dot. */

@@ -389,6 +389,12 @@
     // running turn hears you now, and it does not. See steerableProvider().
     lastTurnUsage: null, // last prompt's billing split (#53), for the donut popover
     sessionUsage: null, // session-cumulative billing — summed by the host, not grok
+    contextCategories: null,
+    contextSystemPromptTokens: null,
+    contextToolDefinitionsTokens: null,
+    contextMessageTokens: null,
+    contextFreeTokens: null,
+    contextAutoCompactPct: null,
     activeAgentEl: null,
     activeAgentRaw: "",
     activeUserEl: null,
@@ -1761,6 +1767,14 @@
 
   function openContextPopover() {
     closePopovers();
+    // The control-plane meter is independent of model prompts and is TTL-gated
+    // by the host. Render the cached snapshot immediately, then re-render when
+    // a fresh structured response arrives.
+    vscode.postMessage({ type: "refreshContextDetails" });
+    renderContextPopover();
+  }
+
+  function renderContextPopover() {
     contextPopover.innerHTML = "";
     // A `↳ ` label marks a sub-row (a component of the line above it) — indented
     // via CSS rather than padding the string, so the value column stays aligned.
@@ -1815,6 +1829,25 @@
       };
     }
     contextPopover.appendChild(act);
+
+    const hasBreakdown =
+      state.contextSystemPromptTokens != null ||
+      state.contextToolDefinitionsTokens != null ||
+      state.contextMessageTokens != null ||
+      (state.contextCategories && state.contextCategories.length);
+    if (hasBreakdown) {
+      section("In this window");
+      if (state.contextSystemPromptTokens != null) info("System", tok(state.contextSystemPromptTokens));
+      if (state.contextToolDefinitionsTokens != null) info("Tools", tok(state.contextToolDefinitionsTokens));
+      if (state.contextMessageTokens != null) info("Messages", tok(state.contextMessageTokens));
+      if (state.contextCategories) {
+        for (const category of state.contextCategories) {
+          info(category.detail ? `${category.label} (${category.detail})` : category.label, tok(category.tokens));
+        }
+      }
+      if (state.contextFreeTokens != null) info("Free", tok(state.contextFreeTokens));
+      if (state.contextAutoCompactPct != null) info("Auto-compact at", `${state.contextAutoCompactPct}%`);
+    }
 
     // Billing rows only when the CLI actually reported usage — an older build or
     // a session with no completed turn shows the context row alone rather than a
@@ -13332,6 +13365,12 @@
         state.availableModels = msg.models || [];
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId && (!x.provider || x.provider === state.activeProvider));
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
+        state.contextCategories = null;
+        state.contextSystemPromptTokens = null;
+        state.contextToolDefinitionsTokens = null;
+        state.contextMessageTokens = null;
+        state.contextFreeTokens = null;
+        state.contextAutoCompactPct = null;
         updateDonut(0);
         reportRemotePreferences();
         break;
@@ -13933,8 +13972,15 @@
         // or the remembered adapter prompt size. A window-only frame updates
         // the denominator without inventing a used count.
         if (msg.window) state.contextWindow = msg.window;
+        if (msg.categories) state.contextCategories = msg.categories;
+        if (msg.systemPromptTokens != null) state.contextSystemPromptTokens = msg.systemPromptTokens;
+        if (msg.toolDefinitionsTokens != null) state.contextToolDefinitionsTokens = msg.toolDefinitionsTokens;
+        if (msg.messageTokens != null) state.contextMessageTokens = msg.messageTokens;
+        if (msg.freeTokens != null) state.contextFreeTokens = msg.freeTokens;
+        if (msg.autoCompactThresholdPercent != null) state.contextAutoCompactPct = msg.autoCompactThresholdPercent;
         if (msg.used != null) updateDonut(msg.used);
         else updateDonut();
+        if (!contextPopover.hidden) renderContextPopover();
         break;
       case "expandCommandOutputs":
         // Live toggle (grok.expandCommandOutputs): applies to existing rows

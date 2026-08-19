@@ -362,7 +362,18 @@ export type HostMsg =
   | { type: "promptComplete"; meta: PromptResultMeta }
   // Context occupancy for the donut. `used` is optional so an adapter can
   // deliver `usage_update.size` (the real window) before any occupancy exists.
-  | { type: "contextUsage"; used?: number; window?: number }
+  // The structured fields are only populated by Grok's `_x.ai/session/info`.
+  | {
+      type: "contextUsage";
+      used?: number;
+      window?: number;
+      categories?: { label: string; tokens: number; detail?: string }[];
+      systemPromptTokens?: number;
+      toolDefinitionsTokens?: number;
+      messageTokens?: number;
+      freeTokens?: number;
+      autoCompactThresholdPercent?: number;
+    }
   | { type: "agentReset" }
   | { type: "agentError"; text: string }
   | { type: "agentEnd"; meta?: PromptResultMeta }
@@ -735,6 +746,8 @@ export type WebviewMsg =
   | { type: "uiConfirmAnswer"; id: string; ok: boolean }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
   | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }
+  /** Read-only Grok context snapshot for the open donut popover. */
+  | { type: "refreshContextDetails" }
   // Relay account (gear "AFK Pilot" section, local webview only): start the
   // device-link flow / drop the device token / open the relay web portal.
   | { type: "remoteSignIn" }
@@ -794,6 +807,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
   rewindSession: true, editLastMessage: true, uiConfirmAnswer: true, workflowControl: true,
+  refreshContextDetails: true,
   remoteSignIn: true, remoteSignOut: true, unlinkRemoteDevice: true, openRemotePortal: true,
   openUpdateRelease: true, restartToUpdate: true,
 };

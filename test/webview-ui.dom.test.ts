@@ -3132,16 +3132,43 @@ describe("gear entry: Move view (Settings → Advanced)", () => {
 
 describe("context popover (donut click, #39)", () => {
   it("opens on donut click with the context line, closes on outside click", () => {
-    const { window, doc } = bootWebview();
+    const { window, doc, posted } = bootWebview();
     dispatch(window, { type: "promptComplete", meta: { totalTokens: 44123 } });
 
     click(window, $(doc, "donut"));
     const pop = $(doc, "context-popover");
     expect((pop as any).hidden).toBe(false);
     expect(pop.textContent).toContain("Context used");
+    expect(posted).toContainEqual({ type: "refreshContextDetails" });
 
     click(window, $(doc, "messages"));
     expect((pop as any).hidden).toBe(true);
+  });
+
+  it("renders a structured session/info breakdown without changing adapter occupancy", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "contextUsage", used: 16017, window: 512000 });
+    dispatch(window, {
+      type: "contextUsage",
+      used: 16017,
+      window: 512000,
+      systemPromptTokens: 1039,
+      toolDefinitionsTokens: 812,
+      messageTokens: 12166,
+      freeTokens: 495983,
+      autoCompactThresholdPercent: 92,
+      categories: [{ label: "Skills", tokens: 1200 }, { label: "MCP", tokens: 800, detail: "2 servers" }],
+    });
+    click(window, $(doc, "donut"));
+    const text = $(doc, "context-popover").textContent!;
+    expect(text).toContain("In this window");
+    expect(text).toContain("System");
+    expect(text).toContain("Tools");
+    expect(text).toContain("Messages");
+    expect(text).toContain("Skills");
+    expect(text).toContain("MCP (2 servers)");
+    expect(text).toContain("Free");
+    expect(text).toContain("Auto-compact at");
   });
 
   it("labels Claude and Codex occupancy as context used, not last prompt", () => {

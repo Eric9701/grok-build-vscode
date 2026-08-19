@@ -238,6 +238,20 @@ rl.on("line", async (line) => {
     }
     case "session/set_mode":
       return respondOk(id, {});
+    case "_x.ai/session/info":
+      return respondOk(id, {
+        sessionId: sessions.id,
+        context: {
+          used: 16017,
+          total: 512000,
+          systemPromptTokens: 1039,
+          toolDefinitionsTokens: 812,
+          messageTokens: 12166,
+          freeTokens: 495983,
+          autoCompactThresholdPercent: 92,
+          usageCategories: [{ label: "Skills", tokens: 1200 }],
+        },
+      });
     case "_x.ai/git/worktree/apply":
       return respondOk(id, { status: "ok", files: [], gitRoot: params?.worktreePath || "" });
     case "_x.ai/git/worktree/remove":
