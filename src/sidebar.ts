@@ -326,7 +326,7 @@ import {
   type ConnectorId,
   type ReservedMcpIdentity,
 } from "./mcp-connectors";
-import { authorizeMcpRemote, npxSpawnPlan } from "./mcp-connector-auth";
+import { authorizeMcpRemote, listenFreeLoopbackPort, npxSpawnPlan } from "./mcp-connector-auth";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -8958,6 +8958,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         args: mcpRemoteArgs(endpoint),
         shell: npx.shell,
         env: process.env,
+        pickFreeListenPort: listenFreeLoopbackPort,
       });
       if (this.mcpConnectingId !== id) return;
       if (!result.ok) {
@@ -12323,7 +12324,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // DevTools is discoverable without the auto-hidden application menu.
         toggleDevTools: this.host.canToggleDevTools,
         // OPT-IN: unpackaged desktop only. Absent/false hides Settings →
-        // Connectors and MCP servers. VS Code omits the field.
+        // Connectors. VS Code omits the field.
         ...(this.host.canShowMcpSettings ? { mcpSettings: true } : {}),
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.

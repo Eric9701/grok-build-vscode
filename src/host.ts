@@ -761,7 +761,7 @@ export interface Host {
    */
   readonly canToggleDevTools: boolean;
   /**
-   * Settings → Connectors and MCP servers. OPT-IN: absent/false = hide.
+   * Settings → Connectors. OPT-IN: absent/false = hide.
    * True only for unpackaged desktop (`!app.isPackaged`, same signal as
    * {@link canToggleDevTools}). VS Code is false and does not advertise
    * `capabilities.mcpSettings`.

@@ -2251,18 +2251,19 @@ describe("gear menu — Other group + About / Settings", () => {
     expect(types(h.posted)).toContain("showLogs");
   });
 
-  it("Settings → MCP servers is a read-only live inventory", () => {
+  it("Settings → Connectors is a read-only live Grok inventory plus host-owned apps", () => {
     const h = boot();
     openSettingsOverlay(h.window, h.doc);
-    clickSettingsNav(h.window, h.doc, "MCP servers");
+    clickSettingsNav(h.window, h.doc, "Connectors");
     expect(types(h.posted)).toContain("listMcpServers");
-    expect(h.doc.querySelector("#settings-overlay .settings-mcp-state")?.textContent).toContain("Loading");
+    expect(h.doc.querySelector('#settings-overlay [data-id="mcpCatalog"] .settings-mcp-state')?.textContent).toContain("Loading");
     dispatch(h.window, {
       type: "mcpServers",
       servers: [{ name: "managed_gateway:canva", displayName: "Canva", managed: true, enabled: true, status: "ready", toolCount: 32 }],
-      warning: "Read-only inventory.",
+      warning: "This list is read-only. Connector enable/disable is machine-global and is not controlled here.",
     });
     expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("grok.com managed");
+    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("In this Grok session");
     expect(h.doc.querySelector("#settings-overlay .settings-switch")).toBeNull();
   });
 });

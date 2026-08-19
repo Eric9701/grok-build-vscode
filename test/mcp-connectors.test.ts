@@ -6,15 +6,18 @@ import {
   collectReservedMcpIdentity,
   connectConnector,
   connectFailureMessage,
+  connectOutputLooksLikePortConflict,
   connectOutputLooksSuccessful,
   connectorViews,
   disconnectConnector,
   hostMcpServers,
   mcpConfigPaths,
+  mcpRemoteArgs,
   parseConnectedConnectorStore,
   parseInitializeResult,
   reservedConflictsConnector,
   reservedFromMcpInventory,
+  withMcpRemoteCallbackPort,
 } from "../src/mcp-connectors";
 
 describe("Tier-1 connector catalog", () => {
@@ -42,6 +45,31 @@ describe("Tier-1 connector catalog", () => {
       command: "npx",
       args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
     });
+  });
+
+  it("appends a callback port only when it is a usable TCP port", () => {
+    expect(mcpRemoteArgs("https://mcp.linear.app/mcp")).toEqual(
+      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+    );
+    expect(mcpRemoteArgs("https://mcp.linear.app/mcp", 22227)).toEqual(
+      ["-y", "mcp-remote", "https://mcp.linear.app/mcp", "22227"],
+    );
+    expect(mcpRemoteArgs("https://mcp.linear.app/mcp", 0)).toEqual(
+      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+    );
+    expect(mcpRemoteArgs("https://mcp.linear.app/mcp", 70000)).toEqual(
+      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+    );
+    expect(withMcpRemoteCallbackPort(
+      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      54321,
+    )).toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp", "54321"]);
+    expect(withMcpRemoteCallbackPort(["-y", "something-else"], 54321)).toBeUndefined();
+  });
+
+  it("does not pin a callback port on the session/new entry", () => {
+    expect(buildMcpRemoteEntry("linear", "https://mcp.linear.app/mcp").args)
+      .toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp"]);
   });
 });
 
@@ -215,15 +243,28 @@ FOO = "bar"
 });
 
 describe("connect failure taxonomy", () => {
-  it("maps missing npx, closed browser, timeout, and refused endpoint separately", () => {
+  it("maps missing npx, closed browser, timeout, port conflict, and refused endpoint separately", () => {
     expect(classifyConnectFailure({ spawnError: { code: "ENOENT", message: "spawn npx ENOENT" } })).toBe("npx-missing");
     expect(classifyConnectFailure({ output: "Authorization cancelled by the user" })).toBe("cancelled");
     expect(classifyConnectFailure({ timedOut: true })).toBe("timeout");
+    expect(classifyConnectFailure({
+      output: "Error: listen EADDRINUSE: address already in use 127.0.0.1:22227",
+    })).toBe("port-conflict");
+    expect(classifyConnectFailure({
+      spawnError: { code: "EADDRINUSE", message: "listen EADDRINUSE" },
+    })).toBe("port-conflict");
+    expect(classifyConnectFailure({
+      timedOut: true,
+      output: "Error: listen EADDRINUSE: address already in use :::22227",
+    })).toBe("port-conflict");
     expect(classifyConnectFailure({ output: "getaddrinfo ENOTFOUND mcp.example.invalid" })).toBe("endpoint-refused");
     expect(classifyConnectFailure({ exitCode: 1, output: "boom" })).toBe("failed");
+    expect(connectOutputLooksLikePortConflict("Error: listen EADDRINUSE: address already in use")).toBe(true);
     expect(connectFailureMessage("npx-missing")).toMatch(/npx/i);
     expect(connectFailureMessage("cancelled")).toMatch(/browser/i);
     expect(connectFailureMessage("timeout")).toMatch(/timed out/i);
+    expect(connectFailureMessage("port-conflict")).toMatch(/login port/i);
+    expect(connectFailureMessage("port-conflict")).not.toMatch(/EADDRINUSE/i);
   });
 
   it("treats mcp-remote auth-success logs and initialize results as connected", () => {

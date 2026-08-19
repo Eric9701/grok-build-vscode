@@ -28,8 +28,22 @@ drop a host entry whose name (including `managed_gateway:<id>`) or HTTPS
 endpoint is already in the provider's config / last grok `_x.ai/mcp/list`.
 Theirs wins. grok.com managed Canva is the load-bearing case.
 
+## Connect
+
+`authorizeMcpRemote` is a one-shot `mcp-remote` spawn. A live Grok session
+already running that endpoint holds the OAuth callback port pinned in
+`client_info.json` (Windows skips mcp-remote's lockfile, so a second instance
+cannot see the first). `EADDRINUSE` is retried once with a free loopback port
+as `mcp-remote <url> <port>`, which forces re-registration. The first failure
+never reaches the UI. `buildMcpRemoteEntry` does not pin a port — a specified
+port on `session/new` would re-register on every conversation.
+
+See `research/mcp-orphan-probe.cjs`.
+
 ## Remote
 
 `mcpConnectors` is mirrored (ids, names, connected — no tokens).
 `connectMcpConnector` / `disconnectMcpConnector` are host-local: OAuth needs
-a browser on the machine that owns `~/.mcp-auth`.
+a browser on the machine that owns `~/.mcp-auth`. Settings → Connectors on a
+remote shows the desk-owned catalog read-only plus a grok.com/connectors
+link; the live Grok inventory stays desk-only (`listMcpServers` is host-local).

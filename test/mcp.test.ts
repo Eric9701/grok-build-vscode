@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mcpServerDetail, mergeMcpNotification, parseMcpListResponse } from "../src/mcp";
+import { MCP_GLOBAL_SCOPE_WARNING, mcpServerDetail, mergeMcpNotification, parseMcpListResponse } from "../src/mcp";
 
 describe("MCP ACP catalog", () => {
   it("parses the wrapped response, sorts display names, and keeps tool metadata", () => {
@@ -43,5 +43,10 @@ describe("MCP ACP catalog", () => {
     expect(mcpServerDetail({
       name: "docs", enabled: true, status: "ready", toolCount: 2, command: "npx", args: ["docs-mcp"],
     })).toBe("ready · 2 tools · npx docs-mcp");
+  });
+
+  it("scopes the read-only warning to the inventory, not the host-owned catalog", () => {
+    expect(MCP_GLOBAL_SCOPE_WARNING).toMatch(/this list is read-only/i);
+    expect(MCP_GLOBAL_SCOPE_WARNING).toMatch(/machine-global/i);
   });
 });

@@ -63,6 +63,7 @@ export type ConnectFailureKind =
   | "npx-missing"
   | "cancelled"
   | "timeout"
+  | "port-conflict"
   | "endpoint-refused"
   | "failed";
 
@@ -136,8 +137,30 @@ export function connectorById(id: string): ConnectorDef | undefined {
   return CONNECTOR_BY_ID.get(id);
 }
 
-export function mcpRemoteArgs(endpoint: string): string[] {
-  return ["-y", MCP_REMOTE_PACKAGE, endpoint];
+export function isUsableListenPort(port: number): boolean {
+  return Number.isInteger(port) && port > 0 && port <= 65535;
+}
+
+/**
+ * `npx -y mcp-remote <url> [port]`. The optional port is mcp-remote's second
+ * positional argument (`specifiedPort`): when it differs from the registered
+ * OAuth callback port, mcp-remote deletes `client_info.json` and re-registers.
+ */
+export function mcpRemoteArgs(endpoint: string, callbackPort?: number): string[] {
+  const args = ["-y", MCP_REMOTE_PACKAGE, endpoint];
+  if (callbackPort != null && isUsableListenPort(callbackPort)) args.push(String(callbackPort));
+  return args;
+}
+
+/** Rebuild `mcpRemoteArgs` with a callback port. `undefined` if `args` is not an mcp-remote invocation. */
+export function withMcpRemoteCallbackPort(
+  args: readonly string[],
+  callbackPort: number,
+): string[] | undefined {
+  const idx = args.indexOf(MCP_REMOTE_PACKAGE);
+  const endpoint = idx >= 0 ? args[idx + 1] : undefined;
+  if (!endpoint || /^\d+$/.test(endpoint)) return undefined;
+  return mcpRemoteArgs(endpoint, callbackPort);
 }
 
 export function buildMcpRemoteEntry(name: string, endpoint: string): AcpMcpStdioServer {
@@ -473,6 +496,8 @@ export function connectFailureMessage(kind: ConnectFailureKind, detail?: string)
       return "Sign-in did not finish. If you closed the browser, try Connect again.";
     case "timeout":
       return "Sign-in timed out. Complete the browser prompt within three minutes, then try again.";
+    case "port-conflict":
+      return "Couldn't finish sign-in because another connection to this app is using the login port. Close other conversations that use this app, then try Connect again.";
     case "endpoint-refused":
       return detail
         ? `The app refused the connection: ${detail}`
@@ -502,6 +527,13 @@ export function classifyConnectFailure(input: {
   ) {
     return "npx-missing";
   }
+  if (
+    spawnCode === "EADDRINUSE"
+    || connectOutputLooksLikePortConflict(output)
+    || connectOutputLooksLikePortConflict(spawnMessage)
+  ) {
+    return "port-conflict";
+  }
   if (input.timedOut) return "timeout";
   if (
     /\baccess_denied\b/.test(output)
@@ -518,6 +550,11 @@ export function classifyConnectFailure(input: {
     return "endpoint-refused";
   }
   return "failed";
+}
+
+export function connectOutputLooksLikePortConflict(output: string): boolean {
+  const text = output.toLowerCase();
+  return /\beaddrinuse\b/.test(text) || /address already in use/.test(text);
 }
 
 export function connectOutputLooksSuccessful(output: string): boolean {

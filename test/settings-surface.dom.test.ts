@@ -118,7 +118,7 @@ describe("settings catalog", () => {
     });
     const local = api.visibleCategories(snapshot, api.defaultEnv(withMcpSettings()));
     expect(local.map((c) => c.id)).toEqual([
-      "general", "voice", "notifications", "providers", "connectors", "mcp", "account", "advanced", "about",
+      "general", "voice", "notifications", "providers", "connectors", "account", "advanced", "about",
     ]);
     const remoteRows = api.visibleRows(snapshot, api.defaultEnv(withMcpSettings({ isRemote: true })));
     expect(remoteRows.some((row) => row.hostLocal)).toBe(false);
@@ -133,10 +133,11 @@ describe("settings catalog", () => {
     expect(remoteRows.some((row) => row.id === "telemetryRemote")).toBe(true);
     expect(remoteRows.some((row) => row.id === "telemetryDesktop")).toBe(false);
     expect(remoteRows.some((row) => row.id === "connectorsCatalog")).toBe(true);
+    expect(remoteRows.some((row) => row.id === "grokConnectorsSite")).toBe(true);
     expect(remoteRows.some((row) => row.id === "mcpCatalog")).toBe(false);
   });
 
-  it("hides Connectors and MCP servers when mcpSettings is absent", () => {
+  it("hides Connectors when mcpSettings is absent", () => {
     const api = loadSettings();
     const snapshot = api.defaultSnapshot({ appPurpose: "coding" });
     const env = api.defaultEnv(fullEnv());
@@ -148,16 +149,21 @@ describe("settings catalog", () => {
     expect(rows.some((row) => row.id === "mcpCatalog")).toBe(false);
   });
 
-  it("shows Connectors and MCP servers when mcpSettings is present", () => {
+  it("shows Connectors as one category with both sections when mcpSettings is present", () => {
     const api = loadSettings();
     const snapshot = api.defaultSnapshot({ appPurpose: "coding" });
     const env = api.defaultEnv(withMcpSettings());
     expect(api.visibleCategories(snapshot, env).map((c) => c.id)).toEqual([
-      "general", "voice", "notifications", "providers", "connectors", "mcp", "account", "advanced", "about",
+      "general", "voice", "notifications", "providers", "connectors", "account", "advanced", "about",
     ]);
+    expect(api.CATEGORIES.some((c: { id: string }) => c.id === "mcp")).toBe(false);
+    expect(api.NAV_ICONS.mcp).toBeUndefined();
     const rows = api.visibleRows(snapshot, env);
     expect(rows.some((row) => row.id === "connectorsCatalog")).toBe(true);
     expect(rows.some((row) => row.id === "mcpCatalog")).toBe(true);
+    expect(rows.some((row) => row.id === "grokConnectorsSite")).toBe(true);
+    expect(rows.find((row) => row.id === "mcpCatalog")?.category).toBe("connectors");
+    expect(api.ROWS.find((row) => row.id === "grokConnectorsSite")?.href).toBe("https://grok.com/connectors");
   });
 
   it("gives every category a nav icon and folds Chat into General", () => {
@@ -182,6 +188,21 @@ describe("settings catalog", () => {
       "soundNotifications",
       "processingSound",
     ]));
+  });
+
+  it("search finds connectors, grok.com, and Grok inventory names", () => {
+    const api = loadSettings();
+    const snapshot = api.defaultSnapshot({
+      appPurpose: "coding",
+      mcpConnectors: [{ id: "linear", name: "Linear", description: "Issues." }],
+      mcpServers: [{ name: "managed_gateway:canva", displayName: "Canva" }],
+    });
+    const env = api.defaultEnv(withMcpSettings());
+    expect(api.filterRows("linear", snapshot, env).map((row) => row.id)).toContain("connectorsCatalog");
+    expect(api.filterRows("grok.com", snapshot, env).map((row) => row.id)).toContain("grokConnectorsSite");
+    expect(api.filterRows("canva", snapshot, env).map((row) => row.id)).toContain("mcpCatalog");
+    expect(api.filterRows("this grok session", snapshot, env).map((row) => row.id))
+      .toEqual(expect.arrayContaining(["grokConnectorsSite", "mcpCatalog"]));
   });
 });
 
@@ -209,7 +230,7 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay!.querySelector('[data-id="voiceSendPhrase"]')).toBeTruthy();
   });
 
-  it("hides Connectors and MCP servers nav rows when mcpSettings is absent", () => {
+  it("hides the Connectors nav row when mcpSettings is absent", () => {
     const h = bootWebview();
     seedChat(h);
     openSettings(h);
@@ -220,14 +241,16 @@ describe("settings overlay (chat.js)", () => {
     expect(h.doc.querySelector('[data-id="mcpCatalog"]')).toBeNull();
   });
 
-  it("shows Connectors and MCP servers nav rows when mcpSettings is present", () => {
+  it("shows a single Connectors nav row when mcpSettings is present", () => {
     const h = bootWebview();
     seedChat(h, { capabilities: { mcpSettings: true } });
     openSettings(h);
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toEqual([
-      "General", "Voice", "Notifications", "Providers", "Connectors", "MCP servers", "Remote control", "Advanced", "About",
+      "General", "Voice", "Notifications", "Providers", "Connectors", "Remote control", "Advanced", "About",
     ]);
+    expect(nav.filter((label) => label === "Connectors")).toHaveLength(1);
+    expect(nav).not.toContain("MCP servers");
   });
 
   it("filters rows across categories from the search box", () => {
@@ -327,11 +350,11 @@ describe("settings overlay (chat.js)", () => {
     ]));
   });
 
-  it("loads a read-only MCP catalog and marks managed servers", () => {
+  it("loads a read-only Grok inventory on the Connectors page and marks managed servers", () => {
     const h = bootWebview();
     seedChat(h, { capabilities: { mcpSettings: true } });
     openSettings(h);
-    clickSettingsNav(h, "MCP servers");
+    clickSettingsNav(h, "Connectors");
     expect(h.posted).toContainEqual({ type: "listMcpServers" });
     dispatch(h.window, {
       type: "mcpServers",
@@ -339,15 +362,24 @@ describe("settings overlay (chat.js)", () => {
         { name: "managed_gateway:canva", displayName: "Canva", managed: true, enabled: true, status: "ready", toolCount: 32 },
         { name: "linear", enabled: false, status: "ready", toolCount: 0 },
       ],
-      warning: "Read-only inventory.",
+      warning: "This list is read-only. Connector enable/disable is machine-global and is not controlled here.",
     });
     const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("On this computer");
+    expect(overlay.textContent).toContain("In this Grok session");
     expect(overlay.textContent).toContain("Canva");
     expect(overlay.textContent).toContain("grok.com managed");
     expect(overlay.textContent).toContain("32 tools");
     expect(overlay.textContent).toContain("Disabled · ready · 0 tools");
+    expect(overlay.textContent).toContain("This list is read-only");
     expect(overlay.querySelector(".settings-switch")).toBeNull();
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "setMcpServerEnabled" }));
+    const grokLink = overlay.querySelector('[data-id="grokConnectorsSite"] .settings-action') as HTMLButtonElement;
+    expect(grokLink).toBeTruthy();
+    expect(grokLink.textContent).toBe("Open");
+    h.posted.length = 0;
+    click(h.window, grokLink);
+    expect(h.posted).toContainEqual({ type: "openUrl", url: "https://grok.com/connectors" });
   });
 
   it("connects and disconnects host-owned connectors from Settings", () => {
@@ -397,6 +429,11 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.textContent).toMatch(/desk machine/);
     expect(overlay.querySelector(".settings-connector-action")).toBeNull();
     expect(overlay.textContent).toContain("Connected");
+    expect(overlay.textContent).toContain("On this computer");
+    expect(overlay.textContent).toContain("In this Grok session");
+    expect(overlay.textContent).toContain("grok.com/connectors");
+    expect(overlay.querySelector('[data-id="mcpCatalog"]')).toBeNull();
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "listMcpServers" }));
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
   });

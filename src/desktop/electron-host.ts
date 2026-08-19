@@ -1250,8 +1250,8 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     get canToggleDevTools() {
       return !app.isPackaged;
     },
-    // Same packaged-build gate as DevTools — Connectors / MCP servers stay
-    // hidden in installed builds (orphan mcp-remote / EADDRINUSE).
+    // Same packaged-build gate as DevTools — Settings → Connectors stays
+    // hidden in installed builds.
     get canShowMcpSettings() {
       return !app.isPackaged;
     },

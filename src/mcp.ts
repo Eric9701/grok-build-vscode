@@ -1,7 +1,7 @@
 /** Pure MCP catalog and live-status helpers for the Grok ACP surface. */
 
 export const MCP_GLOBAL_SCOPE_WARNING =
-  "This panel is read-only. Connector enable/disable is machine-global and is not controlled here.";
+  "This list is read-only. Connector enable/disable is machine-global and is not controlled here.";
 
 export interface McpToolView {
   name?: string;

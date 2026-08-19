@@ -101,11 +101,10 @@ export type HostUiCapabilities = {
    */
   editProjectFiles?: boolean;
   /**
-   * Settings → Connectors and MCP servers. OPT-IN: absent/false = hide both
-   * nav rows and keep those pages unreachable. Unpackaged desktop sets true
-   * (`!app.isPackaged`, the same signal as {@link toggleDevTools}); VS Code
-   * and packaged builds omit the field. Remotes inherit the desk machine's
-   * capabilities.
+   * Settings → Connectors. OPT-IN: absent/false = hide the nav row and keep
+   * the page unreachable. Unpackaged desktop sets true (`!app.isPackaged`,
+   * the same signal as {@link toggleDevTools}); VS Code and packaged builds
+   * omit the field. Remotes inherit the desk machine's capabilities.
    */
   mcpSettings?: boolean;
   /**

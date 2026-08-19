@@ -1,7 +1,7 @@
 # MCP settings inventory
 
-Settings → MCP servers reads `_x.ai/mcp/list` through the active Grok ACP
-session. The parser accepts both the current `{ "servers": [] }` response and
+Settings → Connectors → In this Grok session reads `_x.ai/mcp/list` through
+the active Grok ACP session. The parser accepts both the current `{ "servers": [] }` response and
 a bare array, and the extra `{ result: ... }` envelope emitted by Grok 1.0.5
 over ACP. It prefers `session.enabled`, `session.status`, `session.tools`, and
 `session.error` over top-level values, and preserves per-tool metadata for the
