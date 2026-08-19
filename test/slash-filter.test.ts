@@ -145,10 +145,21 @@ describe("applySlashPick", () => {
     expect(r.caret).toBe(9);
   });
 
-  it("works at start of new line", () => {
+  // #110. The CLI dispatches a slash command only at position 0 of the text
+  // block, so a completion offered on line 2 produced a command that silently
+  // went out as prose. Both of these used to complete; neither may now, and
+  // they are pinned because the popover's own regex must stay in step with
+  // matchSlashCommand — the two drifting apart is what caused the bug.
+  it("does not complete at the start of a later line — it would not dispatch", () => {
     const r = applySlashPick("hi\n/pla", 7, "plan");
-    expect(r.text).toBe("hi\n/plan ");
-    expect(r.caret).toBe(9);
+    expect(r.text).toBe("hi\n/pla");
+    expect(r.caret).toBe(7);
+  });
+
+  it("does not complete mid-line either", () => {
+    const r = applySlashPick("use /pla", 8, "plan");
+    expect(r.text).toBe("use /pla");
+    expect(r.caret).toBe(8);
   });
 });
 

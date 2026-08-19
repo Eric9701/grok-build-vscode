@@ -354,18 +354,20 @@ describe("VS Code session overflow", () => {
     return [...doc.querySelectorAll(".rail-menu-item")] as HTMLButtonElement[];
   }
 
-  it("contains exactly the two moved actions and removes them from the gear", () => {
+  it("contains Continue, Export, and Find in the overflow and removes them from the gear", () => {
     const { window, doc } = bootWebview({ vscode: true });
     dispatch(window, { type: "sessionName", sessionId: "s1", name: "Has overflow", cwd: "/work/repo" });
     playTurn(window, "hello", "hi");
     openGear(window, doc);
     expect(doc.getElementById("gear-popover")!.textContent).not.toContain("Continue in a new chat");
     expect(doc.getElementById("gear-popover")!.textContent).not.toContain("Export conversation as Markdown");
+    expect(doc.getElementById("gear-popover")!.textContent).not.toContain("Find in conversation");
     const items = openVsCodeOverflow(window, doc);
     const labels = items.map((item) => item.textContent?.trim());
     expect(labels).toEqual([
       "Continue in a new chat",
       "Export conversation as Markdown",
+      "Find in conversation",
     ]);
     expect(labels.some((t) => t?.includes("New session"))).toBe(false);
   });

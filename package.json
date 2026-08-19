@@ -160,6 +160,10 @@
         "title": "Grok: Collapse All Tool Details (This Session)"
       },
       {
+        "command": "grok.findInSession",
+        "title": "Grok: Find in Conversation"
+      },
+      {
         "command": "grok.logout",
         "title": "Grok: Log Out"
       },
@@ -204,6 +208,12 @@
         "command": "grok.composerPreviousLine",
         "key": "ctrl+p",
         "when": "isMac && grok.composerFocus"
+      },
+      {
+        "command": "grok.findInSession",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "focusedView == grok.chat"
       }
     ],
     "menus": {

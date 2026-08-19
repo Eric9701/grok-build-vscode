@@ -10165,6 +10165,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.emit(this.focused, { type: "setAllToolDetails", open });
   }
 
+  /** Command Palette / Ctrl+F fallback: open in-webview find (#99). `post`
+   *  (not emit) so a focus-swap cannot replay it; host-local so a desk
+   *  invocation does not pop find on a linked phone. */
+  findInSession(): void {
+    this.view?.show?.(false);
+    this.post({ type: "findInSession" });
+  }
+
   /** grok.showThinking (#26) — whether grok's reasoning traces are shown. Off by
    *  default; hidden traces are replaced by a lightweight "Thinking…" indicator. */
   private showThinking(): boolean {
@@ -12257,7 +12265,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  return to that conversation. The other two would re-steal focus and re-open
    *  the mode picker on reconnect. */
   private static readonly TRANSIENT_TYPES = new Set([
-    "restoreComposer", "focusInput", "openModePopover",
+    "restoreComposer", "focusInput", "findInSession", "openModePopover",
   ]);
   /**
    * Host→rail catalog surface. Everything else stays chat-only so a user who

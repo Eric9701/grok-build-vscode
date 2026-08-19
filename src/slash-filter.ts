@@ -49,6 +49,18 @@ export function filterCommands(commands: SlashCmd[], query: string): SlashCmd[] 
   return prefix.concat(substring, description);
 }
 
+/**
+ * The partial `/q` token the popover is completing, or null.
+ *
+ * Anchored at position 0 of the WHOLE message, deliberately — the same anchor
+ * {@link matchSlashCommand} dispatches on. It used to accept `\n/` as well, so a
+ * command typed at the start of the second line was offered, accepted, and then
+ * silently sent as prose: the CLI only recognises a slash command at position 0
+ * of the text block (#110, and the standing upstream ask in ACP-feedback §4).
+ * Offering a completion we cannot dispatch is worse than offering none.
+ */
+export const SLASH_TOKEN_RE = /^\/(\S*)$/;
+
 /** Replace the partial `/q` token with `/<name> ` and return the new text + caret. */
 export function applySlashPick(
   text: string,
@@ -57,9 +69,7 @@ export function applySlashPick(
 ): { text: string; caret: number } {
   const before = text.slice(0, caret);
   const after = text.slice(caret);
-  const newBefore = before.replace(/(?:^|\n)\/(\S*)$/, (m) =>
-    m.startsWith("\n") ? `\n/${name} ` : `/${name} `,
-  );
+  const newBefore = before.replace(SLASH_TOKEN_RE, `/${name} `);
   return { text: newBefore + after, caret: newBefore.length };
 }
 

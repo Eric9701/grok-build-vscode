@@ -31,6 +31,7 @@ suite("grok-build extension smoke", () => {
       "grok.newSession",
       "grok.showLogs",
       "grok.settings",
+      "grok.findInSession",
       "grok.logout",
       // The escape hatch for an editor that hid the view somewhere unreachable —
       // useless if it is not in the palette.

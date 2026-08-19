@@ -614,6 +614,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",
   focusInput: "mirror",
+  // Desk/VS Code only — a phone opens find from its own ⋯, and a palette
+  // invocation on the desk must not pop a find bar on every linked tab.
+  findInSession: "host-local",
   restoreComposer: "mirror",
   truncateMessages: "mirror",
   uiConfirmRequest: "mirror",
@@ -678,6 +681,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   error: "none",
   hostNotice: "none",
   focusInput: "none",
+  findInSession: "none",
   openModePopover: "none",
   // Open-folder catalog — project-bearing selectedCwd/activeCwd/entries validated.
   repos: "repos-catalog",

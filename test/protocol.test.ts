@@ -63,6 +63,19 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     });
   });
 
+  it("contributes find-in-conversation as a palette command and a Cmd/Ctrl+F fallback", () => {
+    expect(packageJson.contributes.commands).toContainEqual({
+      command: "grok.findInSession",
+      title: "Grok: Find in Conversation",
+    });
+    expect(packageJson.contributes.keybindings).toContainEqual({
+      command: "grok.findInSession",
+      key: "ctrl+f",
+      mac: "cmd+f",
+      when: "focusedView == grok.chat",
+    });
+  });
+
   it("contributes a native title-bar settings command on the chat view", () => {
     expect(packageJson.contributes.commands).toContainEqual({
       command: "grok.settings",

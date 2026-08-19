@@ -435,6 +435,10 @@ export type HostMsg =
   // Selection / Send File / @-mention so the user can type a prompt right away.
   // Ephemeral UI action, not session-scoped (goes via `post`, never buffered).
   | { type: "focusInput" }
+  /** Open the in-webview find bar (#99). Command Palette + Ctrl/Cmd+F fallback
+   *  when the workbench swallows the keystroke inside a WebviewView. Ephemeral
+   *  (`post`, never buffered). Host-local — remotes open find from their own ⋯. */
+  | { type: "findInSession" }
   /** Put text back in the composer (Edit-and-resend, #56). Posted after the
    *  rewind + reload so it survives the clearMessages/replay that follows. */
   | { type: "restoreComposer"; text: string }
@@ -763,7 +767,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   sessionContext: true, clearMessages: true, onboarding: true, error: true, hostNotice: true,
   xaiNotification: true, subagentUpdate: true, childStream: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
-  setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
+  setAllToolDetails: true, focusInput: true, findInSession: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
   sessions: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, usage: true,
 };

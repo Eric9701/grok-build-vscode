@@ -261,6 +261,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
     vscode.commands.registerCommand("grok.settings", () => sidebar.openSettingsEditor()),
     vscode.commands.registerCommand("grok.expandAllToolDetails", () => sidebar.setAllToolDetails(true)),
     vscode.commands.registerCommand("grok.collapseAllToolDetails", () => sidebar.setAllToolDetails(false)),
+    vscode.commands.registerCommand("grok.findInSession", () => sidebar.findInSession()),
     vscode.commands.registerCommand("grok.logout", () => sidebar.logout()),
     vscode.commands.registerCommand("grok.linkRemote", () => sidebar.linkRemoteDevice()),
     vscode.commands.registerCommand("grok.unlinkRemote", () => sidebar.unlinkRemoteDevice()),

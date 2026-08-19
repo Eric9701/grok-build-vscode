@@ -149,6 +149,7 @@ describe("New session in the top bar", () => {
     expect(labels).toEqual([
       "Continue in a new chat",
       "Export conversation as Markdown",
+      "Find in conversation",
     ]);
   });
 
