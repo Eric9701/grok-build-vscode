@@ -12,6 +12,9 @@ import {
   planStrip,
   STRIP_COMPACT_MAX,
   STRIP_EXTREME_MAX,
+  relativeCopyPath,
+  scopeCwd,
+  joinHostPath,
 } from "../media/file-panel.js";
 import { chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
 
@@ -176,6 +179,35 @@ describe("shared file-panel model", () => {
 
     expect(tab.dirty).toBe(false);
     expect(tab.editing).toBe(true);
+  });
+});
+
+describe("copy-path helpers", () => {
+  it("keeps the listing's forward-slash relative form", () => {
+    expect(relativeCopyPath("src/a.ts")).toBe("src/a.ts");
+    expect(relativeCopyPath("src\\a.ts")).toBe("src/a.ts");
+    expect(relativeCopyPath("notes.md")).toBe("notes.md");
+  });
+
+  it("reads the host cwd from a path-shaped scope id, else title", () => {
+    expect(scopeCwd({ id: "C:\\repo", title: "repo" })).toBe("C:\\repo");
+    expect(scopeCwd({ id: "/work/app", title: "app" })).toBe("/work/app");
+    expect(scopeCwd({ id: "scope-a", title: "/work/app" })).toBe("/work/app");
+    expect(scopeCwd({ id: "scope-a", label: "app" })).toBe("scope-a");
+    expect(scopeCwd(null)).toBe("");
+  });
+
+  it("joins with the desk's separator, never a mix", () => {
+    expect(joinHostPath("C:\\repo", "src/foo.ts")).toBe("C:\\repo\\src\\foo.ts");
+    expect(joinHostPath("C:\\repo\\", "src/foo.ts")).toBe("C:\\repo\\src\\foo.ts");
+    expect(joinHostPath("\\\\server\\share", "src/foo.ts")).toBe("\\\\server\\share\\src\\foo.ts");
+    expect(joinHostPath("/work/app", "src/foo.ts")).toBe("/work/app/src/foo.ts");
+    expect(joinHostPath("/work/app/", "src/foo.ts")).toBe("/work/app/src/foo.ts");
+    expect(joinHostPath("/", "foo.ts")).toBe("/foo.ts");
+    expect(joinHostPath("C:\\repo", "notes.md")).toBe("C:\\repo\\notes.md");
+    expect(joinHostPath("C:\\repo", "src")).toBe("C:\\repo\\src");
+    expect(joinHostPath("/work/app", "")).toBe("/work/app");
+    expect(joinHostPath("C:\\repo", "src/foo.ts")).not.toContain("/");
   });
 });
 
@@ -1125,6 +1157,171 @@ describe("the overflow menu opens from every button that offers it", () => {
   });
 });
 
+function mockClipboard(window: Window): { value: string; writes: number; fail: boolean } {
+  const box = { value: "", writes: 0, fail: false };
+  Object.defineProperty((window as unknown as { navigator: Navigator }).navigator, "clipboard", {
+    configurable: true,
+    value: {
+      writeText: (text: string) => {
+        box.writes += 1;
+        if (box.fail) return Promise.reject(new Error("denied"));
+        box.value = text;
+        return Promise.resolve();
+      },
+    },
+  });
+  return box;
+}
+
+function menuLabels(document: Document): string[] {
+  return [...document.querySelectorAll(".gfp-menu-item")].map((el) => el.textContent || "");
+}
+
+function menuItem(document: Document, label: string): Element | null {
+  return [...document.querySelectorAll(".gfp-menu-item")].find((el) => el.textContent === label) || null;
+}
+
+function treeRow(document: Document, name: string): Element | null {
+  return [...document.querySelectorAll(".gfp-row")].find((row) => row.textContent?.includes(name)) || null;
+}
+
+describe("copy path on the file-panel row menu", () => {
+  it("offers copy items first, including on a client with no OS access", async () => {
+    const h = harness();
+    h.panel.setOpen(true);
+    await settle();
+
+    const fileRow = treeRow(h.document, "notes.md");
+    expect(fileRow?.querySelector(".gfp-icon-button"), "remote rows must still have ⋯").toBeTruthy();
+    expect(treeRow(h.document, "src")?.querySelector(".gfp-icon-button"), "directories have paths too").toBeTruthy();
+
+    fileRow!.dispatchEvent(new h.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(menuLabels(h.document)).toEqual(["Copy relative path", "Copy path"]);
+  });
+
+  it("copies the listing-relative path and the desk-joined absolute path", async () => {
+    const h = harness();
+    const copied = mockClipboard(h.window);
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+
+    const fileRow = treeRow(h.document, "a.ts");
+    fileRow!.dispatchEvent(new h.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await settle();
+    click(h.window, menuItem(h.document, "Copy relative path"));
+    await settle();
+    expect(copied.value).toBe("src/a.ts");
+
+    fileRow!.dispatchEvent(new h.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await settle();
+    click(h.window, menuItem(h.document, "Copy path"));
+    await settle();
+    expect(copied.value).toBe("/work/app/src/a.ts");
+    h.panel.destroy();
+  });
+
+  it("joins a Windows cwd with the desk separator, not the client's", async () => {
+    const h = harness();
+    const copied = mockClipboard(h.window);
+    await settle();
+    await h.panel.setScope({ id: "C:\\GitHub\\repo", label: "repo", title: "C:\\GitHub\\repo" });
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+
+    treeRow(h.document, "a.ts")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    click(h.window, menuItem(h.document, "Copy path"));
+    await settle();
+    expect(copied.value).toBe("C:\\GitHub\\repo\\src\\a.ts");
+    expect(copied.value).not.toMatch(/\//);
+    h.panel.destroy();
+  });
+
+  it("copies a directory path the same way", async () => {
+    const h = harness();
+    const copied = mockClipboard(h.window);
+    h.panel.setOpen(true);
+    await settle();
+    treeRow(h.document, "src")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    expect(menuLabels(h.document)[0]).toBe("Copy relative path");
+    click(h.window, menuItem(h.document, "Copy relative path"));
+    await settle();
+    expect(copied.value).toBe("src");
+
+    treeRow(h.document, "src")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    click(h.window, menuItem(h.document, "Copy path"));
+    await settle();
+    expect(copied.value).toBe("/work/app/src");
+    h.panel.destroy();
+  });
+
+  it("keeps Open / Reveal under the copy items when the host can act", async () => {
+    const h = harness();
+    (h.access as { openExternal?: unknown; reveal?: unknown }).openExternal = async () => ({ ok: true });
+    (h.access as { reveal?: unknown }).reveal = async () => ({ ok: true });
+    h.panel.setOpen(true);
+    await settle();
+    treeRow(h.document, "notes.md")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    expect(menuLabels(h.document)).toEqual([
+      "Copy relative path",
+      "Copy path",
+      "Open in default app",
+      "Reveal in file manager",
+    ]);
+  });
+
+  it("copies from the viewer's More actions and flashes the chat checkmark", async () => {
+    const h = harness();
+    const copied = mockClipboard(h.window);
+    await settle();
+    await h.panel.openPath("src/a.ts");
+    const more = h.document.querySelector(".gfp-viewer .gfp-more");
+    expect(more, "the viewer ⋯ is not gated on OS access").toBeTruthy();
+    click(h.window, more);
+    await settle();
+    click(h.window, menuItem(h.document, "Copy relative path"));
+    await settle();
+    expect(copied.value).toBe("src/a.ts");
+    expect(more!.classList.contains("copied")).toBe(true);
+    expect(more!.querySelector("svg")).toBeTruthy();
+    h.panel.destroy();
+  });
+
+  it("swallows a rejected clipboard write", async () => {
+    const h = harness();
+    const copied = mockClipboard(h.window);
+    copied.fail = true;
+    h.panel.setOpen(true);
+    await settle();
+    treeRow(h.document, "notes.md")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    click(h.window, menuItem(h.document, "Copy relative path"));
+    await settle();
+    expect(copied.writes).toBe(1);
+    expect(copied.value).toBe("");
+    expect(h.document.querySelector(".gfp-icon-button.copied")).toBeNull();
+    h.panel.destroy();
+  });
+});
+
 // A non-previewable file used to be handed straight to the OS on the desktop,
 // so the same click meant different things on different clients: a tab with a
 // message in the browser, a silently launched external app on the desktop.
@@ -1175,7 +1372,7 @@ describe("a non-previewable file behaves the same on every client", () => {
   });
 });
 
-// An empty toolbar over an error message is a row of chrome explaining nothing.
+// Copy path is always in the ⋯ menu, so a failed open still keeps the bar.
 describe("the error tab's action row appears only when it has actions", () => {
   const unopenable = (withOs: boolean) => {
     const h = harness({
@@ -1185,11 +1382,12 @@ describe("the error tab's action row appears only when it has actions", () => {
     return h;
   };
 
-  it("drops the bar on a client with nothing to put in it", async () => {
+  it("keeps the bar so you can still copy the path", async () => {
     const h = unopenable(false);
     await settle();
     await h.panel.openPath("app.bin");
-    expect(h.document.querySelector(".gfp-viewer-head")).toBeNull();
+    expect(h.document.querySelector(".gfp-viewer-head")).toBeTruthy();
+    expect(h.document.querySelector(".gfp-more")).toBeTruthy();
     expect(h.document.querySelector(".gfp-viewer-body")?.textContent)
       .toContain("file type not previewable");
   });
