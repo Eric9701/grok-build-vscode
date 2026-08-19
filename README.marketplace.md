@@ -193,6 +193,8 @@ Click the model name in the gear popover. The list comes from your CLI; switchin
 
 The host talks **ACP** (JSON-RPC over stdio), not a Grok-specific protocol, so the same UI drives any agent that speaks it — **OpenAI Codex** and **Claude Code** included. Connect them in **Settings → Providers**; each signs in through its own CLI. Grok Build is the default and the one everything is tuned against, but every connected agent shares one model picker, and each conversation keeps the agent it started with, so all three can run side by side with the same chat, diffs, permission cards, and history.
 
+**Settings → MCP servers** shows the servers and tools reported by the current Grok ACP session, including grok.com-managed connectors. The inventory is read-only because connector enable/disable is machine-global; live MCP status notifications update the health display without polling.
+
 </details>
 
 <details>

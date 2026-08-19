@@ -112,7 +112,7 @@ describe("settings catalog", () => {
     });
     const local = api.visibleCategories(snapshot, api.defaultEnv(fullEnv()));
     expect(local.map((c) => c.id)).toEqual([
-      "general", "voice", "notifications", "providers", "account", "advanced", "about",
+      "general", "voice", "notifications", "providers", "mcp", "account", "advanced", "about",
     ]);
     const remoteRows = api.visibleRows(snapshot, api.defaultEnv(fullEnv({ isRemote: true })));
     expect(remoteRows.some((row) => row.hostLocal)).toBe(false);
@@ -162,7 +162,7 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay).toBeTruthy();
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toEqual([
-      "General", "Voice", "Notifications", "Providers", "Account", "Advanced", "About",
+      "General", "Voice", "Notifications", "Providers", "MCP servers", "Account", "Advanced", "About",
     ]);
     expect(overlay!.querySelector(".settings-nav-icon svg")).toBeTruthy();
     expect(overlay!.querySelector(".settings-close")).toBeNull();
@@ -265,9 +265,32 @@ describe("settings overlay (chat.js)", () => {
       "showThinking", "expandCommandOutputs", "steerByDefault",
       "soundNotifications", "processingSound",
       "readRepliesAloud", "summarizeRepliesAloud",
-      "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs",
+      "openGlobalConfig", "openProjectConfig", "mcpCatalog", "showLogs",
       "openVsCodeSettings", "moveView",
     ]));
+  });
+
+  it("loads a read-only MCP catalog and marks managed servers", () => {
+    const h = bootWebview();
+    seedChat(h);
+    openSettings(h);
+    clickSettingsNav(h, "MCP servers");
+    expect(h.posted).toContainEqual({ type: "listMcpServers" });
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [
+        { name: "managed_gateway:canva", displayName: "Canva", managed: true, enabled: true, status: "ready", toolCount: 32 },
+        { name: "linear", enabled: false, status: "ready", toolCount: 0 },
+      ],
+      warning: "Read-only inventory.",
+    });
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Canva");
+    expect(overlay.textContent).toContain("grok.com managed");
+    expect(overlay.textContent).toContain("32 tools");
+    expect(overlay.textContent).toContain("Disabled · ready · 0 tools");
+    expect(overlay.querySelector(".settings-switch")).toBeNull();
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "setMcpServerEnabled" }));
   });
 
   it("hides healthy provider rows in the gear and shows them when attention is needed", () => {

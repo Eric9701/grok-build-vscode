@@ -80,7 +80,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "removeProjectFolder":
     case "openGlobalConfig":
     case "openProjectConfig":
-    case "runMcpList":
+    case "listMcpServers":
     case "showLogs":
     case "toggleDevTools":
     case "restartToUpdate":

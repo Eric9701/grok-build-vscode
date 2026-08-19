@@ -153,6 +153,47 @@ describe("AcpClient notification metadata", () => {
   });
 });
 
+describe("AcpClient MCP surface", () => {
+  it("calls the active-session inventory RPC and degrades -32601 to unsupported", async () => {
+    const { client, written } = clientWithFakeProc();
+    (client as any).sessionId = "session-1";
+    const request = client.listMcpServers();
+    const msg = JSON.parse(written[0]);
+    expect(msg).toMatchObject({ method: "_x.ai/mcp/list", params: {} });
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0", id: msg.id, result: { servers: [{ name: "docs" }] },
+    }));
+    await expect(request).resolves.toEqual({ servers: [{ name: "docs" }] });
+
+    const unsupported = client.listMcpServers();
+    const missing = JSON.parse(written[1]);
+    (client as any).onLine(JSON.stringify({
+      jsonrpc: "2.0", id: missing.id, error: { code: -32601, message: "Method not found" },
+    }));
+    await expect(unsupported).resolves.toBe("unsupported");
+  });
+
+  it("forwards the four MCP health notifications", () => {
+    const { client } = clientWithFakeProc();
+    const seen: unknown[] = [];
+    client.on("mcpNotification", (...args) => seen.push(args));
+    for (const method of [
+      "_x.ai/mcp/servers_updated",
+      "_x.ai/mcp/init_progress",
+      "_x.ai/mcp_initialized",
+      "_x.ai/mcp/server_status",
+    ]) {
+      (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", method, params: { name: "docs" } }));
+    }
+    expect(seen.map((entry: any) => entry[0])).toEqual([
+      "_x.ai/mcp/servers_updated",
+      "_x.ai/mcp/init_progress",
+      "_x.ai/mcp_initialized",
+      "_x.ai/mcp/server_status",
+    ]);
+  });
+});
+
 describe("AcpClient child-stream demux", () => {
   const parentId = "sess-parent";
   const childId = "sess-child";

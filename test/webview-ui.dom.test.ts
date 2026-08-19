@@ -2241,11 +2241,25 @@ describe("gear menu — Other group + About / Settings", () => {
     const overlay = h.doc.getElementById("settings-overlay")!;
     expect(overlay.querySelector('[data-id="openGlobalConfig"]')).toBeTruthy();
     expect(overlay.querySelector('[data-id="openProjectConfig"]')).toBeTruthy();
-    expect(overlay.querySelector('[data-id="runMcpList"]')).toBeTruthy();
     expect(overlay.querySelector('[data-id="showLogs"]')).toBeTruthy();
 
     click(h.window, overlay.querySelector('[data-id="showLogs"] .settings-action')!);
     expect(types(h.posted)).toContain("showLogs");
+  });
+
+  it("Settings → MCP servers is a read-only live inventory", () => {
+    const h = boot();
+    openSettingsOverlay(h.window, h.doc);
+    clickSettingsNav(h.window, h.doc, "MCP servers");
+    expect(types(h.posted)).toContain("listMcpServers");
+    expect(h.doc.querySelector("#settings-overlay .settings-mcp-state")?.textContent).toContain("Loading");
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [{ name: "managed_gateway:canva", displayName: "Canva", managed: true, enabled: true, status: "ready", toolCount: 32 }],
+      warning: "Read-only inventory.",
+    });
+    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("grok.com managed");
+    expect(h.doc.querySelector("#settings-overlay .settings-switch")).toBeNull();
   });
 });
 
