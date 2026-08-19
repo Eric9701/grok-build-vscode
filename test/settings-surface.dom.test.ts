@@ -112,7 +112,7 @@ describe("settings catalog", () => {
     });
     const local = api.visibleCategories(snapshot, api.defaultEnv(fullEnv()));
     expect(local.map((c) => c.id)).toEqual([
-      "general", "voice", "notifications", "providers", "mcp", "account", "advanced", "about",
+      "general", "voice", "notifications", "providers", "connectors", "mcp", "account", "advanced", "about",
     ]);
     const remoteRows = api.visibleRows(snapshot, api.defaultEnv(fullEnv({ isRemote: true })));
     expect(remoteRows.some((row) => row.hostLocal)).toBe(false);
@@ -126,6 +126,8 @@ describe("settings catalog", () => {
     expect(remoteRows.some((row) => row.id === "voiceSendPhrase")).toBe(true);
     expect(remoteRows.some((row) => row.id === "telemetryRemote")).toBe(true);
     expect(remoteRows.some((row) => row.id === "telemetryDesktop")).toBe(false);
+    expect(remoteRows.some((row) => row.id === "connectorsCatalog")).toBe(true);
+    expect(remoteRows.some((row) => row.id === "mcpCatalog")).toBe(false);
   });
 
   it("gives every category a nav icon and folds Chat into General", () => {
@@ -162,7 +164,7 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay).toBeTruthy();
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toEqual([
-      "General", "Voice", "Notifications", "Providers", "MCP servers", "Account", "Advanced", "About",
+      "General", "Voice", "Notifications", "Providers", "Connectors", "MCP servers", "Account", "Advanced", "About",
     ]);
     expect(overlay!.querySelector(".settings-nav-icon svg")).toBeTruthy();
     expect(overlay!.querySelector(".settings-close")).toBeNull();
@@ -215,6 +217,7 @@ describe("settings overlay (chat.js)", () => {
     expect(ids).not.toContain("continueRemotely");
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toContain("Providers");
+    expect(nav).toContain("Connectors");
     expect(nav).toContain("Account");
     clickSettingsNav(h, "Providers");
     expect(overlay.textContent).toMatch(/This account is connected on this machine/);
@@ -265,7 +268,7 @@ describe("settings overlay (chat.js)", () => {
       "showThinking", "expandCommandOutputs", "steerByDefault",
       "soundNotifications", "processingSound",
       "readRepliesAloud", "summarizeRepliesAloud",
-      "openGlobalConfig", "openProjectConfig", "mcpCatalog", "showLogs",
+      "openGlobalConfig", "openProjectConfig", "connectorsCatalog", "mcpCatalog", "showLogs",
       "openVsCodeSettings", "moveView",
     ]));
   });
@@ -291,6 +294,57 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.textContent).toContain("Disabled · ready · 0 tools");
     expect(overlay.querySelector(".settings-switch")).toBeNull();
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "setMcpServerEnabled" }));
+  });
+
+  it("connects and disconnects host-owned connectors from Settings", () => {
+    const h = bootWebview();
+    seedChat(h);
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: false, status: "idle" },
+        { id: "canva", name: "Canva", description: "Designs.", endpoint: "https://mcp.canva.com/mcp", connected: true, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Linear");
+    expect(overlay.textContent).toContain("Canva");
+    h.posted.length = 0;
+    const connect = [...overlay.querySelectorAll(".settings-connector-action")]
+      .find((btn) => (btn as HTMLElement).dataset.id === "linear") as HTMLButtonElement;
+    expect(connect.textContent).toBe("Connect");
+    click(h.window, connect);
+    expect(h.posted).toContainEqual({ type: "connectMcpConnector", id: "linear" });
+    const disconnect = [...overlay.querySelectorAll(".settings-connector-action")]
+      .find((btn) => (btn as HTMLElement).dataset.id === "canva") as HTMLButtonElement;
+    expect(disconnect.textContent).toBe("Disconnect");
+    click(h.window, disconnect);
+    expect(h.posted).toContainEqual({ type: "disconnectMcpConnector", id: "canva" });
+  });
+
+  it("shows connectors read-only on a remote and never posts connect", () => {
+    const h = bootWebview({ remote: true });
+    seedChat(h);
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
+    expect(nav).toContain("Connectors");
+    expect(nav).not.toContain("MCP servers");
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Linear");
+    expect(overlay.textContent).toMatch(/desk machine/);
+    expect(overlay.querySelector(".settings-connector-action")).toBeNull();
+    expect(overlay.textContent).toContain("Connected");
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
   });
 
   it("hides healthy provider rows in the gear and shows them when attention is needed", () => {

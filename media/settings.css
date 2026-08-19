@@ -448,6 +448,16 @@ body.settings-page .settings-surface {
   border-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 45%, transparent);
 }
 
+.settings-mcp-list .settings-connector {
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 0;
+}
+
+.settings-mcp-list .settings-connector + .settings-connector {
+  border-top: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, .2));
+}
+
 .settings-row-control {
   display: flex;
   justify-content: flex-end;

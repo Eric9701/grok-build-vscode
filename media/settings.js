@@ -13,6 +13,7 @@
     { id: "voice", title: "Voice", restore: true },
     { id: "notifications", title: "Notifications", restore: true },
     { id: "providers", title: "Providers", restore: false },
+    { id: "connectors", title: "Connectors", restore: false },
     { id: "mcp", title: "MCP servers", restore: false },
     { id: "account", title: "Account", restore: false },
     { id: "advanced", title: "Advanced", restore: false },
@@ -26,6 +27,7 @@
     voice: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>',
     notifications: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>',
     providers: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>',
+    connectors: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h6"/><path d="M14 9h6"/><circle cx="10" cy="9" r="2"/><circle cx="14" cy="9" r="2"/><path d="M7 9v6a5 5 0 0 0 10 0V9"/></svg>',
     mcp: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v3"/><path d="M15 3v3"/><path d="M7 6h10v5a5 5 0 0 1-10 0Z"/><path d="M12 16v5"/></svg>',
     account: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
     advanced: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
@@ -545,6 +547,13 @@
       message: () => ({ type: "openProjectConfig" }),
     },
     {
+      id: "connectorsCatalog",
+      category: "connectors",
+      title: "Connectors",
+      description: "Apps available to Grok, Codex, and Claude after you sign in on this machine.",
+      kind: "connectors",
+    },
+    {
       id: "mcpCatalog",
       category: "mcp",
       title: "MCP servers",
@@ -855,9 +864,13 @@
 
   function searchHaystack(row, snapshot, env) {
     const cat = CATEGORIES.find((c) => c.id === row.category);
+    const extra = row.kind === "connectors" && Array.isArray(snapshot && snapshot.mcpConnectors)
+      ? snapshot.mcpConnectors.map((c) => [c.name, c.description].join(" ")).join(" ")
+      : "";
     return [
       rowTitle(row, snapshot, env),
       rowDescription(row, snapshot, env),
+      extra,
       cat ? cat.title : "",
       row.id,
     ].join(" ").toLowerCase();
@@ -1006,6 +1019,7 @@
       mcpLoading: false,
       mcpError: "",
       mcpWarning: "",
+      mcpConnectors: [],
       ...(partial || {}),
     };
   }
@@ -1224,8 +1238,88 @@
     return el;
   }
 
+  function connectorDescription(connector, env) {
+    if (connector.status === "connecting") {
+      return "Waiting for the browser sign-in to finish…";
+    }
+    if (connector.status === "error" && connector.error) return connector.error;
+    if (env && env.isRemote) {
+      return connector.connected
+        ? connector.description + " Connected on the desk machine."
+        : connector.description + " Sign-in happens on the desk.";
+    }
+    if (connector.connected) {
+      return connector.description + " Applies to new conversations and when you reopen one.";
+    }
+    return connector.description;
+  }
+
+  function renderConnectorsCatalog(snapshot, env) {
+    const el = document.createElement("div");
+    el.className = "settings-mcp";
+    el.dataset.id = "connectorsCatalog";
+    const warning = document.createElement("div");
+    warning.className = "settings-mcp-warning";
+    warning.textContent = env && env.isRemote
+      ? "These apps are connected on the desk machine. Sign-in happens there — a phone cannot change which tools an agent has."
+      : "These apps are available to Grok, Codex, and Claude. Connecting opens a browser to sign in. Tokens stay on this machine.";
+    el.appendChild(warning);
+    const connectors = Array.isArray(snapshot.mcpConnectors) ? snapshot.mcpConnectors : [];
+    if (!connectors.length) {
+      const empty = document.createElement("div");
+      empty.className = "settings-mcp-state";
+      empty.textContent = "Connector list has not arrived from the host yet.";
+      el.appendChild(empty);
+      return el;
+    }
+    const list = document.createElement("div");
+    list.className = "settings-mcp-list";
+    for (const connector of connectors) {
+      const row = document.createElement("div");
+      row.className = "settings-row settings-connector";
+      row.dataset.id = "connector-" + connector.id;
+      const copy = document.createElement("div");
+      copy.className = "settings-row-copy";
+      const name = document.createElement("div");
+      name.className = "settings-row-title";
+      const status = document.createElement("span");
+      status.className = "settings-mcp-status" + (connector.connected ? " is-ready" : (connector.status === "error" ? " is-error" : ""));
+      status.setAttribute("aria-hidden", "true");
+      name.appendChild(status);
+      name.appendChild(document.createTextNode(connector.name));
+      const desc = document.createElement("div");
+      desc.className = "settings-row-desc";
+      desc.textContent = connectorDescription(connector, env);
+      copy.append(name, desc);
+      const control = document.createElement("div");
+      control.className = "settings-row-control";
+      if (!(env && env.isRemote)) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "settings-action settings-connector-action";
+        btn.dataset.id = connector.id;
+        btn.dataset.connected = connector.connected ? "true" : "false";
+        const connecting = connector.status === "connecting";
+        btn.textContent = connecting ? "Connecting…" : (connector.connected ? "Disconnect" : "Connect");
+        btn.disabled = connecting;
+        if (connecting) btn.setAttribute("aria-busy", "true");
+        control.appendChild(btn);
+      } else {
+        const span = document.createElement("span");
+        span.className = "settings-value";
+        span.textContent = connector.connected ? "Connected" : "Not connected";
+        control.appendChild(span);
+      }
+      row.append(copy, control);
+      list.appendChild(row);
+    }
+    el.appendChild(list);
+    return el;
+  }
+
   function renderRow(row, snapshot, env) {
     if (row.kind === "mcp") return renderMcpCatalog(snapshot);
+    if (row.kind === "connectors") return renderConnectorsCatalog(snapshot, env);
     const el = document.createElement("div");
     el.className = "settings-row";
     el.dataset.id = row.id;
@@ -1785,6 +1879,18 @@
           if (!btn) return;
           btn.onclick = (e) => { e.stopPropagation(); runAction(row); };
         }
+      });
+      body.querySelectorAll(".settings-connector-action").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (env.isRemote || btn.disabled) return;
+          const id = btn.dataset.id;
+          if (!id) return;
+          post({
+            type: btn.dataset.connected === "true" ? "disconnectMcpConnector" : "connectMcpConnector",
+            id,
+          });
+        });
       });
       applyFocus(container, focus);
     }

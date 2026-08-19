@@ -184,6 +184,41 @@ describe("AcpClient session/info", () => {
   });
 });
 
+describe("AcpClient session mcpServers", () => {
+  it("sends the host-owned list on session/new and session/load", async () => {
+    const servers = [{ name: "linear", command: "npx", args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"] }];
+    const { client, written } = clientWithFakeProc();
+    (client as any).opts.mcpServers = () => servers;
+    replyToWrites(client, written, (msg) => {
+      if (msg.method === "session/new" || msg.method === "session/load") {
+        return { sessionId: "s1", models: { currentModelId: "grok-build", availableModels: [] } };
+      }
+      return {};
+    });
+    await client.newSession();
+    expect(JSON.parse(written[0])).toMatchObject({
+      method: "session/new",
+      params: { mcpServers: servers },
+    });
+    written.length = 0;
+    await client.loadSession("s1");
+    expect(JSON.parse(written[0])).toMatchObject({
+      method: "session/load",
+      params: { sessionId: "s1", mcpServers: servers },
+    });
+  });
+
+  it("still sends an empty array when nothing is connected", async () => {
+    const { client, written } = clientWithFakeProc();
+    replyToWrites(client, written, () => ({
+      sessionId: "s1",
+      models: { currentModelId: "grok-build", availableModels: [] },
+    }));
+    await client.newSession();
+    expect(JSON.parse(written[0]).params.mcpServers).toEqual([]);
+  });
+});
+
 describe("AcpClient MCP surface", () => {
   it("calls the active-session inventory RPC and degrades -32601 to unsupported", async () => {
     const { client, written } = clientWithFakeProc();

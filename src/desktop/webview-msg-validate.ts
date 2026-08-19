@@ -81,6 +81,12 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "openGlobalConfig":
     case "openProjectConfig":
     case "listMcpServers":
+    case "connectMcpConnector":
+    case "disconnectMcpConnector":
+      if ((type === "connectMcpConnector" || type === "disconnectMcpConnector") && !isString(raw.id)) {
+        return null;
+      }
+      break;
     case "showLogs":
     case "toggleDevTools":
     case "restartToUpdate":

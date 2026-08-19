@@ -204,6 +204,7 @@ describe("PersistedState", () => {
 
   it("maps grok.repoColors onto a client-state file like pins/archives", () => {
     expect(DISK_KEYS["grok.repoColors"]).toBe("repo-colors.json");
+    expect(DISK_KEYS["grok.mcpConnectors"]).toBe("mcp-connectors.json");
   });
 
   it("falls back to globalState when the file is corrupt, without throwing", () => {

@@ -13,6 +13,7 @@ import { isCanonicallyInsideRoot } from "./file-tree";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawn } from "node:child_process";
 import { AcpClient, EffortLevel, ExitPlanRequest, PermissionRequest, QuestionRequest } from "./acp";
 import type { AcpProvider, BackendSessionListEntry } from "./acp-backend";
 import { isAdapterProvider, isAcpProvider, ACP_PROVIDERS } from "./acp-backend";
@@ -307,6 +308,25 @@ import {
   type AppPurpose,
 } from "./app-purpose";
 import { MCP_GLOBAL_SCOPE_WARNING, mergeMcpNotification, parseMcpListResponse, type McpServerView } from "./mcp";
+import {
+  MCP_CONNECTORS_KEY,
+  collectReservedMcpIdentity,
+  connectConnector,
+  connectorById,
+  connectorViews,
+  disconnectConnector,
+  hostMcpServers,
+  isConnectorId,
+  mcpConfigPaths,
+  mcpRemoteArgs,
+  mergeReserved,
+  parseConnectedConnectorStore,
+  reservedFromMcpInventory,
+  type ConnectedConnectorStore,
+  type ConnectorId,
+  type ReservedMcpIdentity,
+} from "./mcp-connectors";
+import { authorizeMcpRemote, npxSpawnPlan } from "./mcp-connector-auth";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -697,7 +717,7 @@ export class GrokSidebar {
   private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
-    "onboarding", "providerState", "expandCommandOutputs", "steerByDefault", "soundNotifications",
+    "onboarding", "providerState", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
     "telemetryEnabled",
   ]);
   private cliPath?: string;
@@ -737,6 +757,8 @@ export class GrokSidebar {
     "openGlobalConfig",
     "openProjectConfig",
     "listMcpServers",
+    "connectMcpConnector",
+    "disconnectMcpConnector",
     "showLogs",
     "toggleDevTools",
     "openSettings",
@@ -759,6 +781,9 @@ export class GrokSidebar {
   private providerRefreshInFlight = false;
   private mcpServers: McpServerView[] = [];
   private mcpListSupported: boolean | undefined;
+  private grokMcpReserved: ReservedMcpIdentity = { names: [], urls: [] };
+  private mcpConnectingId: ConnectorId | undefined;
+  private mcpConnectError: { id: ConnectorId; message: string } | undefined;
   private grokVersionProbe?: Promise<string>;
   private codexVersionProbe?: Promise<string>;
   private claudeVersionProbe?: Promise<string>;
@@ -6892,6 +6917,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       effort,
       log: (msg) => this.host.appendLine(msg),
       timeouts: this.acpClientTimeouts(),
+      mcpServers: () => this.hostMcpServersFor(session),
       ...(session.provider === "grok"
         ? { grokVersion: grokHandshakeVersion, grokVersionVerified }
         : { backend: this.createProviderBackend(session.provider) }),
@@ -7254,6 +7280,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("mcpNotification", (method: string, params: unknown) => {
       if (gen !== session.gen || this.mcpListSupported === false) return;
       this.mcpServers = mergeMcpNotification(this.mcpServers, method, params);
+      this.grokMcpReserved = reservedFromMcpInventory(this.mcpServers, this.connectedConnectorStore());
       if (this.mcpListSupported === true) {
         this.postMcpServers({
           type: "mcpServers",
@@ -8228,6 +8255,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.refreshMcpServers(session);
         break;
       }
+      case "connectMcpConnector":
+        await this.connectMcpConnector(msg.id);
+        break;
+      case "disconnectMcpConnector":
+        await this.disconnectMcpConnector(msg.id);
+        break;
       case "showLogs":
         this.host.showOutput();
         break;
@@ -8853,6 +8886,110 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     void this.settingsEditor?.webview.postMessage(message);
   }
 
+  private connectedConnectorStore(): ConnectedConnectorStore {
+    return parseConnectedConnectorStore(this.state.get(MCP_CONNECTORS_KEY, {}));
+  }
+
+  private mcpConnectorsMessage(): Extract<HostMsg, { type: "mcpConnectors" }> {
+    return {
+      type: "mcpConnectors",
+      connectors: connectorViews(this.connectedConnectorStore(), {
+        connectingId: this.mcpConnectingId,
+        errorId: this.mcpConnectError?.id,
+        error: this.mcpConnectError?.message,
+      }),
+    };
+  }
+
+  private postMcpConnectors(): void {
+    const message = this.mcpConnectorsMessage();
+    this.post(message);
+    void this.settingsEditor?.webview.postMessage(message);
+  }
+
+  private reservedMcpIdentityFor(session: Session): ReservedMcpIdentity {
+    const cwd = this.sessionCwd(session);
+    const parts: ReservedMcpIdentity[] = [];
+    for (const filePath of mcpConfigPaths({
+      cwd,
+      provider: session.provider,
+      grokHome: resolveGrokHome(process.env),
+      userHome: process.env.USERPROFILE || process.env.HOME || os.homedir(),
+    })) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        parts.push(collectReservedMcpIdentity(fs.readFileSync(filePath, "utf8")));
+      } catch {
+        // Unreadable configs must not block session/new.
+      }
+    }
+    if (session.provider === "grok") parts.push(this.grokMcpReserved);
+    return mergeReserved(...parts);
+  }
+
+  private hostMcpServersFor(session: Session) {
+    return hostMcpServers(this.connectedConnectorStore(), this.reservedMcpIdentityFor(session));
+  }
+
+  private async connectMcpConnector(id: string): Promise<void> {
+    if (!isConnectorId(id)) return;
+    if (this.mcpConnectingId) {
+      this.mcpConnectError = {
+        id,
+        message: this.mcpConnectingId === id
+          ? "Sign-in is already in progress. Finish the browser prompt, or wait for it to time out."
+          : `Already connecting ${this.mcpConnectingId}. Wait for that to finish.`,
+      };
+      this.postMcpConnectors();
+      return;
+    }
+    const connector = connectorById(id);
+    if (!connector) return;
+    const store = this.connectedConnectorStore();
+    const endpoint = store[id]?.endpoint || connector.endpoint;
+    this.mcpConnectingId = id;
+    this.mcpConnectError = undefined;
+    this.postMcpConnectors();
+    const npx = npxSpawnPlan(process.platform);
+    try {
+      const result = await authorizeMcpRemote({
+        spawn,
+        command: npx.command,
+        args: mcpRemoteArgs(endpoint),
+        shell: npx.shell,
+        env: process.env,
+      });
+      if (this.mcpConnectingId !== id) return;
+      if (!result.ok) {
+        this.mcpConnectError = { id, message: result.message };
+        return;
+      }
+      // Re-read rather than writing the pre-await snapshot. The browser flow
+      // takes as long as the user takes, other rows stay actionable throughout,
+      // and `store` was captured before it began — so a Disconnect during
+      // sign-in would be undone by this write, silently handing every later
+      // agent a connector the user had explicitly removed.
+      await this.state.update(
+        MCP_CONNECTORS_KEY,
+        connectConnector(this.connectedConnectorStore(), id, endpoint),
+      );
+      this.mcpConnectError = undefined;
+    } catch (error) {
+      this.mcpConnectError = { id, message: (error as Error).message || "Could not connect." };
+    } finally {
+      if (this.mcpConnectingId === id) this.mcpConnectingId = undefined;
+      this.postMcpConnectors();
+    }
+  }
+
+  private async disconnectMcpConnector(id: string): Promise<void> {
+    if (!isConnectorId(id)) return;
+    if (this.mcpConnectingId === id) return;
+    await this.state.update(MCP_CONNECTORS_KEY, disconnectConnector(this.connectedConnectorStore(), id));
+    if (this.mcpConnectError?.id === id) this.mcpConnectError = undefined;
+    this.postMcpConnectors();
+  }
+
   /** Read MCP inventory through the active Grok ACP session. */
   private async refreshMcpServers(session: Session): Promise<void> {
     this.postMcpServers({
@@ -8888,6 +9025,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       this.mcpListSupported = true;
       this.mcpServers = parseMcpListResponse(result);
+      this.grokMcpReserved = reservedFromMcpInventory(this.mcpServers, this.connectedConnectorStore());
       this.postMcpServers({
         type: "mcpServers",
         servers: this.mcpServers,
@@ -12208,6 +12346,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private postInitialState(): void {
     this.post(this.buildInitialStateMsg());
     this.postProviderState();
+    this.postMcpConnectors();
     for (const provider of this.connectedProviders()) void this.probeProviderVersion(provider);
     this.post({
       type: "summarizeRepliesAloud",
@@ -15275,6 +15414,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const snap: HostMsg[] = [];
     snap.push(initial);
     snap.push(this.providerStateMessage());
+    snap.push(this.mcpConnectorsMessage());
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
@@ -15463,6 +15603,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         mcpLoading: false,
         mcpError: "",
         mcpWarning: MCP_GLOBAL_SCOPE_WARNING,
+        mcpConnectors: this.mcpConnectorsMessage().connectors,
       },
       category: opts.category || "general",
       env: {
@@ -15529,6 +15670,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             mcpLoading: msg.loading === true,
             mcpError: msg.error || "",
             mcpWarning: msg.warning || "",
+          });
+        }
+        if (msg.type === "mcpConnectors") {
+          surface.update({
+            mcpConnectors: Array.isArray(msg.connectors) ? msg.connectors : [],
           });
         }
         if (msg.type === "settingsCategory" && msg.category) surface.setCategory(msg.category);

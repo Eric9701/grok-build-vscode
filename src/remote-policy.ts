@@ -325,6 +325,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   openGlobalConfig: "host-local",
   openProjectConfig: "host-local",
   listMcpServers: "host-local",
+  // OAuth opens a browser on the desk and writes ~/.mcp-auth there. A phone
+  // cannot complete that flow, and must not change which tools every agent
+  // receives on the next session/new.
+  connectMcpConnector: "host-local",
+  disconnectMcpConnector: "host-local",
   showLogs: "host-local",
   toggleDevTools: "host-local",
   openSettings: "host-local",
@@ -534,6 +539,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   initialState: "mirror",
   providerState: "mirror",
   mcpServers: "host-local",
+  // The catalog is machine-global and contains no tokens — remotes may look,
+  // they just cannot Connect/Disconnect (inbound host-local above).
+  mcpConnectors: "mirror",
   codexInstallProgress: "host-local",
   // Placement is a property of the machine running the extension, and `moveView`
   // is host-local anyway — a remote could neither act on the hint nor need it.
@@ -673,6 +681,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   onboarding: "none",
   providerState: "none",
   mcpServers: "none",
+  mcpConnectors: "none",
   codexInstallProgress: "none",
   expandCommandOutputs: "none",
   steerByDefault: "none",

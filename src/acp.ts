@@ -67,6 +67,7 @@ import {
   type AcpTimeoutInput,
   type AcpTimeouts,
 } from "./acp-timeout";
+import type { AcpMcpStdioServer } from "./mcp-connectors";
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -94,6 +95,13 @@ export interface AcpClientOptions {
    * (#117); other methods use `requestTimeoutMs`. Omitted keys take defaults.
    */
   timeouts?: AcpTimeoutInput;
+  /**
+   * Host-owned MCP servers for `session/new` and `session/load`. A getter is
+   * read at request time so a Connect that lands after construct still applies.
+   * Omitted / empty is the historical `[]` — the field is still sent because
+   * grok rejects session/new without it.
+   */
+  mcpServers?: AcpMcpStdioServer[] | (() => AcpMcpStdioServer[]);
 }
 
 export interface ModelInfo {
@@ -397,10 +405,16 @@ export class AcpClient extends EventEmitter {
     this.emit("initialized", init);
   }
 
+  private mcpServersForSession(): AcpMcpStdioServer[] {
+    const value = this.opts.mcpServers;
+    if (typeof value === "function") return value();
+    return Array.isArray(value) ? value : [];
+  }
+
   async newSession(modelId?: string): Promise<{ sessionId: string }> {
     const raw = await this.request("session/new", {
       cwd: this.opts.cwd,
-      mcpServers: [],
+      mcpServers: this.mcpServersForSession(),
     });
     const res = this.backend.normalizeSessionResponse(raw);
     this.sessionId = res.sessionId;
@@ -450,7 +464,7 @@ export class AcpClient extends EventEmitter {
     const raw = await this.request("session/load", {
       sessionId,
       cwd: this.opts.cwd,
-      mcpServers: [],
+      mcpServers: this.mcpServersForSession(),
     });
     const res = this.backend.normalizeSessionResponse(raw);
     this.sessionId = sessionId;

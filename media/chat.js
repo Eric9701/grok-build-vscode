@@ -634,6 +634,7 @@
     mcpLoading: false,
     mcpError: "",
     mcpWarning: "",
+    mcpConnectors: [],
     // While replaying an older session, suppress a legacy primer user turn and
     // grok's response until the next user message starts.
     suppressReplayTurn: false,
@@ -2317,6 +2318,7 @@
       mcpLoading: state.mcpLoading,
       mcpError: state.mcpError,
       mcpWarning: state.mcpWarning,
+      mcpConnectors: state.mcpConnectors,
     };
   }
 
@@ -13027,7 +13029,7 @@
     "initialState", "showThinking", "appPurpose", "expandCommandOutputs",
     "steerByDefault", "steerUnavailable", "soundNotifications", "processingSound",
     "readRepliesAloud", "summarizeRepliesAloud", "fontScale", "voiceConfigured",
-    "providerState", "mcpServers", "remoteStatus", "telemetryEnabled", "grokUpdateStatus", "initialized",
+    "providerState", "mcpServers", "mcpConnectors", "remoteStatus", "telemetryEnabled", "grokUpdateStatus", "initialized",
   ]);
 
   function handleHostMessage(msg) {
@@ -13112,6 +13114,10 @@
         state.mcpLoading = msg.loading === true;
         state.mcpError = msg.error || "";
         state.mcpWarning = msg.warning || "";
+        refreshSettingsOverlay();
+        break;
+      case "mcpConnectors":
+        state.mcpConnectors = Array.isArray(msg.connectors) ? msg.connectors : [];
         refreshSettingsOverlay();
         break;
       case "codexInstallProgress":

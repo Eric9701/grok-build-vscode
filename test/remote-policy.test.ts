@@ -528,6 +528,18 @@ describe("allowFromRemote tier gating", () => {
     }
   });
 
+  it("refuses remote connector connect/disconnect at every tier but mirrors the list", () => {
+    expect(INBOUND_DISPOSITION.connectMcpConnector).toBe("host-local");
+    expect(INBOUND_DISPOSITION.disconnectMcpConnector).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.mcpConnectors).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.mcpServers).toBe("host-local");
+    for (const type of ["connectMcpConnector", "disconnectMcpConnector"] as const) {
+      for (const tier of ["read-only", "propose", "full"] as const) {
+        expect(allowFromRemote(type, tier)).toBe(false);
+      }
+    }
+  });
+
   it("refuses remote-origin provider logout and login-terminal actions at every tier", () => {
     for (const type of ["logout", "runGrokLogin"] as const) {
       expect(INBOUND_DISPOSITION[type]).toBe("host-local");
