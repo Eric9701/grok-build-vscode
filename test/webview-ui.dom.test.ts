@@ -1445,7 +1445,7 @@ describe("gear menu — AFK Pilot onboarding", () => {
     click(window, $(doc, "gear-btn"));
     expect(gearItem(doc, "Unlink this device…")).toBeUndefined();
     openSettingsOverlay(window, doc);
-    clickSettingsNav(window, doc, "Account");
+    clickSettingsNav(window, doc, "Remote control");
     const unlink = doc.querySelector('[data-id="unlinkDevice"] .settings-action') as HTMLElement;
     expect(unlink).toBeTruthy();
     click(window, unlink);
@@ -2076,10 +2076,14 @@ describe("gear menu — Other group + About / Settings", () => {
     expect(text).toContain("v0.2.117");
     expect(text).toContain("Codex CLI");
     expect(text).toContain("v0.146.0");
-    expect(text).toContain("Codex ACP adapter");
-    expect(text).toContain("v1.1.14");
-    expect(text).toContain("at its install source");
-    expect(text).toContain("Codex update available");
+    // The ACP adapters and the "Codex updates" status left About on 2026-08-19.
+    // The adapters are pinned deps of this extension and ship in the vsix, so
+    // they move only when it does; and "managed at its install source" pointed
+    // at US whenever the user let us install the managed Codex. Grok is the
+    // only CLI this extension updates, so it is the only one with an update row.
+    expect(text).not.toContain("Codex ACP adapter");
+    expect(text).not.toContain("at its install source");
+    expect(text).not.toContain("Codex update available");
     expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
   });
 
@@ -2096,7 +2100,7 @@ describe("gear menu — Other group + About / Settings", () => {
 
     const text = overlay.textContent || "";
     expect(text).toContain("Codex CLI");
-    expect(text).toContain("Codex ACP adapter");
+    expect(text).not.toContain("Codex ACP adapter");
     expect(overlay.querySelector('[data-id="aboutGrokCli"]')).toBeNull();
     expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
     expect(types(h.posted)).not.toContain("checkGrokUpdate");
@@ -2174,9 +2178,8 @@ describe("gear menu — Other group + About / Settings", () => {
       const text = overlay.textContent || "";
       expect(text).toContain("Grok Build CLI");
       expect(text).toContain("Codex CLI");
-      expect(text).toContain("Codex ACP adapter");
-      expect(text).toContain("Codex update available");
-      expect(text).toContain("at the desk");
+      expect(text).not.toContain("Codex ACP adapter");
+      expect(text).not.toContain("Codex update available");
       expect(types(h.posted)).not.toContain("checkGrokUpdate");
       expect(overlay.querySelector('[data-id="aboutUpdateGrok"]')).toBeNull();
     });

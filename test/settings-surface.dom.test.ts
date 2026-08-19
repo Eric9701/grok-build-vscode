@@ -194,7 +194,7 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay).toBeTruthy();
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toEqual([
-      "General", "Voice", "Notifications", "Providers", "Account", "Advanced", "About",
+      "General", "Voice", "Notifications", "Providers", "Remote control", "Advanced", "About",
     ]);
     expect(nav).not.toContain("Connectors");
     expect(nav).not.toContain("MCP servers");
@@ -226,7 +226,7 @@ describe("settings overlay (chat.js)", () => {
     openSettings(h);
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toEqual([
-      "General", "Voice", "Notifications", "Providers", "Connectors", "MCP servers", "Account", "Advanced", "About",
+      "General", "Voice", "Notifications", "Providers", "Connectors", "MCP servers", "Remote control", "Advanced", "About",
     ]);
   });
 
@@ -272,10 +272,10 @@ describe("settings overlay (chat.js)", () => {
     expect(nav).toContain("Providers");
     expect(nav).not.toContain("Connectors");
     expect(nav).not.toContain("MCP servers");
-    expect(nav).toContain("Account");
+    expect(nav).toContain("Remote control");
     clickSettingsNav(h, "Providers");
     expect(overlay.textContent).toMatch(/This account is connected on this machine/);
-    clickSettingsNav(h, "Account");
+    clickSettingsNav(h, "Remote control");
     expect(overlay.textContent).toMatch(/Device manager/);
     clickSettingsNav(h, "Advanced");
     expect(overlay.textContent).toMatch(/Host config is managed on the desk/);
@@ -796,7 +796,7 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     seedChat(h);
     dispatch(h.window, { type: "remoteStatus", linked: false });
     openSettings(h);
-    clickSettingsNav(h, "Account");
+    clickSettingsNav(h, "Remote control");
     const btn = h.doc.querySelector('[data-id="remoteHowItWorks"] .settings-action') as HTMLElement;
     expect(btn).toBeTruthy();
     click(h.window, btn);
