@@ -5,29 +5,52 @@ import {
   filterCommands,
   getSlashQuery,
   HIDDEN_SLASH_COMMANDS,
+  isAdvertisedSkill,
   matchSlashCommand,
 } from "../src/slash-filter";
 
 describe("getSlashQuery", () => {
-  it("returns null when no slash at line start", () => {
+  it("returns null when there is no slash token", () => {
     expect(getSlashQuery("hello", 5)).toBeNull();
-    expect(getSlashQuery("hello /not", 10)).toBeNull();
+    expect(getSlashQuery("foo/bar", 7)).toBeNull();
   });
 
-  it("returns query when slash is at start of input", () => {
-    expect(getSlashQuery("/com", 4)).toBe("com");
+  it("returns a start query when slash is at position 0", () => {
+    expect(getSlashQuery("/com", 4)).toEqual({ query: "com", atStart: true });
   });
 
-  it("returns query when slash is at start of new line", () => {
-    expect(getSlashQuery("hi\n/pla", 7)).toBe("pla");
+  it("returns a mid-prompt query after whitespace — skills load there", () => {
+    expect(getSlashQuery("hello /not", 10)).toEqual({ query: "not", atStart: false });
+    expect(getSlashQuery("hi\n/pla", 7)).toEqual({ query: "pla", atStart: false });
   });
 
   it("ignores text after the caret", () => {
-    expect(getSlashQuery("/co  more", 3)).toBe("co");
+    expect(getSlashQuery("/co  more", 3)).toEqual({ query: "co", atStart: true });
   });
 
   it("returns empty string for bare `/`", () => {
-    expect(getSlashQuery("/", 1)).toBe("");
+    expect(getSlashQuery("/", 1)).toEqual({ query: "", atStart: true });
+  });
+});
+
+describe("isAdvertisedSkill", () => {
+  it("is true only when _meta has both path and scope strings", () => {
+    expect(isAdvertisedSkill({
+      name: "frontend-design:frontend-design",
+      _meta: { scope: "plugin", path: "/skills/frontend-design/SKILL.md" },
+    })).toBe(true);
+    expect(isAdvertisedSkill({
+      name: "commit",
+      meta: { scope: "user", path: "/home/u/.grok/skills/commit/SKILL.md" },
+    })).toBe(true);
+  });
+
+  it("treats builtins and malformed meta as commands", () => {
+    expect(isAdvertisedSkill({ name: "compact" })).toBe(false);
+    expect(isAdvertisedSkill({ name: "imagine", _meta: { commandAction: "review" } })).toBe(false);
+    expect(isAdvertisedSkill({ name: "broken", _meta: { scope: "local" } })).toBe(false);
+    expect(isAdvertisedSkill({ name: "broken", _meta: { path: "/x/SKILL.md" } })).toBe(false);
+    expect(isAdvertisedSkill({ name: "broken", _meta: { scope: "", path: "/x/SKILL.md" } })).toBe(false);
   });
 });
 
@@ -145,21 +168,27 @@ describe("applySlashPick", () => {
     expect(r.caret).toBe(9);
   });
 
-  // #110. The CLI dispatches a slash command only at position 0 of the text
-  // block, so a completion offered on line 2 produced a command that silently
-  // went out as prose. Both of these used to complete; neither may now, and
-  // they are pinned because the popover's own regex must stay in step with
-  // matchSlashCommand — the two drifting apart is what caused the bug.
-  it("does not complete at the start of a later line — it would not dispatch", () => {
-    const r = applySlashPick("hi\n/pla", 7, "plan");
-    expect(r.text).toBe("hi\n/pla");
-    expect(r.caret).toBe(7);
+  // #110. Skills load anywhere in the prompt (owner-measured: a mid-line
+  // `/frontend-design:frontend-design` is expanded; `/compact` and `/effort`
+  // in the same message are not). The completer must therefore rewrite a
+  // `/token` after whitespace. Commands are still only *offered* at
+  // position 0 (`getSlashQuery.atStart`); matchSlashCommand stays `^`.
+  it("completes a skill at the start of a later line", () => {
+    const r = applySlashPick("hi\n/front", 9, "frontend-design:frontend-design");
+    expect(r.text).toBe("hi\n/frontend-design:frontend-design ");
+    expect(r.caret).toBe(r.text.length);
   });
 
-  it("does not complete mid-line either", () => {
-    const r = applySlashPick("use /pla", 8, "plan");
-    expect(r.text).toBe("use /pla");
-    expect(r.caret).toBe(8);
+  it("completes a skill mid-line after whitespace", () => {
+    const r = applySlashPick("use /front", 10, "frontend-design:frontend-design");
+    expect(r.text).toBe("use /frontend-design:frontend-design ");
+    expect(r.caret).toBe(r.text.length);
+  });
+
+  it("does not rewrite a slash inside a path", () => {
+    const r = applySlashPick("edit foo/bar", 12, "compact");
+    expect(r.text).toBe("edit foo/bar");
+    expect(r.caret).toBe(12);
   });
 });
 

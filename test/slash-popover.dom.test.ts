@@ -161,3 +161,60 @@ describe("/ slash-command popover matching", () => {
     expect(slashNames(h)).toEqual(["/ui-kit", "/web-design", "/notes"]);
   });
 });
+
+function skillCmd(name: string, description?: string) {
+  return {
+    name,
+    description,
+    _meta: { scope: "user", path: `/skills/${name}/SKILL.md` },
+  };
+}
+
+describe("/ slash popover — skills anywhere, commands only at position 0 (#110)", () => {
+  const MIXED = [
+    { name: "compact", description: "Compress conversation" },
+    { name: "effort", description: "Set reasoning effort" },
+    skillCmd("frontend-design:frontend-design", "Frontend design skill"),
+    skillCmd("commit", "Create a commit"),
+  ];
+
+  it("at position 0 offers commands and skills", () => {
+    const h = bootWebview();
+    loadCommands(h, MIXED);
+    typeInComposer(h, "/");
+    expect(slashPopover(h).hidden).toBe(false);
+    expect(slashNames(h)).toEqual([
+      "/compact",
+      "/effort",
+      "/frontend-design:frontend-design",
+      "/commit",
+    ]);
+  });
+
+  it("mid-prompt offers skills and hides commands that would not dispatch", () => {
+    const h = bootWebview();
+    loadCommands(h, MIXED);
+    typeInComposer(h, "rhre /front");
+    expect(slashPopover(h).hidden).toBe(false);
+    expect(slashNames(h)).toEqual(["/frontend-design:frontend-design"]);
+    expect(slashNames(h)).not.toContain("/compact");
+    expect(slashNames(h)).not.toContain("/effort");
+  });
+
+  it("hides the popover for a mid-prompt command token", () => {
+    const h = bootWebview();
+    loadCommands(h, MIXED);
+    typeInComposer(h, "rhre /compact");
+    expect(slashPopover(h).hidden).toBe(true);
+    expect(slashNames(h)).toEqual([]);
+  });
+
+  it("completes a mid-prompt skill in place", () => {
+    const h = bootWebview();
+    loadCommands(h, MIXED);
+    const input = typeInComposer(h, "please /front");
+    const item = slashPopover(h).querySelector(".slash-item") as HTMLElement;
+    item.click();
+    expect(input.value).toBe("please /frontend-design:frontend-design ");
+  });
+});

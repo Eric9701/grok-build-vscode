@@ -1831,6 +1831,7 @@ describe("desktop DevTools gate (non-production only)", () => {
     expect(host).toMatch(/devTools:\s*!app\.isPackaged/);
     expect(host).not.toContain("openDevTools");
     expect(host).toMatch(/canToggleDevTools/);
+    expect(host).toMatch(/canShowMcpSettings/);
     expect(host).toContain("toggleDevTools()");
     const settingsJs = fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "settings.js"),
@@ -1958,7 +1959,15 @@ describe("desktop branding and menu", () => {
     // must keep its document scroller (URL-bar hide, keyboard pans).
     expect(chatCss).toMatch(/html:has\(body\.desk\)\s*\{[^}]*overflow:\s*hidden/s);
     expect(chatCss).not.toMatch(/^html\s*\{[^}]*overflow:\s*hidden/ms);
-    expect(chatCss).toContain("calc(100% / var(--chat-zoom, 1))");
+    // #119. The body must NOT divide the zoom back out. That was correct under
+    // the old non-standard `zoom`; the CSS Zoom spec (Chromium 128+) resolves
+    // percentages against the zoom-adjusted containing block, so `height: 100%`
+    // already fills the window and dividing again halves it. Measured in
+    // Chromium 149 at an 800px viewport, the old formula put the composer at
+    // 400px at zoom 2 and overflowed to 1333px at zoom 0.6 — wrong at every
+    // scale but 1. Both older shapes stay pinned out so neither comes back.
+    expect(chatCss).toMatch(/zoom: var\(--chat-zoom, 1\);\s+height: 100%;/);
+    expect(chatCss).not.toContain("calc(100% / var(--chat-zoom, 1))");
     expect(chatCss).not.toContain("calc(100vh / var(--chat-zoom, 1))");
   });
 

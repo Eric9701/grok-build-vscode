@@ -482,4 +482,9 @@ describe("untitledTextOpenOptions (View all language passthrough)", () => {
     const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     expect(src).toMatch(/settingsEditor:\s*this\.host\.canOpenSettingsEditor/);
   });
+
+  it("sidebar advertises mcpSettings only when the host opts in", () => {
+    const src = readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+    expect(src).toMatch(/canShowMcpSettings\s*\?\s*\{\s*mcpSettings:\s*true\s*\}/);
+  });
 });

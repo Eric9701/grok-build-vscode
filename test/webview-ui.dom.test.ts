@@ -2016,6 +2016,7 @@ describe("gear menu — Other group + About / Settings", () => {
         deleteActiveSession: true,
         relocateView: true,
         showOutput: true,
+        mcpSettings: true,
       },
     });
     dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });

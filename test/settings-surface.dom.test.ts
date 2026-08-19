@@ -51,6 +51,12 @@ function fullEnv(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function withMcpSettings(overrides: Record<string, unknown> = {}) {
+  const base = fullEnv(overrides);
+  const hostCaps = { ...(base.hostCaps as object), mcpSettings: true };
+  return { ...base, hostCaps };
+}
+
 function seedChat(h: ReturnType<typeof bootWebview>, extra: Record<string, unknown> = {}) {
   dispatch(h.window, {
     type: "initialState",
@@ -110,11 +116,11 @@ describe("settings catalog", () => {
       appPurpose: "coding",
       providers: [{ id: "grok", connected: true }, { id: "codex", connected: false }],
     });
-    const local = api.visibleCategories(snapshot, api.defaultEnv(fullEnv()));
+    const local = api.visibleCategories(snapshot, api.defaultEnv(withMcpSettings()));
     expect(local.map((c) => c.id)).toEqual([
       "general", "voice", "notifications", "providers", "connectors", "mcp", "account", "advanced", "about",
     ]);
-    const remoteRows = api.visibleRows(snapshot, api.defaultEnv(fullEnv({ isRemote: true })));
+    const remoteRows = api.visibleRows(snapshot, api.defaultEnv(withMcpSettings({ isRemote: true })));
     expect(remoteRows.some((row) => row.hostLocal)).toBe(false);
     expect(remoteRows.some((row) => row.id === "openGlobalConfig")).toBe(false);
     expect(remoteRows.some((row) => row.id === "providerGrok")).toBe(false);
@@ -128,6 +134,30 @@ describe("settings catalog", () => {
     expect(remoteRows.some((row) => row.id === "telemetryDesktop")).toBe(false);
     expect(remoteRows.some((row) => row.id === "connectorsCatalog")).toBe(true);
     expect(remoteRows.some((row) => row.id === "mcpCatalog")).toBe(false);
+  });
+
+  it("hides Connectors and MCP servers when mcpSettings is absent", () => {
+    const api = loadSettings();
+    const snapshot = api.defaultSnapshot({ appPurpose: "coding" });
+    const env = api.defaultEnv(fullEnv());
+    expect(api.visibleCategories(snapshot, env).map((c) => c.id)).toEqual([
+      "general", "voice", "notifications", "providers", "account", "advanced", "about",
+    ]);
+    const rows = api.visibleRows(snapshot, env);
+    expect(rows.some((row) => row.id === "connectorsCatalog")).toBe(false);
+    expect(rows.some((row) => row.id === "mcpCatalog")).toBe(false);
+  });
+
+  it("shows Connectors and MCP servers when mcpSettings is present", () => {
+    const api = loadSettings();
+    const snapshot = api.defaultSnapshot({ appPurpose: "coding" });
+    const env = api.defaultEnv(withMcpSettings());
+    expect(api.visibleCategories(snapshot, env).map((c) => c.id)).toEqual([
+      "general", "voice", "notifications", "providers", "connectors", "mcp", "account", "advanced", "about",
+    ]);
+    const rows = api.visibleRows(snapshot, env);
+    expect(rows.some((row) => row.id === "connectorsCatalog")).toBe(true);
+    expect(rows.some((row) => row.id === "mcpCatalog")).toBe(true);
   });
 
   it("gives every category a nav icon and folds Chat into General", () => {
@@ -164,8 +194,10 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay).toBeTruthy();
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toEqual([
-      "General", "Voice", "Notifications", "Providers", "Connectors", "MCP servers", "Account", "Advanced", "About",
+      "General", "Voice", "Notifications", "Providers", "Account", "Advanced", "About",
     ]);
+    expect(nav).not.toContain("Connectors");
+    expect(nav).not.toContain("MCP servers");
     expect(overlay!.querySelector(".settings-nav-icon svg")).toBeTruthy();
     expect(overlay!.querySelector(".settings-close")).toBeNull();
     const categorySelect = overlay!.querySelector(".settings-nav-select") as HTMLSelectElement;
@@ -175,6 +207,27 @@ describe("settings overlay (chat.js)", () => {
     categorySelect.value = "voice";
     categorySelect.dispatchEvent(new h.window.Event("change", { bubbles: true }));
     expect(overlay!.querySelector('[data-id="voiceSendPhrase"]')).toBeTruthy();
+  });
+
+  it("hides Connectors and MCP servers nav rows when mcpSettings is absent", () => {
+    const h = bootWebview();
+    seedChat(h);
+    openSettings(h);
+    const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
+    expect(nav).not.toContain("Connectors");
+    expect(nav).not.toContain("MCP servers");
+    expect(h.doc.querySelector('[data-id="connectorsCatalog"]')).toBeNull();
+    expect(h.doc.querySelector('[data-id="mcpCatalog"]')).toBeNull();
+  });
+
+  it("shows Connectors and MCP servers nav rows when mcpSettings is present", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    openSettings(h);
+    const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
+    expect(nav).toEqual([
+      "General", "Voice", "Notifications", "Providers", "Connectors", "MCP servers", "Account", "Advanced", "About",
+    ]);
   });
 
   it("filters rows across categories from the search box", () => {
@@ -217,7 +270,8 @@ describe("settings overlay (chat.js)", () => {
     expect(ids).not.toContain("continueRemotely");
     const nav = settingsNav(h).map((el) => (el.textContent || "").trim());
     expect(nav).toContain("Providers");
-    expect(nav).toContain("Connectors");
+    expect(nav).not.toContain("Connectors");
+    expect(nav).not.toContain("MCP servers");
     expect(nav).toContain("Account");
     clickSettingsNav(h, "Providers");
     expect(overlay.textContent).toMatch(/This account is connected on this machine/);
@@ -268,14 +322,14 @@ describe("settings overlay (chat.js)", () => {
       "showThinking", "expandCommandOutputs", "steerByDefault",
       "soundNotifications", "processingSound",
       "readRepliesAloud", "summarizeRepliesAloud",
-      "openGlobalConfig", "openProjectConfig", "connectorsCatalog", "mcpCatalog", "showLogs",
+      "openGlobalConfig", "openProjectConfig", "showLogs",
       "openVsCodeSettings", "moveView",
     ]));
   });
 
   it("loads a read-only MCP catalog and marks managed servers", () => {
     const h = bootWebview();
-    seedChat(h);
+    seedChat(h, { capabilities: { mcpSettings: true } });
     openSettings(h);
     clickSettingsNav(h, "MCP servers");
     expect(h.posted).toContainEqual({ type: "listMcpServers" });
@@ -298,7 +352,7 @@ describe("settings overlay (chat.js)", () => {
 
   it("connects and disconnects host-owned connectors from Settings", () => {
     const h = bootWebview();
-    seedChat(h);
+    seedChat(h, { capabilities: { mcpSettings: true } });
     dispatch(h.window, {
       type: "mcpConnectors",
       connectors: [
@@ -326,7 +380,7 @@ describe("settings overlay (chat.js)", () => {
 
   it("shows connectors read-only on a remote and never posts connect", () => {
     const h = bootWebview({ remote: true });
-    seedChat(h);
+    seedChat(h, { capabilities: { mcpSettings: true } });
     dispatch(h.window, {
       type: "mcpConnectors",
       connectors: [

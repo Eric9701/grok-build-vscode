@@ -761,6 +761,13 @@ export interface Host {
    */
   readonly canToggleDevTools: boolean;
   /**
+   * Settings → Connectors and MCP servers. OPT-IN: absent/false = hide.
+   * True only for unpackaged desktop (`!app.isPackaged`, same signal as
+   * {@link canToggleDevTools}). VS Code is false and does not advertise
+   * `capabilities.mcpSettings`.
+   */
+  readonly canShowMcpSettings: boolean;
+  /**
    * Whether clicking a generated image (or the media hover "open" action's
    * sibling click-to-enlarge path) should open a host editor tab via
    * `openFile`. Wired into `initialState.capabilities.openInEditor`. Opt-out

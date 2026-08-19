@@ -138,6 +138,28 @@ describe("tool-call labels (single-call flat line)", () => {
     expect(flatLabel(doc)).toBe("Read README.md lines 1-30");
   });
 
+  it("read_file without a range shows the path and does not invent line numbers", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", kind: "read", title: "read_file", rawInput: { target_file: "hello.txt" } }));
+    close(window);
+    expect(flatLabel(doc)).toBe("Read hello.txt");
+  });
+
+  it("read_file completed FileContent.total_lines fills the range", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, tc({ toolCallId: "1", kind: "read", title: "read_file", rawInput: { target_file: "hello.txt" } }));
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "1",
+        status: "completed",
+        rawOutput: { type: "ReadFile", FileContent: { offset: null, total_lines: 3 } },
+      },
+    });
+    close(window);
+    expect(flatLabel(doc)).toBe("Read hello.txt lines 1-3");
+  });
+
   it("web_fetch shows the page URL ('Fetch <host/path>'), protocol stripped", () => {
     const { window, doc } = bootWebview();
     dispatch(window, tc({ toolCallId: "1", title: "web_fetch", rawInput: { url: "https://example.com/page" } }));

@@ -125,6 +125,11 @@ export interface SlashCommand {
   name: string;
   description?: string;
   input?: { hint?: string };
+  /**
+   * ACP `_meta`. Skills carry `{scope, path}`; builtins omit those keys
+   * (`isAdvertisedSkill` in slash-filter.ts).
+   */
+  _meta?: { path?: string; scope?: string; [k: string]: unknown };
 }
 
 // Re-exported, not redeclared: `extractPromptMeta` (acp-dispatch) is what builds

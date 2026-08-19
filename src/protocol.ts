@@ -101,6 +101,14 @@ export type HostUiCapabilities = {
    */
   editProjectFiles?: boolean;
   /**
+   * Settings → Connectors and MCP servers. OPT-IN: absent/false = hide both
+   * nav rows and keep those pages unreachable. Unpackaged desktop sets true
+   * (`!app.isPackaged`, the same signal as {@link toggleDevTools}); VS Code
+   * and packaged builds omit the field. Remotes inherit the desk machine's
+   * capabilities.
+   */
+  mcpSettings?: boolean;
+  /**
    * Whether generated media is served with honest byte-range responses. This
    * is opt-in: hosts without this capability must keep generated videos lazy.
    */

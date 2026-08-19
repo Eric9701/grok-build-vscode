@@ -35,9 +35,9 @@ const out = (
   truncated,
   ...(cancelled !== undefined ? { cancelled } : {}),
 });
-const read = (id: string, path: string) => ({
+const explore = (id: string, path: string) => ({
   type: "toolCall",
-  call: { toolCallId: id, kind: "read", title: `Read ${path}`, rawInput: { path } },
+  call: { toolCallId: id, kind: "search", title: "grep", rawInput: { pattern: "needle", path } },
 });
 const close = (window: Window) => dispatch(window, { type: "messageChunk", text: "done" });
 
@@ -789,12 +789,43 @@ describe("command details (#41)", () => {
     expect(group.classList.contains("cmd-single")).toBe(false);
   });
 
-  it("non-command tools get no details block and no clickable-highlight class", () => {
+  it("search/list tools get no details block and no clickable-highlight class", () => {
     const { window, doc } = bootWebview();
-    dispatch(window, { type: "toolCall", call: { toolCallId: "r", kind: "read", rawInput: { path: "/a.ts" } } });
+    dispatch(window, { type: "toolCall", call: { toolCallId: "r", kind: "search", rawInput: { pattern: "x", path: "/a.ts" } } });
     close(window);
     expect(doc.querySelector(".tool-item-details")).toBeNull();
     expect(doc.querySelector(".has-details")).toBeNull();
+  });
+
+  it("a completed Read row shows the file text and View all (#122)", () => {
+    const { window, doc } = bootWebview();
+    const body = Array.from({ length: 8 }, (_, i) => `${i + 1}→line ${i + 1}`).join("\n");
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "r1", kind: "read", title: "read_file", rawInput: { target_file: "hello.txt" } },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "r1",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: body } }],
+        rawOutput: {
+          type: "ReadFile",
+          FileContent: { content: body, offset: null, raw_output: body, total_lines: 8 },
+        },
+      },
+    });
+    close(window);
+
+    const flat = doc.querySelector(".tool-flat.has-details") as HTMLElement;
+    expect(flat).not.toBeNull();
+    expect(flat.querySelector(".tool-label")!.textContent).toBe("Read hello.txt lines 1-8");
+    const details = flat.querySelector(".tool-item-details") as HTMLElement;
+    expect(details.querySelector(".tool-cmd-output")!.textContent).toBe(body);
+    const viewAll = details.querySelector(".command-view-all") as HTMLElement;
+    expect(viewAll).not.toBeNull();
+    expect(viewAll.textContent).toBe("View all (8 lines) →");
   });
 
   it("a Codex MCP tool_call without detailInput is not a command row — name shows, no IN/OUT", () => {
@@ -1049,12 +1080,12 @@ describe("group auto-expand under grok.expandCommandOutputs", () => {
 
     // Batch 1: a command + a read → kept as a group, has a command detail row.
     dispatch(window, exec("c1", "git status"));
-    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
     close(window);
 
-    // Batch 2: two reads → kept as a group, NO command detail.
-    dispatch(window, read("r2", "src/b.ts"));
-    dispatch(window, read("r3", "src/c.ts"));
+    // Batch 2: two searches → kept as a group, NO command detail.
+    dispatch(window, explore("r2", "src/b.ts"));
+    dispatch(window, explore("r3", "src/c.ts"));
     close(window);
 
     const groups = [...doc.querySelectorAll(".tool-group")] as HTMLElement[];
@@ -1073,10 +1104,10 @@ describe("group auto-expand under grok.expandCommandOutputs", () => {
     dispatch(window, { type: "appPurpose", value: "coding" });
 
     dispatch(window, exec("c1", "git status"));
-    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
     close(window);
-    dispatch(window, read("r2", "src/b.ts"));
-    dispatch(window, read("r3", "src/c.ts"));
+    dispatch(window, explore("r2", "src/b.ts"));
+    dispatch(window, explore("r3", "src/c.ts"));
     close(window);
 
     const groups = [...doc.querySelectorAll(".tool-group")] as HTMLElement[];
@@ -1106,10 +1137,10 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
     const { window, doc } = bootWebview();
 
     dispatch(window, exec("c1", "git status"));
-    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
     close(window);
-    dispatch(window, read("r2", "src/b.ts"));
-    dispatch(window, read("r3", "src/c.ts"));
+    dispatch(window, explore("r2", "src/b.ts"));
+    dispatch(window, explore("r3", "src/c.ts"));
     close(window);
     dispatch(window, exec("solo", "npm test")); // lone command → flat row with details
     close(window);
@@ -1143,7 +1174,7 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
 
     // A group + a lone command that appear later both render open.
     dispatch(window, exec("c1", "git status"));
-    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
     close(window);
     dispatch(window, exec("solo", "npm test"));
     close(window);
@@ -1152,8 +1183,8 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
 
     // Flip to collapse-all; subsequent content renders collapsed.
     dispatch(window, { type: "setAllToolDetails", open: false });
-    dispatch(window, read("r2", "src/b.ts"));
-    dispatch(window, read("r3", "src/c.ts"));
+    dispatch(window, explore("r2", "src/b.ts"));
+    dispatch(window, explore("r3", "src/c.ts"));
     close(window);
     expect(bodies(doc).every((b) => b.hidden)).toBe(true);
     expect(details(doc).every((d) => d.hidden)).toBe(true);
@@ -1163,10 +1194,10 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "appPurpose", value: "coding" });
     dispatch(window, exec("c1", "git status"));
-    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
     close(window);
-    dispatch(window, read("r2", "src/b.ts")); // explore-only group
-    dispatch(window, read("r3", "src/c.ts"));
+    dispatch(window, explore("r2", "src/b.ts")); // explore-only group
+    dispatch(window, explore("r3", "src/c.ts"));
     close(window);
 
     dispatch(window, { type: "setAllToolDetails", open: false }); // force-collapse everything
@@ -1188,7 +1219,7 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
       showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
     });
     dispatch(window, exec("c1", "git status"));
-    dispatch(window, read("r1", "src/a.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
     close(window); // command group auto-opens under the setting
     const cmdBody = bodies(doc)[0];
     expect(cmdBody.hidden).toBe(false);
@@ -1210,8 +1241,8 @@ describe("setAllToolDetails (expand/collapse all latch)", () => {
     dispatch(window, { type: "setAllToolDetails", open: true }); // latch on
     dispatch(window, { type: "clearMessages" }); // focus-swap / new session
 
-    dispatch(window, read("r1", "src/a.ts"));
-    dispatch(window, read("r2", "src/b.ts"));
+    dispatch(window, explore("r1", "src/a.ts"));
+    dispatch(window, explore("r2", "src/b.ts"));
     close(window);
     // Explore-only group, latch cleared, setting off → collapsed.
     expect(bodies(doc)[0].hidden).toBe(true);

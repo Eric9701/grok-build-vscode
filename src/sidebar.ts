@@ -12322,6 +12322,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // OPT-IN: unpackaged desktop only. Gear → Advanced offers the control so
         // DevTools is discoverable without the auto-hidden application menu.
         toggleDevTools: this.host.canToggleDevTools,
+        // OPT-IN: unpackaged desktop only. Absent/false hides Settings →
+        // Connectors and MCP servers. VS Code omits the field.
+        ...(this.host.canShowMcpSettings ? { mcpSettings: true } : {}),
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
         openInEditor: this.host.canOpenInEditor,

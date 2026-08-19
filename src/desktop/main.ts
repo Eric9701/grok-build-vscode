@@ -593,8 +593,7 @@ async function createApp(): Promise<void> {
     openExternal: (url) => shell.openExternal(url),
   });
 
-  // desktop-dev passes an explicit open signal (not GROK_RELAY_URL). Detached
-  // so the default 720-wide chat stays usable while reading logs.
+  // desktop-dev passes an explicit open signal (not GROK_RELAY_URL).
   if (
     shouldOpenDevToolsAtStartup({
       isPackaged,
@@ -602,8 +601,13 @@ async function createApp(): Promise<void> {
       argv: process.argv,
     })
   ) {
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-    log("DevTools opened (non-production build)");
+    // Docked, not detached. A detached DevTools is its own window, and on
+    // Windows it disappears behind the app the moment you click back into the
+    // chat -- which reads as "DevTools did not open" and cost a debugging
+    // session. The desktop-dev script also passes --remote-debugging-port,
+    // so the same renderer is drivable over CDP without a hand-passed flag.
+    mainWindow.webContents.openDevTools({ mode: "bottom" });
+    log("DevTools opened (non-production build); CDP on --remote-debugging-port if passed");
   }
 
   // Keyboard DevTools without needing the auto-hidden menu bar (Windows).

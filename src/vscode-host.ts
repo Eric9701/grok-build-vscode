@@ -621,6 +621,7 @@ export function createVsCodeHost(
     },
     canShowOutput: true,
     canToggleDevTools: false,
+    canShowMcpSettings: false,
     canOpenInEditor: true,
     canSwitchWorkspaceFolder: false,
     canArchiveRepos: true,

@@ -472,7 +472,7 @@
     "test:integration": "npm run compile && npm run compile:integration && vscode-test",
     "test:live": "tsc -p . && node scripts/live-tests.cjs",
     "desktop": "npm run compile && node scripts/run-desktop.cjs",
-    "desktop-dev": "npm run compile && node scripts/run-desktop.cjs --relay-dev --open-devtools",
+    "desktop-dev": "npm run compile && node scripts/run-desktop.cjs --relay-dev --open-devtools --remote-debugging-port=9333",
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "e2e:screens": "npm run compile && node scripts/desk-screens-check.mjs",
     "e2e:lifecycle-host": "npm run compile && node scripts/lifecycle-host.mjs",
