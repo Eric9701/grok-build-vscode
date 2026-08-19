@@ -52,7 +52,19 @@ function collect<T>(client: AcpClient, event: string): T[] {
 
 /** Wait for a single event, with a small timeout so a hung subprocess fails the
  *  test instead of hanging vitest. */
-function waitFor<T>(client: AcpClient, event: string, timeoutMs = 2000): Promise<T> {
+/**
+ * These bounds exist to fail a HUNG subprocess, not to measure how fast one
+ * starts. At 2000ms this was the latter: `npm test` runs one worker per core
+ * (20 here) and several files spawn real processes, so a cold Node start plus
+ * an ACP handshake routinely lost the race. Measured 2026-08-19 on one commit:
+ * 3-4 tests failed per run and a DIFFERENT set each time, while the same suite
+ * with `--no-file-parallelism` was 168 files / 3818 tests green. A gate that
+ * reports the machine's mood is worse than a slow one — a genuinely failing
+ * test that day was first waved off as another flake.
+ */
+const SUBPROCESS_WAIT_MS = 15_000;
+
+function waitFor<T>(client: AcpClient, event: string, timeoutMs = SUBPROCESS_WAIT_MS): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`timed out waiting for "${event}"`)), timeoutMs);
     client.once(event, (v) => { clearTimeout(t); resolve(v); });
@@ -63,7 +75,7 @@ function waitFor<T>(client: AcpClient, event: string, timeoutMs = 2000): Promise
  *  *_RESPONSE marker to stderr just before the stdout response that resolves the
  *  prompt; stderr can lag stdout across pipes (reliably so on Linux), so asserting
  *  synchronously after the prompt resolves is racy. */
-async function waitForStderr(arr: string[], re: RegExp, timeoutMs = 3000): Promise<void> {
+async function waitForStderr(arr: string[], re: RegExp, timeoutMs = SUBPROCESS_WAIT_MS): Promise<void> {
   const start = Date.now();
   while (!re.test(arr.join(""))) {
     if (Date.now() - start > timeoutMs) {
