@@ -24,8 +24,8 @@ export interface McpServerView {
   source?: string;
   /**
    * Provenance badge. Managed: `scopeName` or `"grok.com managed"`. Local
-   * project file: `"Project: <folder>"`. Local user file or host-injected:
-   * `"User on: <machine>"`.
+   * user-level file or host-injected: `"User on: <machine>"`. Project-file
+   * servers are omitted from this list (`mcpSettingsVisible`).
    */
   tag?: string;
   status?: string;
@@ -201,27 +201,36 @@ export function projectMcpServersMessageForRemote(msg: {
 export const MCP_MANAGED_TAG = "grok.com managed";
 
 /**
+ * Settings → Connectors → Grok connectors lists grok.com-managed servers and
+ * user-level / host-injected locals. A server declared in a project file
+ * (`.mcp.json`, `.grok/config.toml`) is omitted — that layer is classified by
+ * `mcpConfigLayer`, not guessed from the badge.
+ */
+export function mcpSettingsVisible(input: {
+  source?: string;
+  managed?: boolean;
+  localLayer?: McpConfigLayer;
+}): boolean {
+  if (input.managed === true || input.source === "managed") return true;
+  return input.localLayer !== "project";
+}
+
+/**
  * Badge text for one inventory row. Managed uses the CLI's `scopeName` when
  * present (a team name, or `"Grok CLI"`); otherwise the grok.com tag. Local
- * project files are `"Project: <folder>"`; everything else local — user-level
- * config and host-injected Tier-1 connectors — is `"User on: <machine>"`.
+ * user-level config and host-injected Tier-1 connectors are
+ * `"User on: <machine>"`.
  */
 export function mcpOriginTag(input: {
   source?: string;
   managed?: boolean;
   scopeName?: string;
-  localLayer?: McpConfigLayer;
-  projectName?: string;
   machineName?: string;
 }): string | undefined {
   const managed = input.managed === true || input.source === "managed";
   if (managed) {
     const named = input.scopeName?.trim();
     return named || MCP_MANAGED_TAG;
-  }
-  if (input.localLayer === "project") {
-    const name = input.projectName?.trim();
-    return name ? `Project: ${name}` : undefined;
   }
   const machine = input.machineName?.trim();
   return machine ? `User on: ${machine}` : undefined;
@@ -231,30 +240,32 @@ function nameKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
-/** Stamp `tag` on each server. Does not mutate `servers`. */
+/** Stamp `tag` on each settings-visible server. Drops project-file rows. Does not mutate `servers`. */
 export function applyMcpOriginTags(
   servers: readonly McpServerView[],
   opts: {
     nameLayer: ReadonlyMap<string, McpConfigLayer>;
-    projectName: string;
     machineName: string;
   },
 ): McpServerView[] {
-  return servers.map((server) => {
+  const out: McpServerView[] = [];
+  for (const server of servers) {
     const managed = server.managed === true || server.source === "managed";
     const localLayer = managed
       ? undefined
       : (opts.nameLayer.get(nameKey(server.name)) ?? "user");
+    if (!mcpSettingsVisible({ source: server.source, managed: server.managed, localLayer })) {
+      continue;
+    }
     const tag = mcpOriginTag({
       source: server.source,
       managed: server.managed,
       scopeName: server.scopeName,
-      localLayer,
-      projectName: opts.projectName,
       machineName: opts.machineName,
     });
-    return tag ? { ...server, tag } : server;
-  });
+    out.push(tag ? { ...server, tag } : server);
+  }
+  return out;
 }
 
 /** Merge one of Grok's undocumented MCP status notifications into a catalog. */

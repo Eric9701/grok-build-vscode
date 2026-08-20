@@ -6,6 +6,7 @@ import {
   MCP_REMOTE_SERVER_KEYS,
   applyMcpOriginTags,
   mcpOriginTag,
+  mcpSettingsVisible,
   mcpServerDetail,
   mergeMcpNotification,
   parseMcpListResponse,
@@ -257,24 +258,9 @@ describe("MCP origin tags", () => {
     expect(mcpOriginTag({ managed: true })).toBe(MCP_MANAGED_TAG);
   });
 
-  it("attributes local servers by config layer", () => {
+  it("attributes local servers as user-on-machine", () => {
     expect(mcpOriginTag({
       source: "local",
-      localLayer: "project",
-      projectName: "grok-build-vscode",
-      machineName: "Mac (macOS)",
-    })).toBe("Project: grok-build-vscode");
-    expect(mcpOriginTag({
-      source: "local",
-      localLayer: "project",
-      projectName: "grok-remote",
-      machineName: "Dell (Windows 11)",
-    })).toBe("Project: grok-remote");
-    expect(mcpOriginTag({ source: "local", localLayer: "project" })).toBeUndefined();
-    expect(mcpOriginTag({
-      source: "local",
-      localLayer: "user",
-      projectName: "grok-build-vscode",
       machineName: "Mac (macOS)",
     })).toBe("User on: Mac (macOS)");
     expect(mcpOriginTag({
@@ -283,7 +269,14 @@ describe("MCP origin tags", () => {
     })).toBe("User on: Dell (Windows 11)");
   });
 
-  it("stamps tags without touching launch recipes", () => {
+  it("keeps grok.com and user-level rows and drops project-file servers", () => {
+    expect(mcpSettingsVisible({ source: "managed" })).toBe(true);
+    expect(mcpSettingsVisible({ managed: true })).toBe(true);
+    expect(mcpSettingsVisible({ source: "local", localLayer: "user" })).toBe(true);
+    expect(mcpSettingsVisible({ source: "local" })).toBe(true);
+    expect(mcpSettingsVisible({ source: "local", localLayer: "project" })).toBe(false);
+    expect(mcpSettingsVisible({ source: "managed", localLayer: "project" })).toBe(true);
+
     const layers = new Map<string, "project" | "user">([
       ["docs", "project"],
       ["notes", "user"],
@@ -293,33 +286,73 @@ describe("MCP origin tags", () => {
       { name: "docs", enabled: true, source: "local", command: "npx" },
       { name: "notes", enabled: true, source: "local" },
       { name: "linear", enabled: true, source: "local", command: "npx" },
-    ], { nameLayer: layers, projectName: "app", machineName: "Mac (macOS)" });
+    ], { nameLayer: layers, machineName: "Mac (macOS)" });
+    expect(tagged.map((s) => s.name)).toEqual([
+      "managed_gateway:canva",
+      "notes",
+      "linear",
+    ]);
     expect(tagged.map((s) => s.tag)).toEqual([
       "Grok CLI",
-      "Project: app",
       "User on: Mac (macOS)",
       "User on: Mac (macOS)",
     ]);
-    expect(tagged[1].command).toBe("npx");
+    expect(tagged.find((s) => s.name === "docs")).toBeUndefined();
+    expect(tagged.find((s) => s.name === "notes")?.command).toBeUndefined();
+    expect(tagged.find((s) => s.name === "linear")?.command).toBe("npx");
   });
 
-  it("the remote projection copies tag and scopeName and still strips recipes", () => {
-    const remote = projectMcpServerForRemote({
-      name: "docs",
+  it("the remote projection copies tag and scopeName, strips recipes, and never sees a project-file row", () => {
+    const layers = new Map<string, "project" | "user">([
+      ["docs", "project"],
+      ["notes", "user"],
+    ]);
+    const tagged = applyMcpOriginTags([
+      { name: "managed_gateway:linear", displayName: "Linear", enabled: true, source: "managed", managed: true, scopeName: "Grok CLI" },
+      { name: "docs", enabled: true, source: "local", command: "npx", args: ["-y", "secret"] },
+      { name: "notes", enabled: true, source: "local", tag: "stale", command: "npx" },
+    ], { nameLayer: layers, machineName: "Dell (Windows 11)" });
+    const remote = projectMcpServersMessageForRemote({
+      type: "mcpServers",
+      servers: tagged,
+      warning: MCP_GLOBAL_SCOPE_WARNING,
+    });
+    expect(remote.servers.map((s) => s.name)).toEqual(["managed_gateway:linear", "notes"]);
+    expect(remote.servers[0]).toEqual({
+      name: "managed_gateway:linear",
+      displayName: "Linear",
+      enabled: true,
+      source: "managed",
+      managed: true,
+      scopeName: "Grok CLI",
+      tag: "Grok CLI",
+    });
+    expect(remote.servers[1]).toEqual({
+      name: "notes",
+      enabled: true,
+      source: "local",
+      tag: "User on: Dell (Windows 11)",
+    });
+    expect(JSON.stringify(remote)).not.toContain("docs");
+    expect(JSON.stringify(remote)).not.toContain("npx");
+    expect(JSON.stringify(remote)).not.toContain("secret");
+
+    const one = projectMcpServerForRemote({
+      name: "notes",
       enabled: true,
       source: "local",
       scopeName: "ignored-for-local",
-      tag: "app",
+      tag: "User on: Mac (macOS)",
       command: "npx",
       args: ["-y", "secret"],
     });
-    expect(remote).toEqual({
-      name: "docs",
+    expect(one).toEqual({
+      name: "notes",
       enabled: true,
       source: "local",
       scopeName: "ignored-for-local",
-      tag: "app",
+      tag: "User on: Mac (macOS)",
     });
-    expect(remote).not.toHaveProperty("command");
+    expect(one).not.toHaveProperty("command");
   });
 });

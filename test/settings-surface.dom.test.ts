@@ -165,6 +165,9 @@ describe("settings catalog", () => {
     expect(rows.some((row) => row.id === "grokConnectorsSite")).toBe(true);
     expect(rows.find((row) => row.id === "mcpCatalog")?.category).toBe("connectors");
     expect(api.ROWS.find((row) => row.id === "grokConnectorsSite")?.href).toBe("https://grok.com/connectors");
+    const mcpCopy = api.ROWS.find((row) => row.id === "mcpCatalog") as { description?: string };
+    expect(mcpCopy.description).toBe("grok.com-managed connectors and user-level config on this machine.");
+    expect(mcpCopy.description).not.toMatch(/this project|Grok can use/i);
   });
 
   it("gives every category a nav icon and folds Chat into General", () => {
@@ -396,7 +399,7 @@ describe("settings overlay (chat.js)", () => {
     expect(h.posted).toContainEqual({ type: "openUrl", url: "https://grok.com/connectors" });
   });
 
-  it("renders project, user-on-machine, and scopeName tags on Grok connectors", () => {
+  it("renders user-on-machine and scopeName tags on Grok connectors", () => {
     const h = bootWebview();
     seedChat(h, { capabilities: { mcpSettings: true } });
     openSettings(h);
@@ -404,16 +407,16 @@ describe("settings overlay (chat.js)", () => {
     dispatch(h.window, {
       type: "mcpServers",
       servers: [
-        { name: "docs", displayName: "Docs", source: "local", tag: "Project: grok-build-vscode", enabled: true, status: "ready" },
         { name: "notes", displayName: "Notes", source: "local", tag: "User on: Mac (macOS)", enabled: true, status: "ready" },
         { name: "managed_gateway:linear", displayName: "Linear", source: "managed", tag: "Grok CLI", enabled: true, status: "ready" },
       ],
       warning: "This list is read-only.",
     });
     const overlay = h.doc.getElementById("settings-overlay")!;
-    expect(overlay.textContent).toContain("Project: grok-build-vscode");
     expect(overlay.textContent).toContain("User on: Mac (macOS)");
     expect(overlay.textContent).toContain("Grok CLI");
+    expect(overlay.textContent).not.toMatch(/Project:/);
+    expect(overlay.textContent).not.toContain("Docs");
   });
 
   it("connects and disconnects host-owned connectors from Settings", () => {

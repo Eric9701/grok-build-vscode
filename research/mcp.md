@@ -1,9 +1,12 @@
 # MCP settings inventory
 
 Settings → Connectors → Grok connectors reads `_x.ai/mcp/list` through
-the active Grok ACP session. The parser accepts both the current `{ "servers": [] }` response and
-a bare array, and the extra `{ result: ... }` envelope emitted by Grok 1.0.5
-over ACP. It prefers `session.enabled`, `session.status`, `session.tools`, and
+the active Grok ACP session and shows grok.com-managed servers plus
+user-level / host-injected locals. Servers declared in a project file
+(`.mcp.json`, `.grok/config.toml`) are omitted from the page
+(`mcpSettingsVisible`); they still load in the session. The parser accepts
+both the current `{ "servers": [] }` response and a bare array, and the extra
+`{ result: ... }` envelope emitted by Grok 1.0.5 over ACP. It prefers `session.enabled`, `session.status`, `session.tools`, and
 `session.error` over top-level values, and preserves per-tool metadata for the
 host view model. Managed gateway rows are identified from `source: "managed"`
 or `type: "managedGateway"` and are labelled as grok.com-managed in the UI.

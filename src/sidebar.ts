@@ -9262,8 +9262,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // `this.mcpServers` is Grok's inventory (`refreshMcpServers` only reads
     // it through a Grok session). Classify against Grok's config files even
     // when the focused conversation is Codex or Claude — otherwise project
-    // `.mcp.json` / `.grok/config.toml` are skipped and those rows fall back
-    // to `User on: <device>`.
+    // `.mcp.json` / `.grok/config.toml` are skipped and those rows fall
+    // through as user-level and appear on a page that is grok.com + user
+    // config only.
     const opts = {
       cwd,
       provider: "grok" as const,
@@ -9288,7 +9289,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private tagMcpServers(servers: readonly McpServerView[], session: Session = this.focused): McpServerView[] {
     return applyMcpOriginTags(servers, {
       nameLayer: this.mcpNameLayersFor(session),
-      projectName: path.basename(this.sessionCwd(session).replace(/[\\/]+$/, "")),
       machineName: deviceDisplayName(os.hostname(), process.platform, os.release()),
     });
   }

@@ -620,7 +620,7 @@
       id: "mcpCatalog",
       category: "connectors",
       title: "Grok connectors",
-      description: "Connectors Grok can use — grok.com, config files, and this project.",
+      description: "grok.com-managed connectors and user-level config on this machine.",
       kind: "mcp",
       visible: (s, env) => mcpSettingsEnabled(env),
     },

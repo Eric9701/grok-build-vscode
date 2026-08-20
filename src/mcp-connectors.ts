@@ -510,7 +510,8 @@ export type McpConfigLayer = "project" | "user";
 /**
  * Which config file a path from {@link mcpConfigPaths} is. Project files are
  * the checkout's `.mcp.json` and `.grok/config.toml`; everything else in that
- * list is user-level. Compared against the same strings `mcpConfigPaths`
+ * list is user-level. Settings → Connectors hides the project layer
+ * (`mcpSettingsVisible`). Compared against the same strings `mcpConfigPaths`
  * returns, so Windows mixed separators still match.
  */
 export function mcpConfigLayer(
