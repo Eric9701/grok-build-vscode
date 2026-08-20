@@ -329,11 +329,12 @@ export class Session {
    * Pending follow-ups composed while THIS session was busy (typed Enter-sends
    * and dictated utterances), awaiting turn end. Each entry keeps the text AND
    * the attachments snapshotted at queue time, so a later composer edit cannot
-   * silently drop them. The flush still sends them as ONE combined prompt
-   * (`buildQueuedPromptWithImages`), with each contribution's tags sitting next
-   * to its own text. Host-owned per session — the webview renders a mirror
-   * from `queuedSends` snapshots, so it survives focus switches and flushes
-   * even while backgrounded.
+   * silently drop them. Entries are the source of truth (`""` is image-only).
+   * The flush still sends them as ONE combined prompt
+   * (`buildQueuedPromptWithImages`): sequential `[Image #N]` in that prompt,
+   * with authored refs rewritten to match. Host-owned per session — the
+   * webview renders a mirror from `queuedSends` snapshots, so it survives
+   * focus switches and flushes even while backgrounded.
    */
   queuedSends: QueuedSendEntry[] = [];
 

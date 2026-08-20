@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { consumeChips, makeExplicitChip, makeImageChip, makeImplicitChip, removeChip } from "../src/chips";
 import {
   chipsForQueueSend,
+  claimQueuedSendDispatch,
+  dequeueQueuedSends,
   enqueueQueuedSend,
+  queuedFlushText,
   queuedSendsMessage,
   queuedSendsText,
   restoreQueuedChips,
@@ -69,6 +73,15 @@ describe("queuedSendsMessage is additive", () => {
       queued: [{ text: "see", chips: [image] }],
     });
   });
+
+  it("keeps an image-only contribution as empty text plus chips", () => {
+    const image = img("a");
+    expect(queuedSendsMessage([{ text: "", chips: [image] }])).toEqual({
+      type: "queuedSends",
+      items: [""],
+      queued: [{ text: "", chips: [image] }],
+    });
+  });
 });
 
 describe("takeQueuedSendsPrefix", () => {
@@ -82,6 +95,75 @@ describe("takeQueuedSendsPrefix", () => {
       prefix: [items[0], items[1]],
       rest: [items[2]],
     });
+  });
+
+  it("treats an image-only first contribution as a real prefix after a later append", () => {
+    const image = img("only");
+    const items = [
+      { text: "", chips: [image] },
+      { text: "later", chips: [] },
+    ];
+    expect(takeQueuedSendsPrefix(items, "")).toEqual({
+      prefix: [items[0]],
+      rest: [items[1]],
+    });
+  });
+
+  it("does not treat empty text as a prefix of a non-empty first contribution", () => {
+    expect(takeQueuedSendsPrefix([{ text: "later", chips: [] }], "")).toBeUndefined();
+    expect(takeQueuedSendsPrefix([], "")).toBeUndefined();
+  });
+});
+
+describe("dequeueQueuedSends index meaning by client generation", () => {
+  it("an old-capability webview sending index 0 removes the whole pending block", () => {
+    const items = [
+      { text: "first", chips: [] },
+      { text: "second", chips: [] },
+    ];
+    expect(dequeueQueuedSends(items, 0, false)).toEqual({
+      rest: [],
+      removed: items,
+    });
+  });
+
+  it("a chip-aware dequeueSend index 0 removes only that contribution", () => {
+    const items = [
+      { text: "first", chips: [] },
+      { text: "second", chips: [] },
+    ];
+    expect(dequeueQueuedSends(items, 0, true)).toEqual({
+      removed: [items[0]],
+      rest: [items[1]],
+    });
+  });
+});
+
+describe("live host keeps the entry-store invariants", () => {
+  const sidebarSrc = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+
+  it("dequeueSend from an old webview is the pending block, not index-into-entries", () => {
+    expect(sidebarSrc).toContain("dequeueQueuedSends(s.queuedSends, msg.index, false)");
+  });
+
+  it("reconnect minting uses claimQueuedSendDispatch so image-only text is not dropped", () => {
+    expect(sidebarSrc).toContain("session.queuedSendDispatch = claimQueuedSendDispatch(");
+  });
+});
+
+describe("claimQueuedSendDispatch treats empty text as a real image-only payload", () => {
+  it("mints a reconnect dispatch when the ready queue is image-only", () => {
+    const image = img("shot");
+    const ready = queuedFlushText([{ text: "", chips: [image] }]);
+    expect(ready).toBe("");
+    const dispatch = claimQueuedSendDispatch(undefined, ready, () => "dispatch-id");
+    expect(dispatch).toEqual({ id: "dispatch-id", text: "" });
+    expect(claimQueuedSendDispatch(dispatch, ready, () => "other")).toEqual(dispatch);
+  });
+
+  it("does not mint when the queue is not ready", () => {
+    expect(queuedFlushText([])).toBeUndefined();
+    expect(claimQueuedSendDispatch(undefined, undefined, () => "id")).toBeUndefined();
   });
 });
 

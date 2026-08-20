@@ -774,6 +774,9 @@ export type WebviewMsg =
   // an image-only queue is `{ text: "", chips }` — a v2.0.4 host still accepts
   // the type and no-ops on empty text rather than dropping an unknown message.
   | { type: "queueSend"; text: string; chips?: FileChip[] }
+  // Old webviews: `index: 0` is the pending block (every host entry). Chip-aware
+  // clients use `clearQueuedSends` for that block; a live host therefore treats
+  // this message as the pre-split meaning.
   | { type: "dequeueSend"; index: number }
   // `restore` is additive: Stop/Edit set true so queued chips return to the
   // composer. Absent/false discards them (Remove). Older hosts ignore the field

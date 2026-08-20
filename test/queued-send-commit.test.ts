@@ -67,4 +67,18 @@ describe("queued send commit", () => {
     expect(finishQueuedSendCommit(session, claim, true)).toBe(true);
     expect(session.queuedSends).toEqual([item("and B", [b])]);
   });
+
+  it("commits an image-only prefix after a later contribution is appended in flight", () => {
+    const session = new Session();
+    const image = makeImageChip("/s/only.png", 1, "image/png");
+    session.queuedSends = [item("", [image])];
+    session.queuedSendRequiresRelay = true;
+
+    const claim = beginQueuedSendCommit(session, "")!;
+    expect(claim).toBeDefined();
+    session.queuedSends = enqueueQueuedSend(session.queuedSends, "later", []);
+    expect(finishQueuedSendCommit(session, claim, true)).toBe(true);
+    expect(session.queuedSends).toEqual([item("later")]);
+    expect(session.queuedSendRequiresRelay).toBe(true);
+  });
 });

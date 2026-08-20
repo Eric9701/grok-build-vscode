@@ -684,6 +684,31 @@ describe("AFK Pilot shared webview controls", () => {
     expect(doc.getElementById("send-btn")!.classList.contains("stop")).toBe(true);
   });
 
+  it("echoes an image-only queued dequeue whose text is empty", () => {
+    const { window, posted } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "queuedSends",
+      items: [""],
+      queued: [{
+        text: "",
+        chips: [{
+          id: "image:/s/a.png:1:1",
+          path: "/s/a.png",
+          relPath: "Image #1",
+          hidden: false,
+          imageIndex: 1,
+          mimeType: "image/png",
+        }],
+      }],
+    });
+    dispatch(window, { type: "submitQueuedSend", id: "queued-send-id-img1", text: "" });
+    expect(posted).toContainEqual({
+      type: "send",
+      text: "",
+      queuedSendId: "queued-send-id-img1",
+    });
+  });
+
   it("meters a dequeued prompt as a send frame carrying its submission identity", () => {
     const typed = bootWebview({ remote: true });
     const typedInput = typed.doc.getElementById("input") as HTMLTextAreaElement;

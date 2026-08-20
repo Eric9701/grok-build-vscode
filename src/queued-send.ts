@@ -53,6 +53,34 @@ export function queuedSendsHaveContent(items: readonly QueuedSendEntry[]): boole
   return items.some((item) => !!item.text.trim() || item.chips.length > 0);
 }
 
+/**
+ * Combined flush / `submitQueuedSend` payload.
+ *
+ * `undefined` means there is nothing to send. `""` is a real image-only queue
+ * — never treat it as absence. Entries are the source of truth; this string is
+ * only the derived handshake/prompt text.
+ */
+export function queuedFlushText(items: readonly QueuedSendEntry[]): string | undefined {
+  if (!queuedSendsHaveContent(items)) return undefined;
+  return queuedSendsText(items);
+}
+
+/**
+ * Open (or keep) the relay dequeue dispatch.
+ *
+ * `readyText === undefined` is "not ready". `readyText === ""` is a legitimate
+ * image-only payload and must mint a dispatch.
+ */
+export function claimQueuedSendDispatch(
+  existing: { id: string; text: string } | undefined,
+  readyText: string | undefined,
+  mintId: () => string,
+): { id: string; text: string } | undefined {
+  if (existing) return existing;
+  if (readyText === undefined) return undefined;
+  return { id: mintId(), text: readyText };
+}
+
 /** Additive host snapshot: `items` stays `string[]` for old webviews. */
 export function queuedSendsMessage(
   items: readonly QueuedSendEntry[],
@@ -69,16 +97,18 @@ export function queuedSendsMessage(
 }
 
 /**
- * Split `items` into the prefix whose joined text equals `text` and the rest
+ * Split `items` into the prefix whose joined texts equal `text` and the rest
  * (contributions appended while a flush was in flight).
+ *
+ * Walks entries rather than treating the joined string as a second store:
+ * `""` is a real first contribution (image-only), so it matches that entry
+ * and leaves later ones. An empty `text` does not match a non-empty first
+ * item, and it is not a prefix of an empty list.
  */
 export function takeQueuedSendsPrefix(
   items: readonly QueuedSendEntry[],
   text: string,
 ): { prefix: QueuedSendEntry[]; rest: QueuedSendEntry[] } | undefined {
-  const full = queuedSendsText(items);
-  if (full === text) return { prefix: [...items], rest: [] };
-  if (text === "" || !full.startsWith(text + "\n\n")) return undefined;
   let acc = "";
   for (let i = 0; i < items.length; i++) {
     acc = i === 0 ? items[i].text : `${acc}\n\n${items[i].text}`;
@@ -87,6 +117,33 @@ export function takeQueuedSendsPrefix(
     }
   }
   return undefined;
+}
+
+/**
+ * What `dequeueSend.index` means depends on the client generation:
+ *
+ * - Old webview (`queueSendChips: false`): one pending block, and Edit /
+ *   Remove / Steer always send `index: 0` for that block. Remove every entry.
+ * - Chip-aware client (`queueSendChips: true`): `index` is one contribution.
+ *
+ * Live `dequeueSend` is the old message (chip-aware clients use
+ * `clearQueuedSends` for the block). Pass `false` unless the sender is known
+ * to address entries individually.
+ */
+export function dequeueQueuedSends(
+  items: readonly QueuedSendEntry[],
+  index: number,
+  queueSendChips: boolean,
+): { rest: QueuedSendEntry[]; removed: QueuedSendEntry[] } | undefined {
+  if (!Number.isInteger(index) || index < 0 || index >= items.length) return undefined;
+  if (!queueSendChips) {
+    if (index !== 0) return undefined;
+    return { rest: [], removed: [...items] };
+  }
+  return {
+    removed: [items[index]],
+    rest: [...items.slice(0, index), ...items.slice(index + 1)],
+  };
 }
 
 /** Re-attach queued chips to the composer (Edit / Stop). Dedupes by id. */

@@ -144,8 +144,11 @@ import {
 import { buildPromptWithImages, buildQueuedPromptWithImages, type PromptImageInput, type QueuedPromptContribution } from "./prompt-builder";
 import {
   chipsForQueueSend,
+  claimQueuedSendDispatch,
+  dequeueQueuedSends,
   enqueueQueuedSend,
   explicitVisibleChips,
+  queuedFlushText,
   queuedSendsMessage,
   queuedSendsText,
   restoreQueuedChips,
@@ -2688,11 +2691,11 @@ Only continue if you trust this code.`,
    * for backgrounded sessions too.
    */
   private queuedSendReadyText(session: Session): string | undefined {
-    if (!session.queuedSends.length) return undefined;
     // Same readiness as handleSend — client without sessionId is still priming.
     if (!sessionReadyForPrompt(session)) return undefined;
     if (session.status === "working" || session.status === "needs-you") return undefined;
-    return queuedSendsText(session.queuedSends);
+    // `""` is a ready image-only queue; `undefined` is "do not flush".
+    return queuedFlushText(session.queuedSends);
   }
 
   private emitQueuedSends(session: Session): void {
@@ -2705,8 +2708,12 @@ Only continue if you trust this code.`,
     if (session.queuedSendCommit) return;
     if (session.queuedSendRequiresRelay) {
       if (this.remoteClients.clientsForActiveValue(session).length === 0) return;
-      if (session.queuedSendDispatch) return;
-      const dispatch = { id: randomUUID(), text: combined };
+      const dispatch = claimQueuedSendDispatch(
+        session.queuedSendDispatch,
+        combined,
+        () => randomUUID(),
+      );
+      if (!dispatch || session.queuedSendDispatch) return;
       session.queuedSendDispatch = dispatch;
       this.sendRemoteSession(session, { type: "submitQueuedSend", ...dispatch });
       return;
@@ -8032,16 +8039,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "dequeueSend": {
+        // Old webviews render one pending block and send `index: 0` for Edit /
+        // Remove / Steer. Chip-aware clients use `clearQueuedSends` for that
+        // block, so this message keeps the pre-split meaning: the pending
+        // block, not the first of several entries. Passing `false` is the
+        // capability gate — we cannot see whether a remote honored
+        // `queueSendChips`, and every client that still sends `dequeueSend`
+        // is the old one.
         const s = session;
-        if (Number.isInteger(msg.index) && msg.index >= 0 && msg.index < s.queuedSends.length) {
+        const result = dequeueQueuedSends(s.queuedSends, msg.index, false);
+        if (result) {
           s.queuedSendDispatch = undefined;
           s.queuedSendCommit = undefined;
-          const [removed] = s.queuedSends.splice(msg.index, 1);
-          if (removed?.chips.length) {
-            s.chips = restoreQueuedChips(s.chips, [removed]);
+          if (result.removed.some((item) => item.chips.length)) {
+            s.chips = restoreQueuedChips(s.chips, result.removed);
             if (s === this.focused) this.refreshImplicitChip(true);
             else this.postChips(s);
           }
+          s.queuedSends = result.rest;
           if (!s.queuedSends.length) s.queuedSendRequiresRelay = false;
           this.emitQueuedSends(s);
         }
@@ -12057,9 +12072,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Snapshot attachments. A live send reads the composer's chips; a queued
     // flush uses the per-item copies snapshotted at queue time so a later
     // composer remove cannot silently drop them. `bare` sends (gear-menu
-    // /compact) carry none. Image indices are derived here so the `[Image #N]`
-    // tags, the image blocks they name, and the chips painted on the bubble
-    // all come off THIS list, in this order.
+    // /compact) carry none. Combined-prompt `[Image #N]` numbering (tags,
+    // authored refs, bubble chips) is derived from this list's order.
     const queuedItems = !bare && queuedSendCommit?.items.length
       ? queuedSendCommit.items.map((item) => ({ text: item.text, chips: item.chips ?? [] }))
       : undefined;
@@ -12069,26 +12083,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (bare) {
       chips = [];
     } else if (queuedItems) {
+      // Local per-contribution numbering as composed. The combined builder
+      // rebases tags AND authored `[Image #N]` refs to 1..N in this prompt.
       contributions = [];
-      let imageOffset = 0;
       const queuedChips: FileChip[] = [];
       for (const item of queuedItems) {
-        const shifted = withPerMessageImageIndices(item.chips).map((chip) => {
-          if (!isImageChip(chip) || chip.hidden) return chip;
-          const imageIndex = (chip.imageIndex ?? 1) + imageOffset;
-          return { ...chip, imageIndex, relPath: `Image #${imageIndex}` };
-        });
+        const local = withPerMessageImageIndices(item.chips);
         const itemImages: PromptImageInput[] = [];
-        for (const chip of shifted) {
+        for (const chip of local) {
           if (chip.hidden || !isImageChip(chip)) continue;
           const read = await this.readImageChip(chip, session, gen);
           if (read === "gone") return;
           if (read === "failed") return;
           itemImages.push(read);
         }
-        contributions.push({ text: item.text, chips: shifted, images: itemImages });
-        queuedChips.push(...shifted);
-        imageOffset += itemImages.length;
+        contributions.push({ text: item.text, chips: local, images: itemImages });
+        queuedChips.push(...local);
       }
       chips = withPerMessageImageIndices([...queuedChips, ...implicitChips]);
     } else {
@@ -15666,9 +15676,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (session && sessionCwdOk) {
       snap.push(...sessionUiSnapshot(session, this.displayMode(session)));
     }
-    if (session && sessionCwdOk && session.queuedSendRequiresRelay && !session.queuedSendDispatch) {
-      const text = this.queuedSendReadyText(session);
-      if (text) session.queuedSendDispatch = { id: randomUUID(), text };
+    if (session && sessionCwdOk && session.queuedSendRequiresRelay) {
+      session.queuedSendDispatch = claimQueuedSendDispatch(
+        session.queuedSendDispatch,
+        this.queuedSendReadyText(session),
+        () => randomUUID(),
+      );
     }
     if (session && sessionCwdOk && session.queuedSendDispatch) {
       snap.push({ type: "submitQueuedSend", ...session.queuedSendDispatch });
