@@ -62,3 +62,17 @@ Local Grok connectors show a header Open on the desk (`openGlobalConfig`,
 even when the section is empty) and a sentence on remote; there is no
 per-row Open. A host-injected echo is omitted from Local. `listMcpServers` is inbound view
 so a phone can refresh that inventory without the desk opening the page.
+
+## Settings display
+
+`sortConnectorsForDisplay` (`media/settings.js`) orders On this computer:
+connected, then disconnected, each A–Z by display name (case-insensitive).
+`TIER1_CONNECTORS` order is unchanged — `hostMcpServers` walks that array.
+
+Vendor marks live in `media/connector-logos/<id>.webp` and render only on
+On this computer rows (a 1:1 vendor map). They sit in a white chip and
+desaturate when disconnected. A missing or failed image is omitted — no
+empty box. Grok.com / Local rows are CLI-named and get no mark.
+
+Local header Open uses the lucide `settings` gear (`ICON_SETTINGS`, same
+path as `chat.js` `ICON.gear`). Grok.com Open keeps the external-link icon.

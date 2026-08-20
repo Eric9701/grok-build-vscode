@@ -1,9 +1,10 @@
 // Shared settings surface: overlay in chat.js + the catalog in media/settings.js.
 import { describe, expect, it } from "vitest";
 import { Window } from "happy-dom";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { TIER1_CONNECTORS } from "../src/mcp-connectors";
 import { bootWebview, click, dispatch } from "./webview-harness";
 
 const settingsSrc = readFileSync(
@@ -22,6 +23,9 @@ function loadSettings() {
     THUMBS_COPY: string;
     ABOUT_DISCLAIMER: string;
     GROK_CONNECTORS_URL: string;
+    ICON_SETTINGS: string;
+    CONNECTOR_LOGO_IDS: Record<string, boolean>;
+    sortConnectorsForDisplay: (connectors: Array<{ name?: string; connected?: boolean }>) => Array<{ name?: string; connected?: boolean }>;
     CONNECTOR_SECTION_HERE: string;
     CONNECTOR_SECTION_GROK: string;
     CONNECTOR_SECTION_LOCAL: string;
@@ -224,6 +228,38 @@ describe("settings catalog", () => {
     expect(api.filterRows("grok connectors", snapshot, env).map((row) => row.id))
       .toEqual(expect.arrayContaining(["mcpCatalog"]));
   });
+
+  it("sorts On this computer connected-first, then by name case-insensitively", () => {
+    const api = loadSettings();
+    const ordered = api.sortConnectorsForDisplay([
+      { name: "stripe", connected: false },
+      { name: "Linear", connected: true },
+      { name: "canva", connected: true },
+      { name: "Atlassian", connected: false },
+      { name: "Notion", connected: true },
+    ]);
+    expect(ordered.map((c) => c.name)).toEqual([
+      "canva", "Linear", "Notion", "Atlassian", "stripe",
+    ]);
+  });
+
+  it("reuses the lucide settings gear, not a new SVG path", () => {
+    const api = loadSettings();
+    expect(api.ICON_SETTINGS).toContain("M12.22 2h-.44");
+    expect(api.ICON_SETTINGS).toContain('circle cx="12" cy="12" r="3"');
+    const chatSrc = readFileSync(fileURLToPath(new URL("../media/chat.js", import.meta.url)), "utf8");
+    expect(chatSrc).toContain("M12.22 2h-.44");
+  });
+
+  it("ships a webp mark for every current Tier-1 connector", () => {
+    const api = loadSettings();
+    const dir = fileURLToPath(new URL("../media/connector-logos", import.meta.url));
+    const ids = Object.keys(api.CONNECTOR_LOGO_IDS).sort();
+    expect(ids).toEqual([...TIER1_CONNECTORS.map((c) => c.id)].sort());
+    for (const id of ids) {
+      expect(existsSync(path.join(dir, `${id}.webp`)), id).toBe(true);
+    }
+  });
 });
 
 describe("settings overlay (chat.js)", () => {
@@ -413,12 +449,16 @@ describe("settings overlay (chat.js)", () => {
     const grokLink = overlay.querySelector(".settings-mcp-web") as HTMLButtonElement;
     expect(grokLink).toBeTruthy();
     expect(grokLink.textContent).toContain("Open");
+    expect(grokLink.innerHTML).toContain("M15 3h6v6");
     h.posted.length = 0;
     click(h.window, grokLink);
     expect(h.posted).toContainEqual({ type: "openUrl", url: "https://grok.com/connectors" });
     const fileOpen = overlay.querySelector(".settings-mcp-open") as HTMLButtonElement;
     expect(fileOpen).toBeTruthy();
     expect(fileOpen.textContent).toContain("Open");
+    expect(fileOpen.querySelector("img")).toBeNull();
+    expect(fileOpen.querySelector("svg")).toBeTruthy();
+    expect(fileOpen.innerHTML).toContain("M12.22 2h-.44");
     expect(fileOpen.closest(".settings-group-row")).toBeTruthy();
     expect(overlay.querySelectorAll(".settings-mcp-list .settings-mcp-open")).toHaveLength(0);
     click(h.window, fileOpen);
@@ -547,6 +587,138 @@ describe("settings overlay (chat.js)", () => {
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "openGlobalConfig" }));
+  });
+
+  it("renders On this computer connected first, each group alphabetical", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "stripe", name: "Stripe", description: "Pay.", endpoint: "https://mcp.stripe.com", connected: false, status: "idle" },
+        { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
+        { id: "canva", name: "Canva", description: "Designs.", endpoint: "https://mcp.canva.com/mcp", connected: true, status: "idle" },
+        { id: "atlassian", name: "Atlassian", description: "Jira.", endpoint: "https://mcp.atlassian.com/v1/mcp/authv2", connected: false, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    const ids = [...overlay.querySelectorAll(".settings-connector")].map((row) => (row as HTMLElement).dataset.id);
+    expect(ids).toEqual([
+      "connector-canva",
+      "connector-linear",
+      "connector-atlassian",
+      "connector-stripe",
+    ]);
+  });
+
+  it("uses the lucide settings gear on Local Open and leaves Grok.com as an external link", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    const localHeads = [...overlay.querySelectorAll(".settings-group-row")]
+      .filter((row) => (row.textContent || "").includes("Local Grok connectors"));
+    const localOpen = localHeads[0]!.querySelector(".settings-mcp-open") as HTMLButtonElement;
+    expect(localOpen.querySelector("img")).toBeNull();
+    expect(localOpen.innerHTML).toContain("M12.22 2h-.44");
+    const grokOpen = overlay.querySelector(".settings-mcp-web") as HTMLButtonElement;
+    expect(grokOpen.innerHTML).toContain("M15 3h6v6");
+    expect(grokOpen.innerHTML).not.toContain("M12.22 2h-.44");
+  });
+
+  it("leaves a connector row with no logo looking like a normal row", () => {
+    const h = bootWebview({
+      beforeScripts(window) {
+        const script = window.document.createElement("script");
+        script.src = "https://localhost/media/settings.js";
+        window.document.head.appendChild(script);
+      },
+    });
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "custom-tool", name: "Custom tool", description: "Not a vendor.", endpoint: "https://example.test/mcp", connected: false, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    const row = overlay.querySelector('[data-id="connector-custom-tool"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain("Custom tool");
+    expect(row.querySelector(".settings-connector-logo")).toBeNull();
+    expect(row.querySelector("img")).toBeNull();
+    expect(row.querySelector(".settings-row-title")!.classList.contains("has-logo")).toBe(false);
+  });
+
+  it("drops a failed vendor mark instead of leaving an empty chip", () => {
+    const h = bootWebview({
+      beforeScripts(window) {
+        const script = window.document.createElement("script");
+        script.src = "https://localhost/media/settings.js";
+        window.document.head.appendChild(script);
+      },
+    });
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    const row = overlay.querySelector('[data-id="connector-linear"]') as HTMLElement;
+    const chip = row.querySelector(".settings-connector-logo") as HTMLElement;
+    const img = chip.querySelector("img") as HTMLImageElement;
+    expect(chip.classList.contains("is-ready")).toBe(false);
+    expect(img.src).toContain("connector-logos/linear.webp");
+    expect(img.alt).toBe("");
+    img.dispatchEvent(new h.window.Event("load"));
+    expect(chip.classList.contains("is-ready")).toBe(true);
+    img.dispatchEvent(new h.window.Event("error"));
+    expect(row.querySelector(".settings-connector-logo")).toBeNull();
+    expect(row.querySelector("img")).toBeNull();
+    expect(row.textContent).toContain("Linear");
+    expect(row.querySelector(".settings-row-title")!.classList.contains("has-logo")).toBe(false);
+  });
+
+  it("does not put vendor marks on Grok.com or Local rows", () => {
+    const h = bootWebview({
+      beforeScripts(window) {
+        const script = window.document.createElement("script");
+        script.src = "https://localhost/media/settings.js";
+        window.document.head.appendChild(script);
+      },
+    });
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [
+        { name: "notes", displayName: "Notes", source: "local", configFile: "config.toml", enabled: true, status: "ready" },
+        { name: "managed_gateway:linear", displayName: "Linear", source: "managed", scopeName: "Grok CLI", enabled: true, status: "ready" },
+      ],
+    });
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.querySelector('[data-id="connector-linear"] .settings-connector-logo')).toBeTruthy();
+    const lists = [...overlay.querySelectorAll(".settings-mcp-list")];
+    const grokList = lists.find((list) => list.textContent?.includes("Grok CLI"));
+    const localList = lists.find((list) => list.textContent?.includes("Notes"));
+    expect(grokList!.querySelector(".settings-connector-logo")).toBeNull();
+    expect(localList!.querySelector(".settings-connector-logo")).toBeNull();
   });
 
   it("hides healthy provider rows in the gear and shows them when attention is needed", () => {

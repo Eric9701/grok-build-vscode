@@ -321,6 +321,9 @@ describe("settings views", () => {
     expect(views.find((v) => v.id === "figma")).toMatchObject({
       connected: false, status: "error", error: "Sign-in timed out.",
     });
+    // Display sort lives in settings.js. The catalog walk order is load-bearing
+    // for hostMcpServers; do not alphabetize TIER1_CONNECTORS itself.
+    expect(views.map((v) => v.id)).toEqual(TIER1_CONNECTORS.map((c) => c.id));
   });
 });
 

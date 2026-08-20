@@ -41,3 +41,14 @@ The desktop app's file-tree panel uses a curated subset of the **[Seti UI](https
 | **Wiring** | [`src/desktop/file-icons.ts`](../src/desktop/file-icons.ts) maps extensions → icon ids; SVGs are inlined as `data:` URLs into the panel boot script (no runtime network fetch; CSP-safe). |
 
 The MIT notice above is the hard requirement for redistribution of those SVGs. Do not replace this set with a non-redistributable icon pack without updating this section and the vendored license file.
+
+### Connector vendor marks
+
+Settings → Connectors → On this computer uses the vendors' marks (Atlassian, Canva, Cloudflare, Figma, Linear, Notion, Sentry, Stripe) to identify those apps.
+
+| | |
+|---|---|
+| **Vendored at** | [`media/connector-logos/`](../media/connector-logos/) |
+| **Wiring** | `appendConnectorLogo` in [`media/settings.js`](../media/settings.js); sibling URLs of `settings.js`, same pattern as `file-icons/` |
+
+Marks are trademarks of their owners. Inclusion is identification only and does not imply endorsement.
