@@ -219,6 +219,8 @@ import {
   RepoColors,
   RepoListEntry,
   RepoPins,
+  capAutoName,
+  capSessionMetaAutoNames,
   carrySessionName,
   clearSessions,
   cliSessionTitle,
@@ -5738,7 +5740,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const run = this.sessionMetaWrites.then(async () => {
       const current = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
       const next = mutate(current);
-      if (next) await this.state.update(SESSION_META_KEY, next);
+      if (next) await this.state.update(SESSION_META_KEY, capSessionMetaAutoNames(next).value);
     });
     // Keep the chain alive even if one link throws, or every later write dies.
     this.sessionMetaWrites = run.catch(() => {});
@@ -7327,8 +7329,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (!sid) return;
       void this.updateSessionMeta((current) => {
         const entry = current[sid];
-        if (entry?.customName || entry?.autoName === title.trim()) return null;
-        return { ...current, [sid]: { ...(entry ?? {}), autoName: title.trim() } };
+        const autoName = capAutoName(title);
+        if (!autoName || entry?.customName || entry?.autoName === autoName) return null;
+        return { ...current, [sid]: { ...(entry ?? {}), autoName } };
       }).then(() => {
         this.sessionCache.delete(sid);
         this.postSessionName(session);
@@ -9801,6 +9804,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         for (const entry of result.sessions) {
           const previous = next[entry.sessionId] ?? {};
           const title = typeof entry.title === "string" ? entry.title.trim() : "";
+          const autoName = capAutoName(title);
           const updated = {
             ...previous,
             provider,
@@ -9808,7 +9812,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             activeAt: typeof previous.activeAt === "number"
               ? previous.activeAt
               : stableOverrides[entry.sessionId]?.activeAt,
-            ...(!previous.customName && title ? { autoName: title } : {}),
+            ...(!previous.customName && autoName ? { autoName } : {}),
           };
           if (JSON.stringify(updated) !== JSON.stringify(previous)) {
             next[entry.sessionId] = updated;

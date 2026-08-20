@@ -28,6 +28,13 @@
 // started with an empty or stale cache preserves entries another client added.
 // The small read-then-write window within one tick remains the same as it was
 // with globalState and is outside this layer's scope.
+//
+// `grok.sessionMeta.autoName` is capped on ingest (`capAutoName`) so a pasted
+// prompt cannot bloat the file. The load-time sweep writes once if anything
+// changed; capping an already-capped string is a no-op, so it converges after
+// one load. `customName` is never touched.
+
+import { capSessionMetaAutoNames } from "./sessions";
 
 /** The `fs` surface this needs, injected so tests never touch a real disk. */
 export interface StateFs {
@@ -93,6 +100,15 @@ export class PersistedState {
     return `${this.dir}/${DISK_KEYS[key]}`;
   }
 
+  /** Cap `autoName` on session-meta maps. Other keys pass through. Sync and
+   *  idempotent — a second ingest of already-capped data is a no-op. */
+  private ingest(key: string, value: unknown): { value: unknown; changed: boolean } {
+    if (key !== "grok.sessionMeta" || !isRecordMap(value)) {
+      return { value, changed: false };
+    }
+    return capSessionMetaAutoNames(value);
+  }
+
   private validValue(key: string, value: unknown): boolean {
     // Scalar string keys (install id + app purpose). Everything else is a
     // record-of-records map (session meta, pins, archives).
@@ -141,8 +157,10 @@ export class PersistedState {
     const disk = this.readDisk(key);
     this.diskStamps.set(key, disk?.stamp ?? currentStamp);
     if (disk?.value !== undefined) {
-      this.cache.set(key, disk.value);
-      void this.memento.update(key, disk.value);
+      const ingested = this.ingest(key, disk.value);
+      this.cache.set(key, ingested.value);
+      void this.memento.update(key, ingested.value);
+      if (ingested.changed) this.enqueueWrite(key, ingested.value, disk.value);
       return;
     }
     const shadow = this.shadowValue(key);
@@ -159,19 +177,23 @@ export class PersistedState {
       this.diskStamps.set(key, disk?.stamp ?? this.diskStamp(key));
       const shadow = this.shadowValue(key);
       if (disk?.value !== undefined) {
-        this.cache.set(key, disk.value);
+        const ingested = this.ingest(key, disk.value);
+        this.cache.set(key, ingested.value);
         // Keep the downgrade/failure shadow current even when this instance did
-        // not create the disk file.
-        void this.memento.update(key, disk.value);
+        // not create the disk file. Cap first so a fat `autoName` never lands
+        // in either copy, then write once if anything actually changed.
+        void this.memento.update(key, ingested.value);
+        if (ingested.changed) this.enqueueWrite(key, ingested.value, disk.value);
       } else if (shadow !== undefined) {
         // First run after the upgrade: seed the file from what VS Code already
         // holds. Critically this PRESERVES the existing install id — minting a
         // fresh one would read as a new machine at the relay, mint a second
         // device row, and strand a free-tier user against the 1-device cap.
-        this.cache.set(key, shadow);
+        const ingested = this.ingest(key, shadow);
+        this.cache.set(key, ingested.value);
         // A malformed existing file is evidence to preserve, not a migration
         // target. An absent file is safe to seed from the shadow.
-        if (!disk) this.enqueueWrite(key, shadow);
+        if (!disk) this.enqueueWrite(key, ingested.value);
       }
     }
   }
@@ -228,12 +250,13 @@ export class PersistedState {
 
   update(key: string, value: unknown): PromiseLike<void> {
     if (!(key in DISK_KEYS)) return this.memento.update(key, value);
+    const ingested = this.ingest(key, value);
     const previous = this.cache.get(key);
-    this.cache.set(key, value);
+    this.cache.set(key, ingested.value);
     // Shadow first and unawaited: it is the fallback, so it must not be gated
     // on the disk write it exists to survive.
-    void this.memento.update(key, value);
-    return this.enqueueWrite(key, value, previous);
+    void this.memento.update(key, ingested.value);
+    return this.enqueueWrite(key, ingested.value, previous);
   }
 
   private enqueueWrite(key: string, value: unknown, previous?: unknown): Promise<void> {
@@ -245,7 +268,12 @@ export class PersistedState {
           return;
         }
         const disk = this.readDisk(key);
-        const next = mergeRecord(previous, value, disk?.value);
+        let next = mergeRecord(previous, value, disk?.value);
+        // Rebase can revive a fat `autoName` from disk; cap the merged result
+        // so a concurrent client's new entries survive and their prompts don't.
+        if (key === "grok.sessionMeta" && isRecordMap(next)) {
+          next = capSessionMetaAutoNames(next).value;
+        }
         // Write-then-rename: a crash mid-write leaves the previous file intact
         // rather than a truncated one. Node's rename replaces an existing
         // destination on Windows too (MoveFileEx with REPLACE_EXISTING).

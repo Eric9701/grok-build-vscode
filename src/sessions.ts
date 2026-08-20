@@ -68,7 +68,8 @@ export interface SessionMetaOverride {
    *  into the same field made it permanent — grok's own `session_summary` for that
    *  session could never surface, so history read as half-sentences of the opening
    *  prompt while `grok sessions list` showed a clean topic (#96). Ranks BELOW the
-   *  CLI's title, so it only fills the gap before grok writes one. */
+   *  CLI's title, so it only fills the gap before grok writes one. Always stored
+   *  through {@link capAutoName} (`AUTO_NAME_MAX_CHARS`). */
   autoName?: string;
   pinnedAt?: number;
   /** The checkout this pinned session lives in, captured when it was pinned. The
@@ -145,6 +146,50 @@ export interface SessionMetaOverride {
   queuedDraft?: string;
 }
 export type SessionMetaOverrides = Record<string, SessionMetaOverride>;
+
+/** Storage ceiling for `autoName`. History rows elide well before this; the cap
+ *  exists so a pasted prompt cannot bloat `grok.sessionMeta`. */
+export const AUTO_NAME_MAX_CHARS = 120;
+
+/** Prefer a word boundary this close to the cap rather than cutting mid-word. */
+const AUTO_NAME_WORD_LOOKBACK = 20;
+
+/** Collapse whitespace and cut a candidate `autoName` to {@link AUTO_NAME_MAX_CHARS}.
+ *  Cuts on a nearby word boundary when one exists; otherwise a hard cut.
+ *  Empty / non-string input becomes `""`. Idempotent on an already-capped value. */
+export function capAutoName(name: unknown): string {
+  if (typeof name !== "string") return "";
+  const collapsed = name.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= AUTO_NAME_MAX_CHARS) return collapsed;
+  let end = AUTO_NAME_MAX_CHARS;
+  // Don't split a surrogate pair at the hard limit.
+  if ((collapsed.charCodeAt(end) & 0xfc00) === 0xdc00) end -= 1;
+  const slice = collapsed.slice(0, end);
+  const boundary = slice.lastIndexOf(" ");
+  const minKeep = AUTO_NAME_MAX_CHARS - AUTO_NAME_WORD_LOOKBACK;
+  if (boundary >= minKeep) return slice.slice(0, boundary).trimEnd();
+  return slice.trimEnd();
+}
+
+/** Cap every `autoName` in a session-meta map. Returns the same object when
+ *  nothing changed so a load-time sweep can skip the write. Never touches
+ *  `customName` or any other field. */
+export function capSessionMetaAutoNames<T extends Record<string, { autoName?: unknown }>>(
+  meta: T,
+): { value: T; changed: boolean } {
+  let changed = false;
+  let next: T | undefined;
+  for (const id of Object.keys(meta)) {
+    const entry = meta[id];
+    if (!entry || typeof entry.autoName !== "string") continue;
+    const autoName = capAutoName(entry.autoName);
+    if (autoName === entry.autoName) continue;
+    if (!next) next = { ...meta };
+    (next as Record<string, unknown>)[id] = { ...entry, autoName };
+    changed = true;
+  }
+  return { value: next ?? meta, changed };
+}
 
 /** Pick the newest user-visible session from an already-scoped history list. */
 export function mostRecentSession(entries: readonly SessionListEntry[]): SessionListEntry | undefined {

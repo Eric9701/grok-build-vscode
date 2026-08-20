@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { PersistedState, DISK_KEYS, type StateFs, type MementoLike } from "../src/persisted-state";
+import { AUTO_NAME_MAX_CHARS, capAutoName } from "../src/sessions";
 
 const DIR = "/home/.grok/client-state";
 const metaFile = `${DIR}/${DISK_KEYS["grok.sessionMeta"]}`;
@@ -268,5 +269,89 @@ describe("PersistedState", () => {
     void state.update("grok.repoPins", { a: { cwd: "/a", pinnedAt: 2 } });
     await state.update("grok.repoPins", { a: { cwd: "/a", pinnedAt: 3 } });
     expect(JSON.parse(fs.files.get(`${DIR}/${DISK_KEYS["grok.repoPins"]}`)!).a.pinnedAt).toBe(3);
+  });
+});
+
+describe("PersistedState autoName load sweep", () => {
+  const fat = "please rewrite this module from first principles ".repeat(40).trim();
+  const short = "fix the flaky test";
+  const custom = "User title that must survive even when it is quite long ".repeat(4).trim();
+
+  it("caps a fat autoName on load, leaves a short one byte-identical, and writes once", async () => {
+    const seeded = {
+      fat: { autoName: fat, customName: custom, pinnedAt: 3 },
+      short: { autoName: short, unread: true },
+    };
+    const { state, fs, memento } = make((f) => f.setFile(metaFile, JSON.stringify(seeded)));
+    // Readable immediately — the sweep write must not gate the read, and a
+    // read must never return empty while that write is in flight.
+    const live = state.get<typeof seeded>("grok.sessionMeta", {} as typeof seeded);
+    expect(live.fat.autoName).toBe(capAutoName(fat));
+    expect(live.fat.autoName.length).toBeLessThanOrEqual(AUTO_NAME_MAX_CHARS);
+    expect(live.fat.customName).toBe(custom);
+    expect(live.fat.pinnedAt).toBe(3);
+    expect(JSON.stringify(live.short)).toBe(JSON.stringify(seeded.short));
+    expect(Object.keys(live).sort()).toEqual(["fat", "short"]);
+
+    const writesBeforeFlush = fs.renames.length;
+    await state.flush();
+    expect(fs.renames.length).toBeGreaterThan(writesBeforeFlush);
+    const onDisk = JSON.parse(fs.files.get(metaFile)!);
+    expect(onDisk.fat.autoName).toBe(capAutoName(fat));
+    expect(onDisk.fat.customName).toBe(custom);
+    expect(JSON.stringify(onDisk.short)).toBe(JSON.stringify(seeded.short));
+    expect(memento.store.get("grok.sessionMeta")).toEqual(onDisk);
+  });
+
+  it("writes only when something changed, and a second load is a no-op", async () => {
+    const alreadyCapped = {
+      short: { autoName: short },
+      capped: { autoName: capAutoName(fat) },
+    };
+    const first = make((f) => f.setFile(metaFile, JSON.stringify(alreadyCapped)));
+    await first.state.flush();
+    expect(first.fs.renames).toEqual([]);
+    expect(JSON.parse(first.fs.files.get(metaFile)!)).toEqual(alreadyCapped);
+
+    const second = new PersistedState(new FakeMemento(), DIR, first.fs);
+    await second.flush();
+    expect(first.fs.renames).toEqual([]);
+    expect(JSON.parse(first.fs.files.get(metaFile)!)).toEqual(alreadyCapped);
+    expect(second.get("grok.sessionMeta")).toEqual(alreadyCapped);
+  });
+
+  it("never touches customName, even when it is longer than the autoName cap", async () => {
+    const longCustom = "Keep this rename exactly as typed ".repeat(10).trim();
+    expect(longCustom.length).toBeGreaterThan(AUTO_NAME_MAX_CHARS);
+    const { state, fs } = make((f) => f.setFile(metaFile, JSON.stringify({
+      s: { customName: longCustom, autoName: fat },
+    })));
+    const live = state.get<Record<string, { customName: string; autoName: string }>>("grok.sessionMeta", {});
+    expect(live.s.customName).toBe(longCustom);
+    expect(live.s.autoName).toBe(capAutoName(fat));
+    await state.flush();
+    expect(JSON.parse(fs.files.get(metaFile)!).s.customName).toBe(longCustom);
+  });
+
+  it("preserves an entry another client added between load and the sweep write", async () => {
+    const seeded = {
+      fat: { autoName: fat, customName: "mine" },
+      short: { autoName: short },
+    };
+    const { state, fs } = make((f) => f.setFile(metaFile, JSON.stringify(seeded)));
+    expect(state.get<typeof seeded>("grok.sessionMeta", {} as typeof seeded).fat.autoName).toBe(capAutoName(fat));
+
+    fs.setFile(metaFile, JSON.stringify({
+      fat: { autoName: fat, customName: "mine" },
+      short: { autoName: short },
+      theirs: { customName: "added elsewhere", autoName: "new session" },
+    }));
+
+    await state.flush();
+    const onDisk = JSON.parse(fs.files.get(metaFile)!);
+    expect(onDisk.theirs).toEqual({ customName: "added elsewhere", autoName: "new session" });
+    expect(onDisk.fat.autoName).toBe(capAutoName(fat));
+    expect(onDisk.fat.customName).toBe("mine");
+    expect(onDisk.short.autoName).toBe(short);
   });
 });

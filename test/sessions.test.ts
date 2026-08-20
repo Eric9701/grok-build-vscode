@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import { isPrimerSummary } from "../src/grok-primer";
 import * as path from "node:path";
 import {
+  AUTO_NAME_MAX_CHARS,
+  capAutoName,
+  capSessionMetaAutoNames,
   forkDisplayName,
   FsLike,
   SessionMetaOverrides,
@@ -50,6 +53,87 @@ const realQuery = (q: string) => userMsg(`<user_query>\n${q}\n</user_query>`);
 // grok/composer sends some prompts (notably slash commands) UNWRAPPED — a plain
 // user message with no <user_query>. These must still count as real queries.
 const unwrappedQuery = (q: string) => userMsg(q);
+
+describe("capAutoName", () => {
+  const words = Array.from({ length: 40 }, (_, i) => `word${String(i).padStart(2, "0")}`);
+  const longPrompt = words.join(" ");
+
+  it("cuts a long prompt on a nearby word boundary", () => {
+    expect(longPrompt.length).toBeGreaterThan(AUTO_NAME_MAX_CHARS);
+    const capped = capAutoName(longPrompt);
+    expect(capped.length).toBeLessThanOrEqual(AUTO_NAME_MAX_CHARS);
+    expect(capped.length).toBeGreaterThan(AUTO_NAME_MAX_CHARS - 20);
+    expect(capped.endsWith(" ")).toBe(false);
+    expect(longPrompt.startsWith(capped)).toBe(true);
+    expect(capped).not.toContain("word39");
+    expect(capAutoName(capped)).toBe(capped);
+  });
+
+  it("collapses newlines and extra whitespace in a multi-line prompt", () => {
+    expect(capAutoName("hello\n\nworld\tfrom\rprompt")).toBe("hello world from prompt");
+    const multi = `${"alpha ".repeat(30).trim()}\n${"bravo ".repeat(30).trim()}`;
+    const capped = capAutoName(multi);
+    expect(capped).not.toMatch(/\s{2,}/);
+    expect(capped).not.toMatch(/\n/);
+    expect(capped.length).toBeLessThanOrEqual(AUTO_NAME_MAX_CHARS);
+  });
+
+  it("leaves an already-short name unchanged", () => {
+    expect(capAutoName("fix the flaky test")).toBe("fix the flaky test");
+  });
+
+  it("leaves a name that is exactly the limit unchanged", () => {
+    const exact = "a".repeat(AUTO_NAME_MAX_CHARS);
+    expect(exact.length).toBe(AUTO_NAME_MAX_CHARS);
+    expect(capAutoName(exact)).toBe(exact);
+  });
+
+  it("hard-cuts when no word boundary is near the limit", () => {
+    expect(capAutoName("x".repeat(AUTO_NAME_MAX_CHARS + 50))).toBe("x".repeat(AUTO_NAME_MAX_CHARS));
+    expect(capAutoName("hello " + "x".repeat(AUTO_NAME_MAX_CHARS))).toBe("hello " + "x".repeat(AUTO_NAME_MAX_CHARS - 6));
+  });
+
+  it("returns empty for empty or undefined input", () => {
+    expect(capAutoName("")).toBe("");
+    expect(capAutoName("   \n\t  ")).toBe("");
+    expect(capAutoName(undefined)).toBe("");
+    expect(capAutoName(null)).toBe("");
+    expect(capAutoName(12)).toBe("");
+  });
+});
+
+describe("capSessionMetaAutoNames", () => {
+  it("caps fat autoName values and leaves everything else on the same object", () => {
+    const fat = "prompt ".repeat(40).trim();
+    const short = "fix the flaky test";
+    const custom = "A name the user typed that can be as long as they like ".repeat(5).trim();
+    const meta: SessionMetaOverrides = {
+      fat: { autoName: fat, customName: custom, pinnedAt: 9 },
+      short: { autoName: short, unread: true },
+      none: { provider: "grok" },
+    };
+    const { value, changed } = capSessionMetaAutoNames(meta);
+    expect(changed).toBe(true);
+    expect(value).not.toBe(meta);
+    expect(value.fat.autoName).toBe(capAutoName(fat));
+    expect(value.fat.autoName!.length).toBeLessThanOrEqual(AUTO_NAME_MAX_CHARS);
+    expect(value.fat.customName).toBe(custom);
+    expect(value.fat.pinnedAt).toBe(9);
+    expect(value.short).toBe(meta.short);
+    expect(JSON.stringify(value.short)).toBe(JSON.stringify(meta.short));
+    expect(value.none).toBe(meta.none);
+  });
+
+  it("is a no-op on an already-capped map", () => {
+    const meta: SessionMetaOverrides = { a: { autoName: "short" } };
+    const first = capSessionMetaAutoNames(meta);
+    expect(first.changed).toBe(false);
+    expect(first.value).toBe(meta);
+    const second = capSessionMetaAutoNames(first.value);
+    expect(second.changed).toBe(false);
+    expect(second.value).toBe(first.value);
+  });
+});
 
 describe("mostRecentSession", () => {
   const entry = (id: string, updatedAt: number, kind?: "subagent"): SessionListEntry => ({

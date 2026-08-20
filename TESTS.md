@@ -163,7 +163,9 @@ These actually spawn real shell children (real `/bin/sh`, or real PowerShell on 
 - Returns `undefined` when nothing is found
 - **`extensionWasUpgraded`** — true on any version change (incl. a downgrade), false on a fresh install / unchanged version / empty stored version; gates the silent `grok update` the extension runs once when its own version changes
 
-### `test/sessions.test.ts` — session listing & naming (93 tests)
+### `test/sessions.test.ts` — session listing & naming
+
+- **`capAutoName` / `capSessionMetaAutoNames`** — storage ceiling for `autoName` (`AUTO_NAME_MAX_CHARS` 120): long prompts cut on a nearby word boundary, multi-line whitespace collapsed, already-short and exactly-at-limit names unchanged, empty/undefined → `""`. The map helper caps only `autoName`, leaves `customName` and already-short entries byte-identical, and is a no-op the second time.
 
 - Lists sessions from grok's on-disk layout (`~/.grok/sessions/<urlencoded-cwd>/<id>/`) for the current cwd only
 - Row naming precedence (#96): a manual `customName`, then grok's own title (`cliSessionTitle` — `session_summary`, else `generated_title`), then our first-message `autoName`, then `Untitled (<date>)`. A legacy primer-derived title is rejected in both its summarized and verbatim forms, while a real session that merely mentions a primer is kept
@@ -199,11 +201,17 @@ The queue is released at `handleSend`'s synchronous commit point, not before it.
 
 Plan mode hides persistent-grant options on `execute` cards, and the host validates an answer against the options it actually rendered — so a remote client cannot answer with an option id it was never offered. Covers restoring the full set once plan mode exits.
 
-### `test/persisted-state.test.ts` — durable client state (19 tests)
+### `test/persisted-state.test.ts` — durable client state
 
 `PersistedState` keeps session names, pins, archives and the install id in `~/.grok/client-state/*.json` instead of VS Code `globalState`, so another client on the same machine reads the same state. Covered: keys it does not own delegate straight to `globalState`; the first-run migration seeds each file from `globalState` **and preserves the existing install id** (a fresh one would read as a new machine at the relay and mint a second device row against the one-device cap); disk beats a stale shadow, and a disk value hydrates the shadow so downgrade still finds it; a synchronous read refreshes when another client changed the file; a write **rebases on the current disk snapshot** — another client's entries survive, and *the writer's own deletions still delete* rather than being resurrected; the install id is created atomically, so of two racing instances one wins and the other adopts it; write-then-rename; corrupt JSON and wrong-shaped JSON (`null`, arrays, unrelated objects) both fall back to the shadow rather than crashing activation on `Object.values`; an unwritable directory degrades to `globalState`; writes stay ordered.
 
+Load-time `autoName` sweep: a fat prompt is capped on the first read (never empty, never gated on the write), a short name stays byte-identical, `customName` is never touched, the file is written only when something changed, a second load is a no-op, and an entry another client added between load and that write survives the rebase.
+
 Injected `StateFs` mirrors node's real `writeFileSync(file, data, options)` signature deliberately: an earlier double read the exclusive-create flag off a fourth positional argument, which node **silently ignores**, so the atomic create was inert in production while the suite stayed green.
+
+### `test/auto-name-write.test.ts` — autoName write sites
+
+The two live `autoName` writers (`sessionTitle` and adapter history refresh) plus `updateSessionMeta` (the setter they share) all persist `capAutoName`'s result, so a later third path through the setter cannot store a raw prompt.
 
 ### `test/webview-helpers.test.ts` — pure webview helpers (153 tests)
 
