@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.13.1 — 2026-08-20
+
+### Added
+
+- **Connectors — sign in to the apps you already work in.** **Settings → Connectors** ships in release builds now; it was development-only in 3.13.0. Connect Linear, Notion, Atlassian, Canva, Stripe, Sentry or Cloudflare once on this computer and every agent can use them — Grok, Codex and Claude alike. You authorise in your browser and the tokens are cached by `mcp-remote` under `~/.mcp-auth`, so the extension never handles one. The page has three sections: apps you connect here, the grok.com connectors that follow your Grok account, and local Grok connectors declared in this machine's config files. Project-file servers stay off it.
+- **Copy path and Copy relative path ([#120](https://github.com/phuryn/grok-build-vscode/issues/120)).** Every row in the file panel offers both, on files and folders, on the desk and on a phone.
+- **Rate a Grok turn ([#114](https://github.com/phuryn/grok-build-vscode/issues/114)).** Thumbs on a finished turn send a rating to SpaceXAI. Off by default — turn on **Thumbs feedback to SpaceXAI** in Settings → General — and they appear only where the Grok session actually supports feedback, never on Codex or Claude.
+
+### Fixed
+
+- **Connectors could not start at all on macOS.** A desktop app launched from Finder inherits a PATH with no Homebrew in it, so `npx` was missing. Finding it was not enough either: `npx` is a script whose `#!/usr/bin/env node` line needs `node` findable as well, so the child's environment is fixed alongside the lookup. Windows keeps its PATH exactly as you wrote it.
+- **Queueing a message with images keeps the images.** Attachments were dropped when a message went to the queue — everything you attached is queued with it, or nothing is. Steer carries them too, and an image's number is stamped when you attach it and never moves afterwards.
+- **The context breakdown adds up, and stays put.** The rows in the popover did not sum to the figure above them, and a breakdown could be shown against numbers from a different reading. Each one now belongs to the measurement that produced it. Settings also stopped rebuilding itself over and over while open.
+- **Queued messages look like sent ones.** Images in a queued message sit below the text, where they sit in a message you have already sent, and the first message in a conversation gets a little room above it.
+
 ## 3.13.0 — 2026-08-19
 
 ### Added
