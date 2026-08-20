@@ -393,13 +393,9 @@
     // running turn hears you now, and it does not. See steerableProvider().
     lastTurnUsage: null, // last prompt's billing split (#53), for the donut popover
     sessionUsage: null, // session-cumulative billing — summed by the host, not grok
-    contextCategories: null,
-    contextSystemPromptTokens: null,
-    contextToolDefinitionsTokens: null,
-    contextToolDefinitionsCount: null,
-    contextMessageTokens: null,
-    contextFreeTokens: null,
-    contextAutoCompactPct: null,
+    // Structured session/info addends, bound to the `used` they arrived with.
+    // Occupancy-only frames that move used/window drop this rather than mixing.
+    contextBreakdown: null,
     activeAgentEl: null,
     activeAgentRaw: "",
     activeUserEl: null,
@@ -1044,7 +1040,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, contextOverheadTokens, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1843,40 +1839,49 @@
     }
     contextPopover.appendChild(act);
 
-    const hasBreakdown =
-      state.contextSystemPromptTokens != null ||
-      state.contextToolDefinitionsTokens != null ||
-      state.contextMessageTokens != null ||
-      (state.contextCategories && state.contextCategories.length);
+    // Only the session/info snapshot whose used/window still match occupancy.
+    // A used-only frame that moved `used` has already dropped it; this gate
+    // also covers promptComplete / modelChanged, which never go through that path.
+    const breakdown = contextBreakdownIsCurrent(state.contextBreakdown, used, state.contextWindow)
+      ? state.contextBreakdown
+      : null;
+    const hasBreakdown = breakdown && (
+      breakdown.systemPromptTokens != null ||
+      breakdown.toolDefinitionsTokens != null ||
+      breakdown.messageTokens != null ||
+      breakdown.freeTokens != null ||
+      (breakdown.categories && breakdown.categories.length)
+    );
     if (hasBreakdown) {
       // Same split as the CLI TUI: legend rows fill the bar; informational
       // rows sit below it because their tokens are already in those addends
       // (tool definitions in Reasoning/overhead, usage categories in Messages).
+      // Overhead is derived from THIS snapshot's used, never live occupancy.
       const overheadTokens = contextOverheadTokens(
-        used,
-        state.contextSystemPromptTokens,
-        state.contextMessageTokens,
+        breakdown.used,
+        breakdown.systemPromptTokens,
+        breakdown.messageTokens,
       );
       section("In this window");
-      if (state.contextSystemPromptTokens != null) info("System", tok(state.contextSystemPromptTokens));
-      if (state.contextMessageTokens != null) info("Messages", tok(state.contextMessageTokens));
+      if (breakdown.systemPromptTokens != null) info("System", tok(breakdown.systemPromptTokens));
+      if (breakdown.messageTokens != null) info("Messages", tok(breakdown.messageTokens));
       if (overheadTokens != null) info("Reasoning/overhead", tok(overheadTokens));
-      if (state.contextFreeTokens != null) info("Free", tok(state.contextFreeTokens));
-      if (state.contextAutoCompactPct != null) info("Auto-compact at", `${state.contextAutoCompactPct}%`);
+      if (breakdown.freeTokens != null) info("Free", tok(breakdown.freeTokens));
+      if (breakdown.autoCompactPct != null) info("Auto-compact at", `${breakdown.autoCompactPct}%`);
       const hasCounted =
-        state.contextToolDefinitionsTokens != null ||
-        (state.contextCategories && state.contextCategories.length);
+        breakdown.toolDefinitionsTokens != null ||
+        (breakdown.categories && breakdown.categories.length);
       if (hasCounted) {
         section("Already counted above");
-        if (state.contextToolDefinitionsTokens != null) {
-          const n = state.contextToolDefinitionsCount;
+        if (breakdown.toolDefinitionsTokens != null) {
+          const n = breakdown.toolDefinitionsCount;
           const toolsLabel = typeof n === "number"
             ? `Tool definitions (${n} ${n === 1 ? "tool" : "tools"})`
             : "Tool definitions";
-          info(toolsLabel, tok(state.contextToolDefinitionsTokens));
+          info(toolsLabel, tok(breakdown.toolDefinitionsTokens));
         }
-        if (state.contextCategories) {
-          for (const category of state.contextCategories) {
+        if (breakdown.categories) {
+          for (const category of breakdown.categories) {
             info(category.detail ? `${category.label} (${category.detail})` : category.label, tok(category.tokens));
           }
         }
@@ -7031,6 +7036,7 @@
     state.historyEventCount = 0;
     state.lastTurnUsage = null;
     state.sessionUsage = null;
+    state.contextBreakdown = null;
     state.suppressReplayTurn = false;
     state.skipUserBubble = false;
     cancelPendingSpeech();
@@ -11456,6 +11462,10 @@
     donutLabel.textContent = `${toK(used)}/${toK(max)}`;
     donutLabel.title = `${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
     donutEl.title = `Context usage — ${used.toLocaleString()} / ${max.toLocaleString()} tokens`;
+    // Occupancy can move without a contextUsage frame (promptComplete,
+    // modelChanged). Re-paint so the open popover cannot keep a breakdown
+    // that no longer describes the number above it.
+    if (!contextPopover.hidden) renderContextPopover();
   }
 
   // ---------- slash autocomplete ----------
@@ -13562,13 +13572,7 @@
         state.availableModels = msg.models || [];
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId && (!x.provider || x.provider === state.activeProvider));
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
-        state.contextCategories = null;
-        state.contextSystemPromptTokens = null;
-        state.contextToolDefinitionsTokens = null;
-        state.contextToolDefinitionsCount = null;
-        state.contextMessageTokens = null;
-        state.contextFreeTokens = null;
-        state.contextAutoCompactPct = null;
+        state.contextBreakdown = null;
         updateDonut(0);
         reportRemotePreferences();
         break;
@@ -14179,17 +14183,12 @@
         // Host-authoritative occupancy: grok's signals.json / live envelope,
         // or the remembered adapter prompt size. A window-only frame updates
         // the denominator without inventing a used count.
+        // Structured addends are one snapshot (`nextContextBreakdown`): a
+        // used-only frame that moves occupancy drops them instead of merging.
+        state.contextBreakdown = nextContextBreakdown(state.contextBreakdown, msg);
         if (msg.window) state.contextWindow = msg.window;
-        if (msg.categories) state.contextCategories = msg.categories;
-        if (msg.systemPromptTokens != null) state.contextSystemPromptTokens = msg.systemPromptTokens;
-        if (msg.toolDefinitionsTokens != null) state.contextToolDefinitionsTokens = msg.toolDefinitionsTokens;
-        if (msg.toolDefinitionsCount != null) state.contextToolDefinitionsCount = msg.toolDefinitionsCount;
-        if (msg.messageTokens != null) state.contextMessageTokens = msg.messageTokens;
-        if (msg.freeTokens != null) state.contextFreeTokens = msg.freeTokens;
-        if (msg.autoCompactThresholdPercent != null) state.contextAutoCompactPct = msg.autoCompactThresholdPercent;
         if (msg.used != null) updateDonut(msg.used);
         else updateDonut();
-        if (!contextPopover.hidden) renderContextPopover();
         break;
       case "expandCommandOutputs":
         // Live toggle (grok.expandCommandOutputs): applies to existing rows

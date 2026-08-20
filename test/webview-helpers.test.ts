@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent } from "../media/webview-helpers.js";
 import { Window } from "happy-dom";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
@@ -20,6 +20,64 @@ describe("contextOverheadTokens", () => {
     expect(contextOverheadTokens(100, 10, undefined)).toBeNull();
     expect(contextOverheadTokens(100, undefined, 40)).toBeNull();
     expect(contextOverheadTokens(undefined, 10, 40)).toBeNull();
+  });
+});
+
+describe("nextContextBreakdown", () => {
+  const snapshot = {
+    type: "contextUsage" as const,
+    used: 100,
+    window: 200000,
+    systemPromptTokens: 10,
+    messageTokens: 80,
+    freeTokens: 199890,
+  };
+
+  it("binds session/info addends to the used they arrived with", () => {
+    const next = nextContextBreakdown(null, snapshot);
+    expect(next).toMatchObject({ used: 100, window: 200000, systemPromptTokens: 10, messageTokens: 80, freeTokens: 199890 });
+    expect(contextBreakdownIsCurrent(next, 100, 200000)).toBe(true);
+    expect(contextOverheadTokens(next.used, next.systemPromptTokens, next.messageTokens)).toBe(10);
+  });
+
+  it("drops the snapshot when a used-only frame moves occupancy", () => {
+    const prev = nextContextBreakdown(null, snapshot);
+    expect(nextContextBreakdown(prev, { type: "contextUsage", used: 130 })).toBeNull();
+    expect(contextBreakdownIsCurrent(prev, 130, 200000)).toBe(false);
+    // Mixing the two readings is exactly the invented-overhead bug (100→130
+    // would paint Reasoning/overhead 40 from stale 10+80).
+    expect(contextOverheadTokens(130, prev.systemPromptTokens, prev.messageTokens)).toBe(40);
+  });
+
+  it("keeps the snapshot when a used-only frame restates the same used", () => {
+    const prev = nextContextBreakdown(null, snapshot);
+    expect(nextContextBreakdown(prev, { type: "contextUsage", used: 100 })).toBe(prev);
+    expect(contextBreakdownIsCurrent(prev, 100, 200000)).toBe(true);
+  });
+
+  it("drops the snapshot when a window-only frame rescales the denominator", () => {
+    const prev = nextContextBreakdown(null, snapshot);
+    expect(nextContextBreakdown(prev, { type: "contextUsage", window: 1000000 })).toBeNull();
+    expect(contextBreakdownIsCurrent(prev, 100, 1000000)).toBe(false);
+  });
+
+  it("replaces an older snapshot wholesale instead of merging fields", () => {
+    const prev = nextContextBreakdown(null, snapshot);
+    const next = nextContextBreakdown(prev, {
+      type: "contextUsage",
+      used: 110,
+      window: 200000,
+      systemPromptTokens: 10,
+      messageTokens: 100,
+      freeTokens: 199890,
+    });
+    expect(next).toMatchObject({ used: 110, messageTokens: 100, systemPromptTokens: 10 });
+    expect(next.toolDefinitionsTokens).toBeNull();
+    expect(contextBreakdownIsCurrent(next, 110, 200000)).toBe(true);
+  });
+
+  it("refuses a structured frame that cannot bind to a used value", () => {
+    expect(nextContextBreakdown(null, { type: "contextUsage", systemPromptTokens: 10, messageTokens: 80 })).toBeNull();
   });
 });
 
