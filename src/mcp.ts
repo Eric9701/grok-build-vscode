@@ -269,34 +269,19 @@ export function applyMcpOriginTags(
 }
 
 /**
- * True when an inventory read from `catalogCwd` may be shown for `viewCwd`.
- * Empty paths never match — a catalog with no source workspace is not a
- * global answer for whatever happens to be focused.
- */
-export function mcpCatalogVisibleForCwd(
-  catalogCwd: string | undefined,
-  viewCwd: string,
-  sameCwd: (a: string, b: string) => boolean,
-): catalogCwd is string {
-  return !!catalogCwd && !!viewCwd && sameCwd(catalogCwd, viewCwd);
-}
-
-/**
  * Classify an `_x.ai/mcp/list` inventory against the workspace it was read
- * from. A catalog for project A is never classified against project B —
- * mismatch (or a missing source cwd) yields `[]` rather than another
- * project's rows. `nameLayerFor` is invoked only with `catalogCwd`.
+ * from. Project-file rows drop here; what remains is global and may be
+ * rendered for any later workspace. `nameLayerFor` is invoked only with
+ * `catalogCwd`. A missing catalog cwd yields `[]` — nothing has been classified.
  */
 export function taggedMcpServersForCwd(opts: {
   servers: readonly McpServerView[];
   catalogCwd: string | undefined;
-  viewCwd: string;
-  sameCwd: (a: string, b: string) => boolean;
   nameLayerFor: (cwd: string) => ReadonlyMap<string, McpConfigLayer>;
   machineName: string;
 }): McpServerView[] {
   const catalogCwd = opts.catalogCwd;
-  if (!mcpCatalogVisibleForCwd(catalogCwd, opts.viewCwd, opts.sameCwd)) return [];
+  if (!catalogCwd) return [];
   return applyMcpOriginTags(opts.servers, {
     nameLayer: opts.nameLayerFor(catalogCwd),
     machineName: opts.machineName,

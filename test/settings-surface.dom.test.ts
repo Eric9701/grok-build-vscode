@@ -976,10 +976,10 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     expect(body).toContain("telemetryEnabled");
     expect(body).toContain("thumbsFeedback");
     expect(body).toContain("mcpConnectors");
-    expect(body).not.toContain("mcpServers");
+    expect(body).toContain("mcpServers");
   });
 
-  it("scopes the Grok MCP inventory to the workspace it was read from", () => {
+  it("posts the stored global MCP view device-wide", () => {
     const src = readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
       "utf8",
@@ -989,9 +989,10 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const body = src.slice(start, end);
-    expect(body).toContain("this.postLocal");
-    expect(body).toContain("this.sendRemoteRepo");
-    expect(body).not.toContain("this.post(tagged)");
+    expect(body).toContain("this.post(tagged)");
+    expect(body).toContain("this.mcpServersView");
+    expect(body).not.toContain("this.sendRemoteRepo");
+    expect(body).not.toContain("this.postLocal");
   });
 
   it("voice send-phrase and keyterms write the winning inspect scope", () => {

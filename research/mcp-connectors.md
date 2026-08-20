@@ -52,8 +52,9 @@ the session still loads them. Origin tags for that inventory always
 classify against Grok config files for the workspace the catalog was
 read from (`mcpServersCwd` / `taggedMcpServersForCwd` → `mcpNameLayersFor`
 → `mcpConfigPaths` with `provider: "grok"`), never the receiving or
-focused session's cwd or provider. A snapshot or settings view whose
-workspace does not match that cwd gets an empty list.
+focused session's cwd or provider. The classified global-only view is
+stored (`mcpServersView`) and rendered anywhere; project-file rows
+never enter it.
 `connectMcpConnector` / `disconnectMcpConnector` are host-local:
 OAuth needs a browser on the machine that owns `~/.mcp-auth`. Settings →
 Connectors on a remote shows the desk-owned catalog read-only, the live Grok

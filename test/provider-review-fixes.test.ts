@@ -252,8 +252,9 @@ describe("multi-provider review regressions", () => {
     const snapshot = methodBody("private buildRemoteSnapshot(");
     expect(snapshot).toContain("snap.push(this.providerStateMessage());");
     expect(snapshot).toContain("snap.push(this.mcpConnectorsMessage());");
-    expect(snapshot).toContain("this.mcpServersMessageForCwd(mcpViewCwd)");
-    expect(snapshot).toContain("listCwd ?? cwd");
+    expect(snapshot).toContain("this.mcpServersMessage()");
+    expect(snapshot).not.toContain("mcpServersMessageForCwd");
+    expect(snapshot).not.toContain("mcpViewCwd");
     expect(snapshot).not.toContain("this.mcpServersMessage(session || this.focused)");
     expect(snapshot.indexOf("snap.push(initial);")).toBeLessThan(
       snapshot.indexOf("snap.push(this.providerStateMessage());"),

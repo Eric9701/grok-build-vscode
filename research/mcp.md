@@ -3,10 +3,12 @@
 Settings → Connectors → Grok connectors reads `_x.ai/mcp/list` through
 the active Grok ACP session and shows grok.com-managed servers plus
 user-level / host-injected locals. The host stamps that session's cwd
-on the catalog (`mcpServersCwd`) and classifies against it
-(`taggedMcpServersForCwd`); a later focus switch, remote snapshot, or
-second tab on another project never re-derives layers from the
-receiving workspace. Servers declared in a project file
+on the catalog (`mcpServersCwd`) and classifies against it once
+(`taggedMcpServersForCwd`), storing the global-only view
+(`mcpServersView`). A later focus switch, remote snapshot, or second
+tab on another project renders that view as-is — project-file rows
+were already dropped, and global rows are workspace-independent.
+Servers declared in a project file
 (`.mcp.json`, `.grok/config.toml`) are omitted from the page
 (`mcpSettingsVisible`); they still load in the session. The raw
 `this.mcpServers` list stays complete for `hostMcpServers` dedup. The parser accepts
@@ -31,7 +33,10 @@ type is dropped rather than ferried.
 
 The ACP client also consumes `_x.ai/mcp/servers_updated`,
 `_x.ai/mcp/init_progress`, `_x.ai/mcp_initialized`, and
-`_x.ai/mcp/server_status`. Status notifications merge into the catalog already
-loaded by the panel; the panel does not poll. An older CLI returning JSON-RPC
+`_x.ai/mcp/server_status`. Those notifications always update
+`grokMcpReserved` (dedup must not wait on a catalog read) and merge
+into the stored inventory when no catalog is stamped or the notifying
+session's cwd matches `mcpServersCwd`. The panel does not poll. An older CLI returning JSON-RPC
 `-32601` from `_x.ai/mcp/list` is treated as an unsupported optional surface and
-renders an empty catalog.
+renders an empty catalog. Live catalog posts are device-wide because
+the stored view is global.

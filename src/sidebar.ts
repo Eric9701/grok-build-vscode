@@ -742,7 +742,7 @@ export class GrokSidebar {
   private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
-    "onboarding", "providerState", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
+    "onboarding", "providerState", "mcpServers", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
     "telemetryEnabled",
     "thumbsFeedback",
   ]);
@@ -818,8 +818,16 @@ export class GrokSidebar {
   private providerRefreshInFlight = false;
   /** Complete Grok inventory from the last `_x.ai/mcp/list`. Unfiltered — `hostMcpServers` dedup still needs project servers. */
   private mcpServers: McpServerView[] = [];
-  /** Workspace the current `mcpServers` was read from. Classification never uses a different cwd. */
+  /**
+   * Workspace the current `mcpServers` was read from. Classification uses this
+   * at read time only; the stored global-only view is then rendered anywhere.
+   */
   private mcpServersCwd: string | undefined;
+  /**
+   * Global-only tagged view of the last catalog read. Project-file rows were
+   * filtered against `mcpServersCwd`; this is safe to render for any workspace.
+   */
+  private mcpServersView: McpServerView[] = [];
   private mcpListSupported: boolean | undefined;
   private grokMcpReserved: ReservedMcpIdentity = { names: [], urls: [] };
   private mcpConnectingId: ConnectorId | undefined;
@@ -7589,17 +7597,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     });
     client.on("mcpNotification", (method: string, params: unknown) => {
-      if (gen !== session.gen || this.mcpListSupported === false) return;
-      if (!this.mcpServersCwd || !pathsEqual(this.sessionCwd(session), this.mcpServersCwd)) return;
-      this.mcpServers = mergeMcpNotification(this.mcpServers, method, params);
-      this.grokMcpReserved = reservedFromMcpInventory(this.mcpServers, this.connectedConnectorStore());
-      if (this.mcpListSupported === true) {
-        this.postMcpServers({
-          type: "mcpServers",
-          servers: this.mcpServers,
-          warning: MCP_GLOBAL_SCOPE_WARNING,
-        }, session);
-      }
+      if (gen !== session.gen) return;
+      this.applyMcpNotification(session, method, params);
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -9223,32 +9222,40 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   }
 
-  private postMcpServers(message: Extract<HostMsg, { type: "mcpServers" }>, session: Session = this.focused): void {
-    const viewCwd = this.sessionCwd(session);
+  /**
+   * Merge a live MCP notification into reserved identity first so dedup does
+   * not wait on a catalog read, then into the stored inventory only when there
+   * is no catalog yet or the notifying session is that catalog's source.
+   */
+  private applyMcpNotification(session: Session, method: string, params: unknown): void {
+    if (this.mcpListSupported === false) return;
+    const next = mergeMcpNotification(this.mcpServers, method, params);
+    this.grokMcpReserved = reservedFromMcpInventory(next, this.connectedConnectorStore());
+    if (this.mcpServersCwd && !pathsEqual(this.sessionCwd(session), this.mcpServersCwd)) return;
+    this.mcpServers = next;
+    this.mcpServersView = this.tagMcpServers(this.mcpServers);
+    if (this.mcpListSupported === true) {
+      this.postMcpServers({
+        type: "mcpServers",
+        servers: this.mcpServersView,
+        warning: MCP_GLOBAL_SCOPE_WARNING,
+      });
+    }
+  }
+
+  private postMcpServers(message: Extract<HostMsg, { type: "mcpServers" }>): void {
     const tagged = {
       ...message,
-      servers: this.tagMcpServers(message.servers, viewCwd),
+      servers: this.mcpServersView,
     };
-    const focusedCwd = this.sessionCwd(this.focused);
-    if (pathsEqual(viewCwd, focusedCwd)) {
-      this.postLocal(tagged);
-      void this.settingsEditor?.webview.postMessage(tagged);
-    } else {
-      const focusedMsg = this.mcpServersMessage(this.focused);
-      this.postLocal(focusedMsg);
-      void this.settingsEditor?.webview.postMessage(focusedMsg);
-    }
-    if (viewCwd) this.sendRemoteRepo(viewCwd, tagged);
+    this.post(tagged);
+    void this.settingsEditor?.webview.postMessage(tagged);
   }
 
-  private mcpServersMessage(session: Session = this.focused): Extract<HostMsg, { type: "mcpServers" }> {
-    return this.mcpServersMessageForCwd(this.sessionCwd(session));
-  }
-
-  private mcpServersMessageForCwd(viewCwd: string): Extract<HostMsg, { type: "mcpServers" }> {
+  private mcpServersMessage(): Extract<HostMsg, { type: "mcpServers" }> {
     return {
       type: "mcpServers",
-      servers: this.tagMcpServers(this.mcpServers, viewCwd),
+      servers: this.mcpServersView,
       warning: MCP_GLOBAL_SCOPE_WARNING,
     };
   }
@@ -9303,12 +9310,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return collectMcpNameLayers(files);
   }
 
-  private tagMcpServers(servers: readonly McpServerView[], viewCwd: string): McpServerView[] {
+  private tagMcpServers(servers: readonly McpServerView[] = this.mcpServers): McpServerView[] {
     return taggedMcpServersForCwd({
       servers,
       catalogCwd: this.mcpServersCwd,
-      viewCwd,
-      sameCwd: pathsEqual,
       nameLayerFor: (cwd) => this.mcpNameLayersFor(cwd),
       machineName: deviceDisplayName(os.hostname(), process.platform, os.release()),
     });
@@ -9402,21 +9407,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private async refreshMcpServers(session: Session): Promise<void> {
     this.postMcpServers({
       type: "mcpServers",
-      servers: this.mcpServers,
+      servers: this.mcpServersView,
       loading: true,
       warning: MCP_GLOBAL_SCOPE_WARNING,
-    }, session);
+    });
     const client = session.provider === "grok" ? session.client : undefined;
     if (!client) {
       this.mcpListSupported = undefined;
       this.mcpServers = [];
       this.mcpServersCwd = undefined;
+      this.mcpServersView = [];
       this.postMcpServers({
         type: "mcpServers",
         servers: [],
         error: "Connect Grok to inspect MCP servers.",
         warning: MCP_GLOBAL_SCOPE_WARNING,
-      }, session);
+      });
       return;
     }
     try {
@@ -9426,22 +9432,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.mcpListSupported = false;
         this.mcpServers = [];
         this.mcpServersCwd = undefined;
+        this.mcpServersView = [];
         this.postMcpServers({
           type: "mcpServers",
           servers: [],
           warning: MCP_GLOBAL_SCOPE_WARNING,
-        }, session);
+        });
         return;
       }
       this.mcpListSupported = true;
       this.mcpServers = parseMcpListResponse(result);
       this.mcpServersCwd = this.sessionCwd(session) || undefined;
+      this.mcpServersView = this.tagMcpServers(this.mcpServers);
       this.grokMcpReserved = reservedFromMcpInventory(this.mcpServers, this.connectedConnectorStore());
       this.postMcpServers({
         type: "mcpServers",
-        servers: this.mcpServers,
+        servers: this.mcpServersView,
         warning: MCP_GLOBAL_SCOPE_WARNING,
-      }, session);
+      });
     } catch (error) {
       const detail = errorDetail(error);
       this.host.appendLine(`[mcp] _x.ai/mcp/list failed: ${detail}`);
@@ -9450,7 +9458,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         servers: [],
         error: detail || "Could not load MCP servers from the Grok session.",
         warning: MCP_GLOBAL_SCOPE_WARNING,
-      }, session);
+      });
     }
   }
 
@@ -15950,10 +15958,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     snap.push(initial);
     snap.push(this.providerStateMessage());
     snap.push(this.mcpConnectorsMessage());
-    const mcpViewCwd = session && sessionCwdOk
-      ? this.sessionCwd(session)
-      : (listCwd ?? cwd);
-    snap.push(this.mcpServersMessageForCwd(mcpViewCwd));
+    snap.push(this.mcpServersMessage());
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
@@ -16135,7 +16140,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         hostKind: "extension" as const,
         hostName: deviceDisplayName(os.hostname(), process.platform, os.release()),
         grokUpdate: null,
-        mcpServers: this.tagMcpServers(this.mcpServers, this.sessionCwd(this.focused)),
+        mcpServers: this.mcpServersView,
         mcpLoading: false,
         mcpError: "",
         mcpWarning: MCP_GLOBAL_SCOPE_WARNING,
