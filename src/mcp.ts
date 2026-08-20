@@ -26,6 +26,26 @@ export interface McpServerView {
   error?: string;
 }
 
+/**
+ * Page fields a remote may see. Launch recipes (`command`/`args`/`url`),
+ * per-server `error` (it can quote those recipes), and `tools` (arbitrary
+ * provider JSON, including `inputSchema`) stay on the desk. This array is
+ * the allowlist — the remote type and the copier both derive from it.
+ */
+export const MCP_REMOTE_SERVER_KEYS = [
+  "name",
+  "displayName",
+  "enabled",
+  "source",
+  "type",
+  "managed",
+  "scope",
+  "status",
+  "toolCount",
+] as const satisfies ReadonlyArray<keyof McpServerView>;
+
+export type McpServerRemoteView = Pick<McpServerView, typeof MCP_REMOTE_SERVER_KEYS[number]>;
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -116,8 +136,9 @@ function listFromPayload(parsed: unknown): unknown[] | undefined {
 
 /**
  * Parse `_x.ai/mcp/list`, accepting a bare array and `{ servers: [] }`.
- * Allowlisted view fields only — env/headers/token/apiKey on the wire never
- * reach the catalog that remotes mirror.
+ * Allowlisted desk view only — env/headers/token/apiKey never reach the
+ * catalog. Launch recipes stay for the local panel; remotes go through
+ * {@link projectMcpServerForRemote}.
  */
 export function parseMcpListResponse(value: unknown): McpServerView[] {
   const list = listFromPayload(value);
@@ -126,6 +147,38 @@ export function parseMcpListResponse(value: unknown): McpServerView[] {
     .map(parseServer)
     .filter((server): server is McpServerView => !!server)
     .sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
+}
+
+/** Copy only {@link MCP_REMOTE_SERVER_KEYS}. Does not mutate `server`. */
+export function projectMcpServerForRemote(server: McpServerView): McpServerRemoteView {
+  const out: Partial<McpServerRemoteView> = {};
+  for (const key of MCP_REMOTE_SERVER_KEYS) {
+    const value = server[key];
+    if (value !== undefined) Object.assign(out, { [key]: value });
+  }
+  return { name: server.name, enabled: server.enabled, ...out };
+}
+
+export function projectMcpServersMessageForRemote(msg: {
+  type: "mcpServers";
+  servers: readonly McpServerView[];
+  warning: string;
+  loading?: boolean;
+  error?: string;
+}): {
+  type: "mcpServers";
+  servers: McpServerRemoteView[];
+  warning: string;
+  loading?: boolean;
+  error?: string;
+} {
+  return {
+    type: "mcpServers",
+    servers: msg.servers.map(projectMcpServerForRemote),
+    warning: msg.warning,
+    ...(msg.loading !== undefined ? { loading: msg.loading } : {}),
+    ...(msg.error !== undefined ? { error: msg.error } : {}),
+  };
 }
 
 /** Merge one of Grok's undocumented MCP status notifications into a catalog. */

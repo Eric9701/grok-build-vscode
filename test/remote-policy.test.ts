@@ -535,7 +535,7 @@ describe("allowFromRemote tier gating", () => {
     expect(INBOUND_DISPOSITION.connectMcpConnector).toBe("host-local");
     expect(INBOUND_DISPOSITION.disconnectMcpConnector).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.mcpConnectors).toBe("mirror");
-    expect(OUTBOUND_DISPOSITION.mcpServers).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.mcpServers).toBe("allowlist");
     expect(OUTBOUND_PROJECT_AUTH.mcpServers).toBe(OUTBOUND_PROJECT_AUTH.mcpConnectors);
     expect(INBOUND_DISPOSITION.listMcpServers).toBe("view");
     expect(allowFromRemote("listMcpServers", "read-only")).toBe(true);
@@ -661,13 +661,74 @@ describe("transformHostMsgForRemote", () => {
       .toEqual({ type: "voiceConfigured", value: true });
   });
 
-  it("mirrors the Grok MCP inventory without rewriting it", () => {
-    const msg: HostMsg = {
+  it("projects the Grok MCP inventory so launch recipes cannot reach a remote", () => {
+    const bearer = "Authorization: Bearer sk_live_repro_token";
+    const token = "sk_live_repro_token";
+    const exe = "C:/Users/Alice/AppData/Roaming/npm/npx.cmd";
+    const url = `https://mcp.linear.app/mcp?api_key=${token}`;
+    const desk: HostMsg = {
       type: "mcpServers",
-      servers: [{ name: "managed_gateway:canva", displayName: "Canva", enabled: true, status: "ready" }],
+      servers: [{
+        name: "linear",
+        displayName: "Linear",
+        enabled: true,
+        source: "local",
+        type: "stdio",
+        status: "unavailable",
+        command: exe,
+        args: ["-y", "mcp-remote", url, "--header", bearer],
+        url,
+        error: `spawn EACCES ${exe} --header ${bearer}`,
+        tools: [{
+          name: "list_issues",
+          description: "List issues",
+          inputSchema: { properties: { token: { default: token } } },
+        }],
+        toolCount: 1,
+      }],
       warning: "This list is read-only.",
     };
-    expect(transformHostMsgForRemote(msg, deps(null))).toBe(msg);
+    const deskWire = JSON.stringify(desk);
+    expect(deskWire).toContain(bearer);
+    expect(deskWire).toContain(url);
+    expect(deskWire).toContain("C:/Users/Alice");
+
+    const out = transformHostMsgForRemote(desk, deps(null));
+    expect(out).not.toBe(desk);
+    expect(JSON.stringify(desk)).toBe(deskWire);
+    expect(desk.servers[0].command).toBe(exe);
+
+    const wire = JSON.stringify(out);
+    expect(wire).not.toContain(bearer);
+    expect(wire).not.toContain(token);
+    expect(wire).not.toContain("C:/Users/Alice");
+    expect(wire).not.toContain("Authorization");
+    expect(wire).not.toContain(exe);
+    expect(wire).not.toContain(url);
+    expect(out).toEqual({
+      type: "mcpServers",
+      servers: [{
+        name: "linear",
+        displayName: "Linear",
+        enabled: true,
+        source: "local",
+        type: "stdio",
+        status: "unavailable",
+        toolCount: 1,
+      }],
+      warning: "This list is read-only.",
+    });
+    expect(transformHostMsgForRemote(out!, deps(null))).toEqual(out);
+  });
+
+  it("leaves a safe MCP inventory row intact on the remote projection", () => {
+    const msg: HostMsg = {
+      type: "mcpServers",
+      servers: [{ name: "managed_gateway:canva", displayName: "Canva", enabled: true, status: "ready", managed: true, toolCount: 32 }],
+      warning: "This list is read-only.",
+    };
+    expect(transformHostMsgForRemote(msg, deps(null))).toEqual(msg);
+    expect(transformHostMsgForRemote(msg, deps(null))).not.toBe(msg);
   });
 
   it("media is inlined via the injected reader", () => {

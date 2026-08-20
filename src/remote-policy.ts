@@ -13,6 +13,7 @@
 import type { HostMsg, HostUiCapabilities, WebviewMsg } from "./protocol";
 import { isImageChip, type FileChip } from "./chips";
 import { isPrimerText } from "./grok-primer";
+import { projectMcpServersMessageForRemote } from "./mcp";
 import { countsAsUserBubble } from "./plan-restore";
 import { historyEventCount } from "./rewind";
 import { cwdIsAuthorized } from "./workspace-auth";
@@ -534,6 +535,8 @@ export type OutboundDisposition =
   | "mirror"
   /** Carries a webview-only asWebviewUri src — must be inlined to base64 first. */
   | "media"
+  /** Allowlisted subset — rewrite before crossing; never ferry the desk object. */
+  | "allowlist"
   /** Meaningless/misleading outside the local webview (host mic/voice) — suppress. */
   | "host-local";
 
@@ -547,10 +550,10 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   voiceError: "mirror",
   initialState: "mirror",
   providerState: "mirror",
-  // Names, enabled/status, and tool metadata — no credentials. Same machine-
-  // global observation as mcpConnectors; remotes may look, they just cannot
-  // Connect/Disconnect (inbound host-local above).
-  mcpServers: "mirror",
+  // Page fields only (`projectMcpServerForRemote`). Launch recipes stay on
+  // the desk. Same machine-global observation as mcpConnectors; remotes may
+  // look, they cannot Connect/Disconnect (inbound host-local above).
+  mcpServers: "allowlist",
   mcpConnectors: "mirror",
   codexInstallProgress: "host-local",
   // Placement is a property of the machine running the extension, and `moveView`
@@ -1083,7 +1086,15 @@ export function transformHostMsgForRemote(msg: HostMsg, deps: MediaInlineDeps): 
       return msg;
     case "media":
       return inlineMediaForRemote(msg as MediaMsg, deps);
+    case "allowlist":
+      return allowlistHostMsgForRemote(msg);
     default:
       return null; // host-local
   }
+}
+
+/** Fail closed: an `allowlist` type with no rewriter is dropped, not ferried. */
+function allowlistHostMsgForRemote(msg: HostMsg): HostMsg | null {
+  if (msg.type === "mcpServers") return projectMcpServersMessageForRemote(msg);
+  return null;
 }
