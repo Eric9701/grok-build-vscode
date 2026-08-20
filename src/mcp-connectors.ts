@@ -1,6 +1,9 @@
 /**
  * Host-owned MCP connector catalog (Tier 1) and the session/new `mcpServers`
- * builder. Tokens never live here — `mcp-remote` caches them in `~/.mcp-auth`.
+ * builder. OAuth tokens stay in `~/.mcp-auth` (`mcp-remote`). Key-auth tokens
+ * (GitHub PAT) live in `HostSecrets` (`mcpConnectorSecretKey`) and reach
+ * mcp-remote as `AUTH_HEADER` in env — never argv, never `grok.mcpConnectors`,
+ * never PersistedState.
  *
  * Our list is additive, not authoritative: `mcpServers: []` does not suppress
  * servers the provider already loads from config.toml / `.mcp.json` /
@@ -17,8 +20,27 @@ export const MCP_REMOTE_PACKAGE = "mcp-remote";
 /** mcp-remote flag. Value is `@<absolute path>` to a JSON file we write (not inline JSON — Windows Connect uses `shell: true`). */
 export const STATIC_OAUTH_CLIENT_METADATA_FLAG = "--static-oauth-client-metadata";
 
+/** mcp-remote `--header`. Value is `Name:${ENV}` (no spaces) so the secret stays in env. */
+export const MCP_REMOTE_HEADER_FLAG = "--header";
+
+/** Env var mcp-remote substitutes into `Authorization:${AUTH_HEADER}`. */
+export const MCP_REMOTE_AUTH_HEADER_ENV = "AUTH_HEADER";
+
+/** Header template. The Bearer token is the env value, never this string. */
+export const MCP_REMOTE_AUTH_HEADER_TEMPLATE = `Authorization:\${${MCP_REMOTE_AUTH_HEADER_ENV}}`;
+
+/** GitHub MCP read-only header. Constant, not a secret — argv is fine. */
+export const MCP_REMOTE_READONLY_HEADER = "X-MCP-Readonly:true";
+
+export const MCP_CONNECTOR_SECRET_KEY_PREFIX = "grok.mcpConnector.";
+
+/** Paste field / SecretStorage cap. Fine-grained PATs are long; this is abuse-sized. */
+export const MAX_CONNECTOR_KEY_CHARS = 8192;
+
 /** Browser OAuth can sit on a consent page; this is a hard ceiling, not a spinner. */
 export const MCP_REMOTE_CONNECT_TIMEOUT_MS = 180_000;
+
+export type ConnectorAuth = "oauth" | "key";
 
 export type ConnectorId =
   | "linear"
@@ -29,7 +51,8 @@ export type ConnectorId =
   | "sentry"
   | "cloudflare"
   | "calendly"
-  | "airtable";
+  | "airtable"
+  | "github";
 
 export interface ConnectorDef {
   id: ConnectorId;
@@ -45,6 +68,12 @@ export interface ConnectorDef {
    * that validates and refuses.
    */
   oauthScope?: string;
+  /** Default `oauth`. `key` is a user-pasted secret via `--header` + env. */
+  auth?: ConnectorAuth;
+  /** Where to mint the token. Key connectors only; never the token itself. */
+  keyHint?: string;
+  /** Vendor page that issues the token. Key connectors only. */
+  keyDocsUrl?: string;
 }
 
 /**
@@ -70,6 +99,8 @@ export interface AcpMcpStdioServer {
 
 export interface ConnectedConnectorRecord {
   endpoint: string;
+  /** GitHub `X-MCP-Readonly`. Preference, not a credential. */
+  readOnly?: boolean;
 }
 
 export type ConnectedConnectorStore = Record<string, ConnectedConnectorRecord>;
@@ -84,6 +115,12 @@ export interface ConnectorView {
   connected: boolean;
   status: ConnectorStatus;
   error?: string;
+  auth: ConnectorAuth;
+  /** Key-auth only: a secret is stored. Never the secret itself. */
+  keySet?: boolean;
+  keyHint?: string;
+  keyDocsUrl?: string;
+  readOnly?: boolean;
 }
 
 export type ConnectFailureKind =
@@ -93,7 +130,13 @@ export type ConnectFailureKind =
   | "port-conflict"
   | "endpoint-refused"
   | "oauth-incompatible"
+  | "key-rejected"
   | "failed";
+
+export interface McpRemoteHeaderOpts {
+  authorization?: boolean;
+  readOnly?: boolean;
+}
 
 export interface ReservedMcpIdentity {
   names: string[];
@@ -158,6 +201,15 @@ export const TIER1_CONNECTORS: readonly ConnectorDef[] = [
     endpoint: "https://mcp.airtable.com/mcp",
     description: "Search, read, and update records in your Airtable bases.",
   },
+  {
+    id: "github",
+    name: "GitHub",
+    endpoint: "https://api.githubcopilot.com/mcp/",
+    description: "Repos, issues, and pull requests in your GitHub account.",
+    auth: "key",
+    keyHint: "Paste a GitHub personal access token. Fine-grained tokens are recommended; classic tokens also work.",
+    keyDocsUrl: "https://github.com/settings/personal-access-tokens",
+  },
 ];
 
 const CONNECTOR_BY_ID = new Map<string, ConnectorDef>(
@@ -170,6 +222,68 @@ export function isConnectorId(value: string): value is ConnectorId {
 
 export function connectorById(id: string): ConnectorDef | undefined {
   return CONNECTOR_BY_ID.get(id);
+}
+
+export function connectorAuth(connector: Pick<ConnectorDef, "auth"> | undefined): ConnectorAuth {
+  return connector?.auth === "key" ? "key" : "oauth";
+}
+
+export function isKeyConnector(connector: Pick<ConnectorDef, "auth"> | undefined): boolean {
+  return connectorAuth(connector) === "key";
+}
+
+/** SecretStorage / desktop HostSecrets key. Not a PersistedState / grok.mcpConnectors key. */
+export function mcpConnectorSecretKey(id: ConnectorId): string {
+  return `${MCP_CONNECTOR_SECRET_KEY_PREFIX}${id}.key`;
+}
+
+/** `Authorization` value. Accepts a raw PAT or an already-prefixed `Bearer …`. */
+export function bearerAuthorizationHeader(token: string): string {
+  const trimmed = token.trim();
+  if (!trimmed) return "";
+  const match = trimmed.match(/^bearer\s+(.+)$/i);
+  const value = (match ? match[1] : trimmed).trim();
+  return value ? `Bearer ${value}` : "";
+}
+
+export function withAuthHeaderEnv(
+  env: NodeJS.ProcessEnv | undefined,
+  token: string,
+): NodeJS.ProcessEnv {
+  const header = bearerAuthorizationHeader(token);
+  const out: NodeJS.ProcessEnv = { ...env };
+  if (header) out[MCP_REMOTE_AUTH_HEADER_ENV] = header;
+  return out;
+}
+
+export function mcpRemoteHeaderArgs(headers?: McpRemoteHeaderOpts): string[] {
+  if (!headers) return [];
+  const args: string[] = [];
+  if (headers.authorization) {
+    args.push(MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_AUTH_HEADER_TEMPLATE);
+  }
+  if (headers.readOnly) {
+    args.push(MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_READONLY_HEADER);
+  }
+  return args;
+}
+
+export function mcpRemoteHeadersFromArgs(args: readonly string[]): McpRemoteHeaderOpts | undefined {
+  let authorization = false;
+  let readOnly = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== MCP_REMOTE_HEADER_FLAG) continue;
+    const value = args[i + 1];
+    if (!value || value.startsWith("-")) continue;
+    if (value === MCP_REMOTE_AUTH_HEADER_TEMPLATE || value.includes(`\${${MCP_REMOTE_AUTH_HEADER_ENV}}`)) {
+      authorization = true;
+    }
+    if (value === MCP_REMOTE_READONLY_HEADER || /^x-mcp-readonly:/i.test(value)) {
+      readOnly = true;
+    }
+  }
+  if (!authorization && !readOnly) return undefined;
+  return { authorization, readOnly };
 }
 
 export function isUsableListenPort(port: number): boolean {
@@ -209,9 +323,11 @@ export function mcpRemoteArgs(
   endpoint: string,
   callbackPort?: number,
   oauthClientMetadataPath?: string,
+  headers?: McpRemoteHeaderOpts,
 ): string[] {
   const args = ["-y", MCP_REMOTE_PACKAGE, endpoint];
   if (callbackPort != null && isUsableListenPort(callbackPort)) args.push(String(callbackPort));
+  args.push(...mcpRemoteHeaderArgs(headers));
   if (oauthClientMetadataPath) args.push(...mcpRemoteOAuthClientMetadataArgs(oauthClientMetadataPath));
   return args;
 }
@@ -224,21 +340,34 @@ export function withMcpRemoteCallbackPort(
   const idx = args.indexOf(MCP_REMOTE_PACKAGE);
   const endpoint = idx >= 0 ? args[idx + 1] : undefined;
   if (!endpoint || /^\d+$/.test(endpoint)) return undefined;
-  return mcpRemoteArgs(endpoint, callbackPort, mcpRemoteOAuthClientMetadataPath(args));
+  return mcpRemoteArgs(
+    endpoint,
+    callbackPort,
+    mcpRemoteOAuthClientMetadataPath(args),
+    mcpRemoteHeadersFromArgs(args),
+  );
 }
 
 export function buildMcpRemoteEntry(
   name: string,
   endpoint: string,
   oauthClientMetadataPath?: string,
+  keyAuth?: { token: string; readOnly?: boolean },
 ): AcpMcpStdioServer {
+  const header = keyAuth?.token ? bearerAuthorizationHeader(keyAuth.token) : "";
   return {
     name,
     command: "npx",
-    args: mcpRemoteArgs(endpoint, undefined, oauthClientMetadataPath),
-    // Inherited from the host process at spawn; we add nothing. Present because
-    // grok refuses the entry outright without it — see AcpMcpStdioServer.
-    env: [],
+    args: mcpRemoteArgs(
+      endpoint,
+      undefined,
+      oauthClientMetadataPath,
+      header ? { authorization: true, readOnly: !!keyAuth?.readOnly } : undefined,
+    ),
+    // Inherited from the host process at spawn; we add nothing unless a key
+    // connector supplies AUTH_HEADER. Present because grok refuses the entry
+    // outright without env — see AcpMcpStdioServer.
+    env: header ? [{ name: MCP_REMOTE_AUTH_HEADER_ENV, value: header }] : [],
   };
 }
 
@@ -259,17 +388,18 @@ function isHttpsUrl(value: string): boolean {
   }
 }
 
-/** Persist shape: `{ linear: { endpoint } }`. Unknown ids and non-HTTPS URLs drop. */
+/** Persist shape: `{ linear: { endpoint } }`. Unknown ids, non-HTTPS URLs, and any credential fields drop. */
 export function parseConnectedConnectorStore(value: unknown): ConnectedConnectorStore {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: ConnectedConnectorStore = {};
   for (const [id, record] of Object.entries(value as Record<string, unknown>)) {
     if (!isConnectorId(id) || !record || typeof record !== "object" || Array.isArray(record)) continue;
-    const endpoint = typeof (record as { endpoint?: unknown }).endpoint === "string"
-      ? (record as { endpoint: string }).endpoint.trim()
-      : "";
+    const rec = record as Record<string, unknown>;
+    const endpoint = typeof rec.endpoint === "string" ? rec.endpoint.trim() : "";
     if (!isHttpsUrl(endpoint)) continue;
-    out[id] = { endpoint };
+    const parsed: ConnectedConnectorRecord = { endpoint };
+    if (rec.readOnly === true) parsed.readOnly = true;
+    out[id] = parsed;
   }
   return out;
 }
@@ -278,9 +408,12 @@ export function connectConnector(
   store: ConnectedConnectorStore,
   id: ConnectorId,
   endpoint = connectorById(id)?.endpoint,
+  readOnly?: boolean,
 ): ConnectedConnectorStore {
   if (!endpoint || !isHttpsUrl(endpoint)) return store;
-  return { ...store, [id]: { endpoint } };
+  const record: ConnectedConnectorRecord = { endpoint };
+  if (readOnly) record.readOnly = true;
+  return { ...store, [id]: record };
 }
 
 export function disconnectConnector(
@@ -318,6 +451,7 @@ export function hostMcpServers(
   store: ConnectedConnectorStore,
   reserved: ReservedMcpIdentity = { names: [], urls: [] },
   oauthClientMetadataPaths: Readonly<Partial<Record<string, string>>> = {},
+  keyAuthById: Readonly<Partial<Record<string, string>>> = {},
 ): AcpMcpStdioServer[] {
   const out: AcpMcpStdioServer[] = [];
   const seen = new Set<string>();
@@ -328,6 +462,16 @@ export function hostMcpServers(
     if (reservedConflictsConnector(connector, endpoint, reserved)) continue;
     const name = normalizeMcpName(connector.id);
     if (seen.has(name)) continue;
+    if (isKeyConnector(connector)) {
+      const token = keyAuthById[connector.id];
+      if (!token) continue;
+      seen.add(name);
+      out.push(buildMcpRemoteEntry(connector.id, endpoint, undefined, {
+        token,
+        readOnly: record.readOnly === true,
+      }));
+      continue;
+    }
     seen.add(name);
     const metadataPath = connector.oauthScope?.trim()
       ? oauthClientMetadataPaths[connector.id]
@@ -339,10 +483,17 @@ export function hostMcpServers(
 
 export function connectorViews(
   store: ConnectedConnectorStore,
-  opts: { connectingId?: string; errorId?: string; error?: string } = {},
+  opts: {
+    connectingId?: string;
+    errorId?: string;
+    error?: string;
+    keySet?: ReadonlySet<string>;
+  } = {},
 ): ConnectorView[] {
   return TIER1_CONNECTORS.map((connector) => {
-    const connected = !!store[connector.id];
+    const auth = connectorAuth(connector);
+    const keySet = auth === "key" && !!opts.keySet?.has(connector.id);
+    const connected = auth === "key" ? !!store[connector.id] && keySet : !!store[connector.id];
     const connecting = opts.connectingId === connector.id;
     const failed = opts.errorId === connector.id && !!opts.error;
     return {
@@ -352,7 +503,14 @@ export function connectorViews(
       endpoint: store[connector.id]?.endpoint || connector.endpoint,
       connected,
       status: connecting ? "connecting" : failed ? "error" : "idle",
+      auth,
       ...(failed ? { error: opts.error } : {}),
+      ...(auth === "key" ? {
+        keySet,
+        ...(connector.keyHint ? { keyHint: connector.keyHint } : {}),
+        ...(connector.keyDocsUrl ? { keyDocsUrl: connector.keyDocsUrl } : {}),
+        readOnly: store[connector.id]?.readOnly === true,
+      } : {}),
     };
   });
 }
@@ -647,6 +805,8 @@ export function connectFailureMessage(kind: ConnectFailureKind, detail?: string)
         : "The app refused the connection. Check the endpoint is reachable, then try again.";
     case "oauth-incompatible":
       return "This app's sign-in is not compatible with this connector.";
+    case "key-rejected":
+      return "The token was rejected. Check it and try again. Fine-grained personal access tokens are recommended.";
     case "failed":
       return detail
         ? `Could not connect: ${detail}`
@@ -659,6 +819,7 @@ export function classifyConnectFailure(input: {
   timedOut?: boolean;
   exitCode?: number | null;
   output?: string;
+  auth?: ConnectorAuth;
 }): ConnectFailureKind {
   const output = (input.output || "").toLowerCase();
   const spawnMessage = (input.spawnError?.message || "").toLowerCase();
@@ -690,7 +851,7 @@ export function classifyConnectFailure(input: {
     return "cancelled";
   }
   if (connectOutputLooksLikeOAuthIncompatible(input.output || "") || connectOutputLooksLikeOAuthIncompatible(input.spawnError?.message || "")) {
-    return "oauth-incompatible";
+    return input.auth === "key" ? "key-rejected" : "oauth-incompatible";
   }
   if (
     /enotfound|econnrefused|eai_again|getaddrinfo|status code 4\d\d|http 4\d\d|404 not found|connection refused|unable to connect|certificate/.test(output)
@@ -705,12 +866,16 @@ export function connectOutputLooksLikePortConflict(output: string): boolean {
   return /\beaddrinuse\b/.test(text) || /address already in use/.test(text);
 }
 
-/** Vendor DCR / client-metadata rejection. Not the user's fault and not fixed by retrying. */
+/** Vendor DCR / client-metadata rejection. Not the user's fault and not fixed by retrying.
+ *  On a key-auth connector the same text means the key was rejected — GitHub
+ *  falls through to OAuth discovery after a bad PAT and dies here. */
 export function connectOutputLooksLikeOAuthIncompatible(output: string): boolean {
   const text = output.toLowerCase();
   return /invalidclientmetadataerror/.test(text)
     || /\binvalid_client_metadata\b/.test(text)
-    || /not supported:\s*openid/.test(text);
+    || /not supported:\s*openid/.test(text)
+    || /incompatible auth server/.test(text)
+    || /does not support dynamic client registration/.test(text);
 }
 
 export function connectOutputLooksSuccessful(output: string): boolean {

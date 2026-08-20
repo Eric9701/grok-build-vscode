@@ -22,6 +22,7 @@ import {
   DESK_ONLY_CAPABILITIES,
 } from "../src/remote-policy";
 import { HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, type HostMsg } from "../src/protocol";
+import { connectorViews } from "../src/mcp-connectors";
 import { pathsEqual } from "../src/worktree";
 
 const sorted = (a: readonly string[]) => [...a].sort();
@@ -550,6 +551,12 @@ describe("allowFromRemote tier gating", () => {
     }
   });
 
+  it("a remote cannot set, read, or clear a connector key even at full", () => {
+    for (const type of ["connectMcpConnector", "disconnectMcpConnector"] as const) {
+      expect(allowFromRemote(type, "full")).toBe(false);
+    }
+  });
+
   it("refuses remote-origin provider logout and login-terminal actions at every tier", () => {
     for (const type of ["logout", "runGrokLogin"] as const) {
       expect(INBOUND_DISPOSITION[type]).toBe("host-local");
@@ -721,6 +728,26 @@ describe("transformHostMsgForRemote", () => {
       warning: "This list is read-only.",
     });
     expect(transformHostMsgForRemote(out!, deps(null))).toEqual(out);
+  });
+
+  it("mirrors mcpConnectors without a key field or PAT", () => {
+    const planted = "ghp_TESTSECRET_do_not_store";
+    const msg: HostMsg = {
+      type: "mcpConnectors",
+      connectors: connectorViews(
+        { github: { endpoint: "https://api.githubcopilot.com/mcp/" } },
+        { keySet: new Set(["github"]) },
+      ),
+    };
+    const out = transformHostMsgForRemote(msg, deps(null));
+    expect(out).toBe(msg);
+    const json = JSON.stringify(out);
+    expect(json).not.toContain(planted);
+    expect(json).not.toMatch(/"key":|"token":|"authorization":/);
+    const github = msg.connectors.find((c) => c.id === "github");
+    expect(github).toMatchObject({ auth: "key", keySet: true, connected: true });
+    expect(github).not.toHaveProperty("key");
+    expect(github).not.toHaveProperty("token");
   });
 
   it("leaves a safe MCP inventory row intact on the remote projection", () => {

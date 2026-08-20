@@ -15,8 +15,12 @@ import {
 } from "../src/mcp-connector-auth";
 import {
   MCP_INITIALIZE_REQUEST,
+  MCP_REMOTE_AUTH_HEADER_ENV,
+  MCP_REMOTE_AUTH_HEADER_TEMPLATE,
+  MCP_REMOTE_HEADER_FLAG,
   STATIC_OAUTH_CLIENT_METADATA_FLAG,
   connectFailureMessage,
+  mcpRemoteArgs,
 } from "../src/mcp-connectors";
 
 class FakeProc extends EventEmitter {
@@ -57,6 +61,28 @@ describe("sidebar connect wiring", () => {
     expect(body).toContain("writeOAuthClientMetadataFile");
     expect(body).toMatch(/mcpRemoteArgs\(endpoint,\s*undefined,\s*metadata\?\.path\)/);
     expect(body).not.toContain("quoteSpawnArgs");
+    expect(body).toContain("withAuthHeaderEnv(npx.env, token)");
+    expect(body).toContain('auth: "key"');
+    expect(body).toContain("this.context.secrets.store");
+    expect(body).toContain("mcpConnectorSecretKey");
+  });
+
+  it("disconnect of a key connector deletes HostSecrets and the connected record", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const start = src.indexOf("private async disconnectMcpConnector(");
+    const end = src.indexOf("private findLiveGrokSession(", start);
+    const body = src.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(body).toContain("forgetConnectorKey");
+    expect(body).toContain("disconnectConnector");
+    const forgetStart = src.indexOf("private async forgetConnectorKey(");
+    const forgetEnd = src.indexOf("private async connectMcpConnector(", forgetStart);
+    const forget = src.slice(forgetStart, forgetEnd);
+    expect(forgetStart).toBeGreaterThan(-1);
+    expect(forgetEnd).toBeGreaterThan(forgetStart);
+    expect(forget).toContain("this.context.secrets.delete");
+    expect(forget).toContain("mcpConnectorSecretKey");
   });
 
   it("session/new Stripe entry also carries static OAuth client metadata", () => {
@@ -68,6 +94,7 @@ describe("sidebar connect wiring", () => {
     expect(end).toBeGreaterThan(start);
     expect(body).toContain("persistConnectorOAuthClientMetadata");
     expect(body).toContain("hostMcpServers(");
+    expect(body).toContain("this.mcpConnectorKeys");
     expect(body).not.toContain("quoteSpawnArgs");
   });
 });
@@ -327,6 +354,35 @@ describe("authorizeMcpRemote", () => {
     expect(calls).toBe(1);
   });
 
+  it("classifies GitHub's DCR fallback after a rejected key as key-rejected", async () => {
+    const proc = new FakeProc();
+    const secret = "ghp_TESTSECRET_do_not_store";
+    let spawned: { args: string[]; env?: NodeJS.ProcessEnv } | undefined;
+    const result = authorizeMcpRemote({
+      command: "npx",
+      args: mcpRemoteArgs("https://api.githubcopilot.com/mcp/", undefined, undefined, { authorization: true }),
+      env: { [MCP_REMOTE_AUTH_HEADER_ENV]: `Bearer ${secret}` },
+      auth: "key",
+      timeoutMs: 1_000,
+      spawn: (_command, args, opts) => {
+        spawned = { args: [...args], env: opts.env };
+        return proc as never;
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    proc.stderr.write("Connection error: Incompatible auth server: does not support dynamic client registration\n");
+    await expect(result).resolves.toEqual({
+      ok: false,
+      kind: "key-rejected",
+      message: connectFailureMessage("key-rejected"),
+    });
+    expect(spawned?.args).toContain(MCP_REMOTE_HEADER_FLAG);
+    expect(spawned?.args).toContain(MCP_REMOTE_AUTH_HEADER_TEMPLATE);
+    expect(spawned?.args.join(" ")).not.toContain(secret);
+    expect(spawned?.env?.[MCP_REMOTE_AUTH_HEADER_ENV]).toBe(`Bearer ${secret}`);
+    expect(proc.killed).toBe(true);
+  });
+
   it("classifies a DCR client-metadata rejection as oauth-incompatible, not a stack", async () => {
     const proc = new FakeProc();
     const result = authorizeMcpRemote({
@@ -448,12 +504,14 @@ describe("OAuth client metadata files", () => {
       linear: { endpoint: "https://mcp.linear.app/mcp" },
       calendly: { endpoint: "https://mcp.calendly.com" },
       airtable: { endpoint: "https://mcp.airtable.com/mcp" },
+      github: { endpoint: "https://api.githubcopilot.com/mcp/" },
     }, { root });
     expect(Object.keys(paths)).toEqual(["stripe"]);
     expect(readFileSync(paths.stripe, "utf8")).toBe('{"scope":"mcp"}');
     expect(existsSync(join(root, "linear.json"))).toBe(false);
     expect(existsSync(join(root, "calendly.json"))).toBe(false);
     expect(existsSync(join(root, "airtable.json"))).toBe(false);
+    expect(existsSync(join(root, "github.json"))).toBe(false);
   });
 });
 

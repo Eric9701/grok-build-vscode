@@ -3,7 +3,9 @@ import {
   TIER1_CONNECTORS,
   connectorById,
   isConnectorId,
+  isKeyConnector,
   buildMcpRemoteEntry,
+  bearerAuthorizationHeader,
   classifyConnectFailure,
   collectReservedMcpIdentity,
   connectConnector,
@@ -18,22 +20,39 @@ import {
   mcpConfigPaths,
   collectMcpNameFiles,
   collectMcpNameLayers,
+  mcpConnectorSecretKey,
   mcpRemoteArgs,
+  mcpRemoteHeadersFromArgs,
   oauthClientMetadataJson,
   parseConnectedConnectorStore,
   parseInitializeResult,
   reservedConflictsConnector,
   reservedFromMcpInventory,
+  withAuthHeaderEnv,
+  MCP_REMOTE_AUTH_HEADER_ENV,
+  MCP_REMOTE_AUTH_HEADER_TEMPLATE,
+  MCP_REMOTE_HEADER_FLAG,
+  MCP_REMOTE_READONLY_HEADER,
   STATIC_OAUTH_CLIENT_METADATA_FLAG,
   summarizeConnectOutput,
   withMcpRemoteCallbackPort,
 } from "../src/mcp-connectors";
 
+const GITHUB_ENDPOINT = "https://api.githubcopilot.com/mcp/";
+const PLANTED_PAT = "ghp_TESTSECRET_do_not_store";
+
+function assertNoSecretMaterial(value: unknown, planted = PLANTED_PAT) {
+  const json = JSON.stringify(value);
+  expect(json).not.toContain(planted);
+  expect(json).not.toContain("github_pat_");
+  expect(json).not.toMatch(/Bearer ghp_/);
+}
+
 describe("Tier-1 connector catalog", () => {
   it("ships only vendor-documented HTTPS endpoints and unique ids", () => {
     const ids = TIER1_CONNECTORS.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).not.toContain("github");
+    expect(ids).toContain("github");
     expect(ids).not.toContain("figma");
     for (const connector of TIER1_CONNECTORS) {
       expect(connector.endpoint.startsWith("https://")).toBe(true);
@@ -50,9 +69,12 @@ describe("Tier-1 connector catalog", () => {
     expect(TIER1_CONNECTORS.find((c) => c.id === "stripe")?.oauthScope).toBe("mcp");
     expect(TIER1_CONNECTORS.find((c) => c.id === "calendly")?.endpoint).toBe("https://mcp.calendly.com");
     expect(TIER1_CONNECTORS.find((c) => c.id === "airtable")?.endpoint).toBe("https://mcp.airtable.com/mcp");
+    expect(TIER1_CONNECTORS.find((c) => c.id === "github")?.endpoint).toBe(GITHUB_ENDPOINT);
+    expect(TIER1_CONNECTORS.find((c) => c.id === "github")?.auth).toBe("key");
     expect(TIER1_CONNECTORS.filter((c) => c.oauthScope).map((c) => c.id)).toEqual(["stripe"]);
+    expect(TIER1_CONNECTORS.filter((c) => c.auth === "key").map((c) => c.id)).toEqual(["github"]);
     // Append-only walk order: new ids go at the end, not alphabetically.
-    expect(TIER1_CONNECTORS.map((c) => c.id).slice(-2)).toEqual(["calendly", "airtable"]);
+    expect(TIER1_CONNECTORS.map((c) => c.id).slice(-3)).toEqual(["calendly", "airtable", "github"]);
   });
 
   it("resolves calendly and airtable by id with no scope override", () => {
@@ -193,21 +215,114 @@ describe("Tier-1 connector catalog", () => {
 
 describe("connected store", () => {
   it("keeps catalog ids and HTTPS endpoints, never tokens", () => {
-    expect(parseConnectedConnectorStore({
+    const parsed = parseConnectedConnectorStore({
       linear: { endpoint: "https://mcp.linear.app/mcp" },
-      github: { endpoint: "https://api.githubcopilot.com/mcp/" },
+      github: { endpoint: GITHUB_ENDPOINT, token: PLANTED_PAT, key: PLANTED_PAT, authorization: `Bearer ${PLANTED_PAT}` },
       figma: { endpoint: "https://mcp.figma.com/mcp" },
       notion: { endpoint: "not-a-url" },
       canva: { token: "secret" },
-    })).toEqual({
-      linear: { endpoint: "https://mcp.linear.app/mcp" },
     });
+    expect(parsed).toEqual({
+      linear: { endpoint: "https://mcp.linear.app/mcp" },
+      github: { endpoint: GITHUB_ENDPOINT },
+    });
+    assertNoSecretMaterial(parsed);
+    expect(JSON.stringify(parsed)).not.toMatch(/"token"|"key"|"authorization"/);
   });
 
   it("connects and disconnects by id", () => {
     const connected = connectConnector({}, "canva");
     expect(connected.canva?.endpoint).toBe("https://mcp.canva.com/mcp");
     expect(disconnectConnector(connected, "canva")).toEqual({});
+  });
+
+  it("persists GitHub as connected with optional readOnly, never a key", () => {
+    const connected = connectConnector({}, "github", GITHUB_ENDPOINT, true);
+    expect(connected).toEqual({ github: { endpoint: GITHUB_ENDPOINT, readOnly: true } });
+    assertNoSecretMaterial(connected);
+    expect(connectConnector({}, "github")).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
+    expect(parseConnectedConnectorStore({
+      github: { endpoint: GITHUB_ENDPOINT, readOnly: true, token: PLANTED_PAT },
+    })).toEqual({ github: { endpoint: GITHUB_ENDPOINT, readOnly: true } });
+  });
+});
+
+describe("key-auth connectors", () => {
+  it("GitHub is the only key-auth row and stores secrets under HostSecrets, not grok.mcpConnectors", () => {
+    const github = connectorById("github")!;
+    expect(isKeyConnector(github)).toBe(true);
+    expect(isKeyConnector(connectorById("linear"))).toBe(false);
+    expect(mcpConnectorSecretKey("github")).toBe("grok.mcpConnector.github.key");
+    expect(mcpConnectorSecretKey("github")).not.toBe("grok.mcpConnectors");
+  });
+
+  it("puts the PAT in AUTH_HEADER env and never in argv", () => {
+    const entry = buildMcpRemoteEntry("github", GITHUB_ENDPOINT, undefined, {
+      token: PLANTED_PAT,
+      readOnly: true,
+    });
+    expect(entry.args).toEqual([
+      "-y", "mcp-remote", GITHUB_ENDPOINT,
+      MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_AUTH_HEADER_TEMPLATE,
+      MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_READONLY_HEADER,
+    ]);
+    expect(entry.args.join(" ")).not.toContain(PLANTED_PAT);
+    expect(entry.args.some((arg) => arg.includes(" "))).toBe(false);
+    expect(entry.env).toEqual([{ name: MCP_REMOTE_AUTH_HEADER_ENV, value: `Bearer ${PLANTED_PAT}` }]);
+    expect(bearerAuthorizationHeader(`Bearer ${PLANTED_PAT}`)).toBe(`Bearer ${PLANTED_PAT}`);
+    expect(withAuthHeaderEnv({ PATH: "/usr/bin" }, PLANTED_PAT)).toEqual({
+      PATH: "/usr/bin",
+      [MCP_REMOTE_AUTH_HEADER_ENV]: `Bearer ${PLANTED_PAT}`,
+    });
+  });
+
+  it("does not inject GitHub without the in-memory key", () => {
+    const store = { github: { endpoint: GITHUB_ENDPOINT } };
+    expect(hostMcpServers(store)).toEqual([]);
+    const servers = hostMcpServers(store, { names: [], urls: [] }, {}, { github: PLANTED_PAT });
+    expect(servers).toHaveLength(1);
+    expect(servers[0]?.name).toBe("github");
+    expect(servers[0]?.args).not.toContain(PLANTED_PAT);
+    expect(servers[0]?.env).toEqual([{ name: MCP_REMOTE_AUTH_HEADER_ENV, value: `Bearer ${PLANTED_PAT}` }]);
+  });
+
+  it("keeps --header flags when rebuilding args with a callback port", () => {
+    const args = mcpRemoteArgs(GITHUB_ENDPOINT, undefined, undefined, { authorization: true, readOnly: true });
+    expect(mcpRemoteHeadersFromArgs(args)).toEqual({ authorization: true, readOnly: true });
+    expect(withMcpRemoteCallbackPort(args, 54321)).toEqual([
+      "-y", "mcp-remote", GITHUB_ENDPOINT, "54321",
+      MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_AUTH_HEADER_TEMPLATE,
+      MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_READONLY_HEADER,
+    ]);
+  });
+
+  it("views report keySet without the secret, and connected requires both store and key", () => {
+    const views = connectorViews(
+      { github: { endpoint: GITHUB_ENDPOINT, readOnly: true } },
+      { keySet: new Set(["github"]) },
+    );
+    const github = views.find((v) => v.id === "github")!;
+    expect(github).toMatchObject({
+      auth: "key",
+      connected: true,
+      keySet: true,
+      readOnly: true,
+    });
+    expect(github).not.toHaveProperty("key");
+    expect(github).not.toHaveProperty("token");
+    assertNoSecretMaterial(github);
+    assertNoSecretMaterial(views);
+
+    const missingKey = connectorViews(
+      { github: { endpoint: GITHUB_ENDPOINT } },
+      { keySet: new Set() },
+    ).find((v) => v.id === "github")!;
+    expect(missingKey.connected).toBe(false);
+    expect(missingKey.keySet).toBe(false);
+
+    const linear = views.find((v) => v.id === "linear")!;
+    expect(linear.auth).toBe("oauth");
+    expect(linear.keySet).toBeUndefined();
   });
 });
 
@@ -421,6 +536,19 @@ describe("connect failure taxonomy", () => {
     )).toBe(true);
     expect(connectFailureMessage("oauth-incompatible")).toMatch(/not compatible/i);
     expect(connectFailureMessage("oauth-incompatible")).not.toMatch(/try again/i);
+    expect(classifyConnectFailure({
+      output: "Connection error: Incompatible auth server: does not support dynamic client registration",
+    })).toBe("oauth-incompatible");
+    expect(classifyConnectFailure({
+      output: "Connection error: Incompatible auth server: does not support dynamic client registration",
+      auth: "key",
+    })).toBe("key-rejected");
+    expect(classifyConnectFailure({
+      output: "InvalidClientMetadataError: Not supported: openid, email, profile",
+      auth: "key",
+    })).toBe("key-rejected");
+    expect(connectFailureMessage("key-rejected")).toMatch(/token was rejected/i);
+    expect(connectFailureMessage("key-rejected")).not.toMatch(/not compatible/i);
   });
 
   it("summarises a stack-trace blob to the error line, not frames", () => {

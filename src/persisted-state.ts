@@ -70,8 +70,9 @@ export const DISK_KEYS: Readonly<Record<string, string>> = {
   // Global progressive-disclosure preference ("knowledge" | "coding"). String
   // scalar like installId — not a record map. See src/app-purpose.ts.
   "grok.appPurpose": "app-purpose.json",
-  // Connected Tier-1 MCP apps (ids + endpoints only — never tokens). Shared
-  // with the desktop host because `~/.mcp-auth` is already machine-wide.
+  // Connected Tier-1 MCP apps (ids + endpoints + optional readOnly — never
+  // tokens or PATs; those live in HostSecrets). Shared with the desktop host
+  // because `~/.mcp-auth` is already machine-wide.
   "grok.mcpConnectors": "mcp-connectors.json",
 };
 

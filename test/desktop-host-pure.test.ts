@@ -1277,6 +1277,19 @@ describe("webview message schema validation", () => {
       type: "connectMcpConnector",
       id: "linear",
     });
+    expect(parseWebviewMsg({
+      type: "connectMcpConnector",
+      id: "github",
+      key: "ghp_TESTSECRET_do_not_store",
+      readOnly: true,
+    })).toEqual({
+      type: "connectMcpConnector",
+      id: "github",
+      key: "ghp_TESTSECRET_do_not_store",
+      readOnly: true,
+    });
+    expect(parseWebviewMsg({ type: "connectMcpConnector", id: "github", key: 12 })).toBeNull();
+    expect(parseWebviewMsg({ type: "connectMcpConnector", id: "github", readOnly: "yes" })).toBeNull();
     expect(parseWebviewMsg({ type: "disconnectMcpConnector", id: "linear" })?.type)
       .toBe("disconnectMcpConnector");
     expect(parseWebviewMsg({ type: "connectMcpConnector" })).toBeNull();

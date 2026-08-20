@@ -37,6 +37,7 @@ import {
   withMcpRemoteCallbackPort,
   type ConnectedConnectorStore,
   type ConnectFailureKind,
+  type ConnectorAuth,
 } from "./mcp-connectors";
 
 export type McpRemoteSpawn = (
@@ -68,6 +69,11 @@ export interface AuthorizeMcpRemoteOpts {
    * returned as-is (no retry).
    */
   pickFreeListenPort?: PickFreeListenPort;
+  /**
+   * Key-auth connectors: a DCR-incompatibility failure means the pasted
+   * token was rejected, not that the app can never work.
+   */
+  auth?: ConnectorAuth;
 }
 
 export type PickFreeListenPort = () => Promise<number>;
@@ -240,7 +246,9 @@ function runAuthorizeMcpRemote(
         kind,
         message: connectFailureMessage(
           kind,
-          kind === "port-conflict" || kind === "oauth-incompatible" ? undefined : detail,
+          kind === "port-conflict" || kind === "oauth-incompatible" || kind === "key-rejected"
+            ? undefined
+            : detail,
         ),
       }));
     };
@@ -257,7 +265,7 @@ function runAuthorizeMcpRemote(
         return;
       }
       if (connectOutputLooksLikeOAuthIncompatible(combined)) {
-        fail("oauth-incompatible");
+        fail(opts.auth === "key" ? "key-rejected" : "oauth-incompatible");
         return;
       }
     };
@@ -274,7 +282,7 @@ function runAuthorizeMcpRemote(
         code: (error as NodeJS.ErrnoException).code,
         message: (error as Error).message,
       };
-      fail(classifyConnectFailure({ spawnError, output: spawnError.message }), spawnError.message);
+      fail(classifyConnectFailure({ spawnError, output: spawnError.message, auth: opts.auth }), spawnError.message);
       return;
     }
 
@@ -284,7 +292,11 @@ function runAuthorizeMcpRemote(
         message: error.message,
       };
       fail(
-        classifyConnectFailure({ spawnError, output: `${spawnError.message}\n${chunks.join("")}` }),
+        classifyConnectFailure({
+          spawnError,
+          output: `${spawnError.message}\n${chunks.join("")}`,
+          auth: opts.auth,
+        }),
         spawnError.message,
       );
     });
@@ -301,6 +313,7 @@ function runAuthorizeMcpRemote(
         timedOut,
         exitCode: code,
         output,
+        auth: opts.auth,
       });
       fail(kind, summarizeConnectOutput(output) || spawnError?.message);
     };

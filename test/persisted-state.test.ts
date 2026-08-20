@@ -208,6 +208,24 @@ describe("PersistedState", () => {
     expect(DISK_KEYS["grok.mcpConnectors"]).toBe("mcp-connectors.json");
   });
 
+  it("serializes grok.mcpConnectors as ids and endpoints, never a key", async () => {
+    const { connectConnector } = await import("../src/mcp-connectors");
+    const { state, fs, memento } = make();
+    const planted = "ghp_TESTSECRET_do_not_store";
+    const store = connectConnector({}, "github", "https://api.githubcopilot.com/mcp/", true);
+    expect(JSON.stringify(store)).not.toContain(planted);
+    await state.update("grok.mcpConnectors", store);
+    const disk = fs.files.get(`${DIR}/${DISK_KEYS["grok.mcpConnectors"]}`)!;
+    expect(disk).not.toContain(planted);
+    expect(disk).not.toMatch(/"token"|"key"|"authorization"|Bearer /);
+    expect(JSON.parse(disk)).toEqual({
+      github: { endpoint: "https://api.githubcopilot.com/mcp/", readOnly: true },
+    });
+    expect(memento.store.get("grok.mcpConnectors")).toEqual({
+      github: { endpoint: "https://api.githubcopilot.com/mcp/", readOnly: true },
+    });
+  });
+
   it("falls back to globalState when the file is corrupt, without throwing", () => {
     const { state, logs } = make((f, m) => {
       f.files.set(metaFile, "{not json");

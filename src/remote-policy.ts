@@ -335,9 +335,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // and disconnect stay host-local. Mirroring the last fetch is not enough if
   // the desk never opened Settings, so a remote may ask when it opens the page.
   listMcpServers: "view",
-  // OAuth opens a browser on the desk and writes ~/.mcp-auth there. A phone
-  // cannot complete that flow, and must not change which tools every agent
-  // receives on the next session/new.
+  // OAuth opens a browser on the desk and writes ~/.mcp-auth there. Key-auth
+  // pastes a secret into HostSecrets. A phone cannot complete either flow,
+  // must never set/read/clear a key, and must not change which tools every
+  // agent receives on the next session/new.
   connectMcpConnector: "host-local",
   disconnectMcpConnector: "host-local",
   showLogs: "host-local",

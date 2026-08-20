@@ -335,6 +335,9 @@ import {
 import { MCP_GLOBAL_SCOPE_WARNING, mergeMcpNotification, parseMcpListResponse, mcpSettingsServersForCwd, type McpServerView } from "./mcp";
 import {
   MCP_CONNECTORS_KEY,
+  MAX_CONNECTOR_KEY_CHARS,
+  TIER1_CONNECTORS,
+  bearerAuthorizationHeader,
   collectMcpNameFiles,
   collectMcpNameLayers,
   collectReservedMcpIdentity,
@@ -344,13 +347,17 @@ import {
   disconnectConnector,
   hostMcpServers,
   isConnectorId,
+  isKeyConnector,
   mcpConfigLayer,
   mcpConfigPaths,
+  mcpConnectorSecretKey,
   mcpRemoteArgs,
   mergeReserved,
   parseConnectedConnectorStore,
   reservedFromMcpInventory,
+  withAuthHeaderEnv,
   type ConnectedConnectorStore,
+  type ConnectorDef,
   type ConnectorId,
   type ReservedMcpIdentity,
 } from "./mcp-connectors";
@@ -841,6 +848,9 @@ export class GrokSidebar {
   private grokMcpReserved: ReservedMcpIdentity = { names: [], urls: [] };
   private mcpConnectingId: ConnectorId | undefined;
   private mcpConnectError: { id: ConnectorId; message: string } | undefined;
+  /** In-memory PAT cache for key-auth connectors. Never written to PersistedState. */
+  private readonly mcpConnectorKeys = new Map<string, string>();
+  private readonly mcpConnectorKeysReady: Promise<void>;
   /** Overlapping Connectors reads share one lazy Grok start. */
   private grokSessionForMcpListInFlight: Promise<Session | undefined> | undefined;
   private grokVersionProbe?: Promise<string>;
@@ -913,6 +923,7 @@ export class GrokSidebar {
     // resolvedTerminalShell() (for GROK_SHELL in buildEnv) could cache the
     // default "auto" resolution and diverge from a configured `cmd` pref.
     this.applyTerminalShellPref();
+    this.mcpConnectorKeysReady = this.loadMcpConnectorKeys();
     void this.sweepImageStaging();
     void this.sweepFileStaging();
   }
@@ -7225,6 +7236,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         };
       }
     }
+    if (this.mcpConnectorKeysReady) await this.mcpConnectorKeysReady;
+    if (gen !== session.gen) return undefined;
     const env = session.provider === "grok" ? this.buildEnv(cwd) : { ...process.env };
     const effortStr = cfg.get<string>("defaultEffort", "");
     const effort = effortStr ? (effortStr as EffortLevel) : undefined;
@@ -8625,7 +8638,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "connectMcpConnector":
-        await this.connectMcpConnector(msg.id);
+        await this.connectMcpConnector(msg.id, {
+          key: typeof msg.key === "string" ? msg.key : undefined,
+          readOnly: typeof msg.readOnly === "boolean" ? msg.readOnly : undefined,
+        });
         break;
       case "disconnectMcpConnector":
         await this.disconnectMcpConnector(msg.id);
@@ -9303,6 +9319,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         connectingId: this.mcpConnectingId,
         errorId: this.mcpConnectError?.id,
         error: this.mcpConnectError?.message,
+        keySet: new Set((this.mcpConnectorKeys ?? new Map()).keys()),
       }),
     };
   }
@@ -9379,14 +9396,56 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private hostMcpServersFor(session: Session) {
     const store = this.connectedConnectorStore();
+    const keyAuth: Record<string, string> = {};
+    for (const [id, token] of this.mcpConnectorKeys ?? []) {
+      if (store[id]) keyAuth[id] = token;
+    }
     return hostMcpServers(
       store,
       this.reservedMcpIdentityFor(session),
       persistConnectorOAuthClientMetadata(store),
+      keyAuth,
     );
   }
 
-  private async connectMcpConnector(id: string): Promise<void> {
+  private async loadMcpConnectorKeys(): Promise<void> {
+    for (const connector of TIER1_CONNECTORS) {
+      if (!isKeyConnector(connector)) continue;
+      try {
+        const value = await this.context.secrets.get(mcpConnectorSecretKey(connector.id));
+        const trimmed = typeof value === "string" ? value.trim() : "";
+        if (trimmed) this.mcpConnectorKeys.set(connector.id, trimmed);
+        else this.mcpConnectorKeys.delete(connector.id);
+      } catch (error) {
+        this.host.appendLine(`[mcp] could not read ${connector.id} connector key: ${(error as Error).message}`);
+      }
+    }
+    let store = this.connectedConnectorStore();
+    let changed = false;
+    for (const connector of TIER1_CONNECTORS) {
+      if (!isKeyConnector(connector)) continue;
+      if (store[connector.id] && !this.mcpConnectorKeys.has(connector.id)) {
+        store = disconnectConnector(store, connector.id);
+        changed = true;
+      }
+    }
+    if (changed) await this.state.update(MCP_CONNECTORS_KEY, store);
+    this.postMcpConnectors();
+  }
+
+  private async forgetConnectorKey(id: ConnectorId): Promise<void> {
+    this.mcpConnectorKeys.delete(id);
+    try {
+      await this.context.secrets.delete(mcpConnectorSecretKey(id));
+    } catch (error) {
+      this.host.appendLine(`[mcp] could not delete ${id} connector key: ${(error as Error).message}`);
+    }
+  }
+
+  private async connectMcpConnector(
+    id: string,
+    opts: { key?: string; readOnly?: boolean } = {},
+  ): Promise<void> {
     if (!isConnectorId(id)) return;
     if (this.mcpConnectingId) {
       this.mcpConnectError = {
@@ -9402,6 +9461,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!connector) return;
     const store = this.connectedConnectorStore();
     const endpoint = store[id]?.endpoint || connector.endpoint;
+    if (isKeyConnector(connector)) {
+      await this.connectKeyMcpConnector(connector, endpoint, opts);
+      return;
+    }
     this.mcpConnectingId = id;
     this.mcpConnectError = undefined;
     this.postMcpConnectors();
@@ -9443,9 +9506,81 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
   }
 
+  private async connectKeyMcpConnector(
+    connector: ConnectorDef,
+    endpoint: string,
+    opts: { key?: string; readOnly?: boolean },
+  ): Promise<void> {
+    const id = connector.id;
+    const incoming = typeof opts.key === "string" ? opts.key.trim() : "";
+    if (incoming.length > MAX_CONNECTOR_KEY_CHARS) {
+      this.mcpConnectError = { id, message: "That token is too long." };
+      this.postMcpConnectors();
+      return;
+    }
+    const token = incoming || this.mcpConnectorKeys.get(id) || "";
+    const store = this.connectedConnectorStore();
+    if (typeof opts.readOnly === "boolean" && !incoming && store[id] && this.mcpConnectorKeys.has(id)) {
+      await this.state.update(
+        MCP_CONNECTORS_KEY,
+        connectConnector(store, id, endpoint, opts.readOnly),
+      );
+      this.mcpConnectError = undefined;
+      this.postMcpConnectors();
+      return;
+    }
+    if (!token) {
+      this.mcpConnectError = { id, message: "Paste a personal access token to connect." };
+      this.postMcpConnectors();
+      return;
+    }
+    this.mcpConnectingId = id;
+    this.mcpConnectError = undefined;
+    this.postMcpConnectors();
+    const npx = npxSpawnPlan(process.platform);
+    try {
+      const result = await authorizeMcpRemote({
+        spawn,
+        command: npx.command,
+        args: mcpRemoteArgs(endpoint, undefined, undefined, {
+          authorization: true,
+          readOnly: opts.readOnly === true || (!incoming && store[id]?.readOnly === true),
+        }),
+        shell: npx.shell,
+        env: withAuthHeaderEnv(npx.env, token),
+        auth: "key",
+        pickFreeListenPort: listenFreeLoopbackPort,
+      });
+      if (this.mcpConnectingId !== id) return;
+      if (!result.ok) {
+        this.mcpConnectError = { id, message: result.message };
+        return;
+      }
+      const header = bearerAuthorizationHeader(token);
+      if (header) {
+        await this.context.secrets.store(mcpConnectorSecretKey(id), token);
+        this.mcpConnectorKeys.set(id, token);
+      }
+      const readOnly = opts.readOnly === true
+        || (typeof opts.readOnly !== "boolean" && this.connectedConnectorStore()[id]?.readOnly === true);
+      await this.state.update(
+        MCP_CONNECTORS_KEY,
+        connectConnector(this.connectedConnectorStore(), id, endpoint, readOnly),
+      );
+      this.mcpConnectError = undefined;
+    } catch (error) {
+      this.mcpConnectError = { id, message: (error as Error).message || "Could not connect." };
+    } finally {
+      if (this.mcpConnectingId === id) this.mcpConnectingId = undefined;
+      this.postMcpConnectors();
+    }
+  }
+
   private async disconnectMcpConnector(id: string): Promise<void> {
     if (!isConnectorId(id)) return;
     if (this.mcpConnectingId === id) return;
+    const connector = connectorById(id);
+    if (isKeyConnector(connector)) await this.forgetConnectorKey(id);
     await this.state.update(MCP_CONNECTORS_KEY, disconnectConnector(this.connectedConnectorStore(), id));
     if (this.mcpConnectError?.id === id) this.mcpConnectError = undefined;
     this.postMcpConnectors();

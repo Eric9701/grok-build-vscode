@@ -13,6 +13,7 @@ import {
   WEBVIEW_MESSAGE_TYPES,
   type WebviewMsg,
 } from "../protocol";
+import { MAX_CONNECTOR_KEY_CHARS } from "../mcp-connectors";
 
 const TYPE_SET = new Set<string>(WEBVIEW_MESSAGE_TYPES);
 
@@ -85,6 +86,11 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "disconnectMcpConnector":
       if ((type === "connectMcpConnector" || type === "disconnectMcpConnector") && !isString(raw.id)) {
         return null;
+      }
+      if (type === "connectMcpConnector") {
+        if (!opt(raw.key, isString)) return null;
+        if (typeof raw.key === "string" && raw.key.length > MAX_CONNECTOR_KEY_CHARS) return null;
+        if (!opt(raw.readOnly, isBoolean)) return null;
       }
       break;
     case "showLogs":

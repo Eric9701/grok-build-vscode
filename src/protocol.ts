@@ -238,7 +238,8 @@ export type HostMsg =
   | { type: "mcpServers"; servers: McpServerView[]; loading?: boolean; error?: string; warning: string }
   /** Host-owned Tier-1 connector catalog. Mirrored so a remote can SEE which
    *  apps are connected; connect/disconnect stay desk-only (OAuth + ~/.mcp-auth
-   *  live on the machine running the host). */
+   *  and key-auth HostSecrets live on the machine running the host). Views
+   *  never carry the key. */
   | { type: "mcpConnectors"; connectors: ConnectorView[] }
   | { type: "codexInstallProgress"; phase: "downloading" | "verifying" | "installing" | "idle"; receivedBytes?: number; totalBytes?: number; reason?: string }
   /** Plan picker gate. `recheckable` means the version probe failed (not a
@@ -623,9 +624,9 @@ export type WebviewMsg =
   | { type: "openGlobalConfig" }
   | { type: "openProjectConfig" }
   | { type: "listMcpServers" }
-  /** Desk-only: run mcp-remote so the vendor OAuth lands in ~/.mcp-auth. */
-  | { type: "connectMcpConnector"; id: string }
-  /** Desk-only: drop the id from our list. Does not delete ~/.mcp-auth tokens. */
+  /** Desk-only: OAuth opens a browser; key-auth sends `key` once (never echoed). */
+  | { type: "connectMcpConnector"; id: string; key?: string; readOnly?: boolean }
+  /** Desk-only: drop the id from our list. Key-auth also deletes the HostSecrets entry. OAuth does not delete ~/.mcp-auth tokens. */
   | { type: "disconnectMcpConnector"; id: string }
   | { type: "showLogs" }
   /** Unpackaged desktop only — toggle Chromium DevTools (gear / F12). */

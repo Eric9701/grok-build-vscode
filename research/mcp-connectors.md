@@ -1,8 +1,11 @@
 # Host-owned MCP connectors (Tier 1)
 
 One connector list, handed to whichever agent is active through ACP
-`session/new` / `session/load` `mcpServers`. Tokens stay in `~/.mcp-auth`
-(`mcp-remote`); the host stores only ids and endpoints (`grok.mcpConnectors`).
+`session/new` / `session/load` `mcpServers`. OAuth tokens stay in `~/.mcp-auth`
+(`mcp-remote`). Key-auth tokens (GitHub PAT) live in `HostSecrets`
+(`mcpConnectorSecretKey`) and reach mcp-remote as `AUTH_HEADER` in env —
+never argv, never `grok.mcpConnectors`, never PersistedState. The host store
+records ids, endpoints, and optional `readOnly`.
 
 ## Catalog (verified 2026-08-19; Figma measured out 2026-08-20)
 
@@ -17,10 +20,11 @@ One connector list, handed to whichever agent is active through ACP
 | cloudflare | `https://observability.mcp.cloudflare.com/mcp` | [Cloudflare's own MCP servers](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/). Brief listed `/sse`; official catalog now lists `/mcp` |
 | calendly | `https://mcp.calendly.com` | [developer.calendly.com/calendly-mcp-server](https://developer.calendly.com/calendly-mcp-server). Default mcp-remote scopes reach authorize; no `oauthScope` (Calendly advertises `mcp:scheduling:*` — do not infer) |
 | airtable | `https://mcp.airtable.com/mcp` | [Airtable MCP server](https://support.airtable.com/docs/using-the-airtable-mcp-server). Default mcp-remote scopes reach authorize; no `oauthScope` |
+| github | `https://api.githubcopilot.com/mcp/` | Key-auth (`auth: "key"`). GitHub refuses DCR; PAT as `Authorization: Bearer`. Fine-grained recommended. |
 
-**Checked (2026-08-20), so nobody re-tests them to put Figma back:** linear, notion, atlassian, and stripe are connected on the owner's machine; sentry and cloudflare reach the authorize step (owner + probe); canva registers cleanly. Calendly and Airtable reach the authorize step through mcp-remote with default scopes. Figma is the only one that cannot.
+**Checked (2026-08-20), so nobody re-tests them to put Figma back:** linear, notion, atlassian, and stripe are connected on the owner's machine; sentry and cloudflare reach the authorize step (owner + probe); canva registers cleanly. Calendly and Airtable reach the authorize step through mcp-remote with default scopes. Figma is the only OAuth vendor that cannot.
 
-**Left out:** GitHub (`https://api.githubcopilot.com/mcp/`). Official README: each host must register a GitHub App / OAuth App. GitHub staff (2026): "We don't support DCR and we are not going to be able to do so." That is not Tier 1.
+**Key-auth (GitHub).** GitHub staff (2026): "We don't support DCR and we are not going to be able to do so." The remote server accepts a PAT. `mcp-remote --header "Authorization:${AUTH_HEADER}"` with `AUTH_HEADER` in env is the vehicle — measured: the header wins over OAuth discovery, so we do not send a direct HTTP `mcpServers` entry (that would put the token in ACP `session/new` params as a header). A bad PAT is sent, GitHub rejects it, mcp-remote falls through to OAuth and dies with `Incompatible auth server: does not support dynamic client registration`. That classifies as `key-rejected`, not `oauth-incompatible` (the two are opposite advice). Optional `X-MCP-Readonly:true` is a checkbox on the same `--header` plumbing (`ConnectedConnectorRecord.readOnly`).
 
 Figma (`https://mcp.figma.com/mcp`) advertises a `registration_endpoint` (`https://api.figma.com/v1/oauth/mcp/register`) and then answers HTTP 403 Forbidden. Measured twice through mcp-remote itself, including with `--static-oauth-client-metadata {"scope":"mcp:connect"}` — the scope Figma's AS metadata advertises. This is not Stripe's missing-scope refusal: DCR is claimed and then refused. That is Tier 2 (we would have to pre-register an OAuth client and ship the client id), not one-click. A Connect button that cannot succeed is worse than no row; do not re-add on the strength of advertised metadata.
 
@@ -70,7 +74,9 @@ focused session's cwd or provider. The classified global-only view is
 stored (`mcpServersView`) and rendered anywhere; project-file rows
 never enter it.
 `connectMcpConnector` / `disconnectMcpConnector` are host-local:
-OAuth needs a browser on the machine that owns `~/.mcp-auth`. Settings →
+OAuth needs a browser on the machine that owns `~/.mcp-auth`; key-auth
+pastes a secret into HostSecrets. A remote may see that a key connector
+is connected and may not set, read, or clear the key. Settings →
 Connectors on a remote shows the desk-owned catalog read-only, the live Grok
 inventory, and a grok.com/connectors Open in the grok.com section header.
 Local Grok connectors show a header Open on the desk (`openGlobalConfig`,

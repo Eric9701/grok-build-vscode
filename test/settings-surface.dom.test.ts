@@ -261,6 +261,7 @@ describe("settings catalog", () => {
     expect(logoIds.every((id) => catalog.has(id))).toBe(true);
     expect(logoIds).not.toContain("calendly");
     expect(logoIds).not.toContain("airtable");
+    expect(logoIds).not.toContain("github");
     for (const id of logoIds) {
       expect(existsSync(path.join(dir, `${id}.webp`)), id).toBe(true);
     }
@@ -553,6 +554,127 @@ describe("settings overlay (chat.js)", () => {
     expect(disconnect.textContent).toBe("Disconnect");
     click(h.window, disconnect);
     expect(h.posted).toContainEqual({ type: "disconnectMcpConnector", id: "canva" });
+  });
+
+  it("GitHub Connect opens a paste field instead of posting immediately", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    const planted = "ghp_TESTSECRET_do_not_store";
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        {
+          id: "github",
+          name: "GitHub",
+          description: "Repos.",
+          endpoint: "https://api.githubcopilot.com/mcp/",
+          connected: false,
+          status: "idle",
+          auth: "key",
+          keySet: false,
+          keyHint: "Paste a GitHub personal access token. Fine-grained tokens are recommended; classic tokens also work.",
+          keyDocsUrl: "https://github.com/settings/personal-access-tokens",
+        },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toMatch(/fine-grained/i);
+    expect(overlay.querySelector(".settings-connector-key-input")).toBeNull();
+    h.posted.length = 0;
+    const connect = [...overlay.querySelectorAll(".settings-connector-action")]
+      .find((btn) => (btn as HTMLElement).dataset.id === "github") as HTMLButtonElement;
+    expect(connect.textContent).toBe("Connect");
+    click(h.window, connect);
+    expect(h.posted).toEqual([]);
+    const input = overlay.querySelector(".settings-connector-key-input") as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.type).toBe("password");
+    input.value = planted;
+    input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    const box = overlay.querySelector(".settings-connector-readonly-input") as HTMLInputElement;
+    box.checked = true;
+    box.dispatchEvent(new h.window.Event("change", { bubbles: true }));
+    click(h.window, overlay.querySelector(".settings-connector-key-submit") as HTMLButtonElement);
+    expect(h.posted).toContainEqual({
+      type: "connectMcpConnector",
+      id: "github",
+      key: planted,
+      readOnly: true,
+    });
+    expect((overlay.querySelector(".settings-connector-key-input") as HTMLInputElement | null)?.value || "").toBe("");
+    expect(overlay.textContent).not.toContain(planted);
+  });
+
+  it("a connected GitHub row shows that a key is set and never renders it", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    const planted = "ghp_TESTSECRET_do_not_store";
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        {
+          id: "github",
+          name: "GitHub",
+          description: "Repos.",
+          endpoint: "https://api.githubcopilot.com/mcp/",
+          connected: true,
+          status: "idle",
+          auth: "key",
+          keySet: true,
+          keyHint: "Paste a GitHub personal access token.",
+          readOnly: false,
+        },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Key is set");
+    expect(overlay.textContent).not.toContain(planted);
+    expect(overlay.querySelector(".settings-connector-key-input")).toBeNull();
+    const disconnect = [...overlay.querySelectorAll(".settings-connector-action")]
+      .find((btn) => (btn as HTMLElement).dataset.id === "github") as HTMLButtonElement;
+    expect(disconnect.textContent).toBe("Disconnect");
+    h.posted.length = 0;
+    click(h.window, disconnect);
+    expect(h.posted).toContainEqual({ type: "disconnectMcpConnector", id: "github" });
+    const replace = overlay.querySelector(".settings-connector-key-open") as HTMLButtonElement;
+    expect(replace.textContent).toBe("Replace");
+    click(h.window, replace);
+    expect(overlay.querySelector(".settings-connector-key-input")).toBeTruthy();
+    expect((overlay.querySelector(".settings-connector-key-input") as HTMLInputElement).value).toBe("");
+  });
+
+  it("a remote cannot paste, replace, or clear a GitHub key", () => {
+    const h = bootWebview({ remote: true });
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        {
+          id: "github",
+          name: "GitHub",
+          description: "Repos.",
+          endpoint: "https://api.githubcopilot.com/mcp/",
+          connected: true,
+          status: "idle",
+          auth: "key",
+          keySet: true,
+        },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.querySelector(".settings-connector-action")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-key-input")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-key-open")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-readonly-input")).toBeNull();
+    expect(overlay.textContent).toContain("Connected");
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
   });
 
   it("shows connectors read-only on a remote and never posts connect", () => {
