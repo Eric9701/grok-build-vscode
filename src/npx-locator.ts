@@ -9,10 +9,11 @@
  * with. The difference: ffmpeg is a self-contained executable; npx is a
  * `#!/usr/bin/env node` script. Resolving the path is not enough — the child
  * (and the `node` grandchild npx starts for `mcp-remote`) must see the
- * directory on `PATH`. `npxChildPath` prepends the resolved directory and the
- * well-known list; we do not hardcode a node interpreter. Windows npm shims
- * are `.cmd` and need a shell; there is no conventional well-known directory
- * worth guessing on win32.
+ * directory on `PATH`. On POSIX, `npxChildPath` prepends the resolved
+ * directory and the well-known list onto the existing PATH value (same key,
+ * user duplicates kept); we do not hardcode a node interpreter. Windows npm
+ * shims are `.cmd` and need a shell; `NPX_WELL_KNOWN_DIRS.win32` is empty, so
+ * the child env is a clone with PATH left alone.
  */
 import { statSync } from "node:fs";
 
@@ -99,40 +100,52 @@ function pathDelimiter(platform: NodeJS.Platform): string {
 
 /**
  * PATH the mcp-remote child (and npx's `node` grandchild) actually receive.
- * Resolved directory first so `env node` finds the interpreter sitting next
- * to npx, then the well-known list, then the parent's PATH. Deduped, first
- * occurrence wins. Does not name node.
+ * POSIX only: resolved directory first so `env node` finds the interpreter
+ * sitting next to npx, then the well-known list, then the parent's PATH
+ * bytes as they were (duplicates included). Dedupes only the prefix we
+ * add, so a resolved dir that is also well-known is not written twice.
+ * Win32 returns `pathEnv` unchanged — there is nothing to prepend.
+ * Does not name node.
  */
 export function npxChildPath(
   platform: NodeJS.Platform,
   resolvedDir: string | undefined,
   pathEnv: string | undefined,
 ): string {
+  if (platform === "win32") return pathEnv ?? "";
   const delim = pathDelimiter(platform);
-  const out: string[] = [];
+  const prefix: string[] = [];
   const seen = new Set<string>();
-  const add = (dir: string) => {
+  const addPrefix = (dir: string) => {
     if (!dir || seen.has(dir)) return;
     seen.add(dir);
-    out.push(dir);
+    prefix.push(dir);
   };
-  if (resolvedDir) add(resolvedDir);
-  for (const dir of NPX_WELL_KNOWN_DIRS[platform] || []) add(dir);
-  for (const dir of (pathEnv || "").split(delim).map((d) => d.trim()).filter(Boolean)) add(dir);
-  return out.join(delim);
+  if (resolvedDir) addPrefix(resolvedDir);
+  for (const dir of NPX_WELL_KNOWN_DIRS[platform] || []) addPrefix(dir);
+  const rest = pathEnv ?? "";
+  if (!prefix.length) return rest;
+  if (!rest) return prefix.join(delim);
+  return `${prefix.join(delim)}${delim}${rest}`;
 }
 
-/** Clone `processEnv`, replacing PATH so shebang/`env node` resolution works. */
+/**
+ * Clone `processEnv` for the mcp-remote child. POSIX rewrites the existing
+ * PATH key (whatever its casing) so shebang/`env node` resolution works.
+ * Win32 returns the clone untouched: well-known dirs are empty, and
+ * rewriting `Path` would reorder entries, drop duplicates, and change the
+ * key a developer-tuned PATH is stored under.
+ */
 export function withNpxChildEnv(
   processEnv: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
   resolvedDir: string | undefined,
 ): NodeJS.ProcessEnv {
+  const next: NodeJS.ProcessEnv = { ...processEnv };
+  if (platform === "win32") return next;
   const pathKey = Object.keys(processEnv).find((key) => key.toUpperCase() === "PATH");
   const pathEnv = pathKey ? processEnv[pathKey] : undefined;
-  const next: NodeJS.ProcessEnv = { ...processEnv };
-  if (pathKey && pathKey !== "PATH") delete next[pathKey];
-  next.PATH = npxChildPath(platform, resolvedDir, pathEnv);
+  next[pathKey ?? "PATH"] = npxChildPath(platform, resolvedDir, pathEnv);
   return next;
 }
 

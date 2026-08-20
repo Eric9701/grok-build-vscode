@@ -46,7 +46,7 @@ See `research/mcp-orphan-probe.cjs`.
 `mcpServers` is `allowlist`-projected (`projectMcpServerForRemote`: page
 fields only, never the launch recipe). `scopeName` and `tag` are on that
 allowlist so a phone can show the same provenance badge as the desk
-(managed `scopeName` / grok.com, project folder name, or
+(managed `scopeName` / grok.com, `Project: <folder>`, or
 `User on: <deviceDisplayName>`). Origin tags for that inventory always
 classify against Grok config files (`mcpNameLayersFor` → `mcpConfigPaths`
 with `provider: "grok"`), not the focused session's provider.

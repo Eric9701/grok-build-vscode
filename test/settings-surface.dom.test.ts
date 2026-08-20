@@ -404,14 +404,14 @@ describe("settings overlay (chat.js)", () => {
     dispatch(h.window, {
       type: "mcpServers",
       servers: [
-        { name: "docs", displayName: "Docs", source: "local", tag: "grok-build-vscode", enabled: true, status: "ready" },
+        { name: "docs", displayName: "Docs", source: "local", tag: "Project: grok-build-vscode", enabled: true, status: "ready" },
         { name: "notes", displayName: "Notes", source: "local", tag: "User on: Mac (macOS)", enabled: true, status: "ready" },
         { name: "managed_gateway:linear", displayName: "Linear", source: "managed", tag: "Grok CLI", enabled: true, status: "ready" },
       ],
       warning: "This list is read-only.",
     });
     const overlay = h.doc.getElementById("settings-overlay")!;
-    expect(overlay.textContent).toContain("grok-build-vscode");
+    expect(overlay.textContent).toContain("Project: grok-build-vscode");
     expect(overlay.textContent).toContain("User on: Mac (macOS)");
     expect(overlay.textContent).toContain("Grok CLI");
   });

@@ -263,7 +263,14 @@ describe("MCP origin tags", () => {
       localLayer: "project",
       projectName: "grok-build-vscode",
       machineName: "Mac (macOS)",
-    })).toBe("grok-build-vscode");
+    })).toBe("Project: grok-build-vscode");
+    expect(mcpOriginTag({
+      source: "local",
+      localLayer: "project",
+      projectName: "grok-remote",
+      machineName: "Dell (Windows 11)",
+    })).toBe("Project: grok-remote");
+    expect(mcpOriginTag({ source: "local", localLayer: "project" })).toBeUndefined();
     expect(mcpOriginTag({
       source: "local",
       localLayer: "user",
@@ -289,7 +296,7 @@ describe("MCP origin tags", () => {
     ], { nameLayer: layers, projectName: "app", machineName: "Mac (macOS)" });
     expect(tagged.map((s) => s.tag)).toEqual([
       "Grok CLI",
-      "app",
+      "Project: app",
       "User on: Mac (macOS)",
       "User on: Mac (macOS)",
     ]);

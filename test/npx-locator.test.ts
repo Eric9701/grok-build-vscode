@@ -109,12 +109,20 @@ describe("the child's PATH, not just the command string", () => {
     expect(npxChildPath("darwin", homebrew, stripped)).not.toMatch(/\bnode\b/);
   });
 
-  it("uses the Windows delimiter and does not invent a well-known dir", () => {
-    expect(npxChildPath("win32", "C:\\nodejs", "C:\\Windows")).toBe("C:\\nodejs;C:\\Windows");
+  it("leaves a Windows PATH string alone — no prepend, no well-known dir, no dedupe", () => {
+    expect(npxChildPath("win32", "C:\\nodejs", "C:\\Windows")).toBe("C:\\Windows");
     expect(npxChildPath("win32", undefined, "C:\\Windows")).toBe("C:\\Windows");
+    expect(npxChildPath("win32", "C:\\nodejs", "C:\\Tools;C:\\Node;C:\\Node"))
+      .toBe("C:\\Tools;C:\\Node;C:\\Node");
   });
 
-  it("withNpxChildEnv replaces PATH (and a Win32 Path alias) without dropping the rest", () => {
+  it("keeps duplicate entries the parent PATH already had", () => {
+    expect(npxChildPath("darwin", homebrew, "/usr/bin:/usr/bin")).toBe(
+      `${homebrew}:/usr/local/bin:/opt/local/bin:/usr/bin:/usr/bin`,
+    );
+  });
+
+  it("withNpxChildEnv rewrites the existing PATH key on POSIX without dropping the rest", () => {
     const next = withNpxChildEnv(
       { PATH: stripped, HOME: "/Users/grok", LANG: "C" },
       "darwin",
@@ -123,17 +131,37 @@ describe("the child's PATH, not just the command string", () => {
     expect(next.HOME).toBe("/Users/grok");
     expect(next.LANG).toBe("C");
     expect(next.PATH).toBe(`${homebrew}:/usr/local/bin:/opt/local/bin:${stripped}`);
-    const win = withNpxChildEnv({ Path: "C:\\Windows", USERPROFILE: "C:\\Users\\a" }, "win32", "C:\\nodejs");
-    expect(win.PATH).toBe("C:\\nodejs;C:\\Windows");
-    expect(win.Path).toBeUndefined();
-    expect(win.USERPROFILE).toBe("C:\\Users\\a");
+    const mixed = withNpxChildEnv({ Path: "/usr/bin", HOME: "/Users/a" }, "darwin", homebrew);
+    expect(Object.keys(mixed)).toEqual(["Path", "HOME"]);
+    expect(mixed.Path).toBe(`${homebrew}:/usr/local/bin:/opt/local/bin:/usr/bin`);
+    expect(mixed.PATH).toBeUndefined();
+  });
+
+  it("clones a Windows env byte-identical, including mixed-case Path and duplicates", () => {
+    // Repro: Path=C:\Tools;C:\Node;C:\Node used to come back as PATH=C:\Node;C:\Tools.
+    const processEnv = { Path: "C:\\Tools;C:\\Node;C:\\Node", USERPROFILE: "C:\\Users\\a" };
+    const next = withNpxChildEnv(processEnv, "win32", "C:\\nodejs");
+    expect(next).not.toBe(processEnv);
+    expect(Object.keys(next)).toEqual(["Path", "USERPROFILE"]);
+    expect(next).toEqual(processEnv);
+    expect(next.Path).toBe("C:\\Tools;C:\\Node;C:\\Node");
+    expect(next.PATH).toBeUndefined();
+    const plan = npxSpawnPlan("win32", {
+      pathEnv: processEnv.Path,
+      isFile: (p) => p === "C:\\Node\\npx.cmd",
+      processEnv,
+    });
+    expect(plan.command).toBe("npx.cmd");
+    expect(plan.shell).toBe(true);
+    expect(plan.env).toEqual(processEnv);
+    expect(plan.env).not.toBe(processEnv);
   });
 });
 
 describe("npxSpawnPlan", () => {
   it("keeps the Windows cmd shim with a shell when PATH is empty", () => {
     const empty = { pathEnv: "", isFile: () => false, processEnv: { PATH: "" } };
-    expect(npxSpawnPlan("win32", empty)).toMatchObject({ command: "npx.cmd", shell: true });
+    expect(npxSpawnPlan("win32", empty)).toMatchObject({ command: "npx.cmd", shell: true, env: { PATH: "" } });
     expect(npxSpawnPlan("linux", empty)).toMatchObject({ command: "npx", shell: false });
     expect(npxSpawnPlan("darwin", empty)).toMatchObject({ command: "npx", shell: false });
     expect(npxSpawnPlan("darwin", empty).env.PATH).toBe("/opt/homebrew/bin:/usr/local/bin:/opt/local/bin");

@@ -24,7 +24,7 @@ export interface McpServerView {
   source?: string;
   /**
    * Provenance badge. Managed: `scopeName` or `"grok.com managed"`. Local
-   * project file: the project folder name. Local user file or host-injected:
+   * project file: `"Project: <folder>"`. Local user file or host-injected:
    * `"User on: <machine>"`.
    */
   tag?: string;
@@ -203,7 +203,7 @@ export const MCP_MANAGED_TAG = "grok.com managed";
 /**
  * Badge text for one inventory row. Managed uses the CLI's `scopeName` when
  * present (a team name, or `"Grok CLI"`); otherwise the grok.com tag. Local
- * project files take the folder name; everything else local — user-level
+ * project files are `"Project: <folder>"`; everything else local — user-level
  * config and host-injected Tier-1 connectors — is `"User on: <machine>"`.
  */
 export function mcpOriginTag(input: {
@@ -221,7 +221,7 @@ export function mcpOriginTag(input: {
   }
   if (input.localLayer === "project") {
     const name = input.projectName?.trim();
-    return name || undefined;
+    return name ? `Project: ${name}` : undefined;
   }
   const machine = input.machineName?.trim();
   return machine ? `User on: ${machine}` : undefined;
