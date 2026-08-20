@@ -301,6 +301,23 @@ describe("queued blocks — host-owned per session (#37)", () => {
     expect(chipLabels).toEqual(["Image #1", "Image #2"]);
   });
 
+  it("a surviving queued chip keeps #2 after the earlier contribution is gone", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "queuedSends",
+      items: ["edit [Image #2]"],
+      queued: [{
+        text: "edit [Image #2]",
+        chips: [{
+          id: "image:/s/b.png:2:2", path: "/s/b.png", relPath: "Image #2",
+          hidden: false, imageIndex: 2, mimeType: "image/png",
+        }],
+      }],
+    });
+    expect(queuedBlocks(doc)).toEqual(["edit [Image #2]"]);
+    expect(doc.querySelector(".msg.queued .msg-chip")?.textContent).toBe("Image #2");
+  });
+
   it("Edit hands the WHOLE pending message back to the composer (before any draft) and dequeues it", () => {
     const { window, posted, doc } = bootWebview();
     const input = $(doc, "input") as HTMLTextAreaElement;

@@ -5,9 +5,8 @@ export interface FileChip {
   selectionStart?: number;
   selectionEnd?: number;
   hidden: boolean;
-  /** 1-based `[Image #N]` index. Position among the visible image chips of the
-   *  prompt this chip will ride on — queued follow-ups plus the composer, via
-   *  `withPerMessageImageIndices`. Restarts at #1 on a new turn. */
+  /** 1-based `[Image #N]` index, stamped once at attach (`allocateImageIndex`)
+   *  and never rewritten. Gaps are fine; a shown number is this chip's handle. */
   imageIndex?: number;
   mimeType?: string;
   /** Workspace-relative path of the original file for images imported from disk
@@ -146,52 +145,31 @@ export function makeImageChip(
   };
 }
 
-export function visibleImageCount(chips: readonly FileChip[]): number {
-  let n = 0;
-  for (const chip of chips) {
-    if (isImageChip(chip) && !chip.hidden) n += 1;
-  }
-  return n;
-}
-
 /**
- * Renumber the image chips `[Image #startAt..]` by their position in this list.
+ * Next `[Image #N]` for a chip being attached right now.
  *
- * The CLI resolves an `[Image #N]` reference against the images attached to the
- * message it is reading, numbered from 1 — earlier images are not addressable
- * by index at all (measured against grok 1.0.0, `research/image-index-probe.cjs`:
- * a bad reference is refused with "matches no image attached to THIS MESSAGE …
- * ask the user to re-attach it here"). We used to number session-scoped, from a
- * counter that never reset, so the second image of a conversation went out
- * tagged `[Image #2]` while the CLI knew it as `#1` and every `image_edit` on it
- * failed. Position IS the contract, so the tag is now derived from position
- * rather than remembered.
- *
- * `startAt` continues from images already snapshotted on queued follow-ups
- * (`composerImageIndexStart`) so a chip attached while a turn is busy is
- * labeled with the number the combined flush will use. A new turn (empty
- * queue) passes the default 1.
- *
- * Numbering counts only VISIBLE chips, matching the two things a send derives
- * from the same list — the image blocks (`chip.hidden` skips the pre-read) and
- * the bubble's chips (`chips.filter(c => !c.hidden)`) — so the tag, the block
- * order, and the label the user sees cannot disagree. A hidden image chip keeps
- * its previous number: it is not on the wire, and there is no way to hide one
- * from the UI anyway (explicit chips render as removable rows, only the implicit
- * editor chip has the eye), so this is a degenerate case kept merely total.
- *
- * `id` is deliberately NOT rewritten — it is the handle the webview holds for
- * removeChip/toggleChip, and renumbering must not invalidate a click that is
- * already in flight. Its embedded index is an opaque uniqueness component, not
- * a claim about the current tag.
+ * Assigned once; never compacted, never reused while anything is still staged
+ * (composer or queue). `highWater` is the last number handed out in this
+ * staging generation (`Session.imageIndexHighWater`). It resets only when
+ * `staged` holds no image chips — composer empty and queue empty — so a
+ * plain send still starts at `#1`, while `#2` stays `#2` after `#1` flushes
+ * or is removed. Live chips floor the high-water so a restored draft whose
+ * chips already carry numbers cannot collide with the next attach.
  */
-export function withPerMessageImageIndices(chips: FileChip[], startAt = 1): FileChip[] {
-  let n = startAt - 1;
-  return chips.map((chip) => {
-    if (!isImageChip(chip) || chip.hidden) return chip;
-    n += 1;
-    return chip.imageIndex === n ? chip : { ...chip, imageIndex: n, relPath: `Image #${n}` };
-  });
+export function allocateImageIndex(
+  highWater: number,
+  staged: readonly FileChip[],
+): { index: number; highWater: number } {
+  let liveMax = 0;
+  let any = false;
+  for (const chip of staged) {
+    if (!isImageChip(chip)) continue;
+    any = true;
+    if (chip.imageIndex != null) liveMax = Math.max(liveMax, chip.imageIndex);
+  }
+  if (!any) return { index: 1, highWater: 1 };
+  const index = Math.max(highWater, liveMax) + 1;
+  return { index, highWater: index };
 }
 
 /**

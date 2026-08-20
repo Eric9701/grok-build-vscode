@@ -59,13 +59,14 @@ describe("queued send commit", () => {
   it("keeps each contribution's chips with the prefix that owns them", () => {
     const session = new Session();
     const a = makeImageChip("/s/a.png", 1, "image/png");
-    const b = makeImageChip("/s/b.png", 1, "image/png");
-    session.queuedSends = [item("look at A", [a]), item("and B", [b])];
+    const b = makeImageChip("/s/b.png", 2, "image/png");
+    session.queuedSends = [item("look at A", [a]), item("edit [Image #2]", [b])];
 
     const claim = beginQueuedSendCommit(session, "look at A")!;
     expect(claim.items[0].chips).toEqual([a]);
     expect(finishQueuedSendCommit(session, claim, true)).toBe(true);
-    expect(session.queuedSends).toEqual([item("and B", [b])]);
+    expect(session.queuedSends).toEqual([item("edit [Image #2]", [b])]);
+    expect(session.queuedSends[0].chips[0].imageIndex).toBe(2);
   });
 
   it("commits an image-only prefix after a later contribution is appended in flight", () => {

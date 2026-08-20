@@ -263,13 +263,13 @@ export class Session {
    */
   worktree?: { path: string; label: string; sourceGitRoot: string; id?: string };
 
-  // NOTE: there is deliberately no `[Image #N]` counter here any more. Tags are
-  // numbered per MESSAGE, from the chip's position (chips.ts
-  // `withPerMessageImageIndices`), because that is what the CLI resolves an
-  // image reference against. The session-scoped counter this replaced was
-  // chosen so two screenshots in one conversation never shared a tag — a real
-  // benefit, but it bought unambiguous transcripts at the price of tags the
-  // agent could not resolve, which is the wrong trade.
+  /**
+   * Last `[Image #N]` handed to a chip in this staging generation (`0` = idle).
+   * `allocateImageIndex` increments it at attach and resets only when nothing
+   * is staged (composer empty and queue empty), so a plain send starts at `#1`
+   * while a chip shown as `#2` keeps `#2` after an earlier image flushes.
+   */
+  imageIndexHighWater = 0;
 
   titleGenerated = false;
   firstUserMessageForTitle?: string;
@@ -331,11 +331,10 @@ export class Session {
    * the attachments snapshotted at queue time, so a later composer edit cannot
    * silently drop them. Entries are the source of truth (`""` is image-only).
    * The flush still sends them as ONE combined prompt
-   * (`buildQueuedPromptWithImages`): sequential `[Image #N]` assigned when
-   * each chip was attached (continuing through the live queue). Authored
-   * text is copied verbatim. Host-owned per session — the webview renders a
-   * mirror from `queuedSends` snapshots, so it survives focus switches and
-   * flushes even while backgrounded.
+   * (`buildQueuedPromptWithImages`): each chip keeps the `[Image #N]` it was
+   * shown at attach (`allocateImageIndex`); authored text is copied verbatim.
+   * Host-owned per session — the webview renders a mirror from `queuedSends`
+   * snapshots, so it survives focus switches and flushes even while backgrounded.
    */
   queuedSends: QueuedSendEntry[] = [];
 

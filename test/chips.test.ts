@@ -14,7 +14,7 @@ import {
   removeChip,
   selectionLineRange,
   toggleChip,
-  withPerMessageImageIndices,
+  allocateImageIndex,
 } from "../src/chips";
 
 // VS Code positions are 0-based; the chip range is 1-based inclusive. Selection
@@ -192,93 +192,85 @@ describe("implicitChipStartsHidden (#67)", () => {
   });
 });
 
-// The `[Image #N]` tag is resolved by the CLI against the images attached to
-// the message it is reading, numbered from 1 — an index from an earlier message
-// matches nothing (measured: research/image-index-probe.cjs). These pin the
-// numbering to POSITION, which is the only thing that can keep our tag and the
-// CLI's count in step.
-describe("withPerMessageImageIndices", () => {
-  const img = (name: string, index: number, hidden = false) => ({
-    ...makeImageChip(`/staging/${name}.png`, index, "image/png"),
-    hidden,
+// A chip's `[Image #N]` is stamped once at attach and is never rewritten.
+// Removing or flushing an earlier chip must not relabel a later one — that
+// is the handle the user already wrote into the draft.
+describe("allocateImageIndex", () => {
+  const img = (name: string, index: number) => makeImageChip(`/staging/${name}.png`, index, "image/png");
+
+  it("starts at #1 when nothing is staged, even after a previous high-water", () => {
+    expect(allocateImageIndex(0, [])).toEqual({ index: 1, highWater: 1 });
+    expect(allocateImageIndex(7, [])).toEqual({ index: 1, highWater: 1 });
+    expect(allocateImageIndex(4, [makeExplicitChip("/a.ts", "a.ts")])).toEqual({ index: 1, highWater: 1 });
   });
 
-  it("numbers image chips 1..N by position", () => {
-    const out = withPerMessageImageIndices([img("a", 1), img("b", 2), img("c", 3)]);
-    expect(out.map((c) => c.imageIndex)).toEqual([1, 2, 3]);
+  it("continues from the high-water while anything is still staged", () => {
+    expect(allocateImageIndex(1, [img("a", 1)])).toEqual({ index: 2, highWater: 2 });
+    expect(allocateImageIndex(2, [img("a", 1), img("b", 2)])).toEqual({ index: 3, highWater: 3 });
   });
 
-  it("renumbers a session-scoped index down to this message's numbering", () => {
-    // THE BUG: the second image of a conversation was staged as #2 while the
-    // CLI — seeing one image on that message — knew it as #1, so every
-    // image_edit against it was refused.
-    const out = withPerMessageImageIndices([img("second", 2)]);
-    expect(out[0].imageIndex).toBe(1);
-    expect(out[0].relPath).toBe("Image #1");
+  it("does not relabel remaining chips when an earlier one is removed, and does not reuse its number", () => {
+    const a = img("a", 1);
+    const b = img("b", 2);
+    const rest = removeChip([a, b], a.id);
+    expect(rest.map((c) => c.imageIndex)).toEqual([2]);
+    expect(rest[0].relPath).toBe("Image #2");
+    expect(allocateImageIndex(2, rest)).toEqual({ index: 3, highWater: 3 });
   });
 
-  it("closes the gap a removal leaves, instead of sending 1 and 3", () => {
-    const chips = [img("a", 1), img("b", 2), img("c", 3)];
-    const afterRemoval = withPerMessageImageIndices(removeChip(chips, chips[0].id));
-    expect(afterRemoval.map((c) => c.imageIndex)).toEqual([1, 2]);
-    expect(afterRemoval.map((c) => c.relPath)).toEqual(["Image #1", "Image #2"]);
+  it("floors the high-water on live chip indices so a restored draft cannot collide", () => {
+    expect(allocateImageIndex(0, [img("kept", 2)])).toEqual({ index: 3, highWater: 3 });
   });
 
-  it("moves the composer label with the index, so the UI cannot state a stale number", () => {
-    // relPath is what the composer row renders; imageIndex is what the bubble
-    // renders and what the tag carries. They must never disagree.
-    const [only] = withPerMessageImageIndices([img("x", 7)]);
-    expect(only.relPath).toBe("Image #1");
-    expect(only.imageIndex).toBe(1);
+  it("file chips consume no numbers", () => {
+    const staged = [makeExplicitChip("/a.ts", "a.ts"), img("a", 1), makeImplicitChip("/w/open.ts", "open.ts")];
+    expect(allocateImageIndex(1, staged)).toEqual({ index: 2, highWater: 2 });
   });
 
-  it("leaves file chips untouched and lets them consume no numbers", () => {
-    const file = makeExplicitChip("/a.ts", "src/a.ts");
-    const implicit = makeImplicitChip("/w/open.ts", "open.ts");
-    const out = withPerMessageImageIndices([file, img("a", 9), implicit, img("b", 4)]);
-    expect(out[0]).toBe(file); // same object — untouched
-    expect(out[2]).toBe(implicit);
-    expect(out.filter((c) => c.imageIndex != null).map((c) => c.imageIndex)).toEqual([1, 2]);
+  it("does not reuse a removed later chip's number while an earlier one remains", () => {
+    const a = img("a", 1);
+    const b = img("b", 2);
+    const rest = removeChip([a, b], b.id);
+    expect(rest.map((c) => c.imageIndex)).toEqual([1]);
+    expect(allocateImageIndex(2, rest)).toEqual({ index: 3, highWater: 3 });
   });
 
-  it("keeps ids stable so a click already in flight still resolves", () => {
-    const chips = [img("a", 5), img("b", 6)];
-    const out = withPerMessageImageIndices(chips);
-    expect(out.map((c) => c.id)).toEqual(chips.map((c) => c.id));
-    // …and removal by the pre-renumber id still finds its chip.
-    expect(removeChip(out, chips[1].id)).toHaveLength(1);
+  it("a queued image with an empty composer still holds the generation open", () => {
+    expect(allocateImageIndex(1, [img("queued", 1)])).toEqual({ index: 2, highWater: 2 });
   });
 
-  it("is a no-op — same objects — when the numbering is already right", () => {
-    const chips = [img("a", 1), img("b", 2)];
-    const out = withPerMessageImageIndices(chips);
-    expect(out[0]).toBe(chips[0]);
-    expect(out[1]).toBe(chips[1]);
+  it("a hidden image chip still holds the generation open", () => {
+    const hidden = { ...img("hidden", 1), hidden: true };
+    expect(allocateImageIndex(1, [hidden])).toEqual({ index: 2, highWater: 2 });
   });
 
-  it("is idempotent", () => {
-    const once = withPerMessageImageIndices([img("a", 4), img("b", 9)]);
-    const twice = withPerMessageImageIndices(once);
-    expect(twice.map((c) => c.imageIndex)).toEqual(once.map((c) => c.imageIndex));
-  });
+  it("queue #1, attach #2, drop #1 → #2 stays #2, next is #3, idle resets to #1", () => {
+    let highWater = 0;
+    let composer = [] as ReturnType<typeof img>[];
+    let queued = [] as ReturnType<typeof img>[];
 
-  it("skips hidden image chips, matching what the send actually puts on the wire", () => {
-    // A hidden chip is dropped by the pre-read AND by the bubble's chip filter,
-    // so counting it would push every later tag one past the CLI's numbering.
-    const out = withPerMessageImageIndices([img("hidden", 1, true), img("shown", 2)]);
-    expect(out[1].imageIndex).toBe(1);
-    expect(out[0].imageIndex).toBe(1); // untouched — not on the wire, still an image chip
-  });
+    let alloc = allocateImageIndex(highWater, [...composer, ...queued]);
+    highWater = alloc.highWater;
+    const a = img("a", alloc.index);
+    composer = [a];
+    expect(a.imageIndex).toBe(1);
 
-  it("continues from startAt so a chip attached against a queue is the flush number", () => {
-    const out = withPerMessageImageIndices([img("b", 1)], 2);
-    expect(out[0].imageIndex).toBe(2);
-    expect(out[0].relPath).toBe("Image #2");
-  });
+    queued = [a];
+    composer = consumeChips(composer, [a]);
 
-  it("is a no-op when chips already continue from startAt", () => {
-    const chips = [img("b", 2)];
-    const out = withPerMessageImageIndices(chips, 2);
-    expect(out[0]).toBe(chips[0]);
+    alloc = allocateImageIndex(highWater, [...composer, ...queued]);
+    highWater = alloc.highWater;
+    const b = img("b", alloc.index);
+    composer = [b];
+    expect(b.imageIndex).toBe(2);
+    expect(b.relPath).toBe("Image #2");
+
+    queued = [];
+    expect(composer.map((c) => c.imageIndex)).toEqual([2]);
+    alloc = allocateImageIndex(highWater, [...composer, ...queued]);
+    expect(alloc.index).toBe(3);
+
+    composer = [];
+    expect(allocateImageIndex(alloc.highWater, [...composer, ...queued])).toEqual({ index: 1, highWater: 1 });
   });
 });

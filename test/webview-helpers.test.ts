@@ -568,6 +568,15 @@ describe("parseImageTags", () => {
     ]);
   });
 
+  it("round-trips a non-contiguous #2 / #5 set without inventing a sequence", () => {
+    const out = parseImageTags("edit both\n\n[Image #2] (two.png)\n[Image #5] (five.png)");
+    expect(out.body).toBe("edit both");
+    expect(out.images).toEqual([
+      { index: 2, path: "two.png" },
+      { index: 5, path: "five.png" },
+    ]);
+  });
+
   it("strips the legacy leading tag lines (first-build wire)", () => {
     const out = parseImageTags("[Image #1]\n[Image #2]\n\ndescribe both");
     expect(out.body).toBe("describe both");

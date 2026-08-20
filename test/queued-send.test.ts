@@ -1,16 +1,14 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { consumeChips, makeExplicitChip, makeImageChip, makeImplicitChip, removeChip } from "../src/chips";
+import { allocateImageIndex, consumeChips, makeExplicitChip, makeImageChip, makeImplicitChip, removeChip } from "../src/chips";
 import {
   chipsForQueueSend,
   claimQueuedSendDispatch,
-  composerImageIndexStart,
   dequeueQueuedSends,
   enqueueQueuedSend,
   queuedFlushText,
   queuedSendsMessage,
   queuedSendsText,
-  reindexQueuedImageChips,
   restoreQueuedChips,
   takeQueuedSendsPrefix,
 } from "../src/queued-send";
@@ -152,8 +150,11 @@ describe("live host keeps the entry-store invariants", () => {
     expect(sidebarSrc).toContain("session.queuedSendDispatch = claimQueuedSendDispatch(");
   });
 
-  it("composer image numbers continue from the live queue", () => {
-    expect(sidebarSrc).toContain("composerImageIndexStart(session.queuedSends)");
+  it("assigns image numbers at attach and never reindexes them", () => {
+    expect(sidebarSrc).toContain("allocateImageIndex(session.imageIndexHighWater");
+    expect(sidebarSrc).not.toContain("composerImageIndexStart");
+    expect(sidebarSrc).not.toContain("reindexQueuedImageChips");
+    expect(sidebarSrc).not.toContain("withPerMessageImageIndices");
   });
 });
 
@@ -190,37 +191,17 @@ describe("restoreQueuedChips", () => {
     expect(images.map((c) => c.path)).toEqual(["/s/q.png", "/s/c.png"]);
     expect(images.map((c) => c.imageIndex)).toEqual([1, 2]);
   });
-});
 
-describe("composerImageIndexStart continues from the live queue", () => {
-  it("starts at 1 when nothing is queued", () => {
-    expect(composerImageIndexStart([])).toBe(1);
-    expect(composerImageIndexStart([{ text: "x", chips: [makeExplicitChip("/repo/a.ts", "a.ts")] }])).toBe(1);
-  });
-
-  it("counts visible queued images so the next composer chip is the flush number", () => {
-    expect(composerImageIndexStart([{ text: "a", chips: [img("a")] }])).toBe(2);
-    expect(composerImageIndexStart([
-      { text: "a", chips: [makeImageChip("/s/a.png", 1, "image/png")] },
-      { text: "b", chips: [makeImageChip("/s/b.png", 2, "image/png")] },
-    ])).toBe(3);
+  it("does not compact a restored chip that was shown as #2", () => {
+    const queued = makeImageChip("/s/q.png", 2, "image/png");
+    const restored = restoreQueuedChips([], [{ text: "edit [Image #2]", chips: [queued] }]);
+    expect(restored[0].imageIndex).toBe(2);
+    expect(restored[0].relPath).toBe("Image #2");
   });
 });
 
-describe("reindexQueuedImageChips", () => {
-  it("is a no-op when snapshots already continue through the queue", () => {
-    const a = makeImageChip("/s/a.png", 1, "image/png");
-    const b = makeImageChip("/s/b.png", 2, "image/png");
-    const items = [
-      { text: "look at A", chips: [a] },
-      { text: "edit [Image #2]", chips: [b] },
-    ];
-    const out = reindexQueuedImageChips(items);
-    expect(out[0]).toBe(items[0]);
-    expect(out[1]).toBe(items[1]);
-  });
-
-  it("compacts remaining chip labels after an earlier contribution is removed, and leaves text alone", () => {
+describe("queued image numbers stay at the attach-time index", () => {
+  it("removing an earlier contribution does not relabel a later chip or its authored text", () => {
     const a = makeImageChip("/s/a.png", 1, "image/png");
     const b = makeImageChip("/s/b.png", 2, "image/png");
     const items = [
@@ -228,17 +209,21 @@ describe("reindexQueuedImageChips", () => {
       { text: "see [Image #2]", chips: [b] },
     ];
     const rest = dequeueQueuedSends(items, 0, true)!.rest;
-    const out = reindexQueuedImageChips(rest);
-    expect(out[0].chips[0].imageIndex).toBe(1);
-    expect(out[0].chips[0].relPath).toBe("Image #1");
-    expect(out[0].text).toBe("see [Image #2]");
+    expect(rest[0].chips[0].imageIndex).toBe(2);
+    expect(rest[0].chips[0].relPath).toBe("Image #2");
+    expect(rest[0].text).toBe("see [Image #2]");
+    expect(allocateImageIndex(2, rest.flatMap((item) => item.chips))).toEqual({ index: 3, highWater: 3 });
   });
 
-  it("maps a stale session-scoped index down to #1 on a single-item flush", () => {
-    const stale = makeImageChip("/s/x.png", 7, "image/png");
-    const out = reindexQueuedImageChips([{ text: "make it green", chips: [stale] }]);
-    expect(out[0].chips[0].imageIndex).toBe(1);
-    expect(out[0].chips[0].relPath).toBe("Image #1");
-    expect(out[0].text).toBe("make it green");
+  it("a prefix flush leaves the surviving contribution on its type-time number", () => {
+    const a = makeImageChip("/s/a.png", 1, "image/png");
+    const b = makeImageChip("/s/b.png", 2, "image/png");
+    const items = [
+      { text: "look at A", chips: [a] },
+      { text: "edit [Image #2]", chips: [b] },
+    ];
+    const split = takeQueuedSendsPrefix(items, "look at A")!;
+    expect(split.rest[0].chips[0].imageIndex).toBe(2);
+    expect(split.rest[0].text).toBe("edit [Image #2]");
   });
 });

@@ -185,8 +185,8 @@ export function buildPromptWithImages(
 
 /**
  * One queued contribution's prompt ingredients. Image indices are the numbers
- * the composer showed (continuing from images already queued). The combined
- * builder copies `text` verbatim and emits tags from those indices.
+ * stamped at attach — never rewritten. The combined builder copies `text`
+ * verbatim and emits tags from those indices.
  */
 export interface QueuedPromptContribution {
   text: string;
@@ -197,9 +197,9 @@ export interface QueuedPromptContribution {
 /**
  * Build one `session/prompt` from discrete queued contributions, each keeping
  * its own attachments. Tags sit with the contribution they belong to rather
- * than dumping a union at the end. Numbering is sequential within this one
- * prompt because each contribution was numbered that way when composed —
- * `text` is copied as authored, never rewritten.
+ * than dumping a union at the end. Numbering is the attach-time index on each
+ * chip — gaps survive a prefix flush or a removed contribution, and `text`
+ * is copied as authored, never rewritten.
  *
  * Implicit (ambient editor) chips are applied once, on the last contribution,
  * matching a live send's single context envelope.

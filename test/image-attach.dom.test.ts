@@ -167,6 +167,27 @@ describe("restored [Image #N] rendering", () => {
     expect(doc.querySelector(".msg-chip")?.textContent).toContain("Image #1");
   });
 
+  it("maps non-contiguous restored tags to the matching thumbnails", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, {
+      type: "userMessageChunk",
+      text: "edit both\n\n[Image #2] (C:\\staging\\two.png — attached inline; do not Read it)\n[Image #5] (C:\\staging\\five.png — attached inline; do not Read it)",
+      images: [
+        { imageIndex: 2, path: "C:\\staging\\two.png", previewSrc: "data:image/png;base64,AAA=" },
+        { imageIndex: 5, path: "C:\\staging\\five.png", previewSrc: "data:image/png;base64,BBB=" },
+      ],
+    });
+    dispatch(window, { type: "historyReplay", active: false });
+    const chips = [...doc.querySelectorAll(".msg-chip")];
+    expect(chips.map((el) => el.textContent)).toEqual(["Image #2", "Image #5"]);
+    const thumbs = [...doc.querySelectorAll(".msg-chip-preview img")].map((el) => el.getAttribute("src"));
+    expect(thumbs).toEqual([
+      "data:image/png;base64,AAA=",
+      "data:image/png;base64,BBB=",
+    ]);
+  });
+
   it("leaves a literal [Image #N] in the middle of the user's words alone", () => {
     const { window, doc } = bootWebview();
     replayUserMessage(window, "the TUI prints [Image #1] before the text — why?");

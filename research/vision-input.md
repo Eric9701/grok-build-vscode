@@ -59,34 +59,31 @@ Run it: `node research/vision-probe.cjs` (env: `PROBE_PNG_SIZE=<px>`,
   (or none) — hint-less legacy tags and leading/inline legacy shapes from the
   first build are also stripped; a tag-looking string in the *middle* of the
   user's words is left alone.
-- **`[Image #N]` numbering is PER-PROMPT** — the tag is the image's position
-  among the visible image chips of the prompt it rides on, so it restarts at
-  #1 every turn (`withPerMessageImageIndices` in `src/chips.ts`; the composer
-  label, the bubble chip, and the tag all derive from it, so they cannot
-  disagree). Queued follow-ups are one combined prompt: a chip attached while
-  a turn is busy continues from `composerImageIndexStart`, so the number
-  shown while composing is the number the flush emits. Authored text is
-  copied verbatim — never rewritten to chase a later remap. This is not a
-  style choice: the CLI resolves a reference against the images attached to
-  the message it is reading, numbered from 1, and an index from an earlier
-  message matches **nothing** — measured against grok 1.0.0 by
-  `research/image-index-probe.cjs`, which asks for a deliberately
-  impossible `[Image #9]` and reads the refusal:
+- **`[Image #N]` is assigned once, at attach, and never rewritten.**
+  `allocateImageIndex` (`src/chips.ts`) stamps the chip from
+  `Session.imageIndexHighWater`. That high-water resets to zero only when
+  nothing is staged — composer empty *and* queue empty — so a plain send
+  still starts at `#1`, while a chip shown as `#2` keeps `#2` after `#1`
+  flushes or is removed. Tags may be non-contiguous (`#2`, `#5`);
+  `parseImageTags` stores the captured number as a Map key, and
+  `buildPromptWithImages` sorts by index, so holes do not disturb restore
+  or block order. The composer label, the bubble chip, and the prompt tag
+  all read that stored index. Authored text is copied verbatim — never
+  rewritten, never compacted. There is no `withPerMessageImageIndices` /
+  `composerImageIndexStart` / `reindexQueuedImageChips`. The CLI still
+  resolves a reference against the images attached to THIS message
+  (`research/image-index-probe.cjs`); a number from an earlier *turn*
+  (staging already idle, next paste is `#1` again) matches nothing:
 
   > image reference "[Image #9]" matches no image attached to THIS MESSAGE. If
   > it was attached earlier in the conversation, ask the user to re-attach it
   > here; otherwise pass an absolute filesystem path or a data: URL.
 
-  It was session-scoped until 2026-08-12 (`Session.imageCounter`, re-seeded
-  from replayed prompts on restore) so two screenshots in one conversation
-  never shared a tag. That reads better in a transcript, but it made the second
-  image of any conversation go out as `[Image #2]` against a message carrying
-  one image, so `image_edit` refused every reference to it — unambiguous
-  transcripts are not worth unresolvable tags. Consequence accepted with the
-  change: two different pictures in one conversation are both "Image #1", each
-  in its own bubble. Old transcripts still render correctly, because restore
-  matches previews to the tags found in the very same text, whatever numbers
-  that text happens to carry.
+  Restore matches previews to the tags found in the very same text, whatever
+  numbers that text happens to carry. Two pictures in two sequential turns
+  are both "Image #1", each in its own bubble, because the high-water reset
+  between them. Two pictures staged together stay `#1` and `#2` even if the
+  first contribution is flushed or removed.
 - **Send is validated, never silent.** Every visible image chip is pre-read on
   the host before anything is cleared or sent; any failure blocks the send
   with the chips intact and an error in the chat. Formats are whitelisted to
