@@ -30,13 +30,24 @@ describe("sidebar connect wiring", () => {
     const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
     expect(src).toMatch(/pickFreeListenPort:\s*listenFreeLoopbackPort/);
   });
+
+  it("hands the child npxSpawnPlan's env, not the stripped process.env", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const start = src.indexOf("private async connectMcpConnector(");
+    const end = src.indexOf("private async disconnectMcpConnector(");
+    const body = src.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(body).toContain("env: npx.env");
+    expect(body).not.toContain("env: process.env");
+  });
 });
 
 describe("npx spawn plan", () => {
   it("uses the Windows cmd shim with a shell", () => {
     const empty = { pathEnv: "", isFile: () => false };
-    expect(npxSpawnPlan("win32", empty)).toEqual({ command: "npx.cmd", shell: true });
-    expect(npxSpawnPlan("linux", empty)).toEqual({ command: "npx", shell: false });
+    expect(npxSpawnPlan("win32", empty)).toMatchObject({ command: "npx.cmd", shell: true });
+    expect(npxSpawnPlan("linux", empty)).toMatchObject({ command: "npx", shell: false });
   });
 });
 

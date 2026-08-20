@@ -26,7 +26,9 @@ that includes the `feedback` builtin. Off until one of those is true.
 to SpaceXAI*, default **off**) is an additional gate on
 `decideFeedbackAvailability` (`userEnabled`). Off means never; on means when
 the provider supports it. Codex and Claude stay off. The TUI samples
-feedback; this host does not — the setting is the substitute. Ratings stay
+feedback; this host does not — the setting is the substitute. The desk owns
+the toggle; remotes show a read-only On/Off status (`thumbsFeedbackRemote`)
+because inbound `setThumbsFeedback` is `host-local`. Ratings stay
 ephemeral (`Session.turnRating` only). Solicited
 `FeedbackRequestNotification` / `x.ai/feedback/dismiss` stay unimplemented.
 

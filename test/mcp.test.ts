@@ -230,6 +230,24 @@ describe("MCP remote inventory projection", () => {
     expect(body).toContain("tagMcpServers");
     expect(body).not.toContain("projectMcp");
   });
+
+  it("classifies Grok inventory against Grok config files even if Codex or Claude is focused", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const start = src.indexOf("private mcpNameLayersFor(");
+    const end = src.indexOf("private tagMcpServers(", start);
+    const body = src.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(body).toContain('provider: "grok"');
+    expect(body).not.toContain("session.provider");
+    // Host-inject reserved identity stays provider-specific; only the Grok
+    // inventory tagger is pinned to grok.
+    const reserved = src.slice(
+      src.indexOf("private reservedMcpIdentityFor("),
+      src.indexOf("private hostMcpServersFor("),
+    );
+    expect(reserved).toContain("provider: session.provider");
+  });
 });
 
 describe("MCP origin tags", () => {

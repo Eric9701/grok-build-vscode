@@ -47,7 +47,10 @@ See `research/mcp-orphan-probe.cjs`.
 fields only, never the launch recipe). `scopeName` and `tag` are on that
 allowlist so a phone can show the same provenance badge as the desk
 (managed `scopeName` / grok.com, project folder name, or
-`User on: <deviceDisplayName>`). `connectMcpConnector` / `disconnectMcpConnector` are host-local:
+`User on: <deviceDisplayName>`). Origin tags for that inventory always
+classify against Grok config files (`mcpNameLayersFor` → `mcpConfigPaths`
+with `provider: "grok"`), not the focused session's provider.
+`connectMcpConnector` / `disconnectMcpConnector` are host-local:
 OAuth needs a browser on the machine that owns `~/.mcp-auth`. Settings →
 Connectors on a remote shows the desk-owned catalog read-only, the live Grok
 inventory, and a grok.com/connectors link. `listMcpServers` is inbound view

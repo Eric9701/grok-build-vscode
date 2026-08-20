@@ -89,6 +89,9 @@
   const TELEMETRY_COPY =
     "Anonymous usage stats only: a single session-start event with an anonymous install id — never prompts, code, file paths or names, and no identity. The IP address is discarded, never stored.";
 
+  const THUMBS_COPY =
+    "Show thumbs on a finished Grok turn so you can send a rating to SpaceXAI. Off by default. On, thumbs appear only when this Grok session supports feedback — never on Codex or Claude.";
+
   function escapeHtml(s) {
     return String(s ?? "")
       .replace(/&/g, "&amp;")
@@ -250,11 +253,25 @@
       id: "thumbsFeedback",
       category: "general",
       title: "Thumbs feedback to SpaceXAI",
-      description: "Show thumbs on a finished Grok turn so you can send a rating to SpaceXAI. Off by default. On, thumbs appear only when this Grok session supports feedback — never on Codex or Claude.",
+      description: THUMBS_COPY,
       kind: "toggle",
       defaultValue: false,
+      visible: (s, env) => !env || !env.isRemote,
       get: (s) => !!(s && s.thumbsFeedback),
       message: (value) => ({ type: "setThumbsFeedback", value }),
+    },
+    {
+      id: "thumbsFeedbackRemote",
+      category: "general",
+      title: "Thumbs feedback to SpaceXAI",
+      description: "",
+      kind: "status",
+      visible: (s, env) => !!(env && env.isRemote),
+      describe: (s) => {
+        const known = s && typeof s.thumbsFeedback === "boolean";
+        const state = known ? (s.thumbsFeedback ? "On. " : "Off. ") : "";
+        return state + THUMBS_COPY;
+      },
     },
     {
       id: "chatFontScale",
@@ -2092,6 +2109,7 @@
     CATEGORIES,
     NAV_ICONS,
     TELEMETRY_COPY,
+    THUMBS_COPY,
     ABOUT_DISCLAIMER,
     GITHUB_REPO_URL,
     GROK_CONNECTORS_URL,

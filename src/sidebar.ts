@@ -768,8 +768,10 @@ export class GrokSidebar {
    * Last posted `voiceConfigured` fingerprint per destination (`local` or
    * `remote:<clientId>`). The auth.json watcher matches a null filename, so
    * every grok write under `~/.grok` used to fan identical frames to every
-   * phone. Snapshot and credential-failure writers seed this so a skipped
-   * watcher post cannot starve a fresh tab or swallow a later genuine change.
+   * phone. Writers seed or invalidate: snapshot and credential-failure seed
+   * so a skipped watcher post cannot starve a fresh tab or swallow a later
+   * genuine change; a replaced renderer drops its entry (`forgetPostedVoiceConfigured`)
+   * because the new JS state starts unconfigured.
    */
   private lastPostedVoiceConfigured = new Map<string, string>();
   /** VS Code settings tab. Desktop/remote keep the in-page overlay. */
@@ -1458,6 +1460,9 @@ export class GrokSidebar {
 
   resolveWebviewView(view: HostWebviewView): void {
     this.view = view;
+    // Assigning html boots a new renderer. The `local` cache entry belonged
+    // to the previous JS state and must not suppress the next identical frame.
+    this.forgetPostedVoiceConfigured("local");
     view.webview.options = {
       enableScripts: true,
       // Extension assets keep extensionUri identity (vscode-remote on remote hosts).
@@ -9254,9 +9259,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private mcpNameLayersFor(session: Session): Map<string, "project" | "user"> {
     const cwd = this.sessionCwd(session);
+    // `this.mcpServers` is Grok's inventory (`refreshMcpServers` only reads
+    // it through a Grok session). Classify against Grok's config files even
+    // when the focused conversation is Codex or Claude — otherwise project
+    // `.mcp.json` / `.grok/config.toml` are skipped and those rows fall back
+    // to `User on: <device>`.
     const opts = {
       cwd,
-      provider: session.provider,
+      provider: "grok" as const,
       grokHome: resolveGrokHome(process.env),
       userHome: process.env.USERPROFILE || process.env.HOME || os.homedir(),
     };
@@ -9333,7 +9343,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         command: npx.command,
         args: mcpRemoteArgs(endpoint),
         shell: npx.shell,
-        env: process.env,
+        env: npx.env,
         pickFreeListenPort: listenFreeLoopbackPort,
       });
       if (this.mcpConnectingId !== id) return;
@@ -10889,6 +10899,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     payload: Extract<HostMsg, { type: "voiceConfigured" }>,
   ): void {
     this.lastPostedVoiceConfigured.set(destKey, voiceConfiguredFingerprint(payload));
+  }
+
+  /** A replaced renderer is a new destination — drop the old view's cache entry. */
+  private forgetPostedVoiceConfigured(destKey: string): void {
+    this.lastPostedVoiceConfigured?.delete(destKey);
   }
 
   /**
@@ -12796,6 +12811,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private postInitialState(): void {
+    // `ready` means the local renderer just booted (including Electron
+    // document reload, which does not re-enter resolveWebviewView). Drop the
+    // cache so postVoiceConfigured below is not swallowed against the old view.
+    this.forgetPostedVoiceConfigured("local");
     this.post(this.buildInitialStateMsg());
     this.postProviderState();
     this.postMcpConnectors();
@@ -13874,7 +13893,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   /** The sole remote-client release path: abandon its session before deleting ownership. */
   private releaseRemoteClient(clientId: string): void {
-    this.lastPostedVoiceConfigured?.delete(`remote:${clientId}`);
+    this.forgetPostedVoiceConfigured(`remote:${clientId}`);
     const current = this.remoteClients.active(clientId);
     const preserveLogicalTab = !!current && (
       current.needsProvider ||

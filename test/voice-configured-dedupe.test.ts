@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { GrokSidebar } from "../src/sidebar";
 import { Session } from "../src/session";
@@ -85,5 +86,41 @@ describe("postVoiceConfigured dedupes identical frames", () => {
     expect(sidebar.lastVoiceConfiguredByCwd.has(normalizeRepoPath("/gone"))).toBe(false);
     expect(sidebar.lastVoiceConfiguredByCwd.get(normalizeRepoPath("/repo"))).toBe(true);
     expect(sidebar.lastPostedVoiceConfigured.get("local")).toBeTruthy();
+  });
+
+  it("a recreated local webview is a new destination and gets the frame again", () => {
+    const sidebar = stubVoiceSidebar();
+    sidebar.postVoiceConfigured();
+    sidebar.postVoiceConfigured();
+    expect(sidebar.postLocal).toHaveBeenCalledTimes(1);
+
+    sidebar.forgetPostedVoiceConfigured("local");
+    sidebar.postVoiceConfigured();
+
+    expect(sidebar.postLocal).toHaveBeenCalledTimes(2);
+    expect(sidebar.postLocal.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ type: "voiceConfigured", value: true }),
+    );
+  });
+});
+
+describe("voiceConfigured cache dies with the renderer", () => {
+  it("resolveWebviewView and postInitialState drop the local entry; remote release drops the tab", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const resolveStart = src.indexOf("resolveWebviewView(");
+    const resolveEnd = src.indexOf("resolveProjectsRailView(", resolveStart);
+    const resolveBody = src.slice(resolveStart, resolveEnd);
+    expect(resolveBody).toContain('forgetPostedVoiceConfigured("local")');
+
+    const initialStart = src.indexOf("private postInitialState(");
+    const initialEnd = src.indexOf("private rehydrateWebviewFromFocused", initialStart);
+    const initialBody = src.slice(initialStart, initialEnd);
+    expect(initialBody).toContain('forgetPostedVoiceConfigured("local")');
+    expect(initialBody.indexOf('forgetPostedVoiceConfigured("local")'))
+      .toBeLessThan(initialBody.indexOf("this.postVoiceConfigured()"));
+
+    const releaseStart = src.indexOf("private releaseRemoteClient(");
+    const releaseEnd = src.indexOf("private retainRemoteClients(", releaseStart);
+    expect(src.slice(releaseStart, releaseEnd)).toContain("forgetPostedVoiceConfigured(`remote:${clientId}`)");
   });
 });

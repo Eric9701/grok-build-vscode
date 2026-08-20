@@ -19,6 +19,7 @@ function loadSettings() {
     CATEGORIES: Array<{ id: string; title: string }>;
     NAV_ICONS: Record<string, string>;
     TELEMETRY_COPY: string;
+    THUMBS_COPY: string;
     ABOUT_DISCLAIMER: string;
     GITHUB_ISSUE_BUG_URL: string;
     GITHUB_ISSUE_FEATURE_URL: string;
@@ -557,30 +558,73 @@ describe("settings overlay (chat.js)", () => {
     expect(api.TELEMETRY_COPY).toContain("The IP address is discarded, never stored.");
   });
 
-  it("offers Thumbs feedback to SpaceXAI on every surface, default off, next to usage stats", () => {
+  it("offers Thumbs feedback to SpaceXAI on the desk, default off, next to usage stats", () => {
     const api = loadSettings();
     const row = api.ROWS.find((r: { id: string }) => r.id === "thumbsFeedback") as {
       id: string;
       category: string;
       title: string;
       defaultValue: boolean;
+      kind: string;
     };
     expect(row).toMatchObject({
       category: "general",
       title: "Thumbs feedback to SpaceXAI",
       defaultValue: false,
+      kind: "toggle",
     });
     const ids = api.ROWS.filter((r: { category: string }) => r.category === "general").map((r: { id: string }) => r.id);
     expect(ids.indexOf("thumbsFeedback")).toBeGreaterThan(ids.indexOf("telemetryRemote"));
     const snapshot = api.defaultSnapshot();
     expect(snapshot.thumbsFeedback).toBe(false);
+    expect(api.THUMBS_COPY).toContain("send a rating to SpaceXAI");
     for (const env of [
       api.defaultEnv(fullEnv({ isDesktop: true, isRemote: false })),
       api.defaultEnv(fullEnv({ isDesktop: false, isRemote: false })),
-      api.defaultEnv(fullEnv({ isRemote: true })),
     ]) {
-      expect(api.visibleRows(snapshot, env).some((r) => r.id === "thumbsFeedback")).toBe(true);
+      const visible = api.visibleRows(snapshot, env).map((r) => r.id);
+      expect(visible).toContain("thumbsFeedback");
+      expect(visible).not.toContain("thumbsFeedbackRemote");
     }
+  });
+
+  it("shows thumbs as a read-only status on remote so a tap cannot lie about the host setting", () => {
+    const api = loadSettings();
+    const remoteRow = api.ROWS.find((r: { id: string }) => r.id === "thumbsFeedbackRemote") as {
+      id: string;
+      kind: string;
+      message?: unknown;
+      describe: (s: unknown) => string;
+    };
+    expect(remoteRow).toMatchObject({ kind: "status" });
+    expect(remoteRow.message).toBeUndefined();
+    const snapshot = api.defaultSnapshot({ thumbsFeedback: true });
+    const env = api.defaultEnv(fullEnv({ isRemote: true }));
+    const visible = api.visibleRows(snapshot, env).map((r) => r.id);
+    expect(visible).toContain("thumbsFeedbackRemote");
+    expect(visible).not.toContain("thumbsFeedback");
+    expect(remoteRow.describe(snapshot)).toMatch(/^On\. /);
+    expect(remoteRow.describe(snapshot)).toContain(api.THUMBS_COPY);
+    expect(remoteRow.describe(api.defaultSnapshot({ thumbsFeedback: false }))).toMatch(/^Off\. /);
+
+    const posted: unknown[] = [];
+    const window = new Window({ url: "https://localhost/" });
+    (window as unknown as { eval: (src: string) => void }).eval(settingsSrc);
+    const grok = (window as unknown as { GrokSettings: ReturnType<typeof loadSettings> }).GrokSettings;
+    const doc = window.document as unknown as Document;
+    const root = doc.createElement("div");
+    doc.body.appendChild(root);
+    grok.mount(root, {
+      snapshot,
+      env,
+      post: (msg: unknown) => posted.push(msg),
+    });
+    expect(root.querySelector('[data-id="thumbsFeedback"]')).toBeNull();
+    const status = root.querySelector('[data-id="thumbsFeedbackRemote"]') as HTMLElement;
+    expect(status).toBeTruthy();
+    expect(status.querySelector(".settings-switch")).toBeNull();
+    status.click();
+    expect(posted).not.toContainEqual(expect.objectContaining({ type: "setThumbsFeedback" }));
   });
 });
 
