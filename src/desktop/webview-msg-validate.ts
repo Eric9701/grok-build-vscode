@@ -320,6 +320,9 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "steerSend":
       if (!isString(raw.text)) return null;
       break;
+    case "turnFeedback":
+      if (raw.rating !== -1 && raw.rating !== 0 && raw.rating !== 1) return null;
+      break;
     case "dequeueSend":
       if (!isNumber(raw.index)) return null;
       break;

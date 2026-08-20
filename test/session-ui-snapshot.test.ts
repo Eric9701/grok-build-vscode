@@ -62,25 +62,28 @@ describe("sessionUiSnapshot", () => {
     });
   });
 
-  it("replays thumbs availability and confirmed ratings after a focus swap", () => {
+  it("replays thumbs availability and the live-turn rating after a focus swap", () => {
     const session = new Session();
     session.feedbackAvailable = true;
-    session.turnRatings.set(0, 1);
-    session.turnRatings.set(2, -1);
+    session.liveFeedbackEligible = true;
+    session.turnRating = -1;
     expect(sessionUiSnapshot(session, "agent")).toContainEqual({
       type: "feedbackAvailability",
       available: true,
     });
     expect(sessionUiSnapshot(session, "agent")).toContainEqual({
       type: "turnFeedbackAck",
-      userBubbleIndex: 0,
-      rating: 1,
-    });
-    expect(sessionUiSnapshot(session, "agent")).toContainEqual({
-      type: "turnFeedbackAck",
-      userBubbleIndex: 2,
       rating: -1,
     });
+  });
+
+  it("does not restore thumbs for a session that has not completed a live turn", () => {
+    const session = new Session();
+    session.feedbackAvailable = true;
+    session.turnRating = 1;
+    expect(sessionUiSnapshot(session, "agent")).not.toContainEqual(
+      expect.objectContaining({ type: "turnFeedbackAck" }),
+    );
   });
 
   it("accepts locally staged preview URIs for a warm focus snapshot", () => {

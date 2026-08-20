@@ -27,7 +27,6 @@ describe("per-turn thumbs (#114)", () => {
     expect(actions.querySelector(".msg-copy-btn")).toBeTruthy();
     expect(actions.querySelector(".msg-thumb-up")).toBeTruthy();
     expect(actions.querySelector(".msg-thumb-down")).toBeTruthy();
-    expect(actions.dataset.userBubbleIndex).toBe("0");
     const thumbs = actions.querySelector(".msg-thumbs") as HTMLElement;
     const ts = actions.querySelector(".msg-timestamp") as HTMLElement;
     expect(thumbs.nextElementSibling).toBe(ts);
@@ -41,7 +40,7 @@ describe("per-turn thumbs (#114)", () => {
     expect(doc.querySelector(".msg-thumbs")).toBeNull();
   });
 
-  it("posts turnFeedback with the visible bubble index and can clear", () => {
+  it("offers thumbs only on the latest completed turn and can clear", () => {
     const { window, doc, posted } = bootWebview();
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build", provider: "grok" });
     dispatch(window, { type: "feedbackAvailability", available: true });
@@ -50,23 +49,18 @@ describe("per-turn thumbs (#114)", () => {
     posted.length = 0;
     const footers = [...doc.querySelectorAll(".msg.agent .msg-actions")] as HTMLElement[];
     expect(footers).toHaveLength(2);
-    expect(footers[0].dataset.userBubbleIndex).toBe("0");
-    expect(footers[1].dataset.userBubbleIndex).toBe("1");
-    click(window, footers[0].querySelector(".msg-thumb-up")!);
-    expect(posted).toEqual([{
-      type: "turnFeedback",
-      userBubbleIndex: 0,
-      rating: 1,
-      totalUserBubbles: 2,
-    }]);
-    dispatch(window, { type: "turnFeedbackAck", userBubbleIndex: 0, rating: 1 });
-    expect(footers[0].querySelector(".msg-thumb-up")!.getAttribute("aria-pressed")).toBe("true");
+    expect(footers[0].querySelector(".msg-thumbs")).toBeNull();
+    expect(footers[1].querySelector(".msg-thumbs")).toBeTruthy();
+    click(window, footers[1].querySelector(".msg-thumb-up")!);
+    expect(posted).toEqual([{ type: "turnFeedback", rating: 1 }]);
+    dispatch(window, { type: "turnFeedbackAck", rating: 1 });
+    expect(footers[1].querySelector(".msg-thumb-up")!.getAttribute("aria-pressed")).toBe("true");
     posted.length = 0;
-    click(window, footers[0].querySelector(".msg-thumb-up")!);
-    expect(posted[0]).toMatchObject({ type: "turnFeedback", userBubbleIndex: 0, rating: 0 });
+    click(window, footers[1].querySelector(".msg-thumb-up")!);
+    expect(posted[0]).toMatchObject({ type: "turnFeedback", rating: 0 });
   });
 
-  it("skips steer bubbles when numbering the turn that gets the footer", () => {
+  it("still offers thumbs after a steered turn, without a bubble index", () => {
     const { window, doc, posted } = bootWebview();
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build", provider: "grok" });
     dispatch(window, { type: "feedbackAvailability", available: true });
@@ -78,19 +72,58 @@ describe("per-turn thumbs (#114)", () => {
     dispatch(window, { type: "promptComplete", meta: { totalTokens: 10 } });
     dispatch(window, { type: "agentEnd" });
     posted.length = 0;
-    const actions = doc.querySelector(".msg.agent .msg-actions") as HTMLElement;
-    expect(actions.dataset.userBubbleIndex).toBe("0");
+    const footers = [...doc.querySelectorAll(".msg.agent .msg-actions")] as HTMLElement[];
+    const actions = footers[footers.length - 1];
+    expect(actions.querySelector(".msg-thumbs")).toBeTruthy();
     click(window, actions.querySelector(".msg-thumb-down")!);
-    expect(posted[0]).toMatchObject({ userBubbleIndex: 0, rating: -1, totalUserBubbles: 1 });
+    expect(posted[0]).toEqual({ type: "turnFeedback", rating: -1 });
   });
 
-  it("adds thumbs to already-finished turns when availability arrives late", () => {
+  it("drops thumbs when rewind truncates the live turn", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build", provider: "grok" });
+    dispatch(window, { type: "feedbackAvailability", available: true });
+    completeTurn(window, "first");
+    completeTurn(window, "second");
+    expect(doc.querySelector(".msg-thumbs")).toBeTruthy();
+    dispatch(window, { type: "truncateMessages", surviving: 1 });
+    expect(doc.querySelector(".msg-thumbs")).toBeNull();
+  });
+
+  it("adds thumbs to the live finished turn when availability arrives late", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build", provider: "grok" });
     completeTurn(window);
     expect(doc.querySelector(".msg-thumbs")).toBeNull();
     dispatch(window, { type: "feedbackAvailability", available: true });
     expect(doc.querySelector(".msg.agent .msg-thumbs")).toBeTruthy();
+  });
+
+  it("does not add thumbs to restored session/load turns", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build", provider: "grok" });
+    dispatch(window, { type: "feedbackAvailability", available: true });
+    dispatch(window, { type: "historyReplay", active: true });
+    completeTurn(window, "restored");
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(doc.querySelector(".msg-thumbs")).toBeNull();
+  });
+
+  it("restores thumbs on the live footer after a focus-swap snapshot", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "session", sessionId: "s1", models: [], currentModelId: "grok-build", provider: "grok" });
+    dispatch(window, { type: "historyReplay", active: true });
+    completeTurn(window, "warm");
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(doc.querySelector(".msg-thumbs")).toBeNull();
+    dispatch(window, { type: "feedbackAvailability", available: true });
+    dispatch(window, { type: "turnFeedbackAck", rating: 1 });
+    const actions = doc.querySelector(".msg.agent .msg-actions") as HTMLElement;
+    expect(actions.querySelector(".msg-thumbs")).toBeTruthy();
+    expect(actions.querySelector(".msg-thumb-up")!.getAttribute("aria-pressed")).toBe("true");
+    posted.length = 0;
+    click(window, actions.querySelector(".msg-thumb-down")!);
+    expect(posted[0]).toEqual({ type: "turnFeedback", rating: -1 });
   });
 
   it("hides thumbs when the host latches availability off", () => {

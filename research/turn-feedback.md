@@ -1,7 +1,8 @@
 # Per-turn thumbs (#114)
 
 Grok-only. Codex and Claude have no equivalent. Buttons live on the single
-agent-turn footer (Copy + timestamp), revealed at turn end.
+agent-turn footer (Copy + timestamp), revealed at turn end — and only on the
+turn that just finished **in this process**.
 
 ## Wire
 
@@ -13,36 +14,57 @@ JSON-RPC wire the host sends **`_x.ai/feedback`**: the ACP decoder only routes
 
 `rating_type: "thumbs"`, `rating_value` -1 / 0 / 1. No `request_id` (spontaneous).
 `client_type` is the **host** (`extension` or `desktop`), even when a phone
-clicked. `turn_number` is always sent.
+clicked. **`turn_number` is omitted.** The agent attributes the rating from its
+own session tracking — the same numbering it uses for solicited `/feedback`.
 
 Degrade and hide the affordance on `-32601` and on an internal error whose
 detail begins `Feedback is disabled.` Availability is advertised first from
 `session/new` `_meta.feedbackEnabled`, else from an `available_commands_update`
 that includes the `feedback` builtin. Off until one of those is true.
 
-## `turn_number` is not rewind `promptIndex`
+## Why the host does not send `turn_number`
 
-`turn_texts_for_feedback` does `.filter(User).nth(turn_number)` on the live
-conversation snapshot. That index counts **every** `ConversationItem::User`,
-including legacy primers and mid-turn interjections.
+An earlier revision mapped visible user bubble N → the Nth **prompt** among
+host-seen User items and sent that index. That mapping cannot be made correct.
 
-Rewind `prompt_index` counts `session/prompt` turns. Steers do not consume one.
-After compaction the conversation User-item count collapses and `prompt_index`
-does not.
+`turn_texts_for_feedback` filters `matches!(item, ConversationItem::User(_))`
+— a bare match. It does not skip synthetic items. `SyntheticReason`
+(`xai-grok-sampling-types/src/conversation.rs`) has six variants that all
+produce `ConversationItem::User`:
 
-The host maps visible user bubble N → the Nth **prompt** among host-seen User
-items, then sends that item's index in the full (primer + steer + prompt) list.
-Omitting `turn_number` would file the rating against `allocate_turn_number - 1`
-(telemetry, monotonic across rewinds, harness siblings) — the wrong turn.
+| Variant | What injects it |
+|---|---|
+| `CompactionMeta` | compaction pipeline |
+| `SystemReminder` | runtime `<system-reminder>` |
+| `ProjectInstructions` | AGENTS.md / CLAUDE.md, at session spawn |
+| `AutoContinue` | after compaction, so the agent keeps going |
+| `AutoRecovery` | after a transient tool failure, to retry |
+| `Interjection` | steers (the only one this host models) |
 
-Known remaining miss: agent-side User items the host never saw (notification
-drain, TASK_WAKE). Same class as rewind's `bubbleMapIsConsistent` refusal;
-thumbs refuse rather than guess when the visible count diverges.
+We model exactly one of six. `ProjectInstructions` means any repo with an
+AGENTS.md or CLAUDE.md is already offset before the user types anything.
+`AutoRecovery` fires on transient tool failures and is invisible to the host.
+Compaction rewrites the CLI's User-item sequence while `session.buffer` keeps
+the original visible turns — so the consistency check (visible prompt count)
+still passes while the thumb silently rates a hidden `compaction_meta`.
+
+There is no signal we receive that reconstructs this sequence. Patching in a
+compaction tracker would fix one of six sources and leave the feature still
+silently wrong.
+
+Omitting `turn_number` is therefore the honest wire: the agent fills in its
+current turn. The UI is narrowed to match — thumbs only on that turn.
 
 ## UI
 
-Thumbs only, no comment box. Click paints after the host acks. Clicking the
-active thumb sends `rating_value: 0` (clear). Local `Session.turnRatings` only
-— nothing is read back from the agent; a cold `session/load` shows unrated.
+Thumbs only, no comment box. Only the most recent completed turn's footer
+offers them; older turns lose the affordance. A turn completed in a previous
+process (`session/load`) gets none — the agent's counter restarts, so there
+is nothing honest to attribute to. Click paints after the host acks. Clicking
+the active thumb sends `rating_value: 0` (clear). Local `Session.turnRating`
+only — nothing is read back from the agent.
+
+Rewind drops eligibility: the discarded tail includes the turn that just
+finished, and a surviving older turn is not "the current one."
 
 Remote inbound is `propose` (same class as `steerSend`).

@@ -237,8 +237,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   steerSend: "propose",
   // A thumbs rating is input about the conversation the remote is already
   // driving — same class as steerSend, not a desk-local picker or a destructive
-  // approval. The host files it against the desk session (`client_type` is
-  // extension/desktop even when a phone clicked).
+  // approval. The host files it against the live process's current turn
+  // (`client_type` is extension/desktop even when a phone clicked).
   turnFeedback: "propose",
   forkSession: "propose",
   // Worktree create/apply/remove: REVERTED to host-local 2026-08-07, hours

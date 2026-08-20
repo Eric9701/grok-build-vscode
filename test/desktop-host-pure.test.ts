@@ -1258,6 +1258,16 @@ describe("webview message schema validation", () => {
       type: "setTelemetryEnabled",
       value: false,
     });
+    expect(parseWebviewMsg({ type: "turnFeedback", rating: 1 })).toEqual({
+      type: "turnFeedback",
+      rating: 1,
+    });
+    expect(parseWebviewMsg({ type: "turnFeedback", rating: 0 })).toEqual({
+      type: "turnFeedback",
+      rating: 0,
+    });
+    expect(parseWebviewMsg({ type: "turnFeedback", rating: 2 })).toBeNull();
+    expect(parseWebviewMsg({ type: "turnFeedback" })).toBeNull();
     expect(parseWebviewMsg({ type: "connectMcpConnector", id: "linear" })).toEqual({
       type: "connectMcpConnector",
       id: "linear",

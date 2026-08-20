@@ -533,10 +533,11 @@ export type HostMsg =
    */
   | { type: "feedbackAvailability"; available: boolean }
   /**
-   * Host-confirmed rating for one visible user bubble's agent footer. `0` clears.
-   * Nothing is read back from the agent; this is local session state.
+   * Host-confirmed rating for the live-process turn that just finished.
+   * `0` clears. Also restores the thumbs affordance after a focus-swap
+   * (the only turn that can be rated). Nothing is read back from the agent.
    */
-  | { type: "turnFeedbackAck"; userBubbleIndex: number; rating: -1 | 0 | 1 }
+  | { type: "turnFeedbackAck"; rating: -1 | 0 | 1 }
   // Session-cumulative billing (#53), summed by the host across the session's
   // turns. `turn` is the last prompt's own usage. Both omitted when the CLI sent
   // no `_meta.usage` — the popover then shows only the context row, never zeros.
@@ -754,12 +755,10 @@ export type WebviewMsg =
   // prompt itself, so a -32601 fallback can re-queue the text without losing it.
   | { type: "steerSend"; text: string }
   /**
-   * Rate the agent turn that answered visible user bubble `userBubbleIndex`
-   * (0-based, steers excluded — same index Rewind uses). `rating` 0 clears.
-   * Host maps this to feedback `turn_number`; omit that mapping and the agent
-   * files the rating against the wrong turn.
+   * Rate the agent turn that just finished in this process. `rating` 0 clears.
+   * No bubble index: the host does not reconstruct CLI `turn_number`.
    */
-  | { type: "turnFeedback"; userBubbleIndex: number; rating: -1 | 0 | 1; totalUserBubbles?: number }
+  | { type: "turnFeedback"; rating: -1 | 0 | 1 }
   // Fork (#48): branch this session's conversation into a new one and focus it.
   // `sessionId` is additive: old clients omit it and keep today's path; a
   // present id that is not the dispatch-resolved session is refused.

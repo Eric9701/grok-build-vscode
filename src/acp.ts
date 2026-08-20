@@ -719,7 +719,6 @@ export class AcpClient extends EventEmitter {
    */
   async submitFeedback(opts: {
     ratingValue: ThumbsRating;
-    turnNumber: number;
     clientType: FeedbackClientType;
     clientVersion?: string;
   }): Promise<"ok" | "unsupported"> {
@@ -730,7 +729,6 @@ export class AcpClient extends EventEmitter {
         sessionId: this.sessionId,
         clientType: opts.clientType,
         ratingValue: opts.ratingValue,
-        turnNumber: opts.turnNumber,
         clientVersion: opts.clientVersion,
       }));
       return "ok";

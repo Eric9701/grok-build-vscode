@@ -301,12 +301,8 @@ import {
   commandsAdvertiseFeedback,
   decideFeedbackAvailability,
   feedbackClientType,
-  feedbackMapIsConsistent,
-  feedbackTurnNumberForVisibleBubble,
-  feedbackUserItemsFromBuffer,
   isThumbsRating,
   parseFeedbackEnabledMeta,
-  truncateTurnRatings,
 } from "./feedback";
 import {
   parseRunProgressUpdate,
@@ -2788,27 +2784,35 @@ Only continue if you trust this code.`,
     this.refreshFeedbackAvailability(session);
   }
 
-  private ackTurnFeedback(session: Session, userBubbleIndex: number, rating: -1 | 0 | 1): void {
-    if (rating === 1 || rating === -1) session.turnRatings.set(userBubbleIndex, rating);
-    else session.turnRatings.delete(userBubbleIndex);
-    this.emit(session, { type: "turnFeedbackAck", userBubbleIndex, rating });
+  private ackTurnFeedback(session: Session, rating: -1 | 0 | 1): void {
+    if (!session.liveFeedbackEligible) return;
+    session.turnRating = rating === 1 || rating === -1 ? rating : 0;
+    this.emit(session, { type: "turnFeedbackAck", rating });
   }
 
   /**
-   * Per-turn thumbs (#114). Maps the visible user bubble to feedback
-   * `turn_number` (User-item index, including primers and steers — not rewind
-   * `promptIndex`). Refuses rather than omitting `turn_number`.
+   * A live (non-replay) prompt settled in this process. Thumbs may rate that
+   * turn and no earlier one; a cold `session/load` never sets this.
+   */
+  private noteLiveTurnEnded(session: Session): void {
+    if (session.replaying || session.suppressContent) return;
+    session.liveFeedbackEligible = true;
+    session.turnRating = 0;
+  }
+
+  /**
+   * Per-turn thumbs (#114). Rates the turn that just finished in this process.
+   * Does not send `turn_number` — the agent attributes the rating from its own
+   * session tracking. See research/turn-feedback.md.
    */
   private async handleTurnFeedback(
-    userBubbleIndex: number,
     rating: unknown,
-    totalUserBubbles: number | undefined,
     session: Session,
     requester?: RemoteRequester,
   ): Promise<void> {
-    const previous = session.turnRatings.get(userBubbleIndex) ?? 0;
-    const revert = () => this.ackTurnFeedback(session, userBubbleIndex, previous);
-    if (!isThumbsRating(rating) || !Number.isInteger(userBubbleIndex) || userBubbleIndex < 0) {
+    const previous = session.turnRating;
+    const revert = () => this.ackTurnFeedback(session, previous);
+    if (!isThumbsRating(rating)) {
       revert();
       return;
     }
@@ -2817,28 +2821,20 @@ Only continue if you trust this code.`,
       revert();
       return;
     }
+    if (!session.liveFeedbackEligible) {
+      revert();
+      this.reportRequester(requester, "warning", "Only the latest reply in this session can be rated.");
+      return;
+    }
     const client = session.client;
     if (!client?.sessionId) {
       revert();
       this.reportRequester(requester, "warning", "Start a Grok session before rating a turn.");
       return;
     }
-    const items = feedbackUserItemsFromBuffer(session.buffer);
-    if (!feedbackMapIsConsistent(items, totalUserBubbles)) {
-      revert();
-      this.reportRequester(requester, "warning", "Couldn't attach that rating to a turn.");
-      return;
-    }
-    const turnNumber = feedbackTurnNumberForVisibleBubble(items, userBubbleIndex);
-    if (turnNumber == null) {
-      revert();
-      this.reportRequester(requester, "warning", "Couldn't attach that rating to a turn.");
-      return;
-    }
     try {
       const result = await client.submitFeedback({
         ratingValue: rating,
-        turnNumber,
         clientType: feedbackClientType(!!this.host.canSwitchWorkspaceFolder),
         clientVersion: this.context.extensionVersion,
       });
@@ -2852,7 +2848,10 @@ Only continue if you trust this code.`,
         );
         return;
       }
-      this.ackTurnFeedback(session, userBubbleIndex, rating);
+      // A later send already took the affordance. The RPC rated the turn that
+      // was current at click time; do not paint the next footer.
+      if (!session.liveFeedbackEligible) return;
+      this.ackTurnFeedback(session, rating);
     } catch (e: any) {
       revert();
       this.reportRequester(requester, "error", `Couldn't send that rating: ${e?.message ?? e}`);
@@ -6922,7 +6921,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.feedbackUnsupported = false;
     session.feedbackMetaEnabled = undefined;
     session.feedbackCommandsAdvertise = undefined;
-    session.turnRatings.clear();
+    session.liveFeedbackEligible = false;
+    session.turnRating = 0;
     session.activeSessionId = undefined;
     session.titleGenerated = false;
     session.firstUserMessageForTitle = undefined;
@@ -8032,7 +8032,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.steerSend(msg.text, session, requester);
         break;
       case "turnFeedback":
-        await this.handleTurnFeedback(msg.userBubbleIndex, msg.rating, msg.totalUserBubbles, session, requester);
+        await this.handleTurnFeedback(msg.rating, session, requester);
         break;
       case "forkSession":
         if (this.refuseMismatchedSessionId(msg.sessionId, session, requester)) break;
@@ -11469,7 +11469,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private applyRewindToView(session: Session, surviving: number): void {
     session.buffer = truncateReplayBuffer(session.buffer, surviving);
     session.userMessageCount = surviving;
-    session.turnRatings = truncateTurnRatings(session.turnRatings, surviving);
+    session.liveFeedbackEligible = false;
+    session.turnRating = 0;
     session.historyEventCount = historyEventCount(session.buffer);
     // Positions for anything persisted after this point are counted against the
     // same number the webview now holds.
@@ -12186,6 +12187,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
       }
       this.emit(session, { type: "agentEnd", meta });
+      this.noteLiveTurnEnded(session);
       this.setStatus(session, "done");
       // Again at the end: by now the transcript really has moved, so this is
       // the push that makes the row's position true rather than asserted.
@@ -12209,6 +12211,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // notice instead (#57).
       if (isRateLimitError(e)) {
         this.emit(session, { type: "agentError", text: rateLimitNoticeText(e) });
+        this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
         return;
       }
@@ -12220,6 +12223,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // promptErrorText keeps the copy consistent — the entitlement notice for
       // billing-flavored wording (#58), the raw detail otherwise.
       this.emit(session, { type: "agentError", text: promptErrorText(e) });
+      this.noteLiveTurnEnded(session);
       this.setStatus(session, "error");
     } finally {
       // Belt to the braces above: however this turn left — an early return on a
@@ -12291,6 +12295,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       if (!endTurn(session, turn)) return true;
       this.emit(session, { type: "agentEnd", meta });
+      this.noteLiveTurnEnded(session);
       this.setStatus(session, "done");
       session.authRecoveryTried = false; // recovered — re-arm for a future expiry
       this.maybeGenerateTitle(session);
@@ -12306,6 +12311,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // (#57): a fresh process with a fresh token hit the same wall.
       if (isRateLimitError(e2)) {
         this.emit(session, { type: "agentError", text: rateLimitNoticeText(e2) });
+        this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
         return true;
       }
@@ -12318,6 +12324,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // from the replay buffer on a later focus switch after the user has
         // already re-authed.
         this.emit(session, { type: "agentError", text: errorDetail(e2) });
+        this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
         this.post({ type: "onboarding", state: this.onboardingForSession(session) });
       } else {
@@ -12326,6 +12333,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // with the CLI's own actionable advice in chat (#58), never the login
         // overlay, which can't fix it.
         this.emit(session, { type: "agentError", text: promptErrorText(e2) });
+        this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
       }
     } finally {
@@ -12614,6 +12622,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  the mode picker on reconnect. */
   private static readonly TRANSIENT_TYPES = new Set([
     "restoreComposer", "focusInput", "findInSession", "openModePopover",
+    // Replayed mid-buffer it would stamp the then-current footer, not the live
+    // one. `sessionUiSnapshot` restores eligibility after historyReplay ends.
+    "turnFeedbackAck",
   ]);
   /**
    * Host→rail catalog surface. Everything else stays chat-only so a user who
@@ -13215,6 +13226,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     if (message.type === "clearMessages") session.buffer = [];
     else if (!GrokSidebar.TRANSIENT_TYPES.has(message.type)) session.buffer.push(message);
+    if (message.type === "userMessage" && !message.steer) {
+      session.liveFeedbackEligible = false;
+      session.turnRating = 0;
+    }
     if (session === this.focused) {
       this.postTap?.("local", message);
       const webview = this.view?.webview;
@@ -13239,6 +13254,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     if (message.type === "clearMessages") session.buffer = [];
     else if (!GrokSidebar.TRANSIENT_TYPES.has(message.type)) session.buffer.push(message);
+    if (message.type === "userMessage" && !message.steer) {
+      session.liveFeedbackEligible = false;
+      session.turnRating = 0;
+    }
     if (session !== this.focused) return;
     this.postTap?.("local", message);
     const webview = this.view?.webview;

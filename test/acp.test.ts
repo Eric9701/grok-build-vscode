@@ -159,7 +159,6 @@ describe("AcpClient submitFeedback", () => {
     client.sessionId = "s1";
     const pending = client.submitFeedback({
       ratingValue: 1,
-      turnNumber: 2,
       clientType: "extension",
       clientVersion: "3.13.0",
     });
@@ -171,11 +170,11 @@ describe("AcpClient submitFeedback", () => {
         client_type: "extension",
         rating_type: "thumbs",
         rating_value: 1,
-        turn_number: 2,
         client_version: "3.13.0",
       },
     });
     expect(msg.params.request_id).toBeUndefined();
+    expect(msg.params.turn_number).toBeUndefined();
     (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }));
     await expect(pending).resolves.toBe("ok");
   });
@@ -186,7 +185,6 @@ describe("AcpClient submitFeedback", () => {
     (client as any).request = vi.fn().mockRejectedValue({ code: -32601, message: "Method not found" });
     await expect(client.submitFeedback({
       ratingValue: -1,
-      turnNumber: 0,
       clientType: "desktop",
     })).resolves.toBe("unsupported");
 
@@ -197,7 +195,6 @@ describe("AcpClient submitFeedback", () => {
     });
     await expect(client.submitFeedback({
       ratingValue: 1,
-      turnNumber: 0,
       clientType: "desktop",
     })).resolves.toBe("unsupported");
   });
@@ -209,7 +206,6 @@ describe("AcpClient submitFeedback", () => {
     (client as any).request = request;
     await expect(client.submitFeedback({
       ratingValue: 1,
-      turnNumber: 0,
       clientType: "extension",
     })).resolves.toBe("unsupported");
     expect(request).not.toHaveBeenCalled();
@@ -221,7 +217,6 @@ describe("AcpClient submitFeedback", () => {
     (client as any).request = vi.fn().mockRejectedValue({ code: -32602, message: "Invalid params" });
     await expect(client.submitFeedback({
       ratingValue: 1,
-      turnNumber: 0,
       clientType: "extension",
     })).rejects.toMatchObject({ code: -32602 });
   });

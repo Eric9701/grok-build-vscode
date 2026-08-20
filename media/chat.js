@@ -384,8 +384,9 @@
     // time the CLI answers -32601 (the text falls back to the queue, never lost).
     steerSupported: true,
     // Grok thumbs (#114). Off until the host advertises feedbackAvailability.
+    // Only the live-process turn that just finished is rateable (not session/load).
     feedbackAvailable: false,
-    turnRatings: new Map(),
+    turnRating: 0,
     // Claude Code has no mid-turn interject, so a message typed while it is
     // working is always SCHEDULED, never steered — whatever the steer-by-default
     // setting says (owner, 2026-08-17). Offering Steer there would promise the
@@ -7025,7 +7026,7 @@
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
     state.feedbackAvailable = false;
-    state.turnRatings = new Map();
+    state.turnRating = 0;
     state.interjectionCount = 0;
     state.historyEventCount = 0;
     state.lastTurnUsage = null;
@@ -7482,10 +7483,6 @@
         editBtn.innerHTML = `<span class="msg-action-glyph">${ICON.pencil}</span>`;
         actions.appendChild(editBtn);
       }
-      if (role === "agent" && state.userMsgCount > 0) {
-        actions.dataset.userBubbleIndex = String(state.userMsgCount - 1);
-        if (feedbackOffered()) insertTurnThumbs(actions);
-      }
       const ts = document.createElement("span");
       ts.className = "msg-timestamp";
       const replayTimestamp = opts && opts.timestampMs;
@@ -7511,8 +7508,15 @@
       } else {
         // A user message starts a new turn; the previous turn's footer (if the
         // replay never emitted an explicit turn end) becomes final now.
+        // A steer is still the same turn — keep the footer pointer so agentEnd
+        // can attach thumbs to it. Nulling it here dropped the only handle
+        // after more agent chunks reused the same bubble.
         revealTurnFooter();
-        state.turnAgentActionsEl = null;
+        if (!(opts && opts.steer)) {
+          retireLiveTurnFeedback(state.turnAgentActionsEl);
+          state.turnAgentActionsEl = null;
+          state.turnRating = 0;
+        }
       }
     }
 
@@ -7592,6 +7596,26 @@
     return state.feedbackAvailable === true && state.activeProvider !== "codex" && state.activeProvider !== "claude";
   }
 
+  function stripTurnThumbs(actions) {
+    if (!actions) return;
+    const existing = actions.querySelector(".msg-thumbs");
+    if (existing) existing.remove();
+    actions.classList.remove("has-rating");
+    delete actions.dataset.feedbackPending;
+  }
+
+  function retireLiveTurnFeedback(actions) {
+    if (!actions) return;
+    stripTurnThumbs(actions);
+    delete actions.dataset.feedbackLive;
+  }
+
+  function liveTurnActions() {
+    const a = state.turnAgentActionsEl;
+    if (!a || a.hidden || a.dataset.feedbackLive !== "1") return null;
+    return a;
+  }
+
   function insertTurnThumbs(actions) {
     if (actions.querySelector(".msg-thumbs")) return;
     const wrap = document.createElement("span");
@@ -7617,8 +7641,7 @@
   }
 
   function paintTurnThumbs(actions) {
-    const idx = Number(actions.dataset.userBubbleIndex);
-    const rating = Number.isInteger(idx) ? (state.turnRatings.get(idx) || 0) : 0;
+    const rating = state.turnRating === 1 || state.turnRating === -1 ? state.turnRating : 0;
     actions.classList.toggle("has-rating", rating === 1 || rating === -1);
     const up = actions.querySelector(".msg-thumb-up");
     const down = actions.querySelector(".msg-thumb-down");
@@ -7627,27 +7650,38 @@
   }
 
   function syncFeedbackButtons() {
+    const live = liveTurnActions();
     for (const actions of messagesEl.querySelectorAll(".msg.agent .msg-actions")) {
-      const existing = actions.querySelector(".msg-thumbs");
-      const idx = Number(actions.dataset.userBubbleIndex);
-      if (feedbackOffered() && Number.isInteger(idx) && idx >= 0) {
-        if (!existing) insertTurnThumbs(actions);
+      if (actions === live && feedbackOffered()) {
+        if (!actions.querySelector(".msg-thumbs")) insertTurnThumbs(actions);
         else paintTurnThumbs(actions);
-      } else if (existing) {
-        existing.remove();
-        actions.classList.remove("has-rating");
-        delete actions.dataset.feedbackPending;
+      } else {
+        stripTurnThumbs(actions);
       }
     }
   }
 
-  function applyTurnFeedbackAck(userBubbleIndex, rating) {
-    if (rating === 1 || rating === -1) state.turnRatings.set(userBubbleIndex, rating);
-    else state.turnRatings.delete(userBubbleIndex);
-    for (const actions of messagesEl.querySelectorAll(`.msg.agent .msg-actions[data-user-bubble-index="${userBubbleIndex}"]`)) {
-      delete actions.dataset.feedbackPending;
-      paintTurnThumbs(actions);
+  /** Thumbs rate only the turn that just finished in this process. */
+  function markLiveTurnFeedback() {
+    if (state.replaying) return;
+    const a = state.turnAgentActionsEl;
+    if (!a) return;
+    for (const other of messagesEl.querySelectorAll(".msg.agent .msg-actions")) {
+      if (other !== a) retireLiveTurnFeedback(other);
     }
+    a.dataset.feedbackLive = "1";
+    state.turnRating = 0;
+    syncFeedbackButtons();
+  }
+
+  function applyTurnFeedbackAck(rating) {
+    if (state.replaying) return;
+    const a = state.turnAgentActionsEl;
+    if (!a) return;
+    a.dataset.feedbackLive = "1";
+    state.turnRating = rating === 1 || rating === -1 ? rating : 0;
+    delete a.dataset.feedbackPending;
+    syncFeedbackButtons();
   }
 
   const TOOL_VERB = {
@@ -13423,9 +13457,7 @@
         // Nothing streaming survives a truncation — drop the per-turn handles so
         // the next turn starts clean rather than appending into a removed node.
         state.userMsgCount = msg.surviving;
-        for (const key of [...state.turnRatings.keys()]) {
-          if (key >= msg.surviving) state.turnRatings.delete(key);
-        }
+        state.turnRating = 0;
         state.activeAgentEl = null;
         state.activeAgentRaw = "";
         state.activeUserEl = null;
@@ -13728,7 +13760,11 @@
         break;
       case "agentStart":
         // A user-initiated turn began. Show Grokking until content replaces it.
+        // Previous completed turn keeps its footer but loses thumbs — only the
+        // turn that just finished is rateable.
+        retireLiveTurnFeedback(state.turnAgentActionsEl);
         state.turnAgentActionsEl = null; // new turn → previous turn keeps its footer
+        if (!state.replaying) state.turnRating = 0;
         state.ttsTurnText = "";
         showGrokking();
         // Busy is event-sourced through the session buffer so a re-focus lands
@@ -14243,6 +14279,9 @@
         hideGrokking(); // turn ended (possibly before any content)
         hideThinkingIndicator();
         revealTurnFooter();
+        // Image-read failures fire agentError before a turn starts — don't
+        // restamp the previous reply. A prompt that actually failed is busy.
+        if (state.busy) markLiveTurnFeedback();
         addError(msg.text);
         state.busy = false;
         state.busyLocked = false; // an error ends any startup lock too
@@ -14258,6 +14297,7 @@
         // empty) would otherwise orphan the dots forever — content-based
         // clearing never fires.
         revealTurnFooter();
+        markLiveTurnFeedback();
         state.busy = false;
         updateSendButton();
         if (!state.replaying) maybeNotifySound("done"); // #59 — live turns only, and only when away
@@ -14380,7 +14420,7 @@
         syncFeedbackButtons();
         break;
       case "turnFeedbackAck":
-        applyTurnFeedbackAck(msg.userBubbleIndex, msg.rating);
+        applyTurnFeedbackAck(msg.rating);
         break;
       case "usage":
         // Billing split (#53). `turn` is absent on a restore (we only stored the
@@ -15156,18 +15196,13 @@
       if (state.replaying || !feedbackOffered()) return;
       const actions = thumbBtn.closest(".msg-actions");
       if (!actions || actions.dataset.feedbackPending === "1") return;
-      const idx = Number(actions.dataset.userBubbleIndex);
+      if (actions !== liveTurnActions()) return;
       const clicked = Number(thumbBtn.dataset.rating);
-      if (!Number.isInteger(idx) || idx < 0 || (clicked !== 1 && clicked !== -1)) return;
-      const current = state.turnRatings.get(idx) || 0;
+      if (clicked !== 1 && clicked !== -1) return;
+      const current = state.turnRating === 1 || state.turnRating === -1 ? state.turnRating : 0;
       const next = current === clicked ? 0 : clicked;
       actions.dataset.feedbackPending = "1";
-      vscode.postMessage({
-        type: "turnFeedback",
-        userBubbleIndex: idx,
-        rating: next,
-        totalUserBubbles: visibleUserBubbleCount(),
-      });
+      vscode.postMessage({ type: "turnFeedback", rating: next });
       return;
     }
     const msgCopyBtn = e.target.closest(".msg-copy-btn");
