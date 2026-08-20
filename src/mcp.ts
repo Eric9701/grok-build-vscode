@@ -1,5 +1,9 @@
 /** Pure MCP catalog and live-status helpers for the Grok ACP surface. */
 
+import type { McpConfigLayer } from "./mcp-connectors";
+
+export type { McpConfigLayer };
+
 export const MCP_GLOBAL_SCOPE_WARNING =
   "This list is read-only. Connector enable/disable is machine-global and is not controlled here.";
 
@@ -15,7 +19,15 @@ export interface McpServerView {
   enabled: boolean;
   managed?: boolean;
   scope?: string;
+  /** Human label from `_x.ai/mcp/list` (`scopeName`), e.g. `"Grok CLI"`. */
+  scopeName?: string;
   source?: string;
+  /**
+   * Provenance badge. Managed: `scopeName` or `"grok.com managed"`. Local
+   * project file: the project folder name. Local user file or host-injected:
+   * `"User on: <machine>"`.
+   */
+  tag?: string;
   status?: string;
   type?: string;
   command?: string;
@@ -40,6 +52,8 @@ export const MCP_REMOTE_SERVER_KEYS = [
   "type",
   "managed",
   "scope",
+  "scopeName",
+  "tag",
   "status",
   "toolCount",
 ] as const satisfies ReadonlyArray<keyof McpServerView>;
@@ -112,6 +126,9 @@ function parseServer(value: unknown): McpServerView | undefined {
     ...(type ? { type } : {}),
     ...(source === "managed" || type === "managedGateway" ? { managed: true } : {}),
     ...(textField(session, item, "scope") ? { scope: textField(session, item, "scope") } : {}),
+    ...(textField(session, item, "scopeName") || textField(session, item, "scope_name")
+      ? { scopeName: textField(session, item, "scopeName") || textField(session, item, "scope_name") }
+      : {}),
     ...(textField(session, item, "status") ? { status: textField(session, item, "status") } : {}),
     ...(text(item.command) ? { command: text(item.command) } : {}),
     ...(stringArray(item.args) ? { args: stringArray(item.args) } : {}),
@@ -179,6 +196,65 @@ export function projectMcpServersMessageForRemote(msg: {
     ...(msg.loading !== undefined ? { loading: msg.loading } : {}),
     ...(msg.error !== undefined ? { error: msg.error } : {}),
   };
+}
+
+export const MCP_MANAGED_TAG = "grok.com managed";
+
+/**
+ * Badge text for one inventory row. Managed uses the CLI's `scopeName` when
+ * present (a team name, or `"Grok CLI"`); otherwise the grok.com tag. Local
+ * project files take the folder name; everything else local — user-level
+ * config and host-injected Tier-1 connectors — is `"User on: <machine>"`.
+ */
+export function mcpOriginTag(input: {
+  source?: string;
+  managed?: boolean;
+  scopeName?: string;
+  localLayer?: McpConfigLayer;
+  projectName?: string;
+  machineName?: string;
+}): string | undefined {
+  const managed = input.managed === true || input.source === "managed";
+  if (managed) {
+    const named = input.scopeName?.trim();
+    return named || MCP_MANAGED_TAG;
+  }
+  if (input.localLayer === "project") {
+    const name = input.projectName?.trim();
+    return name || undefined;
+  }
+  const machine = input.machineName?.trim();
+  return machine ? `User on: ${machine}` : undefined;
+}
+
+function nameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Stamp `tag` on each server. Does not mutate `servers`. */
+export function applyMcpOriginTags(
+  servers: readonly McpServerView[],
+  opts: {
+    nameLayer: ReadonlyMap<string, McpConfigLayer>;
+    projectName: string;
+    machineName: string;
+  },
+): McpServerView[] {
+  return servers.map((server) => {
+    const managed = server.managed === true || server.source === "managed";
+    const localLayer = managed
+      ? undefined
+      : (opts.nameLayer.get(nameKey(server.name)) ?? "user");
+    const tag = mcpOriginTag({
+      source: server.source,
+      managed: server.managed,
+      scopeName: server.scopeName,
+      localLayer,
+      projectName: opts.projectName,
+      machineName: opts.machineName,
+    });
+    return tag ? { ...server, tag } : server;
+  });
 }
 
 /** Merge one of Grok's undocumented MCP status notifications into a catalog. */

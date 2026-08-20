@@ -67,7 +67,7 @@ import {
   turnIsInFlight,
 } from "./session";
 import { buildReapCandidates, selectReapable, computeDot, Dot } from "./session-pool";
-import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterms, voiceSettingForRepo, voiceSettingWriteTarget, sanitizeVoiceSendPhrase, sanitizeVoiceKeyterms, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
+import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, buildSttKeyterms, voiceSettingForRepo, voiceSettingWriteTarget, sanitizeVoiceSendPhrase, sanitizeVoiceKeyterms, voiceConfiguredFingerprint, DEFAULT_SEND_PHRASE, MAX_RECORDING_SECONDS } from "./voice";
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
@@ -330,9 +330,10 @@ import {
   parseAppPurpose,
   type AppPurpose,
 } from "./app-purpose";
-import { MCP_GLOBAL_SCOPE_WARNING, mergeMcpNotification, parseMcpListResponse, type McpServerView } from "./mcp";
+import { MCP_GLOBAL_SCOPE_WARNING, applyMcpOriginTags, mergeMcpNotification, parseMcpListResponse, type McpServerView } from "./mcp";
 import {
   MCP_CONNECTORS_KEY,
+  collectMcpNameLayers,
   collectReservedMcpIdentity,
   connectConnector,
   connectorById,
@@ -340,6 +341,7 @@ import {
   disconnectConnector,
   hostMcpServers,
   isConnectorId,
+  mcpConfigLayer,
   mcpConfigPaths,
   mcpRemoteArgs,
   mergeReserved,
@@ -742,6 +744,7 @@ export class GrokSidebar {
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
     "onboarding", "providerState", "mcpServers", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
     "telemetryEnabled",
+    "thumbsFeedback",
   ]);
   private cliPath?: string;
   private codexCliPath?: string;
@@ -761,6 +764,14 @@ export class GrokSidebar {
    *  coerced to false. Rebuilt on each refresh so removed keys cannot serve
    *  stale `true` forever. */
   private lastVoiceConfiguredByCwd = new Map<string, boolean>();
+  /**
+   * Last posted `voiceConfigured` fingerprint per destination (`local` or
+   * `remote:<clientId>`). The auth.json watcher matches a null filename, so
+   * every grok write under `~/.grok` used to fan identical frames to every
+   * phone. Snapshot and credential-failure writers seed this so a skipped
+   * watcher post cannot starve a fresh tab or swallow a later genuine change.
+   */
+  private lastPostedVoiceConfigured = new Map<string, string>();
   /** VS Code settings tab. Desktop/remote keep the in-page overlay. */
   private settingsEditor?: HostEditorWebview;
   private static readonly SETTINGS_PANEL_TYPES = new Set<WebviewMsg["type"]>([
@@ -777,6 +788,7 @@ export class GrokSidebar {
     "setVoiceSendPhrase",
     "setVoiceKeyterms",
     "setTelemetryEnabled",
+    "setThumbsFeedback",
     "openGlobalConfig",
     "openProjectConfig",
     "listMcpServers",
@@ -1555,6 +1567,12 @@ export class GrokSidebar {
           type: "telemetryEnabled",
           value: this.host.getConfiguration("grok").get<boolean>("telemetry.enabled", true),
         });
+      }
+      if (e.affectsConfiguration("grok.thumbsFeedback")) {
+        this.postThumbsFeedback();
+        for (const session of [this.focused, ...this.pool]) {
+          this.refreshFeedbackAvailability(session);
+        }
       }
     });
     const authWatcher = this.host.createFileSystemWatcher(
@@ -2938,6 +2956,7 @@ Only continue if you trust this code.`,
       metaEnabled: session.feedbackMetaEnabled,
       commandsAdvertise: session.feedbackCommandsAdvertise,
       latchedUnsupported: session.feedbackUnsupported,
+      userEnabled: this.thumbsFeedbackEnabled(),
     });
     if (session.feedbackAvailable === available) return;
     session.feedbackAvailable = available;
@@ -2978,6 +2997,12 @@ Only continue if you trust this code.`,
     const previous = session.turnRating;
     const revert = () => this.ackTurnFeedback(session, previous);
     if (!isThumbsRating(rating)) {
+      revert();
+      return;
+    }
+    // Setting off is not a capability gap — do not latch unsupported, or
+    // turning the opt-in on later could never restore thumbs.
+    if (!this.thumbsFeedbackEnabled()) {
       revert();
       return;
     }
@@ -7564,7 +7589,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           type: "mcpServers",
           servers: this.mcpServers,
           warning: MCP_GLOBAL_SCOPE_WARNING,
-        });
+        }, session);
       }
     });
     client.on("xaiNotification", (u) => {
@@ -8649,6 +8674,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.host.getConfiguration("grok")
           .update("telemetry.enabled", !!msg.value, "global");
         break;
+      case "setThumbsFeedback":
+        await this.host.getConfiguration("grok")
+          .update("thumbsFeedback", !!msg.value, "global");
+        break;
       case "runInstallCmd": {
         // Host-owned confirmation, because this is one of the two messages that
         // run something. The renderer does not supply the command — it is the
@@ -9185,15 +9214,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   }
 
-  private postMcpServers(message: Extract<HostMsg, { type: "mcpServers" }>): void {
-    this.post(message);
-    void this.settingsEditor?.webview.postMessage(message);
+  private postMcpServers(message: Extract<HostMsg, { type: "mcpServers" }>, session: Session = this.focused): void {
+    const tagged = {
+      ...message,
+      servers: this.tagMcpServers(message.servers, session),
+    };
+    this.post(tagged);
+    void this.settingsEditor?.webview.postMessage(tagged);
   }
 
-  private mcpServersMessage(): Extract<HostMsg, { type: "mcpServers" }> {
+  private mcpServersMessage(session: Session = this.focused): Extract<HostMsg, { type: "mcpServers" }> {
     return {
       type: "mcpServers",
-      servers: this.mcpServers,
+      servers: this.tagMcpServers(this.mcpServers, session),
       warning: MCP_GLOBAL_SCOPE_WARNING,
     };
   }
@@ -9217,6 +9250,37 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const message = this.mcpConnectorsMessage();
     this.post(message);
     void this.settingsEditor?.webview.postMessage(message);
+  }
+
+  private mcpNameLayersFor(session: Session): Map<string, "project" | "user"> {
+    const cwd = this.sessionCwd(session);
+    const opts = {
+      cwd,
+      provider: session.provider,
+      grokHome: resolveGrokHome(process.env),
+      userHome: process.env.USERPROFILE || process.env.HOME || os.homedir(),
+    };
+    const files: { layer: "project" | "user"; names: string[] }[] = [];
+    for (const filePath of mcpConfigPaths(opts)) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        files.push({
+          layer: mcpConfigLayer(filePath, opts),
+          names: collectReservedMcpIdentity(fs.readFileSync(filePath, "utf8")).names,
+        });
+      } catch {
+        // Unreadable configs must not block the inventory page.
+      }
+    }
+    return collectMcpNameLayers(files);
+  }
+
+  private tagMcpServers(servers: readonly McpServerView[], session: Session = this.focused): McpServerView[] {
+    return applyMcpOriginTags(servers, {
+      nameLayer: this.mcpNameLayersFor(session),
+      projectName: path.basename(this.sessionCwd(session).replace(/[\\/]+$/, "")),
+      machineName: deviceDisplayName(os.hostname(), process.platform, os.release()),
+    });
   }
 
   private reservedMcpIdentityFor(session: Session): ReservedMcpIdentity {
@@ -9310,7 +9374,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       servers: this.mcpServers,
       loading: true,
       warning: MCP_GLOBAL_SCOPE_WARNING,
-    });
+    }, session);
     const client = session.provider === "grok" ? session.client : undefined;
     if (!client) {
       this.mcpListSupported = undefined;
@@ -9320,7 +9384,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         servers: [],
         error: "Connect Grok to inspect MCP servers.",
         warning: MCP_GLOBAL_SCOPE_WARNING,
-      });
+      }, session);
       return;
     }
     try {
@@ -9333,7 +9397,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           type: "mcpServers",
           servers: [],
           warning: MCP_GLOBAL_SCOPE_WARNING,
-        });
+        }, session);
         return;
       }
       this.mcpListSupported = true;
@@ -9343,7 +9407,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         type: "mcpServers",
         servers: this.mcpServers,
         warning: MCP_GLOBAL_SCOPE_WARNING,
-      });
+      }, session);
     } catch (error) {
       const detail = errorDetail(error);
       this.host.appendLine(`[mcp] _x.ai/mcp/list failed: ${detail}`);
@@ -9352,7 +9416,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         servers: [],
         error: detail || "Could not load MCP servers from the Grok session.",
         warning: MCP_GLOBAL_SCOPE_WARNING,
-      });
+      }, session);
     }
   }
 
@@ -10714,6 +10778,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.post({ type: "showThinking", value: this.showThinking() });
   }
 
+  /** grok.thumbsFeedback — Settings → General opt-in. Off by default. */
+  private thumbsFeedbackEnabled(): boolean {
+    return this.host.getConfiguration("grok").get<boolean>("thumbsFeedback", false);
+  }
+
+  private postThumbsFeedback(): void {
+    this.post({ type: "thumbsFeedback", value: this.thumbsFeedbackEnabled() });
+  }
+
   /** Anonymous, per-install GUID — generated once and kept in shared client state
    *  (so it survives extension updates and identifies this machine across clients).
    *  It's an opaque random id, not tied to any
@@ -10801,20 +10874,49 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.lastVoiceConfiguredByCwd.set(normalizeRepoPath(cwd), value);
   }
 
+  private voiceConfiguredMsg(cwd: string, value: boolean): Extract<HostMsg, { type: "voiceConfigured" }> {
+    return {
+      type: "voiceConfigured",
+      value,
+      sendPhrase: this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
+      keyterms: sanitizeVoiceKeyterms(this.voiceSetting(cwd, "voiceKeyterms", [])),
+    };
+  }
+
+  /** Record that this destination already has `payload`. Watcher posts skip a match. */
+  private seedPostedVoiceConfigured(
+    destKey: string,
+    payload: Extract<HostMsg, { type: "voiceConfigured" }>,
+  ): void {
+    this.lastPostedVoiceConfigured.set(destKey, voiceConfiguredFingerprint(payload));
+  }
+
+  /**
+   * Post `voiceConfigured` unless this destination already received an identical
+   * frame. Returns whether a frame went out.
+   */
+  private deliverVoiceConfigured(
+    destKey: string,
+    payload: Extract<HostMsg, { type: "voiceConfigured" }>,
+    send: () => void,
+  ): boolean {
+    const fp = voiceConfiguredFingerprint(payload);
+    if (this.lastPostedVoiceConfigured.get(destKey) === fp) return false;
+    this.seedPostedVoiceConfigured(destKey, payload);
+    send();
+    return true;
+  }
+
   private postVoiceConfigured(): void {
     const cwd = this.sessionCwd(this.focused);
     const configured = !!this.resolveVoiceApiKey(cwd);
+    const localMsg = this.voiceConfiguredMsg(cwd, configured);
     // Refresh = rebuild: only the cwds this pass actually resolved stay in the
     // map. Point-writes between refreshes (voice-start failure paths) are
     // fresh by definition; accumulation is what made stale `true` immortal.
     this.lastVoiceConfiguredByCwd.clear();
     this.rememberVoiceConfigured(cwd, configured);
-    this.postLocal({
-      type: "voiceConfigured",
-      value: configured,
-      sendPhrase: this.voiceSetting(cwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
-      keyterms: sanitizeVoiceKeyterms(this.voiceSetting(cwd, "voiceKeyterms", [])),
-    });
+    this.deliverVoiceConfigured("local", localMsg, () => this.postLocal(localMsg));
     for (const clientId of this.remoteClients.clients()) {
       // Scope = the project whose config we resolved. Classification is "scope"
       // so a closed/re-homed tab cannot receive the prior project's prefs.
@@ -10831,12 +10933,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (!remoteCwd) continue;
       const remoteConfigured = !!this.resolveVoiceApiKey(remoteCwd);
       this.rememberVoiceConfigured(remoteCwd, remoteConfigured);
-      this.sendRemoteClient(clientId, {
-        type: "voiceConfigured",
-        value: remoteConfigured,
-        sendPhrase: this.voiceSetting(remoteCwd, "voiceSendPhrase", DEFAULT_SEND_PHRASE),
-        keyterms: sanitizeVoiceKeyterms(this.voiceSetting(remoteCwd, "voiceKeyterms", [])),
-      }, remoteCwd);
+      const remoteMsg = this.voiceConfiguredMsg(remoteCwd, remoteConfigured);
+      this.deliverVoiceConfigured(`remote:${clientId}`, remoteMsg, () => {
+        this.sendRemoteClient(clientId, remoteMsg, remoteCwd);
+      });
     }
   }
 
@@ -11352,7 +11452,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const credentialCwd = this.sessionCwd(session);
     if (!this.resolveVoiceApiKey(credentialCwd)) {
       this.rememberVoiceConfigured(credentialCwd, false);
-      this.sendRemoteClient(clientId, { type: "voiceConfigured", value: false }, credentialCwd);
+      const payload = this.voiceConfiguredMsg(credentialCwd, false);
+      this.deliverVoiceConfigured(`remote:${clientId}`, payload, () => {
+        this.sendRemoteClient(clientId, payload, credentialCwd);
+      });
       this.sendRemoteClient(clientId, { type: "voiceError" });
       this.sendRemoteClient(clientId, {
         type: "error",
@@ -12640,6 +12743,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       processingSound: cfg.get("processingSound", false),
       readRepliesAloud: cfg.get("readRepliesAloud", false),
       telemetryEnabled: cfg.get("telemetry.enabled", true),
+      thumbsFeedback: cfg.get("thumbsFeedback", false),
       appPurpose: this.appPurpose() || DEFAULT_APP_PURPOSE,
       ...(commandLanguage ? { commandLanguage } : {}),
       // For a remote's About page. A phone is looking at neither GUI,
@@ -13770,6 +13874,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   /** The sole remote-client release path: abandon its session before deleting ownership. */
   private releaseRemoteClient(clientId: string): void {
+    this.lastPostedVoiceConfigured?.delete(`remote:${clientId}`);
     const current = this.remoteClients.active(clientId);
     const preserveLogicalTab = !!current && (
       current.needsProvider ||
@@ -15798,16 +15903,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const initial = this.messageForRemote({ ...this.buildInitialStateMsg(), cwd: listCwd ?? "" });
     const sessionCwd = session ? this.sessionCwd(session) : "";
     const sessionCwdOk = !!session && !!authorizedListCwd(sessionCwd, authorized, pathsEqual);
-    const phrase = this.voiceSetting(
-      sessionCwdOk ? sessionCwd : this.workspaceRoot(),
-      "voiceSendPhrase",
-      DEFAULT_SEND_PHRASE,
-    );
     const snap: HostMsg[] = [];
     snap.push(initial);
     snap.push(this.providerStateMessage());
     snap.push(this.mcpConnectorsMessage());
-    snap.push(this.mcpServersMessage());
+    snap.push(this.mcpServersMessage(session || this.focused));
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
@@ -15830,16 +15930,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const voiceCwd = sessionCwdOk ? sessionCwd : this.workspaceRoot();
     const voiceConfigured = !!this.resolveVoiceApiKey(voiceCwd);
     this.rememberVoiceConfigured(voiceCwd, voiceConfigured);
-    snap.push({
-      type: "voiceConfigured",
-      value: voiceConfigured,
-      sendPhrase: phrase,
-      keyterms: sanitizeVoiceKeyterms(this.voiceSetting(
-        voiceCwd,
-        "voiceKeyterms",
-        [],
-      )),
-    });
+    const voicePayload = this.voiceConfiguredMsg(voiceCwd, voiceConfigured);
+    this.seedPostedVoiceConfigured(`remote:${clientId}`, voicePayload);
+    snap.push(voicePayload);
     const activeVoice = this.remoteVoice.get(clientId);
     if (activeVoice) {
       snap.push({ type: "voiceState", status: activeVoice.finalizing ? "transcribing" : "listening" });
@@ -15988,6 +16081,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.voiceSetting(this.workspaceRoot(), "voiceKeyterms", []),
         ),
         telemetryEnabled: cfg.get("telemetry.enabled", true),
+        thumbsFeedback: cfg.get("thumbsFeedback", false),
         providers: this.providerStateMessage().providers,
         providersChecking: this.providerRefreshInFlight,
         extVersion: this.context.extensionVersion,
@@ -15995,7 +16089,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         hostKind: "extension" as const,
         hostName: deviceDisplayName(os.hostname(), process.platform, os.release()),
         grokUpdate: null,
-        mcpServers: this.mcpServers,
+        mcpServers: this.tagMcpServers(this.mcpServers),
         mcpLoading: false,
         mcpError: "",
         mcpWarning: MCP_GLOBAL_SCOPE_WARNING,

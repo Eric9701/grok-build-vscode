@@ -1,6 +1,6 @@
 # Privacy
 
-**Privacy by design.** The extension sends **no** background data about you or your code — the only thing it reports on its own is an anonymous usage count, with no content and no identity, and you can turn even that off. Data leaves your machine only at your request: **voice input** (you send audio to SpaceXAI to transcribe it), optional **spoken-reply summarization** (you send one reply to SpaceXAI to shorten what is spoken), and **Remote Control** (you link this machine to [AFK Pilot](https://afkpilot.com) so your own devices can reach it) — all disclosed in full below, separate from telemetry.
+**Privacy by design.** The extension sends **no** background data about you or your code — the only thing it reports on its own is an anonymous usage count, with no content and no identity, and you can turn even that off. Data leaves your machine only at your request: **voice input** (you send audio to SpaceXAI to transcribe it), optional **spoken-reply summarization** (you send one reply to SpaceXAI to shorten what is spoken), optional **thumbs on a Grok turn** (you send a rating to SpaceXAI), and **Remote Control** (you link this machine to [AFK Pilot](https://afkpilot.com) so your own devices can reach it) — all disclosed in full below, separate from telemetry.
 
 ## Telemetry — what is sent
 
@@ -61,6 +61,10 @@ Do **any** of the following:
 - In VS Code, disable global telemetry: set `telemetry.telemetryLevel` to `off`.
 
 Either change takes effect immediately — no reload needed. A non-official build never sends, regardless of these settings.
+
+## Thumbs feedback
+
+Separate from telemetry: when **Thumbs feedback to SpaceXAI** is on (`grok.thumbsFeedback`, default **off**) and a Grok session advertises feedback, the turn footer offers thumbs. Clicking one sends a rating (`-1` / `0` / `1`) to the Grok Build CLI over `_x.ai/feedback`. No comment, no message content, and nothing is stored or read back. Codex and Claude never show thumbs. Off, the buttons are not offered and a click is ignored.
 
 ## Voice input (Speech-to-Text)
 

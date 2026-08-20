@@ -348,6 +348,7 @@
     voiceSendPhrase: "grok send",
     voiceKeyterms: [],
     telemetryEnabled: undefined,
+    thumbsFeedback: false,
     // Client-owned zoom (remote + desktop). VS Code uses hostFontScale only.
     remoteFontScale: CLIENT_OWNS_FONT_SCALE
       ? clampClientFontScale(storedNumber(CLIENT_FONT_SCALE_KEY, 1))
@@ -2342,6 +2343,7 @@
       voiceSendPhrase: typeof state.voiceSendPhrase === "string" ? state.voiceSendPhrase : "grok send",
       voiceKeyterms: Array.isArray(state.voiceKeyterms) ? state.voiceKeyterms : [],
       telemetryEnabled: state.telemetryEnabled,
+      thumbsFeedback: !!state.thumbsFeedback,
       providers: state.providers || [],
       providersChecking: !!state.providersChecking,
       extVersion: state.extVersion,
@@ -2424,6 +2426,9 @@
         break;
       case "telemetryDesktop":
         state.telemetryEnabled = !!value;
+        break;
+      case "thumbsFeedback":
+        state.thumbsFeedback = !!value;
         break;
       default:
         break;
@@ -13251,7 +13256,7 @@
     "initialState", "showThinking", "appPurpose", "expandCommandOutputs",
     "steerByDefault", "steerUnavailable", "soundNotifications", "processingSound",
     "readRepliesAloud", "summarizeRepliesAloud", "fontScale", "voiceConfigured",
-    "providerState", "mcpServers", "mcpConnectors", "remoteStatus", "telemetryEnabled", "grokUpdateStatus", "initialized",
+    "providerState", "mcpServers", "mcpConnectors", "remoteStatus", "telemetryEnabled", "thumbsFeedback", "grokUpdateStatus", "initialized",
   ]);
 
   function handleHostMessage(msg) {
@@ -13293,6 +13298,7 @@
           }
         }
         if (typeof msg.telemetryEnabled === "boolean") state.telemetryEnabled = msg.telemetryEnabled;
+        if (typeof msg.thumbsFeedback === "boolean") state.thumbsFeedback = msg.thumbsFeedback;
         applyThinkingVisibility();
         applyExpandCommandOutputs();
         syncGearPlacement();
@@ -13413,6 +13419,9 @@
         break;
       case "telemetryEnabled":
         state.telemetryEnabled = !!msg.value;
+        break;
+      case "thumbsFeedback":
+        state.thumbsFeedback = !!msg.value;
         break;
       case "speechSummary": {
         const pending = pendingSpeechSummary;

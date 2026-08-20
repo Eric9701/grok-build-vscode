@@ -34,8 +34,9 @@ describe("sidebar connect wiring", () => {
 
 describe("npx spawn plan", () => {
   it("uses the Windows cmd shim with a shell", () => {
-    expect(npxSpawnPlan("win32")).toEqual({ command: "npx.cmd", shell: true });
-    expect(npxSpawnPlan("linux")).toEqual({ command: "npx", shell: false });
+    const empty = { pathEnv: "", isFile: () => false };
+    expect(npxSpawnPlan("win32", empty)).toEqual({ command: "npx.cmd", shell: true });
+    expect(npxSpawnPlan("linux", empty)).toEqual({ command: "npx", shell: false });
   });
 });
 

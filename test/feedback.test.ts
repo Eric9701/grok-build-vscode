@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   FEEDBACK_RPC_METHOD,
@@ -66,33 +67,80 @@ describe("availability", () => {
       provider: "codex",
       metaEnabled: true,
       latchedUnsupported: false,
+      userEnabled: true,
+    })).toBe(false);
+    expect(decideFeedbackAvailability({
+      provider: "claude",
+      metaEnabled: true,
+      latchedUnsupported: false,
+      userEnabled: true,
     })).toBe(false);
     expect(decideFeedbackAvailability({
       provider: "grok",
       latchedUnsupported: false,
+      userEnabled: true,
     })).toBe(false);
     expect(decideFeedbackAvailability({
       provider: "grok",
       commandsAdvertise: true,
       latchedUnsupported: false,
+      userEnabled: true,
     })).toBe(true);
     expect(decideFeedbackAvailability({
       provider: "grok",
       metaEnabled: true,
       commandsAdvertise: false,
       latchedUnsupported: false,
+      userEnabled: true,
     })).toBe(true);
     expect(decideFeedbackAvailability({
       provider: "grok",
       metaEnabled: false,
       commandsAdvertise: true,
       latchedUnsupported: false,
+      userEnabled: true,
     })).toBe(false);
     expect(decideFeedbackAvailability({
       provider: "grok",
       metaEnabled: true,
       latchedUnsupported: true,
+      userEnabled: true,
     })).toBe(false);
+  });
+
+  it("the Settings opt-in is an additional gate: off never, on means when grok supports it", () => {
+    expect(decideFeedbackAvailability({
+      provider: "grok",
+      metaEnabled: true,
+      latchedUnsupported: false,
+      userEnabled: false,
+    })).toBe(false);
+    expect(decideFeedbackAvailability({
+      provider: "grok",
+      commandsAdvertise: true,
+      latchedUnsupported: false,
+      userEnabled: false,
+    })).toBe(false);
+    expect(decideFeedbackAvailability({
+      provider: "codex",
+      metaEnabled: true,
+      latchedUnsupported: false,
+      userEnabled: true,
+    })).toBe(false);
+  });
+
+  it("threads grok.thumbsFeedback through the host without latching a setting-off click", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    expect(src).toContain("userEnabled: this.thumbsFeedbackEnabled()");
+    expect(src).toContain('update("thumbsFeedback"');
+    expect(src).toMatch(/affectsConfiguration\("grok\.thumbsFeedback"\)/);
+    const start = src.indexOf("private async handleTurnFeedback(");
+    const end = src.indexOf("private async forkFocusedSession", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(body).toContain("if (!this.thumbsFeedbackEnabled())");
+    expect(body.indexOf("if (!this.thumbsFeedbackEnabled())")).toBeLessThan(body.indexOf("latchFeedbackUnavailable"));
   });
 
   it("treats the disabled internal_error as a capability gap, not a send failure", () => {

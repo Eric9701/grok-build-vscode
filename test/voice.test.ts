@@ -16,6 +16,7 @@ import {
   buildSttKeyterms,
   sanitizeVoiceSendPhrase,
   sanitizeVoiceKeyterms,
+  voiceConfiguredFingerprint,
   voiceSettingForRepo,
   voiceSettingWriteTarget,
   buildSttStreamUrl,
@@ -527,5 +528,17 @@ describe("applySegment / joinSegments (streaming transcript accumulation)", () =
   it("collapses whitespace when joining", () => {
     expect(joinSegments([{ start: 0, text: "  a  " }, { start: 1, text: " b " }])).toBe("a b");
     expect(joinSegments([])).toBe("");
+  });
+});
+
+describe("voiceConfiguredFingerprint", () => {
+  it("treats identical frames as equal and a phrase change as different", () => {
+    const a = { value: true, sendPhrase: "grok send", keyterms: ["useEffect"] };
+    expect(voiceConfiguredFingerprint(a)).toBe(voiceConfiguredFingerprint({ ...a, keyterms: ["useEffect"] }));
+    expect(voiceConfiguredFingerprint(a)).not.toBe(voiceConfiguredFingerprint({ ...a, sendPhrase: "ok send" }));
+    expect(voiceConfiguredFingerprint(a)).not.toBe(voiceConfiguredFingerprint({ ...a, value: false }));
+    expect(voiceConfiguredFingerprint({ value: false })).toBe(
+      voiceConfiguredFingerprint({ value: false, sendPhrase: "", keyterms: [] }),
+    );
   });
 });

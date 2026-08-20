@@ -73,15 +73,7 @@ export type AuthorizeMcpRemoteResult =
   | { ok: true }
   | { ok: false; kind: ConnectFailureKind; message: string };
 
-export function npxSpawnPlan(platform: NodeJS.Platform = process.platform): {
-  command: string;
-  shell: boolean;
-} {
-  // Windows npm shims are `.cmd`; Node's spawn without a shell cannot run them.
-  return platform === "win32"
-    ? { command: "npx.cmd", shell: true }
-    : { command: "npx", shell: false };
-}
+export { npxSpawnPlan } from "./npx-locator";
 
 /**
  * Bind loopback port 0, read the OS-assigned port, close. mcp-remote's

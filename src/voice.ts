@@ -370,6 +370,23 @@ export function cleanTranscript(text: string): string {
 
 export const DEFAULT_SEND_PHRASE = "grok send";
 
+/**
+ * Identity of a `voiceConfigured` frame. Watcher noise under `~/.grok` posts
+ * identical frames; destinations skip when this matches the last one they got.
+ * Phrase and keyterms belong here — a prefs change must still go out.
+ */
+export function voiceConfiguredFingerprint(payload: {
+  value: boolean;
+  sendPhrase?: string;
+  keyterms?: readonly string[];
+}): string {
+  return JSON.stringify({
+    value: !!payload.value,
+    sendPhrase: typeof payload.sendPhrase === "string" ? payload.sendPhrase : "",
+    keyterms: Array.isArray(payload.keyterms) ? [...payload.keyterms] : [],
+  });
+}
+
 export interface VoiceCommandResult {
   /** The transcript with a trailing send-phrase stripped off. */
   text: string;

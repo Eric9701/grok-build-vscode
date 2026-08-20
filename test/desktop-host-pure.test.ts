@@ -1258,6 +1258,11 @@ describe("webview message schema validation", () => {
       type: "setTelemetryEnabled",
       value: false,
     });
+    expect(parseWebviewMsg({ type: "setThumbsFeedback", value: true })).toEqual({
+      type: "setThumbsFeedback",
+      value: true,
+    });
+    expect(parseWebviewMsg({ type: "setThumbsFeedback", value: "yes" })).toBeNull();
     expect(parseWebviewMsg({ type: "turnFeedback", rating: 1 })).toEqual({
       type: "turnFeedback",
       rating: 1,

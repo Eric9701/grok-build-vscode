@@ -42,6 +42,7 @@ export const CONFIG_DEFAULTS: Readonly<Record<string, unknown>> = {
   "grok.readRepliesAloud": false,
   "grok.summarizeRepliesAloud": true,
   "grok.remote.keepAwake": true,
+  "grok.thumbsFeedback": false,
   "grok.telemetry.enabled": true,
   "grok.chatFontScale": 100,
   "grok.voiceApiKey": "",

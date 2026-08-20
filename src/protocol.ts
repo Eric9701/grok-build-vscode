@@ -209,6 +209,12 @@ export type HostMsg =
       /** Product telemetry opt-out. Absent on older hosts; remotes treat that
        *  as unknown and show the explanation without an on/off claim. */
       telemetryEnabled?: boolean;
+      /**
+       * Settings → General "Thumbs feedback to SpaceXAI" (`grok.thumbsFeedback`).
+       * Default off. Absent on older hosts — the webview must not invent thumbs
+       * from this field; `feedbackAvailability` remains the affordance gate.
+       */
+      thumbsFeedback?: boolean;
       capabilities: HostUiCapabilities }
   /** Live retraction of `capabilities.moveViewHint`, sent the moment the user
    *  opens the host's move-view picker. `initialState` is not re-sent on a
@@ -280,6 +286,8 @@ export type HostMsg =
   | { type: "voiceConfigured"; value: boolean; sendPhrase?: string; keyterms?: string[] }
   /** Live `grok.telemetry.enabled` so the settings surface stays in sync. */
   | { type: "telemetryEnabled"; value: boolean }
+  /** Live `grok.thumbsFeedback` so the settings surface stays in sync. */
+  | { type: "thumbsFeedback"; value: boolean }
   | { type: "voicePartial"; text: string }
   | { type: "voiceSubmit"; text: string }
   | { type: "voiceTranscript"; text: string; send?: boolean }
@@ -657,6 +665,8 @@ export type WebviewMsg =
   | { type: "setVoiceKeyterms"; value: string[] }
   /** Persist `grok.telemetry.enabled`. Desktop toggle; remotes do not send this. */
   | { type: "setTelemetryEnabled"; value: boolean }
+  /** Persist `grok.thumbsFeedback`. Host-owned; remotes honour the desk value. */
+  | { type: "setThumbsFeedback"; value: boolean }
   /**
    * Attach a user-selected file. VS Code posts a `path` (file URI or absolute)
    * from the webview drag-drop surface. Desktop posts only a host-minted
@@ -838,7 +848,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, moveViewHint: true, providerState: true, mcpServers: true, mcpConnectors: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true,
+  initialState: true, moveViewHint: true, providerState: true, mcpServers: true, mcpConnectors: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -864,7 +874,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   addProjectFolder: true, removeProjectFolder: true,
   openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
-  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
+  setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, refreshProviders: true, retryProviderSession: true,

@@ -476,7 +476,7 @@ describe("sidebar close-revocation wiring (source)", () => {
     const body = src.slice(start, end);
     // Must pass the resolved project cwd as scope (3rd arg), not bare sendRemoteClient(id, msg).
     expect(body).toMatch(
-      /sendRemoteClient\(\s*clientId\s*,\s*\{[\s\S]*?type:\s*"voiceConfigured"[\s\S]*?\}\s*,\s*remoteCwd\s*\)/,
+      /sendRemoteClient\(\s*clientId\s*,\s*remoteMsg\s*,\s*remoteCwd\s*\)/,
     );
     expect(body).toContain("cwdIfPresent");
     expect(body).not.toContain("remoteSessionFor");

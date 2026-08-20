@@ -505,6 +505,50 @@ export function mcpConfigPaths(opts: {
   return paths;
 }
 
+export type McpConfigLayer = "project" | "user";
+
+/**
+ * Which config file a path from {@link mcpConfigPaths} is. Project files are
+ * the checkout's `.mcp.json` and `.grok/config.toml`; everything else in that
+ * list is user-level. Compared against the same strings `mcpConfigPaths`
+ * returns, so Windows mixed separators still match.
+ */
+export function mcpConfigLayer(
+  filePath: string,
+  opts: { cwd: string; provider: "grok" | "codex" | "claude" },
+): McpConfigLayer {
+  const cwd = opts.cwd.replace(/[\\/]+$/, "");
+  if (filePath === `${cwd}/.mcp.json` || filePath === `${cwd}/.grok/config.toml`) {
+    return "project";
+  }
+  return "user";
+}
+
+/**
+ * Name → layer. A name in both a user file and a project file is project
+ * (more specific). Keys are lowercased so they match `_x.ai/mcp/list` names.
+ */
+export function collectMcpNameLayers(
+  files: readonly { layer: McpConfigLayer; names: readonly string[] }[],
+): Map<string, McpConfigLayer> {
+  const out = new Map<string, McpConfigLayer>();
+  for (const file of files) {
+    if (file.layer !== "user") continue;
+    for (const name of file.names) {
+      const key = name.trim().toLowerCase();
+      if (key) out.set(key, "user");
+    }
+  }
+  for (const file of files) {
+    if (file.layer !== "project") continue;
+    for (const name of file.names) {
+      const key = name.trim().toLowerCase();
+      if (key) out.set(key, "project");
+    }
+  }
+  return out;
+}
+
 export function connectFailureMessage(kind: ConnectFailureKind, detail?: string): string {
   switch (kind) {
     case "npx-missing":

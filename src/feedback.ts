@@ -1,5 +1,6 @@
 /**
  * Pure helpers for per-turn thumbs feedback (`x.ai/feedback`, #114).
+ * Host opt-in: `grok.thumbsFeedback` (Settings → General, default off).
  *
  * Logical ACP method is `x.ai/feedback`. On the JSON-RPC wire it MUST be
  * `_x.ai/feedback`: the ACP decoder only routes `_`-prefixed extension
@@ -55,6 +56,8 @@ export function commandsAdvertiseFeedback(commands: readonly unknown[]): boolean
 
 /**
  * Whether this host should offer thumbs. Codex/Claude have no equivalent.
+ * `userEnabled` is the Settings → General opt-in (`grok.thumbsFeedback`,
+ * default off): off means never; on means when the provider supports it.
  * A latched RPC failure (`-32601` or "Feedback is disabled.") wins. An
  * explicit `session/new` false wins over a later commands list. Unknown
  * (no meta, no commands yet) stays off — an affordance that cannot work
@@ -65,7 +68,9 @@ export function decideFeedbackAvailability(input: {
   metaEnabled?: boolean;
   commandsAdvertise?: boolean;
   latchedUnsupported: boolean;
+  userEnabled: boolean;
 }): boolean {
+  if (!input.userEnabled) return false;
   if (input.provider !== "grok" || input.latchedUnsupported) return false;
   if (input.metaEnabled === false) return false;
   return input.metaEnabled === true || input.commandsAdvertise === true;

@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   MCP_GLOBAL_SCOPE_WARNING,
+  MCP_MANAGED_TAG,
   MCP_REMOTE_SERVER_KEYS,
+  applyMcpOriginTags,
+  mcpOriginTag,
   mcpServerDetail,
   mergeMcpNotification,
   parseMcpListResponse,
@@ -35,6 +38,26 @@ describe("MCP ACP catalog", () => {
     expect(parseMcpListResponse({ result: { servers: [{ name: "canva", source: "local" }] } })).toEqual([
       { name: "canva", enabled: true, source: "local" },
     ]);
+  });
+
+  it("keeps scopeName from the CLI inventory", () => {
+    expect(parseMcpListResponse({
+      servers: [{
+        name: "managed_gateway:linear",
+        displayName: "Linear",
+        source: "managed",
+        scope: "user",
+        scopeName: "Grok CLI",
+      }],
+    })).toEqual([{
+      name: "managed_gateway:linear",
+      displayName: "Linear",
+      enabled: true,
+      source: "managed",
+      managed: true,
+      scope: "user",
+      scopeName: "Grok CLI",
+    }]);
   });
 
   it("rejects a response without a server list", () => {
@@ -142,7 +165,7 @@ describe("MCP remote inventory projection", () => {
 
   it("the remote allowlist is page fields only — not a denylist of today's secrets", () => {
     expect([...MCP_REMOTE_SERVER_KEYS]).toEqual([
-      "name", "displayName", "enabled", "source", "type", "managed", "scope", "status", "toolCount",
+      "name", "displayName", "enabled", "source", "type", "managed", "scope", "scopeName", "tag", "status", "toolCount",
     ]);
     expect(MCP_REMOTE_SERVER_KEYS).not.toEqual(expect.arrayContaining([
       "command", "args", "url", "error", "tools", "env", "headers",
@@ -204,7 +227,74 @@ describe("MCP remote inventory projection", () => {
     const body = src.slice(start, end);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    expect(body).toContain("servers: this.mcpServers");
+    expect(body).toContain("tagMcpServers");
     expect(body).not.toContain("projectMcp");
+  });
+});
+
+describe("MCP origin tags", () => {
+  it("uses scopeName for managed connectors and falls back to grok.com", () => {
+    expect(mcpOriginTag({ source: "managed", scopeName: "Grok CLI" })).toBe("Grok CLI");
+    expect(mcpOriginTag({ source: "managed", scopeName: "Acme" })).toBe("Acme");
+    expect(mcpOriginTag({ managed: true })).toBe(MCP_MANAGED_TAG);
+  });
+
+  it("attributes local servers by config layer", () => {
+    expect(mcpOriginTag({
+      source: "local",
+      localLayer: "project",
+      projectName: "grok-build-vscode",
+      machineName: "Mac (macOS)",
+    })).toBe("grok-build-vscode");
+    expect(mcpOriginTag({
+      source: "local",
+      localLayer: "user",
+      projectName: "grok-build-vscode",
+      machineName: "Mac (macOS)",
+    })).toBe("User on: Mac (macOS)");
+    expect(mcpOriginTag({
+      source: "local",
+      machineName: "Dell (Windows 11)",
+    })).toBe("User on: Dell (Windows 11)");
+  });
+
+  it("stamps tags without touching launch recipes", () => {
+    const layers = new Map<string, "project" | "user">([
+      ["docs", "project"],
+      ["notes", "user"],
+    ]);
+    const tagged = applyMcpOriginTags([
+      { name: "managed_gateway:canva", displayName: "Canva", enabled: true, source: "managed", managed: true, scopeName: "Grok CLI" },
+      { name: "docs", enabled: true, source: "local", command: "npx" },
+      { name: "notes", enabled: true, source: "local" },
+      { name: "linear", enabled: true, source: "local", command: "npx" },
+    ], { nameLayer: layers, projectName: "app", machineName: "Mac (macOS)" });
+    expect(tagged.map((s) => s.tag)).toEqual([
+      "Grok CLI",
+      "app",
+      "User on: Mac (macOS)",
+      "User on: Mac (macOS)",
+    ]);
+    expect(tagged[1].command).toBe("npx");
+  });
+
+  it("the remote projection copies tag and scopeName and still strips recipes", () => {
+    const remote = projectMcpServerForRemote({
+      name: "docs",
+      enabled: true,
+      source: "local",
+      scopeName: "ignored-for-local",
+      tag: "app",
+      command: "npx",
+      args: ["-y", "secret"],
+    });
+    expect(remote).toEqual({
+      name: "docs",
+      enabled: true,
+      source: "local",
+      scopeName: "ignored-for-local",
+      tag: "app",
+    });
+    expect(remote).not.toHaveProperty("command");
   });
 });

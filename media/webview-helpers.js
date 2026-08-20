@@ -24,7 +24,7 @@
   // copy and test/protocol.test.ts asserts the two are set-equal in both
   // directions (and that chat.js actually handles every host type).
   const HOST_MESSAGE_TYPES = [
-    "initialState", "moveViewHint", "providerState", "mcpServers", "mcpConnectors", "codexInstallProgress", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "updateReady", "telemetryEnabled", "initialized",
+    "initialState", "moveViewHint", "providerState", "mcpServers", "mcpConnectors", "codexInstallProgress", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "updateReady", "telemetryEnabled", "thumbsFeedback", "initialized",
     "cliUpdating", "session", "sessionName", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "projectDirListing", "projectFileContent", "projectFileWriteResult", "userMessage", "agentStart", "thoughtChunk",
@@ -48,7 +48,7 @@
       "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "listProjectDir", "readProjectFile", "writeProjectFile", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
       "remoteVoiceStart", "remoteVoiceChunk", "remoteVoiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "turnFeedback", "forkSession", "setSteerByDefault",
-    "setSoundNotifications", "setProcessingSound", "setReadRepliesAloud", "setSummarizeRepliesAloud", "setVoiceSendPhrase", "setVoiceKeyterms", "setTelemetryEnabled", "summarizeSpeech", "requestImageFull", "composerFocus",
+    "setSoundNotifications", "setProcessingSound", "setReadRepliesAloud", "setSummarizeRepliesAloud", "setVoiceSendPhrase", "setVoiceKeyterms", "setTelemetryEnabled", "setThumbsFeedback", "summarizeSpeech", "requestImageFull", "composerFocus",
     "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "editLastMessage", "uiConfirmAnswer", "workflowControl", "refreshContextDetails",
     "remoteSignIn", "remoteSignOut", "unlinkRemoteDevice", "openRemotePortal",
     "openUpdateRelease", "restartToUpdate",

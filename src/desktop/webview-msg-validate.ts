@@ -176,6 +176,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "setExpandCommandOutputs":
     case "setSteerByDefault":
     case "setTelemetryEnabled":
+    case "setThumbsFeedback":
     case "composerFocus":
       if (type === "composerFocus") {
         if (!isBoolean(raw.focused)) return null;

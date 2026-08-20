@@ -252,7 +252,7 @@ describe("multi-provider review regressions", () => {
     const snapshot = methodBody("private buildRemoteSnapshot(");
     expect(snapshot).toContain("snap.push(this.providerStateMessage());");
     expect(snapshot).toContain("snap.push(this.mcpConnectorsMessage());");
-    expect(snapshot).toContain("snap.push(this.mcpServersMessage());");
+    expect(snapshot).toContain("snap.push(this.mcpServersMessage(session || this.focused));");
     expect(snapshot.indexOf("snap.push(initial);")).toBeLessThan(
       snapshot.indexOf("snap.push(this.providerStateMessage());"),
     );

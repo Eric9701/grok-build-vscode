@@ -22,6 +22,14 @@ detail begins `Feedback is disabled.` Availability is advertised first from
 `session/new` `_meta.feedbackEnabled`, else from an `available_commands_update`
 that includes the `feedback` builtin. Off until one of those is true.
 
+**Host opt-in.** `grok.thumbsFeedback` (Settings → General → *Thumbs feedback
+to SpaceXAI*, default **off**) is an additional gate on
+`decideFeedbackAvailability` (`userEnabled`). Off means never; on means when
+the provider supports it. Codex and Claude stay off. The TUI samples
+feedback; this host does not — the setting is the substitute. Ratings stay
+ephemeral (`Session.turnRating` only). Solicited
+`FeedbackRequestNotification` / `x.ai/feedback/dismiss` stay unimplemented.
+
 ## Why the host does not send `turn_number`
 
 An earlier revision mapped visible user bubble N → the Nth **prompt** among

@@ -408,6 +408,11 @@
           "default": true,
           "markdownDescription": "Keep this machine awake while it's linked to an **AFK Pilot** account, so a remote turn isn't cut off by idle sleep. Only active once you've signed in (gear → AFK Pilot → *Sign in*); unlinking releases the lock immediately. The display is still free to sleep — only system/idle sleep is blocked. Uses `caffeinate` on macOS, `SetThreadExecutionState` on Windows and `systemd-inhibit` on Linux. **A closed laptop lid still sleeps** on every platform — that's an OS-level decision no application can override."
         },
+        "grok.thumbsFeedback": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show thumbs on a finished Grok turn so you can send a rating to SpaceXAI. **Off by default.** On, thumbs appear only when this Grok session actually supports feedback — never on Codex or Claude. Ratings are not stored. Toggle live from Settings → General → **Thumbs feedback to SpaceXAI**."
+        },
         "grok.telemetry.enabled": {
           "type": "boolean",
           "default": true,

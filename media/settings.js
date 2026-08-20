@@ -247,6 +247,16 @@
       },
     },
     {
+      id: "thumbsFeedback",
+      category: "general",
+      title: "Thumbs feedback to SpaceXAI",
+      description: "Show thumbs on a finished Grok turn so you can send a rating to SpaceXAI. Off by default. On, thumbs appear only when this Grok session supports feedback — never on Codex or Claude.",
+      kind: "toggle",
+      defaultValue: false,
+      get: (s) => !!(s && s.thumbsFeedback),
+      message: (value) => ({ type: "setThumbsFeedback", value }),
+    },
+    {
       id: "chatFontScale",
       category: "general",
       title: "Text size",
@@ -999,6 +1009,9 @@
       case "telemetryDesktop":
         next.telemetryEnabled = !!value;
         break;
+      case "thumbsFeedback":
+        next.thumbsFeedback = !!value;
+        break;
       default:
         break;
     }
@@ -1035,6 +1048,7 @@
       voiceSendPhrase: "grok send",
       voiceKeyterms: [],
       telemetryEnabled: true,
+      thumbsFeedback: false,
       providers: [],
       // Host-owned, never latched locally: an older host that ignores
       // refreshProviders leaves this false and the button stays idle rather
@@ -1263,10 +1277,12 @@
       const label = document.createElement("span");
       label.textContent = server.displayName || server.name;
       name.appendChild(label);
-      if (server.managed || server.source === "managed") {
+      const tag = server.tag
+        || ((server.managed || server.source === "managed") ? "grok.com managed" : "");
+      if (tag) {
         const badge = document.createElement("span");
         badge.className = "settings-mcp-badge";
-        badge.textContent = "grok.com managed";
+        badge.textContent = tag;
         name.appendChild(badge);
       }
       const detail = document.createElement("div");

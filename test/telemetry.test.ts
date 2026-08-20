@@ -677,6 +677,7 @@ describe("sidebar session_start wiring", () => {
     sidebar.postLocal = vi.fn();
     sidebar.remoteClients = new RemoteClientState<Session>("/repo");
     sidebar.lastVoiceConfiguredByCwd = new Map([[normalizeRepoPath("/gone"), true]]);
+    sidebar.lastPostedVoiceConfigured = new Map();
     sidebar.postVoiceConfigured();
     expect(sidebar.lastVoiceConfiguredByCwd.has(normalizeRepoPath("/gone"))).toBe(false);
     expect(sidebar.lastVoiceConfiguredByCwd.get(normalizeRepoPath("/repo"))).toBe(true);
@@ -693,6 +694,7 @@ describe("sidebar session_start wiring", () => {
     sidebar.sendRemoteClient = vi.fn();
     sidebar.remoteClients = new RemoteClientState<Session>("");
     sidebar.lastVoiceConfiguredByCwd = new Map();
+    sidebar.lastPostedVoiceConfigured = new Map();
     sidebar.remoteClients.ready("c49");
     sidebar.remoteClients.ready("ok");
     sidebar.remoteClients.select("ok", "/repo");

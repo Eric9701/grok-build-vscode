@@ -11,7 +11,9 @@ import {
   connectorViews,
   disconnectConnector,
   hostMcpServers,
+  mcpConfigLayer,
   mcpConfigPaths,
+  collectMcpNameLayers,
   mcpRemoteArgs,
   parseConnectedConnectorStore,
   parseInitializeResult,
@@ -243,6 +245,21 @@ FOO = "bar"
     expect(mcpConfigPaths({
       cwd: "/proj", provider: "codex", grokHome: "/home/.grok", userHome: "/home",
     })).toEqual(["/home/.codex/config.toml"]);
+  });
+
+  it("classifies project files vs user files from the same path list", () => {
+    const grok = { cwd: "/proj", provider: "grok" as const, grokHome: "/home/.grok", userHome: "/home" };
+    expect(mcpConfigLayer("/proj/.mcp.json", grok)).toBe("project");
+    expect(mcpConfigLayer("/proj/.grok/config.toml", grok)).toBe("project");
+    expect(mcpConfigLayer("/home/.grok/config.toml", grok)).toBe("user");
+    expect(mcpConfigLayer("/home/.cursor/mcp.json", grok)).toBe("user");
+    const layers = collectMcpNameLayers([
+      { layer: "user", names: ["notes", "shared"] },
+      { layer: "project", names: ["docs", "shared"] },
+    ]);
+    expect(layers.get("docs")).toBe("project");
+    expect(layers.get("notes")).toBe("user");
+    expect(layers.get("shared")).toBe("project");
   });
 });
 

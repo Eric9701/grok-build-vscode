@@ -44,7 +44,10 @@ See `research/mcp-orphan-probe.cjs`.
 
 `mcpConnectors` is mirrored (ids, names, connected — no tokens).
 `mcpServers` is `allowlist`-projected (`projectMcpServerForRemote`: page
-fields only, never the launch recipe). `connectMcpConnector` / `disconnectMcpConnector` are host-local:
+fields only, never the launch recipe). `scopeName` and `tag` are on that
+allowlist so a phone can show the same provenance badge as the desk
+(managed `scopeName` / grok.com, project folder name, or
+`User on: <deviceDisplayName>`). `connectMcpConnector` / `disconnectMcpConnector` are host-local:
 OAuth needs a browser on the machine that owns `~/.mcp-auth`. Settings →
 Connectors on a remote shows the desk-owned catalog read-only, the live Grok
 inventory, and a grok.com/connectors link. `listMcpServers` is inbound view

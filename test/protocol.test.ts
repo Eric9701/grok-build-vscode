@@ -48,6 +48,9 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
     expect(
       packageJson.contributes.configuration.properties["grok.summarizeRepliesAloud"].default,
     ).toBe(true);
+    expect(
+      packageJson.contributes.configuration.properties["grok.thumbsFeedback"].default,
+    ).toBe(false);
   });
 
   it("scopes the macOS Emacs composer bindings to composer focus", () => {

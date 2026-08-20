@@ -80,6 +80,8 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.setVoiceKeyterms).toBe("propose");
     expect(INBOUND_DISPOSITION.setTelemetryEnabled).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.telemetryEnabled).toBe("mirror");
+    expect(INBOUND_DISPOSITION.setThumbsFeedback).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.thumbsFeedback).toBe("mirror");
     expect(INBOUND_DISPOSITION.summarizeSpeech).toBe("propose");
     expect(INBOUND_DISPOSITION.requestImageFull).toBe("propose");
     // Worktree create/apply/remove stay host-local. apply/remove now refuse a

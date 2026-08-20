@@ -369,6 +369,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setVoiceKeyterms: "propose",
   // Remote surface is read-only for telemetry; the desk owns the switch.
   setTelemetryEnabled: "host-local",
+  // Same class as the other General host prefs: the desk owns the switch,
+  // remotes receive the live value and honour it for thumbs.
+  setThumbsFeedback: "host-local",
   // Machine-global disclosure preference in ~/.grok/client-state — the web
   // client inherits and may set it (host-owned store, not VS Code settings).
   setAppPurpose: "propose",
@@ -563,6 +566,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   appPurpose: "mirror",
   fontScale: "mirror",
   telemetryEnabled: "mirror",
+  thumbsFeedback: "mirror",
   grokUpdateStatus: "mirror",
   // Desk-only installer notice / restart — a remote has nothing useful to do with it.
   updateAvailable: "host-local",
@@ -689,6 +693,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   appPurpose: "none",
   fontScale: "none",
   telemetryEnabled: "none",
+  thumbsFeedback: "none",
   grokUpdateStatus: "none",
   updateAvailable: "none",
   updateReady: "none",

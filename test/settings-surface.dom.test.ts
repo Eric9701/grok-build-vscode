@@ -395,6 +395,26 @@ describe("settings overlay (chat.js)", () => {
     expect(h.posted).toContainEqual({ type: "openUrl", url: "https://grok.com/connectors" });
   });
 
+  it("renders project, user-on-machine, and scopeName tags on Grok connectors", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [
+        { name: "docs", displayName: "Docs", source: "local", tag: "grok-build-vscode", enabled: true, status: "ready" },
+        { name: "notes", displayName: "Notes", source: "local", tag: "User on: Mac (macOS)", enabled: true, status: "ready" },
+        { name: "managed_gateway:linear", displayName: "Linear", source: "managed", tag: "Grok CLI", enabled: true, status: "ready" },
+      ],
+      warning: "This list is read-only.",
+    });
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("grok-build-vscode");
+    expect(overlay.textContent).toContain("User on: Mac (macOS)");
+    expect(overlay.textContent).toContain("Grok CLI");
+  });
+
   it("connects and disconnects host-owned connectors from Settings", () => {
     const h = bootWebview();
     seedChat(h, { capabilities: { mcpSettings: true } });
@@ -535,6 +555,32 @@ describe("settings overlay (chat.js)", () => {
     expect(remote).toContain("telemetryRemote");
     expect(api.TELEMETRY_COPY).toContain("never prompts, code, file paths or names");
     expect(api.TELEMETRY_COPY).toContain("The IP address is discarded, never stored.");
+  });
+
+  it("offers Thumbs feedback to SpaceXAI on every surface, default off, next to usage stats", () => {
+    const api = loadSettings();
+    const row = api.ROWS.find((r: { id: string }) => r.id === "thumbsFeedback") as {
+      id: string;
+      category: string;
+      title: string;
+      defaultValue: boolean;
+    };
+    expect(row).toMatchObject({
+      category: "general",
+      title: "Thumbs feedback to SpaceXAI",
+      defaultValue: false,
+    });
+    const ids = api.ROWS.filter((r: { category: string }) => r.category === "general").map((r: { id: string }) => r.id);
+    expect(ids.indexOf("thumbsFeedback")).toBeGreaterThan(ids.indexOf("telemetryRemote"));
+    const snapshot = api.defaultSnapshot();
+    expect(snapshot.thumbsFeedback).toBe(false);
+    for (const env of [
+      api.defaultEnv(fullEnv({ isDesktop: true, isRemote: false })),
+      api.defaultEnv(fullEnv({ isDesktop: false, isRemote: false })),
+      api.defaultEnv(fullEnv({ isRemote: true })),
+    ]) {
+      expect(api.visibleRows(snapshot, env).some((r) => r.id === "thumbsFeedback")).toBe(true);
+    }
   });
 });
 
@@ -880,6 +926,7 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     expect(src.slice(start, end)).toContain("telemetryEnabled");
+    expect(src.slice(start, end)).toContain("thumbsFeedback");
     expect(src.slice(start, end)).toContain("mcpServers");
   });
 
@@ -893,8 +940,8 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const body = src.slice(start, end);
-    expect(body).toContain("this.post(message)");
-    expect(body).not.toContain("this.postLocal(message)");
+    expect(body).toContain("this.post(tagged)");
+    expect(body).not.toContain("this.postLocal(");
   });
 
   it("voice send-phrase and keyterms write the winning inspect scope", () => {
