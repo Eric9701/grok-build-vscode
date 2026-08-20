@@ -395,6 +395,7 @@
     contextCategories: null,
     contextSystemPromptTokens: null,
     contextToolDefinitionsTokens: null,
+    contextToolDefinitionsCount: null,
     contextMessageTokens: null,
     contextFreeTokens: null,
     contextAutoCompactPct: null,
@@ -1042,7 +1043,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, contextOverheadTokens, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1847,17 +1848,38 @@
       state.contextMessageTokens != null ||
       (state.contextCategories && state.contextCategories.length);
     if (hasBreakdown) {
+      // Same split as the CLI TUI: legend rows fill the bar; informational
+      // rows sit below it because their tokens are already in those addends
+      // (tool definitions in Reasoning/overhead, usage categories in Messages).
+      const overheadTokens = contextOverheadTokens(
+        used,
+        state.contextSystemPromptTokens,
+        state.contextMessageTokens,
+      );
       section("In this window");
       if (state.contextSystemPromptTokens != null) info("System", tok(state.contextSystemPromptTokens));
-      if (state.contextToolDefinitionsTokens != null) info("Tools", tok(state.contextToolDefinitionsTokens));
       if (state.contextMessageTokens != null) info("Messages", tok(state.contextMessageTokens));
-      if (state.contextCategories) {
-        for (const category of state.contextCategories) {
-          info(category.detail ? `${category.label} (${category.detail})` : category.label, tok(category.tokens));
-        }
-      }
+      if (overheadTokens != null) info("Reasoning/overhead", tok(overheadTokens));
       if (state.contextFreeTokens != null) info("Free", tok(state.contextFreeTokens));
       if (state.contextAutoCompactPct != null) info("Auto-compact at", `${state.contextAutoCompactPct}%`);
+      const hasCounted =
+        state.contextToolDefinitionsTokens != null ||
+        (state.contextCategories && state.contextCategories.length);
+      if (hasCounted) {
+        section("Already counted above");
+        if (state.contextToolDefinitionsTokens != null) {
+          const n = state.contextToolDefinitionsCount;
+          const toolsLabel = typeof n === "number"
+            ? `Tool definitions (${n} ${n === 1 ? "tool" : "tools"})`
+            : "Tool definitions";
+          info(toolsLabel, tok(state.contextToolDefinitionsTokens));
+        }
+        if (state.contextCategories) {
+          for (const category of state.contextCategories) {
+            info(category.detail ? `${category.label} (${category.detail})` : category.label, tok(category.tokens));
+          }
+        }
+      }
     }
 
     // Billing rows only when the CLI actually reported usage — an older build or
@@ -13511,6 +13533,7 @@
         state.contextCategories = null;
         state.contextSystemPromptTokens = null;
         state.contextToolDefinitionsTokens = null;
+        state.contextToolDefinitionsCount = null;
         state.contextMessageTokens = null;
         state.contextFreeTokens = null;
         state.contextAutoCompactPct = null;
@@ -14124,6 +14147,7 @@
         if (msg.categories) state.contextCategories = msg.categories;
         if (msg.systemPromptTokens != null) state.contextSystemPromptTokens = msg.systemPromptTokens;
         if (msg.toolDefinitionsTokens != null) state.contextToolDefinitionsTokens = msg.toolDefinitionsTokens;
+        if (msg.toolDefinitionsCount != null) state.contextToolDefinitionsCount = msg.toolDefinitionsCount;
         if (msg.messageTokens != null) state.contextMessageTokens = msg.messageTokens;
         if (msg.freeTokens != null) state.contextFreeTokens = msg.freeTokens;
         if (msg.autoCompactThresholdPercent != null) state.contextAutoCompactPct = msg.autoCompactThresholdPercent;

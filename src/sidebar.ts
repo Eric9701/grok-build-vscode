@@ -14082,6 +14082,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       categories: info.categories,
       systemPromptTokens: info.systemPromptTokens,
       toolDefinitionsTokens: info.toolDefinitionsTokens,
+      toolDefinitionsCount: info.toolDefinitionsCount,
       messageTokens: info.messageTokens,
       freeTokens: info.freeTokens,
       autoCompactThresholdPercent: info.autoCompactThresholdPercent,

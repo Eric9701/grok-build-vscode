@@ -1119,6 +1119,18 @@
     return null;
   }
 
+  /** Focus plus whether the phone category <select> is the live control.
+   *  Destroying that node while its native picker is open closes the picker. */
+  function describeChrome(container) {
+    const doc = container.ownerDocument;
+    const active = doc && doc.activeElement;
+    const focus = describeFocus(container, active);
+    return {
+      focus,
+      navMenuOpen: !!(focus && focus.kind === "nav-select"),
+    };
+  }
+
   function applyFocus(container, desc) {
     if (!desc) return;
     let next = null;
@@ -1487,6 +1499,8 @@
     const onLocal = typeof opts.onLocal === "function" ? opts.onLocal : null;
     const onClose = typeof opts.onClose === "function" ? opts.onClose : null;
     let phoneNav = matchPhoneNav(container.ownerDocument);
+    let lastPaintedKey = "";
+    let paintDeferred = false;
 
     const modal = !opts.standalone;
     container.classList.add("settings-surface");
@@ -1622,12 +1636,31 @@
       if (opts.closeOnAction && onClose) onClose();
     }
 
+    function paintKey() {
+      return JSON.stringify({
+        snapshot,
+        env,
+        categoryId,
+        query,
+        pendingRestore: pendingRestore ? pendingRestore.map((row) => row.id) : null,
+        phoneNav,
+      });
+    }
+
     function paint() {
-      const focus = describeFocus(container, container.ownerDocument && container.ownerDocument.activeElement);
+      const chrome = describeChrome(container);
       ensureCategory();
       maybeCheckAbout();
       maybeRefreshProviders();
       maybeRefreshMcp();
+      const key = paintKey();
+      if (key === lastPaintedKey && container.firstChild) {
+        paintDeferred = false;
+        return;
+      }
+      lastPaintedKey = key;
+      paintDeferred = false;
+      const focus = chrome.focus;
       const searching = !!query.trim();
       const shownCats = cats();
       const page = CATEGORIES.find((c) => c.id === categoryId) || shownCats[0];
@@ -1984,6 +2017,12 @@
 
     container._onKey = onKey;
     document.addEventListener("keydown", onKey, true);
+    container.addEventListener("blur", (e) => {
+      if (!paintDeferred) return;
+      const target = e.target;
+      if (!target || !target.classList || !target.classList.contains("settings-nav-select")) return;
+      paint();
+    }, true);
     const view = container.ownerDocument && container.ownerDocument.defaultView;
     const phoneMq = view && view.matchMedia ? view.matchMedia(PHONE_NAV_MQ) : null;
     function onPhoneNavChange() {
@@ -2002,6 +2041,11 @@
       update(nextSnapshot, nextEnv) {
         if (nextSnapshot) snapshot = defaultSnapshot({ ...snapshot, ...nextSnapshot });
         if (nextEnv) Object.assign(env, nextEnv);
+        if (container.firstChild && paintKey() === lastPaintedKey) return;
+        if (describeChrome(container).navMenuOpen) {
+          paintDeferred = true;
+          return;
+        }
         paint();
       },
       focusSearch() {

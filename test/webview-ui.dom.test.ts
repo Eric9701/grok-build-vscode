@@ -3182,12 +3182,67 @@ describe("context popover (donut click, #39)", () => {
     const text = $(doc, "context-popover").textContent!;
     expect(text).toContain("In this window");
     expect(text).toContain("System");
-    expect(text).toContain("Tools");
     expect(text).toContain("Messages");
-    expect(text).toContain("Skills");
-    expect(text).toContain("MCP (2 servers)");
     expect(text).toContain("Free");
     expect(text).toContain("Auto-compact at");
+    expect(text).toContain("Already counted above");
+    expect(text).toContain("Tool definitions");
+    expect(text).not.toContain("Tool definitions (");
+    expect(text).toContain("Skills");
+    expect(text).toContain("MCP (2 servers)");
+    // 16,017 used − 1,039 system − 12,166 messages = 2,812 overhead.
+    expect(text).toMatch(/Reasoning\/overhead\s*2,812/);
+    const windowAt = text.indexOf("In this window");
+    const countedAt = text.indexOf("Already counted above");
+    expect(text.indexOf("System")).toBeGreaterThan(windowAt);
+    expect(text.indexOf("Messages")).toBeGreaterThan(windowAt);
+    expect(text.indexOf("Messages")).toBeLessThan(countedAt);
+    expect(text.indexOf("Reasoning/overhead")).toBeLessThan(countedAt);
+    expect(text.indexOf("Tool definitions")).toBeGreaterThan(countedAt);
+    expect(text.indexOf("Skills")).toBeGreaterThan(countedAt);
+  });
+
+  it("shows Reasoning/overhead only when used exceeds system + messages", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "contextUsage",
+      used: 25000,
+      window: 100000,
+      systemPromptTokens: 2000,
+      toolDefinitionsTokens: 8000,
+      messageTokens: 20000,
+      freeTokens: 75000,
+    });
+    click(window, $(doc, "donut"));
+    const text = $(doc, "context-popover").textContent!;
+    expect(text).toMatch(/Reasoning\/overhead\s*3,000/);
+    const windowAt = text.indexOf("In this window");
+    const countedAt = text.indexOf("Already counted above");
+    expect(text.indexOf("Reasoning/overhead")).toBeGreaterThan(windowAt);
+    expect(text.indexOf("Reasoning/overhead")).toBeLessThan(countedAt);
+    expect(text.indexOf("Tool definitions")).toBeGreaterThan(countedAt);
+  });
+
+  it("labels Tool definitions with the CLI's tool count when present", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "contextUsage",
+      used: 24273,
+      window: 500000,
+      systemPromptTokens: 1516,
+      toolDefinitionsTokens: 8471,
+      toolDefinitionsCount: 51,
+      messageTokens: 22757,
+      freeTokens: 475727,
+      categories: [{ label: "Skills", tokens: 4886, detail: "51 skills" }],
+    });
+    click(window, $(doc, "donut"));
+    const text = $(doc, "context-popover").textContent!;
+    expect(text).toContain("Tool definitions (51 tools)");
+    expect(text).not.toContain("Reasoning/overhead");
+    expect(text.indexOf("Messages")).toBeLessThan(text.indexOf("Already counted above"));
+    expect(text.indexOf("Tool definitions")).toBeGreaterThan(text.indexOf("Already counted above"));
+    expect(text.indexOf("Skills (51 skills)")).toBeGreaterThan(text.indexOf("Already counted above"));
   });
 
   it("labels Claude and Codex occupancy as context used, not last prompt", () => {

@@ -230,6 +230,19 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay!.querySelector('[data-id="voiceSendPhrase"]')).toBeTruthy();
   });
 
+  it("does not rebuild the overlay when a live host message repeats the same snapshot", () => {
+    const h = bootWebview();
+    seedChat(h);
+    openSettings(h);
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    dispatch(h.window, { type: "voiceConfigured", value: true });
+    const shell = overlay.querySelector(".settings-shell");
+    expect(shell).toBeTruthy();
+    dispatch(h.window, { type: "voiceConfigured", value: true });
+    dispatch(h.window, { type: "voiceConfigured", value: true });
+    expect(overlay.querySelector(".settings-shell")).toBe(shell);
+  });
+
   it("hides the Connectors nav row when mcpSettings is absent", () => {
     const h = bootWebview();
     seedChat(h);
@@ -953,29 +966,30 @@ describe("settings editor tab dispose (sidebar.ts)", () => {
   });
 });
 
+/** Mount straight onto a page and record what the surface asks the host for. */
+function mountAt(category: string, opts: {
+  env?: Record<string, unknown>;
+  snapshot?: Record<string, unknown>;
+} = {}) {
+  const window = new Window({ url: "https://localhost/" });
+  (window as unknown as { eval: (src: string) => void }).eval(settingsSrc);
+  const api = (window as unknown as { GrokSettings: ReturnType<typeof loadSettings> }).GrokSettings;
+  const doc = window.document as unknown as Document;
+  const root = doc.createElement("div");
+  doc.body.appendChild(root);
+  const posted: Array<{ type: string }> = [];
+  const surface = api.mount(root, {
+    snapshot: api.defaultSnapshot(opts.snapshot),
+    env: api.defaultEnv(fullEnv(opts.env)),
+    category,
+    post: (msg: { type: string }) => posted.push(msg),
+    standalone: true,
+  }) as unknown as { setCategory: (id: string) => void; update: (s: unknown) => void };
+  const types = () => posted.map((msg) => msg.type);
+  return { window, root, posted, types, surface };
+}
+
 describe("Providers refresh", () => {
-  /** Mount straight onto a page and record what the surface asks the host for. */
-  function mountAt(category: string, opts: {
-    env?: Record<string, unknown>;
-    snapshot?: Record<string, unknown>;
-  } = {}) {
-    const window = new Window({ url: "https://localhost/" });
-    (window as unknown as { eval: (src: string) => void }).eval(settingsSrc);
-    const api = (window as unknown as { GrokSettings: ReturnType<typeof loadSettings> }).GrokSettings;
-    const doc = window.document as unknown as Document;
-    const root = doc.createElement("div");
-    doc.body.appendChild(root);
-    const posted: Array<{ type: string }> = [];
-    const surface = api.mount(root, {
-      snapshot: api.defaultSnapshot(opts.snapshot),
-      env: api.defaultEnv(fullEnv(opts.env)),
-      category,
-      post: (msg: { type: string }) => posted.push(msg),
-      standalone: true,
-    }) as unknown as { setCategory: (id: string) => void; update: (s: unknown) => void };
-    const types = () => posted.map((msg) => msg.type);
-    return { window, root, posted, types, surface };
-  }
 
   it("offers Refresh above the rows and asks the host on open", () => {
     const { root, types } = mountAt("providers");
@@ -1047,6 +1061,62 @@ describe("Providers refresh", () => {
     const { root, types } = mountAt("general");
     expect(root.querySelector(".settings-refresh")).toBeNull();
     expect(types()).toEqual([]);
+  });
+});
+
+describe("settings update() skips an unchanged snapshot", () => {
+  it("does not rebuild the DOM when the displayed snapshot is identical", () => {
+    const { root, surface } = mountAt("general", { snapshot: { appPurpose: "coding" } });
+    const shell = root.querySelector(".settings-shell");
+    expect(shell).toBeTruthy();
+    surface.update({ showThinking: false, voiceConfigured: false });
+    expect(root.querySelector(".settings-shell")).toBe(shell);
+  });
+
+  it("rebuilds when a displayed value actually changes", () => {
+    const { root, surface } = mountAt("general", { snapshot: { appPurpose: "coding" } });
+    const shell = root.querySelector(".settings-shell");
+    surface.update({ showThinking: true });
+    const next = root.querySelector(".settings-shell");
+    expect(next).toBeTruthy();
+    expect(next).not.toBe(shell);
+    expect(root.querySelector('[data-id="showThinking"] .settings-switch')?.classList.contains("on")).toBe(true);
+  });
+
+  it("defers a real repaint while the phone category menu is focused", () => {
+    const window = new Window({ url: "https://localhost/" });
+    (window as unknown as { matchMedia: (q: string) => { matches: boolean } }).matchMedia = (query) => ({
+      matches: String(query).includes("520px"),
+      addEventListener() { /* */ },
+      removeEventListener() { /* */ },
+      addListener() { /* */ },
+      removeListener() { /* */ },
+    }) as unknown as { matches: boolean };
+    (window as unknown as { eval: (src: string) => void }).eval(settingsSrc);
+    const api = (window as unknown as { GrokSettings: ReturnType<typeof loadSettings> }).GrokSettings;
+    const doc = window.document as unknown as Document;
+    const root = doc.createElement("div");
+    doc.body.appendChild(root);
+    const surface = api.mount(root, {
+      snapshot: api.defaultSnapshot({ appPurpose: "coding" }),
+      env: api.defaultEnv(fullEnv()),
+      category: "general",
+      post: () => { /* */ },
+      standalone: true,
+    }) as unknown as { update: (s: unknown) => void };
+    const select = root.querySelector(".settings-nav-select") as HTMLSelectElement;
+    expect(select).toBeTruthy();
+    expect(select.hidden).toBe(false);
+    select.focus();
+    expect(doc.activeElement).toBe(select);
+    const shell = root.querySelector(".settings-shell");
+    surface.update({ showThinking: true });
+    expect(root.querySelector(".settings-shell")).toBe(shell);
+    expect(root.querySelector('[data-id="showThinking"] .settings-switch')?.classList.contains("on")).toBe(false);
+    select.blur();
+    const next = root.querySelector(".settings-shell");
+    expect(next).not.toBe(shell);
+    expect(root.querySelector('[data-id="showThinking"] .settings-switch')?.classList.contains("on")).toBe(true);
   });
 });
 

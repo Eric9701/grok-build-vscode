@@ -749,6 +749,7 @@ export interface SessionInfoContext {
   categories?: ContextUsageCategory[];
   systemPromptTokens?: number;
   toolDefinitionsTokens?: number;
+  toolDefinitionsCount?: number;
   messageTokens?: number;
   freeTokens?: number;
   autoCompactThresholdPercent?: number;
@@ -802,6 +803,8 @@ export function parseSessionInfoRpcResult(raw: unknown): SessionInfoContext | nu
   if (system !== undefined) parsed.systemPromptTokens = system;
   const tools = finiteNonNegative(values.toolDefinitionsTokens);
   if (tools !== undefined) parsed.toolDefinitionsTokens = tools;
+  const toolCount = finiteNonNegative(values.toolDefinitionsCount);
+  if (toolCount !== undefined) parsed.toolDefinitionsCount = toolCount;
   const messages = finiteNonNegative(values.messageTokens);
   if (messages !== undefined) parsed.messageTokens = messages;
   const free = finiteNonNegative(values.freeTokens);

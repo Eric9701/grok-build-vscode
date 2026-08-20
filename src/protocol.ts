@@ -384,6 +384,7 @@ export type HostMsg =
       categories?: { label: string; tokens: number; detail?: string }[];
       systemPromptTokens?: number;
       toolDefinitionsTokens?: number;
+      toolDefinitionsCount?: number;
       messageTokens?: number;
       freeTokens?: number;
       autoCompactThresholdPercent?: number;
