@@ -240,6 +240,15 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(acceptedAtExit).toBe(true);
   });
 
+  it("forwards interject content image blocks to the CLI", async () => {
+    const b64 = Buffer.from("fake-png-bytes").toString("base64");
+    await client.interject("look at this", undefined, [
+      { type: "text", text: "look at [Image #1]" },
+      { type: "image", mimeType: "image/png", data: b64 },
+    ]);
+    await waitForStderr(stderr, /INTERJECT_CONTENT:1:image\/png/);
+  });
+
   it("vision: image content blocks cross the wire verbatim alongside the text block", async () => {
     const chunks: string[] = [];
     client.on("messageChunk", (t: string) => chunks.push(t));

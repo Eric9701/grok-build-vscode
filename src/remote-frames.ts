@@ -333,6 +333,23 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
       return value.restore === undefined
         ? { type: "clearQueuedSends" }
         : { type: "clearQueuedSends", restore: value.restore };
+    case "steerSend": {
+      if (typeof value.text !== "string") return null;
+      if (value.fromQueue !== undefined && typeof value.fromQueue !== "boolean") return null;
+      const fromQueue = value.fromQueue === true ? { fromQueue: true as const } : {};
+      if (value.chips === undefined) {
+        return { type: "steerSend", text: value.text, ...fromQueue };
+      }
+      if (!Array.isArray(value.chips)) return null;
+      const chips: { id: string; path: string; relPath: string; hidden: boolean }[] = [];
+      for (const raw of value.chips) {
+        if (!raw || typeof raw !== "object") return null;
+        const id = (raw as { id?: unknown }).id;
+        if (typeof id !== "string" || !id || id.length > 512) return null;
+        chips.push({ id, path: "", relPath: "", hidden: false });
+      }
+      return { type: "steerSend", text: value.text, chips, ...fromQueue };
+    }
     case "exitPlanAnswer": {
       const validRequestId = typeof value.requestId === "string" || typeof value.requestId === "number";
       if (

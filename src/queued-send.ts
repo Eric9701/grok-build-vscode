@@ -37,6 +37,17 @@ export function chipsForQueueSend(
   return explicit.filter((chip) => ids.has(chip.id)).map(cloneChipForQueue);
 }
 
+/** True when any requested id still lives on a queued contribution. */
+export function queuedSendsContainChipIds(
+  items: readonly QueuedSendEntry[],
+  requested: readonly Pick<FileChip, "id">[] | undefined,
+): boolean {
+  if (!requested?.length) return false;
+  const ids = new Set(requested.map((chip) => chip.id).filter(Boolean));
+  if (!ids.size) return false;
+  return items.some((item) => item.chips.some((chip) => ids.has(chip.id)));
+}
+
 export function enqueueQueuedSend(
   items: readonly QueuedSendEntry[],
   text: string,

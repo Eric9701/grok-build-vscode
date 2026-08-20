@@ -7,6 +7,8 @@ import {
   ACP_IMAGE_READ_FS_CAPABILITIES,
   acpClientCapabilities,
   buildGrokAgentArgs,
+  buildInterjectParams,
+  cliHonorsInterjectContent,
 } from "../src/acp";
 import type { AcpBackend } from "../src/acp-backend";
 import { ClaudeBackend } from "../src/claude-backend";
@@ -706,6 +708,83 @@ describe("acpClientCapabilities", () => {
     expect(acpClientCapabilities("grok", "")).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
     expect(acpClientCapabilities("grok", "unparseable", true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
     expect(acpClientCapabilities("grok", null, true)).toEqual(ACP_DELEGATED_FS_CAPABILITIES);
+  });
+});
+
+describe("cliHonorsInterjectContent", () => {
+  it("is true only for a live-verified grok 1.x", () => {
+    expect(cliHonorsInterjectContent("1.0.0", true)).toBe(true);
+    expect(cliHonorsInterjectContent("grok 1.0.5 (x) [stable]", true)).toBe(true);
+    expect(cliHonorsInterjectContent("1.0.5", false)).toBe(false);
+    expect(cliHonorsInterjectContent("0.2.117", true)).toBe(false);
+    expect(cliHonorsInterjectContent("unparseable", true)).toBe(false);
+    expect(cliHonorsInterjectContent()).toBe(false);
+  });
+});
+
+describe("buildInterjectParams", () => {
+  it("omits content when there are no image blocks — legacy wire", () => {
+    expect(buildInterjectParams("s1", "steer")).toEqual({ sessionId: "s1", text: "steer" });
+    expect(buildInterjectParams("s1", "steer", [{ type: "text", text: "steer" }])).toEqual({
+      sessionId: "s1",
+      text: "steer",
+    });
+    expect(Object.keys(buildInterjectParams("s1", "steer"))).toEqual(["sessionId", "text"]);
+  });
+
+  it("includes content when an image block is present", () => {
+    const content = [
+      { type: "text" as const, text: "look at [Image #1]" },
+      { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=" },
+    ];
+    expect(buildInterjectParams("s1", "look at this", content)).toEqual({
+      sessionId: "s1",
+      text: "look at this",
+      content,
+    });
+  });
+});
+
+describe("AcpClient.interject wire", () => {
+  it("sends text-only params without a content key", async () => {
+    const { client, written } = clientWithFakeProc();
+    (client as any).sessionId = "s1";
+    replyToWrites(client, written, () => ({ status: "queued" }));
+    await expect(client.interject("steer left")).resolves.toBe("ok");
+    const sent = JSON.parse(written[0]);
+    expect(sent).toMatchObject({
+      method: "_x.ai/interject",
+      params: { sessionId: "s1", text: "steer left" },
+    });
+    expect(sent.params).not.toHaveProperty("content");
+  });
+
+  it("sends additive content when image blocks are provided", async () => {
+    const { client, written } = clientWithFakeProc();
+    (client as any).sessionId = "s1";
+    replyToWrites(client, written, () => ({ status: "queued" }));
+    const content = [
+      { type: "text" as const, text: "look at [Image #1]" },
+      { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=" },
+    ];
+    await expect(client.interject("look at this", undefined, content)).resolves.toBe("ok");
+    const sent = JSON.parse(written[0]);
+    expect(sent.params).toEqual({
+      sessionId: "s1",
+      text: "look at this",
+      content,
+    });
+  });
+
+  it("honorsInterjectContent follows the live-verified 1.x floor", () => {
+    const yes = new AcpClient({
+      cliPath: "x", cwd: "/", log: () => {}, grokVersion: "1.0.5", grokVersionVerified: true,
+    });
+    const no = new AcpClient({
+      cliPath: "x", cwd: "/", log: () => {}, grokVersion: "0.2.117", grokVersionVerified: true,
+    });
+    expect(yes.honorsInterjectContent()).toBe(true);
+    expect(no.honorsInterjectContent()).toBe(false);
   });
 });
 

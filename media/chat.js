@@ -12240,15 +12240,15 @@
   // (session-start priming — no session id to interject against yet), a CLI that
   // can't interject, and (defensively) not being busy at all. Any of those fall
   // back to the queue, which is the safe home for the text either way.
+  // Attachments ride `_x.ai/interject` `content` (same encoder as a send).
   function queueOutgoing(text, chips) {
     const attachments = Array.isArray(chips) ? chips : explicitVisibleChips(state.chips);
-    // Steer is text-only (`_x.ai/interject`). Attachments fall back to the
-    // queue rather than silently dropping — everything or nothing.
     if (
-      !attachments.length &&
       state.steerByDefault && state.steerSupported && steerableProvider() && state.busy && !state.busyLocked
     ) {
-      vscode.postMessage({ type: "steerSend", text });
+      const msg = { type: "steerSend", text };
+      if (attachments.length) msg.chips = attachments;
+      vscode.postMessage(msg);
       return;
     }
     const msg = { type: "queueSend", text };
@@ -12355,9 +12355,10 @@
     // still ends up with the button once busy lands.
     // Not for Claude Code: it has no mid-turn interject, so the button would
     // offer to do something the agent cannot do. Its messages stay scheduled.
-    // Attachments cannot ride `_x.ai/interject` — hide Steer rather than
-    // silently drop them.
-    if (state.steerSupported && steerableProvider() && !chips.length) {
+    // Attachments ride `_x.ai/interject` `content` — the host encodes them the
+    // same way as a send. An older CLI that ignores `content` gets the whole
+    // item queued rather than a silent drop.
+    if (state.steerSupported && steerableProvider()) {
       const steerBtn = document.createElement("button");
       steerBtn.className = "queued-action queued-steer";
       steerBtn.title = "Steer — submit now without interrupting Grok";
@@ -12372,8 +12373,12 @@
       steerBtn.onpointerdown = (e) => {
         e.preventDefault();
         e.stopPropagation();
+        // steerSend first so the host can snapshot the queue before this
+        // clear races (webview handlers are not serialized across awaits).
+        const msg = { type: "steerSend", text, fromQueue: true };
+        if (chips.length) msg.chips = chips;
+        vscode.postMessage(msg);
         vscode.postMessage({ type: "clearQueuedSends" });
-        vscode.postMessage({ type: "steerSend", text });
       };
       actions.appendChild(steerBtn);
     }
@@ -12381,21 +12386,21 @@
     actions.appendChild(rmBtn);
     hdr.appendChild(tag);
     hdr.appendChild(actions);
-    if (text) {
-      const body = document.createElement("div");
-      body.className = "queued-text";
-      body.textContent = text;
-      body.title = text; // body is line-clamped; full text on hover
-      bubble.appendChild(hdr);
-      bubble.appendChild(body);
-    } else {
-      bubble.appendChild(hdr);
-    }
+    // Composer order: attachments above the typed text. The pending block
+    // is that composition, pinned — chips then text, not the reverse.
+    bubble.appendChild(hdr);
     if (chips.length) {
       const chipsRow = document.createElement("div");
       chipsRow.className = "msg-chips";
       for (const chip of chips) chipsRow.appendChild(makeMsgChipTag(chip.relPath, chip));
       bubble.appendChild(chipsRow);
+    }
+    if (text) {
+      const body = document.createElement("div");
+      body.className = "queued-text";
+      body.textContent = text;
+      body.title = text; // body is line-clamped; full text on hover
+      bubble.appendChild(body);
     }
     msg.appendChild(bubble);
     wrap.appendChild(msg);

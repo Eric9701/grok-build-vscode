@@ -1699,6 +1699,14 @@ body.turn-busy .queued-steer:hover {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* Pending block matches the composer: chips sit above the text. */
+.msg.user.queued .msg-chips {
+  margin-top: 4px;
+  margin-bottom: 2px;
+}
+.msg.user.queued .msg-chips:last-child {
+  margin-bottom: 0;
+}
 .msg.agent {
   background: transparent;
   padding-left: 0;

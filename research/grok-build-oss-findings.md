@@ -242,6 +242,9 @@ It queues into the session's pending-interjection buffer, **drained at the next 
 emitted the interjected token, the turn still ended `end_turn`, and the model confirmed it saw the
 text verbatim. A `_x.ai/session/interjection` notification echoes back on the rail (for rendering).
 `content` carries images, and its Text block overrides `text` when non-empty.
+This host sends that shape from Steer: `text` is the authored display string;
+`content` is `buildPromptWithImages` blocks (rewritten text first, then images)
+and is omitted when there are no images so the legacy wire stays byte-identical.
 
 **Control, same probe:** a plain second `session/prompt` mid-turn returned `stop=end_turn` rather
 than erroring — it does **not** cleanly queue, and repo lore (`test/send-queue.dom.test.ts:13-15`)

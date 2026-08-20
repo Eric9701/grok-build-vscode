@@ -551,11 +551,57 @@ describe("Steer — submit into the running turn (#52)", () => {
     press(window, steerBtn(doc)!);
 
     expect(types(posted)).toContain("steerSend");
-    expect(posted.find((p) => p.type === "steerSend")).toMatchObject({ text: "actually, use async" });
+    expect(posted.find((p) => p.type === "steerSend")).toMatchObject({
+      text: "actually, use async",
+      fromQueue: true,
+    });
     // The whole point of #52: steering is not a disguised Stop.
     expect(types(posted)).not.toContain("cancel");
     // It leaves the queue, or the host would ALSO flush it at turn end (double send).
     expect(types(posted)).toContain("clearQueuedSends");
+    expect(types(posted).indexOf("steerSend")).toBeLessThan(types(posted).indexOf("clearQueuedSends"));
+  });
+
+  it("offers Steer when the queued item has an attachment and carries those chips", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, { type: "agentStart" });
+    const chip = {
+      id: "image:/s/a.png:1:1", path: "/s/a.png", relPath: "Image #1",
+      hidden: false, imageIndex: 1, mimeType: "image/png",
+    };
+    dispatch(window, {
+      type: "queuedSends",
+      items: ["look at this"],
+      queued: [{ text: "look at this", chips: [chip] }],
+    });
+
+    expect(steerBtn(doc)).not.toBeNull();
+    press(window, steerBtn(doc)!);
+    expect(posted.find((p) => p.type === "steerSend")).toMatchObject({
+      type: "steerSend",
+      text: "look at this",
+      fromQueue: true,
+      chips: [expect.objectContaining({ id: chip.id })],
+    });
+    expect(types(posted)).not.toContain("cancel");
+  });
+
+  it("renders queued chips above queued text, matching the composer", () => {
+    const { window, doc } = bootWebview();
+    const chip = {
+      id: "image:/s/a.png:1:1", path: "/s/a.png", relPath: "Image #1",
+      hidden: false, imageIndex: 1, mimeType: "image/png",
+    };
+    dispatch(window, {
+      type: "queuedSends",
+      items: ["look at this"],
+      queued: [{ text: "look at this", chips: [chip] }],
+    });
+    const bubble = doc.querySelector(".msg.queued .msg-bubble") as HTMLElement;
+    const classes = [...bubble.children].map((el) => el.className);
+    expect(classes).toEqual(["queued-hdr", "msg-chips", "queued-text"]);
+    expect(bubble.querySelector(".msg-chip")?.textContent).toBe("Image #1");
+    expect(bubble.querySelector(".queued-text")?.textContent).toBe("look at this");
   });
 
   it("is hidden when no turn is running — there is nothing to steer", () => {
@@ -633,6 +679,35 @@ describe("Steer by default — skip the queue (#52)", () => {
     expect(types(posted)).not.toContain("queueSend");
     // Still never a cancel — steering is not a disguised Stop.
     expect(types(posted)).not.toContain("cancel");
+  });
+
+  it("steers an attachment instead of hiding Steer or dropping the file", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "9.9.9",
+      showThinking: false, expandCommandOutputs: false, steerByDefault: true,
+      capabilities: { uploadFile: true, remoteVoice: true, queueSendChips: true },
+    });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, {
+      type: "chips",
+      chips: [{
+        id: "image:/s/a.png:1:1",
+        path: "/s/a.png",
+        relPath: "Image #1",
+        hidden: false,
+        imageIndex: 1,
+        mimeType: "image/png",
+      }],
+    });
+    typeAndEnter(window, doc, "what is this");
+    expect(posted.find((p) => p.type === "steerSend")).toMatchObject({
+      type: "steerSend",
+      text: "what is this",
+      chips: [expect.objectContaining({ id: "image:/s/a.png:1:1" })],
+    });
+    expect(types(posted)).not.toContain("queueSend");
   });
 
   it("falls back to the queue during the locked startup window", () => {

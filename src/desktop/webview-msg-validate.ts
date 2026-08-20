@@ -321,6 +321,8 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       break;
     case "steerSend":
       if (!isString(raw.text)) return null;
+      if (raw.chips !== undefined && !Array.isArray(raw.chips)) return null;
+      if (!opt(raw.fromQueue, isBoolean)) return null;
       break;
     case "clearQueuedSends":
       if (!opt(raw.restore, isBoolean)) return null;

@@ -7,6 +7,7 @@ import {
   dequeueQueuedSends,
   enqueueQueuedSend,
   queuedFlushText,
+  queuedSendsContainChipIds,
   queuedSendsMessage,
   queuedSendsText,
   restoreQueuedChips,
@@ -33,6 +34,17 @@ describe("chipsForQueueSend", () => {
 
   it("ignores requested ids that are not on the composer", () => {
     expect(chipsForQueueSend([file], [{ id: "stale" }])).toEqual([]);
+  });
+});
+
+describe("queuedSendsContainChipIds", () => {
+  it("is true when a requested id still lives on a queued contribution", () => {
+    const image = img("shot");
+    const items = enqueueQueuedSend([], "look", [image]);
+    expect(queuedSendsContainChipIds(items, [{ id: image.id }])).toBe(true);
+    expect(queuedSendsContainChipIds(items, [{ id: "other" }])).toBe(false);
+    expect(queuedSendsContainChipIds(items, [])).toBe(false);
+    expect(queuedSendsContainChipIds(items, undefined)).toBe(false);
   });
 });
 

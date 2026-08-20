@@ -74,6 +74,12 @@ vi.mock("../src/acp", async (importOriginal) => {
       }
     }
     async setMode(): Promise<void> {}
+    honorsInterjectContent(): boolean {
+      return true;
+    }
+    async interject(): Promise<"ok"> {
+      return "ok";
+    }
     isCredentialError(): boolean {
       return false;
     }

@@ -82,6 +82,47 @@ export type PromptContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; mimeType: string; data: string };
 
+/**
+ * Oldest grok whose `_x.ai/interject` honors `content` (text + image blocks).
+ * 0.2.x accepts `{sessionId, text}` and ignores unknown fields, so images
+ * would drop silently — the host refuses image-bearing Steer instead.
+ * Fail closed unless the version is live-verified. Inspected on 1.0.5
+ * (`InterjectRequest.content` in `extensions/interject.rs`).
+ */
+export const GROK_INTERJECT_CONTENT_MIN_VERSION: [number, number, number] = [1, 0, 0];
+
+/** True only for a live-verified grok that will apply interject `content`. */
+export function cliHonorsInterjectContent(
+  grokVersion?: string | null,
+  versionVerified = false,
+): boolean {
+  if (!versionVerified) return false;
+  const parsed = parseGrokVersion(grokVersion ?? "");
+  if (!parsed) return false;
+  return compareVersionTuple(parsed, GROK_INTERJECT_CONTENT_MIN_VERSION) >= 0;
+}
+
+/**
+ * `_x.ai/interject` params. `content` is omitted entirely when there are no
+ * image blocks so the legacy `{sessionId, text}` wire stays byte-identical
+ * (the TUI does the same). The Text block, when present, is the rewritten
+ * prompt (`buildPromptWithImages`) and wins over `text` on a capable CLI.
+ */
+export function buildInterjectParams(
+  sessionId: string,
+  text: string,
+  content?: readonly PromptContentBlock[],
+): { sessionId: string; text: string; content?: PromptContentBlock[] } {
+  const params: { sessionId: string; text: string; content?: PromptContentBlock[] } = {
+    sessionId,
+    text,
+  };
+  if (content && content.some((block) => block.type === "image")) {
+    params.content = [...content];
+  }
+  return params;
+}
+
 export interface AcpClientOptions {
   cliPath: string;
   cwd: string;
@@ -692,13 +733,22 @@ export class AcpClient extends EventEmitter {
    * `_x.ai/interject` is unadvertised, so a pre-~0.2.96 CLI answers -32601. That
    * returns `"unsupported"` (not a throw) so the caller can fall back to queueing
    * — the user's text must never be lost to a capability gap.
+   *
+   * `content` is additive: image-capable CLIs take structured text + image
+   * blocks (the Text block wins over `text`); older CLIs keep reading `text`.
+   * Omit it when there are no images so the legacy wire stays byte-identical.
+   * The host must not pass image blocks to a CLI that ignores `content`.
    */
-  async interject(text: string, onQueued?: () => void): Promise<"ok" | "unsupported"> {
+  async interject(
+    text: string,
+    onQueued?: () => void,
+    content?: readonly PromptContentBlock[],
+  ): Promise<"ok" | "unsupported"> {
     if (!this.sessionId) throw new Error("no session");
     try {
       await this.request(
         "_x.ai/interject",
-        { sessionId: this.sessionId, text },
+        buildInterjectParams(this.sessionId, text, content),
         () => onQueued?.(),
       );
       return "ok";
@@ -709,6 +759,12 @@ export class AcpClient extends EventEmitter {
       }
       throw e;
     }
+  }
+
+  /** Live-verified grok that will apply interject `content` rather than drop it. */
+  honorsInterjectContent(): boolean {
+    return this.provider === "grok"
+      && cliHonorsInterjectContent(this.opts.grokVersion, this.opts.grokVersionVerified === true);
   }
 
   /**

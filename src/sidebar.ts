@@ -145,10 +145,13 @@ import { buildPromptWithImages, buildQueuedPromptWithImages, type PromptImageInp
 import {
   chipsForQueueSend,
   claimQueuedSendDispatch,
+  cloneChipForQueue,
   dequeueQueuedSends,
   enqueueQueuedSend,
   explicitVisibleChips,
   queuedFlushText,
+  queuedSendsContainChipIds,
+  queuedSendsHaveContent,
   queuedSendsMessage,
   queuedSendsText,
   restoreQueuedChips,
@@ -2728,48 +2731,188 @@ Only continue if you trust this code.`,
   }
 
   /**
-   * Steer (#52) — inject text into the RUNNING turn instead of waiting for it.
-   * Unlike a second `session/prompt` (which kills the in-flight turn), grok's
-   * `_x.ai/interject` queues into a buffer the agent drains at its next safe
-   * point, so no tool work is lost and the turn still ends normally.
+   * Steer (#52) — inject text (and attachments) into the RUNNING turn instead
+   * of waiting. Unlike a second `session/prompt` (which kills the in-flight
+   * turn), grok's `_x.ai/interject` queues into a buffer the agent drains at
+   * its next safe point, so no tool work is lost and the turn still ends
+   * normally.
    *
-   * Steering carries plain text ONLY: it bypasses `prompt-builder`, so there is
-   * no context envelope, no chips, and no `/command` dispatch — the interjection
-   * reaches the model as-is. The bubble is painted optimistically before the RPC
-   * so the UI feels immediate; a failure re-queues the text rather than losing
-   * it, which is the whole point of the host owning this (#37).
+   * Images ride additive `content` blocks built by `buildPromptWithImages` —
+   * the same encoder as `session/prompt`. A CLI old enough to ignore `content`
+   * never sees a silent drop: the whole item is queued instead. File chips
+   * stay in the text block and work on that legacy wire.
+   *
+   * The queue / composer snapshot is synchronous (VS Code does not serialize
+   * async webview handlers; a following `clearQueuedSends` can race). A
+   * failure restores that snapshot rather than losing the message.
    */
   private async steerSend(
     text: string,
     session: Session = this.focused,
     requester?: RemoteRequester,
+    requestedChips?: FileChip[],
+    fromQueue = false,
   ): Promise<void> {
-    const body = (text ?? "").trim();
-    if (!body) return;
+    const authored = text ?? "";
+    const takeQueue = (fromQueue && queuedSendsHaveContent(session.queuedSends))
+      || queuedSendsContainChipIds(session.queuedSends, requestedChips);
+
     if (!session.client || !session.activeSessionId) {
       // No live turn to steer — fall back to the queue rather than drop it.
       // Deliberately NOT flagged for a relay round-trip: the relay meters
       // steerSend on ingress exactly like send, so this text is already paid
       // for — re-submitting the queued fallback through the relay would
       // charge it twice. Same for the two fallbacks below.
-      session.queuedSends = enqueueQueuedSend(session.queuedSends, body, []);
+      if (takeQueue) return;
+      const chips = chipsForQueueSend(session.chips, requestedChips);
+      if (!authored.trim() && !chips.length) return;
+      session.queuedSends = enqueueQueuedSend(session.queuedSends, authored, chips);
+      if (chips.length) {
+        session.chips = consumeChips(session.chips, chips);
+        if (session === this.focused) this.refreshImplicitChip(true);
+        else this.postChips(session);
+      }
       this.emitQueuedSends(session);
       return;
     }
-    this.emit(session, { type: "userMessage", text: body, chips: [], steer: true });
+
+    const relayFlag = session.queuedSendRequiresRelay;
+    let contributions: QueuedSendEntry[];
+    let fromComposer = false;
+    if (takeQueue) {
+      contributions = session.queuedSends.map((item) => ({
+        text: item.text,
+        chips: item.chips.map(cloneChipForQueue),
+      }));
+      session.queuedSends = [];
+      session.queuedSendDispatch = undefined;
+      session.queuedSendCommit = undefined;
+      this.emitQueuedSends(session);
+    } else {
+      const chips = chipsForQueueSend(session.chips, requestedChips);
+      if (!authored.trim() && !chips.length) return;
+      contributions = [{ text: authored, chips }];
+      if (chips.length) {
+        fromComposer = true;
+        session.chips = consumeChips(session.chips, chips);
+        if (session === this.focused) this.refreshImplicitChip(true);
+        else this.postChips(session);
+      }
+    }
+
+    const putBackOnQueue = (): void => {
+      if (takeQueue) {
+        session.queuedSends = [...contributions, ...session.queuedSends];
+        session.queuedSendRequiresRelay = relayFlag;
+      } else {
+        for (const item of contributions) {
+          session.queuedSends = enqueueQueuedSend(session.queuedSends, item.text, item.chips);
+        }
+      }
+      this.emitQueuedSends(session);
+    };
+    const putBackOnComposer = (): void => {
+      if (takeQueue) {
+        session.queuedSends = [...contributions, ...session.queuedSends];
+        session.queuedSendRequiresRelay = relayFlag;
+        this.emitQueuedSends(session);
+        return;
+      }
+      if (fromComposer) {
+        session.chips = restoreQueuedChips(session.chips, contributions);
+        if (session === this.focused) this.refreshImplicitChip(true);
+        else this.postChips(session);
+      }
+    };
+
+    const client = session.client;
+    const gen = session.gen;
+    const promptDeps = {
+      readFile: (p: string) => fs.readFileSync(p, "utf8"),
+      extName: (p: string) => path.extname(p),
+    };
+
+    const builtContributions: QueuedPromptContribution[] = [];
+    for (const item of contributions) {
+      const itemImages: PromptImageInput[] = [];
+      for (const chip of item.chips) {
+        if (chip.hidden || !isImageChip(chip)) continue;
+        const read = await this.readImageChip(chip, session, gen);
+        if (read === "gone") {
+          putBackOnComposer();
+          return;
+        }
+        if (read === "failed") {
+          putBackOnComposer();
+          return;
+        }
+        itemImages.push(read);
+      }
+      builtContributions.push({ text: item.text, chips: item.chips, images: itemImages });
+    }
+    if (gen !== session.gen || session.client !== client) {
+      putBackOnComposer();
+      return;
+    }
+
+    const images = builtContributions.flatMap((item) => item.images);
+    if (images.length && !client.honorsInterjectContent()) {
+      // 0.2.x / unverified: interject still works, but `content` is ignored
+      // and the pixels would vanish. Queue the whole item instead.
+      putBackOnQueue();
+      this.reportRequester(
+        requester,
+        "warning",
+        "This Grok CLI cannot steer attachments mid-turn — your message was queued instead. It will send when the turn finishes.",
+      );
+      return;
+    }
+
+    const implicitChips = session.chips.filter((chip) => isImplicitChip(chip));
+    const slashCommand = matchSlashCommand(
+      queuedSendsText(contributions) || authored,
+      client.availableCommands.map((c) => c.name),
+    );
+    const built = builtContributions.length === 1
+      ? buildPromptWithImages(
+        builtContributions[0].text,
+        [...builtContributions[0].chips, ...implicitChips],
+        builtContributions[0].images,
+        promptDeps,
+        slashCommand != null,
+      )
+      : buildQueuedPromptWithImages(builtContributions, implicitChips, promptDeps, slashCommand != null);
+
+    await this.retainUploadedFilesForSession(
+      session,
+      contributions.flatMap((item) => item.chips),
+    );
+    if (gen !== session.gen || session.client !== client) {
+      putBackOnComposer();
+      return;
+    }
+
+    const displayText = queuedSendsText(contributions);
+    const displayChips = contributions.flatMap((item) => item.chips);
+    this.emit(session, {
+      type: "userMessage",
+      text: displayText,
+      chips: displayChips,
+      steer: true,
+    });
+    if (!session.queuedSends.length) session.queuedSendRequiresRelay = false;
+
+    const rpcText = images.length ? displayText : built.text;
     try {
-      const client = session.client;
-      const gen = session.gen;
-      const r = await client.interject(body, () => {
+      const r = await client.interject(rpcText, () => {
         if (gen === session.gen && session.client === client) session.interjectionCount += 1;
-      });
+      }, images.length ? built.blocks : undefined);
       if (r === "unsupported") {
-        // Pre-~0.2.96 CLI: latch the button off and hand the text to the queue,
+        // Pre-~0.2.96 CLI: latch the button off and hand the item to the queue,
         // which is exactly the behavior Steer was offering to skip.
         this.emit(session, { type: "steerUnavailable" });
         this.emit(session, { type: "agentReset" });
-        session.queuedSends = enqueueQueuedSend(session.queuedSends, body, []);
-        this.emitQueuedSends(session);
+        putBackOnQueue();
         this.reportRequester(
           requester,
           "warning",
@@ -2777,11 +2920,14 @@ Only continue if you trust this code.`,
         );
         return;
       }
-      this.host.appendLine(`[steer] interjected ${body.length} chars into the running turn`);
+      this.host.appendLine(
+        images.length
+          ? `[steer] interjected ${rpcText.length} chars + ${images.length} image(s) into the running turn`
+          : `[steer] interjected ${rpcText.length} chars into the running turn`,
+      );
     } catch (e: any) {
       this.emit(session, { type: "agentReset" });
-      session.queuedSends = enqueueQueuedSend(session.queuedSends, body, []);
-      this.emitQueuedSends(session);
+      putBackOnQueue();
       this.emit(session, { type: "error", text: `Steer failed: ${e?.message ?? e}. Your message was queued instead.` });
     }
   }
@@ -8063,7 +8209,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "steerSend":
-        await this.steerSend(msg.text, session, requester);
+        await this.steerSend(msg.text, session, requester, msg.chips, msg.fromQueue === true);
         break;
       case "turnFeedback":
         await this.handleTurnFeedback(msg.rating, session, requester);

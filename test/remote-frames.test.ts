@@ -223,6 +223,32 @@ describe("parseRelayFrame", () => {
     expect(parseRelayFrame(wrap({ type: "queueSend", text: "x", chips: "nope" }))).toBeNull();
   });
 
+  it("reconstructs steerSend chips as ids only — never a caller-supplied path", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({
+      type: "steerSend",
+      text: "look",
+      fromQueue: true,
+      chips: [{ id: "image:/s/a.png:1:1", path: "/etc/passwd", relPath: "secret", hidden: false }],
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: {
+        type: "steerSend",
+        text: "look",
+        fromQueue: true,
+        chips: [{ id: "image:/s/a.png:1:1", path: "", relPath: "", hidden: false }],
+      },
+    });
+    expect(parseRelayFrame(wrap({ type: "steerSend", text: "x" }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: { type: "steerSend", text: "x" },
+    });
+    expect(parseRelayFrame(wrap({ type: "steerSend", text: "x", chips: "nope" }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "steerSend", text: "x", fromQueue: "yes" }))).toBeNull();
+  });
+
   it("validates and reconstructs browser-owned speech preferences", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     expect(parseRelayFrame(wrap({

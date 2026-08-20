@@ -782,10 +782,13 @@ export type WebviewMsg =
   // composer. Absent/false discards them (Remove). Older hosts ignore the field
   // and only empty the queue.
   | { type: "clearQueuedSends"; restore?: boolean }
-  // Steer (#52): inject the composed text into the RUNNING turn instead of
-  // waiting for it. Host-owned like the queue — the webview never sends the
-  // prompt itself, so a -32601 fallback can re-queue the text without losing it.
-  | { type: "steerSend"; text: string }
+  // Steer (#52): inject the composed text (and, additively, attachments) into
+  // the RUNNING turn instead of waiting. Host-owned like the queue — the
+  // webview never sends the prompt itself, so a capability gap can re-queue
+  // the whole item without losing it. `chips` is additive (same as queueSend).
+  // `fromQueue` marks the pending-block button so the host snapshots
+  // `queuedSends` before any await (a following `clearQueuedSends` can race).
+  | { type: "steerSend"; text: string; chips?: FileChip[]; fromQueue?: boolean }
   /**
    * Rate the agent turn that just finished in this process. `rating` 0 clears.
    * No bubble index: the host does not reconstruct CLI `turn_number`.

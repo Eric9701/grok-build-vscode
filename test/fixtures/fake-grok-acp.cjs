@@ -265,13 +265,19 @@ rl.on("line", async (line) => {
     case "_x.ai/feedback":
       return respondOk(id, {});
     case "_x.ai/interject":
-      if (params.text.includes("SCENARIO_INTERJECT_ACK_THEN_EXIT")) {
+      if (String(params?.text || "").includes("SCENARIO_INTERJECT_ACK_THEN_EXIT")) {
         // Put the successful response on stdout and exit immediately after the
         // write reaches the pipe. The parent may observe process `exit` before
         // it drains that final line; its host-facing exit must wait for drain.
         return process.stdout.write(
           JSON.stringify({ jsonrpc: "2.0", id, result: {} }) + "\n",
           () => process.exit(0),
+        );
+      }
+      if (Array.isArray(params?.content)) {
+        const images = params.content.filter((b) => b && b.type === "image");
+        process.stderr.write(
+          `INTERJECT_CONTENT:${images.length}:${images.map((b) => b.mimeType).join(",")}\n`,
         );
       }
       return respondOk(id, {});
