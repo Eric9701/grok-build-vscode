@@ -76,6 +76,7 @@ describe("sidebar connect wiring", () => {
     expect(end).toBeGreaterThan(start);
     expect(body).toContain("forgetConnectorKey");
     expect(body).toContain("disconnectConnector");
+    expect(body).toContain("MCP_CONNECTORS_KEY");
     const forgetStart = src.indexOf("private async forgetConnectorKey(");
     const forgetEnd = src.indexOf("private async connectMcpConnector(", forgetStart);
     const forget = src.slice(forgetStart, forgetEnd);
@@ -83,6 +84,24 @@ describe("sidebar connect wiring", () => {
     expect(forgetEnd).toBeGreaterThan(forgetStart);
     expect(forget).toContain("this.context.secrets.delete");
     expect(forget).toContain("mcpConnectorSecretKey");
+  });
+
+  it("loading keys never writes grok.mcpConnectors, including when a secret read fails", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const start = src.indexOf("private async loadMcpConnectorKeys(");
+    const end = src.indexOf("private async forgetConnectorKey(", start);
+    const load = src.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(load).toContain("this.context.secrets.get");
+    expect(load).toContain("mcpConnectorSecretKey");
+    expect(load).toContain("could not read");
+    expect(load).toContain("this.postMcpConnectors");
+    expect(load).not.toContain("disconnectConnector");
+    expect(load).not.toContain("forgetConnectorKey");
+    expect(load).not.toContain("this.state.update");
+    expect(load).not.toContain("MCP_CONNECTORS_KEY");
+    expect(load).not.toContain("connectedConnectorStore");
   });
 
   it("session/new Stripe entry also carries static OAuth client metadata", () => {
@@ -96,6 +115,8 @@ describe("sidebar connect wiring", () => {
     expect(body).toContain("hostMcpServers(");
     expect(body).toContain("this.mcpConnectorKeys");
     expect(body).not.toContain("quoteSpawnArgs");
+    expect(body).not.toContain("disconnectConnector");
+    expect(body).not.toContain("this.state.update");
   });
 });
 

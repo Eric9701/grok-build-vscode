@@ -607,6 +607,62 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.textContent).not.toContain(planted);
   });
 
+  it("a connected GitHub row without a key on this host stays connected and offers a paste", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    const planted = "ghp_TESTSECRET_do_not_store";
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        {
+          id: "github",
+          name: "GitHub",
+          description: "Repos.",
+          endpoint: "https://api.githubcopilot.com/mcp/",
+          connected: true,
+          status: "idle",
+          auth: "key",
+          keySet: false,
+          keyHint: "Paste a GitHub personal access token.",
+          keyDocsUrl: "https://github.com/settings/personal-access-tokens",
+        },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.querySelector('[data-id="connector-github"]')!.classList.contains("is-connected")).toBe(true);
+    expect(overlay.textContent).toMatch(/no key on this machine/i);
+    expect(overlay.textContent).not.toContain("Key is set");
+    expect(overlay.textContent).not.toContain(planted);
+    expect(overlay.querySelector(".settings-connector-key-input")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-readonly-live")).toBeNull();
+    const disconnect = [...overlay.querySelectorAll(".settings-connector-action")]
+      .find((btn) => (btn as HTMLElement).dataset.id === "github") as HTMLButtonElement;
+    expect(disconnect.textContent).toBe("Disconnect");
+    const paste = overlay.querySelector(".settings-connector-key-open") as HTMLButtonElement;
+    expect(paste.textContent).toBe("Paste token");
+    h.posted.length = 0;
+    click(h.window, disconnect);
+    expect(h.posted).toContainEqual({ type: "disconnectMcpConnector", id: "github" });
+    click(h.window, paste);
+    expect(h.posted).toEqual([{ type: "disconnectMcpConnector", id: "github" }]);
+    const input = overlay.querySelector(".settings-connector-key-input") as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe("");
+    input.value = planted;
+    input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    click(h.window, overlay.querySelector(".settings-connector-key-submit") as HTMLButtonElement);
+    expect(h.posted).toContainEqual({
+      type: "connectMcpConnector",
+      id: "github",
+      key: planted,
+      readOnly: false,
+    });
+    expect((overlay.querySelector(".settings-connector-key-input") as HTMLInputElement | null)?.value || "").toBe("");
+    expect(overlay.textContent).not.toContain(planted);
+  });
+
   it("a connected GitHub row shows that a key is set and never renders it", () => {
     const h = bootWebview();
     seedChat(h, { capabilities: { mcpSettings: true } });
@@ -673,6 +729,40 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.querySelector(".settings-connector-key-open")).toBeNull();
     expect(overlay.querySelector(".settings-connector-readonly-input")).toBeNull();
     expect(overlay.textContent).toContain("Connected");
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
+    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
+  });
+
+  it("a remote sees a connected GitHub row without a desk key as connected, with no paste", () => {
+    const h = bootWebview({ remote: true });
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    const planted = "ghp_TESTSECRET_do_not_store";
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        {
+          id: "github",
+          name: "GitHub",
+          description: "Repos.",
+          endpoint: "https://api.githubcopilot.com/mcp/",
+          connected: true,
+          status: "idle",
+          auth: "key",
+          keySet: false,
+        },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.querySelector('[data-id="connector-github"]')!.classList.contains("is-connected")).toBe(true);
+    expect(overlay.textContent).toContain("Connected");
+    expect(overlay.textContent).toMatch(/no key on the desk/i);
+    expect(overlay.textContent).not.toContain(planted);
+    expect(overlay.querySelector(".settings-connector-action")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-key-input")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-key-open")).toBeNull();
+    expect(overlay.querySelector(".settings-connector-readonly-input")).toBeNull();
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
   });

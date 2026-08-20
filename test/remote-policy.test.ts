@@ -748,6 +748,23 @@ describe("transformHostMsgForRemote", () => {
     expect(github).toMatchObject({ auth: "key", keySet: true, connected: true });
     expect(github).not.toHaveProperty("key");
     expect(github).not.toHaveProperty("token");
+
+    const missingKey: HostMsg = {
+      type: "mcpConnectors",
+      connectors: connectorViews(
+        { github: { endpoint: "https://api.githubcopilot.com/mcp/" } },
+        { keySet: new Set() },
+      ),
+    };
+    const missingOut = transformHostMsgForRemote(missingKey, deps(null));
+    expect(missingOut).toBe(missingKey);
+    const missingJson = JSON.stringify(missingOut);
+    expect(missingJson).not.toContain(planted);
+    expect(missingJson).not.toMatch(/"key":|"token":|"authorization":/);
+    const missingGithub = missingKey.connectors.find((c) => c.id === "github");
+    expect(missingGithub).toMatchObject({ auth: "key", keySet: false, connected: true });
+    expect(missingGithub).not.toHaveProperty("key");
+    expect(missingGithub).not.toHaveProperty("token");
   });
 
   it("leaves a safe MCP inventory row intact on the remote projection", () => {

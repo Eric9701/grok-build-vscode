@@ -276,14 +276,33 @@ describe("key-auth connectors", () => {
     });
   });
 
-  it("does not inject GitHub without the in-memory key", () => {
-    const store = { github: { endpoint: GITHUB_ENDPOINT } };
+  it("does not inject GitHub without the in-memory key, and does not mutate the shared record", () => {
+    const store = Object.freeze({ github: Object.freeze({ endpoint: GITHUB_ENDPOINT }) });
     expect(hostMcpServers(store)).toEqual([]);
+    expect(store).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
     const servers = hostMcpServers(store, { names: [], urls: [] }, {}, { github: PLANTED_PAT });
     expect(servers).toHaveLength(1);
     expect(servers[0]?.name).toBe("github");
     expect(servers[0]?.args).not.toContain(PLANTED_PAT);
     expect(servers[0]?.env).toEqual([{ name: MCP_REMOTE_AUTH_HEADER_ENV, value: `Bearer ${PLANTED_PAT}` }]);
+    expect(store).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
+  });
+
+  it("a host without a key leaves the shared record for a host that has one", () => {
+    const store = { github: { endpoint: GITHUB_ENDPOINT } };
+    expect(hostMcpServers(store)).toEqual([]);
+    expect(connectorViews(store, { keySet: new Set() }).find((v) => v.id === "github")).toMatchObject({
+      connected: true,
+      keySet: false,
+    });
+    expect(store).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
+    const servers = hostMcpServers(store, { names: [], urls: [] }, {}, { github: PLANTED_PAT });
+    expect(servers).toHaveLength(1);
+    expect(servers[0]?.name).toBe("github");
+    expect(connectorViews(store, { keySet: new Set(["github"]) }).find((v) => v.id === "github")).toMatchObject({
+      connected: true,
+      keySet: true,
+    });
   });
 
   it("keeps --header flags when rebuilding args with a callback port", () => {
@@ -296,7 +315,7 @@ describe("key-auth connectors", () => {
     ]);
   });
 
-  it("views report keySet without the secret, and connected requires both store and key", () => {
+  it("views report connected from the store and keySet from this host, never the secret", () => {
     const views = connectorViews(
       { github: { endpoint: GITHUB_ENDPOINT, readOnly: true } },
       { keySet: new Set(["github"]) },
@@ -317,8 +336,11 @@ describe("key-auth connectors", () => {
       { github: { endpoint: GITHUB_ENDPOINT } },
       { keySet: new Set() },
     ).find((v) => v.id === "github")!;
-    expect(missingKey.connected).toBe(false);
+    expect(missingKey.connected).toBe(true);
     expect(missingKey.keySet).toBe(false);
+    expect(missingKey).not.toHaveProperty("key");
+    expect(missingKey).not.toHaveProperty("token");
+    assertNoSecretMaterial(missingKey);
 
     const linear = views.find((v) => v.id === "linear")!;
     expect(linear.auth).toBe("oauth");

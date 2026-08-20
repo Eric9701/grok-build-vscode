@@ -9420,16 +9420,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.host.appendLine(`[mcp] could not read ${connector.id} connector key: ${(error as Error).message}`);
       }
     }
-    let store = this.connectedConnectorStore();
-    let changed = false;
-    for (const connector of TIER1_CONNECTORS) {
-      if (!isKeyConnector(connector)) continue;
-      if (store[connector.id] && !this.mcpConnectorKeys.has(connector.id)) {
-        store = disconnectConnector(store, connector.id);
-        changed = true;
-      }
-    }
-    if (changed) await this.state.update(MCP_CONNECTORS_KEY, store);
     this.postMcpConnectors();
   }
 

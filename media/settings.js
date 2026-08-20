@@ -1460,12 +1460,18 @@
     }
     if (connector.status === "error" && connector.error) return connector.error;
     if (env && env.isRemote) {
+      if (isKeyConnectorView(connector) && connector.connected && connector.keySet !== true) {
+        return connector.description + " Connected, but no key on the desk.";
+      }
       return connector.connected
         ? connector.description + " Connected on the desk machine."
         : connector.description + " Sign-in happens on the desk.";
     }
-    if (isKeyConnectorView(connector) && connector.connected) {
+    if (isKeyConnectorView(connector) && connector.connected && connector.keySet === true) {
       return connector.description + " Key is set. Applies to new conversations and when you reopen one.";
+    }
+    if (isKeyConnectorView(connector) && connector.connected) {
+      return connector.description + " Connected, but no key on this machine. Paste a token to use it here.";
     }
     if (connector.connected) {
       return connector.description + " Applies to new conversations and when you reopen one.";
@@ -1579,7 +1585,7 @@
           replace.className = "settings-action settings-connector-key-open";
           replace.dataset.id = connector.id;
           replace.dataset.action = "replace";
-          replace.textContent = "Replace";
+          replace.textContent = connector.keySet === true ? "Replace" : "Paste token";
           replace.disabled = connecting;
           control.appendChild(replace);
         }
@@ -1605,7 +1611,7 @@
         control.appendChild(span);
       }
       row.append(copy, control);
-      if (!(env && env.isRemote) && isKeyConnectorView(connector) && connector.connected && !formOpen) {
+      if (!(env && env.isRemote) && isKeyConnectorView(connector) && connector.connected && connector.keySet === true && !formOpen) {
         const readonly = document.createElement("label");
         readonly.className = "settings-connector-readonly settings-connector-readonly-live";
         const box = document.createElement("input");

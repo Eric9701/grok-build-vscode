@@ -26,6 +26,8 @@ records ids, endpoints, and optional `readOnly`.
 
 **Key-auth (GitHub).** GitHub staff (2026): "We don't support DCR and we are not going to be able to do so." The remote server accepts a PAT. `mcp-remote --header "Authorization:${AUTH_HEADER}"` with `AUTH_HEADER` in env is the vehicle — measured: the header wins over OAuth discovery, so we do not send a direct HTTP `mcpServers` entry (that would put the token in ACP `session/new` params as a header). A bad PAT is sent, GitHub rejects it, mcp-remote falls through to OAuth and dies with `Incompatible auth server: does not support dynamic client registration`. That classifies as `key-rejected`, not `oauth-incompatible` (the two are opposite advice). Optional `X-MCP-Readonly:true` is a checkbox on the same `--header` plumbing (`ConnectedConnectorRecord.readOnly`).
 
+`grok.mcpConnectors` is machine-shared (`PersistedState` / `~/.grok/client-state/`). HostSecrets are not — VS Code, Cursor, and the desktop app each have their own. `connected` is the shared record; `keySet` is this host's secret. A host that cannot find a key (absent or a failed secret read) skips that row in `hostMcpServers` and leaves the record alone. Disconnect is the only deletion.
+
 Figma (`https://mcp.figma.com/mcp`) advertises a `registration_endpoint` (`https://api.figma.com/v1/oauth/mcp/register`) and then answers HTTP 403 Forbidden. Measured twice through mcp-remote itself, including with `--static-oauth-client-metadata {"scope":"mcp:connect"}` — the scope Figma's AS metadata advertises. This is not Stripe's missing-scope refusal: DCR is claimed and then refused. That is Tier 2 (we would have to pre-register an OAuth client and ship the client id), not one-click. A Connect button that cannot succeed is worse than no row; do not re-add on the strength of advertised metadata.
 
 Google / Slack / Microsoft stay out of scope (pre-registered OAuth client or enterprise app).
@@ -61,7 +63,7 @@ See `research/mcp-orphan-probe.cjs`.
 
 ## Remote
 
-`mcpConnectors` is mirrored (ids, names, connected — no tokens).
+`mcpConnectors` is mirrored (ids, names, connected, keySet — no tokens).
 `mcpServers` is `allowlist`-projected (`projectMcpServerForRemote`: page
 fields only, never the launch recipe). `scopeName` is on that allowlist
 (the team name in the grok.com section). `tag` and `configFile` are not.

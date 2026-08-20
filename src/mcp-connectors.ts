@@ -112,11 +112,12 @@ export interface ConnectorView {
   name: string;
   description: string;
   endpoint: string;
+  /** Shared `grok.mcpConnectors` record. Independent of this host's secret. */
   connected: boolean;
   status: ConnectorStatus;
   error?: string;
   auth: ConnectorAuth;
-  /** Key-auth only: a secret is stored. Never the secret itself. */
+  /** Key-auth only: this host has a secret. Never the secret itself. */
   keySet?: boolean;
   keyHint?: string;
   keyDocsUrl?: string;
@@ -445,7 +446,9 @@ export function reservedConflictsConnector(
 
 /**
  * Host `mcpServers` payload. File-discovered / managed names win: we skip a
- * convenience entry rather than duplicate their tools.
+ * convenience entry rather than duplicate their tools. A key-auth row with a
+ * store record but no local token is skipped, not deleted — `grok.mcpConnectors`
+ * is shared across hosts; HostSecrets are not.
  */
 export function hostMcpServers(
   store: ConnectedConnectorStore,
@@ -493,7 +496,7 @@ export function connectorViews(
   return TIER1_CONNECTORS.map((connector) => {
     const auth = connectorAuth(connector);
     const keySet = auth === "key" && !!opts.keySet?.has(connector.id);
-    const connected = auth === "key" ? !!store[connector.id] && keySet : !!store[connector.id];
+    const connected = !!store[connector.id];
     const connecting = opts.connectingId === connector.id;
     const failed = opts.errorId === connector.id && !!opts.error;
     return {
