@@ -1,9 +1,21 @@
 import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { authorizeMcpRemote, listenFreeLoopbackPort, npxSpawnPlan } from "../src/mcp-connector-auth";
-import { MCP_INITIALIZE_REQUEST, connectFailureMessage } from "../src/mcp-connectors";
+import {
+  authorizeMcpRemote,
+  listenFreeLoopbackPort,
+  npxSpawnPlan,
+  persistConnectorOAuthClientMetadata,
+  writeOAuthClientMetadataFile,
+} from "../src/mcp-connector-auth";
+import {
+  MCP_INITIALIZE_REQUEST,
+  STATIC_OAUTH_CLIENT_METADATA_FLAG,
+  connectFailureMessage,
+} from "../src/mcp-connectors";
 
 class FakeProc extends EventEmitter {
   stdin = new PassThrough();
@@ -40,6 +52,19 @@ describe("sidebar connect wiring", () => {
     expect(end).toBeGreaterThan(start);
     expect(body).toContain("env: npx.env");
     expect(body).not.toContain("env: process.env");
+    expect(body).toContain("writeOAuthClientMetadataFile");
+    expect(body).toMatch(/mcpRemoteArgs\(endpoint,\s*undefined,\s*metadata\?\.path\)/);
+  });
+
+  it("session/new Stripe entry also carries static OAuth client metadata", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const start = src.indexOf("private hostMcpServersFor(");
+    const end = src.indexOf("private async connectMcpConnector(");
+    const body = src.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(body).toContain("persistConnectorOAuthClientMetadata");
+    expect(body).toContain("hostMcpServers(");
   });
 });
 
@@ -226,6 +251,78 @@ describe("authorizeMcpRemote", () => {
     proc.stderr.write("Error: listen EADDRINUSE: address already in use :::22227\n");
     await expect(result).resolves.toMatchObject({ ok: false, kind: "port-conflict" });
     expect(calls).toBe(1);
+  });
+
+  it("classifies a DCR client-metadata rejection as oauth-incompatible, not a stack", async () => {
+    const proc = new FakeProc();
+    const result = authorizeMcpRemote({
+      command: "npx",
+      args: ["-y", "mcp-remote", "https://mcp.stripe.com"],
+      timeoutMs: 1_000,
+      spawn: () => proc as never,
+    });
+    await new Promise((r) => setImmediate(r));
+    proc.stderr.write(`Connection error: InvalidClientMetadataError: Not supported: openid, email, profile
+    at async auth (file:///C:/Users/foo/chunk-65X3S4HB.js:18536:12)
+    at async StreamableHTTPClientTransport.send (file:///C:/Users/foo/chunk.js:99:5)\n`);
+    await expect(result).resolves.toEqual({
+      ok: false,
+      kind: "oauth-incompatible",
+      message: connectFailureMessage("oauth-incompatible"),
+    });
+    expect(proc.killed).toBe(true);
+  });
+
+  it("retries EADDRINUSE without dropping static OAuth client metadata", async () => {
+    const first = new FakeProc();
+    const second = new FakeProc();
+    const spawned: string[][] = [];
+    const result = authorizeMcpRemote({
+      command: "npx",
+      args: [
+        "-y", "mcp-remote", "https://mcp.stripe.com",
+        STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
+      ],
+      timeoutMs: 1_000,
+      pickFreeListenPort: async () => 54321,
+      spawn: (_command, args) => {
+        spawned.push([...args]);
+        return (spawned.length === 1 ? first : second) as never;
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    first.stderr.write("Error: listen EADDRINUSE: address already in use 127.0.0.1:22227\n");
+    for (let i = 0; i < 8 && spawned.length < 2; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(spawned).toEqual([
+      ["-y", "mcp-remote", "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
+      ["-y", "mcp-remote", "https://mcp.stripe.com", "54321", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
+    ]);
+    second.stderr.write("Authentication successful! Caching credentials...\n");
+    await expect(result).resolves.toEqual({ ok: true });
+  });
+});
+
+describe("OAuth client metadata files", () => {
+  it("writes compact scope JSON to a temp file and disposes the directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "grok-mcp-oauth-test-"));
+    const written = writeOAuthClientMetadataFile("mcp", { tmpRoot: root });
+    expect(readFileSync(written.path, "utf8")).toBe('{"scope":"mcp"}');
+    expect(written.path.endsWith("oauth-client-metadata.json")).toBe(true);
+    written.dispose();
+    expect(existsSync(written.path)).toBe(false);
+  });
+
+  it("persists metadata only for connected connectors that declare a scope", () => {
+    const root = mkdtempSync(join(tmpdir(), "grok-mcp-oauth-persist-"));
+    const paths = persistConnectorOAuthClientMetadata({
+      stripe: { endpoint: "https://mcp.stripe.com" },
+      linear: { endpoint: "https://mcp.linear.app/mcp" },
+    }, { root });
+    expect(Object.keys(paths)).toEqual(["stripe"]);
+    expect(readFileSync(paths.stripe, "utf8")).toBe('{"scope":"mcp"}');
+    expect(existsSync(join(root, "linear.json"))).toBe(false);
   });
 });
 

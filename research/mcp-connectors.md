@@ -38,6 +38,16 @@ as `mcp-remote <url> <port>`, which forces re-registration. The first failure
 never reaches the UI. `buildMcpRemoteEntry` does not pin a port — a specified
 port on `session/new` would re-register on every conversation.
 
+Stripe is the only catalog vendor that rejects mcp-remote's default DCR
+scopes (`openid, email, profile`). Its `oauthScope` is `"mcp"` — measured
+against `https://access.stripe.com/mcp`, not inferred from
+`scopes_supported` (Notion advertises only `default` and Atlassian
+advertises none; both accept the defaults). Connect and `session/new` pass
+`--static-oauth-client-metadata @<file>` with `{"scope":"mcp"}`. Inline JSON
+is not used: Windows Connect spawns with `shell: true`, which mangles
+`{...}`. A DCR client-metadata rejection classifies as `oauth-incompatible`
+(`summarizeConnectOutput` never surfaces `at …` frames or `file:///` paths).
+
 See `research/mcp-orphan-probe.cjs`.
 
 ## Remote

@@ -1,7 +1,11 @@
 /**
  * One-shot `mcp-remote` spawn that drives the vendor OAuth flow. Credentials
  * land in `~/.mcp-auth`; we never read that directory. Injected spawn keeps
- * this testable without npx or a browser.
+ * this testable without npx or a browser. A connector with `oauthScope`
+ * writes that JSON to a temp `@file` (`writeOAuthClientMetadataFile`) because
+ * Windows Connect uses `shell: true` and inline `{...}` is mangled; dispose
+ * after the child exits. `session/new` gets the same flag from
+ * `persistConnectorOAuthClientMetadata` so grok's later spawn agrees.
  *
  * A live Grok session already running the same endpoint holds the OAuth
  * callback port pinned in mcp-remote's client registration. Windows also
@@ -12,18 +16,25 @@
  */
 import { createInterface } from "node:readline";
 import { createServer as defaultCreateServer } from "node:net";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   MCP_INITIALIZE_REQUEST,
   MCP_REMOTE_CONNECT_TIMEOUT_MS,
+  TIER1_CONNECTORS,
   classifyConnectFailure,
   connectFailureMessage,
+  connectOutputLooksLikeOAuthIncompatible,
   connectOutputLooksLikePortConflict,
   connectOutputLooksSuccessful,
   isUsableListenPort,
+  oauthClientMetadataJson,
   parseInitializeResult,
   summarizeConnectOutput,
   withMcpRemoteCallbackPort,
+  type ConnectedConnectorStore,
   type ConnectFailureKind,
 } from "./mcp-connectors";
 
@@ -74,6 +85,51 @@ export type AuthorizeMcpRemoteResult =
   | { ok: false; kind: ConnectFailureKind; message: string };
 
 export { npxSpawnPlan } from "./npx-locator";
+
+const OAUTH_METADATA_DIR_NAME = "grok-mcp-oauth-metadata";
+
+/**
+ * One-shot JSON file for Connect. mcp-remote is spawned with `shell: true`
+ * on Windows, so inline `{"scope":"mcp"}` is mangled; pass `@<path>` instead.
+ * Dispose after the child exits — grok's later `session/new` spawn uses
+ * {@link persistConnectorOAuthClientMetadata}, not this temp.
+ */
+export function writeOAuthClientMetadataFile(
+  scope: string,
+  opts?: { tmpRoot?: string },
+): { path: string; dispose: () => void } {
+  const dir = mkdtempSync(join(opts?.tmpRoot ?? tmpdir(), "grok-mcp-oauth-"));
+  const filePath = join(dir, "oauth-client-metadata.json");
+  writeFileSync(filePath, oauthClientMetadataJson(scope), "utf8");
+  return {
+    path: filePath,
+    dispose() {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    },
+  };
+}
+
+/**
+ * Durable `@file` paths for `session/new`. Grok spawns mcp-remote later,
+ * so these must outlive Connect. Rewritten on each call; not secrets.
+ */
+export function persistConnectorOAuthClientMetadata(
+  store: ConnectedConnectorStore,
+  opts?: { root?: string },
+): Record<string, string> {
+  const dir = opts?.root ?? join(tmpdir(), OAUTH_METADATA_DIR_NAME);
+  const paths: Record<string, string> = {};
+  for (const connector of TIER1_CONNECTORS) {
+    if (!store[connector.id]) continue;
+    const scope = connector.oauthScope?.trim();
+    if (!scope) continue;
+    mkdirSync(dir, { recursive: true });
+    const filePath = join(dir, `${connector.id}.json`);
+    writeFileSync(filePath, oauthClientMetadataJson(scope), "utf8");
+    paths[connector.id] = filePath;
+  }
+  return paths;
+}
 
 /**
  * Bind loopback port 0, read the OS-assigned port, close. mcp-remote's
@@ -169,7 +225,10 @@ function runAuthorizeMcpRemote(
       resolve(finish({
         ok: false,
         kind,
-        message: connectFailureMessage(kind, kind === "port-conflict" ? undefined : detail),
+        message: connectFailureMessage(
+          kind,
+          kind === "port-conflict" || kind === "oauth-incompatible" ? undefined : detail,
+        ),
       }));
     };
 
@@ -182,6 +241,10 @@ function runAuthorizeMcpRemote(
       }
       if (connectOutputLooksLikePortConflict(combined)) {
         fail("port-conflict");
+        return;
+      }
+      if (connectOutputLooksLikeOAuthIncompatible(combined)) {
+        fail("oauth-incompatible");
         return;
       }
     };

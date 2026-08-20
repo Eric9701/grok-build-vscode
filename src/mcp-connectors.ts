@@ -14,6 +14,9 @@ export const MCP_CONNECTORS_KEY = "grok.mcpConnectors";
 
 export const MCP_REMOTE_PACKAGE = "mcp-remote";
 
+/** mcp-remote flag. Value is `@<absolute path>` to a JSON file we write (not inline JSON — Windows Connect uses `shell: true`). */
+export const STATIC_OAUTH_CLIENT_METADATA_FLAG = "--static-oauth-client-metadata";
+
 /** Browser OAuth can sit on a consent page; this is a hard ceiling, not a spinner. */
 export const MCP_REMOTE_CONNECT_TIMEOUT_MS = 180_000;
 
@@ -32,6 +35,15 @@ export interface ConnectorDef {
   name: string;
   endpoint: string;
   description: string;
+  /**
+   * OAuth scope for mcp-remote DCR (`--static-oauth-client-metadata`).
+   * Set only when a vendor is measured to reject mcp-remote's default
+   * `openid, email, profile` scopes. Do not infer this from
+   * `scopes_supported` — Notion advertises only `default` and Atlassian
+   * advertises none, and both accept the defaults. Stripe is the one
+   * that validates and refuses.
+   */
+  oauthScope?: string;
 }
 
 /**
@@ -79,6 +91,7 @@ export type ConnectFailureKind =
   | "timeout"
   | "port-conflict"
   | "endpoint-refused"
+  | "oauth-incompatible"
   | "failed";
 
 export interface ReservedMcpIdentity {
@@ -123,6 +136,7 @@ export const TIER1_CONNECTORS: readonly ConnectorDef[] = [
     name: "Stripe",
     endpoint: "https://mcp.stripe.com",
     description: "Look up customers, payments, and Stripe documentation.",
+    oauthScope: "mcp",
   },
   {
     id: "sentry",
@@ -155,18 +169,47 @@ export function isUsableListenPort(port: number): boolean {
   return Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
+/** Compact JSON mcp-remote reads from `--static-oauth-client-metadata @file`. */
+export function oauthClientMetadataJson(scope: string): string {
+  return JSON.stringify({ scope });
+}
+
+export function mcpRemoteOAuthClientMetadataArgs(filePath: string): string[] {
+  const trimmed = filePath.trim();
+  if (!trimmed) return [];
+  const value = trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
+  return [STATIC_OAUTH_CLIENT_METADATA_FLAG, value];
+}
+
+/** Absolute path from a previous `mcpRemoteArgs` invocation, without the `@`. */
+export function mcpRemoteOAuthClientMetadataPath(args: readonly string[]): string | undefined {
+  const idx = args.indexOf(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+  if (idx < 0) return undefined;
+  const value = args[idx + 1];
+  if (!value || value.startsWith("-")) return undefined;
+  return value.startsWith("@") ? value.slice(1) : value;
+}
+
 /**
- * `npx -y mcp-remote <url> [port]`. The optional port is mcp-remote's second
- * positional argument (`specifiedPort`): when it differs from the registered
- * OAuth callback port, mcp-remote deletes `client_info.json` and re-registers.
+ * `npx -y mcp-remote <url> [port] [--static-oauth-client-metadata @file]`.
+ * The optional port is mcp-remote's second positional argument
+ * (`specifiedPort`): when it differs from the registered OAuth callback
+ * port, mcp-remote deletes `client_info.json` and re-registers. The
+ * metadata flag is a later option, never a substitute for that port —
+ * mcp-remote always reads `args[1]` as the port.
  */
-export function mcpRemoteArgs(endpoint: string, callbackPort?: number): string[] {
+export function mcpRemoteArgs(
+  endpoint: string,
+  callbackPort?: number,
+  oauthClientMetadataPath?: string,
+): string[] {
   const args = ["-y", MCP_REMOTE_PACKAGE, endpoint];
   if (callbackPort != null && isUsableListenPort(callbackPort)) args.push(String(callbackPort));
+  if (oauthClientMetadataPath) args.push(...mcpRemoteOAuthClientMetadataArgs(oauthClientMetadataPath));
   return args;
 }
 
-/** Rebuild `mcpRemoteArgs` with a callback port. `undefined` if `args` is not an mcp-remote invocation. */
+/** Rebuild `mcpRemoteArgs` with a callback port, keeping static OAuth metadata. `undefined` if `args` is not an mcp-remote invocation. */
 export function withMcpRemoteCallbackPort(
   args: readonly string[],
   callbackPort: number,
@@ -174,14 +217,18 @@ export function withMcpRemoteCallbackPort(
   const idx = args.indexOf(MCP_REMOTE_PACKAGE);
   const endpoint = idx >= 0 ? args[idx + 1] : undefined;
   if (!endpoint || /^\d+$/.test(endpoint)) return undefined;
-  return mcpRemoteArgs(endpoint, callbackPort);
+  return mcpRemoteArgs(endpoint, callbackPort, mcpRemoteOAuthClientMetadataPath(args));
 }
 
-export function buildMcpRemoteEntry(name: string, endpoint: string): AcpMcpStdioServer {
+export function buildMcpRemoteEntry(
+  name: string,
+  endpoint: string,
+  oauthClientMetadataPath?: string,
+): AcpMcpStdioServer {
   return {
     name,
     command: "npx",
-    args: mcpRemoteArgs(endpoint),
+    args: mcpRemoteArgs(endpoint, undefined, oauthClientMetadataPath),
     // Inherited from the host process at spawn; we add nothing. Present because
     // grok refuses the entry outright without it — see AcpMcpStdioServer.
     env: [],
@@ -263,6 +310,7 @@ export function reservedConflictsConnector(
 export function hostMcpServers(
   store: ConnectedConnectorStore,
   reserved: ReservedMcpIdentity = { names: [], urls: [] },
+  oauthClientMetadataPaths: Readonly<Partial<Record<string, string>>> = {},
 ): AcpMcpStdioServer[] {
   const out: AcpMcpStdioServer[] = [];
   const seen = new Set<string>();
@@ -274,7 +322,10 @@ export function hostMcpServers(
     const name = normalizeMcpName(connector.id);
     if (seen.has(name)) continue;
     seen.add(name);
-    out.push(buildMcpRemoteEntry(connector.id, endpoint));
+    const metadataPath = connector.oauthScope?.trim()
+      ? oauthClientMetadataPaths[connector.id]
+      : undefined;
+    out.push(buildMcpRemoteEntry(connector.id, endpoint, metadataPath));
   }
   return out;
 }
@@ -585,6 +636,8 @@ export function connectFailureMessage(kind: ConnectFailureKind, detail?: string)
       return detail
         ? `The app refused the connection: ${detail}`
         : "The app refused the connection. Check the endpoint is reachable, then try again.";
+    case "oauth-incompatible":
+      return "This app's sign-in is not compatible with this connector.";
     case "failed":
       return detail
         ? `Could not connect: ${detail}`
@@ -627,6 +680,9 @@ export function classifyConnectFailure(input: {
   ) {
     return "cancelled";
   }
+  if (connectOutputLooksLikeOAuthIncompatible(input.output || "") || connectOutputLooksLikeOAuthIncompatible(input.spawnError?.message || "")) {
+    return "oauth-incompatible";
+  }
   if (
     /enotfound|econnrefused|eai_again|getaddrinfo|status code 4\d\d|http 4\d\d|404 not found|connection refused|unable to connect|certificate/.test(output)
   ) {
@@ -640,6 +696,14 @@ export function connectOutputLooksLikePortConflict(output: string): boolean {
   return /\beaddrinuse\b/.test(text) || /address already in use/.test(text);
 }
 
+/** Vendor DCR / client-metadata rejection. Not the user's fault and not fixed by retrying. */
+export function connectOutputLooksLikeOAuthIncompatible(output: string): boolean {
+  const text = output.toLowerCase();
+  return /invalidclientmetadataerror/.test(text)
+    || /\binvalid_client_metadata\b/.test(text)
+    || /not supported:\s*openid/.test(text);
+}
+
 export function connectOutputLooksSuccessful(output: string): boolean {
   const text = output.toLowerCase();
   return /authentication (completed|successful)/.test(text)
@@ -649,14 +713,59 @@ export function connectOutputLooksSuccessful(output: string): boolean {
     || /credentials (saved|cached)/.test(text);
 }
 
+const CONNECT_LOG_PREFIX =
+  /^(?:Connection error|Error from remote server|Error from local client|Authorization error):\s+/i;
+const CONNECT_ERROR_TEXT = /(?:[A-Za-z_$][\w$]*Error|Error):\s+\S/;
+
+function normalizeConnectLine(line: string): string {
+  return line
+    .replace(/^\[\d+\]\s+/, "")
+    .replace(CONNECT_LOG_PREFIX, "")
+    .trim();
+}
+
+function isConnectStackNoise(line: string): boolean {
+  if (!line) return true;
+  if (/^npm\s+warn/i.test(line)) return true;
+  if (/^at\s+/.test(line)) return true;
+  if (/^file:\/\//i.test(line)) return true;
+  if (/file:\/\//i.test(line) && !CONNECT_ERROR_TEXT.test(line)) return true;
+  return false;
+}
+
+function connectErrorText(line: string): string {
+  const cut = line.replace(/\s+at\s+[\s\S]*$/, "").replace(/\s*file:\/\/\/\S+/g, "").trim();
+  const match = cut.match(/((?:[A-Za-z_$][\w$]*Error|Error):\s+\S.*)$/);
+  return (match?.[1] ?? cut).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * One user-facing line from mcp-remote's stderr. Prefers an `*Error:` line
+ * (e.g. `InvalidClientMetadataError: Not supported: openid, email, profile`)
+ * and drops `at …` frames and `file:///` paths. Empty means the generic
+ * fallback — never a stack dump.
+ */
 export function summarizeConnectOutput(output: string, max = 240): string {
-  const lines = output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !/^\s*npm\s+warn/i.test(line));
-  const last = lines.slice(-4).join(" ").replace(/\s+/g, " ").trim();
-  if (!last) return "";
-  return last.length > max ? `${last.slice(0, max - 1)}…` : last;
+  const lines: string[] = [];
+  for (const raw of output.split(/\r?\n/)) {
+    const line = normalizeConnectLine(raw.trim());
+    if (isConnectStackNoise(line)) continue;
+    lines.push(line);
+  }
+  let picked = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (CONNECT_ERROR_TEXT.test(lines[i])) {
+      picked = connectErrorText(lines[i]);
+      break;
+    }
+  }
+  if (!picked) {
+    const last = lines[lines.length - 1] || "";
+    picked = isConnectStackNoise(last) ? "" : connectErrorText(last);
+    if (/^at\s+/.test(picked) || /file:\/\//i.test(picked)) picked = "";
+  }
+  if (!picked) return "";
+  return picked.length > max ? `${picked.slice(0, max - 1)}…` : picked;
 }
 
 export function parseInitializeResult(line: string): boolean | undefined {

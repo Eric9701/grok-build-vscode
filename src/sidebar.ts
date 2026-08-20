@@ -352,7 +352,13 @@ import {
   type ConnectorId,
   type ReservedMcpIdentity,
 } from "./mcp-connectors";
-import { authorizeMcpRemote, listenFreeLoopbackPort, npxSpawnPlan } from "./mcp-connector-auth";
+import {
+  authorizeMcpRemote,
+  listenFreeLoopbackPort,
+  npxSpawnPlan,
+  persistConnectorOAuthClientMetadata,
+  writeOAuthClientMetadataFile,
+} from "./mcp-connector-auth";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -9367,7 +9373,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private hostMcpServersFor(session: Session) {
-    return hostMcpServers(this.connectedConnectorStore(), this.reservedMcpIdentityFor(session));
+    const store = this.connectedConnectorStore();
+    return hostMcpServers(
+      store,
+      this.reservedMcpIdentityFor(session),
+      persistConnectorOAuthClientMetadata(store),
+    );
   }
 
   private async connectMcpConnector(id: string): Promise<void> {
@@ -9390,11 +9401,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.mcpConnectError = undefined;
     this.postMcpConnectors();
     const npx = npxSpawnPlan(process.platform);
+    let metadata: { path: string; dispose: () => void } | undefined;
     try {
+      if (connector.oauthScope?.trim()) {
+        metadata = writeOAuthClientMetadataFile(connector.oauthScope.trim());
+      }
       const result = await authorizeMcpRemote({
         spawn,
         command: npx.command,
-        args: mcpRemoteArgs(endpoint),
+        args: mcpRemoteArgs(endpoint, undefined, metadata?.path),
         shell: npx.shell,
         env: npx.env,
         pickFreeListenPort: listenFreeLoopbackPort,
@@ -9417,6 +9432,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     } catch (error) {
       this.mcpConnectError = { id, message: (error as Error).message || "Could not connect." };
     } finally {
+      try { metadata?.dispose(); } catch { /* best-effort */ }
       if (this.mcpConnectingId === id) this.mcpConnectingId = undefined;
       this.postMcpConnectors();
     }

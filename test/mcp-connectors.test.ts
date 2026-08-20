@@ -6,6 +6,7 @@ import {
   collectReservedMcpIdentity,
   connectConnector,
   connectFailureMessage,
+  connectOutputLooksLikeOAuthIncompatible,
   connectOutputLooksLikePortConflict,
   connectOutputLooksSuccessful,
   connectorViews,
@@ -16,10 +17,13 @@ import {
   collectMcpNameFiles,
   collectMcpNameLayers,
   mcpRemoteArgs,
+  oauthClientMetadataJson,
   parseConnectedConnectorStore,
   parseInitializeResult,
   reservedConflictsConnector,
   reservedFromMcpInventory,
+  STATIC_OAUTH_CLIENT_METADATA_FLAG,
+  summarizeConnectOutput,
   withMcpRemoteCallbackPort,
 } from "../src/mcp-connectors";
 
@@ -40,6 +44,8 @@ describe("Tier-1 connector catalog", () => {
       "https://observability.mcp.cloudflare.com/mcp",
     );
     expect(TIER1_CONNECTORS.find((c) => c.id === "stripe")?.endpoint).toBe("https://mcp.stripe.com");
+    expect(TIER1_CONNECTORS.find((c) => c.id === "stripe")?.oauthScope).toBe("mcp");
+    expect(TIER1_CONNECTORS.filter((c) => c.oauthScope).map((c) => c.id)).toEqual(["stripe"]);
   });
 
   it("builds the stdio mcp-remote entry vendors document", () => {
@@ -77,6 +83,47 @@ describe("Tier-1 connector catalog", () => {
   it("does not pin a callback port on the session/new entry", () => {
     expect(buildMcpRemoteEntry("linear", "https://mcp.linear.app/mcp").args)
       .toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp"]);
+  });
+
+  it("attaches static OAuth client metadata only when a scoped connector has a file", () => {
+    expect(oauthClientMetadataJson("mcp")).toBe('{"scope":"mcp"}');
+    const meta = "/tmp/stripe-oauth.json";
+    expect(mcpRemoteArgs("https://mcp.stripe.com", undefined, meta)).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
+    ]);
+    expect(mcpRemoteArgs("https://mcp.stripe.com", 22227, meta)).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com", "22227",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
+    ]);
+    expect(mcpRemoteArgs("https://mcp.linear.app/mcp")).not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+    expect(buildMcpRemoteEntry("stripe", "https://mcp.stripe.com", meta).args)
+      .toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+    expect(buildMcpRemoteEntry("linear", "https://mcp.linear.app/mcp").args)
+      .not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+
+    const servers = hostMcpServers({
+      stripe: { endpoint: "https://mcp.stripe.com" },
+      linear: { endpoint: "https://mcp.linear.app/mcp" },
+    }, { names: [], urls: [] }, { stripe: meta });
+    const stripe = servers.find((s) => s.name === "stripe");
+    const linear = servers.find((s) => s.name === "linear");
+    expect(stripe?.args).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
+    ]);
+    expect(linear?.args).toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp"]);
+    expect(linear?.args).not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+  });
+
+  it("keeps static OAuth metadata when rebuilding args with a callback port", () => {
+    expect(withMcpRemoteCallbackPort(
+      ["-y", "mcp-remote", "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
+      54321,
+    )).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com", "54321",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
+    ]);
   });
 });
 
@@ -299,6 +346,33 @@ describe("connect failure taxonomy", () => {
     expect(connectFailureMessage("timeout")).toMatch(/timed out/i);
     expect(connectFailureMessage("port-conflict")).toMatch(/login port/i);
     expect(connectFailureMessage("port-conflict")).not.toMatch(/EADDRINUSE/i);
+    expect(classifyConnectFailure({
+      output: "InvalidClientMetadataError: Not supported: openid, email, profile",
+    })).toBe("oauth-incompatible");
+    expect(connectOutputLooksLikeOAuthIncompatible(
+      "Connection error: InvalidClientMetadataError: Not supported: openid, email, profile",
+    )).toBe(true);
+    expect(connectFailureMessage("oauth-incompatible")).toMatch(/not compatible/i);
+    expect(connectFailureMessage("oauth-incompatible")).not.toMatch(/try again/i);
+  });
+
+  it("summarises a stack-trace blob to the error line, not frames", () => {
+    const blob = `Discovered authorization server: https://access.stripe.com/mcp
+[18536] Connection error: InvalidClientMetadataError: Not supported: openid, email, profile
+    at registerClient (file:///C:/Users/foo/AppData/Local/npm-cache/_npx/chunk.js:12:3)
+    at async auth (file:///C:/Users/foo/chunk-65X3S4HB.js:18536:12)
+    at async StreamableHTTPClientTransport.send (file:///C:/Users/foo/chunk.js:99:5)`;
+    expect(summarizeConnectOutput(blob)).toBe(
+      "InvalidClientMetadataError: Not supported: openid, email, profile",
+    );
+    expect(summarizeConnectOutput(blob)).not.toMatch(/\bat\s+/);
+    expect(summarizeConnectOutput(blob)).not.toMatch(/file:\/\//);
+
+    const framesOnly = `at async auth (file:///C:/Users/foo/chunk-65X3S4HB.js:18536:12)
+at async StreamableHTTPClientTransport.send (file:///C:/Users/foo/chunk.js:99:5)`;
+    expect(summarizeConnectOutput(framesOnly)).toBe("");
+    expect(connectFailureMessage("failed", summarizeConnectOutput(framesOnly)))
+      .toBe("Could not connect. See the host log for details.");
   });
 
   it("treats mcp-remote auth-success logs and initialize results as connected", () => {
