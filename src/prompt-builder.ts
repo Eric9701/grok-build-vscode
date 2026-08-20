@@ -182,3 +182,65 @@ export function buildPromptWithImages(
   }
   return { text: promptText, blocks };
 }
+
+/**
+ * One queued contribution's prompt ingredients. Image `index` values must be
+ * unique across the combined prompt (1..N in block order) so each
+ * contribution's `[Image #N]` tags name the blocks that follow.
+ */
+export interface QueuedPromptContribution {
+  text: string;
+  chips: FileChip[];
+  images: PromptImageInput[];
+}
+
+/**
+ * Build one `session/prompt` from discrete queued contributions, each keeping
+ * its own attachments. Tags sit with the contribution they belong to rather
+ * than dumping a union at the end. Numbering is sequential within this one
+ * prompt — the CLI resolves `[Image #N]` per prompt, not per original
+ * composition, so restarting at #1 on a later contribution would mis-address.
+ *
+ * Implicit (ambient editor) chips are applied once, on the last contribution,
+ * matching a live send's single context envelope.
+ */
+export function buildQueuedPromptWithImages(
+  contributions: QueuedPromptContribution[],
+  implicitChips: FileChip[],
+  deps: PromptBuilderDeps,
+  slashCommand = false,
+): { text: string; blocks: PromptContentBlock[] } {
+  if (contributions.length === 0) {
+    const plain = buildPrompt("", implicitChips, deps, slashCommand);
+    return { text: plain, blocks: [{ type: "text", text: plain }] };
+  }
+  if (contributions.length === 1) {
+    const only = contributions[0];
+    return buildPromptWithImages(
+      only.text,
+      [...only.chips, ...implicitChips],
+      only.images,
+      deps,
+      slashCommand,
+    );
+  }
+  const parts: string[] = [];
+  const imageBlocks: PromptContentBlock[] = [];
+  for (let i = 0; i < contributions.length; i++) {
+    const contribution = contributions[i];
+    const extraImplicit = i === contributions.length - 1 ? implicitChips : [];
+    const built = buildPromptWithImages(
+      contribution.text,
+      [...contribution.chips, ...extraImplicit],
+      contribution.images,
+      deps,
+      slashCommand && i === 0,
+    );
+    if (built.text) parts.push(built.text);
+    for (const block of built.blocks) {
+      if (block.type === "image") imageBlocks.push(block);
+    }
+  }
+  const promptText = parts.join("\n\n");
+  return { text: promptText, blocks: [{ type: "text", text: promptText }, ...imageBlocks] };
+}

@@ -363,10 +363,11 @@
     remotePreferencesSupported: false,
     ttsTurnText: "",
     // Render MIRROR of the focused session's host-owned send queue (#37) —
-    // messages typed/dictated while Grok was busy. All mutations route through
-    // the host (queueSend/dequeueSend/clearQueuedSends) and come back as a
-    // queuedSends snapshot, so the queue survives focus switches and the HOST
-    // flushes it (one combined prompt) when the session's turn ends.
+    // messages typed/dictated while Grok was busy. Entries are `{text, chips}`.
+    // All mutations route through the host (queueSend/dequeueSend/clearQueuedSends)
+    // and come back as a queuedSends snapshot, so the queue survives focus
+    // switches and the HOST flushes it (one combined prompt) when the session's
+    // turn ends.
     sendQueue: [],
     queuedWrapEl: null, // the .queued-msgs container pinned to the end of the chat
     queuedSubmissionPending: false,
@@ -1040,7 +1041,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, appendHighlightedText, commandProgramLabel, commandTextPreview, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, composerHasSendIntent, explicitVisibleChips, normalizeQueuedSends, queuedSendsText, queuedSendsChips, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, createPendingOverlay, getMentionQuery, applyMentionPick, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -11625,7 +11626,7 @@
       sendBtn.title = "Initializing…";
       sendBtn.classList.add("initializing");
       sendBtn.disabled = true;
-    } else if (input.value.trim()) {
+    } else if (composerHasSendIntent(input.value, state.chips)) {
       sendBtn.innerHTML = ICON.arrowUp;
       sendBtn.title = "Queue — sends when Grok finishes";
       sendBtn.disabled = false;
@@ -11637,18 +11638,28 @@
     }
   }
 
-  // Queue whatever is typed for send-at-turn-end. Returns true if something was
-  // queued. The one busy-path helper both Enter and the button click funnel
-  // through, so typed text can never turn into a cancel (#37).
+  // Queue whatever is staged for send-at-turn-end. Returns true if something was
+  // queued (or refused with a reason — never a cancel). The one busy-path helper
+  // both Enter and the button click funnel through, so send-intent can never
+  // turn into a cancel (#37). A composer holding only an attachment is send-intent.
   function queueFromComposer() {
+    if (state.pendingPaste > 0) return true;
     const t = input.value.trim();
-    if (!t) return false;
+    const chips = explicitVisibleChips(state.chips);
+    if (!composerHasSendIntent(t, state.chips)) return false;
+    // Everything or nothing: an older host would ignore extra chips and queue
+    // the text alone. Refuse rather than silently drop attachments.
+    if (chips.length && !(state.hostCaps && state.hostCaps.queueSendChips)) {
+      addError("This host cannot queue attachments. Wait until Grok finishes, then send.");
+      return true;
+    }
     stopVoiceForManualSend();
-    queueOutgoing(t);
+    queueOutgoing(t, chips);
     input.value = "";
     renderInputHighlight(); // also flips the busy button back to Stop (empty composer)
     updateSlash();
     updateMention();
+    updateSendButton();
     return true;
   }
 
@@ -11720,12 +11731,12 @@
       // cancelled turn actually ends (agentEnd / agentError), so the button
       // stays as "Stop" until the CLI confirms.
       if (state.sendQueue.length) {
-        input.value = state.sendQueue.join("\n\n");
+        input.value = queuedSendsText(state.sendQueue);
         state.sendQueue = [];
         state.queuedSubmissionPending = false;
         state.queuedSubmissionRejected = false;
         renderQueuedBlocks();
-        vscode.postMessage({ type: "clearQueuedSends" });
+        vscode.postMessage({ type: "clearQueuedSends", restore: true });
         renderInputHighlight();
       }
       vscode.postMessage({ type: "cancel" });
@@ -12229,12 +12240,20 @@
   // (session-start priming — no session id to interject against yet), a CLI that
   // can't interject, and (defensively) not being busy at all. Any of those fall
   // back to the queue, which is the safe home for the text either way.
-  function queueOutgoing(text) {
-    if (state.steerByDefault && state.steerSupported && steerableProvider() && state.busy && !state.busyLocked) {
+  function queueOutgoing(text, chips) {
+    const attachments = Array.isArray(chips) ? chips : explicitVisibleChips(state.chips);
+    // Steer is text-only (`_x.ai/interject`). Attachments fall back to the
+    // queue rather than silently dropping — everything or nothing.
+    if (
+      !attachments.length &&
+      state.steerByDefault && state.steerSupported && steerableProvider() && state.busy && !state.busyLocked
+    ) {
       vscode.postMessage({ type: "steerSend", text });
       return;
     }
-    vscode.postMessage({ type: "queueSend", text });
+    const msg = { type: "queueSend", text };
+    if (state.hostCaps && state.hostCaps.queueSendChips) msg.chips = attachments;
+    vscode.postMessage(msg);
   }
 
   // THE pending user block (the host keeps at most one queued message —
@@ -12256,21 +12275,23 @@
    *  queued something. A "no" leaves a stale placeholder beside the queued block
    *  until the next refresh, which is cosmetic; a wrong "yes" would retire a
    *  submission that is still in flight, which is not. */
-  function queueHoldsContribution(items, text) {
+  function queueHoldsContribution(entries, text) {
     if (!text) return false;
-    for (var i = 0; i < items.length; i++) {
-      if (String(items[i] || "") === text) return true;
+    for (var i = 0; i < entries.length; i++) {
+      const entryText = typeof entries[i] === "string" ? entries[i] : (entries[i] && entries[i].text) || "";
+      if (entryText === text) return true;
     }
     return false;
   }
 
   function renderQueuedBlocks() {
     let wrap = state.queuedWrapEl;
-    // Defensive join: the host's invariant is a single entry, but render
-    // whatever arrives the way the flush would send it.
+    // One visual block: the flush is still one combined prompt. Text is joined
+    // the way it will send; chips from every contribution are shown on it.
     const rejected = !!state.rejectedSubmissionText;
-    const text = rejected ? state.rejectedSubmissionText : state.sendQueue.join("\n\n");
-    if (!text) {
+    const text = rejected ? state.rejectedSubmissionText : queuedSendsText(state.sendQueue);
+    const chips = rejected ? [] : queuedSendsChips(state.sendQueue);
+    if (!text && !chips.length) {
       if (wrap) wrap.remove();
       state.queuedWrapEl = null;
       return;
@@ -12308,7 +12329,7 @@
         state.rejectedSubmissionText = "";
         renderQueuedBlocks();
       } else {
-        vscode.postMessage({ type: "dequeueSend", index: 0 });
+        vscode.postMessage({ type: "clearQueuedSends", restore: true });
       }
       input.value = input.value.trim() ? text + "\n\n" + input.value : text;
       renderInputHighlight();
@@ -12325,7 +12346,7 @@
         state.rejectedSubmissionText = "";
         renderQueuedBlocks();
       } else {
-        vscode.postMessage({ type: "dequeueSend", index: 0 });
+        vscode.postMessage({ type: "clearQueuedSends" });
       }
     };
     // Steer (#52): send this into the RUNNING turn instead of waiting for it.
@@ -12334,7 +12355,9 @@
     // still ends up with the button once busy lands.
     // Not for Claude Code: it has no mid-turn interject, so the button would
     // offer to do something the agent cannot do. Its messages stay scheduled.
-    if (state.steerSupported && steerableProvider()) {
+    // Attachments cannot ride `_x.ai/interject` — hide Steer rather than
+    // silently drop them.
+    if (state.steerSupported && steerableProvider() && !chips.length) {
       const steerBtn = document.createElement("button");
       steerBtn.className = "queued-action queued-steer";
       steerBtn.title = "Steer — submit now without interrupting Grok";
@@ -12349,7 +12372,7 @@
       steerBtn.onpointerdown = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        vscode.postMessage({ type: "dequeueSend", index: 0 });
+        vscode.postMessage({ type: "clearQueuedSends" });
         vscode.postMessage({ type: "steerSend", text });
       };
       actions.appendChild(steerBtn);
@@ -12358,12 +12381,22 @@
     actions.appendChild(rmBtn);
     hdr.appendChild(tag);
     hdr.appendChild(actions);
-    const body = document.createElement("div");
-    body.className = "queued-text";
-    body.textContent = text;
-    body.title = text; // body is line-clamped; full text on hover
-    bubble.appendChild(hdr);
-    bubble.appendChild(body);
+    if (text) {
+      const body = document.createElement("div");
+      body.className = "queued-text";
+      body.textContent = text;
+      body.title = text; // body is line-clamped; full text on hover
+      bubble.appendChild(hdr);
+      bubble.appendChild(body);
+    } else {
+      bubble.appendChild(hdr);
+    }
+    if (chips.length) {
+      const chipsRow = document.createElement("div");
+      chipsRow.className = "msg-chips";
+      for (const chip of chips) chipsRow.appendChild(makeMsgChipTag(chip.relPath, chip));
+      bubble.appendChild(chipsRow);
+    }
     msg.appendChild(bubble);
     wrap.appendChild(msg);
     messagesEl.appendChild(wrap); // (re)pin to the end of the conversation
@@ -13705,6 +13738,7 @@
       case "chips":
         state.chips = msg.chips;
         renderChips();
+        updateSendButton();
         break;
       case "commandsUpdate":
         state.commands = msg.commands || [];
@@ -14334,7 +14368,7 @@
         // fixes the surface where the loss was actually reported and where a
         // phone has nothing else to fall back on.
         if (IS_REMOTE && state.sendQueue.length) {
-          state.rejectedSubmissionText = state.sendQueue.join("\n\n");
+          state.rejectedSubmissionText = queuedSendsText(state.sendQueue);
           state.sendQueue = [];
           renderQueuedBlocks();
         }
@@ -14345,7 +14379,8 @@
       case "queuedSends":
         // Snapshot of the focused session's host-owned send queue — replayed on
         // re-focus like everything else, so queued blocks survive session swaps.
-        state.sendQueue = Array.isArray(msg.items) ? msg.items : [];
+        // Prefer additive `queued` (text + chips); `items` is the text-only fallback.
+        state.sendQueue = normalizeQueuedSends(msg);
         if (!state.sendQueue.length) {
           state.queuedSubmissionPending = false;
           state.queuedSubmissionRejected = false;
@@ -14386,7 +14421,6 @@
           typeof msg.id === "string" &&
           msg.id &&
           typeof msg.text === "string" &&
-          msg.text.trim() &&
           !state.submittedQueuedSendIds.has(msg.id)
         ) {
           state.submittedQueuedSendIds.add(msg.id);

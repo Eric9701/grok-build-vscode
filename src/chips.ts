@@ -227,3 +227,8 @@ export function consumeChips(current: FileChip[], sent: FileChip[]): FileChip[] 
 export function isImplicitChip(chip: FileChip): boolean {
   return chip.id.startsWith("implicit:");
 }
+
+/** A chip the user staged (file, image, @-mention) and did not hide. */
+export function isExplicitVisibleChip(chip: FileChip): boolean {
+  return !chip.hidden && !isImplicitChip(chip);
+}

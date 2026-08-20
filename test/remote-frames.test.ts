@@ -194,6 +194,35 @@ describe("parseRelayFrame", () => {
     }
   });
 
+  it("reconstructs queueSend chips as ids only — never a caller-supplied path", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    expect(parseRelayFrame(wrap({
+      type: "queueSend",
+      text: "follow-up",
+      chips: [{ id: "image:/s/a.png:1:1", path: "/etc/passwd", relPath: "secret", hidden: false }],
+    }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: {
+        type: "queueSend",
+        text: "follow-up",
+        chips: [{ id: "image:/s/a.png:1:1", path: "", relPath: "", hidden: false }],
+      },
+    });
+    expect(parseRelayFrame(wrap({ type: "queueSend", text: "" }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: { type: "queueSend", text: "" },
+    });
+    expect(parseRelayFrame(wrap({ type: "clearQueuedSends", restore: true }))).toEqual({
+      t: "msg",
+      clientId: "c1",
+      msg: { type: "clearQueuedSends", restore: true },
+    });
+    expect(parseRelayFrame(wrap({ type: "queueSend", chips: [] }))).toBeNull();
+    expect(parseRelayFrame(wrap({ type: "queueSend", text: "x", chips: "nope" }))).toBeNull();
+  });
+
   it("validates and reconstructs browser-owned speech preferences", () => {
     const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
     expect(parseRelayFrame(wrap({

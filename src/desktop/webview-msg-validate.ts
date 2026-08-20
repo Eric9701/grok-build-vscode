@@ -107,7 +107,6 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "pickFile":
     case "voiceStart":
     case "remoteVoiceStart":
-    case "clearQueuedSends":
     case "forkSession":
     case "newWorktreeSession":
     case "applyWorktree":
@@ -317,8 +316,14 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       if (!opt(raw.cancel, isBoolean)) return null;
       break;
     case "queueSend":
+      if (!isString(raw.text)) return null;
+      if (raw.chips !== undefined && !Array.isArray(raw.chips)) return null;
+      break;
     case "steerSend":
       if (!isString(raw.text)) return null;
+      break;
+    case "clearQueuedSends":
+      if (!opt(raw.restore, isBoolean)) return null;
       break;
     case "turnFeedback":
       if (raw.rating !== -1 && raw.rating !== 0 && raw.rating !== 1) return null;

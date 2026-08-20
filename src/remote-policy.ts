@@ -1073,6 +1073,17 @@ export function transformHostMsgForRemote(msg: HostMsg, deps: MediaInlineDeps): 
       ...(msg.chips ? { chips: msg.chips.map((chip) => inlineChipPreviewForRemote(chip, deps)) } : {}),
     };
   }
+  if (msg.type === "queuedSends" && msg.queued) {
+    return {
+      ...msg,
+      queued: msg.queued.map((item) => ({
+        ...item,
+        ...(item.chips
+          ? { chips: item.chips.map((chip) => inlineChipPreviewForRemote(chip, deps)) }
+          : {}),
+      })),
+    };
+  }
   if (msg.type === "userMessageChunk") {
     return {
       ...msg,

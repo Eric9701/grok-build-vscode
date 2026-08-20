@@ -4,22 +4,26 @@ import {
   beginQueuedSendCommit,
   finishQueuedSendCommit,
 } from "../src/session";
+import { enqueueQueuedSend } from "../src/queued-send";
+import { makeImageChip } from "../src/chips";
+
+const item = (text: string, chips: Session["queuedSends"][number]["chips"] = []) => ({ text, chips });
 
 describe("queued send commit", () => {
   it("retains a queued send when the send does not commit", () => {
     const session = new Session();
-    session.queuedSends = ["do not lose this"];
+    session.queuedSends = [item("do not lose this")];
     session.queuedSendRequiresRelay = true;
 
     const claim = beginQueuedSendCommit(session, "do not lose this")!;
     expect(finishQueuedSendCommit(session, claim, false)).toBe(false);
-    expect(session.queuedSends).toEqual(["do not lose this"]);
+    expect(session.queuedSends).toEqual([item("do not lose this")]);
     expect(session.queuedSendRequiresRelay).toBe(true);
   });
 
   it("releases a queued send exactly once when the send commits", () => {
     const session = new Session();
-    session.queuedSends = ["run this once"];
+    session.queuedSends = [item("run this once")];
     session.queuedSendRequiresRelay = true;
 
     const claim = beginQueuedSendCommit(session, "run this once")!;
@@ -29,26 +33,38 @@ describe("queued send commit", () => {
     expect(finishQueuedSendCommit(session, claim, true)).toBe(false);
   });
 
-  it("keeps text appended while a failing send is awaiting commit", () => {
+  it("keeps a contribution appended while a failing send is awaiting commit", () => {
     const session = new Session();
-    session.queuedSends = ["first part"];
+    session.queuedSends = [item("first part")];
     session.queuedSendRequiresRelay = true;
 
     const claim = beginQueuedSendCommit(session, "first part")!;
-    session.queuedSends[0] += "\n\nsecond part";
+    session.queuedSends = enqueueQueuedSend(session.queuedSends, "second part", []);
     expect(finishQueuedSendCommit(session, claim, false)).toBe(false);
-    expect(session.queuedSends).toEqual(["first part\n\nsecond part"]);
+    expect(session.queuedSends).toEqual([item("first part"), item("second part")]);
   });
 
-  it("releases only the committed prefix when text was appended in flight", () => {
+  it("releases only the committed prefix when a contribution was appended in flight", () => {
     const session = new Session();
-    session.queuedSends = ["first part"];
+    session.queuedSends = [item("first part")];
     session.queuedSendRequiresRelay = true;
 
     const claim = beginQueuedSendCommit(session, "first part")!;
-    session.queuedSends[0] += "\n\nsecond part";
+    session.queuedSends = enqueueQueuedSend(session.queuedSends, "second part", []);
     expect(finishQueuedSendCommit(session, claim, true)).toBe(true);
-    expect(session.queuedSends).toEqual(["second part"]);
+    expect(session.queuedSends).toEqual([item("second part")]);
     expect(session.queuedSendRequiresRelay).toBe(true);
+  });
+
+  it("keeps each contribution's chips with the prefix that owns them", () => {
+    const session = new Session();
+    const a = makeImageChip("/s/a.png", 1, "image/png");
+    const b = makeImageChip("/s/b.png", 1, "image/png");
+    session.queuedSends = [item("look at A", [a]), item("and B", [b])];
+
+    const claim = beginQueuedSendCommit(session, "look at A")!;
+    expect(claim.items[0].chips).toEqual([a]);
+    expect(finishQueuedSendCommit(session, claim, true)).toBe(true);
+    expect(session.queuedSends).toEqual([item("and B", [b])]);
   });
 });

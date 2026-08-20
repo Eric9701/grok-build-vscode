@@ -142,14 +142,13 @@ describe("rehydrate during priming does not lose a prompt", () => {
 
   /** Mirror of divertRacingSend + maybeFlush readiness. */
   function queueThenFlushModel(session: Session, text: string): {
-    queuedDuringPriming: string[];
+    queuedDuringPriming: Array<{ text: string; chips: [] }>;
     flushedWhenReady: string | undefined;
   } {
     if (wouldQueueSend(session) || !sessionReadyForPrompt(session)) {
-      if (session.queuedSends.length) session.queuedSends[0] += "\n\n" + text;
-      else session.queuedSends.push(text);
+      session.queuedSends = [...session.queuedSends, { text, chips: [] }];
     }
-    const queuedDuringPriming = [...session.queuedSends];
+    const queuedDuringPriming = [...session.queuedSends] as Array<{ text: string; chips: [] }>;
     // startSession success path:
     session.priming = false;
     if (session.client && !session.client.sessionId) {
@@ -160,7 +159,7 @@ describe("rehydrate during priming does not lose a prompt", () => {
       session.status !== "working" &&
       session.status !== "needs-you" &&
       session.queuedSends.length
-        ? session.queuedSends.join("\n\n")
+        ? session.queuedSends.map((item) => item.text).join("\n\n")
         : undefined;
     return { queuedDuringPriming, flushedWhenReady };
   }
@@ -194,7 +193,7 @@ describe("rehydrate during priming does not lose a prompt", () => {
       session,
       "from the phone during sign-out",
     );
-    expect(queuedDuringPriming).toEqual(["from the phone during sign-out"]);
+    expect(queuedDuringPriming).toEqual([{ text: "from the phone during sign-out", chips: [] }]);
   });
 
   it("queues a send during priming and flushes the same text when ready", () => {
@@ -211,7 +210,7 @@ describe("rehydrate during priming does not lose a prompt", () => {
       session,
       "do not lose this prompt",
     );
-    expect(queuedDuringPriming).toEqual(["do not lose this prompt"]);
+    expect(queuedDuringPriming).toEqual([{ text: "do not lose this prompt", chips: [] }]);
     // Chips must still be present — divert does not consume them.
     expect(session.chips).toHaveLength(1);
     expect(flushedWhenReady).toBe("do not lose this prompt");

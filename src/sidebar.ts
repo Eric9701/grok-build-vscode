@@ -141,7 +141,17 @@ import {
   toggleChip,
   withPerMessageImageIndices,
 } from "./chips";
-import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
+import { buildPromptWithImages, buildQueuedPromptWithImages, type PromptImageInput, type QueuedPromptContribution } from "./prompt-builder";
+import {
+  chipsForQueueSend,
+  enqueueQueuedSend,
+  explicitVisibleChips,
+  queuedSendsMessage,
+  queuedSendsText,
+  restoreQueuedChips,
+  type QueuedSendEntry,
+} from "./queued-send";
+
 import { matchSlashCommand } from "./slash-filter";
 import {
   MENTION_INDEX_LIMIT,
@@ -2263,9 +2273,7 @@ Only continue if you trust this code.`,
       recovered.push(pending.text);
     }
     if (!recovered.length) return;
-    const text = recovered.join("\n\n");
-    if (session.queuedSends.length) session.queuedSends[0] += "\n\n" + text;
-    else session.queuedSends.push(text);
+    session.queuedSends = enqueueQueuedSend(session.queuedSends, recovered.join("\n\n"), []);
   }
 
   /**
@@ -2684,12 +2692,16 @@ Only continue if you trust this code.`,
     // Same readiness as handleSend — client without sessionId is still priming.
     if (!sessionReadyForPrompt(session)) return undefined;
     if (session.status === "working" || session.status === "needs-you") return undefined;
-    return session.queuedSends.join("\n\n");
+    return queuedSendsText(session.queuedSends);
+  }
+
+  private emitQueuedSends(session: Session): void {
+    this.emit(session, queuedSendsMessage(session.queuedSends));
   }
 
   private async maybeFlushQueuedSends(session: Session): Promise<void> {
     const combined = this.queuedSendReadyText(session);
-    if (!combined) return;
+    if (combined === undefined) return;
     if (session.queuedSendCommit) return;
     if (session.queuedSendRequiresRelay) {
       if (this.remoteClients.clientsForActiveValue(session).length === 0) return;
@@ -2733,8 +2745,8 @@ Only continue if you trust this code.`,
       // steerSend on ingress exactly like send, so this text is already paid
       // for — re-submitting the queued fallback through the relay would
       // charge it twice. Same for the two fallbacks below.
-      session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
-      this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+      session.queuedSends = enqueueQueuedSend(session.queuedSends, body, []);
+      this.emitQueuedSends(session);
       return;
     }
     this.emit(session, { type: "userMessage", text: body, chips: [], steer: true });
@@ -2749,8 +2761,8 @@ Only continue if you trust this code.`,
         // which is exactly the behavior Steer was offering to skip.
         this.emit(session, { type: "steerUnavailable" });
         this.emit(session, { type: "agentReset" });
-        session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
-        this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+        session.queuedSends = enqueueQueuedSend(session.queuedSends, body, []);
+        this.emitQueuedSends(session);
         this.reportRequester(
           requester,
           "warning",
@@ -2761,8 +2773,8 @@ Only continue if you trust this code.`,
       this.host.appendLine(`[steer] interjected ${body.length} chars into the running turn`);
     } catch (e: any) {
       this.emit(session, { type: "agentReset" });
-      session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
-      this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+      session.queuedSends = enqueueQueuedSend(session.queuedSends, body, []);
+      this.emitQueuedSends(session);
       this.emit(session, { type: "error", text: `Steer failed: ${e?.message ?? e}. Your message was queued instead.` });
     }
   }
@@ -5937,7 +5949,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const active = this.remoteClients.active(clientId);
       return [clientId, {
         id: active?.activeSessionId,
-        text: active?.queuedSends.join("\n\n") ?? "",
+        text: active ? queuedSendsText(active.queuedSends) : "",
       }] as const;
     }));
     const connected = this.connectedProviders();
@@ -5959,7 +5971,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         replacement.priming = connected.length > 0;
         this.setSessionCwd(replacement, cwd, this.workspaceRoot());
         replacement.lastActiveAt = Date.now();
-        const queuedText = session.queuedSends.join("\n\n");
+        const queuedText = queuedSendsText(session.queuedSends);
         // Nothing will start this tab until an account comes back, so the draft
         // has to outlive the buffered notice below (a start clears the buffer).
         if (queuedText) {
@@ -5983,7 +5995,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     ]);
     if (this.focused.provider === provider) affectedSessions.add(this.focused);
     const replacingFocused = this.focused.provider === provider;
-    const focusedQueuedText = replacingFocused ? this.focused.queuedSends.join("\n\n") : "";
+    const focusedQueuedText = replacingFocused ? queuedSendsText(this.focused.queuedSends) : "";
     const focusedDraftId = replacingFocused ? this.focused.activeSessionId : undefined;
     const focusedCwd = replacingFocused ? this.sessionCwd(this.focused) : "";
     const backgroundQueued = [...affectedSessions]
@@ -5996,11 +6008,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       .map((session) => ({
         id: session.activeSessionId,
         name: this.sessionDisplayName(session) || "a background conversation",
-        text: session.queuedSends.join("\n\n"),
+        text: queuedSendsText(session.queuedSends),
       }));
 
     for (const affected of affectedSessions) {
-      const text = affected.queuedSends.join("\n\n");
+      const text = queuedSendsText(affected.queuedSends);
       if (text && affected.activeSessionId) {
         await this.rememberQueuedDraft(affected.activeSessionId, text);
       }
@@ -7524,7 +7536,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         session.queuedSendCommit = undefined;
         session.queuedSends = [];
         session.queuedSendRequiresRelay = false;
-        this.emit(session, { type: "queuedSends", items: [] });
+        this.emitQueuedSends(session);
       }
       this.setStatus(session, "error");
       this.pool.delete(session); // the process is gone; it's no longer a live pool member
@@ -7946,7 +7958,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "send":
-        let queuedSendCommit: { text: string } | undefined;
+        let queuedSendCommit: { text: string; items: QueuedSendEntry[] } | undefined;
         if (origin === "remote" && msg.queuedSendId) {
           if (session.completedQueuedSendIds.includes(msg.queuedSendId)) {
             this.host.appendLine(`[queue] ignored duplicate remote dequeue ${msg.queuedSendId}`);
@@ -7993,15 +8005,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "queueSend": {
-        // Host-owned per-session queue (#37): the webview renders a mirror from
-        // the queuedSends snapshots, so queued messages survive focus switches
-        // and flush even while their session is backgrounded. A SINGLE pending
-        // message is kept — composing more while one is queued APPENDS to it
-        // (blank-line separator, the exact flush format). Separate entries were
-        // a fiction: Stop and the flush both collapse them anyway, and per-entry
-        // editing broke ordering (an edited entry re-queued at the end).
+        // Host-owned per-session queue (#37): each contribution keeps the chips
+        // snapshotted here, then the flush sends them as one combined prompt
+        // with per-item tags. The webview renders a mirror from queuedSends
+        // snapshots, so queued messages survive focus switches and flush even
+        // while backgrounded.
         const s = session;
-        if (typeof msg.text === "string" && msg.text.trim()) {
+        const text = typeof msg.text === "string" ? msg.text : "";
+        const chips = chipsForQueueSend(s.chips, msg.chips);
+        if (text.trim() || chips.length) {
           s.queuedSendDispatch = undefined;
           // STICKY, never overwritten back to false: with desk↔remote
           // co-attach both views append to ONE queue, and the combined flush
@@ -8009,9 +8021,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           // round-trip the relay so it gets metered (a local overwrite here
           // would flush remote text through the unmetered local branch).
           if (origin === "remote") s.queuedSendRequiresRelay = true;
-          if (s.queuedSends.length) s.queuedSends[0] += "\n\n" + msg.text;
-          else s.queuedSends.push(msg.text);
-          this.emit(s, { type: "queuedSends", items: [...s.queuedSends] });
+          s.queuedSends = enqueueQueuedSend(s.queuedSends, text, chips);
+          s.chips = consumeChips(s.chips, chips);
+          if (s === this.focused) this.refreshImplicitChip(true);
+          else this.postChips(s);
+          this.emitQueuedSends(s);
           // If the turn ended while this message was in flight, fire it now.
           void this.maybeFlushQueuedSends(s);
         }
@@ -8022,9 +8036,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (Number.isInteger(msg.index) && msg.index >= 0 && msg.index < s.queuedSends.length) {
           s.queuedSendDispatch = undefined;
           s.queuedSendCommit = undefined;
-          s.queuedSends.splice(msg.index, 1);
+          const [removed] = s.queuedSends.splice(msg.index, 1);
+          if (removed?.chips.length) {
+            s.chips = restoreQueuedChips(s.chips, [removed]);
+            if (s === this.focused) this.refreshImplicitChip(true);
+            else this.postChips(s);
+          }
           if (!s.queuedSends.length) s.queuedSendRequiresRelay = false;
-          this.emit(s, { type: "queuedSends", items: [...s.queuedSends] });
+          this.emitQueuedSends(s);
         }
         break;
       }
@@ -8107,15 +8126,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         break;
       case "clearQueuedSends": {
-        // Posted by the webview's Stop flow BEFORE the cancel — a halt must not
-        // auto-fire queued sends into the cancelled turn's wake.
+        // Posted by the webview's Stop/Edit/Remove flows. Stop and Edit set
+        // `restore: true` so queued chips return to the composer; Remove omits
+        // it and discards them. A halt must not auto-fire queued sends into
+        // the cancelled turn's wake — this runs BEFORE cancel on that path.
         const s = session;
         if (s.queuedSends.length) {
           s.queuedSendDispatch = undefined;
           s.queuedSendCommit = undefined;
+          if (msg.restore) {
+            s.chips = restoreQueuedChips(s.chips, s.queuedSends);
+            if (s === this.focused) this.refreshImplicitChip(true);
+            else this.postChips(s);
+          }
           s.queuedSends = [];
           s.queuedSendRequiresRelay = false;
-          this.emit(s, { type: "queuedSends", items: [] });
+          this.emitQueuedSends(s);
         }
         break;
       }
@@ -11945,7 +11971,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  delivery. Revisit when queued state can track every contribution id and
    *  one committed message can acknowledge all of them without changing the
    *  relay dequeue handshake. */
-  private divertRacingSend(session: Session, text: string, bare: boolean): void {
+  private divertRacingSend(
+    session: Session,
+    text: string,
+    bare: boolean,
+    chips: FileChip[] = explicitVisibleChips(session.chips),
+  ): void {
     if (bare) {
       this.emit(session, {
         type: "error",
@@ -11953,10 +11984,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       });
       return;
     }
+    if (!text.trim() && !chips.length) return;
     session.queuedSendDispatch = undefined;
-    if (session.queuedSends.length) session.queuedSends[0] += "\n\n" + text;
-    else session.queuedSends.push(text);
-    this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+    session.queuedSends = enqueueQueuedSend(session.queuedSends, text, chips);
+    if (chips.length) {
+      session.chips = consumeChips(session.chips, chips);
+      if (session === this.focused) this.refreshImplicitChip(true);
+      else this.postChips(session);
+    }
+    this.emitQueuedSends(session);
     void this.maybeFlushQueuedSends(session);
   }
 
@@ -11965,7 +12001,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     bare = false,
     target?: Session,
     origin: MsgOrigin = "local",
-    queuedSendCommit?: { text: string },
+    queuedSendCommit?: { text: string; items: QueuedSendEntry[] },
     submissionId?: string,
   ): Promise<void> {
     // `target` lets a queued-send flush fire into a BACKGROUNDED session (its
@@ -12018,40 +12054,61 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (gen !== session.gen) return;
     }
 
-    // Snapshot the HOST's chips — the webview copy is a render mirror of these
-    // (every mutation routes through us + postChips).
-    // `bare` sends (gear-menu /compact) deliberately carry no attachments, and
-    // a background flush must not consume the FOCUSED view's composer chips.
-    // Renumbered here as well as in postChips, so the guarantee is local to the
-    // send rather than inherited from whoever last posted: the `[Image #N]`
-    // tags, the image blocks they name, and the chips painted on the bubble all
-    // come off THIS list, in this order.
-    const chips = bare ? [] : withPerMessageImageIndices([...session.chips]);
+    // Snapshot attachments. A live send reads the composer's chips; a queued
+    // flush uses the per-item copies snapshotted at queue time so a later
+    // composer remove cannot silently drop them. `bare` sends (gear-menu
+    // /compact) carry none. Image indices are derived here so the `[Image #N]`
+    // tags, the image blocks they name, and the chips painted on the bubble
+    // all come off THIS list, in this order.
+    const queuedItems = !bare && queuedSendCommit?.items.length
+      ? queuedSendCommit.items.map((item) => ({ text: item.text, chips: item.chips ?? [] }))
+      : undefined;
+    const implicitChips = session.chips.filter((chip) => isImplicitChip(chip));
+    let chips: FileChip[] = [];
+    let contributions: QueuedPromptContribution[] | undefined;
+    if (bare) {
+      chips = [];
+    } else if (queuedItems) {
+      contributions = [];
+      let imageOffset = 0;
+      const queuedChips: FileChip[] = [];
+      for (const item of queuedItems) {
+        const shifted = withPerMessageImageIndices(item.chips).map((chip) => {
+          if (!isImageChip(chip) || chip.hidden) return chip;
+          const imageIndex = (chip.imageIndex ?? 1) + imageOffset;
+          return { ...chip, imageIndex, relPath: `Image #${imageIndex}` };
+        });
+        const itemImages: PromptImageInput[] = [];
+        for (const chip of shifted) {
+          if (chip.hidden || !isImageChip(chip)) continue;
+          const read = await this.readImageChip(chip, session, gen);
+          if (read === "gone") return;
+          if (read === "failed") return;
+          itemImages.push(read);
+        }
+        contributions.push({ text: item.text, chips: shifted, images: itemImages });
+        queuedChips.push(...shifted);
+        imageOffset += itemImages.length;
+      }
+      chips = withPerMessageImageIndices([...queuedChips, ...implicitChips]);
+    } else {
+      chips = withPerMessageImageIndices([...session.chips]);
+    }
 
     // Pre-read every visible image BEFORE anything is cleared or sent. Any
     // failure blocks the whole send with the chips intact — never a prompt
     // whose [Image #N] tag has no image block behind it (a dangling tag sends
     // grok hunting the workspace for an image it was never given).
-    const images: PromptImageInput[] = [];
-    for (const chip of chips) {
-      if (chip.hidden || !isImageChip(chip)) continue;
-      try {
-        const bytes = await fs.promises.readFile(chip.path);
-        if (bytes.length === 0) throw new Error("file is empty");
-        images.push({
-          index: chip.imageIndex!,
-          mimeType: chip.mimeType ?? "image/png",
-          data: bytes.toString("base64"),
-          path: chip.path,
-          relPath: chip.originRelPath,
-        });
-      } catch (e) {
-        if (gen !== session.gen) return;
-        this.emit(session, {
-          type: "agentError",
-          text: `Could not read ${chip.relPath} (${(e as Error).message}). Remove the attachment and try again.`,
-        });
-        return;
+    const images: PromptImageInput[] = contributions
+      ? contributions.flatMap((contribution) => contribution.images)
+      : [];
+    if (!contributions) {
+      for (const chip of chips) {
+        if (chip.hidden || !isImageChip(chip)) continue;
+        const read = await this.readImageChip(chip, session, gen);
+        if (read === "gone") return;
+        if (read === "failed") return;
+        images.push(read);
       }
     }
     // Mirror the failure path's guard: if the client was torn down during the
@@ -12068,16 +12125,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       text,
       client.availableCommands.map((c) => c.name),
     );
-    const { blocks: promptBlocks } = buildPromptWithImages(
-      text,
-      chips,
-      images,
-      {
-        readFile: (p) => fs.readFileSync(p, "utf8"),
-        extName: (p) => path.extname(p),
-      },
-      slashCommand != null,
-    );
+    const promptDeps = {
+      readFile: (p: string) => fs.readFileSync(p, "utf8"),
+      extName: (p: string) => path.extname(p),
+    };
+    const { blocks: promptBlocks } = contributions
+      ? buildQueuedPromptWithImages(contributions, implicitChips, promptDeps, slashCommand != null)
+      : buildPromptWithImages(text, chips, images, promptDeps, slashCommand != null);
 
     // Unlike images, document bytes are read lazily by Grok from the path in
     // the prompt. Persist ownership before consuming the chip or sending.
@@ -12091,18 +12145,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // would cancel the first turn. Runs before chips are consumed, so a
     // diverted send leaves its attachments staged for the queued flush.
     if (this.turnInFlight(session)) {
-      if (!queuedSendCommit) this.divertRacingSend(session, text, bare);
+      if (!queuedSendCommit) this.divertRacingSend(session, text, bare, explicitVisibleChips(chips));
       return;
     }
 
     if (queuedSendCommit) {
       if (!finishQueuedSendCommit(session, queuedSendCommit, true)) return;
-      this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+      this.emitQueuedSends(session);
     }
 
     if (bare) {
       this.postChips(session);
-    } else {
+    } else if (!queuedSendCommit) {
       // One-shot attachments are consumed by the send; the implicit context
       // chip mirrors IDE state and stays resident (like Claude Code's). Keep
       // it through the clear so refreshImplicitChip sees `prev` — preserving
@@ -12571,6 +12625,31 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.postSessionName(session);
   }
 
+  private async readImageChip(
+    chip: FileChip,
+    session: Session,
+    gen: number,
+  ): Promise<PromptImageInput | "failed" | "gone"> {
+    try {
+      const bytes = await fs.promises.readFile(chip.path);
+      if (bytes.length === 0) throw new Error("file is empty");
+      return {
+        index: chip.imageIndex!,
+        mimeType: chip.mimeType ?? "image/png",
+        data: bytes.toString("base64"),
+        path: chip.path,
+        relPath: chip.originRelPath,
+      };
+    } catch (e) {
+      if (gen !== session.gen) return "gone";
+      this.emit(session, {
+        type: "agentError",
+        text: `Could not read ${chip.relPath} (${(e as Error).message}). Remove the attachment and try again.`,
+      });
+      return "failed";
+    }
+  }
+
   private postChips(session: Session = this.focused): void {
     // The single chokepoint every chip mutation passes through, so it is where
     // the `[Image #N]` labels are re-derived: removing the first of three
@@ -12601,6 +12680,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           ? { previewSrc: webview.asWebviewUri(Uri.file(chip.path)) }
           : {}) }
         : chip) };
+    }
+    if (message.type === "queuedSends" && message.queued) {
+      return {
+        ...message,
+        queued: message.queued.map((item) => ({
+          ...item,
+          ...(item.chips ? { chips: item.chips.map((chip) => isImageChip(chip)
+            ? { ...chip, ...(fs.existsSync(chip.path)
+              ? { previewSrc: webview.asWebviewUri(Uri.file(chip.path)) }
+              : {}) }
+            : chip) } : {}),
+        })),
+      };
     }
     if (message.type === "userMessageChunk" && message.images) {
       return {
@@ -12988,7 +13080,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // Priming: client may exist without a session id (spawn window).
         session.client = { dispose() {} } as AcpClient;
         session.priming = true;
-        session.queuedSends = [queuedText];
+        session.queuedSends = [{ text: queuedText, chips: [] }];
         session.queuedSendRequiresRelay = true;
         this.pool.add(session);
         this.remoteClients.setActive(clientId, session);
@@ -13013,15 +13105,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         } as unknown as AcpClient;
         session.hasHistory = true;
         session.status = "done";
-        session.chips = chips;
-        session.queuedSends = [queuedText];
+        session.chips = [];
+        session.queuedSends = [{ text: queuedText, chips: chips.map((chip) => ({ ...chip })) }];
         session.queuedSendRequiresRelay = true;
         this.pool.add(session);
         this.remoteClients.setActive(clientId, session);
         void this.maybeFlushQueuedSends(session);
         return {
           promptCount: () => prompts,
-          queuedSends: () => [...session.queuedSends],
+          queuedSends: () => session.queuedSends.map((item) => item.text),
           lastPromptBlocks: () => lastBlocks,
         };
       },

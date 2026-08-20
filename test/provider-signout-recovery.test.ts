@@ -130,7 +130,7 @@ describe("a background conversation's draft when its provider signs out", () => 
     background.activeSessionId = "background-grok";
     background.hasHistory = true;
     background.client = { dispose: vi.fn() } as any;
-    background.queuedSends = ["the secret draft"];
+    background.queuedSends = [{ text: "the secret draft", chips: [] }];
     sidebar.pool.add(background);
     sidebar.sessionDisplayName = vi.fn((session: Session) =>
       session === background ? "Background investigation" : "Codex desk");
@@ -159,7 +159,7 @@ describe("a background conversation's draft when its provider signs out", () => 
     const background = new Session();
     background.provider = "grok";
     background.cwd = "/repo";
-    background.queuedSends = ["draft typed during startup"];
+    background.queuedSends = [{ text: "draft typed during startup", chips: [] }];
     background.client = { dispose: vi.fn() } as any;
     sidebar.pool.add(background);
     sidebar.sessionDisplayName = vi.fn(() => "Starting conversation");
@@ -184,7 +184,7 @@ describe("a background conversation's draft when its provider signs out", () => 
     background.cwd = "/repo";
     background.activeSessionId = "background-grok";
     background.client = { dispose: vi.fn() } as any;
-    background.queuedSends = ["draft text"];
+    background.queuedSends = [{ text: "draft text", chips: [] }];
     sidebar.pool.add(background);
     sidebar.sessionDisplayName = vi.fn(() => "Background investigation");
     sidebar.view = { webview: { postMessage: vi.fn() } };
@@ -361,7 +361,7 @@ describe("signing back in after the last provider signed out", () => {
     phone.provider = "grok";
     phone.cwd = "/repo";
     phone.client = { dispose: vi.fn() } as any;
-    phone.queuedSends = ["ask about the migration"];
+    phone.queuedSends = [{ text: "ask about the migration", chips: [] }];
     sidebar.remoteClients.identify("phone", "stable-phone-tab-after-logout");
     sidebar.remoteClients.ready("phone");
     sidebar.remoteClients.setActive("phone", phone);
@@ -391,7 +391,7 @@ describe("signing back in after the last provider signed out", () => {
     const old = sidebar.focused as Session;
     old.provider = "grok";
     old.activeSessionId = "park-origin";
-    old.queuedSends = ["park me"];
+    old.queuedSends = [{ text: "park me", chips: [] }];
     old.client = { dispose: vi.fn() } as any;
     await logout(sidebar);
     const stranded = sidebar.focused as Session;
@@ -417,14 +417,14 @@ describe("signing back in after the last provider signed out", () => {
     phone.provider = "grok";
     phone.cwd = "/repo";
     phone.client = { dispose: vi.fn() } as any;
-    phone.queuedSends = ["ask about the migration"];
+    phone.queuedSends = [{ text: "ask about the migration", chips: [] }];
     const detached = new Session();
     detached.provider = "grok";
     detached.cwd = "/repo";
     detached.activeSessionId = "detached-grok";
     detached.hasHistory = true;
     detached.client = { dispose: vi.fn() } as any;
-    detached.queuedSends = ["draft from the disconnected phone"];
+    detached.queuedSends = [{ text: "draft from the disconnected phone", chips: [] }];
     sidebar.remoteClients.ready("phone");
     sidebar.remoteClients.setActive("phone", phone);
     sidebar.remoteClients.identify("old-socket", "stable-tab");
@@ -499,7 +499,7 @@ describe("signing back in after the last provider signed out", () => {
     const old = sidebar.focused as Session;
     old.provider = "grok";
     old.activeSessionId = "draft-origin";
-    old.queuedSends = ["survive failed retry"];
+    old.queuedSends = [{ text: "survive failed retry", chips: [] }];
     old.client = { dispose: vi.fn() } as any;
     await logout(sidebar);
 
@@ -534,7 +534,7 @@ describe("signing back in after the last provider signed out", () => {
     const old = sidebar.focused as Session;
     old.provider = "grok";
     old.activeSessionId = "cross-provider-origin";
-    old.queuedSends = ["survive the Codex replacement refusal"];
+    old.queuedSends = [{ text: "survive the Codex replacement refusal", chips: [] }];
     old.client = { dispose: vi.fn() } as any;
     sidebar.startSession = vi.fn(async () => undefined);
     const restored: HostMsg[] = [];

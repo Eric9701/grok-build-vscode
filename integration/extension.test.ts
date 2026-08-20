@@ -1700,13 +1700,18 @@ suite("repo selection: isolated per remote tab, workspace-local in VS Code", () 
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     assert.strictEqual(model.promptCount(), 0, "the unreadable image must bail before model prompt");
-    assert.deepStrictEqual(model.queuedSends(), [`${first}\n\n${second}`]);
+    assert.deepStrictEqual(model.queuedSends(), [first, second]);
     assert.ok(posts.some((post) =>
       post.msg?.type === "agentError" &&
       post.msg.text?.includes("Could not read missing.png")
     ), JSON.stringify(posts));
 
+    // Chips live on the queued item, not the composer. Edit restores them so
+    // the user can drop the bad attachment; Remove-from-composer must not
+    // silently strip a snapshotted queued chip.
+    hooks.fromRemote({ type: "clearQueuedSends", restore: true }, clientId);
     hooks.fromRemote({ type: "removeChip", id: "missing-image" }, clientId);
+    hooks.fromRemote({ type: "queueSend", text: `${first}\n\n${second}` }, clientId);
     await new Promise((resolve) => setTimeout(resolve, 50));
     // Known limitation: this retained retry is a fresh relay submission, so it
     // is metered again. Pin that behavior until the queue can represent an

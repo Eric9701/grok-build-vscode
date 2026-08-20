@@ -3,6 +3,11 @@ import type { HostMsg } from "./protocol";
 import type { FileChip } from "./chips";
 import { permissionOptionsForPlan } from "./plan-gate";
 import type { AcpProvider } from "./acp-backend";
+import {
+  queuedSendsMessage,
+  takeQueuedSendsPrefix,
+  type QueuedSendEntry,
+} from "./queued-send";
 
 /** Live state for the dashboard dot. `cold` (no live process) is represented by
  *  the absence of a Session, so it isn't in this union. */
@@ -321,16 +326,16 @@ export class Session {
   buffer: HostMsg[] = [];
 
   /**
-   * The ONE pending message composed while THIS session was busy (typed
-   * Enter-sends and dictated utterances), awaiting its turn end. Invariant:
-   * length ≤ 1 — composing more while one is queued appends to the entry
-   * (blank-line separator, the exact flush format), because Stop and the flush
-   * collapse everything into one message anyway. Host-owned per session — the
-   * webview renders a mirror (a pending user block) from `queuedSends`
-   * snapshots, so it survives focus switches and the flush
-   * (maybeFlushQueuedSends) fires even while the session is backgrounded.
+   * Pending follow-ups composed while THIS session was busy (typed Enter-sends
+   * and dictated utterances), awaiting turn end. Each entry keeps the text AND
+   * the attachments snapshotted at queue time, so a later composer edit cannot
+   * silently drop them. The flush still sends them as ONE combined prompt
+   * (`buildQueuedPromptWithImages`), with each contribution's tags sitting next
+   * to its own text. Host-owned per session — the webview renders a mirror
+   * from `queuedSends` snapshots, so it survives focus switches and flushes
+   * even while backgrounded.
    */
-  queuedSends: string[] = [];
+  queuedSends: QueuedSendEntry[] = [];
 
   /**
    * Remote-only dequeue handshake. While set, the host has asked the owning
@@ -348,7 +353,7 @@ export class Session {
    * Restoring on a rejected prompt result can also execute a partially accepted
    * prompt twice. Do not widen this window without an ACP acceptance signal or
    * an explicit retained-prefix state plus a proven never-executed classifier. */
-  queuedSendCommit?: { text: string };
+  queuedSendCommit?: { text: string; items: QueuedSendEntry[] };
 
   /** Recently accepted dequeue ids. Delayed outbox copies are ignored even
    * after the active dispatch has been retired. Bounded per live session. */
@@ -560,35 +565,35 @@ export function sessionHasWorkInFlight(session: Session): boolean {
   return session.priming || (!!session.client && !session.client.sessionId);
 }
 
-export function beginQueuedSendCommit(session: Session, text: string): { text: string } | undefined {
+export function beginQueuedSendCommit(
+  session: Session,
+  text: string,
+): { text: string; items: QueuedSendEntry[] } | undefined {
   if (session.queuedSendCommit) return undefined;
-  const queued = session.queuedSends[0] ?? "";
-  if (queued !== text && !queued.startsWith(text + "\n\n")) return undefined;
-  const claim = { text };
+  const split = takeQueuedSendsPrefix(session.queuedSends, text);
+  if (!split) return undefined;
+  const claim = { text, items: split.prefix };
   session.queuedSendCommit = claim;
   return claim;
 }
 
 export function finishQueuedSendCommit(
   session: Session,
-  claim: { text: string },
+  claim: { text: string; items: QueuedSendEntry[] },
   committed: boolean,
 ): boolean {
   if (session.queuedSendCommit !== claim) return false;
   session.queuedSendCommit = undefined;
   if (!committed) return false;
 
-  const queued = session.queuedSends[0] ?? "";
-  if (queued === claim.text) {
-    session.queuedSends = [];
-    session.queuedSendRequiresRelay = false;
-    return true;
-  }
-  if (queued.startsWith(claim.text + "\n\n")) {
-    session.queuedSends = [queued.slice(claim.text.length + 2)];
-    return true;
-  }
-  return false;
+  const split = takeQueuedSendsPrefix(session.queuedSends, claim.text);
+  if (!split) return false;
+  session.queuedSends = split.rest.map((item) => ({
+    text: item.text,
+    chips: item.chips ?? [],
+  }));
+  if (!session.queuedSends.length) session.queuedSendRequiresRelay = false;
+  return true;
 }
 
 /** Current non-chat UI state for rebuilding a view of this live session. */
@@ -621,6 +626,6 @@ export function sessionUiSnapshot(
     });
   }
   messages.push({ type: "chips", chips });
-  messages.push({ type: "queuedSends", items: [...session.queuedSends] });
+  messages.push(queuedSendsMessage(session.queuedSends));
   return messages;
 }

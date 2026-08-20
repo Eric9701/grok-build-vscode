@@ -69,6 +69,10 @@ export const HOST_CAPABILITIES = {
   // went, so the delete did not stick — and a client that offers the control
   // anyway is offering one that answers with a refusal. Capability, not version.
   deleteActiveSession: true,
+  // Queued follow-ups carry their attachments. OPT-IN: absent/false = the
+  // webview must not post `queueSend.chips` (a v2.0.4 host would ignore them
+  // and silently drop the files). Field presence, not a version check.
+  queueSendChips: true,
   // Read-only project file browse for AFK Pilot (phone/browser). Field presence
   // is the gate — never a version check. Local VS Code / desktop webviews
   // receive the flag but must not draw a second explorer; only IS_REMOTE clients
@@ -173,6 +177,19 @@ export type HostUiCapabilities = {
    * and VS Code deliberately does not — its workspace is VS Code's to manage.
    */
   addProjectFolder?: boolean;
+  /**
+   * `queueSend` / `queuedSends` carry per-item attachments. OPT-IN: absent/false
+   * = the webview posts text-only `queueSend` (and refuses to queue when the
+   * composer holds a chip — everything or nothing). Older hosts omit the field
+   * and would ignore extra `chips` / `queued` keys.
+   */
+  queueSendChips?: boolean;
+};
+
+/** One host-owned queued follow-up. `chips` omitted means none. */
+export type QueuedSend = {
+  text: string;
+  chips?: FileChip[];
 };
 
 export type HostMsg =
@@ -520,7 +537,10 @@ export type HostMsg =
   | { type: "sessionDot"; id: string; dot: Dot }
   // Full snapshot of the focused session's host-owned send queue (#37) — the
   // webview renders pending user blocks from this; replay rebuilds them.
-  | { type: "queuedSends"; items: string[] }
+  // `items` stays string[] so an older webview still renders text. `queued` is
+  // additive: same contributions plus per-item chips. A client that never sees
+  // it keeps today's text-only block.
+  | { type: "queuedSends"; items: string[]; queued?: QueuedSend[] }
   // A remote queued prompt is ready to run. The browser echoes this as an
   // ordinary send carrying the same host-issued id, so relay quota/rate metering
   // applies at dequeue time and replayed/outbox copies are recognisably one send.
@@ -750,9 +770,15 @@ export type WebviewMsg =
   | { type: "remoteVoiceStop"; cancel?: boolean }
   // Host-owned send queue mutations (#37): the webview never mutates its local
   // mirror — it posts these and re-renders from the queuedSends snapshot.
-  | { type: "queueSend"; text: string }
+  // `chips` is additive (capabilities.queueSendChips). `text` stays required so
+  // an image-only queue is `{ text: "", chips }` — a v2.0.4 host still accepts
+  // the type and no-ops on empty text rather than dropping an unknown message.
+  | { type: "queueSend"; text: string; chips?: FileChip[] }
   | { type: "dequeueSend"; index: number }
-  | { type: "clearQueuedSends" }
+  // `restore` is additive: Stop/Edit set true so queued chips return to the
+  // composer. Absent/false discards them (Remove). Older hosts ignore the field
+  // and only empty the queue.
+  | { type: "clearQueuedSends"; restore?: boolean }
   // Steer (#52): inject the composed text into the RUNNING turn instead of
   // waiting for it. Host-owned like the queue — the webview never sends the
   // prompt itself, so a -32601 fallback can re-queue the text without losing it.

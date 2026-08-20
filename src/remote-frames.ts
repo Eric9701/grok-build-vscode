@@ -313,6 +313,26 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
         data: value.data,
         ...(value.previewId !== undefined ? { previewId: value.previewId } : {}),
       };
+    case "queueSend": {
+      if (typeof value.text !== "string") return null;
+      if (value.chips === undefined) return { type: "queueSend", text: value.text };
+      if (!Array.isArray(value.chips)) return null;
+      const chips: { id: string; path: string; relPath: string; hidden: boolean }[] = [];
+      for (const raw of value.chips) {
+        if (!raw || typeof raw !== "object") return null;
+        const id = (raw as { id?: unknown }).id;
+        if (typeof id !== "string" || !id || id.length > 512) return null;
+        // Ids only — the host looks the chip up on the session. Never accept a
+        // caller-supplied path over this boundary.
+        chips.push({ id, path: "", relPath: "", hidden: false });
+      }
+      return { type: "queueSend", text: value.text, chips };
+    }
+    case "clearQueuedSends":
+      if (value.restore !== undefined && typeof value.restore !== "boolean") return null;
+      return value.restore === undefined
+        ? { type: "clearQueuedSends" }
+        : { type: "clearQueuedSends", restore: value.restore };
     case "exitPlanAnswer": {
       const validRequestId = typeof value.requestId === "string" || typeof value.requestId === "number";
       if (

@@ -751,6 +751,13 @@ describe("transformHostMsgForRemote", () => {
     const missing = transformHostMsgForRemote({ type: "chips", chips: [chip] }, deps(null)) as Extract<HostMsg, { type: "chips" }>;
     expect(missing.chips[0]).toEqual(chip);
     expect(missing.chips[0].previewSrc).toBeUndefined();
+
+    const queued = transformHostMsgForRemote({
+      type: "queuedSends",
+      items: ["see this"],
+      queued: [{ text: "see this", chips: [chip] }],
+    }, deps(new Uint8Array([7]))) as Extract<HostMsg, { type: "queuedSends" }>;
+    expect(queued.queued?.[0].chips?.[0].previewSrc).toBe("data:image/png;base64,Bw==");
   });
 
   it("uses the thumbnail hook and keeps replayed image tags usable remotely", () => {

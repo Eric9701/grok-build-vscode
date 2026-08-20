@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPrompt, buildPromptWithImages, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from "../src/prompt-builder";
+import { buildPrompt, buildPromptWithImages, buildQueuedPromptWithImages, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from "../src/prompt-builder";
 import {
   makeImplicitChip,
   makeExplicitChip,
@@ -323,5 +323,44 @@ describe("buildPromptWithImages", () => {
       expect(out.text).toBe(PASTE_TAG(1));
       expect(out.blocks.filter((blk) => blk.type === "image")).toHaveLength(1);
     });
+  });
+});
+
+describe("buildQueuedPromptWithImages keeps per-contribution attachments", () => {
+  const tag = (n: number) =>
+    `[Image #${n}] (${`img${n}.png`} — ${STAGED_IMAGE_TAG_HINT})`;
+
+  it("places each contribution's tags next to its own text, not as a union dump", () => {
+    const a = makeImageChip("/s/img1.png", 1, "image/png");
+    const b = makeImageChip("/s/img2.png", 1, "image/png");
+    const out = buildQueuedPromptWithImages(
+      [
+        { text: "look at A", chips: [a], images: [{ index: 1, mimeType: "image/png", data: "AAA", path: "/s/img1.png" }] },
+        { text: "and B", chips: [b], images: [{ index: 2, mimeType: "image/png", data: "BBB", path: "/s/img2.png" }] },
+      ],
+      [],
+      deps,
+    );
+    expect(out.text).toBe(`look at A\n\n${tag(1)}\n\nand B\n\n${tag(2)}`);
+    const imageBlocks = out.blocks.filter((blk) => blk.type === "image");
+    expect(imageBlocks.map((blk) => (blk.type === "image" ? blk.data : ""))).toEqual(["AAA", "BBB"]);
+    const firstTag = out.text.indexOf("[Image #1]");
+    const secondText = out.text.indexOf("and B");
+    const secondTag = out.text.indexOf("[Image #2]");
+    expect(firstTag).toBeGreaterThan(out.text.indexOf("look at A"));
+    expect(firstTag).toBeLessThan(secondText);
+    expect(secondTag).toBeGreaterThan(secondText);
+  });
+
+  it("a single contribution is byte-identical to a live send of that message", () => {
+    const chip = makeImageChip("/s/img1.png", 1, "image/png");
+    const images = [{ index: 1, mimeType: "image/png", data: "AAA", path: "/s/img1.png" }];
+    const queued = buildQueuedPromptWithImages(
+      [{ text: "look", chips: [chip], images }],
+      [],
+      deps,
+    );
+    const live = buildPromptWithImages("look", [chip], images, deps);
+    expect(queued).toEqual(live);
   });
 });

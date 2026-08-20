@@ -45,7 +45,7 @@ export interface ReapPolicy {
 export function buildReapCandidates<T extends Pick<ReapCandidate, "status" | "lastActiveAt"> & {
   needsProvider?: boolean;
   strandedDraft?: string;
-  queuedSends?: readonly string[];
+  queuedSends?: readonly unknown[];
 }>(
   sessions: Iterable<T>,
   focused: T,

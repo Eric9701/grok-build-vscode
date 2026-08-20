@@ -11,7 +11,15 @@ or `type: "managedGateway"` and are labelled as grok.com-managed in the UI.
 The surface is read-only. Enable/disable is intentionally absent because it is
 machine-global rather than conversation-scoped, and a remote settings page
 must not be able to change it. Remotes may view and refresh the list
-(`mcpServers` mirrored, `listMcpServers` inbound view).
+(`listMcpServers` inbound view). The desk catalog keeps launch recipes
+(`command`/`args`/`url`) for the local panel; remotes receive
+`projectMcpServerForRemote` — an allowlist of page fields (`name`,
+`displayName`, `enabled`, `source`, `type`, `managed`, `scope`, `status`,
+`toolCount`). `tools` (including `inputSchema`) and per-server `error` stay
+on the desk: the Connectors page does not render tool schemas, and an error
+string can quote the command line. `transformHostMsgForRemote` is the choke
+point (`mcpServers` is `allowlist`, not `mirror`); an unknown `allowlist`
+type is dropped rather than ferried.
 
 The ACP client also consumes `_x.ai/mcp/servers_updated`,
 `_x.ai/mcp/init_progress`, `_x.ai/mcp_initialized`, and

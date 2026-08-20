@@ -144,12 +144,12 @@ describe("provider logout real-entry wiring", () => {
     focused.provider = "grok";
     focused.cwd = "/repo";
     focused.client = { dispose: vi.fn() } as any;
-    focused.queuedSends = ["queued before sign-out"];
+    focused.queuedSends = [{ text: "queued before sign-out", chips: [] }];
     const remote = new Session();
     remote.provider = "grok";
     remote.cwd = "/repo";
     remote.client = { dispose: vi.fn() } as any;
-    remote.queuedSends = ["remote queued before sign-out"];
+    remote.queuedSends = [{ text: "remote queued before sign-out", chips: [] }];
     sidebar.focused = focused;
     sidebar.pool = new Set([focused, remote]);
     sidebar.remoteClients.ready("grok-tab");
@@ -185,7 +185,7 @@ describe("provider logout real-entry wiring", () => {
     background.activeSessionId = "background-grok";
     background.hasHistory = true;
     background.client = { dispose: vi.fn() } as any;
-    background.queuedSends = ["keep this background draft"];
+    background.queuedSends = [{ text: "keep this background draft", chips: [] }];
     sidebar.pool.add(background);
     sidebar.sessionDisplayName = vi.fn((session: Session) =>
       session === background ? "Background investigation" : "Codex session"
@@ -217,7 +217,7 @@ describe("provider logout real-entry wiring", () => {
       detached.activeSessionId = "detached-grok";
       detached.hasHistory = true;
       detached.client = { dispose: vi.fn() } as any;
-      detached.queuedSends = ["draft from disconnected phone"];
+      detached.queuedSends = [{ text: "draft from disconnected phone", chips: [] }];
       sidebar.pool.add(detached);
       sidebar.remoteClients.identify("old-socket", "stable-tab");
       sidebar.remoteClients.ready("old-socket");
@@ -275,7 +275,7 @@ describe("provider logout real-entry wiring", () => {
     focused.provider = "grok";
     focused.cwd = "/project-b";
     focused.client = { dispose: vi.fn() } as any;
-    focused.queuedSends = ["B-only draft"];
+    focused.queuedSends = [{ text: "B-only draft", chips: [] }];
     sidebar.focused = focused;
     sidebar.pool.add(focused);
     const restored: Array<{ cwd: string; text: string }> = [];

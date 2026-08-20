@@ -10,14 +10,14 @@ describe("sessionUiSnapshot", () => {
       relPath: "file.ts",
       hidden: false,
     }];
-    session.queuedSends = ["queued for B"];
+    session.queuedSends = [{ text: "queued for B", chips: [] }];
 
     expect(sessionUiSnapshot(session, "plan")).toEqual([
       { type: "modeChanged", modeId: "plan" },
       { type: "planModeAvailability", available: true, reason: undefined, recheckable: false },
       { type: "feedbackAvailability", available: false },
       { type: "chips", chips: session.chips },
-      { type: "queuedSends", items: ["queued for B"] },
+      { type: "queuedSends", items: ["queued for B"], queued: [{ text: "queued for B" }] },
     ]);
   });
 

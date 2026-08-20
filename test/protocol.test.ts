@@ -29,6 +29,7 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
       // Older hosts refuse to delete the conversation the requester is reading,
       // so the client has to be told rather than assume. Capability, not version.
       deleteActiveSession: true,
+      queueSendChips: true,
       // Project file browse for AFK Pilot. Absent on older hosts.
       browseProjectFiles: true,
       // Edit+save existing files — separate from browse so a host can offer

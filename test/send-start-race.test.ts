@@ -285,12 +285,12 @@ describe("send vs concurrent startSession", () => {
 
     await sidebar.handleSend("from the phone");
 
-    expect(sidebar.focused.queuedSends).toEqual(["from the phone"]);
+    expect(sidebar.focused.queuedSends).toEqual([{ text: "from the phone", chips: [] }]);
     expect(promptControl.starts).toBe(0);
     expect(promptControl.calls).toBe(0);
     expect(sidebar.posted.some((m: HostMsg) => m.type === "userMessage")).toBe(false);
     expect(sidebar.posted.filter((m: HostMsg) => m.type === "queuedSends")).toEqual([
-      { type: "queuedSends", items: ["from the phone"] },
+      { type: "queuedSends", items: ["from the phone"], queued: [{ text: "from the phone" }] },
     ]);
   });
 
