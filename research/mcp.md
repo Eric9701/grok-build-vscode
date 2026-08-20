@@ -2,9 +2,14 @@
 
 Settings → Connectors → Grok connectors reads `_x.ai/mcp/list` through
 the active Grok ACP session and shows grok.com-managed servers plus
-user-level / host-injected locals. Servers declared in a project file
+user-level / host-injected locals. The host stamps that session's cwd
+on the catalog (`mcpServersCwd`) and classifies against it
+(`taggedMcpServersForCwd`); a later focus switch, remote snapshot, or
+second tab on another project never re-derives layers from the
+receiving workspace. Servers declared in a project file
 (`.mcp.json`, `.grok/config.toml`) are omitted from the page
-(`mcpSettingsVisible`); they still load in the session. The parser accepts
+(`mcpSettingsVisible`); they still load in the session. The raw
+`this.mcpServers` list stays complete for `hostMcpServers` dedup. The parser accepts
 both the current `{ "servers": [] }` response and a bare array, and the extra
 `{ result: ... }` envelope emitted by Grok 1.0.5 over ACP. It prefers `session.enabled`, `session.status`, `session.tools`, and
 `session.error` over top-level values, and preserves per-tool metadata for the

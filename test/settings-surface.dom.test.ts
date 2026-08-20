@@ -968,16 +968,18 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
       "utf8",
     );
-    const start = src.indexOf("DEVICE_GLOBAL_REMOTE_TYPES");
-    const end = src.indexOf("];", start);
+    const start = src.indexOf("private static readonly DEVICE_GLOBAL_REMOTE_TYPES");
+    const end = src.indexOf("]);", start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
-    expect(src.slice(start, end)).toContain("telemetryEnabled");
-    expect(src.slice(start, end)).toContain("thumbsFeedback");
-    expect(src.slice(start, end)).toContain("mcpServers");
+    const body = src.slice(start, end);
+    expect(body).toContain("telemetryEnabled");
+    expect(body).toContain("thumbsFeedback");
+    expect(body).toContain("mcpConnectors");
+    expect(body).not.toContain("mcpServers");
   });
 
-  it("fans the Grok MCP inventory to remotes the same way as the connector catalog", () => {
+  it("scopes the Grok MCP inventory to the workspace it was read from", () => {
     const src = readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
       "utf8",
@@ -987,8 +989,9 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const body = src.slice(start, end);
-    expect(body).toContain("this.post(tagged)");
-    expect(body).not.toContain("this.postLocal(");
+    expect(body).toContain("this.postLocal");
+    expect(body).toContain("this.sendRemoteRepo");
+    expect(body).not.toContain("this.post(tagged)");
   });
 
   it("voice send-phrase and keyterms write the winning inspect scope", () => {

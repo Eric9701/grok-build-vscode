@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { GrokSidebar } from "../src/sidebar";
+import { Session } from "../src/session";
+import { collectMcpNameLayers } from "../src/mcp-connectors";
 import {
   MCP_GLOBAL_SCOPE_WARNING,
   MCP_MANAGED_TAG,
   MCP_REMOTE_SERVER_KEYS,
   applyMcpOriginTags,
+  mcpCatalogVisibleForCwd,
   mcpOriginTag,
   mcpSettingsVisible,
   mcpServerDetail,
@@ -12,6 +16,7 @@ import {
   parseMcpListResponse,
   projectMcpServerForRemote,
   projectMcpServersMessageForRemote,
+  taggedMcpServersForCwd,
 } from "../src/mcp";
 
 describe("MCP ACP catalog", () => {
@@ -249,6 +254,28 @@ describe("MCP remote inventory projection", () => {
     );
     expect(reserved).toContain("provider: session.provider");
   });
+
+  it("stamps the catalog cwd at read time and classifies against that, not the focused session", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const refresh = src.slice(
+      src.indexOf("private async refreshMcpServers("),
+      src.indexOf("private historyCwdFor("),
+    );
+    expect(refresh).toContain("this.mcpServersCwd = this.sessionCwd(session)");
+    const tag = src.slice(
+      src.indexOf("private tagMcpServers("),
+      src.indexOf("private reservedMcpIdentityFor("),
+    );
+    expect(tag).toContain("taggedMcpServersForCwd");
+    expect(tag).toContain("catalogCwd: this.mcpServersCwd");
+    expect(tag).not.toContain("mcpNameLayersFor(session)");
+    const notify = src.slice(
+      src.indexOf('client.on("mcpNotification"'),
+      src.indexOf('client.on("xaiNotification"'),
+    );
+    expect(notify).toContain("this.mcpServersCwd");
+    expect(notify).toContain("pathsEqual(this.sessionCwd(session), this.mcpServersCwd)");
+  });
 });
 
 describe("MCP origin tags", () => {
@@ -354,5 +381,107 @@ describe("MCP origin tags", () => {
       tag: "User on: Mac (macOS)",
     });
     expect(one).not.toHaveProperty("command");
+  });
+});
+
+describe("MCP catalog classified against the workspace it was read from", () => {
+  const catalogA = [
+    { name: "shared", enabled: true, source: "local" },
+    { name: "a-only", enabled: true, source: "local" },
+  ];
+  const layersA = collectMcpNameLayers([
+    { layer: "user", names: ["shared"] },
+    { layer: "project", names: ["a-only"] },
+  ]);
+  const layersB = collectMcpNameLayers([
+    { layer: "project", names: ["shared"] },
+  ]);
+  const sameCwd = (a: string, b: string) => a === b;
+
+  it("the reviewer's mis-classification hid global shared and promoted a-only", () => {
+    const buggy = applyMcpOriginTags(catalogA, { nameLayer: layersB, machineName: "Desk" });
+    expect(buggy.map((s) => s.name)).toEqual(["a-only"]);
+    expect(buggy[0]?.tag).toBe("User on: Desk");
+    expect(buggy.find((s) => s.name === "shared")).toBeUndefined();
+  });
+
+  it("keeps global shared and omits a-only when A's catalog is classified against A", () => {
+    const nameLayerFor = vi.fn((cwd: string) => cwd === "/proj-a" ? layersA : layersB);
+    const tagged = taggedMcpServersForCwd({
+      servers: catalogA,
+      catalogCwd: "/proj-a",
+      viewCwd: "/proj-a",
+      sameCwd,
+      nameLayerFor,
+      machineName: "Desk",
+    });
+    expect(tagged.map((s) => s.name)).toEqual(["shared"]);
+    expect(tagged[0]?.tag).toBe("User on: Desk");
+    expect(tagged.find((s) => s.name === "a-only")).toBeUndefined();
+    expect(nameLayerFor).toHaveBeenCalledWith("/proj-a");
+    expect(nameLayerFor).not.toHaveBeenCalledWith("/proj-b");
+  });
+
+  it("does not hide global shared or present a-only as user-level when rendered for project B", () => {
+    const nameLayerFor = vi.fn((cwd: string) => cwd === "/proj-a" ? layersA : layersB);
+    const forB = taggedMcpServersForCwd({
+      servers: catalogA,
+      catalogCwd: "/proj-a",
+      viewCwd: "/proj-b",
+      sameCwd,
+      nameLayerFor,
+      machineName: "Desk",
+    });
+    expect(forB).toEqual([]);
+    expect(forB.find((s) => s.name === "a-only")).toBeUndefined();
+    expect(nameLayerFor).not.toHaveBeenCalled();
+    expect(mcpCatalogVisibleForCwd("/proj-a", "/proj-b", sameCwd)).toBe(false);
+  });
+
+  it("sidebar tagging uses the catalog cwd, so a B session cannot reclassify A's inventory", () => {
+    const proto = GrokSidebar.prototype as unknown as {
+      mcpServersMessage(session: Session): { type: "mcpServers"; servers: Array<{ name: string; tag?: string }> };
+      mcpServersMessageForCwd(viewCwd: string): { type: "mcpServers"; servers: Array<{ name: string; tag?: string }> };
+      tagMcpServers: (servers: typeof catalogA, viewCwd: string) => Array<{ name: string; tag?: string }>;
+    };
+    const instance = Object.create(proto) as {
+      mcpServers: typeof catalogA;
+      mcpServersCwd: string | undefined;
+      sessionCwd: (session: Session) => string;
+      mcpNameLayersFor: ReturnType<typeof vi.fn>;
+    };
+    instance.mcpServers = catalogA;
+    instance.mcpServersCwd = "/proj-a";
+    instance.sessionCwd = (session) => session.cwd || "";
+    instance.mcpNameLayersFor = vi.fn((cwd: string) => cwd === "/proj-a" ? layersA : layersB);
+
+    const sessionA = new Session();
+    sessionA.cwd = "/proj-a";
+    const sessionB = new Session();
+    sessionB.cwd = "/proj-b";
+
+    const forA = proto.mcpServersMessage.call(instance, sessionA);
+    expect(forA.servers.map((s) => s.name)).toEqual(["shared"]);
+    expect(forA.servers[0]?.tag).toMatch(/^User on: /);
+    expect(instance.mcpNameLayersFor).toHaveBeenCalledWith("/proj-a");
+
+    instance.mcpNameLayersFor.mockClear();
+    const forB = proto.mcpServersMessage.call(instance, sessionB);
+    expect(forB.servers).toEqual([]);
+    expect(instance.mcpNameLayersFor).not.toHaveBeenCalled();
+
+    const remoteB = proto.mcpServersMessageForCwd.call(instance, "/proj-b");
+    expect(remoteB.servers).toEqual([]);
+  });
+
+  it("a remote snapshot for a second tab on another project does not receive A's rows", () => {
+    const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
+    const start = src.indexOf("private buildRemoteSnapshot(");
+    const end = src.indexOf("\n  private ", start + "private buildRemoteSnapshot(".length);
+    const body = src.slice(start, end < 0 ? src.length : end);
+    expect(body).toContain("this.mcpServersMessageForCwd(mcpViewCwd)");
+    expect(body).toContain("listCwd ?? cwd");
+    expect(body).not.toContain("this.mcpServersMessage(session || this.focused)");
+    expect(body).toContain("session && sessionCwdOk");
   });
 });
