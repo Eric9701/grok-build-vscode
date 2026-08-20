@@ -329,7 +329,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   removeProjectFolder: "host-local",
   openGlobalConfig: "host-local",
   openProjectConfig: "host-local",
-  listMcpServers: "host-local",
+  // Read-only inventory query through the live Grok ACP session. Same class as
+  // refreshContextDetails: no turn, no mutation, no desk-local picker. Connect
+  // and disconnect stay host-local. Mirroring the last fetch is not enough if
+  // the desk never opened Settings, so a remote may ask when it opens the page.
+  listMcpServers: "view",
   // OAuth opens a browser on the desk and writes ~/.mcp-auth there. A phone
   // cannot complete that flow, and must not change which tools every agent
   // receives on the next session/new.
@@ -543,9 +547,10 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   voiceError: "mirror",
   initialState: "mirror",
   providerState: "mirror",
-  mcpServers: "host-local",
-  // The catalog is machine-global and contains no tokens — remotes may look,
-  // they just cannot Connect/Disconnect (inbound host-local above).
+  // Names, enabled/status, and tool metadata — no credentials. Same machine-
+  // global observation as mcpConnectors; remotes may look, they just cannot
+  // Connect/Disconnect (inbound host-local above).
+  mcpServers: "mirror",
   mcpConnectors: "mirror",
   codexInstallProgress: "host-local",
   // Placement is a property of the machine running the extension, and `moveView`

@@ -724,7 +724,7 @@ export class GrokSidebar {
   private readonly keepAwake = new KeepAwake((l) => this.host.appendLine(l), process.platform, process.pid, os.release());
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
-    "onboarding", "providerState", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
+    "onboarding", "providerState", "mcpServers", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
     "telemetryEnabled",
   ]);
   private cliPath?: string;
@@ -8998,8 +8998,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private postMcpServers(message: Extract<HostMsg, { type: "mcpServers" }>): void {
-    this.postLocal(message);
+    this.post(message);
     void this.settingsEditor?.webview.postMessage(message);
+  }
+
+  private mcpServersMessage(): Extract<HostMsg, { type: "mcpServers" }> {
+    return {
+      type: "mcpServers",
+      servers: this.mcpServers,
+      warning: MCP_GLOBAL_SCOPE_WARNING,
+    };
   }
 
   private connectedConnectorStore(): ConnectedConnectorStore {
@@ -15556,6 +15564,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     snap.push(initial);
     snap.push(this.providerStateMessage());
     snap.push(this.mcpConnectorsMessage());
+    snap.push(this.mcpServersMessage());
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).

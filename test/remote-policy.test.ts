@@ -535,7 +535,12 @@ describe("allowFromRemote tier gating", () => {
     expect(INBOUND_DISPOSITION.connectMcpConnector).toBe("host-local");
     expect(INBOUND_DISPOSITION.disconnectMcpConnector).toBe("host-local");
     expect(OUTBOUND_DISPOSITION.mcpConnectors).toBe("mirror");
-    expect(OUTBOUND_DISPOSITION.mcpServers).toBe("host-local");
+    expect(OUTBOUND_DISPOSITION.mcpServers).toBe("mirror");
+    expect(OUTBOUND_PROJECT_AUTH.mcpServers).toBe(OUTBOUND_PROJECT_AUTH.mcpConnectors);
+    expect(INBOUND_DISPOSITION.listMcpServers).toBe("view");
+    expect(allowFromRemote("listMcpServers", "read-only")).toBe(true);
+    expect(allowFromRemote("listMcpServers", "propose")).toBe(true);
+    expect(allowFromRemote("listMcpServers", "full")).toBe(true);
     for (const type of ["connectMcpConnector", "disconnectMcpConnector"] as const) {
       for (const tier of ["read-only", "propose", "full"] as const) {
         expect(allowFromRemote(type, tier)).toBe(false);
@@ -654,6 +659,15 @@ describe("transformHostMsgForRemote", () => {
       .toEqual({ type: "voiceState", status: "idle" });
     expect(transformHostMsgForRemote({ type: "voiceConfigured", value: true }, deps(null)))
       .toEqual({ type: "voiceConfigured", value: true });
+  });
+
+  it("mirrors the Grok MCP inventory without rewriting it", () => {
+    const msg: HostMsg = {
+      type: "mcpServers",
+      servers: [{ name: "managed_gateway:canva", displayName: "Canva", enabled: true, status: "ready" }],
+      warning: "This list is read-only.",
+    };
+    expect(transformHostMsgForRemote(msg, deps(null))).toBe(msg);
   });
 
   it("media is inlined via the injected reader", () => {

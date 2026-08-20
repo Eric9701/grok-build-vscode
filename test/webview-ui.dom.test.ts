@@ -2263,7 +2263,7 @@ describe("gear menu — Other group + About / Settings", () => {
       warning: "This list is read-only. Connector enable/disable is machine-global and is not controlled here.",
     });
     expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("grok.com managed");
-    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("In this Grok session");
+    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("Grok connectors");
     expect(h.doc.querySelector("#settings-overlay .settings-switch")).toBeNull();
   });
 });

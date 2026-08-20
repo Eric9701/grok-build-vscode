@@ -2150,6 +2150,7 @@ describe("file-tree panel assets", () => {
     const iconBtnRule = chatCss.match(/^\.icon-btn\s*\{[^}]+\}/m)?.[0] ?? "";
     expect(iconBtnRule).toMatch(/border-radius:\s*8px/);
     expect(iconBtnRule).toMatch(/color:\s*var\(--vscode-descriptionForeground\)/);
+    expect(chatCss).toMatch(/#add-popover \.toolbar-popover-item\s*\{[^}]*justify-content:\s*flex-start/s);
 
     // Created and torn down together. A border could not be orphaned; a
     // sibling can, and a re-inject would stack them up.

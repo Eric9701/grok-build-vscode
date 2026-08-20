@@ -77,7 +77,7 @@
   const GITHUB_REPO_URL = "https://github.com/phuryn/grok-build-vscode";
   const GROK_CONNECTORS_URL = "https://grok.com/connectors";
   const CONNECTOR_SECTION_HERE = "On this computer";
-  const CONNECTOR_SECTION_GROK = "In this Grok session";
+  const CONNECTOR_SECTION_GROK = "Grok connectors";
   const GITHUB_ISSUE_BUG_URL = GITHUB_REPO_URL + "/issues/new?labels=bug";
   const GITHUB_ISSUE_FEATURE_URL = GITHUB_REPO_URL + "/issues/new?labels=enhancement";
   const SUPPORT_MAILTO = "mailto:support@productcompass.pm";
@@ -587,17 +587,14 @@
       actionLabel: "Open",
       href: GROK_CONNECTORS_URL,
       visible: (s, env) => mcpSettingsEnabled(env),
-      describe: (s, env) => env && env.isRemote
-        ? "Grok's live server list is only on the desk. Add or remove grok.com-managed connectors here."
-        : "Add or remove grok.com-managed connectors for this machine.",
+      description: "Add or remove grok.com-managed connectors here.",
     },
     {
       id: "mcpCatalog",
       category: "connectors",
-      title: "MCP servers",
-      description: "Servers and tools the current Grok session actually sees.",
+      title: "Grok connectors",
+      description: "Connectors Grok can use — grok.com, config files, and this project.",
       kind: "mcp",
-      hostLocal: true,
       visible: (s, env) => mcpSettingsEnabled(env),
     },
     {
@@ -1230,7 +1227,7 @@
       const loading = document.createElement("div");
       loading.className = "settings-mcp-state";
       loading.setAttribute("aria-live", "polite");
-      loading.textContent = "Loading Grok's server list…";
+      loading.textContent = "Loading Grok connectors…";
       el.appendChild(loading);
       return el;
     }
@@ -1246,7 +1243,7 @@
     if (!servers.length) {
       const empty = document.createElement("div");
       empty.className = "settings-mcp-state";
-      empty.textContent = "No servers reported by this Grok session.";
+      empty.textContent = "No connectors reported.";
       el.appendChild(empty);
       return el;
     }
@@ -1616,7 +1613,7 @@
     }
 
     function maybeRefreshMcp() {
-      if (mcpChecked || categoryId !== "connectors" || query.trim() || env.isRemote) return;
+      if (mcpChecked || categoryId !== "connectors" || query.trim()) return;
       mcpChecked = true;
       requestMcpRefresh();
     }
@@ -1762,7 +1759,7 @@
         refresh.onclick = (e) => { e.stopPropagation(); requestProvidersRefresh(); };
         headActions.appendChild(refresh);
       }
-      if (!searching && page && page.id === "connectors" && !env.isRemote) {
+      if (!searching && page && page.id === "connectors") {
         const refresh = document.createElement("button");
         refresh.type = "button";
         refresh.className = "settings-refresh";

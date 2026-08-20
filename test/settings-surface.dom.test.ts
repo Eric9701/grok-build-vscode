@@ -134,7 +134,7 @@ describe("settings catalog", () => {
     expect(remoteRows.some((row) => row.id === "telemetryDesktop")).toBe(false);
     expect(remoteRows.some((row) => row.id === "connectorsCatalog")).toBe(true);
     expect(remoteRows.some((row) => row.id === "grokConnectorsSite")).toBe(true);
-    expect(remoteRows.some((row) => row.id === "mcpCatalog")).toBe(false);
+    expect(remoteRows.some((row) => row.id === "mcpCatalog")).toBe(true);
   });
 
   it("hides Connectors when mcpSettings is absent", () => {
@@ -201,7 +201,7 @@ describe("settings catalog", () => {
     expect(api.filterRows("linear", snapshot, env).map((row) => row.id)).toContain("connectorsCatalog");
     expect(api.filterRows("grok.com", snapshot, env).map((row) => row.id)).toContain("grokConnectorsSite");
     expect(api.filterRows("canva", snapshot, env).map((row) => row.id)).toContain("mcpCatalog");
-    expect(api.filterRows("this grok session", snapshot, env).map((row) => row.id))
+    expect(api.filterRows("grok connectors", snapshot, env).map((row) => row.id))
       .toEqual(expect.arrayContaining(["grokConnectorsSite", "mcpCatalog"]));
   });
 });
@@ -379,7 +379,7 @@ describe("settings overlay (chat.js)", () => {
     });
     const overlay = h.doc.getElementById("settings-overlay")!;
     expect(overlay.textContent).toContain("On this computer");
-    expect(overlay.textContent).toContain("In this Grok session");
+    expect(overlay.textContent).toContain("Grok connectors");
     expect(overlay.textContent).toContain("Canva");
     expect(overlay.textContent).toContain("grok.com managed");
     expect(overlay.textContent).toContain("32 tools");
@@ -443,10 +443,11 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.querySelector(".settings-connector-action")).toBeNull();
     expect(overlay.textContent).toContain("Connected");
     expect(overlay.textContent).toContain("On this computer");
-    expect(overlay.textContent).toContain("In this Grok session");
+    expect(overlay.textContent).toContain("Grok connectors");
     expect(overlay.textContent).toContain("grok.com/connectors");
-    expect(overlay.querySelector('[data-id="mcpCatalog"]')).toBeNull();
-    expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "listMcpServers" }));
+    expect(overlay.querySelector('[data-id="mcpCatalog"]')).toBeTruthy();
+    expect(overlay.querySelector(".settings-refresh")).toBeTruthy();
+    expect(h.posted).toContainEqual({ type: "listMcpServers" });
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "connectMcpConnector" }));
     expect(h.posted).not.toContainEqual(expect.objectContaining({ type: "disconnectMcpConnector" }));
   });
@@ -879,6 +880,21 @@ describe("review lows (settings / telemetry / voice write scope)", () => {
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     expect(src.slice(start, end)).toContain("telemetryEnabled");
+    expect(src.slice(start, end)).toContain("mcpServers");
+  });
+
+  it("fans the Grok MCP inventory to remotes the same way as the connector catalog", () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "sidebar.ts"),
+      "utf8",
+    );
+    const start = src.indexOf("private postMcpServers");
+    const end = src.indexOf("private connectedConnectorStore");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(body).toContain("this.post(message)");
+    expect(body).not.toContain("this.postLocal(message)");
   });
 
   it("voice send-phrase and keyterms write the winning inspect scope", () => {

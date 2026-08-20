@@ -45,6 +45,28 @@ describe("MCP ACP catalog", () => {
     })).toBe("ready · 2 tools · npx docs-mcp");
   });
 
+  it("keeps the launch recipe and drops credentials and unknown fields", () => {
+    expect(parseMcpListResponse({
+      servers: [{
+        name: "linear",
+        command: "npx",
+        args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+        env: { LINEAR_API_KEY: "secret" },
+        headers: { Authorization: "Bearer secret" },
+        token: "secret",
+        apiKey: "secret",
+        tools: [{ name: "issues", token: "secret", headers: { Authorization: "x" } }],
+      }],
+    })).toEqual([{
+      name: "linear",
+      enabled: true,
+      command: "npx",
+      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      tools: [{ name: "issues" }],
+      toolCount: 1,
+    }]);
+  });
+
   it("scopes the read-only warning to the inventory, not the host-owned catalog", () => {
     expect(MCP_GLOBAL_SCOPE_WARNING).toMatch(/this list is read-only/i);
     expect(MCP_GLOBAL_SCOPE_WARNING).toMatch(/machine-global/i);

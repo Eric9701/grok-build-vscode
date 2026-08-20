@@ -1,6 +1,6 @@
 # MCP settings inventory
 
-Settings → Connectors → In this Grok session reads `_x.ai/mcp/list` through
+Settings → Connectors → Grok connectors reads `_x.ai/mcp/list` through
 the active Grok ACP session. The parser accepts both the current `{ "servers": [] }` response and
 a bare array, and the extra `{ result: ... }` envelope emitted by Grok 1.0.5
 over ACP. It prefers `session.enabled`, `session.status`, `session.tools`, and
@@ -10,7 +10,8 @@ or `type: "managedGateway"` and are labelled as grok.com-managed in the UI.
 
 The surface is read-only. Enable/disable is intentionally absent because it is
 machine-global rather than conversation-scoped, and a remote settings page
-must not be able to change it.
+must not be able to change it. Remotes may view and refresh the list
+(`mcpServers` mirrored, `listMcpServers` inbound view).
 
 The ACP client also consumes `_x.ai/mcp/servers_updated`,
 `_x.ai/mcp/init_progress`, `_x.ai/mcp_initialized`, and

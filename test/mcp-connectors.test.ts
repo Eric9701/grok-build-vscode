@@ -44,6 +44,10 @@ describe("Tier-1 connector catalog", () => {
       name: "linear",
       command: "npx",
       args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      // This assertion previously pinned the entry WITHOUT env, which is what
+      // made the bug look intentional. grok refuses that shape outright — see
+      // the wire-shape test at the bottom of this file.
+      env: [],
     });
   });
 
@@ -287,5 +291,25 @@ describe("settings views", () => {
     expect(views.find((v) => v.id === "figma")).toMatchObject({
       connected: false, status: "error", error: "Sign-in timed out.",
     });
+  });
+});
+
+describe("ACP stdio wire shape", () => {
+  // grok's session/new deserializes mcpServers into an untagged McpServer enum.
+  // Probed against grok 1.0.5: {name, command, args} is refused with
+  // "-32602 ... did not match any variant of untagged enum McpServer" and the
+  // session never starts; adding env makes it accepted. Codex and Claude accept
+  // either, so only grok fails — and only once a connector is actually
+  // connected, since an empty store sends [] and nothing is rejected.
+  it("always carries env, because grok refuses the entry without it", () => {
+    const entry = buildMcpRemoteEntry("linear", "https://mcp.linear.app/mcp");
+    expect(entry.env).toEqual([]);
+    expect(Object.keys(entry).sort()).toEqual(["args", "command", "env", "name"]);
+  });
+
+  it("every server hostMcpServers hands a session carries env", () => {
+    const servers = hostMcpServers({ linear: { endpoint: "https://mcp.linear.app/mcp" } });
+    expect(servers.length).toBeGreaterThan(0);
+    for (const s of servers) expect(Array.isArray(s.env)).toBe(true);
   });
 });

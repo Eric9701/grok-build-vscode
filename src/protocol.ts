@@ -208,6 +208,9 @@ export type HostMsg =
    * is the ONLY source of that spinner: a client must never latch it locally,
    * or an older host that ignores `refreshProviders` would spin forever. */
   | { type: "providerState"; providers: { id: "grok" | "codex" | "claude"; connected: boolean; needsLogin?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean }[]; checking?: boolean }
+  /** Grok's live MCP inventory (`_x.ai/mcp/list`). Mirrored so a remote can
+   *  SEE names, status, and tool metadata; it carries no credentials.
+   *  Connect/disconnect stay desk-only. */
   | { type: "mcpServers"; servers: McpServerView[]; loading?: boolean; error?: string; warning: string }
   /** Host-owned Tier-1 connector catalog. Mirrored so a remote can SEE which
    *  apps are connected; connect/disconnect stay desk-only (OAuth + ~/.mcp-auth

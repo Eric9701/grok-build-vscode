@@ -7,7 +7,6 @@ export interface McpToolView {
   name?: string;
   description?: string;
   inputSchema?: unknown;
-  [key: string]: unknown;
 }
 
 export interface McpServerView {
@@ -53,11 +52,26 @@ function textField(session: Record<string, unknown> | undefined, item: Record<st
   return text(session?.[key]) || text(item[key]);
 }
 
+function parseTool(value: unknown): McpToolView | undefined {
+  const tool = record(value);
+  if (!tool) return undefined;
+  const name = text(tool.name);
+  const description = text(tool.description);
+  const inputSchema = tool.inputSchema;
+  if (!name && !description && inputSchema === undefined) return undefined;
+  return {
+    ...(name ? { name } : {}),
+    ...(description ? { description } : {}),
+    ...(inputSchema !== undefined ? { inputSchema } : {}),
+  };
+}
+
 function parseTools(value: unknown): McpToolView[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  return value
-    .map((tool) => record(tool))
+  const tools = value
+    .map(parseTool)
     .filter((tool): tool is McpToolView => !!tool);
+  return tools.length ? tools : undefined;
 }
 
 function parseServer(value: unknown): McpServerView | undefined {
@@ -100,7 +114,11 @@ function listFromPayload(parsed: unknown): unknown[] | undefined {
   return Array.isArray(object?.servers) ? object.servers : undefined;
 }
 
-/** Parse `_x.ai/mcp/list`, accepting a bare array and `{ servers: [] }`. */
+/**
+ * Parse `_x.ai/mcp/list`, accepting a bare array and `{ servers: [] }`.
+ * Allowlisted view fields only — env/headers/token/apiKey on the wire never
+ * reach the catalog that remotes mirror.
+ */
 export function parseMcpListResponse(value: unknown): McpServerView[] {
   const list = listFromPayload(value);
   if (!list) throw new Error("Unexpected response from _x.ai/mcp/list");

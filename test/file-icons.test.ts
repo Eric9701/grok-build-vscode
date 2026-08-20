@@ -102,6 +102,15 @@ describe("Seti icon assets", () => {
     expect(filePanelCss).toMatch(/\.gfp-lead\s*\{[^}]*width:\s*16px/s);
     expect(filePanelCss).toMatch(/\.gfp-row\s*\{[^}]*min-height:\s*var\(--rail-row-min-height,\s*24px\)/s);
   });
+
+  it("drops the file-tree hover fill on touch, matching the rail's in-flow actions", () => {
+    const touch = filePanelCss.match(
+      /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*?^\}/m,
+    )?.[0] ?? "";
+    expect(touch).toMatch(/\.gfp-row:hover\s*\{\s*background:\s*transparent/);
+    expect(touch).toMatch(/\.gfp-row-actions\s*\{[^}]*position:\s*static/s);
+    expect(touch).toMatch(/\.gfp-row-actions\s*\{[^}]*background:\s*transparent/s);
+  });
 });
 
 describe("fill-less Seti glyphs are theme-tinted, not black", () => {

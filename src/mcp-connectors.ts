@@ -34,11 +34,25 @@ export interface ConnectorDef {
   description: string;
 }
 
-/** ACP stdio `mcpServers` entry. Command/args match the vendor mcp-remote snippets. */
+/**
+ * ACP stdio `mcpServers` entry. Command/args match the vendor mcp-remote snippets.
+ *
+ * `env` is REQUIRED, not decorative. grok's `session/new` deserializes this into
+ * an untagged `McpServer` enum, and an entry without `env` matches no variant:
+ * the whole request comes back `-32602 Invalid params — data did not match any
+ * variant of untagged enum McpServer`, so the session never starts. Measured
+ * against grok 1.0.5 (research/mcp-connectors.md § Wire shape): `{name, command,
+ * args}` is refused, `{name, command, args, env: []}` is accepted. Codex and
+ * Claude accept both, which is why this stayed invisible — and it stayed
+ * invisible on grok too only because a store with no connectors sends `[]` and
+ * there is nothing to reject.
+ */
 export interface AcpMcpStdioServer {
   name: string;
   command: string;
   args: string[];
+  /** ACP `EnvVariable[]`. Empty is valid; omitted is not. */
+  env: { name: string; value: string }[];
 }
 
 export interface ConnectedConnectorRecord {
@@ -168,6 +182,9 @@ export function buildMcpRemoteEntry(name: string, endpoint: string): AcpMcpStdio
     name,
     command: "npx",
     args: mcpRemoteArgs(endpoint),
+    // Inherited from the host process at spawn; we add nothing. Present because
+    // grok refuses the entry outright without it — see AcpMcpStdioServer.
+    env: [],
   };
 }
 
