@@ -586,7 +586,7 @@ describe("Steer — submit into the running turn (#52)", () => {
     expect(types(posted)).not.toContain("cancel");
   });
 
-  it("renders queued chips above queued text, matching the composer", () => {
+  it("renders queued chips below queued text, matching a sent user bubble", () => {
     const { window, doc } = bootWebview();
     const chip = {
       id: "image:/s/a.png:1:1", path: "/s/a.png", relPath: "Image #1",
@@ -599,7 +599,7 @@ describe("Steer — submit into the running turn (#52)", () => {
     });
     const bubble = doc.querySelector(".msg.queued .msg-bubble") as HTMLElement;
     const classes = [...bubble.children].map((el) => el.className);
-    expect(classes).toEqual(["queued-hdr", "msg-chips", "queued-text"]);
+    expect(classes).toEqual(["queued-hdr", "queued-text", "msg-chips"]);
     expect(bubble.querySelector(".msg-chip")?.textContent).toBe("Image #1");
     expect(bubble.querySelector(".queued-text")?.textContent).toBe("look at this");
   });
