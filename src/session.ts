@@ -133,6 +133,10 @@ export class Session {
 
   /** Last successful `_x.ai/session/info` snapshot, for the popover TTL. */
   lastSessionInfoAt = 0;
+  /** `used` from that snapshot — occupancy that moves off it is stale. */
+  lastSessionInfoUsed?: number;
+  /** Live occupancy moved off the last session/info snapshot. */
+  sessionInfoStale = false;
 
   /** Latched after this process returns -32601 for `_x.ai/session/info`. */
   sessionInfoUnsupported = false;

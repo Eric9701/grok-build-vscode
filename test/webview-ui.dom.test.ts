@@ -3204,9 +3204,9 @@ describe("context popover (donut click, #39)", () => {
   });
 
   it("does not mix a used-only occupancy update into a stale session/info snapshot", () => {
-    // Authoritative 100 / 10 system / 80 messages → overhead 10. A used-only
-    // 130 used to keep the stale addends and paint overhead 40.
-    const { window, doc } = bootWebview();
+    // Authoritative 100 / 10 system / 80 messages → overhead 10. Keep the
+    // group (overhead stays 10, not an invented 40) and re-fetch session/info.
+    const { window, doc, posted } = bootWebview();
     dispatch(window, {
       type: "contextUsage",
       used: 100,
@@ -3229,17 +3229,17 @@ describe("context popover (donut click, #39)", () => {
     expect(first).toContain("Tool definitions");
     expect(first).toContain("Skills");
 
+    posted.length = 0;
     dispatch(window, { type: "contextUsage", used: 130 });
     const after = $(doc, "context-popover").textContent!;
     expect(after).toMatch(/Context used\s*130/);
-    expect(after).not.toContain("In this window");
-    expect(after).not.toContain("Reasoning/overhead");
-    expect(after).not.toContain("System");
-    expect(after).not.toContain("Messages");
-    expect(after).not.toContain("Free");
-    expect(after).not.toContain("Already counted above");
-    expect(after).not.toContain("Tool definitions");
-    expect(after).not.toContain("Skills");
+    expect(after).toContain("In this window");
+    expect(after).toMatch(/System\s*10/);
+    expect(after).toMatch(/Messages\s*80/);
+    expect(after).toMatch(/Reasoning\/overhead\s*10/);
+    expect(after).not.toMatch(/Reasoning\/overhead\s*40/);
+    expect(after).toContain("Already counted above");
+    expect(posted).toContainEqual({ type: "refreshContextDetails" });
   });
 
   it("keeps the snapshot when a used-only frame restates the same used", () => {
@@ -3260,8 +3260,8 @@ describe("context popover (donut click, #39)", () => {
     expect(text).toMatch(/Free\s*199,890/);
   });
 
-  it("hides the snapshot after promptComplete moves used, even without a used-only frame", () => {
-    const { window, doc } = bootWebview();
+  it("keeps the snapshot after promptComplete moves used and re-fetches session/info", () => {
+    const { window, doc, posted } = bootWebview();
     dispatch(window, {
       type: "contextUsage",
       used: 100,
@@ -3272,12 +3272,14 @@ describe("context popover (donut click, #39)", () => {
     });
     click(window, $(doc, "donut"));
     expect($(doc, "context-popover").textContent).toContain("In this window");
+    posted.length = 0;
     dispatch(window, { type: "promptComplete", meta: { totalTokens: 130 } });
     const text = $(doc, "context-popover").textContent!;
     expect(text).toMatch(/Context used\s*130/);
-    expect(text).not.toContain("In this window");
-    expect(text).not.toContain("Reasoning/overhead");
-    expect(text).not.toContain("Free");
+    expect(text).toContain("In this window");
+    expect(text).toMatch(/Reasoning\/overhead\s*10/);
+    expect(text).toContain("Free");
+    expect(posted).toContainEqual({ type: "refreshContextDetails" });
   });
 
   it("shows Reasoning/overhead only when used exceeds system + messages", () => {

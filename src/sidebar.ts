@@ -7110,6 +7110,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.suppressContent = false;
     session.captureAgentText = undefined;
     session.lastSessionInfoAt = 0;
+    session.lastSessionInfoUsed = undefined;
+    session.sessionInfoStale = false;
     session.sessionInfoUnsupported = false;
     session.sawCompactNotification = false;
     session.lastPlanText = "";
@@ -7236,6 +7238,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.client = client;
     // A replacement process may have gained the capability after a CLI update.
     session.lastSessionInfoAt = 0;
+    session.lastSessionInfoUsed = undefined;
+    session.sessionInfoStale = false;
     session.sessionInfoUnsupported = false;
 
     // fs handlers. Still wired on every session: 0.2.x, unverified, and Codex
@@ -7543,6 +7547,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           meta: { ...gated, totalTokens: remembered?.used ?? gated.totalTokens },
         });
       } else {
+        if (
+          typeof gated.totalTokens === "number"
+          && session.lastSessionInfoUsed != null
+          && gated.totalTokens !== session.lastSessionInfoUsed
+        ) {
+          session.sessionInfoStale = true;
+        }
         this.emit(session, { type: "promptComplete", meta: gated });
       }
       // The hidden legacy `/session-info` fallback is a CLI-local meter, not a
@@ -7566,6 +7577,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           ...(typeof window === "number" && Number.isFinite(window) && window > 0 ? { window } : {}),
         });
         return;
+      }
+      if (
+        typeof used === "number" && Number.isFinite(used) && used > 0
+        && session.lastSessionInfoUsed != null
+        && used !== session.lastSessionInfoUsed
+      ) {
+        session.sessionInfoStale = true;
       }
       this.emit(session, {
         type: "contextUsage",
@@ -8317,7 +8335,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "refreshContextDetails":
         if (session.provider === "grok") {
-          void this.refreshContextFromSessionInfo(session, session.gen);
+          void this.refreshContextFromSessionInfo(session, session.gen, {
+            force: session.sessionInfoStale,
+          });
         }
         break;
       case "clearQueuedSends": {
@@ -9410,7 +9430,51 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.postMcpConnectors();
   }
 
-  /** Read MCP inventory through the active Grok ACP session. */
+  /**
+   * Live Grok ACP session to read `_x.ai/mcp/list` through. Prefers any pooled
+   * Grok conversation that already has a client — the focused session may be
+   * Codex or Claude. Does not mint a session.
+   */
+  private findLiveGrokSession(): Session | undefined {
+    const seen = new Set<Session>();
+    for (const candidate of [this.focused, ...this.pool]) {
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (candidate.provider === "grok" && candidate.client) return candidate;
+    }
+    return undefined;
+  }
+
+  /**
+   * Session for the Connectors inventory. Reuses a live Grok client when one
+   * exists; otherwise, if Grok is connected, starts an empty Grok session
+   * (Connectors page only — never on boot). Empty-session recycling owns the
+   * rest: we do not dispose it here.
+   */
+  private async grokSessionForMcpList(requester: Session): Promise<Session | undefined> {
+    const live = this.findLiveGrokSession();
+    if (live) return live;
+    if (!this.connectedProviders().includes("grok")) return undefined;
+    const seen = new Set<Session>();
+    let grok: Session | undefined;
+    for (const candidate of [this.focused, ...this.pool]) {
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (candidate.provider === "grok") {
+        grok = candidate;
+        break;
+      }
+    }
+    if (!grok) {
+      grok = this.newLocalSession();
+      grok.provider = "grok";
+      this.setSessionCwd(grok, this.sessionCwd(requester), this.workspaceRoot());
+    }
+    await this.startSession(undefined, grok, "ensure");
+    return grok.client ? grok : undefined;
+  }
+
+  /** Read MCP inventory through a Grok ACP session, not necessarily the focused one. */
   private async refreshMcpServers(session: Session): Promise<void> {
     this.postMcpServers({
       type: "mcpServers",
@@ -9418,8 +9482,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       loading: true,
       warning: MCP_GLOBAL_SCOPE_WARNING,
     });
-    const client = session.provider === "grok" ? session.client : undefined;
-    if (!client) {
+    const grokConnected = this.connectedProviders().includes("grok");
+    const grok = await this.grokSessionForMcpList(session);
+    const client = grok?.client;
+    if (!grok || !client) {
       this.mcpListSupported = undefined;
       this.mcpServers = [];
       this.mcpServersCwd = undefined;
@@ -9427,14 +9493,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postMcpServers({
         type: "mcpServers",
         servers: [],
-        error: "Connect Grok to inspect MCP servers.",
+        error: grokConnected
+          ? "Could not load MCP servers from Grok."
+          : "Connect Grok to inspect MCP servers.",
         warning: MCP_GLOBAL_SCOPE_WARNING,
       });
       return;
     }
     try {
       const result = await client.listMcpServers();
-      if (session.client !== client) return;
+      if (grok.client !== client) return;
       if (result === "unsupported") {
         this.mcpListSupported = false;
         this.mcpServers = [];
@@ -9449,7 +9517,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       this.mcpListSupported = true;
       this.mcpServers = parseMcpListResponse(result);
-      this.mcpServersCwd = this.sessionCwd(session) || undefined;
+      this.mcpServersCwd = this.sessionCwd(grok) || undefined;
       this.mcpServersView = this.filterMcpServers(this.mcpServers);
       this.grokMcpReserved = reservedFromMcpInventory(this.mcpServers, this.connectedConnectorStore());
       this.postMcpServers({
@@ -9463,7 +9531,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postMcpServers({
         type: "mcpServers",
         servers: [],
-        error: detail || "Could not load MCP servers from the Grok session.",
+        error: detail || "Could not load MCP servers from Grok.",
         warning: MCP_GLOBAL_SCOPE_WARNING,
       });
     }
@@ -14507,6 +14575,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   /** Publish a control-plane session/info snapshot without touching accounting. */
   private emitSessionInfoContext(session: Session, info: SessionInfoContext): void {
     session.lastSessionInfoAt = Date.now();
+    session.lastSessionInfoUsed = info.used;
+    session.sessionInfoStale = false;
     this.emit(session, {
       type: "contextUsage",
       used: info.used,
@@ -14534,7 +14604,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (session.provider !== "grok" || gen !== session.gen || session.sessionInfoUnsupported) return false;
     const client = session.client;
     if (!client?.sessionId) return false;
-    if (!opts.force && sessionInfoCacheFresh(session.lastSessionInfoAt, Date.now())) return false;
+    if (!opts.force && !session.sessionInfoStale && sessionInfoCacheFresh(session.lastSessionInfoAt, Date.now())) {
+      return false;
+    }
     try {
       const info = await client.getSessionInfo();
       if (gen !== session.gen) return false;

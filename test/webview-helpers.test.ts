@@ -40,12 +40,13 @@ describe("nextContextBreakdown", () => {
     expect(contextOverheadTokens(next.used, next.systemPromptTokens, next.messageTokens)).toBe(10);
   });
 
-  it("drops the snapshot when a used-only frame moves occupancy", () => {
+  it("keeps the snapshot when a used-only frame moves occupancy", () => {
     const prev = nextContextBreakdown(null, snapshot);
-    expect(nextContextBreakdown(prev, { type: "contextUsage", used: 130 })).toBeNull();
+    expect(nextContextBreakdown(prev, { type: "contextUsage", used: 130 })).toBe(prev);
     expect(contextBreakdownIsCurrent(prev, 130, 200000)).toBe(false);
-    // Mixing the two readings is exactly the invented-overhead bug (100→130
-    // would paint Reasoning/overhead 40 from stale 10+80).
+    // Overhead stays bound to the snapshot's used, never live occupancy minus
+    // stale addends (100→130 would invent Reasoning/overhead 40).
+    expect(contextOverheadTokens(prev.used, prev.systemPromptTokens, prev.messageTokens)).toBe(10);
     expect(contextOverheadTokens(130, prev.systemPromptTokens, prev.messageTokens)).toBe(40);
   });
 
@@ -55,9 +56,9 @@ describe("nextContextBreakdown", () => {
     expect(contextBreakdownIsCurrent(prev, 100, 200000)).toBe(true);
   });
 
-  it("drops the snapshot when a window-only frame rescales the denominator", () => {
+  it("keeps the snapshot when a window-only frame rescales the denominator", () => {
     const prev = nextContextBreakdown(null, snapshot);
-    expect(nextContextBreakdown(prev, { type: "contextUsage", window: 1000000 })).toBeNull();
+    expect(nextContextBreakdown(prev, { type: "contextUsage", window: 1000000 })).toBe(prev);
     expect(contextBreakdownIsCurrent(prev, 100, 1000000)).toBe(false);
   });
 

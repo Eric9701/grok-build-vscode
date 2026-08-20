@@ -419,6 +419,32 @@ describe("settings overlay (chat.js)", () => {
     const fileOpen = overlay.querySelector(".settings-mcp-open") as HTMLButtonElement;
     expect(fileOpen).toBeTruthy();
     expect(fileOpen.textContent).toContain("Open");
+    expect(fileOpen.closest(".settings-group-row")).toBeTruthy();
+    expect(overlay.querySelectorAll(".settings-mcp-list .settings-mcp-open")).toHaveLength(0);
+    click(h.window, fileOpen);
+    expect(h.posted).toContainEqual({ type: "openGlobalConfig" });
+  });
+
+  it("shows Local Open in the section header even when the section is empty", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [],
+      warning: "This list is read-only.",
+    });
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("Local Grok connectors");
+    expect(overlay.textContent).toContain("No local Grok connectors reported.");
+    const localHeads = [...overlay.querySelectorAll(".settings-group-row")]
+      .filter((row) => (row.textContent || "").includes("Local Grok connectors"));
+    expect(localHeads).toHaveLength(1);
+    const fileOpen = localHeads[0]!.querySelector(".settings-mcp-open") as HTMLButtonElement;
+    expect(fileOpen).toBeTruthy();
+    expect(fileOpen.textContent).toContain("Open");
+    h.posted.length = 0;
     click(h.window, fileOpen);
     expect(h.posted).toContainEqual({ type: "openGlobalConfig" });
   });

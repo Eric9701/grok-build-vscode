@@ -263,8 +263,17 @@ describe("MCP remote inventory projection", () => {
       src.indexOf("private async refreshMcpServers("),
       src.indexOf("private historyCwdFor("),
     );
-    expect(refresh).toContain("this.mcpServersCwd = this.sessionCwd(session)");
+    expect(refresh).toContain("this.mcpServersCwd = this.sessionCwd(grok)");
+    expect(refresh).toContain("this.grokSessionForMcpList(session)");
     expect(refresh).toContain("this.mcpServersView = this.filterMcpServers(this.mcpServers)");
+    expect(refresh).not.toContain('session.provider === "grok" ? session.client');
+    const helper = src.slice(
+      src.indexOf("private async grokSessionForMcpList("),
+      src.indexOf("private async refreshMcpServers("),
+    );
+    expect(helper).toContain('startSession(undefined, grok, "ensure")');
+    expect(helper).not.toContain("disposeSession");
+    expect(helper).not.toContain("removeSessionFromDisk");
     const tag = src.slice(
       src.indexOf("private filterMcpServers("),
       src.indexOf("private reservedMcpIdentityFor("),
@@ -303,13 +312,14 @@ describe("MCP settings sections", () => {
     expect(mcpSettingsVisible({ source: "managed" })).toBe(true);
     expect(mcpSettingsVisible({ managed: true })).toBe(true);
     expect(mcpSettingsVisible({ source: "local", localLayer: "user" })).toBe(true);
-    expect(mcpSettingsVisible({ source: "local" })).toBe(true);
+    expect(mcpSettingsVisible({ source: "local" })).toBe(false);
     expect(mcpSettingsVisible({ source: "local", localLayer: "project" })).toBe(false);
     expect(mcpSettingsVisible({ source: "managed", localLayer: "project" })).toBe(true);
 
     const layers = new Map<string, "project" | "user">([
       ["docs", "project"],
       ["notes", "user"],
+      ["linear", "user"],
     ]);
     const files = collectMcpNameFiles([
       { layer: "user", path: "/home/.grok/config.toml", names: ["notes"] },
@@ -397,6 +407,23 @@ describe("MCP settings sections", () => {
     expect(one).not.toHaveProperty("tag");
     expect(one).not.toHaveProperty("configFile");
   });
+
+  it("omits a host-injected echo whose name is in no config layer, keeps a config-declared local", () => {
+    const layers = new Map<string, "project" | "user">([["linear", "user"]]);
+    const files = collectMcpNameFiles([
+      { layer: "user", path: "/home/.grok/config.toml", names: ["linear"] },
+    ]);
+    const filtered = filterMcpSettingsServers([
+      { name: "linear", enabled: true, source: "local" },
+      { name: "notion", enabled: true, source: "local" },
+      { name: "atlassian", enabled: true, source: "local" },
+      { name: "managed_gateway:canva", displayName: "Canva", enabled: true, source: "managed", managed: true },
+    ], { nameLayer: layers, nameFile: files });
+    expect(filtered.map((s) => s.name)).toEqual(["linear", "managed_gateway:canva"]);
+    expect(filtered.find((s) => s.name === "linear")?.configFile).toBe("config.toml");
+    expect(filtered.find((s) => s.name === "notion")).toBeUndefined();
+    expect(filtered.find((s) => s.name === "atlassian")).toBeUndefined();
+  });
 });
 
 describe("MCP catalog classified against the workspace it was read from", () => {
@@ -412,10 +439,11 @@ describe("MCP catalog classified against the workspace it was read from", () => 
     { layer: "project", names: ["shared"] },
   ]);
 
-  it("the reviewer's mis-classification hid global shared and promoted a-only", () => {
-    const buggy = filterMcpSettingsServers(catalogA, { nameLayer: layersB });
-    expect(buggy.map((s) => s.name)).toEqual(["a-only"]);
-    expect(buggy.find((s) => s.name === "shared")).toBeUndefined();
+  it("does not promote a name missing from the catalog layers to Local", () => {
+    const filtered = filterMcpSettingsServers(catalogA, { nameLayer: layersB });
+    expect(filtered.map((s) => s.name)).toEqual([]);
+    expect(filtered.find((s) => s.name === "shared")).toBeUndefined();
+    expect(filtered.find((s) => s.name === "a-only")).toBeUndefined();
   });
 
   it("keeps global shared and omits a-only when A's catalog is classified against A", () => {
@@ -581,5 +609,114 @@ describe("MCP catalog classified against the workspace it was read from", () => 
     });
     expect(posted).toHaveLength(1);
     expect(posted[0]?.servers.map((s) => s.name)).toEqual(["shared"]);
+  });
+});
+
+describe("MCP inventory while a non-Grok session is focused", () => {
+  function mcpHarness(opts: {
+    focused: Session;
+    pool: Session[];
+    grokConnected: boolean;
+  }) {
+    const proto = GrokSidebar.prototype as unknown as {
+      refreshMcpServers(session: Session): Promise<void>;
+    };
+    const posted: Array<{ type: string; error?: string; loading?: boolean }> = [];
+    const startSession = vi.fn(async (_id: unknown, target: Session) => {
+      target.client = {
+        listMcpServers: vi.fn().mockResolvedValue({ servers: [{ name: "notes", source: "local", enabled: true }] }),
+      } as unknown as Session["client"];
+      return target.client;
+    });
+    const instance = Object.create(proto) as {
+      focused: Session;
+      pool: Set<Session>;
+      mcpServers: unknown[];
+      mcpServersView: unknown[];
+      mcpServersCwd: string | undefined;
+      mcpListSupported: boolean | undefined;
+      grokMcpReserved: { names: string[]; urls: string[] };
+      postMcpServers: (msg: { type: string; error?: string; loading?: boolean }) => void;
+      sessionCwd: (session: Session) => string;
+      filterMcpServers: (servers: unknown[]) => unknown[];
+      connectedConnectorStore: () => Record<string, never>;
+      connectedProviders: () => string[];
+      startSession: typeof startSession;
+      setSessionCwd: (session: Session, cwd: string) => void;
+      newLocalSession: () => Session;
+      workspaceRoot: () => string;
+      host: { appendLine: ReturnType<typeof vi.fn> };
+    };
+    instance.focused = opts.focused;
+    instance.pool = new Set(opts.pool);
+    instance.mcpServers = [];
+    instance.mcpServersView = [];
+    instance.mcpServersCwd = undefined;
+    instance.mcpListSupported = undefined;
+    instance.grokMcpReserved = { names: [], urls: [] };
+    instance.postMcpServers = (msg) => { posted.push(msg); };
+    instance.sessionCwd = (session) => session.cwd || "";
+    instance.filterMcpServers = (servers) => servers;
+    instance.connectedConnectorStore = () => ({});
+    instance.connectedProviders = () => (opts.grokConnected ? ["grok", "codex"] : ["codex"]);
+    instance.startSession = startSession;
+    instance.setSessionCwd = (session, cwd) => { session.cwd = cwd; };
+    instance.newLocalSession = () => new Session();
+    instance.workspaceRoot = () => "/proj";
+    instance.host = { appendLine: vi.fn() };
+    return { proto, instance, posted, startSession };
+  }
+
+  it("lists MCP from a pooled Grok session while Codex is focused", async () => {
+    const listMcpServers = vi.fn().mockResolvedValue({
+      servers: [{ name: "notes", source: "local", enabled: true }],
+    });
+    const grok = new Session();
+    grok.provider = "grok";
+    grok.cwd = "/proj";
+    grok.client = { listMcpServers } as unknown as Session["client"];
+    const focused = new Session();
+    focused.provider = "codex";
+    focused.cwd = "/proj";
+    const { proto, instance, posted, startSession } = mcpHarness({
+      focused,
+      pool: [focused, grok],
+      grokConnected: true,
+    });
+    await proto.refreshMcpServers.call(instance, focused);
+    expect(listMcpServers).toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+    expect(instance.mcpServersCwd).toBe("/proj");
+    expect(posted.some((msg) => msg.error === "Connect Grok to inspect MCP servers.")).toBe(false);
+    expect(posted.some((msg) => msg.loading === true)).toBe(true);
+  });
+
+  it("starts a Grok session when none is live and Grok is connected", async () => {
+    const focused = new Session();
+    focused.provider = "codex";
+    focused.cwd = "/proj";
+    const { proto, instance, posted, startSession } = mcpHarness({
+      focused,
+      pool: [focused],
+      grokConnected: true,
+    });
+    await proto.refreshMcpServers.call(instance, focused);
+    expect(startSession).toHaveBeenCalled();
+    expect(posted.some((msg) => msg.error === "Connect Grok to inspect MCP servers.")).toBe(false);
+    expect(instance.mcpServersCwd).toBe("/proj");
+  });
+
+  it("says Connect Grok only when the Grok provider is not connected", async () => {
+    const focused = new Session();
+    focused.provider = "codex";
+    focused.cwd = "/proj";
+    const { proto, instance, posted, startSession } = mcpHarness({
+      focused,
+      pool: [focused],
+      grokConnected: false,
+    });
+    await proto.refreshMcpServers.call(instance, focused);
+    expect(startSession).not.toHaveBeenCalled();
+    expect(posted.some((msg) => msg.error === "Connect Grok to inspect MCP servers.")).toBe(true);
   });
 });

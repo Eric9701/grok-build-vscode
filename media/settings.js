@@ -1314,23 +1314,6 @@
       detail.textContent = mcpDetail(server) || (server.enabled ? "Enabled" : "Disabled");
       copy.append(name, detail);
       row.appendChild(copy);
-      if (opts.fileOpen && server.configFile) {
-        const control = document.createElement("div");
-        control.className = "settings-row-control";
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "settings-action settings-mcp-open";
-        btn.dataset.file = server.configFile;
-        const icon = document.createElement("span");
-        icon.className = "settings-file-icon";
-        icon.setAttribute("aria-hidden", "true");
-        renderConfigFileIcon(icon, server.configFile);
-        btn.appendChild(icon);
-        btn.appendChild(document.createTextNode("Open"));
-        btn.title = server.configFile;
-        control.appendChild(btn);
-        row.appendChild(control);
-      }
       list.appendChild(row);
     }
   }
@@ -1389,10 +1372,26 @@
       el.appendChild(grokList);
     }
 
+    const localHead = document.createElement("div");
+    localHead.className = "settings-group-row";
     const localTitle = document.createElement("h2");
     localTitle.className = "settings-group";
     localTitle.textContent = CONNECTOR_SECTION_LOCAL;
-    el.appendChild(localTitle);
+    localHead.appendChild(localTitle);
+    if (!(env && env.isRemote)) {
+      const localOpen = document.createElement("button");
+      localOpen.type = "button";
+      localOpen.className = "settings-action settings-mcp-open";
+      localOpen.title = "config.toml";
+      const localIcon = document.createElement("span");
+      localIcon.className = "settings-file-icon";
+      localIcon.setAttribute("aria-hidden", "true");
+      renderConfigFileIcon(localIcon, "config.toml");
+      localOpen.appendChild(localIcon);
+      localOpen.appendChild(document.createTextNode("Open"));
+      localHead.appendChild(localOpen);
+    }
+    el.appendChild(localHead);
     const localBlurb = document.createElement("div");
     localBlurb.className = "settings-mcp-warning";
     localBlurb.textContent = env && env.isRemote ? CONNECTOR_BLURB_LOCAL_REMOTE : CONNECTOR_BLURB_LOCAL;
@@ -1406,9 +1405,7 @@
     } else {
       const localList = document.createElement("div");
       localList.className = "settings-mcp-list";
-      appendMcpServerRows(localList, local, {
-        fileOpen: !(env && env.isRemote),
-      });
+      appendMcpServerRows(localList, local, {});
       el.appendChild(localList);
     }
     return el;

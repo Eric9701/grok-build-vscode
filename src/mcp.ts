@@ -25,7 +25,7 @@ export interface McpServerView {
   /**
    * Basename of the user-level config file that declared this server
    * (`config.toml`, `mcp.json`). Desk-only — omitted from the remote
-   * allowlist. Managed / host-injected rows have none.
+   * allowlist. Managed rows and host-injected echoes have none.
    */
   configFile?: string;
   status?: string;
@@ -198,10 +198,13 @@ export function projectMcpServersMessageForRemote(msg: {
 }
 
 /**
- * Settings → Connectors lists grok.com-managed servers and user-level /
- * host-injected locals. A server declared in a project file (`.mcp.json`,
- * `.grok/config.toml`) is omitted — that layer is classified by
- * `mcpConfigLayer`, not guessed from the section.
+ * Settings → Connectors lists grok.com-managed servers and user-level
+ * config-file locals. A server belongs in Local only when its name is in a
+ * user-level config layer we actually read (`collectMcpNameLayers`). A
+ * `source: "local"` echo we injected at `session/new` is in no layer — it
+ * already has an On this computer row. Project-file servers
+ * (`.mcp.json`, `.grok/config.toml`) are omitted; that layer is classified
+ * by `mcpConfigLayer`, not guessed from the section.
  */
 export function mcpSettingsVisible(input: {
   source?: string;
@@ -209,7 +212,7 @@ export function mcpSettingsVisible(input: {
   localLayer?: McpConfigLayer;
 }): boolean {
   if (input.managed === true || input.source === "managed") return true;
-  return input.localLayer !== "project";
+  return input.localLayer === "user";
 }
 
 /** grok.com-managed vs everything else that survived {@link mcpSettingsVisible}. */
@@ -227,8 +230,9 @@ export function mcpConfigFileName(filePath: string): string {
 }
 
 /**
- * Drop project-file rows. Stamp `configFile` (basename) on user-level locals.
- * Strips a leftover `tag`. Does not mutate `servers`.
+ * Drop project-file rows and host-injected echoes (names in no config
+ * layer). Stamp `configFile` (basename) on user-level locals. Strips a
+ * leftover `tag`. Does not mutate `servers`.
  */
 export function filterMcpSettingsServers(
   servers: readonly McpServerView[],
@@ -242,7 +246,7 @@ export function filterMcpSettingsServers(
     const managed = mcpIsManaged(server);
     const localLayer = managed
       ? undefined
-      : (opts.nameLayer.get(nameKey(server.name)) ?? "user");
+      : opts.nameLayer.get(nameKey(server.name));
     if (!mcpSettingsVisible({ source: server.source, managed: server.managed, localLayer })) {
       continue;
     }

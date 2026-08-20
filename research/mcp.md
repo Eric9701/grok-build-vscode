@@ -1,9 +1,13 @@
 # MCP settings inventory
 
 Settings → Connectors reads `_x.ai/mcp/list` through
-the active Grok ACP session and splits it into Grok.com connectors
-(managed) and Local Grok connectors (user-level / host-injected). The
-host stamps that session's cwd on the catalog (`mcpServersCwd`) and
+a Grok ACP session (a live pooled client, else a lazily started empty
+session when Grok is connected and Connectors is opened) and splits it
+into Grok.com connectors (managed) and Local Grok connectors (user-level
+config files). A `source: "local"` name that appears in no config layer
+is our session/new echo and is omitted from Local — it already has an
+On this computer row. The host stamps that session's cwd on the catalog
+(`mcpServersCwd`) and
 classifies against it once (`mcpSettingsServersForCwd`), storing the
 global-only view (`mcpServersView`). A later focus switch, remote
 snapshot, or second tab on another project renders that view as-is —

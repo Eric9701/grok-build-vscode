@@ -58,6 +58,7 @@ never enter it.
 OAuth needs a browser on the machine that owns `~/.mcp-auth`. Settings →
 Connectors on a remote shows the desk-owned catalog read-only, the live Grok
 inventory, and a grok.com/connectors Open in the grok.com section header.
-Local Grok connectors are listed with a sentence that they are managed on
-the desk; there is no Open button. `listMcpServers` is inbound view
+Local Grok connectors show a header Open on the desk (`openGlobalConfig`,
+even when the section is empty) and a sentence on remote; there is no
+per-row Open. A host-injected echo is omitted from Local. `listMcpServers` is inbound view
 so a phone can refresh that inventory without the desk opening the page.

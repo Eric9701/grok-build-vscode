@@ -510,10 +510,11 @@ export type McpConfigLayer = "project" | "user";
 /**
  * Which config file a path from {@link mcpConfigPaths} is. Project files are
  * the checkout's `.mcp.json` and `.grok/config.toml`; everything else in that
- * list is user-level. Settings → Connectors hides the project layer
- * (`mcpSettingsVisible`); user-level files stamp `configFile` via
- * {@link collectMcpNameFiles}. Compared against the same strings `mcpConfigPaths`
- * returns, so Windows mixed separators still match.
+ * list is user-level. Settings → Connectors lists a local row only when
+ * its name is in a user-level layer (`mcpSettingsVisible`); project-file
+ * and host-injected echo names are omitted. User-level files stamp
+ * `configFile` via {@link collectMcpNameFiles}. Compared against the same
+ * strings `mcpConfigPaths` returns, so Windows mixed separators still match.
  */
 export function mcpConfigLayer(
   filePath: string,
