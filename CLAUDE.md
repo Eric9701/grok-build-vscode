@@ -267,6 +267,10 @@ What the script encodes, step by step:
    - **Never announce a store as "live now."** A successful `ovsx publish` is NOT public availability — Open VSX scans new versions before listing them. In issue comments / user-facing messages, say **"~10 minutes"** for BOTH stores (Open VSX and the VS Code Marketplace alike).
    Publishing ≠ tagging either way.
 
+7. **Close the loop on every issue the release fixed — this is part of releasing, not follow-up.** For each one: comment saying what shipped and in which version, apply `done-please-confirm`, and leave it **OPEN** (§ Repo conventions — the reporter decides, and `close-confirmed.yml` closes it after 3 quiet days). Sign the comment per § Repo conventions. Sweep the whole open list, not just the issues named in the changelog: a release sometimes fixes something nobody linked, and a slow-performance report may have a cause that is not ours at all — read the thread before crediting a fix to it.
+
+   **Do NOT label before the fix is installable from the store the reporter actually uses.** The label starts `close-confirmed.yml`'s 3-day clock, so labelling while the VS Code Marketplace still serves the previous version can auto-close an issue the reporter never had a chance to verify — with a message claiming a fix shipped. Step 6 publishes the two stores at different times and by different people, so **the Marketplace publish is the gate**, not the tag and not Open VSX. Commenting earlier is fine (it starts no clock) as long as it says where the build can actually be had.
+
 Don't skip the tag/release (or the vsix asset) on a release push. (A pure mid-dev version bump that isn't a release — e.g. the unreleased v1.3.0 voice iteration — is the only exception.)
 
 ## Repo conventions
