@@ -1,5 +1,6 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -9,6 +10,7 @@ import {
   listenFreeLoopbackPort,
   npxSpawnPlan,
   persistConnectorOAuthClientMetadata,
+  quoteSpawnArgs,
   writeOAuthClientMetadataFile,
 } from "../src/mcp-connector-auth";
 import {
@@ -54,6 +56,7 @@ describe("sidebar connect wiring", () => {
     expect(body).not.toContain("env: process.env");
     expect(body).toContain("writeOAuthClientMetadataFile");
     expect(body).toMatch(/mcpRemoteArgs\(endpoint,\s*undefined,\s*metadata\?\.path\)/);
+    expect(body).not.toContain("quoteSpawnArgs");
   });
 
   it("session/new Stripe entry also carries static OAuth client metadata", () => {
@@ -65,6 +68,77 @@ describe("sidebar connect wiring", () => {
     expect(end).toBeGreaterThan(start);
     expect(body).toContain("persistConnectorOAuthClientMetadata");
     expect(body).toContain("hostMcpServers(");
+    expect(body).not.toContain("quoteSpawnArgs");
+  });
+});
+
+const SPACED_METADATA_PATH =
+  "C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\grok-mcp-oauth-x\\oauth-client-metadata.json";
+const SPACED_METADATA_ARG = `@${SPACED_METADATA_PATH}`;
+const SPACED_MCP_ARGV = [
+  "-y", "mcp-remote", "https://mcp.stripe.com",
+  STATIC_OAUTH_CLIENT_METADATA_FLAG, SPACED_METADATA_ARG,
+];
+
+describe("quoteSpawnArgs", () => {
+  it("is applied at the mcp-remote spawn seam", () => {
+    const src = readFileSync(new URL("../src/mcp-connector-auth.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/quoteSpawnArgs\(opts\.args,\s*opts\.shell\)/);
+  });
+
+  it("wraps whitespace-bearing entries for a shell spawn and leaves the rest raw", () => {
+    expect(quoteSpawnArgs(SPACED_MCP_ARGV, true)).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, `"${SPACED_METADATA_ARG}"`,
+    ]);
+    expect(quoteSpawnArgs(["-y", "mcp-remote", "https://mcp.stripe.com"], true))
+      .toEqual(["-y", "mcp-remote", "https://mcp.stripe.com"]);
+  });
+
+  it("leaves argv unchanged for a non-shell spawn", () => {
+    expect(quoteSpawnArgs(SPACED_MCP_ARGV, false)).toEqual(SPACED_MCP_ARGV);
+    expect(quoteSpawnArgs(SPACED_MCP_ARGV)).toEqual(SPACED_MCP_ARGV);
+    expect(quoteSpawnArgs(SPACED_MCP_ARGV, false).some((arg) => arg.startsWith('"'))).toBe(false);
+  });
+
+  it("a shell-spawned child receives the original unquoted path as one argument", () => {
+    const root = mkdtempSync(join(tmpdir(), "Jane Doe-echo-"));
+    const script = join(root, "echo-argv.cjs");
+    try {
+      writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(1)));\n");
+      const result = spawnSync("node", quoteSpawnArgs([script, SPACED_METADATA_ARG], true), {
+        encoding: "utf8",
+        shell: true,
+        windowsHide: true,
+        timeout: 8_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([script, SPACED_METADATA_ARG]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a non-shell spawn is given the raw argv, with no quotes added", () => {
+    const root = mkdtempSync(join(tmpdir(), "Jane Doe-echo-"));
+    const script = join(root, "echo-argv.cjs");
+    try {
+      writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(1)));\n");
+      const argv = quoteSpawnArgs([script, SPACED_METADATA_ARG], false);
+      expect(argv).toEqual([script, SPACED_METADATA_ARG]);
+      const result = spawnSync(process.execPath, argv, {
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+        timeout: 8_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([script, SPACED_METADATA_ARG]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -300,6 +374,59 @@ describe("authorizeMcpRemote", () => {
       ["-y", "mcp-remote", "https://mcp.stripe.com", "54321", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
     ]);
     second.stderr.write("Authentication successful! Caching credentials...\n");
+    await expect(result).resolves.toEqual({ ok: true });
+  });
+
+  it("quotes a spaced metadata path on both the first spawn and the EADDRINUSE retry", async () => {
+    const first = new FakeProc();
+    const second = new FakeProc();
+    const spawned: string[][] = [];
+    const result = authorizeMcpRemote({
+      command: "npx",
+      args: SPACED_MCP_ARGV,
+      shell: true,
+      timeoutMs: 1_000,
+      pickFreeListenPort: async () => 54321,
+      spawn: (_command, args) => {
+        spawned.push([...args]);
+        return (spawned.length === 1 ? first : second) as never;
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    first.stderr.write("Error: listen EADDRINUSE: address already in use 127.0.0.1:22227\n");
+    for (let i = 0; i < 8 && spawned.length < 2; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(spawned).toEqual([
+      [
+        "-y", "mcp-remote", "https://mcp.stripe.com",
+        STATIC_OAUTH_CLIENT_METADATA_FLAG, `"${SPACED_METADATA_ARG}"`,
+      ],
+      [
+        "-y", "mcp-remote", "https://mcp.stripe.com", "54321",
+        STATIC_OAUTH_CLIENT_METADATA_FLAG, `"${SPACED_METADATA_ARG}"`,
+      ],
+    ]);
+    second.stderr.write("Authentication successful! Caching credentials...\n");
+    await expect(result).resolves.toEqual({ ok: true });
+  });
+
+  it("does not quote a spaced metadata path when the spawn is not a shell", async () => {
+    const proc = new FakeProc();
+    let spawned: string[] | undefined;
+    const result = authorizeMcpRemote({
+      command: "npx",
+      args: SPACED_MCP_ARGV,
+      shell: false,
+      timeoutMs: 1_000,
+      spawn: (_command, args) => {
+        spawned = [...args];
+        return proc as never;
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(spawned).toEqual(SPACED_MCP_ARGV);
+    proc.stderr.write("Authentication successful! Caching credentials...\n");
     await expect(result).resolves.toEqual({ ok: true });
   });
 });

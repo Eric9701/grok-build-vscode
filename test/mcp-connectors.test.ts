@@ -126,6 +126,36 @@ describe("Tier-1 connector catalog", () => {
       STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
     ]);
   });
+
+  it("emits the raw metadata path even when it contains spaces", () => {
+    const meta = "C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\oauth-client-metadata.json";
+    const raw = `@${meta}`;
+    expect(mcpRemoteArgs("https://mcp.stripe.com", undefined, meta)).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
+    ]);
+    expect(mcpRemoteArgs("https://mcp.stripe.com", 22227, meta)).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com", "22227",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
+    ]);
+    const stripe = hostMcpServers(
+      { stripe: { endpoint: "https://mcp.stripe.com" } },
+      { names: [], urls: [] },
+      { stripe: meta },
+    )[0];
+    expect(stripe?.args).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
+    ]);
+    expect(stripe?.args.some((arg) => arg.includes('"'))).toBe(false);
+    expect(withMcpRemoteCallbackPort(
+      ["-y", "mcp-remote", "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, raw],
+      54321,
+    )).toEqual([
+      "-y", "mcp-remote", "https://mcp.stripe.com", "54321",
+      STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
+    ]);
+  });
 });
 
 describe("connected store", () => {

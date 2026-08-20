@@ -12,7 +12,8 @@
  * skips mcp-remote's lockfile, so a second instance cannot learn the first
  * exists. On `EADDRINUSE` we retry once with a free loopback port as
  * `mcp-remote <url> <port>`, which forces re-registration. The first
- * failure never reaches the UI.
+ * failure never reaches the UI. `quoteSpawnArgs` wraps whitespace-bearing
+ * argv entries only for this shell spawn — never in `mcpRemoteArgs`.
  */
 import { createInterface } from "node:readline";
 import { createServer as defaultCreateServer } from "node:net";
@@ -87,6 +88,18 @@ export type AuthorizeMcpRemoteResult =
 export { npxSpawnPlan } from "./npx-locator";
 
 const OAUTH_METADATA_DIR_NAME = "grok-mcp-oauth-metadata";
+
+/**
+ * Node's CMD `shell: true` joins argv with spaces and no quotes, so a path
+ * like `C:\Users\Jane Doe\...` splits. Wrap any whitespace-bearing entry in
+ * double quotes; CMD strips them. A non-shell spawn (POSIX Connect, grok's
+ * `session/new`) must receive the raw strings — quoting here would make `"`
+ * part of the path.
+ */
+export function quoteSpawnArgs(args: readonly string[], shell?: boolean): string[] {
+  if (!shell) return [...args];
+  return args.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg));
+}
 
 /**
  * One-shot JSON file for Connect. mcp-remote is spawned with `shell: true`
@@ -250,7 +263,7 @@ function runAuthorizeMcpRemote(
     };
 
     try {
-      proc = opts.spawn(opts.command, [...opts.args], {
+      proc = opts.spawn(opts.command, quoteSpawnArgs(opts.args, opts.shell), {
         stdio: ["pipe", "pipe", "pipe"],
         env: opts.env,
         shell: opts.shell,
