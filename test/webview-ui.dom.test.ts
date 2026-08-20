@@ -2262,8 +2262,9 @@ describe("gear menu — Other group + About / Settings", () => {
       servers: [{ name: "managed_gateway:canva", displayName: "Canva", managed: true, enabled: true, status: "ready", toolCount: 32 }],
       warning: "This list is read-only. Connector enable/disable is machine-global and is not controlled here.",
     });
-    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("grok.com managed");
-    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("Grok connectors");
+    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("Grok.com connectors");
+    expect(h.doc.querySelector("#settings-overlay")?.textContent).toContain("Local Grok connectors");
+    expect(h.doc.querySelector("#settings-overlay")?.textContent).not.toContain("grok.com managed");
     expect(h.doc.querySelector("#settings-overlay .settings-switch")).toBeNull();
   });
 });

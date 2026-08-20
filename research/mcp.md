@@ -1,14 +1,14 @@
 # MCP settings inventory
 
-Settings → Connectors → Grok connectors reads `_x.ai/mcp/list` through
-the active Grok ACP session and shows grok.com-managed servers plus
-user-level / host-injected locals. The host stamps that session's cwd
-on the catalog (`mcpServersCwd`) and classifies against it once
-(`taggedMcpServersForCwd`), storing the global-only view
-(`mcpServersView`). A later focus switch, remote snapshot, or second
-tab on another project renders that view as-is — project-file rows
-were already dropped, and global rows are workspace-independent.
-Servers declared in a project file
+Settings → Connectors reads `_x.ai/mcp/list` through
+the active Grok ACP session and splits it into Grok.com connectors
+(managed) and Local Grok connectors (user-level / host-injected). The
+host stamps that session's cwd on the catalog (`mcpServersCwd`) and
+classifies against it once (`mcpSettingsServersForCwd`), storing the
+global-only view (`mcpServersView`). A later focus switch, remote
+snapshot, or second tab on another project renders that view as-is —
+project-file rows were already dropped, and global rows are
+workspace-independent. Servers declared in a project file
 (`.mcp.json`, `.grok/config.toml`) are omitted from the page
 (`mcpSettingsVisible`); they still load in the session. The raw
 `this.mcpServers` list stays complete for `hostMcpServers` dedup. The parser accepts
@@ -16,7 +16,8 @@ both the current `{ "servers": [] }` response and a bare array, and the extra
 `{ result: ... }` envelope emitted by Grok 1.0.5 over ACP. It prefers `session.enabled`, `session.status`, `session.tools`, and
 `session.error` over top-level values, and preserves per-tool metadata for the
 host view model. Managed gateway rows are identified from `source: "managed"`
-or `type: "managedGateway"` and are labelled as grok.com-managed in the UI.
+or `type: "managedGateway"` and land in the grok.com section (`scopeName` is
+the team name). Origin tags are gone.
 
 The surface is read-only. Enable/disable is intentionally absent because it is
 machine-global rather than conversation-scoped, and a remote settings page
@@ -24,8 +25,9 @@ must not be able to change it. Remotes may view and refresh the list
 (`listMcpServers` inbound view). The desk catalog keeps launch recipes
 (`command`/`args`/`url`) for the local panel; remotes receive
 `projectMcpServerForRemote` — an allowlist of page fields (`name`,
-`displayName`, `enabled`, `source`, `type`, `managed`, `scope`, `status`,
-`toolCount`). `tools` (including `inputSchema`) and per-server `error` stay
+`displayName`, `enabled`, `source`, `type`, `managed`, `scope`, `scopeName`,
+`status`, `toolCount`). `tag` and `configFile` are not on it. `tools`
+(including `inputSchema`) and per-server `error` stay
 on the desk: the Connectors page does not render tool schemas, and an error
 string can quote the command line. `transformHostMsgForRemote` is the choke
 point (`mcpServers` is `allowlist`, not `mirror`); an unknown `allowlist`

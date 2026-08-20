@@ -1186,7 +1186,7 @@ function treeRow(document: Document, name: string): Element | null {
 }
 
 describe("copy path on the file-panel row menu", () => {
-  it("offers copy items first, including on a client with no OS access", async () => {
+  it("offers copy items only on a client with no OS access, with no leading gap", async () => {
     const h = harness();
     h.panel.setOpen(true);
     await settle();
@@ -1198,6 +1198,7 @@ describe("copy path on the file-panel row menu", () => {
     fileRow!.dispatchEvent(new h.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
     await settle();
     expect(menuLabels(h.document)).toEqual(["Copy relative path", "Copy path"]);
+    expect(h.document.querySelector(".gfp-menu-sep, .gfp-sep")).toBeNull();
   });
 
   it("copies the listing-relative path and the desk-joined absolute path", async () => {
@@ -1254,6 +1255,7 @@ describe("copy path on the file-panel row menu", () => {
     }));
     await settle();
     expect(menuLabels(h.document)[0]).toBe("Copy relative path");
+    expect(menuLabels(h.document)).toEqual(["Copy relative path", "Copy path"]);
     click(h.window, menuItem(h.document, "Copy relative path"));
     await settle();
     expect(copied.value).toBe("src");
@@ -1268,7 +1270,7 @@ describe("copy path on the file-panel row menu", () => {
     h.panel.destroy();
   });
 
-  it("keeps Open / Reveal under the copy items when the host can act", async () => {
+  it("puts Open / Reveal above the copy items when the host can act", async () => {
     const h = harness();
     (h.access as { openExternal?: unknown; reveal?: unknown }).openExternal = async () => ({ ok: true });
     (h.access as { reveal?: unknown }).reveal = async () => ({ ok: true });
@@ -1279,10 +1281,21 @@ describe("copy path on the file-panel row menu", () => {
     }));
     await settle();
     expect(menuLabels(h.document)).toEqual([
-      "Copy relative path",
-      "Copy path",
       "Open in default app",
       "Reveal in file manager",
+      "Copy relative path",
+      "Copy path",
+    ]);
+
+    h.document.querySelector(".gfp-menu")?.remove();
+    treeRow(h.document, "src")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    expect(menuLabels(h.document)).toEqual([
+      "Reveal in file manager",
+      "Copy relative path",
+      "Copy path",
     ]);
   });
 

@@ -13,6 +13,7 @@ import {
   hostMcpServers,
   mcpConfigLayer,
   mcpConfigPaths,
+  collectMcpNameFiles,
   collectMcpNameLayers,
   mcpRemoteArgs,
   parseConnectedConnectorStore,
@@ -260,6 +261,18 @@ FOO = "bar"
     expect(layers.get("docs")).toBe("project");
     expect(layers.get("notes")).toBe("user");
     expect(layers.get("shared")).toBe("project");
+  });
+
+  it("maps user-level names to the declaring file and ignores project files", () => {
+    const files = collectMcpNameFiles([
+      { layer: "user", path: "/home/.grok/config.toml", names: ["notes", "shared"] },
+      { layer: "user", path: "/home/.cursor/mcp.json", names: ["cursor-docs", "shared"] },
+      { layer: "project", path: "/proj/.mcp.json", names: ["docs"] },
+    ]);
+    expect(files.get("notes")).toBe("/home/.grok/config.toml");
+    expect(files.get("cursor-docs")).toBe("/home/.cursor/mcp.json");
+    expect(files.get("shared")).toBe("/home/.cursor/mcp.json");
+    expect(files.get("docs")).toBeUndefined();
   });
 });
 

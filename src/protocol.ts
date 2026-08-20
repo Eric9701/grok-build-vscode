@@ -106,9 +106,9 @@ export type HostUiCapabilities = {
   editProjectFiles?: boolean;
   /**
    * Settings → Connectors. OPT-IN: absent/false = hide the nav row and keep
-   * the page unreachable. Unpackaged desktop sets true (`!app.isPackaged`,
-   * the same signal as {@link toggleDevTools}); VS Code and packaged builds
-   * omit the field. Remotes inherit the desk machine's capabilities.
+   * the page unreachable. Desktop and VS Code set true; remotes inherit the
+   * desk machine's capabilities. The webview still keys on this field so an
+   * older host that never sent it keeps the page hidden.
    */
   mcpSettings?: boolean;
   /**
@@ -232,9 +232,9 @@ export type HostMsg =
    * or an older host that ignores `refreshProviders` would spin forever. */
   | { type: "providerState"; providers: { id: "grok" | "codex" | "claude"; connected: boolean; needsLogin?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean }[]; checking?: boolean }
   /** Grok's grok.com + user-level MCP inventory (`_x.ai/mcp/list`; project-file
-   *  servers omitted). The desk keeps launch recipes; remotes receive
-   *  `projectMcpServerForRemote` (page fields only). Connect/disconnect stay
-   *  desk-only. */
+   *  servers omitted). The desk keeps launch recipes and `configFile`; remotes
+   *  receive `projectMcpServerForRemote` (page fields only — no `tag`).
+   *  Connect/disconnect stay desk-only. */
   | { type: "mcpServers"; servers: McpServerView[]; loading?: boolean; error?: string; warning: string }
   /** Host-owned Tier-1 connector catalog. Mirrored so a remote can SEE which
    *  apps are connected; connect/disconnect stay desk-only (OAuth + ~/.mcp-auth

@@ -1250,11 +1250,7 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     get canToggleDevTools() {
       return !app.isPackaged;
     },
-    // Same packaged-build gate as DevTools — Settings → Connectors stays
-    // hidden in installed builds.
-    get canShowMcpSettings() {
-      return !app.isPackaged;
-    },
+    canShowMcpSettings: true,
     // No editor tabs — a generated-image click must use the in-app lightbox,
     // not openFile (which would hand the file to the OS image viewer).
     canOpenInEditor: false,

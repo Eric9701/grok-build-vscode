@@ -511,7 +511,8 @@ export type McpConfigLayer = "project" | "user";
  * Which config file a path from {@link mcpConfigPaths} is. Project files are
  * the checkout's `.mcp.json` and `.grok/config.toml`; everything else in that
  * list is user-level. Settings → Connectors hides the project layer
- * (`mcpSettingsVisible`). Compared against the same strings `mcpConfigPaths`
+ * (`mcpSettingsVisible`); user-level files stamp `configFile` via
+ * {@link collectMcpNameFiles}. Compared against the same strings `mcpConfigPaths`
  * returns, so Windows mixed separators still match.
  */
 export function mcpConfigLayer(
@@ -545,6 +546,25 @@ export function collectMcpNameLayers(
     for (const name of file.names) {
       const key = name.trim().toLowerCase();
       if (key) out.set(key, "project");
+    }
+  }
+  return out;
+}
+
+/**
+ * Name → user-level config path. Later user files overwrite earlier ones
+ * (same walk order as {@link mcpConfigPaths}). Project files are ignored —
+ * those rows never reach Settings. Keys are lowercased.
+ */
+export function collectMcpNameFiles(
+  files: readonly { layer: McpConfigLayer; path: string; names: readonly string[] }[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const file of files) {
+    if (file.layer !== "user") continue;
+    for (const name of file.names) {
+      const key = name.trim().toLowerCase();
+      if (key) out.set(key, file.path);
     }
   }
   return out;

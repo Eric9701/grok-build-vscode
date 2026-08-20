@@ -23,11 +23,11 @@ export interface McpServerView {
   scopeName?: string;
   source?: string;
   /**
-   * Provenance badge. Managed: `scopeName` or `"grok.com managed"`. Local
-   * user-level file or host-injected: `"User on: <machine>"`. Project-file
-   * servers are omitted from this list (`mcpSettingsVisible`).
+   * Basename of the user-level config file that declared this server
+   * (`config.toml`, `mcp.json`). Desk-only — omitted from the remote
+   * allowlist. Managed / host-injected rows have none.
    */
-  tag?: string;
+  configFile?: string;
   status?: string;
   type?: string;
   command?: string;
@@ -53,7 +53,6 @@ export const MCP_REMOTE_SERVER_KEYS = [
   "managed",
   "scope",
   "scopeName",
-  "tag",
   "status",
   "toolCount",
 ] as const satisfies ReadonlyArray<keyof McpServerView>;
@@ -198,13 +197,11 @@ export function projectMcpServersMessageForRemote(msg: {
   };
 }
 
-export const MCP_MANAGED_TAG = "grok.com managed";
-
 /**
- * Settings → Connectors → Grok connectors lists grok.com-managed servers and
- * user-level / host-injected locals. A server declared in a project file
- * (`.mcp.json`, `.grok/config.toml`) is omitted — that layer is classified by
- * `mcpConfigLayer`, not guessed from the badge.
+ * Settings → Connectors lists grok.com-managed servers and user-level /
+ * host-injected locals. A server declared in a project file (`.mcp.json`,
+ * `.grok/config.toml`) is omitted — that layer is classified by
+ * `mcpConfigLayer`, not guessed from the section.
  */
 export function mcpSettingsVisible(input: {
   source?: string;
@@ -215,55 +212,52 @@ export function mcpSettingsVisible(input: {
   return input.localLayer !== "project";
 }
 
-/**
- * Badge text for one inventory row. Managed uses the CLI's `scopeName` when
- * present (a team name, or `"Grok CLI"`); otherwise the grok.com tag. Local
- * user-level config and host-injected Tier-1 connectors are
- * `"User on: <machine>"`.
- */
-export function mcpOriginTag(input: {
-  source?: string;
-  managed?: boolean;
-  scopeName?: string;
-  machineName?: string;
-}): string | undefined {
-  const managed = input.managed === true || input.source === "managed";
-  if (managed) {
-    const named = input.scopeName?.trim();
-    return named || MCP_MANAGED_TAG;
-  }
-  const machine = input.machineName?.trim();
-  return machine ? `User on: ${machine}` : undefined;
+/** grok.com-managed vs everything else that survived {@link mcpSettingsVisible}. */
+export function mcpIsManaged(server: { managed?: boolean; source?: string }): boolean {
+  return server.managed === true || server.source === "managed";
 }
 
 function nameKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
-/** Stamp `tag` on each settings-visible server. Drops project-file rows. Does not mutate `servers`. */
-export function applyMcpOriginTags(
+export function mcpConfigFileName(filePath: string): string {
+  const parts = filePath.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] || filePath;
+}
+
+/**
+ * Drop project-file rows. Stamp `configFile` (basename) on user-level locals.
+ * Strips a leftover `tag`. Does not mutate `servers`.
+ */
+export function filterMcpSettingsServers(
   servers: readonly McpServerView[],
   opts: {
     nameLayer: ReadonlyMap<string, McpConfigLayer>;
-    machineName: string;
+    nameFile?: ReadonlyMap<string, string>;
   },
 ): McpServerView[] {
   const out: McpServerView[] = [];
   for (const server of servers) {
-    const managed = server.managed === true || server.source === "managed";
+    const managed = mcpIsManaged(server);
     const localLayer = managed
       ? undefined
       : (opts.nameLayer.get(nameKey(server.name)) ?? "user");
     if (!mcpSettingsVisible({ source: server.source, managed: server.managed, localLayer })) {
       continue;
     }
-    const tag = mcpOriginTag({
-      source: server.source,
-      managed: server.managed,
-      scopeName: server.scopeName,
-      machineName: opts.machineName,
-    });
-    out.push(tag ? { ...server, tag } : server);
+    const rest = { ...server } as McpServerView & { tag?: string };
+    delete rest.tag;
+    if (managed) {
+      delete rest.configFile;
+      out.push(rest);
+      continue;
+    }
+    const filePath = opts.nameFile?.get(nameKey(server.name));
+    const configFile = filePath ? mcpConfigFileName(filePath) : undefined;
+    if (configFile) rest.configFile = configFile;
+    else delete rest.configFile;
+    out.push(rest);
   }
   return out;
 }
@@ -271,20 +265,23 @@ export function applyMcpOriginTags(
 /**
  * Classify an `_x.ai/mcp/list` inventory against the workspace it was read
  * from. Project-file rows drop here; what remains is global and may be
- * rendered for any later workspace. `nameLayerFor` is invoked only with
+ * rendered for any later workspace. `nameCatalogFor` is invoked only with
  * `catalogCwd`. A missing catalog cwd yields `[]` — nothing has been classified.
  */
-export function taggedMcpServersForCwd(opts: {
+export function mcpSettingsServersForCwd(opts: {
   servers: readonly McpServerView[];
   catalogCwd: string | undefined;
-  nameLayerFor: (cwd: string) => ReadonlyMap<string, McpConfigLayer>;
-  machineName: string;
+  nameCatalogFor: (cwd: string) => {
+    nameLayer: ReadonlyMap<string, McpConfigLayer>;
+    nameFile?: ReadonlyMap<string, string>;
+  };
 }): McpServerView[] {
   const catalogCwd = opts.catalogCwd;
   if (!catalogCwd) return [];
-  return applyMcpOriginTags(opts.servers, {
-    nameLayer: opts.nameLayerFor(catalogCwd),
-    machineName: opts.machineName,
+  const catalog = opts.nameCatalogFor(catalogCwd);
+  return filterMcpSettingsServers(opts.servers, {
+    nameLayer: catalog.nameLayer,
+    nameFile: catalog.nameFile,
   });
 }
 

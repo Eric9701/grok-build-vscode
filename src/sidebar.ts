@@ -330,9 +330,10 @@ import {
   parseAppPurpose,
   type AppPurpose,
 } from "./app-purpose";
-import { MCP_GLOBAL_SCOPE_WARNING, mergeMcpNotification, parseMcpListResponse, taggedMcpServersForCwd, type McpServerView } from "./mcp";
+import { MCP_GLOBAL_SCOPE_WARNING, mergeMcpNotification, parseMcpListResponse, mcpSettingsServersForCwd, type McpServerView } from "./mcp";
 import {
   MCP_CONNECTORS_KEY,
+  collectMcpNameFiles,
   collectMcpNameLayers,
   collectReservedMcpIdentity,
   connectConnector,
@@ -9233,7 +9234,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.grokMcpReserved = reservedFromMcpInventory(next, this.connectedConnectorStore());
     if (this.mcpServersCwd && !pathsEqual(this.sessionCwd(session), this.mcpServersCwd)) return;
     this.mcpServers = next;
-    this.mcpServersView = this.tagMcpServers(this.mcpServers);
+    this.mcpServersView = this.filterMcpServers(this.mcpServers);
     if (this.mcpListSupported === true) {
       this.postMcpServers({
         type: "mcpServers",
@@ -9244,12 +9245,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private postMcpServers(message: Extract<HostMsg, { type: "mcpServers" }>): void {
-    const tagged = {
+    const view = {
       ...message,
       servers: this.mcpServersView,
     };
-    this.post(tagged);
-    void this.settingsEditor?.webview.postMessage(tagged);
+    this.post(view);
+    void this.settingsEditor?.webview.postMessage(view);
   }
 
   private mcpServersMessage(): Extract<HostMsg, { type: "mcpServers" }> {
@@ -9281,7 +9282,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     void this.settingsEditor?.webview.postMessage(message);
   }
 
-  private mcpNameLayersFor(cwd: string): Map<string, "project" | "user"> {
+  private mcpNameCatalogFor(cwd: string): {
+    nameLayer: Map<string, "project" | "user">;
+    nameFile: Map<string, string>;
+  } {
     // `this.mcpServers` is Grok's inventory (`refreshMcpServers` only reads
     // it through a Grok session). Classify against Grok's config files even
     // when the focused conversation is Codex or Claude — otherwise project
@@ -9295,27 +9299,30 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       grokHome: resolveGrokHome(process.env),
       userHome: process.env.USERPROFILE || process.env.HOME || os.homedir(),
     };
-    const files: { layer: "project" | "user"; names: string[] }[] = [];
+    const files: { layer: "project" | "user"; path: string; names: string[] }[] = [];
     for (const filePath of mcpConfigPaths(opts)) {
       try {
         if (!fs.existsSync(filePath)) continue;
         files.push({
           layer: mcpConfigLayer(filePath, opts),
+          path: filePath,
           names: collectReservedMcpIdentity(fs.readFileSync(filePath, "utf8")).names,
         });
       } catch {
         // Unreadable configs must not block the inventory page.
       }
     }
-    return collectMcpNameLayers(files);
+    return {
+      nameLayer: collectMcpNameLayers(files),
+      nameFile: collectMcpNameFiles(files),
+    };
   }
 
-  private tagMcpServers(servers: readonly McpServerView[] = this.mcpServers): McpServerView[] {
-    return taggedMcpServersForCwd({
+  private filterMcpServers(servers: readonly McpServerView[] = this.mcpServers): McpServerView[] {
+    return mcpSettingsServersForCwd({
       servers,
       catalogCwd: this.mcpServersCwd,
-      nameLayerFor: (cwd) => this.mcpNameLayersFor(cwd),
-      machineName: deviceDisplayName(os.hostname(), process.platform, os.release()),
+      nameCatalogFor: (cwd) => this.mcpNameCatalogFor(cwd),
     });
   }
 
@@ -9443,7 +9450,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.mcpListSupported = true;
       this.mcpServers = parseMcpListResponse(result);
       this.mcpServersCwd = this.sessionCwd(session) || undefined;
-      this.mcpServersView = this.tagMcpServers(this.mcpServers);
+      this.mcpServersView = this.filterMcpServers(this.mcpServers);
       this.grokMcpReserved = reservedFromMcpInventory(this.mcpServers, this.connectedConnectorStore());
       this.postMcpServers({
         type: "mcpServers",
@@ -12818,8 +12825,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // OPT-IN: unpackaged desktop only. Gear → Advanced offers the control so
         // DevTools is discoverable without the auto-hidden application menu.
         toggleDevTools: this.host.canToggleDevTools,
-        // OPT-IN: unpackaged desktop only. Absent/false hides Settings →
-        // Connectors. VS Code omits the field.
+        // OPT-IN: absent/false hides Settings → Connectors.
         ...(this.host.canShowMcpSettings ? { mcpSettings: true } : {}),
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
@@ -16160,6 +16166,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           showOutput: this.host.canShowOutput,
           toggleDevTools: this.host.canToggleDevTools,
           settingsEditor: true,
+          ...(this.host.canShowMcpSettings ? { mcpSettings: true } : {}),
         },
       },
     };

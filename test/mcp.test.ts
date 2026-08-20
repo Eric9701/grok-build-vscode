@@ -2,21 +2,21 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { GrokSidebar } from "../src/sidebar";
 import { Session } from "../src/session";
-import { collectMcpNameLayers, hostMcpServers } from "../src/mcp-connectors";
+import { collectMcpNameFiles, collectMcpNameLayers, hostMcpServers } from "../src/mcp-connectors";
 import { RemoteClientState } from "../src/remote-client-state";
 import {
   MCP_GLOBAL_SCOPE_WARNING,
-  MCP_MANAGED_TAG,
   MCP_REMOTE_SERVER_KEYS,
-  applyMcpOriginTags,
-  mcpOriginTag,
+  filterMcpSettingsServers,
+  mcpConfigFileName,
+  mcpIsManaged,
+  mcpSettingsServersForCwd,
   mcpSettingsVisible,
   mcpServerDetail,
   mergeMcpNotification,
   parseMcpListResponse,
   projectMcpServerForRemote,
   projectMcpServersMessageForRemote,
-  taggedMcpServersForCwd,
 } from "../src/mcp";
 
 describe("MCP ACP catalog", () => {
@@ -171,8 +171,9 @@ describe("MCP remote inventory projection", () => {
 
   it("the remote allowlist is page fields only — not a denylist of today's secrets", () => {
     expect([...MCP_REMOTE_SERVER_KEYS]).toEqual([
-      "name", "displayName", "enabled", "source", "type", "managed", "scope", "scopeName", "tag", "status", "toolCount",
+      "name", "displayName", "enabled", "source", "type", "managed", "scope", "scopeName", "status", "toolCount",
     ]);
+    expect(MCP_REMOTE_SERVER_KEYS).not.toEqual(expect.arrayContaining(["tag", "configFile"]));
     expect(MCP_REMOTE_SERVER_KEYS).not.toEqual(expect.arrayContaining([
       "command", "args", "url", "error", "tools", "env", "headers",
     ]));
@@ -240,8 +241,8 @@ describe("MCP remote inventory projection", () => {
 
   it("classifies Grok inventory against Grok config files even if Codex or Claude is focused", () => {
     const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
-    const start = src.indexOf("private mcpNameLayersFor(");
-    const end = src.indexOf("private tagMcpServers(", start);
+    const start = src.indexOf("private mcpNameCatalogFor(");
+    const end = src.indexOf("private filterMcpServers(", start);
     const body = src.slice(start, end);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
@@ -263,16 +264,16 @@ describe("MCP remote inventory projection", () => {
       src.indexOf("private historyCwdFor("),
     );
     expect(refresh).toContain("this.mcpServersCwd = this.sessionCwd(session)");
-    expect(refresh).toContain("this.mcpServersView = this.tagMcpServers(this.mcpServers)");
+    expect(refresh).toContain("this.mcpServersView = this.filterMcpServers(this.mcpServers)");
     const tag = src.slice(
-      src.indexOf("private tagMcpServers("),
+      src.indexOf("private filterMcpServers("),
       src.indexOf("private reservedMcpIdentityFor("),
     );
-    expect(tag).toContain("taggedMcpServersForCwd");
+    expect(tag).toContain("mcpSettingsServersForCwd");
     expect(tag).toContain("catalogCwd: this.mcpServersCwd");
     expect(tag).not.toContain("viewCwd");
     expect(tag).not.toContain("sameCwd");
-    expect(tag).not.toContain("mcpNameLayersFor(session)");
+    expect(tag).not.toContain("mcpNameCatalogFor(session)");
     const notify = src.slice(
       src.indexOf('client.on("mcpNotification"'),
       src.indexOf('client.on("xaiNotification"'),
@@ -290,25 +291,15 @@ describe("MCP remote inventory projection", () => {
   });
 });
 
-describe("MCP origin tags", () => {
-  it("uses scopeName for managed connectors and falls back to grok.com", () => {
-    expect(mcpOriginTag({ source: "managed", scopeName: "Grok CLI" })).toBe("Grok CLI");
-    expect(mcpOriginTag({ source: "managed", scopeName: "Acme" })).toBe("Acme");
-    expect(mcpOriginTag({ managed: true })).toBe(MCP_MANAGED_TAG);
+describe("MCP settings sections", () => {
+  it("treats source=managed and managed=true as grok.com, everything else as local", () => {
+    expect(mcpIsManaged({ source: "managed", scopeName: "Grok CLI" })).toBe(true);
+    expect(mcpIsManaged({ managed: true })).toBe(true);
+    expect(mcpIsManaged({ source: "local" })).toBe(false);
+    expect(mcpIsManaged({})).toBe(false);
   });
 
-  it("attributes local servers as user-on-machine", () => {
-    expect(mcpOriginTag({
-      source: "local",
-      machineName: "Mac (macOS)",
-    })).toBe("User on: Mac (macOS)");
-    expect(mcpOriginTag({
-      source: "local",
-      machineName: "Dell (Windows 11)",
-    })).toBe("User on: Dell (Windows 11)");
-  });
-
-  it("keeps grok.com and user-level rows and drops project-file servers", () => {
+  it("keeps grok.com and user-level rows, drops project-file servers, and stamps configFile", () => {
     expect(mcpSettingsVisible({ source: "managed" })).toBe(true);
     expect(mcpSettingsVisible({ managed: true })).toBe(true);
     expect(mcpSettingsVisible({ source: "local", localLayer: "user" })).toBe(true);
@@ -320,40 +311,49 @@ describe("MCP origin tags", () => {
       ["docs", "project"],
       ["notes", "user"],
     ]);
-    const tagged = applyMcpOriginTags([
+    const files = collectMcpNameFiles([
+      { layer: "user", path: "/home/.grok/config.toml", names: ["notes"] },
+      { layer: "user", path: "/home/.cursor/mcp.json", names: ["linear"] },
+      { layer: "project", path: "/proj/.mcp.json", names: ["docs"] },
+    ]);
+    const filtered = filterMcpSettingsServers([
       { name: "managed_gateway:canva", displayName: "Canva", enabled: true, source: "managed", managed: true, scopeName: "Grok CLI" },
       { name: "docs", enabled: true, source: "local", command: "npx" },
       { name: "notes", enabled: true, source: "local" },
       { name: "linear", enabled: true, source: "local", command: "npx" },
-    ], { nameLayer: layers, machineName: "Mac (macOS)" });
-    expect(tagged.map((s) => s.name)).toEqual([
+    ], { nameLayer: layers, nameFile: files });
+    expect(filtered.map((s) => s.name)).toEqual([
       "managed_gateway:canva",
       "notes",
       "linear",
     ]);
-    expect(tagged.map((s) => s.tag)).toEqual([
-      "Grok CLI",
-      "User on: Mac (macOS)",
-      "User on: Mac (macOS)",
-    ]);
-    expect(tagged.find((s) => s.name === "docs")).toBeUndefined();
-    expect(tagged.find((s) => s.name === "notes")?.command).toBeUndefined();
-    expect(tagged.find((s) => s.name === "linear")?.command).toBe("npx");
+    expect(filtered.every((s) => !("tag" in s))).toBe(true);
+    expect(filtered.find((s) => s.name === "managed_gateway:canva")?.scopeName).toBe("Grok CLI");
+    expect(filtered.find((s) => s.name === "managed_gateway:canva")?.configFile).toBeUndefined();
+    expect(filtered.find((s) => s.name === "notes")?.configFile).toBe("config.toml");
+    expect(filtered.find((s) => s.name === "linear")?.configFile).toBe("mcp.json");
+    expect(filtered.find((s) => s.name === "docs")).toBeUndefined();
+    expect(filtered.find((s) => s.name === "notes")?.command).toBeUndefined();
+    expect(filtered.find((s) => s.name === "linear")?.command).toBe("npx");
+    expect(mcpConfigFileName("C:\\Users\\Dell\\.grok\\config.toml")).toBe("config.toml");
   });
 
-  it("the remote projection copies tag and scopeName, strips recipes, and never sees a project-file row", () => {
+  it("the remote projection copies scopeName, never tag or configFile, and never sees a project-file row", () => {
     const layers = new Map<string, "project" | "user">([
       ["docs", "project"],
       ["notes", "user"],
     ]);
-    const tagged = applyMcpOriginTags([
+    const files = collectMcpNameFiles([
+      { layer: "user", path: "/home/.grok/config.toml", names: ["notes"] },
+    ]);
+    const filtered = filterMcpSettingsServers([
       { name: "managed_gateway:linear", displayName: "Linear", enabled: true, source: "managed", managed: true, scopeName: "Grok CLI" },
       { name: "docs", enabled: true, source: "local", command: "npx", args: ["-y", "secret"] },
-      { name: "notes", enabled: true, source: "local", tag: "stale", command: "npx" },
-    ], { nameLayer: layers, machineName: "Dell (Windows 11)" });
+      { name: "notes", enabled: true, source: "local", command: "npx" },
+    ], { nameLayer: layers, nameFile: files });
     const remote = projectMcpServersMessageForRemote({
       type: "mcpServers",
-      servers: tagged,
+      servers: filtered,
       warning: MCP_GLOBAL_SCOPE_WARNING,
     });
     expect(remote.servers.map((s) => s.name)).toEqual(["managed_gateway:linear", "notes"]);
@@ -364,24 +364,26 @@ describe("MCP origin tags", () => {
       source: "managed",
       managed: true,
       scopeName: "Grok CLI",
-      tag: "Grok CLI",
     });
     expect(remote.servers[1]).toEqual({
       name: "notes",
       enabled: true,
       source: "local",
-      tag: "User on: Dell (Windows 11)",
     });
     expect(JSON.stringify(remote)).not.toContain("docs");
     expect(JSON.stringify(remote)).not.toContain("npx");
     expect(JSON.stringify(remote)).not.toContain("secret");
+    expect(JSON.stringify(remote)).not.toContain("tag");
+    expect(JSON.stringify(remote)).not.toContain("configFile");
+    expect(JSON.stringify(remote)).not.toContain("config.toml");
+    expect(filtered.find((s) => s.name === "notes")?.configFile).toBe("config.toml");
 
     const one = projectMcpServerForRemote({
       name: "notes",
       enabled: true,
       source: "local",
       scopeName: "ignored-for-local",
-      tag: "User on: Mac (macOS)",
+      configFile: "config.toml",
       command: "npx",
       args: ["-y", "secret"],
     });
@@ -390,9 +392,10 @@ describe("MCP origin tags", () => {
       enabled: true,
       source: "local",
       scopeName: "ignored-for-local",
-      tag: "User on: Mac (macOS)",
     });
     expect(one).not.toHaveProperty("command");
+    expect(one).not.toHaveProperty("tag");
+    expect(one).not.toHaveProperty("configFile");
   });
 });
 
@@ -410,78 +413,79 @@ describe("MCP catalog classified against the workspace it was read from", () => 
   ]);
 
   it("the reviewer's mis-classification hid global shared and promoted a-only", () => {
-    const buggy = applyMcpOriginTags(catalogA, { nameLayer: layersB, machineName: "Desk" });
+    const buggy = filterMcpSettingsServers(catalogA, { nameLayer: layersB });
     expect(buggy.map((s) => s.name)).toEqual(["a-only"]);
-    expect(buggy[0]?.tag).toBe("User on: Desk");
     expect(buggy.find((s) => s.name === "shared")).toBeUndefined();
   });
 
   it("keeps global shared and omits a-only when A's catalog is classified against A", () => {
-    const nameLayerFor = vi.fn((cwd: string) => cwd === "/proj-a" ? layersA : layersB);
-    const tagged = taggedMcpServersForCwd({
+    const nameCatalogFor = vi.fn((cwd: string) => ({
+      nameLayer: cwd === "/proj-a" ? layersA : layersB,
+    }));
+    const filtered = mcpSettingsServersForCwd({
       servers: catalogA,
       catalogCwd: "/proj-a",
-      nameLayerFor,
-      machineName: "Desk",
+      nameCatalogFor,
     });
-    expect(tagged.map((s) => s.name)).toEqual(["shared"]);
-    expect(tagged[0]?.tag).toBe("User on: Desk");
-    expect(tagged.find((s) => s.name === "a-only")).toBeUndefined();
-    expect(nameLayerFor).toHaveBeenCalledWith("/proj-a");
-    expect(nameLayerFor).not.toHaveBeenCalledWith("/proj-b");
+    expect(filtered.map((s) => s.name)).toEqual(["shared"]);
+    expect(filtered.find((s) => s.name === "a-only")).toBeUndefined();
+    expect(nameCatalogFor).toHaveBeenCalledWith("/proj-a");
+    expect(nameCatalogFor).not.toHaveBeenCalledWith("/proj-b");
   });
 
   it("a global row survives a render for a different workspace because project-local rows never entered the view", () => {
-    const nameLayerFor = vi.fn((cwd: string) => cwd === "/proj-a" ? layersA : layersB);
-    const storedView = taggedMcpServersForCwd({
+    const nameCatalogFor = vi.fn((cwd: string) => ({
+      nameLayer: cwd === "/proj-a" ? layersA : layersB,
+    }));
+    const storedView = mcpSettingsServersForCwd({
       servers: catalogA,
       catalogCwd: "/proj-a",
-      nameLayerFor,
-      machineName: "Desk",
+      nameCatalogFor,
     });
     expect(storedView.map((s) => s.name)).toEqual(["shared"]);
     expect(storedView.find((s) => s.name === "a-only")).toBeUndefined();
-    expect(nameLayerFor).toHaveBeenCalledWith("/proj-a");
-    expect(nameLayerFor).not.toHaveBeenCalledWith("/proj-b");
+    expect(nameCatalogFor).toHaveBeenCalledWith("/proj-a");
+    expect(nameCatalogFor).not.toHaveBeenCalledWith("/proj-b");
   });
 
   it("an unclassified catalog (no read-time cwd) yields an empty view", () => {
-    const nameLayerFor = vi.fn();
-    expect(taggedMcpServersForCwd({
+    const nameCatalogFor = vi.fn();
+    expect(mcpSettingsServersForCwd({
       servers: catalogA,
       catalogCwd: undefined,
-      nameLayerFor,
-      machineName: "Desk",
+      nameCatalogFor,
     })).toEqual([]);
-    expect(nameLayerFor).not.toHaveBeenCalled();
+    expect(nameCatalogFor).not.toHaveBeenCalled();
   });
 
   it("sidebar stores the classified view, so a B session cannot reclassify A's inventory", () => {
     const proto = GrokSidebar.prototype as unknown as {
-      mcpServersMessage(): { type: "mcpServers"; servers: Array<{ name: string; tag?: string }> };
-      tagMcpServers: (servers: typeof catalogA) => Array<{ name: string; tag?: string }>;
+      mcpServersMessage(): { type: "mcpServers"; servers: Array<{ name: string }> };
+      filterMcpServers: (servers: typeof catalogA) => Array<{ name: string }>;
     };
     const instance = Object.create(proto) as {
       mcpServers: typeof catalogA;
       mcpServersCwd: string | undefined;
-      mcpServersView: Array<{ name: string; tag?: string }>;
-      mcpNameLayersFor: ReturnType<typeof vi.fn>;
+      mcpServersView: Array<{ name: string }>;
+      mcpNameCatalogFor: ReturnType<typeof vi.fn>;
     };
     instance.mcpServers = catalogA;
     instance.mcpServersCwd = "/proj-a";
-    instance.mcpNameLayersFor = vi.fn((cwd: string) => cwd === "/proj-a" ? layersA : layersB);
-    instance.mcpServersView = proto.tagMcpServers.call(instance, catalogA);
+    instance.mcpNameCatalogFor = vi.fn((cwd: string) => ({
+      nameLayer: cwd === "/proj-a" ? layersA : layersB,
+    }));
+    instance.mcpServersView = proto.filterMcpServers.call(instance, catalogA);
 
     expect(instance.mcpServersView.map((s) => s.name)).toEqual(["shared"]);
     expect(instance.mcpServersView.find((s) => s.name === "a-only")).toBeUndefined();
-    expect(instance.mcpNameLayersFor).toHaveBeenCalledWith("/proj-a");
-    expect(instance.mcpNameLayersFor).not.toHaveBeenCalledWith("/proj-b");
+    expect(instance.mcpNameCatalogFor).toHaveBeenCalledWith("/proj-a");
+    expect(instance.mcpNameCatalogFor).not.toHaveBeenCalledWith("/proj-b");
 
-    instance.mcpNameLayersFor.mockClear();
+    instance.mcpNameCatalogFor.mockClear();
     const forB = proto.mcpServersMessage.call(instance);
     expect(forB.servers.map((s) => s.name)).toEqual(["shared"]);
     expect(forB.servers.find((s) => s.name === "a-only")).toBeUndefined();
-    expect(instance.mcpNameLayersFor).not.toHaveBeenCalled();
+    expect(instance.mcpNameCatalogFor).not.toHaveBeenCalled();
   });
 
   it("a remote snapshot for a second tab on another project receives the stored global view", () => {
@@ -554,7 +558,7 @@ describe("MCP catalog classified against the workspace it was read from", () => 
       src.indexOf("private postMcpServers("),
       src.indexOf("private mcpServersMessage("),
     );
-    expect(post).toContain("this.post(tagged)");
+    expect(post).toContain("this.post(view)");
     expect(post).not.toContain("sendRemoteRepo");
     expect(post).not.toContain("clientsForCwd");
 
@@ -563,11 +567,11 @@ describe("MCP catalog classified against the workspace it was read from", () => 
     };
     const posted: Array<{ type: string; servers: Array<{ name: string }> }> = [];
     const instance = Object.create(proto) as {
-      mcpServersView: Array<{ name: string; enabled: boolean; tag: string }>;
+      mcpServersView: Array<{ name: string; enabled: boolean }>;
       post: (msg: { type: string; servers: Array<{ name: string }> }) => void;
       settingsEditor: undefined;
     };
-    instance.mcpServersView = [{ name: "shared", enabled: true, tag: "User on: Desk" }];
+    instance.mcpServersView = [{ name: "shared", enabled: true }];
     instance.post = (msg) => posted.push(msg);
     instance.settingsEditor = undefined;
     proto.postMcpServers.call(instance, {

@@ -44,13 +44,12 @@ See `research/mcp-orphan-probe.cjs`.
 
 `mcpConnectors` is mirrored (ids, names, connected — no tokens).
 `mcpServers` is `allowlist`-projected (`projectMcpServerForRemote`: page
-fields only, never the launch recipe). `scopeName` and `tag` are on that
-allowlist so a phone can show the same provenance badge as the desk
-(managed `scopeName` / grok.com, or `User on: <deviceDisplayName>`).
+fields only, never the launch recipe). `scopeName` is on that allowlist
+(the team name in the grok.com section). `tag` and `configFile` are not.
 Project-file servers are omitted from this list (`mcpSettingsVisible`);
-the session still loads them. Origin tags for that inventory always
-classify against Grok config files for the workspace the catalog was
-read from (`mcpServersCwd` / `taggedMcpServersForCwd` → `mcpNameLayersFor`
+the session still loads them. Classification for that inventory always
+runs against Grok config files for the workspace the catalog was
+read from (`mcpServersCwd` / `mcpSettingsServersForCwd` → `mcpNameCatalogFor`
 → `mcpConfigPaths` with `provider: "grok"`), never the receiving or
 focused session's cwd or provider. The classified global-only view is
 stored (`mcpServersView`) and rendered anywhere; project-file rows
@@ -58,5 +57,7 @@ never enter it.
 `connectMcpConnector` / `disconnectMcpConnector` are host-local:
 OAuth needs a browser on the machine that owns `~/.mcp-auth`. Settings →
 Connectors on a remote shows the desk-owned catalog read-only, the live Grok
-inventory, and a grok.com/connectors link. `listMcpServers` is inbound view
+inventory, and a grok.com/connectors Open in the grok.com section header.
+Local Grok connectors are listed with a sentence that they are managed on
+the desk; there is no Open button. `listMcpServers` is inbound view
 so a phone can refresh that inventory without the desk opening the page.

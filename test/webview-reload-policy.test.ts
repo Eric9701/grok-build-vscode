@@ -82,7 +82,7 @@ describe("source gates — capability at the ownership boundary", () => {
     expect(src).toMatch(/canRelocateView:\s*true/);
     expect(src).toMatch(/canShowOutput:\s*true/);
     expect(src).toMatch(/canToggleDevTools:\s*false/);
-    expect(src).toMatch(/canShowMcpSettings:\s*false/);
+    expect(src).toMatch(/canShowMcpSettings:\s*true/);
     expect(src).toMatch(/canOpenInEditor:\s*true/);
     expect(src).toMatch(/canPreviewInApp:\s*false/);
     expect(src).toMatch(/canOpenSettingsEditor:\s*true/);

@@ -761,10 +761,9 @@ export interface Host {
    */
   readonly canToggleDevTools: boolean;
   /**
-   * Settings → Connectors. OPT-IN: absent/false = hide.
-   * True only for unpackaged desktop (`!app.isPackaged`, same signal as
-   * {@link canToggleDevTools}). VS Code is false and does not advertise
-   * `capabilities.mcpSettings`.
+   * Settings → Connectors. OPT-IN: absent/false = hide the nav row.
+   * Desktop and VS Code set true; the webview still reads
+   * `capabilities.mcpSettings` so an older host can omit the page.
    */
   readonly canShowMcpSettings: boolean;
   /**
