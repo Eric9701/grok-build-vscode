@@ -524,6 +524,18 @@ export type HostMsg =
   // Steer (#52) is unavailable on this CLI (`_x.ai/interject` → -32601). Latches
   // the button off for the session; the queue stays as the fallback.
   | { type: "steerUnavailable" }
+  /**
+   * Grok-only thumbs (#114). Off until the host has a positive signal
+   * (`session/new` `_meta.feedbackEnabled` or an advertised `feedback` command)
+   * and not latched off by `-32601` / "Feedback is disabled." Older hosts omit
+   * the frame — the webview must not invent buttons.
+   */
+  | { type: "feedbackAvailability"; available: boolean }
+  /**
+   * Host-confirmed rating for one visible user bubble's agent footer. `0` clears.
+   * Nothing is read back from the agent; this is local session state.
+   */
+  | { type: "turnFeedbackAck"; userBubbleIndex: number; rating: -1 | 0 | 1 }
   // Session-cumulative billing (#53), summed by the host across the session's
   // turns. `turn` is the last prompt's own usage. Both omitted when the CLI sent
   // no `_meta.usage` — the popover then shows only the context row, never zeros.
@@ -740,6 +752,13 @@ export type WebviewMsg =
   // waiting for it. Host-owned like the queue — the webview never sends the
   // prompt itself, so a -32601 fallback can re-queue the text without losing it.
   | { type: "steerSend"; text: string }
+  /**
+   * Rate the agent turn that answered visible user bubble `userBubbleIndex`
+   * (0-based, steers excluded — same index Rewind uses). `rating` 0 clears.
+   * Host maps this to feedback `turn_number`; omit that mapping and the agent
+   * files the rating against the wrong turn.
+   */
+  | { type: "turnFeedback"; userBubbleIndex: number; rating: -1 | 0 | 1; totalUserBubbles?: number }
   // Fork (#48): branch this session's conversation into a new one and focus it.
   // `sessionId` is additive: old clients omit it and keep today's path; a
   // present id that is not the dispatch-resolved session is refused.
@@ -800,7 +819,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, findInSession: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
   sessions: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
-  steerUnavailable: true, usage: true,
+  steerUnavailable: true, feedbackAvailability: true, turnFeedbackAck: true, usage: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
@@ -822,7 +841,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   pasteImage: true, uploadFile: true, voiceStart: true,
   voiceStop: true, remoteVoiceStart: true, remoteVoiceChunk: true,
   remoteVoiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
-  steerSend: true, forkSession: true,
+  steerSend: true, turnFeedback: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
   rewindSession: true, editLastMessage: true, uiConfirmAnswer: true, workflowControl: true,
   refreshContextDetails: true,

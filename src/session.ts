@@ -132,6 +132,18 @@ export class Session {
   /** Latched after this process returns -32601 for `_x.ai/session/info`. */
   sessionInfoUnsupported = false;
 
+  /**
+   * Grok thumbs (#114). Off until `session/new` `_meta.feedbackEnabled` or an
+   * advertised `feedback` command says otherwise. `feedbackUnsupported` latches
+   * a -32601 / disabled-feedback RPC so the buttons cannot come back on this
+   * process. `turnRatings` is local UI state keyed by visible user-bubble index.
+   */
+  feedbackAvailable = false;
+  feedbackUnsupported = false;
+  feedbackMetaEnabled?: boolean;
+  feedbackCommandsAdvertise?: boolean;
+  turnRatings = new Map<number, 1 | -1>();
+
   /** A live compact notification already supplied this manual compact's count. */
   sawCompactNotification = false;
 
@@ -595,6 +607,10 @@ export function sessionUiSnapshot(
     // Unverified probes stay clickable so the user can re-check without restart.
     recheckable: !session.planModeAvailable && !session.planModeVersionVerified,
   });
+  messages.push({ type: "feedbackAvailability", available: session.feedbackAvailable });
+  for (const [userBubbleIndex, rating] of [...session.turnRatings.entries()].sort((a, b) => a[0] - b[0])) {
+    messages.push({ type: "turnFeedbackAck", userBubbleIndex, rating });
+  }
   for (const [requestId, pending] of session.pendingPermissions) {
     messages.push({
       type: "permissionOptions",

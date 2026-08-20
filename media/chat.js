@@ -383,6 +383,9 @@
     // whether it works — we offer it and let the host latch this off the first
     // time the CLI answers -32601 (the text falls back to the queue, never lost).
     steerSupported: true,
+    // Grok thumbs (#114). Off until the host advertises feedbackAvailability.
+    feedbackAvailable: false,
+    turnRatings: new Map(),
     // Claude Code has no mid-turn interject, so a message typed while it is
     // working is always SCHEDULED, never steered — whatever the steer-by-default
     // setting says (owner, 2026-08-17). Offering Steer there would promise the
@@ -736,6 +739,8 @@
     listTree: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></svg>`,
     zap: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>`,
     copy: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`,
+    thumbsUp: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>`,
+    thumbsDown: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>`,
     check: `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
     squareChevronRight: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m10 8 4 4-4 4"/></svg>`,
     chevronRight: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
@@ -6997,6 +7002,8 @@
     state.planHistoryQueue = [];
     state.permissionHistoryQueue = [];
     state.userMsgCount = 0;
+    state.feedbackAvailable = false;
+    state.turnRatings = new Map();
     state.interjectionCount = 0;
     state.historyEventCount = 0;
     state.lastTurnUsage = null;
@@ -7453,6 +7460,10 @@
         editBtn.innerHTML = `<span class="msg-action-glyph">${ICON.pencil}</span>`;
         actions.appendChild(editBtn);
       }
+      if (role === "agent" && state.userMsgCount > 0) {
+        actions.dataset.userBubbleIndex = String(state.userMsgCount - 1);
+        if (feedbackOffered()) insertTurnThumbs(actions);
+      }
       const ts = document.createElement("span");
       ts.className = "msg-timestamp";
       const replayTimestamp = opts && opts.timestampMs;
@@ -7552,6 +7563,68 @@
       ts.textContent = formatTime(Date.now());
     } else if (typeof timestampMs === "number" && Number.isFinite(timestampMs)) {
       ts.textContent = formatTime(timestampMs);
+    }
+  }
+
+  function feedbackOffered() {
+    return state.feedbackAvailable === true && state.activeProvider !== "codex" && state.activeProvider !== "claude";
+  }
+
+  function insertTurnThumbs(actions) {
+    if (actions.querySelector(".msg-thumbs")) return;
+    const wrap = document.createElement("span");
+    wrap.className = "msg-thumbs";
+    wrap.appendChild(makeThumbButton("up", 1, "Good response", ICON.thumbsUp));
+    wrap.appendChild(makeThumbButton("down", -1, "Bad response", ICON.thumbsDown));
+    const ts = actions.querySelector(".msg-timestamp");
+    if (ts) actions.insertBefore(wrap, ts);
+    else actions.appendChild(wrap);
+    paintTurnThumbs(actions);
+  }
+
+  function makeThumbButton(kind, rating, label, glyph) {
+    const btn = document.createElement("button");
+    btn.className = `msg-action-btn msg-thumb-btn msg-thumb-${kind}`;
+    btn.type = "button";
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("aria-pressed", "false");
+    btn.dataset.rating = String(rating);
+    btn.innerHTML = `<span class="msg-action-glyph">${glyph}</span>`;
+    return btn;
+  }
+
+  function paintTurnThumbs(actions) {
+    const idx = Number(actions.dataset.userBubbleIndex);
+    const rating = Number.isInteger(idx) ? (state.turnRatings.get(idx) || 0) : 0;
+    actions.classList.toggle("has-rating", rating === 1 || rating === -1);
+    const up = actions.querySelector(".msg-thumb-up");
+    const down = actions.querySelector(".msg-thumb-down");
+    if (up) up.setAttribute("aria-pressed", rating === 1 ? "true" : "false");
+    if (down) down.setAttribute("aria-pressed", rating === -1 ? "true" : "false");
+  }
+
+  function syncFeedbackButtons() {
+    for (const actions of messagesEl.querySelectorAll(".msg.agent .msg-actions")) {
+      const existing = actions.querySelector(".msg-thumbs");
+      const idx = Number(actions.dataset.userBubbleIndex);
+      if (feedbackOffered() && Number.isInteger(idx) && idx >= 0) {
+        if (!existing) insertTurnThumbs(actions);
+        else paintTurnThumbs(actions);
+      } else if (existing) {
+        existing.remove();
+        actions.classList.remove("has-rating");
+        delete actions.dataset.feedbackPending;
+      }
+    }
+  }
+
+  function applyTurnFeedbackAck(userBubbleIndex, rating) {
+    if (rating === 1 || rating === -1) state.turnRatings.set(userBubbleIndex, rating);
+    else state.turnRatings.delete(userBubbleIndex);
+    for (const actions of messagesEl.querySelectorAll(`.msg.agent .msg-actions[data-user-bubble-index="${userBubbleIndex}"]`)) {
+      delete actions.dataset.feedbackPending;
+      paintTurnThumbs(actions);
     }
   }
 
@@ -13328,6 +13401,9 @@
         // Nothing streaming survives a truncation — drop the per-turn handles so
         // the next turn starts clean rather than appending into a removed node.
         state.userMsgCount = msg.surviving;
+        for (const key of [...state.turnRatings.keys()]) {
+          if (key >= msg.surviving) state.turnRatings.delete(key);
+        }
         state.activeAgentEl = null;
         state.activeAgentRaw = "";
         state.activeUserEl = null;
@@ -13425,6 +13501,7 @@
       case "session": {
         state.currentModelId = msg.currentModelId;
         state.activeProvider = msg.provider === "codex" || msg.provider === "claude" ? msg.provider : "grok";
+        syncFeedbackButtons();
         syncProviderVoice();
         if (state.railTransition?.kind === "new") renderRail();
         state.isWorktree = !!msg.worktree; // gates the gear Apply/Remove worktree items
@@ -14269,6 +14346,18 @@
         state.steerByDefault = false;
         renderQueuedBlocks();
         break;
+      case "feedbackAvailability":
+        state.feedbackAvailable = msg.available === true;
+        if (!state.feedbackAvailable) {
+          for (const actions of messagesEl.querySelectorAll(".msg.agent .msg-actions")) {
+            delete actions.dataset.feedbackPending;
+          }
+        }
+        syncFeedbackButtons();
+        break;
+      case "turnFeedbackAck":
+        applyTurnFeedbackAck(msg.userBubbleIndex, msg.rating);
+        break;
       case "usage":
         // Billing split (#53). `turn` is absent on a restore (we only stored the
         // session total), so keep whatever we have rather than blanking it.
@@ -15033,6 +15122,27 @@
           onbCopy.innerHTML = prevHtml;
           onbCopy.classList.remove("copied");
         }, 1500);
+      });
+      return;
+    }
+    const thumbBtn = e.target.closest(".msg-thumb-btn");
+    if (thumbBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (state.replaying || !feedbackOffered()) return;
+      const actions = thumbBtn.closest(".msg-actions");
+      if (!actions || actions.dataset.feedbackPending === "1") return;
+      const idx = Number(actions.dataset.userBubbleIndex);
+      const clicked = Number(thumbBtn.dataset.rating);
+      if (!Number.isInteger(idx) || idx < 0 || (clicked !== 1 && clicked !== -1)) return;
+      const current = state.turnRatings.get(idx) || 0;
+      const next = current === clicked ? 0 : clicked;
+      actions.dataset.feedbackPending = "1";
+      vscode.postMessage({
+        type: "turnFeedback",
+        userBubbleIndex: idx,
+        rating: next,
+        totalUserBubbles: visibleUserBubbleCount(),
       });
       return;
     }

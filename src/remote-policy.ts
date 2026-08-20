@@ -235,6 +235,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   dequeueSend: "propose",
   clearQueuedSends: "propose",
   steerSend: "propose",
+  // A thumbs rating is input about the conversation the remote is already
+  // driving — same class as steerSend, not a desk-local picker or a destructive
+  // approval. The host files it against the desk session (`client_type` is
+  // extension/desktop even when a phone clicked).
+  turnFeedback: "propose",
   forkSession: "propose",
   // Worktree create/apply/remove: REVERTED to host-local 2026-08-07, hours
   // after being widened to "propose" the same day. The widening was safe in
@@ -639,6 +644,8 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   queuedSends: "mirror",
   submitQueuedSend: "mirror",
   steerUnavailable: "mirror",
+  feedbackAvailability: "mirror",
+  turnFeedbackAck: "mirror",
   usage: "mirror",
 };
 
@@ -778,6 +785,8 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   queuedSends: "scope",
   submitQueuedSend: "scope",
   steerUnavailable: "scope",
+  feedbackAvailability: "scope",
+  turnFeedbackAck: "scope",
   usage: "scope",
 };
 

@@ -153,6 +153,80 @@ describe("AcpClient notification metadata", () => {
   });
 });
 
+describe("AcpClient submitFeedback", () => {
+  it("sends _x.ai/feedback with snake_case thumbs params", async () => {
+    const { client, written } = clientWithFakeProc();
+    client.sessionId = "s1";
+    const pending = client.submitFeedback({
+      ratingValue: 1,
+      turnNumber: 2,
+      clientType: "extension",
+      clientVersion: "3.13.0",
+    });
+    const msg = JSON.parse(written[0]);
+    expect(msg).toMatchObject({
+      method: "_x.ai/feedback",
+      params: {
+        session_id: "s1",
+        client_type: "extension",
+        rating_type: "thumbs",
+        rating_value: 1,
+        turn_number: 2,
+        client_version: "3.13.0",
+      },
+    });
+    expect(msg.params.request_id).toBeUndefined();
+    (client as any).onLine(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }));
+    await expect(pending).resolves.toBe("ok");
+  });
+
+  it("degrades -32601 and disabled-feedback to unsupported", async () => {
+    const { client } = clientWithFakeProc();
+    client.sessionId = "s1";
+    (client as any).request = vi.fn().mockRejectedValue({ code: -32601, message: "Method not found" });
+    await expect(client.submitFeedback({
+      ratingValue: -1,
+      turnNumber: 0,
+      clientType: "desktop",
+    })).resolves.toBe("unsupported");
+
+    (client as any).request = vi.fn().mockRejectedValue({
+      code: -32603,
+      message: "Internal error",
+      data: "Feedback is disabled. To enable, set GROK_FEEDBACK_ENABLED=true",
+    });
+    await expect(client.submitFeedback({
+      ratingValue: 1,
+      turnNumber: 0,
+      clientType: "desktop",
+    })).resolves.toBe("unsupported");
+  });
+
+  it("does not call the RPC for Codex or Claude", async () => {
+    const { client } = clientWithFakeProc({ backend: new ClaudeBackend() });
+    client.sessionId = "s1";
+    const request = vi.fn();
+    (client as any).request = request;
+    await expect(client.submitFeedback({
+      ratingValue: 1,
+      turnNumber: 0,
+      clientType: "extension",
+    })).resolves.toBe("unsupported");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("does not treat -32602 as a capability gap", async () => {
+    const { client } = clientWithFakeProc();
+    client.sessionId = "s1";
+    (client as any).request = vi.fn().mockRejectedValue({ code: -32602, message: "Invalid params" });
+    await expect(client.submitFeedback({
+      ratingValue: 1,
+      turnNumber: 0,
+      clientType: "extension",
+    })).rejects.toMatchObject({ code: -32602 });
+  });
+});
+
 describe("AcpClient session/info", () => {
   it("returns the structured control-plane context without prompting", async () => {
     const { client } = clientWithFakeProc();

@@ -262,6 +262,8 @@ rl.on("line", async (line) => {
       return send({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     case "session/cancel":
       return respondOk(id, {});
+    case "_x.ai/feedback":
+      return respondOk(id, {});
     case "_x.ai/interject":
       if (params.text.includes("SCENARIO_INTERJECT_ACK_THEN_EXIT")) {
         // Put the successful response on stdout and exit immediately after the

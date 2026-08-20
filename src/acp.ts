@@ -68,6 +68,13 @@ import {
   type AcpTimeouts,
 } from "./acp-timeout";
 import type { AcpMcpStdioServer } from "./mcp-connectors";
+import {
+  FEEDBACK_RPC_METHOD,
+  buildClientFeedbackParams,
+  isFeedbackDisabledError,
+  type FeedbackClientType,
+  type ThumbsRating,
+} from "./feedback";
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -705,6 +712,38 @@ export class AcpClient extends EventEmitter {
   }
 
   /**
+   * Spontaneous thumbs rating (#114). Logical method `x.ai/feedback`; wire
+   * name `_x.ai/feedback` (ACP `_` extension prefix — a bare `x.ai/feedback`
+   * is -32601 at decode). `"unsupported"` on -32601, a disabled-feedback
+   * internal_error, or a non-Grok backend so the caller can hide the buttons.
+   */
+  async submitFeedback(opts: {
+    ratingValue: ThumbsRating;
+    turnNumber: number;
+    clientType: FeedbackClientType;
+    clientVersion?: string;
+  }): Promise<"ok" | "unsupported"> {
+    if (this.provider !== "grok") return "unsupported";
+    if (!this.sessionId) throw new Error("no session");
+    try {
+      await this.request(FEEDBACK_RPC_METHOD, buildClientFeedbackParams({
+        sessionId: this.sessionId,
+        clientType: opts.clientType,
+        ratingValue: opts.ratingValue,
+        turnNumber: opts.turnNumber,
+        clientVersion: opts.clientVersion,
+      }));
+      return "ok";
+    } catch (e: any) {
+      if (isMethodNotFoundError(e) || isFeedbackDisabledError(e)) {
+        this.opts.log("[feedback] CLI does not accept x.ai/feedback");
+        return "unsupported";
+      }
+      throw e;
+    }
+  }
+
+  /**
    * Fork a session (#48) — copies the conversation into a NEW session id, leaving
    * the source untouched (probe-verified: parent history byte-unchanged after
    * forking + using the fork). Params are `ForkSessionRequest`'s three required
@@ -1118,7 +1157,7 @@ export class AcpClient extends EventEmitter {
         if (p.timer) clearTimeout(p.timer);
         // A response is ACP traffic too, and the idle policy (#117) is "fire
         // only if nothing has been heard". Concurrent in-turn calls answer
-        // during a long prompt — `_x.ai/interject`, `session/set_mode` — and
+        // during a long prompt — `_x.ai/interject`, `_x.ai/feedback`, `session/set_mode` — and
         // each reply proves the peer is alive. Re-arm AFTER this entry is out
         // of `pending`, so a prompt's own response doesn't arm a timer for a
         // request that just finished.

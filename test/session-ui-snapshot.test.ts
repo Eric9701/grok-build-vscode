@@ -15,6 +15,7 @@ describe("sessionUiSnapshot", () => {
     expect(sessionUiSnapshot(session, "plan")).toEqual([
       { type: "modeChanged", modeId: "plan" },
       { type: "planModeAvailability", available: true, reason: undefined, recheckable: false },
+      { type: "feedbackAvailability", available: false },
       { type: "chips", chips: session.chips },
       { type: "queuedSends", items: ["queued for B"] },
     ]);
@@ -58,6 +59,27 @@ describe("sessionUiSnapshot", () => {
       available: false,
       reason: "Could not verify the installed Grok CLI version.",
       recheckable: true,
+    });
+  });
+
+  it("replays thumbs availability and confirmed ratings after a focus swap", () => {
+    const session = new Session();
+    session.feedbackAvailable = true;
+    session.turnRatings.set(0, 1);
+    session.turnRatings.set(2, -1);
+    expect(sessionUiSnapshot(session, "agent")).toContainEqual({
+      type: "feedbackAvailability",
+      available: true,
+    });
+    expect(sessionUiSnapshot(session, "agent")).toContainEqual({
+      type: "turnFeedbackAck",
+      userBubbleIndex: 0,
+      rating: 1,
+    });
+    expect(sessionUiSnapshot(session, "agent")).toContainEqual({
+      type: "turnFeedbackAck",
+      userBubbleIndex: 2,
+      rating: -1,
     });
   });
 

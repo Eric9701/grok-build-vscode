@@ -45,6 +45,7 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.ready).toBe("control");
     expect(INBOUND_DISPOSITION.send).toBe("propose");
     expect(INBOUND_DISPOSITION.steerSend).toBe("propose");
+    expect(INBOUND_DISPOSITION.turnFeedback).toBe("propose");
     expect(INBOUND_DISPOSITION.uploadFile).toBe("propose");
     // Workspace file mutation — propose (not view); existing files only.
     expect(INBOUND_DISPOSITION.writeProjectFile).toBe("propose");
@@ -106,6 +107,8 @@ describe("remote-policy classification tables", () => {
     expect(OUTBOUND_DISPOSITION.messageChunk).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.permissionRequest).toBe("mirror");
     expect(OUTBOUND_DISPOSITION.permissionOptions).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.feedbackAvailability).toBe("mirror");
+    expect(OUTBOUND_DISPOSITION.turnFeedbackAck).toBe("mirror");
   });
 });
 

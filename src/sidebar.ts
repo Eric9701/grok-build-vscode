@@ -298,6 +298,17 @@ import {
   userFacingRewindPoints,
 } from "./rewind";
 import {
+  commandsAdvertiseFeedback,
+  decideFeedbackAvailability,
+  feedbackClientType,
+  feedbackMapIsConsistent,
+  feedbackTurnNumberForVisibleBubble,
+  feedbackUserItemsFromBuffer,
+  isThumbsRating,
+  parseFeedbackEnabledMeta,
+  truncateTurnRatings,
+} from "./feedback";
+import {
   parseRunProgressUpdate,
   workflowControlCommand,
 } from "./run-progress";
@@ -2757,6 +2768,94 @@ Only continue if you trust this code.`,
       session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
       this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
       this.emit(session, { type: "error", text: `Steer failed: ${e?.message ?? e}. Your message was queued instead.` });
+    }
+  }
+
+  private refreshFeedbackAvailability(session: Session): void {
+    const available = decideFeedbackAvailability({
+      provider: session.provider,
+      metaEnabled: session.feedbackMetaEnabled,
+      commandsAdvertise: session.feedbackCommandsAdvertise,
+      latchedUnsupported: session.feedbackUnsupported,
+    });
+    if (session.feedbackAvailable === available) return;
+    session.feedbackAvailable = available;
+    this.emit(session, { type: "feedbackAvailability", available });
+  }
+
+  private latchFeedbackUnavailable(session: Session): void {
+    session.feedbackUnsupported = true;
+    this.refreshFeedbackAvailability(session);
+  }
+
+  private ackTurnFeedback(session: Session, userBubbleIndex: number, rating: -1 | 0 | 1): void {
+    if (rating === 1 || rating === -1) session.turnRatings.set(userBubbleIndex, rating);
+    else session.turnRatings.delete(userBubbleIndex);
+    this.emit(session, { type: "turnFeedbackAck", userBubbleIndex, rating });
+  }
+
+  /**
+   * Per-turn thumbs (#114). Maps the visible user bubble to feedback
+   * `turn_number` (User-item index, including primers and steers — not rewind
+   * `promptIndex`). Refuses rather than omitting `turn_number`.
+   */
+  private async handleTurnFeedback(
+    userBubbleIndex: number,
+    rating: unknown,
+    totalUserBubbles: number | undefined,
+    session: Session,
+    requester?: RemoteRequester,
+  ): Promise<void> {
+    const previous = session.turnRatings.get(userBubbleIndex) ?? 0;
+    const revert = () => this.ackTurnFeedback(session, userBubbleIndex, previous);
+    if (!isThumbsRating(rating) || !Number.isInteger(userBubbleIndex) || userBubbleIndex < 0) {
+      revert();
+      return;
+    }
+    if (session.provider !== "grok" || !session.feedbackAvailable) {
+      this.latchFeedbackUnavailable(session);
+      revert();
+      return;
+    }
+    const client = session.client;
+    if (!client?.sessionId) {
+      revert();
+      this.reportRequester(requester, "warning", "Start a Grok session before rating a turn.");
+      return;
+    }
+    const items = feedbackUserItemsFromBuffer(session.buffer);
+    if (!feedbackMapIsConsistent(items, totalUserBubbles)) {
+      revert();
+      this.reportRequester(requester, "warning", "Couldn't attach that rating to a turn.");
+      return;
+    }
+    const turnNumber = feedbackTurnNumberForVisibleBubble(items, userBubbleIndex);
+    if (turnNumber == null) {
+      revert();
+      this.reportRequester(requester, "warning", "Couldn't attach that rating to a turn.");
+      return;
+    }
+    try {
+      const result = await client.submitFeedback({
+        ratingValue: rating,
+        turnNumber,
+        clientType: feedbackClientType(!!this.host.canSwitchWorkspaceFolder),
+        clientVersion: this.context.extensionVersion,
+      });
+      if (result === "unsupported") {
+        this.latchFeedbackUnavailable(session);
+        revert();
+        this.reportRequester(
+          requester,
+          "warning",
+          "Turn ratings need a Grok Build CLI that accepts feedback.",
+        );
+        return;
+      }
+      this.ackTurnFeedback(session, userBubbleIndex, rating);
+    } catch (e: any) {
+      revert();
+      this.reportRequester(requester, "error", `Couldn't send that rating: ${e?.message ?? e}`);
     }
   }
 
@@ -6819,6 +6918,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.replayUserIsInterjection = false;
     session.userMessageCount = 0;
     session.inUserMessage = false;
+    session.feedbackAvailable = false;
+    session.feedbackUnsupported = false;
+    session.feedbackMetaEnabled = undefined;
+    session.feedbackCommandsAdvertise = undefined;
+    session.turnRatings.clear();
     session.activeSessionId = undefined;
     session.titleGenerated = false;
     session.firstUserMessageForTitle = undefined;
@@ -6992,6 +7096,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         worktree: !!session.worktree,
         provider: session.provider,
       });
+      if (session.provider === "grok") {
+        const metaEnabled = parseFeedbackEnabledMeta(res);
+        if (metaEnabled !== undefined) session.feedbackMetaEnabled = metaEnabled;
+        this.refreshFeedbackAvailability(session);
+      }
     });
     client.on("sessionTitle", (title: string) => {
       if (gen !== session.gen || !title.trim()) return;
@@ -7046,6 +7155,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("commandsUpdate", (cmds) => {
       if (gen !== session.gen) return;
       this.emit(session, { type: "commandsUpdate", commands: cmds });
+      if (session.provider === "grok") {
+        session.feedbackCommandsAdvertise = commandsAdvertiseFeedback(cmds);
+        this.refreshFeedbackAvailability(session);
+      }
     });
     client.on("messageChunk", (text: string) => {
       if (gen !== session.gen) return;
@@ -7917,6 +8030,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       case "steerSend":
         await this.steerSend(msg.text, session, requester);
+        break;
+      case "turnFeedback":
+        await this.handleTurnFeedback(msg.userBubbleIndex, msg.rating, msg.totalUserBubbles, session, requester);
         break;
       case "forkSession":
         if (this.refuseMismatchedSessionId(msg.sessionId, session, requester)) break;
@@ -11353,6 +11469,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private applyRewindToView(session: Session, surviving: number): void {
     session.buffer = truncateReplayBuffer(session.buffer, surviving);
     session.userMessageCount = surviving;
+    session.turnRatings = truncateTurnRatings(session.turnRatings, surviving);
     session.historyEventCount = historyEventCount(session.buffer);
     // Positions for anything persisted after this point are counted against the
     // same number the webview now holds.
