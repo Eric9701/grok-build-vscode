@@ -23,7 +23,6 @@ export const MCP_REMOTE_CONNECT_TIMEOUT_MS = 180_000;
 export type ConnectorId =
   | "linear"
   | "notion"
-  | "figma"
   | "atlassian"
   | "canva"
   | "stripe"
@@ -111,12 +110,6 @@ export const TIER1_CONNECTORS: readonly ConnectorDef[] = [
     name: "Notion",
     endpoint: "https://mcp.notion.com/mcp",
     description: "Search and edit pages in your Notion workspace.",
-  },
-  {
-    id: "figma",
-    name: "Figma",
-    endpoint: "https://mcp.figma.com/mcp",
-    description: "Read design context from Figma files.",
   },
   {
     id: "atlassian",
@@ -545,6 +538,8 @@ export function mcpConfigPaths(opts: {
       `${opts.grokHome}/config.toml`,
       `${cwd}/.grok/config.toml`,
       `${opts.userHome}/.cursor/mcp.json`,
+      // Grok loads Claude's user-level MCP map as a compatibility source.
+      `${opts.userHome}/.claude.json`,
     );
   }
   if (opts.provider === "claude") {

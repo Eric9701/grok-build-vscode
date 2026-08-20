@@ -839,6 +839,8 @@ export class GrokSidebar {
   private grokMcpReserved: ReservedMcpIdentity = { names: [], urls: [] };
   private mcpConnectingId: ConnectorId | undefined;
   private mcpConnectError: { id: ConnectorId; message: string } | undefined;
+  /** Overlapping Connectors reads share one lazy Grok start. */
+  private grokSessionForMcpListInFlight: Promise<Session | undefined> | undefined;
   private grokVersionProbe?: Promise<string>;
   private codexVersionProbe?: Promise<string>;
   private claudeVersionProbe?: Promise<string>;
@@ -9464,30 +9466,45 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   /**
    * Session for the Connectors inventory. Reuses a live Grok client when one
    * exists; otherwise, if Grok is connected, starts an empty Grok session
-   * (Connectors page only — never on boot). Empty-session recycling owns the
-   * rest: we do not dispose it here.
+   * (Connectors page only — never on boot). Overlapping callers await the same
+   * in-flight start — a newly created session is not in `pool` until startup
+   * completes. Empty-session recycling owns the rest: we do not dispose it here.
    */
   private async grokSessionForMcpList(requester: Session): Promise<Session | undefined> {
     const live = this.findLiveGrokSession();
     if (live) return live;
+    if (this.grokSessionForMcpListInFlight) return this.grokSessionForMcpListInFlight;
     if (!this.connectedProviders().includes("grok")) return undefined;
-    const seen = new Set<Session>();
-    let grok: Session | undefined;
-    for (const candidate of [this.focused, ...this.pool]) {
-      if (!candidate || seen.has(candidate)) continue;
-      seen.add(candidate);
-      if (candidate.provider === "grok") {
-        grok = candidate;
-        break;
+    const pending = (async (): Promise<Session | undefined> => {
+      const seen = new Set<Session>();
+      let grok: Session | undefined;
+      for (const candidate of [this.focused, ...this.pool]) {
+        if (!candidate || seen.has(candidate)) continue;
+        seen.add(candidate);
+        if (candidate.provider === "grok") {
+          grok = candidate;
+          break;
+        }
       }
-    }
-    if (!grok) {
-      grok = this.newLocalSession();
-      grok.provider = "grok";
-      this.setSessionCwd(grok, this.sessionCwd(requester), this.workspaceRoot());
-    }
-    await this.startSession(undefined, grok, "ensure");
-    return grok.client ? grok : undefined;
+      if (!grok) {
+        grok = this.newLocalSession();
+        grok.provider = "grok";
+        this.setSessionCwd(grok, this.sessionCwd(requester), this.workspaceRoot());
+      }
+      await this.startSession(undefined, grok, "ensure");
+      return grok.client ? grok : undefined;
+    })();
+    this.grokSessionForMcpListInFlight = pending;
+    // `then(clear, clear)` rather than `finally`: an ACP start can reject, and
+    // the promise `finally` derives would carry that rejection with nothing
+    // attached to it. Callers await `pending` itself, never the derived one.
+    const clear = () => {
+      if (this.grokSessionForMcpListInFlight === pending) {
+        this.grokSessionForMcpListInFlight = undefined;
+      }
+    };
+    void pending.then(clear, clear);
+    return pending;
   }
 
   /** Read MCP inventory through a Grok ACP session, not necessarily the focused one. */

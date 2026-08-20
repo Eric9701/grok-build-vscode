@@ -32,6 +32,7 @@ describe("Tier-1 connector catalog", () => {
     const ids = TIER1_CONNECTORS.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).not.toContain("github");
+    expect(ids).not.toContain("figma");
     for (const connector of TIER1_CONNECTORS) {
       expect(connector.endpoint.startsWith("https://")).toBe(true);
       expect(connector.description.length).toBeGreaterThan(10);
@@ -132,6 +133,7 @@ describe("connected store", () => {
     expect(parseConnectedConnectorStore({
       linear: { endpoint: "https://mcp.linear.app/mcp" },
       github: { endpoint: "https://api.githubcopilot.com/mcp/" },
+      figma: { endpoint: "https://mcp.figma.com/mcp" },
       notion: { endpoint: "not-a-url" },
       canva: { token: "secret" },
     })).toEqual({
@@ -283,6 +285,7 @@ FOO = "bar"
       "/home/.grok/config.toml",
       "/proj/.grok/config.toml",
       "/home/.cursor/mcp.json",
+      "/home/.claude.json",
     ]);
     expect(mcpConfigPaths({
       cwd: "/proj", provider: "claude", grokHome: "/home/.grok", userHome: "/home",
@@ -301,6 +304,7 @@ FOO = "bar"
     expect(mcpConfigLayer("/proj/.grok/config.toml", grok)).toBe("project");
     expect(mcpConfigLayer("/home/.grok/config.toml", grok)).toBe("user");
     expect(mcpConfigLayer("/home/.cursor/mcp.json", grok)).toBe("user");
+    expect(mcpConfigLayer("/home/.claude.json", grok)).toBe("user");
     const layers = collectMcpNameLayers([
       { layer: "user", names: ["notes", "shared"] },
       { layer: "project", names: ["docs", "shared"] },
@@ -387,12 +391,12 @@ describe("settings views", () => {
   it("renders every catalog row with live connecting/error state", () => {
     const views = connectorViews(
       { linear: { endpoint: "https://mcp.linear.app/mcp" } },
-      { connectingId: "notion", errorId: "figma", error: "Sign-in timed out." },
+      { connectingId: "notion", errorId: "sentry", error: "Sign-in timed out." },
     );
     expect(views).toHaveLength(TIER1_CONNECTORS.length);
     expect(views.find((v) => v.id === "linear")).toMatchObject({ connected: true, status: "idle" });
     expect(views.find((v) => v.id === "notion")).toMatchObject({ connected: false, status: "connecting" });
-    expect(views.find((v) => v.id === "figma")).toMatchObject({
+    expect(views.find((v) => v.id === "sentry")).toMatchObject({
       connected: false, status: "error", error: "Sign-in timed out.",
     });
     // Display sort lives in settings.js. The catalog walk order is load-bearing

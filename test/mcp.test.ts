@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { GrokSidebar } from "../src/sidebar";
 import { Session } from "../src/session";
-import { collectMcpNameFiles, collectMcpNameLayers, hostMcpServers } from "../src/mcp-connectors";
+import { collectMcpNameFiles, collectMcpNameLayers, hostMcpServers, mcpConfigLayer } from "../src/mcp-connectors";
 import { RemoteClientState } from "../src/remote-client-state";
 import {
   MCP_GLOBAL_SCOPE_WARNING,
@@ -272,6 +272,7 @@ describe("MCP remote inventory projection", () => {
       src.indexOf("private async refreshMcpServers("),
     );
     expect(helper).toContain('startSession(undefined, grok, "ensure")');
+    expect(helper).toContain("grokSessionForMcpListInFlight");
     expect(helper).not.toContain("disposeSession");
     expect(helper).not.toContain("removeSessionFromDisk");
     const tag = src.slice(
@@ -346,6 +347,18 @@ describe("MCP settings sections", () => {
     expect(filtered.find((s) => s.name === "notes")?.command).toBeUndefined();
     expect(filtered.find((s) => s.name === "linear")?.command).toBe("npx");
     expect(mcpConfigFileName("C:\\Users\\Dell\\.grok\\config.toml")).toBe("config.toml");
+  });
+
+  it("keeps a Grok compatibility server declared only in ~/.claude.json", () => {
+    const grok = { cwd: "/proj", provider: "grok" as const };
+    expect(mcpConfigLayer("/home/.claude.json", grok)).toBe("user");
+    const files = [{ layer: "user" as const, path: "/home/.claude.json", names: ["notes"] }];
+    const filtered = filterMcpSettingsServers(
+      [{ name: "notes", enabled: true, source: "local" }],
+      { nameLayer: collectMcpNameLayers(files), nameFile: collectMcpNameFiles(files) },
+    );
+    expect(filtered.map((s) => s.name)).toEqual(["notes"]);
+    expect(filtered[0]?.configFile).toBe(".claude.json");
   });
 
   it("the remote projection copies scopeName, never tag or configFile, and never sees a project-file row", () => {
@@ -718,5 +731,39 @@ describe("MCP inventory while a non-Grok session is focused", () => {
     await proto.refreshMcpServers.call(instance, focused);
     expect(startSession).not.toHaveBeenCalled();
     expect(posted.some((msg) => msg.error === "Connect Grok to inspect MCP servers.")).toBe(true);
+  });
+
+  it("overlapping inventory reads share one Grok start", async () => {
+    const focused = new Session();
+    focused.provider = "codex";
+    focused.cwd = "/proj";
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { proto, instance, startSession } = mcpHarness({
+      focused,
+      pool: [focused],
+      grokConnected: true,
+    });
+    const minted: Session[] = [];
+    instance.newLocalSession = () => {
+      const session = new Session();
+      minted.push(session);
+      return session;
+    };
+    startSession.mockImplementation(async (_id: unknown, target: Session) => {
+      await gate;
+      target.client = {
+        listMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+      } as unknown as Session["client"];
+      return target.client;
+    });
+    const first = proto.refreshMcpServers.call(instance, focused);
+    const second = proto.refreshMcpServers.call(instance, focused);
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(minted).toHaveLength(1);
+    release();
+    await Promise.all([first, second]);
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(minted).toHaveLength(1);
   });
 });
