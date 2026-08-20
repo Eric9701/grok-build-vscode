@@ -446,10 +446,14 @@ describe("OAuth client metadata files", () => {
     const paths = persistConnectorOAuthClientMetadata({
       stripe: { endpoint: "https://mcp.stripe.com" },
       linear: { endpoint: "https://mcp.linear.app/mcp" },
+      calendly: { endpoint: "https://mcp.calendly.com" },
+      airtable: { endpoint: "https://mcp.airtable.com/mcp" },
     }, { root });
     expect(Object.keys(paths)).toEqual(["stripe"]);
     expect(readFileSync(paths.stripe, "utf8")).toBe('{"scope":"mcp"}');
     expect(existsSync(join(root, "linear.json"))).toBe(false);
+    expect(existsSync(join(root, "calendly.json"))).toBe(false);
+    expect(existsSync(join(root, "airtable.json"))).toBe(false);
   });
 });
 

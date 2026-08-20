@@ -237,9 +237,11 @@ describe("settings catalog", () => {
       { name: "canva", connected: true },
       { name: "Atlassian", connected: false },
       { name: "Notion", connected: true },
+      { name: "Calendly", connected: false },
+      { name: "Airtable", connected: false },
     ]);
     expect(ordered.map((c) => c.name)).toEqual([
-      "canva", "Linear", "Notion", "Atlassian", "stripe",
+      "canva", "Linear", "Notion", "Airtable", "Atlassian", "Calendly", "stripe",
     ]);
   });
 
@@ -251,14 +253,19 @@ describe("settings catalog", () => {
     expect(chatSrc).toContain("M12.22 2h-.44");
   });
 
-  it("ships a webp mark for every current Tier-1 connector", () => {
+  it("ships a webp mark only for catalog ids that have one", () => {
     const api = loadSettings();
     const dir = fileURLToPath(new URL("../media/connector-logos", import.meta.url));
-    const ids = Object.keys(api.CONNECTOR_LOGO_IDS).sort();
-    expect(ids).toEqual([...TIER1_CONNECTORS.map((c) => c.id)].sort());
-    for (const id of ids) {
+    const logoIds = Object.keys(api.CONNECTOR_LOGO_IDS).sort();
+    const catalog = new Set(TIER1_CONNECTORS.map((c) => c.id));
+    expect(logoIds.every((id) => catalog.has(id))).toBe(true);
+    expect(logoIds).not.toContain("calendly");
+    expect(logoIds).not.toContain("airtable");
+    for (const id of logoIds) {
       expect(existsSync(path.join(dir, `${id}.webp`)), id).toBe(true);
     }
+    expect(existsSync(path.join(dir, "calendly.webp"))).toBe(false);
+    expect(existsSync(path.join(dir, "airtable.webp"))).toBe(false);
   });
 });
 
@@ -599,6 +606,8 @@ describe("settings overlay (chat.js)", () => {
         { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
         { id: "canva", name: "Canva", description: "Designs.", endpoint: "https://mcp.canva.com/mcp", connected: true, status: "idle" },
         { id: "atlassian", name: "Atlassian", description: "Jira.", endpoint: "https://mcp.atlassian.com/v1/mcp/authv2", connected: false, status: "idle" },
+        { id: "calendly", name: "Calendly", description: "Meetings.", endpoint: "https://mcp.calendly.com", connected: false, status: "idle" },
+        { id: "airtable", name: "Airtable", description: "Bases.", endpoint: "https://mcp.airtable.com/mcp", connected: false, status: "idle" },
       ],
     });
     openSettings(h);
@@ -608,7 +617,9 @@ describe("settings overlay (chat.js)", () => {
     expect(ids).toEqual([
       "connector-canva",
       "connector-linear",
+      "connector-airtable",
       "connector-atlassian",
+      "connector-calendly",
       "connector-stripe",
     ]);
   });
@@ -653,6 +664,36 @@ describe("settings overlay (chat.js)", () => {
     expect(row.querySelector(".settings-connector-logo")).toBeNull();
     expect(row.querySelector("img")).toBeNull();
     expect(row.querySelector(".settings-row-title")!.classList.contains("has-logo")).toBe(false);
+  });
+
+  it("renders Calendly and Airtable without a blank logo slot", () => {
+    const h = bootWebview({
+      beforeScripts(window) {
+        const script = window.document.createElement("script");
+        script.src = "https://localhost/media/settings.js";
+        window.document.head.appendChild(script);
+      },
+    });
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    dispatch(h.window, {
+      type: "mcpConnectors",
+      connectors: [
+        { id: "calendly", name: "Calendly", description: "Meetings.", endpoint: "https://mcp.calendly.com", connected: false, status: "idle" },
+        { id: "airtable", name: "Airtable", description: "Bases.", endpoint: "https://mcp.airtable.com/mcp", connected: false, status: "idle" },
+        { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
+      ],
+    });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    for (const id of ["calendly", "airtable"]) {
+      const row = overlay.querySelector(`[data-id="connector-${id}"]`) as HTMLElement;
+      expect(row).toBeTruthy();
+      expect(row.querySelector(".settings-connector-logo")).toBeNull();
+      expect(row.querySelector("img")).toBeNull();
+      expect(row.querySelector(".settings-row-title")!.classList.contains("has-logo")).toBe(false);
+    }
+    expect(overlay.querySelector('[data-id="connector-linear"] .settings-connector-logo')).toBeTruthy();
   });
 
   it("drops a failed vendor mark instead of leaving an empty chip", () => {

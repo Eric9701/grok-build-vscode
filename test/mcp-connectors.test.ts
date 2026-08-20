@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   TIER1_CONNECTORS,
+  connectorById,
+  isConnectorId,
   buildMcpRemoteEntry,
   classifyConnectFailure,
   collectReservedMcpIdentity,
@@ -46,7 +48,28 @@ describe("Tier-1 connector catalog", () => {
     );
     expect(TIER1_CONNECTORS.find((c) => c.id === "stripe")?.endpoint).toBe("https://mcp.stripe.com");
     expect(TIER1_CONNECTORS.find((c) => c.id === "stripe")?.oauthScope).toBe("mcp");
+    expect(TIER1_CONNECTORS.find((c) => c.id === "calendly")?.endpoint).toBe("https://mcp.calendly.com");
+    expect(TIER1_CONNECTORS.find((c) => c.id === "airtable")?.endpoint).toBe("https://mcp.airtable.com/mcp");
     expect(TIER1_CONNECTORS.filter((c) => c.oauthScope).map((c) => c.id)).toEqual(["stripe"]);
+    // Append-only walk order: new ids go at the end, not alphabetically.
+    expect(TIER1_CONNECTORS.map((c) => c.id).slice(-2)).toEqual(["calendly", "airtable"]);
+  });
+
+  it("resolves calendly and airtable by id with no scope override", () => {
+    expect(isConnectorId("calendly")).toBe(true);
+    expect(isConnectorId("airtable")).toBe(true);
+    expect(connectorById("calendly")).toMatchObject({
+      id: "calendly",
+      name: "Calendly",
+      endpoint: "https://mcp.calendly.com",
+    });
+    expect(connectorById("airtable")).toMatchObject({
+      id: "airtable",
+      name: "Airtable",
+      endpoint: "https://mcp.airtable.com/mcp",
+    });
+    expect(connectorById("calendly")?.oauthScope).toBeUndefined();
+    expect(connectorById("airtable")?.oauthScope).toBeUndefined();
   });
 
   it("builds the stdio mcp-remote entry vendors document", () => {
@@ -115,6 +138,16 @@ describe("Tier-1 connector catalog", () => {
     ]);
     expect(linear?.args).toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp"]);
     expect(linear?.args).not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+
+    const unscoped = hostMcpServers({
+      calendly: { endpoint: "https://mcp.calendly.com" },
+      airtable: { endpoint: "https://mcp.airtable.com/mcp" },
+    });
+    expect(unscoped.map((s) => s.name)).toEqual(["calendly", "airtable"]);
+    for (const server of unscoped) {
+      expect(server.env).toEqual([]);
+      expect(server.args).not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
+    }
   });
 
   it("keeps static OAuth metadata when rebuilding args with a callback port", () => {
@@ -452,5 +485,17 @@ describe("ACP stdio wire shape", () => {
     const servers = hostMcpServers({ linear: { endpoint: "https://mcp.linear.app/mcp" } });
     expect(servers.length).toBeGreaterThan(0);
     for (const s of servers) expect(Array.isArray(s.env)).toBe(true);
+  });
+
+  it("emits env: [] for calendly and airtable", () => {
+    const servers = hostMcpServers({
+      calendly: { endpoint: "https://mcp.calendly.com" },
+      airtable: { endpoint: "https://mcp.airtable.com/mcp" },
+    });
+    expect(servers).toHaveLength(2);
+    for (const s of servers) {
+      expect(s.env).toEqual([]);
+      expect(Object.keys(s).sort()).toEqual(["args", "command", "env", "name"]);
+    }
   });
 });

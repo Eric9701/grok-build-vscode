@@ -15,8 +15,10 @@ One connector list, handed to whichever agent is active through ACP
 | stripe | `https://mcp.stripe.com` | [docs.stripe.com/mcp](https://docs.stripe.com/mcp) |
 | sentry | `https://mcp.sentry.dev/mcp` | [mcp.sentry.dev](https://mcp.sentry.dev/) |
 | cloudflare | `https://observability.mcp.cloudflare.com/mcp` | [Cloudflare's own MCP servers](https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/). Brief listed `/sse`; official catalog now lists `/mcp` |
+| calendly | `https://mcp.calendly.com` | [developer.calendly.com/calendly-mcp-server](https://developer.calendly.com/calendly-mcp-server). Default mcp-remote scopes reach authorize; no `oauthScope` (Calendly advertises `mcp:scheduling:*` — do not infer) |
+| airtable | `https://mcp.airtable.com/mcp` | [Airtable MCP server](https://support.airtable.com/docs/using-the-airtable-mcp-server). Default mcp-remote scopes reach authorize; no `oauthScope` |
 
-**Checked (2026-08-20), so nobody re-tests them to put Figma back:** linear, notion, atlassian, and stripe are connected on the owner's machine; sentry and cloudflare reach the authorize step (owner + probe); canva registers cleanly. Figma is the only one that cannot.
+**Checked (2026-08-20), so nobody re-tests them to put Figma back:** linear, notion, atlassian, and stripe are connected on the owner's machine; sentry and cloudflare reach the authorize step (owner + probe); canva registers cleanly. Calendly and Airtable reach the authorize step through mcp-remote with default scopes. Figma is the only one that cannot.
 
 **Left out:** GitHub (`https://api.githubcopilot.com/mcp/`). Official README: each host must register a GitHub App / OAuth App. GitHub staff (2026): "We don't support DCR and we are not going to be able to do so." That is not Tier 1.
 
@@ -83,9 +85,11 @@ connected, then disconnected, each A–Z by display name (case-insensitive).
 `TIER1_CONNECTORS` order is unchanged — `hostMcpServers` walks that array.
 
 Vendor marks live in `media/connector-logos/<id>.webp` and render only on
-On this computer rows (a 1:1 vendor map). They sit in a white chip and
-desaturate when disconnected. A missing or failed image is omitted — no
-empty box. Grok.com / Local rows are CLI-named and get no mark.
+On this computer rows that have one (`CONNECTOR_LOGO_IDS` in
+`media/settings.js`). They sit in a white chip and desaturate when
+disconnected. A missing or failed image is omitted — no empty box.
+Calendly and Airtable have no mark; the row is a plain title. Grok.com /
+Local rows are CLI-named and get no mark.
 
 Local header Open uses the lucide `settings` gear (`ICON_SETTINGS`, same
 path as `chat.js` `ICON.gear`). Grok.com Open keeps the external-link icon.

@@ -27,7 +27,9 @@ export type ConnectorId =
   | "canva"
   | "stripe"
   | "sentry"
-  | "cloudflare";
+  | "cloudflare"
+  | "calendly"
+  | "airtable";
 
 export interface ConnectorDef {
   id: ConnectorId;
@@ -143,6 +145,18 @@ export const TIER1_CONNECTORS: readonly ConnectorDef[] = [
     // Official catalog now lists `/mcp`. Historical `/sse` is an alias, not SSE.
     endpoint: "https://observability.mcp.cloudflare.com/mcp",
     description: "Workers logs and analytics for your Cloudflare account.",
+  },
+  {
+    id: "calendly",
+    name: "Calendly",
+    endpoint: "https://mcp.calendly.com",
+    description: "Schedule meetings and manage availability in your Calendly account.",
+  },
+  {
+    id: "airtable",
+    name: "Airtable",
+    endpoint: "https://mcp.airtable.com/mcp",
+    description: "Search, read, and update records in your Airtable bases.",
   },
 ];
 
