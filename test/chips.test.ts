@@ -269,4 +269,16 @@ describe("withPerMessageImageIndices", () => {
     expect(out[1].imageIndex).toBe(1);
     expect(out[0].imageIndex).toBe(1); // untouched — not on the wire, still an image chip
   });
+
+  it("continues from startAt so a chip attached against a queue is the flush number", () => {
+    const out = withPerMessageImageIndices([img("b", 1)], 2);
+    expect(out[0].imageIndex).toBe(2);
+    expect(out[0].relPath).toBe("Image #2");
+  });
+
+  it("is a no-op when chips already continue from startAt", () => {
+    const chips = [img("b", 2)];
+    const out = withPerMessageImageIndices(chips, 2);
+    expect(out[0]).toBe(chips[0]);
+  });
 });

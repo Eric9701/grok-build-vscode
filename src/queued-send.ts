@@ -1,5 +1,5 @@
 import type { FileChip } from "./chips";
-import { isImplicitChip, withPerMessageImageIndices } from "./chips";
+import { isImplicitChip, visibleImageCount, withPerMessageImageIndices } from "./chips";
 import type { HostMsg, QueuedSend } from "./protocol";
 
 export type { QueuedSend };
@@ -146,21 +146,54 @@ export function dequeueQueuedSends(
   };
 }
 
-/** Re-attach queued chips to the composer (Edit / Stop). Dedupes by id. */
+/** Visible images already snapshotted on the pending follow-ups. */
+export function queuedVisibleImageCount(items: readonly QueuedSendEntry[]): number {
+  let n = 0;
+  for (const item of items) n += visibleImageCount(item.chips);
+  return n;
+}
+
+/** First `[Image #N]` a new composer chip should take, given the live queue. */
+export function composerImageIndexStart(items: readonly QueuedSendEntry[]): number {
+  return queuedVisibleImageCount(items) + 1;
+}
+
+/**
+ * Dense 1..N across queued contributions, in queue order. Chip labels only —
+ * contribution text is left alone. A no-op when the snapshots are already
+ * sequential (the type-time numbering). Closes gaps after an earlier
+ * contribution is removed, and maps a stale session-scoped index down to #1
+ * on a single-item flush.
+ */
+export function reindexQueuedImageChips(
+  items: readonly QueuedSendEntry[],
+): QueuedSendEntry[] {
+  let start = 1;
+  return items.map((item) => {
+    const chips = withPerMessageImageIndices(item.chips, start);
+    start += visibleImageCount(item.chips);
+    const same = chips.length === item.chips.length && chips.every((chip, i) => chip === item.chips[i]);
+    return same ? item : { ...item, chips };
+  });
+}
+
+/** Re-attach queued chips to the composer (Edit / Stop). Dedupes by id.
+ *  Queued chips lead: Edit prepends their text, so they keep the leading
+ *  numbers. */
 export function restoreQueuedChips(
   sessionChips: readonly FileChip[],
   items: readonly QueuedSendEntry[],
 ): FileChip[] {
   const have = new Set(sessionChips.map((chip) => chip.id));
-  const next = [...sessionChips];
+  const fromQueue: FileChip[] = [];
   for (const item of items) {
     for (const chip of item.chips) {
       if (have.has(chip.id)) continue;
-      next.push(cloneChipForQueue(chip));
+      fromQueue.push(cloneChipForQueue(chip));
       have.add(chip.id);
     }
   }
-  return withPerMessageImageIndices(next);
+  return withPerMessageImageIndices([...fromQueue, ...sessionChips]);
 }
 
 export function allQueuedChips(items: readonly QueuedSendEntry[]): FileChip[] {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildPrompt, buildPromptWithImages, buildQueuedPromptWithImages, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE, shiftAuthoredImageRefs } from "../src/prompt-builder";
+import { buildPrompt, buildPromptWithImages, buildQueuedPromptWithImages, CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from "../src/prompt-builder";
 import {
   makeImplicitChip,
   makeExplicitChip,
@@ -332,7 +332,7 @@ describe("buildQueuedPromptWithImages keeps per-contribution attachments", () =>
 
   it("places each contribution's tags next to its own text, not as a union dump", () => {
     const a = makeImageChip("/s/img1.png", 1, "image/png");
-    const b = makeImageChip("/s/img2.png", 1, "image/png");
+    const b = makeImageChip("/s/img2.png", 2, "image/png");
     const out = buildQueuedPromptWithImages(
       [
         { text: "look at A", chips: [a], images: [{ index: 1, mimeType: "image/png", data: "AAA", path: "/s/img1.png" }] },
@@ -364,31 +364,34 @@ describe("buildQueuedPromptWithImages keeps per-contribution attachments", () =>
     expect(queued).toEqual(live);
   });
 
-  it("rewrites a later contribution's authored [Image #1] to the global number", () => {
+  it("copies a later contribution's literal `[Image #1]` byte-identical", () => {
+    const authored = "Keep the literal token `[Image #1]`";
     const a = makeImageChip("/s/img1.png", 1, "image/png");
-    const b = makeImageChip("/s/img2.png", 1, "image/png");
+    const b = makeImageChip("/s/img2.png", 2, "image/png");
     const out = buildQueuedPromptWithImages(
       [
         { text: "look at A", chips: [a], images: [{ index: 1, mimeType: "image/png", data: "AAA", path: "/s/img1.png" }] },
-        { text: "edit [Image #1]", chips: [b], images: [{ index: 1, mimeType: "image/png", data: "BBB", path: "/s/img2.png" }] },
+        { text: authored, chips: [b], images: [{ index: 2, mimeType: "image/png", data: "BBB", path: "/s/img2.png" }] },
+      ],
+      [],
+      deps,
+    );
+    expect(out.text).toBe(`look at A\n\n${tag(1)}\n\n${authored}\n\n${tag(2)}`);
+    const imageBlocks = out.blocks.filter((blk) => blk.type === "image");
+    expect(imageBlocks.map((blk) => (blk.type === "image" ? blk.data : ""))).toEqual(["AAA", "BBB"]);
+  });
+
+  it("emits a later contribution's type-time tag without rewriting its text", () => {
+    const a = makeImageChip("/s/img1.png", 1, "image/png");
+    const b = makeImageChip("/s/img2.png", 2, "image/png");
+    const out = buildQueuedPromptWithImages(
+      [
+        { text: "look at A", chips: [a], images: [{ index: 1, mimeType: "image/png", data: "AAA", path: "/s/img1.png" }] },
+        { text: "edit [Image #2]", chips: [b], images: [{ index: 2, mimeType: "image/png", data: "BBB", path: "/s/img2.png" }] },
       ],
       [],
       deps,
     );
     expect(out.text).toBe(`look at A\n\n${tag(1)}\n\nedit [Image #2]\n\n${tag(2)}`);
-    const imageBlocks = out.blocks.filter((blk) => blk.type === "image");
-    expect(imageBlocks.map((blk) => (blk.type === "image" ? blk.data : ""))).toEqual(["AAA", "BBB"]);
-    expect(out.text.indexOf("edit [Image #2]")).toBeGreaterThan(out.text.indexOf("[Image #1]"));
-    expect(out.text).not.toMatch(/edit \[Image #1\]/);
-  });
-});
-
-describe("shiftAuthoredImageRefs", () => {
-  it("moves only local numbers and leaves out-of-range refs alone", () => {
-    expect(shiftAuthoredImageRefs("edit [Image #1]", 1, 1)).toBe("edit [Image #2]");
-    expect(shiftAuthoredImageRefs("see [Image #1] and [Image #2]", 3, 2))
-      .toBe("see [Image #4] and [Image #5]");
-    expect(shiftAuthoredImageRefs("ignore [Image #3]", 1, 1)).toBe("ignore [Image #3]");
-    expect(shiftAuthoredImageRefs("edit [Image #1]", 0, 1)).toBe("edit [Image #1]");
   });
 });

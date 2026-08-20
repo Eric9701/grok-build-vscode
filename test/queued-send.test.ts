@@ -4,11 +4,13 @@ import { consumeChips, makeExplicitChip, makeImageChip, makeImplicitChip, remove
 import {
   chipsForQueueSend,
   claimQueuedSendDispatch,
+  composerImageIndexStart,
   dequeueQueuedSends,
   enqueueQueuedSend,
   queuedFlushText,
   queuedSendsMessage,
   queuedSendsText,
+  reindexQueuedImageChips,
   restoreQueuedChips,
   takeQueuedSendsPrefix,
 } from "../src/queued-send";
@@ -149,6 +151,10 @@ describe("live host keeps the entry-store invariants", () => {
   it("reconnect minting uses claimQueuedSendDispatch so image-only text is not dropped", () => {
     expect(sidebarSrc).toContain("session.queuedSendDispatch = claimQueuedSendDispatch(");
   });
+
+  it("composer image numbers continue from the live queue", () => {
+    expect(sidebarSrc).toContain("composerImageIndexStart(session.queuedSends)");
+  });
 });
 
 describe("claimQueuedSendDispatch treats empty text as a real image-only payload", () => {
@@ -174,5 +180,65 @@ describe("restoreQueuedChips", () => {
     const restored = restoreQueuedChips([already, image], [{ text: "x", chips: [image] }]);
     expect(restored.filter((c) => c.id === image.id)).toHaveLength(1);
     expect(restored.map((c) => c.id)).toContain(already.id);
+  });
+
+  it("puts restored queued images ahead of composer images so numbers match prepended text", () => {
+    const queued = makeImageChip("/s/q.png", 1, "image/png");
+    const composing = makeImageChip("/s/c.png", 2, "image/png");
+    const restored = restoreQueuedChips([composing], [{ text: "see [Image #1]", chips: [queued] }]);
+    const images = restored.filter((c) => c.imageIndex != null);
+    expect(images.map((c) => c.path)).toEqual(["/s/q.png", "/s/c.png"]);
+    expect(images.map((c) => c.imageIndex)).toEqual([1, 2]);
+  });
+});
+
+describe("composerImageIndexStart continues from the live queue", () => {
+  it("starts at 1 when nothing is queued", () => {
+    expect(composerImageIndexStart([])).toBe(1);
+    expect(composerImageIndexStart([{ text: "x", chips: [makeExplicitChip("/repo/a.ts", "a.ts")] }])).toBe(1);
+  });
+
+  it("counts visible queued images so the next composer chip is the flush number", () => {
+    expect(composerImageIndexStart([{ text: "a", chips: [img("a")] }])).toBe(2);
+    expect(composerImageIndexStart([
+      { text: "a", chips: [makeImageChip("/s/a.png", 1, "image/png")] },
+      { text: "b", chips: [makeImageChip("/s/b.png", 2, "image/png")] },
+    ])).toBe(3);
+  });
+});
+
+describe("reindexQueuedImageChips", () => {
+  it("is a no-op when snapshots already continue through the queue", () => {
+    const a = makeImageChip("/s/a.png", 1, "image/png");
+    const b = makeImageChip("/s/b.png", 2, "image/png");
+    const items = [
+      { text: "look at A", chips: [a] },
+      { text: "edit [Image #2]", chips: [b] },
+    ];
+    const out = reindexQueuedImageChips(items);
+    expect(out[0]).toBe(items[0]);
+    expect(out[1]).toBe(items[1]);
+  });
+
+  it("compacts remaining chip labels after an earlier contribution is removed, and leaves text alone", () => {
+    const a = makeImageChip("/s/a.png", 1, "image/png");
+    const b = makeImageChip("/s/b.png", 2, "image/png");
+    const items = [
+      { text: "first", chips: [a] },
+      { text: "see [Image #2]", chips: [b] },
+    ];
+    const rest = dequeueQueuedSends(items, 0, true)!.rest;
+    const out = reindexQueuedImageChips(rest);
+    expect(out[0].chips[0].imageIndex).toBe(1);
+    expect(out[0].chips[0].relPath).toBe("Image #1");
+    expect(out[0].text).toBe("see [Image #2]");
+  });
+
+  it("maps a stale session-scoped index down to #1 on a single-item flush", () => {
+    const stale = makeImageChip("/s/x.png", 7, "image/png");
+    const out = reindexQueuedImageChips([{ text: "make it green", chips: [stale] }]);
+    expect(out[0].chips[0].imageIndex).toBe(1);
+    expect(out[0].chips[0].relPath).toBe("Image #1");
+    expect(out[0].text).toBe("make it green");
   });
 });

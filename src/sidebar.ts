@@ -139,18 +139,21 @@ import {
   removeChip,
   selectionLineRange,
   toggleChip,
+  visibleImageCount,
   withPerMessageImageIndices,
 } from "./chips";
 import { buildPromptWithImages, buildQueuedPromptWithImages, type PromptImageInput, type QueuedPromptContribution } from "./prompt-builder";
 import {
   chipsForQueueSend,
   claimQueuedSendDispatch,
+  composerImageIndexStart,
   dequeueQueuedSends,
   enqueueQueuedSend,
   explicitVisibleChips,
   queuedFlushText,
   queuedSendsMessage,
   queuedSendsText,
+  reindexQueuedImageChips,
   restoreQueuedChips,
   type QueuedSendEntry,
 } from "./queued-send";
@@ -8013,8 +8016,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       case "queueSend": {
         // Host-owned per-session queue (#37): each contribution keeps the chips
-        // snapshotted here, then the flush sends them as one combined prompt
-        // with per-item tags. The webview renders a mirror from queuedSends
+        // snapshotted here (already numbered continuing through the live
+        // queue), then the flush sends them as one combined prompt with
+        // per-item tags. The webview renders a mirror from queuedSends
         // snapshots, so queued messages survive focus switches and flush even
         // while backgrounded.
         const s = session;
@@ -8053,11 +8057,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           s.queuedSendCommit = undefined;
           if (result.removed.some((item) => item.chips.length)) {
             s.chips = restoreQueuedChips(s.chips, result.removed);
-            if (s === this.focused) this.refreshImplicitChip(true);
-            else this.postChips(s);
           }
-          s.queuedSends = result.rest;
+          s.queuedSends = reindexQueuedImageChips(result.rest);
           if (!s.queuedSends.length) s.queuedSendRequiresRelay = false;
+          if (s === this.focused) this.refreshImplicitChip(true);
+          else this.postChips(s);
           this.emitQueuedSends(s);
         }
         break;
@@ -8149,13 +8153,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (s.queuedSends.length) {
           s.queuedSendDispatch = undefined;
           s.queuedSendCommit = undefined;
-          if (msg.restore) {
-            s.chips = restoreQueuedChips(s.chips, s.queuedSends);
-            if (s === this.focused) this.refreshImplicitChip(true);
-            else this.postChips(s);
-          }
+          const items = s.queuedSends;
           s.queuedSends = [];
           s.queuedSendRequiresRelay = false;
+          if (msg.restore) {
+            s.chips = restoreQueuedChips(s.chips, items);
+          }
+          if (s === this.focused) this.refreshImplicitChip(true);
+          else this.postChips(s);
           this.emitQueuedSends(s);
         }
         break;
@@ -11759,7 +11764,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Write image bytes into staging and attach the chip. The `[Image #N]` index
-   *  is the chip's position among the images already staged for THIS message —
+   *  continues from images already queued for this prompt, then the composer —
    *  the numbering the CLI resolves references against (see
    *  `withPerMessageImageIndices`). postChips re-derives it after every
    *  mutation, so this only has to be right at the moment of attach. */
@@ -11790,7 +11795,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const originRelPath = rel && rel !== ".." && !rel.startsWith("../") && !path.isAbsolute(rel)
       ? rel
       : undefined;
-    const imageIndex = session.chips.filter((c) => isImageChip(c) && !c.hidden).length + 1;
+    const imageIndex = visibleImageCount(session.chips) + composerImageIndexStart(session.queuedSends);
     session.chips.push(makeImageChip(absPath, imageIndex, mimeType, originRelPath, previewId));
     this.postChips(session);
     return session;
@@ -12073,7 +12078,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // flush uses the per-item copies snapshotted at queue time so a later
     // composer remove cannot silently drop them. `bare` sends (gear-menu
     // /compact) carry none. Combined-prompt `[Image #N]` numbering (tags,
-    // authored refs, bubble chips) is derived from this list's order.
+    // bubble chips) is the type-time index on those chips.
     const queuedItems = !bare && queuedSendCommit?.items.length
       ? queuedSendCommit.items.map((item) => ({ text: item.text, chips: item.chips ?? [] }))
       : undefined;
@@ -12083,22 +12088,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (bare) {
       chips = [];
     } else if (queuedItems) {
-      // Local per-contribution numbering as composed. The combined builder
-      // rebases tags AND authored `[Image #N]` refs to 1..N in this prompt.
+      // Use the numbers assigned at attach (continuing through the queue).
+      // Dense 1..N here is a no-op on that path; it also maps a stale
+      // session-scoped index down to #1 on a single-item flush.
+      const numberedItems = reindexQueuedImageChips(queuedItems);
       contributions = [];
       const queuedChips: FileChip[] = [];
-      for (const item of queuedItems) {
-        const local = withPerMessageImageIndices(item.chips);
+      for (const item of numberedItems) {
         const itemImages: PromptImageInput[] = [];
-        for (const chip of local) {
+        for (const chip of item.chips) {
           if (chip.hidden || !isImageChip(chip)) continue;
           const read = await this.readImageChip(chip, session, gen);
           if (read === "gone") return;
           if (read === "failed") return;
           itemImages.push(read);
         }
-        contributions.push({ text: item.text, chips: local, images: itemImages });
-        queuedChips.push(...local);
+        contributions.push({ text: item.text, chips: item.chips, images: itemImages });
+        queuedChips.push(...item.chips);
       }
       chips = withPerMessageImageIndices([...queuedChips, ...implicitChips]);
     } else {
@@ -12162,6 +12168,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (queuedSendCommit) {
       if (!finishQueuedSendCommit(session, queuedSendCommit, true)) return;
       this.emitQueuedSends(session);
+      if (session === this.focused) this.refreshImplicitChip(true);
+      else this.postChips(session);
     }
 
     if (bare) {
@@ -12663,10 +12671,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private postChips(session: Session = this.focused): void {
     // The single chokepoint every chip mutation passes through, so it is where
     // the `[Image #N]` labels are re-derived: removing the first of three
-    // attachments must renumber the rest to #1..#2 rather than leave a gap the
-    // send would then close silently, showing the user a number the agent was
-    // never told. See `withPerMessageImageIndices`.
-    session.chips = withPerMessageImageIndices(session.chips);
+    // attachments must renumber the rest rather than leave a gap the send
+    // would then close silently, showing the user a number the agent was
+    // never told. Continues from the live queue so a chip attached while
+    // busy is already the combined-prompt number. See `withPerMessageImageIndices`.
+    session.chips = withPerMessageImageIndices(
+      session.chips,
+      composerImageIndexStart(session.queuedSends),
+    );
     const remoteMessage: HostMsg = { type: "chips", chips: session.chips };
     if (session === this.focused && this.view) {
       const webview = this.view.webview;

@@ -5,10 +5,9 @@ export interface FileChip {
   selectionStart?: number;
   selectionEnd?: number;
   hidden: boolean;
-  /** 1-based, PER-MESSAGE index for pasted/uploaded images — the `[Image #N]`
-   *  tag sent in the prompt text. Its position among the visible image chips of
-   *  the message it rides on, so it restarts at #1 every turn; see
-   *  `withPerMessageImageIndices`. */
+  /** 1-based `[Image #N]` index. Position among the visible image chips of the
+   *  prompt this chip will ride on — queued follow-ups plus the composer, via
+   *  `withPerMessageImageIndices`. Restarts at #1 on a new turn. */
   imageIndex?: number;
   mimeType?: string;
   /** Workspace-relative path of the original file for images imported from disk
@@ -147,8 +146,16 @@ export function makeImageChip(
   };
 }
 
+export function visibleImageCount(chips: readonly FileChip[]): number {
+  let n = 0;
+  for (const chip of chips) {
+    if (isImageChip(chip) && !chip.hidden) n += 1;
+  }
+  return n;
+}
+
 /**
- * Renumber the image chips `[Image #1..N]` by their position in this list.
+ * Renumber the image chips `[Image #startAt..]` by their position in this list.
  *
  * The CLI resolves an `[Image #N]` reference against the images attached to the
  * message it is reading, numbered from 1 — earlier images are not addressable
@@ -159,6 +166,11 @@ export function makeImageChip(
  * tagged `[Image #2]` while the CLI knew it as `#1` and every `image_edit` on it
  * failed. Position IS the contract, so the tag is now derived from position
  * rather than remembered.
+ *
+ * `startAt` continues from images already snapshotted on queued follow-ups
+ * (`composerImageIndexStart`) so a chip attached while a turn is busy is
+ * labeled with the number the combined flush will use. A new turn (empty
+ * queue) passes the default 1.
  *
  * Numbering counts only VISIBLE chips, matching the two things a send derives
  * from the same list — the image blocks (`chip.hidden` skips the pre-read) and
@@ -173,8 +185,8 @@ export function makeImageChip(
  * already in flight. Its embedded index is an opaque uniqueness component, not
  * a claim about the current tag.
  */
-export function withPerMessageImageIndices(chips: FileChip[]): FileChip[] {
-  let n = 0;
+export function withPerMessageImageIndices(chips: FileChip[], startAt = 1): FileChip[] {
+  let n = startAt - 1;
   return chips.map((chip) => {
     if (!isImageChip(chip) || chip.hidden) return chip;
     n += 1;

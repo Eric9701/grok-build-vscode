@@ -331,10 +331,11 @@ export class Session {
    * the attachments snapshotted at queue time, so a later composer edit cannot
    * silently drop them. Entries are the source of truth (`""` is image-only).
    * The flush still sends them as ONE combined prompt
-   * (`buildQueuedPromptWithImages`): sequential `[Image #N]` in that prompt,
-   * with authored refs rewritten to match. Host-owned per session — the
-   * webview renders a mirror from `queuedSends` snapshots, so it survives
-   * focus switches and flushes even while backgrounded.
+   * (`buildQueuedPromptWithImages`): sequential `[Image #N]` assigned when
+   * each chip was attached (continuing through the live queue). Authored
+   * text is copied verbatim. Host-owned per session — the webview renders a
+   * mirror from `queuedSends` snapshots, so it survives focus switches and
+   * flushes even while backgrounded.
    */
   queuedSends: QueuedSendEntry[] = [];
 

@@ -285,8 +285,8 @@ describe("queued blocks — host-owned per session (#37)", () => {
       hidden: false, imageIndex: 1, mimeType: "image/png",
     };
     const chipB = {
-      id: "image:/s/b.png:1:2", path: "/s/b.png", relPath: "Image #1",
-      hidden: false, imageIndex: 1, mimeType: "image/png",
+      id: "image:/s/b.png:1:2", path: "/s/b.png", relPath: "Image #2",
+      hidden: false, imageIndex: 2, mimeType: "image/png",
     };
     dispatch(window, {
       type: "queuedSends",
@@ -298,7 +298,7 @@ describe("queued blocks — host-owned per session (#37)", () => {
     });
     expect(queuedBlocks(doc)).toEqual(["look at A\n\nand B"]);
     const chipLabels = [...doc.querySelectorAll(".msg.queued .msg-chip")].map((el) => el.textContent);
-    expect(chipLabels).toEqual(["Image #1", "Image #1"]);
+    expect(chipLabels).toEqual(["Image #1", "Image #2"]);
   });
 
   it("Edit hands the WHOLE pending message back to the composer (before any draft) and dequeues it", () => {

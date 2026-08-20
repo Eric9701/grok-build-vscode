@@ -59,14 +59,18 @@ Run it: `node research/vision-probe.cjs` (env: `PROBE_PNG_SIZE=<px>`,
   (or none) — hint-less legacy tags and leading/inline legacy shapes from the
   first build are also stripped; a tag-looking string in the *middle* of the
   user's words is left alone.
-- **`[Image #N]` numbering is PER-MESSAGE** — the tag is the image's position
-  among the visible image chips of the message it rides on, so it restarts at
+- **`[Image #N]` numbering is PER-PROMPT** — the tag is the image's position
+  among the visible image chips of the prompt it rides on, so it restarts at
   #1 every turn (`withPerMessageImageIndices` in `src/chips.ts`; the composer
   label, the bubble chip, and the tag all derive from it, so they cannot
-  disagree). This is not a style choice: the CLI resolves a reference against
-  the images attached to the message it is reading, numbered from 1, and an
-  index from an earlier message matches **nothing** — measured against grok
-  1.0.0 by `research/image-index-probe.cjs`, which asks for a deliberately
+  disagree). Queued follow-ups are one combined prompt: a chip attached while
+  a turn is busy continues from `composerImageIndexStart`, so the number
+  shown while composing is the number the flush emits. Authored text is
+  copied verbatim — never rewritten to chase a later remap. This is not a
+  style choice: the CLI resolves a reference against the images attached to
+  the message it is reading, numbered from 1, and an index from an earlier
+  message matches **nothing** — measured against grok 1.0.0 by
+  `research/image-index-probe.cjs`, which asks for a deliberately
   impossible `[Image #9]` and reads the refusal:
 
   > image reference "[Image #9]" matches no image attached to THIS MESSAGE. If

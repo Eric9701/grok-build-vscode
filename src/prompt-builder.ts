@@ -184,11 +184,9 @@ export function buildPromptWithImages(
 }
 
 /**
- * One queued contribution's prompt ingredients. Image indices are local to
- * the contribution as composed (usually 1..k). The combined builder rebases
- * them to 1..N in block order and rewrites authored `[Image #N]` refs in
- * `text` by the same offset, so a later "edit [Image #1]" names that
- * contribution's image, not an earlier one.
+ * One queued contribution's prompt ingredients. Image indices are the numbers
+ * the composer showed (continuing from images already queued). The combined
+ * builder copies `text` verbatim and emits tags from those indices.
  */
 export interface QueuedPromptContribution {
   text: string;
@@ -197,30 +195,11 @@ export interface QueuedPromptContribution {
 }
 
 /**
- * Rewrite authored `[Image #N]` refs so they track a global index shift.
- * Only local numbers 1..`localCount` move — a `#3` in a one-image
- * contribution is left alone. Offset 0 is a no-op.
- */
-export function shiftAuthoredImageRefs(
-  text: string,
-  offset: number,
-  localCount: number,
-): string {
-  if (offset === 0 || localCount <= 0 || !text) return text;
-  return text.replace(/\[Image #(\d+)\]/g, (match, digits: string) => {
-    const local = Number(digits);
-    if (!Number.isInteger(local) || local < 1 || local > localCount) return match;
-    return `[Image #${local + offset}]`;
-  });
-}
-
-/**
  * Build one `session/prompt` from discrete queued contributions, each keeping
  * its own attachments. Tags sit with the contribution they belong to rather
  * than dumping a union at the end. Numbering is sequential within this one
- * prompt — the CLI resolves `[Image #N]` per prompt, not per original
- * composition, so restarting at #1 on a later contribution would mis-address.
- * Authored refs in that contribution's text move with the generated tags.
+ * prompt because each contribution was numbered that way when composed —
+ * `text` is copied as authored, never rewritten.
  *
  * Implicit (ambient editor) chips are applied once, on the last contribution,
  * matching a live send's single context envelope.
@@ -247,19 +226,13 @@ export function buildQueuedPromptWithImages(
   }
   const parts: string[] = [];
   const imageBlocks: PromptContentBlock[] = [];
-  let imageOffset = 0;
   for (let i = 0; i < contributions.length; i++) {
     const contribution = contributions[i];
     const extraImplicit = i === contributions.length - 1 ? implicitChips : [];
-    const localCount = contribution.images.length;
-    const shiftedImages = contribution.images.map((image, index) => ({
-      ...image,
-      index: index + 1 + imageOffset,
-    }));
     const built = buildPromptWithImages(
-      shiftAuthoredImageRefs(contribution.text, imageOffset, localCount),
+      contribution.text,
       [...contribution.chips, ...extraImplicit],
-      shiftedImages,
+      contribution.images,
       deps,
       slashCommand && i === 0,
     );
@@ -267,7 +240,6 @@ export function buildQueuedPromptWithImages(
     for (const block of built.blocks) {
       if (block.type === "image") imageBlocks.push(block);
     }
-    imageOffset += localCount;
   }
   const promptText = parts.join("\n\n");
   return { text: promptText, blocks: [{ type: "text", text: promptText }, ...imageBlocks] };
