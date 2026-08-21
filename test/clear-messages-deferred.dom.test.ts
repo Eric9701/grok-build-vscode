@@ -151,20 +151,29 @@ describe("clearMessages defers destroying the transcript", () => {
   it("flushes to the welcome on the next frame when no replacement arrives", async () => {
     const { window, doc } = bootWebview();
     seedConnected(window);
+    dispatch(window, { type: "sessionName", sessionId: "s1", name: "soon gone", cwd: "/work" });
     dispatch(window, { type: "userMessage", text: "soon gone" });
     expect(welcome(doc).hidden).toBe(true);
     expect(welcomeStatus(doc)).toBe("Connected · v0.2.40");
+    expect((doc.getElementById("session-name-chip") as HTMLElement).hidden).toBe(false);
+    expect(doc.getElementById("session-name-label")?.textContent).toBe("soon gone");
+    (doc.getElementById("history-btn") as HTMLButtonElement).focus();
 
     dispatch(window, { type: "clearMessages" });
     expect(welcome(doc).hidden).toBe(true);
     expect(doc.querySelector(".msg.user")?.textContent).toContain("soon gone");
     expect(welcomeStatus(doc)).toBe("Connected · v0.2.40");
     expect(showsEmptyState(doc)).toBe(false);
+    // Held until the flush — a resync must not blank the name first.
+    expect((doc.getElementById("session-name-chip") as HTMLElement).hidden).toBe(false);
+    expect(doc.activeElement).toBe(doc.getElementById("history-btn"));
 
     await raf(window);
     expect(doc.querySelector(".msg.user")).toBeNull();
     expect(welcome(doc).hidden).toBe(false);
     expect(welcomeStatus(doc)).toBe("Starting");
+    expect((doc.getElementById("session-name-chip") as HTMLElement).hidden).toBe(true);
+    expect(doc.activeElement).toBe(doc.getElementById("input"));
   });
 
   it("keeps the Connected onboarding confirmation across a session-swap clearMessages", async () => {
@@ -240,6 +249,67 @@ describe("clearMessages defers destroying the transcript", () => {
     expect(welcomeStatus(doc)).toBe("Loading conversation");
     expect(welcomeStatus(doc)).not.toBe("Starting");
     expect(welcome(doc).hidden).toBe(false);
+  });
+
+  it("a same-conversation resync changes nothing the user can see", () => {
+    // The rule, not a string: take a painted conversation, run a full
+    // same-session resync burst, and observe no change — not even between
+    // clearMessages and the replay that puts the same conversation back.
+    // Symptom tests below still catch Starting / Loading conversation /
+    // Connected; this is what stops the next reset from blanking the title
+    // or stealing focus the way those strings used to leak.
+    const snapshot = (doc: Document) => ({
+      transcript: [...doc.querySelectorAll("#messages .msg .body")].map((el) => (el.textContent || "").trim()),
+      welcomeHidden: welcome(doc).hidden,
+      sessionName: {
+        label: doc.getElementById("session-name-label")?.textContent ?? null,
+        chipHidden: (doc.getElementById("session-name-chip") as HTMLElement | null)?.hidden ?? null,
+        title: doc.getElementById("session-head-title")?.textContent ?? null,
+      },
+      header: {
+        chip: doc.getElementById("session-name-chip")?.innerHTML ?? null,
+        head: doc.getElementById("session-head")?.innerHTML ?? null,
+        headTitle: (doc.getElementById("session-head") as HTMLElement | null)?.title ?? null,
+        editHidden: (doc.getElementById("session-head-edit") as HTMLElement | null)?.hidden ?? null,
+      },
+      focused: (doc.activeElement as HTMLElement | null)?.id ?? null,
+    });
+    const replaySame = (window: Window, remote: boolean) => {
+      dispatch(window, {
+        type: "session",
+        sessionId: "keep-1",
+        models: [],
+        currentModelId: undefined,
+        ...(remote ? { provider: "grok" as const } : {}),
+      });
+      dispatch(window, { type: "historyReplay", active: true });
+      dispatch(window, { type: "userMessage", text: "keep me" });
+      dispatch(window, { type: "historyReplay", active: false });
+      dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
+    };
+
+    for (const remote of [false, true]) {
+      const { window, doc } = bootWebview({ remote });
+      seedConnected(window);
+      dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
+      dispatch(window, { type: "userMessage", text: "keep me" });
+      const historyBtn = doc.getElementById("history-btn") as HTMLButtonElement;
+      historyBtn.focus();
+      const before = snapshot(doc);
+      expect(before.focused).toBe("history-btn");
+      expect(before.transcript.join("\n")).toContain("keep me");
+      if (remote) expect(before.sessionName.title).toBe("Keep this");
+      else {
+        expect(before.sessionName.label).toBe("Keep this");
+        expect(before.sessionName.chipHidden).toBe(false);
+      }
+
+      dispatch(window, { type: "clearMessages" });
+      expect(snapshot(doc), remote ? "remote after clearMessages" : "local after clearMessages").toEqual(before);
+
+      replaySame(window, remote);
+      expect(snapshot(doc), remote ? "remote after resync burst" : "local after resync burst").toEqual(before);
+    }
   });
 
   it("preserves scrollTop across a same-burst resync", () => {
