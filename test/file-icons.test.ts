@@ -110,6 +110,15 @@ describe("Seti icon assets", () => {
     expect(touch).toMatch(/\.gfp-row:hover\s*\{\s*background:\s*transparent/);
     expect(touch).toMatch(/\.gfp-row-actions\s*\{[^}]*position:\s*static/s);
     expect(touch).toMatch(/\.gfp-row-actions\s*\{[^}]*background:\s*transparent/s);
+    expect(touch).toMatch(/\.gfp-row-actions\s*\{[^}]*display:\s*flex/s);
+  });
+
+  it("reveals row actions on hover, :focus-visible, and an open ⋯ menu — not :focus-within", () => {
+    expect(filePanelCss).not.toMatch(/\.gfp-row:focus-within\s+\.gfp-row-actions/);
+    expect(filePanelCss).toMatch(/\.gfp-row:hover \.gfp-row-actions/);
+    expect(filePanelCss).toMatch(/\.gfp-row:focus-visible \.gfp-row-actions/);
+    expect(filePanelCss).toMatch(/\.gfp-row:has\(:focus-visible\) \.gfp-row-actions/);
+    expect(filePanelCss).toMatch(/\.gfp-row\.gfp-menu-open \.gfp-row-actions/);
   });
 });
 

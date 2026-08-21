@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Window } from "happy-dom";
 // @ts-expect-error Plain-JS webview module intentionally has no TS build step.
 import {
@@ -17,6 +20,32 @@ import {
   joinHostPath,
 } from "../media/file-panel.js";
 import { chatZoomFactor, unzoomClientPx } from "../media/webview-helpers.js";
+
+const filePanelCss = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "file-panel.css"),
+  "utf8",
+);
+
+function injectPanelCss(document: Document) {
+  const style = document.createElement("style");
+  // The touch block always lays the ⋯ out; these tests are the pointer/keyboard
+  // reveal rules, so strip that media query or happy-dom's hover:none matches it.
+  style.textContent = filePanelCss.replace(
+    /@media \(hover: none\) and \(pointer: coarse\) \{[\s\S]*?^\}\s*/m,
+    "",
+  );
+  document.head.appendChild(style);
+}
+
+function rowActions(row: Element): HTMLElement {
+  const actions = row.querySelector(".gfp-row-actions") as HTMLElement | null;
+  expect(actions).toBeTruthy();
+  return actions!;
+}
+
+function actionsDisplay(row: Element): string {
+  return row.ownerDocument.defaultView!.getComputedStyle(rowActions(row)).display;
+}
 
 type Scope = { id: string; label: string; title?: string };
 
@@ -1759,5 +1788,75 @@ describe("tab strip structure follows the overflow design", () => {
     title.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
     await settle();
     expect(title.classList.contains("gfp-title-selected")).toBe(true);
+  });
+});
+
+describe("file-tree row actions stay on hover / keyboard / open menu, not a mouse click", () => {
+  async function openTree() {
+    const h = harness();
+    injectPanelCss(h.document);
+    h.panel.setOpen(true);
+    await settle();
+    const row = treeRow(h.document, "notes.md");
+    expect(row).toBeTruthy();
+    const more = row!.querySelector(".gfp-icon-button") as HTMLButtonElement | null;
+    expect(more).toBeTruthy();
+    return { h, row: row as HTMLElement, more: more! };
+  }
+
+  it("a mouse click on a row does not leave its actions visible once the pointer leaves", async () => {
+    const { h, row, more } = await openTree();
+    expect(actionsDisplay(row)).toBe("none");
+    click(h.window, row);
+    await settle();
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    row.dispatchEvent(new h.window.MouseEvent("mouseleave", { bubbles: true }));
+    // A mouse click must not pin the ⋯ via :focus-within. happy-dom does not
+    // focus a tabindex row on click; if it starts treating click as
+    // :focus-visible, the CSS source test is the remaining contract.
+    if (row.matches(":focus-visible") || row.querySelector(":focus-visible")) {
+      expect(filePanelCss).not.toMatch(/\.gfp-row:focus-within\s+\.gfp-row-actions/);
+    } else {
+      expect(actionsDisplay(row)).toBe("none");
+    }
+    h.panel.destroy();
+  });
+
+  it("a keyboard-focused row shows its actions", async () => {
+    const { h, row, more } = await openTree();
+    row.focus();
+    expect(h.document.activeElement).toBe(row);
+    if (!row.matches(":focus-visible")) more.focus();
+    if (row.matches(":focus-visible") || more.matches(":focus-visible")) {
+      expect(actionsDisplay(row)).toBe("flex");
+    } else {
+      expect(filePanelCss).toMatch(/\.gfp-row:focus-visible \.gfp-row-actions/);
+      expect(filePanelCss).toMatch(/\.gfp-row:has\(:focus-visible\) \.gfp-row-actions/);
+    }
+    h.panel.destroy();
+  });
+
+  it("an open overflow menu keeps its row's actions visible", async () => {
+    const { h, row, more } = await openTree();
+    expect(actionsDisplay(row)).toBe("none");
+    row.classList.add("gfp-menu-open");
+    expect(actionsDisplay(row)).toBe("flex");
+    row.classList.remove("gfp-menu-open");
+    expect(actionsDisplay(row)).toBe("none");
+
+    click(h.window, more);
+    await settle();
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    expect(row.classList.contains("gfp-menu-open")).toBe(true);
+    expect(h.document.querySelector(".gfp-menu")).toBeTruthy();
+    more.blur();
+    expect(actionsDisplay(row)).toBe("flex");
+
+    h.document.body.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(row.classList.contains("gfp-menu-open")).toBe(false);
+    expect(h.document.querySelector(".gfp-menu")).toBeNull();
+    h.panel.destroy();
   });
 });
