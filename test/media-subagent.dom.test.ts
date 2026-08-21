@@ -162,7 +162,7 @@ describe("addGeneratedMedia image click by surface (openInEditor)", () => {
     }
   });
 
-  it("clearMessages closes an open lightbox and clears its pending full-size state", () => {
+  it("clearMessages closes an open lightbox and clears its pending full-size state", async () => {
     // openImagePreview attaches to document.body; resetForNewSession only
     // cleared the transcript — a session swap with the lightbox open left the
     // previous session's image over the next one. Routing generated-media
@@ -185,7 +185,8 @@ describe("addGeneratedMedia image click by surface (openInEditor)", () => {
     expect(overlay!.hidden).toBe(true);
     const previewImg = overlay!.querySelector("img") as HTMLImageElement;
     expect(previewImg.getAttribute("src")).toBeNull();
-    // Transcript wiped; no leftover media row either.
+    // Transcript wipe is deferred to the next frame when no replacement arrives.
+    await new Promise<void>((resolve) => h.window.requestAnimationFrame(() => resolve()));
     expect(messages(h.doc).querySelector(".generated-image")).toBeNull();
   });
 

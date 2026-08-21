@@ -232,6 +232,8 @@ every live `Session` (`pool`). The point is **lossless re-focus**: a backgrounde
 session keeps streaming into its own *view buffer* (every webview post that built
 its chat, in order), so re-focusing it is a `clearMessages` + replay of that
 buffer — no backend reload, no process kill, even mid-turn or mid-approval.
+The webview defers destroying those nodes until the first replacement append
+(`appendTranscriptChild`) or the next animation frame (`flushPendingTranscriptClear`).
 
 Switching focus (`focusSession`) never touches the backend: it swaps `this.focused`,
 replays the target's buffer to the webview, and re-pushes the mode/sessions UI.
