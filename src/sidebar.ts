@@ -9394,7 +9394,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return mergeReserved(...parts);
   }
 
-  private hostMcpServersFor(session: Session) {
+  private async hostMcpServersFor(session: Session) {
+    // Shared record is refreshSync'd from disk; the PAT cache is not. Re-read
+    // this host's own HostSecrets, then take the disk-fresh record. The
+    // secret does not travel.
+    await this.loadMcpConnectorKeys();
     const store = this.connectedConnectorStore();
     const keyAuth: Record<string, string> = {};
     for (const [id, token] of this.mcpConnectorKeys ?? []) {

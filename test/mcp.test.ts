@@ -252,7 +252,7 @@ describe("MCP remote inventory projection", () => {
     // inventory tagger is pinned to grok.
     const reserved = src.slice(
       src.indexOf("private reservedMcpIdentityFor("),
-      src.indexOf("private hostMcpServersFor("),
+      src.indexOf("private async hostMcpServersFor("),
     );
     expect(reserved).toContain("provider: session.provider");
   });

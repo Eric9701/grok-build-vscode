@@ -146,10 +146,11 @@ export interface AcpClientOptions {
   /**
    * Host-owned MCP servers for `session/new` and `session/load`. A getter is
    * read at request time so a Connect that lands after construct still applies.
+   * The getter may be async so a host can re-read its own secrets first.
    * Omitted / empty is the historical `[]` — the field is still sent because
    * grok rejects session/new without it.
    */
-  mcpServers?: AcpMcpStdioServer[] | (() => AcpMcpStdioServer[]);
+  mcpServers?: AcpMcpStdioServer[] | (() => AcpMcpStdioServer[] | Promise<AcpMcpStdioServer[]>);
 }
 
 export interface ModelInfo {
@@ -458,16 +459,16 @@ export class AcpClient extends EventEmitter {
     this.emit("initialized", init);
   }
 
-  private mcpServersForSession(): AcpMcpStdioServer[] {
+  private async mcpServersForSession(): Promise<AcpMcpStdioServer[]> {
     const value = this.opts.mcpServers;
-    if (typeof value === "function") return value();
+    if (typeof value === "function") return await value();
     return Array.isArray(value) ? value : [];
   }
 
   async newSession(modelId?: string): Promise<{ sessionId: string }> {
     const raw = await this.request("session/new", {
       cwd: this.opts.cwd,
-      mcpServers: this.mcpServersForSession(),
+      mcpServers: await this.mcpServersForSession(),
     });
     const res = this.backend.normalizeSessionResponse(raw);
     this.sessionId = res.sessionId;
@@ -517,7 +518,7 @@ export class AcpClient extends EventEmitter {
     const raw = await this.request("session/load", {
       sessionId,
       cwd: this.opts.cwd,
-      mcpServers: this.mcpServersForSession(),
+      mcpServers: await this.mcpServersForSession(),
     });
     const res = this.backend.normalizeSessionResponse(raw);
     this.sessionId = sessionId;

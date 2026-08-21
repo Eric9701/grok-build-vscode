@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   authorizeMcpRemote,
   listenFreeLoopbackPort,
@@ -19,9 +19,14 @@ import {
   MCP_REMOTE_AUTH_HEADER_TEMPLATE,
   MCP_REMOTE_HEADER_FLAG,
   STATIC_OAUTH_CLIENT_METADATA_FLAG,
+  connectConnector,
   connectFailureMessage,
+  mcpConnectorSecretKey,
   mcpRemoteArgs,
+  MCP_CONNECTORS_KEY,
 } from "../src/mcp-connectors";
+import { DISK_KEYS, PersistedState, type MementoLike, type StateFs } from "../src/persisted-state";
+import { GrokSidebar } from "../src/sidebar";
 
 class FakeProc extends EventEmitter {
   stdin = new PassThrough();
@@ -106,14 +111,16 @@ describe("sidebar connect wiring", () => {
 
   it("session/new Stripe entry also carries static OAuth client metadata", () => {
     const src = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
-    const start = src.indexOf("private hostMcpServersFor(");
-    const end = src.indexOf("private async connectMcpConnector(");
+    const start = src.indexOf("private async hostMcpServersFor(");
+    const end = src.indexOf("private async loadMcpConnectorKeys(");
     const body = src.slice(start, end);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     expect(body).toContain("persistConnectorOAuthClientMetadata");
     expect(body).toContain("hostMcpServers(");
     expect(body).toContain("this.mcpConnectorKeys");
+    expect(body).toContain("this.loadMcpConnectorKeys");
+    expect(body).toContain("this.connectedConnectorStore");
     expect(body).not.toContain("quoteSpawnArgs");
     expect(body).not.toContain("disconnectConnector");
     expect(body).not.toContain("this.state.update");
@@ -553,3 +560,169 @@ describe("listenFreeLoopbackPort", () => {
     expect(listened).toEqual({ port: 0, host: "127.0.0.1" });
   });
 });
+
+class SharedStateFs implements StateFs {
+  files = new Map<string, string>();
+  private nextMtime = 1;
+  private mtimes = new Map<string, number>();
+
+  existsSync(p: string): boolean {
+    return this.files.has(p);
+  }
+  readFileSync(p: string): string {
+    const v = this.files.get(p);
+    if (v === undefined) throw new Error(`ENOENT: ${p}`);
+    return v;
+  }
+  statSync(p: string): { size: number; mtimeMs: number } {
+    const data = this.files.get(p);
+    if (data === undefined) throw new Error(`ENOENT: ${p}`);
+    return { size: Buffer.byteLength(data), mtimeMs: this.mtimes.get(p) ?? 0 };
+  }
+  writeFileSync(p: string, data: string, opts?: { encoding: "utf8"; flag?: string }): void {
+    if (opts?.flag === "wx" && this.files.has(p)) {
+      const error = new Error(`EEXIST: ${p}`) as Error & { code: string };
+      error.code = "EEXIST";
+      throw error;
+    }
+    this.files.set(p, data);
+    this.mtimes.set(p, this.nextMtime++);
+  }
+  renameSync(from: string, to: string): void {
+    const v = this.files.get(from);
+    if (v === undefined) throw new Error(`ENOENT: ${from}`);
+    this.files.delete(from);
+    this.mtimes.delete(from);
+    this.writeFileSync(to, v);
+  }
+  mkdirSync(): void { /* */ }
+}
+
+class MemoryMemento implements MementoLike {
+  store = new Map<string, unknown>();
+  get<T>(key: string): T | undefined;
+  get<T>(key: string, defaultValue: T): T;
+  get<T>(key: string, defaultValue?: T): T | undefined {
+    return this.store.has(key) ? (this.store.get(key) as T) : defaultValue;
+  }
+  update(key: string, value: unknown): PromiseLike<void> {
+    this.store.set(key, value);
+    return Promise.resolve();
+  }
+}
+
+const GITHUB_ENDPOINT = "https://api.githubcopilot.com/mcp/";
+const PAT_A = "ghp_HOST_A_TOKEN_do_not_store";
+const PAT_B = "ghp_HOST_B_TOKEN_do_not_store";
+const PAT_B_NEXT = "ghp_HOST_B_REPLACED_do_not_store";
+const GITHUB_SECRET = mcpConnectorSecretKey("github");
+
+type SidebarHost = {
+  mcpConnectorKeys: Map<string, string>;
+  context: { secrets: { get: (k: string) => Promise<string | undefined>; store: (k: string, v: string) => Promise<void>; delete: (k: string) => Promise<void> } };
+  state: PersistedState;
+  host: { appendLine: ReturnType<typeof vi.fn> };
+  post: ReturnType<typeof vi.fn>;
+  settingsEditor: undefined;
+  reservedMcpIdentityFor: () => { names: string[]; urls: string[] };
+};
+
+function makeKeyHost(secrets: Map<string, string>, state: PersistedState): SidebarHost {
+  const host = Object.create(GrokSidebar.prototype) as SidebarHost;
+  host.mcpConnectorKeys = new Map();
+  host.context = {
+    secrets: {
+      get: async (k) => secrets.get(k),
+      store: async (k, v) => { secrets.set(k, v); },
+      delete: async (k) => { secrets.delete(k); },
+    },
+  };
+  host.state = state;
+  host.host = { appendLine: vi.fn() };
+  host.post = vi.fn();
+  host.settingsEditor = undefined;
+  host.reservedMcpIdentityFor = () => ({ names: [], urls: [] });
+  return host;
+}
+
+function githubAuth(servers: Array<{ name: string; env?: Array<{ name: string; value: string }> }>): string | undefined {
+  const github = servers.find((s) => s.name === "github");
+  return github?.env?.find((e) => e.name === MCP_REMOTE_AUTH_HEADER_ENV)?.value;
+}
+
+const proto = GrokSidebar.prototype as unknown as {
+  loadMcpConnectorKeys(): Promise<void>;
+  hostMcpServersFor(session: { provider: string }): unknown;
+  connectedConnectorStore(): Record<string, { endpoint: string }>;
+};
+
+describe("key cache across hosts sharing grok.mcpConnectors", () => {
+  const DIR = "/home/.grok/client-state";
+  const diskFile = `${DIR}/${DISK_KEYS[MCP_CONNECTORS_KEY]}`;
+
+  function twoHosts() {
+    const fs = new SharedStateFs();
+    const stateA = new PersistedState(new MemoryMemento(), DIR, fs);
+    const stateB = new PersistedState(new MemoryMemento(), DIR, fs);
+    const secretsA = new Map<string, string>();
+    const secretsB = new Map<string, string>();
+    const a = makeKeyHost(secretsA, stateA);
+    const b = makeKeyHost(secretsB, stateB);
+    return { fs, stateA, stateB, secretsA, secretsB, a, b };
+  }
+
+  it("connecting GitHub in one host is picked up by the other without a restart, and the secret stays put", async () => {
+    const { fs, stateA, secretsA, secretsB, a, b } = twoHosts();
+    await proto.loadMcpConnectorKeys.call(a);
+    await proto.loadMcpConnectorKeys.call(b);
+    expect(await proto.hostMcpServersFor.call(b, { provider: "grok" })).toEqual([]);
+
+    secretsA.set(GITHUB_SECRET, PAT_A);
+    a.mcpConnectorKeys.set("github", PAT_A);
+    await stateA.update(MCP_CONNECTORS_KEY, connectConnector({}, "github", GITHUB_ENDPOINT));
+    await stateA.flush();
+
+    secretsB.set(GITHUB_SECRET, PAT_B);
+    const servers = await proto.hostMcpServersFor.call(b, { provider: "grok" }) as Array<{ name: string; env?: Array<{ name: string; value: string }>; args?: string[] }>;
+    expect(githubAuth(servers)).toBe(`Bearer ${PAT_B}`);
+    expect(JSON.stringify(servers)).not.toContain(PAT_A);
+    expect(secretsB.get(GITHUB_SECRET)).toBe(PAT_B);
+    expect(secretsA.get(GITHUB_SECRET)).toBe(PAT_A);
+    expect(fs.files.get(diskFile)).not.toContain(PAT_A);
+    expect(fs.files.get(diskFile)).not.toContain(PAT_B);
+    expect(JSON.parse(fs.files.get(diskFile)!)).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
+  });
+
+  it("replacing a token on this host is what a later session/new sends, not the boot snapshot", async () => {
+    const { secretsB, stateA, b } = twoHosts();
+    secretsB.set(GITHUB_SECRET, PAT_B);
+    await proto.loadMcpConnectorKeys.call(b);
+    await stateA.update(MCP_CONNECTORS_KEY, connectConnector({}, "github", GITHUB_ENDPOINT));
+    await stateA.flush();
+    expect(githubAuth(await proto.hostMcpServersFor.call(b, { provider: "grok" }) as never)).toBe(`Bearer ${PAT_B}`);
+
+    secretsB.set(GITHUB_SECRET, PAT_B_NEXT);
+    const servers = await proto.hostMcpServersFor.call(b, { provider: "grok" }) as Array<{ name: string; env?: Array<{ name: string; value: string }> }>;
+    expect(githubAuth(servers)).toBe(`Bearer ${PAT_B_NEXT}`);
+    expect(JSON.stringify(servers)).not.toContain(PAT_B);
+  });
+
+  it("a host with no key still omits GitHub and does not delete the shared record", async () => {
+    const { fs, stateA, secretsB, a, b } = twoHosts();
+    secretsB.set(GITHUB_SECRET, PAT_B);
+    await proto.loadMcpConnectorKeys.call(a);
+    await proto.loadMcpConnectorKeys.call(b);
+    await stateA.update(MCP_CONNECTORS_KEY, connectConnector({}, "github", GITHUB_ENDPOINT));
+    await stateA.flush();
+
+    const none = makeKeyHost(new Map(), a.state);
+    await proto.loadMcpConnectorKeys.call(none);
+    const servers = await proto.hostMcpServersFor.call(none, { provider: "grok" });
+    expect(servers).toEqual([]);
+    expect(proto.connectedConnectorStore.call(none)).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
+    expect(fs.files.get(diskFile)).toContain("github");
+    expect(JSON.parse(fs.files.get(diskFile)!)).toEqual({ github: { endpoint: GITHUB_ENDPOINT } });
+    expect(secretsB.get(GITHUB_SECRET)).toBe(PAT_B);
+  });
+});
+

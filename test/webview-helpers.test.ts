@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters, partitionHistoryCards } from "../media/webview-helpers.js";
 import { Window } from "happy-dom";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
@@ -1739,5 +1739,27 @@ describe("splitHistoryWindow (#102)", () => {
     const split = splitHistoryWindow(turns(3), 0);
     expect(split.suffix).toEqual([]);
     expect(split.prefixUserCount).toBe(3);
+  });
+});
+
+describe("partitionHistoryCards", () => {
+  const cards = [
+    { text: "early", afterUserMessage: 10 },
+    { text: "start", afterUserMessage: 1380 },
+    { text: "mid", afterUserMessage: 1390 },
+    { text: "end", afterUserMessage: 1420 },
+    { text: "unpositioned" },
+  ];
+
+  it("gives a hydrated chunk only the cards whose turns it renders", () => {
+    const { inChunk, rest } = partitionHistoryCards(cards, 1380, 1420);
+    expect(inChunk.map((c: { text: string }) => c.text)).toEqual(["start", "mid", "end"]);
+    expect(rest.map((c: { text: string }) => c.text)).toEqual(["early", "unpositioned"]);
+  });
+
+  it("keeps earlier cards deferred for the chunks that will render theirs", () => {
+    const { inChunk, rest } = partitionHistoryCards(cards, 1340, 1380);
+    expect(inChunk.map((c: { text: string }) => c.text)).toEqual(["start"]);
+    expect(rest.map((c: { text: string }) => c.text)).toEqual(["early", "mid", "end", "unpositioned"]);
   });
 });

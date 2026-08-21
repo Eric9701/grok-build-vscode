@@ -141,3 +141,105 @@ describe("history window on open (#102)", () => {
     expect(String(sent[0].content)).toContain("export-early-token");
   });
 });
+
+function cardTranscript(doc: Document): string[] {
+  const messages = doc.getElementById("messages")!;
+  const out: string[] = [];
+  for (const child of Array.from(messages.children) as HTMLElement[]) {
+    if (child.id === "welcome" || child.id === "history-head") continue;
+    if (child.classList.contains("plan-history")) {
+      out.push(`plan:${(child.querySelector(".plan-body")?.textContent || "").trim()}`);
+    } else if (child.classList.contains("perm-resolved")) {
+      out.push(`perm:${(child.querySelector(".perm-resolved-what")?.textContent || "").trim()}`);
+    } else if (child.classList.contains("user") && !child.classList.contains("queued")) {
+      out.push(`user:${(child.querySelector(".body")?.textContent || "").trim()}`);
+    }
+  }
+  return out;
+}
+
+function replayUserTurns(window: Window, n: number) {
+  dispatch(window, { type: "historyReplay", active: true });
+  for (let i = 1; i <= n; i++) {
+    dispatch(window, { type: "userMessage", text: `u${i}`, chips: [] });
+  }
+  dispatch(window, { type: "historyReplay", active: false });
+}
+
+describe("history window plan/permission cards (#102 prepend)", () => {
+  it("a conversation shorter than one window still places cards beside their turns", () => {
+    const { window, doc } = bootWebview();
+    setHistoryWindow(window, 80);
+    dispatch(window, {
+      type: "planHistoryQueue",
+      plans: [{ text: "short-plan", verdict: "approved", afterUserMessage: 2 }],
+    });
+    dispatch(window, {
+      type: "permissionHistoryQueue",
+      permissions: [{ title: "short-perm", outcome: "allowed", afterUserMessage: 1 }],
+    });
+    replayUserTurns(window, 4);
+    expect(api(window).__grokHistory.prefixRemaining()).toBe(0);
+    expect(cardTranscript(doc)).toEqual([
+      "user:u1",
+      "perm:short-perm",
+      "user:u2",
+      "plan:short-plan",
+      "user:u3",
+      "user:u4",
+    ]);
+  });
+
+  it("after two prepends, each card sits beside its own turn and earlier ones stay deferred", () => {
+    // Window 80 + two prepends of 40 = 160 rendered from the end. Cards on
+    // still-unrendered turns must not drain into the first prepended chunk.
+    const { window, doc } = bootWebview();
+    setHistoryWindow(window, 80);
+    dispatch(window, {
+      type: "planHistoryQueue",
+      plans: [
+        { text: "plan-early", verdict: "approved", afterUserMessage: 10 },
+        { text: "plan-mid", verdict: "rejected", afterUserMessage: 1360 },
+        { text: "plan-tail", verdict: "abandoned", afterUserMessage: 1480 },
+      ],
+    });
+    dispatch(window, {
+      type: "permissionHistoryQueue",
+      permissions: [
+        { title: "perm-early", outcome: "allowed", afterUserMessage: 20 },
+        { title: "perm-mid", outcome: "rejected", afterUserMessage: 1390 },
+        { title: "perm-tail", outcome: "allowed", afterUserMessage: 1490 },
+      ],
+    });
+    replayUserTurns(window, 1500);
+    expect(api(window).__grokHistory.prefixRemaining()).toBe(1420);
+    const initial = cardTranscript(doc);
+    expect(initial[0]).toBe("user:u1421");
+    expect(initial.at(-1)).toBe("user:u1500");
+    expect(initial).not.toContain("plan:plan-early");
+    expect(initial).not.toContain("perm:perm-early");
+    expect(initial).not.toContain("plan:plan-mid");
+    expect(initial.indexOf("plan:plan-tail")).toBe(initial.indexOf("user:u1480") + 1);
+    expect(initial.indexOf("perm:perm-tail")).toBe(initial.indexOf("user:u1490") + 1);
+
+    expect(api(window).__grokHistory.expandMore()).toBe(true);
+    expect(api(window).__grokHistory.expandMore()).toBe(true);
+    expect(api(window).__grokHistory.prefixRemaining()).toBe(1340);
+
+    const afterTwo = cardTranscript(doc);
+    expect(afterTwo).not.toContain("plan:plan-early");
+    expect(afterTwo).not.toContain("perm:perm-early");
+    const at = (label: string) => afterTwo.indexOf(label);
+    expect(at("user:u10")).toBe(-1);
+    expect(at("user:u1360")).toBeGreaterThan(-1);
+    expect(at("plan:plan-mid")).toBe(at("user:u1360") + 1);
+    expect(at("user:u1361")).toBe(at("plan:plan-mid") + 1);
+    expect(at("perm:perm-mid")).toBe(at("user:u1390") + 1);
+    expect(at("user:u1391")).toBe(at("perm:perm-mid") + 1);
+    expect(at("plan:plan-tail")).toBe(at("user:u1480") + 1);
+    expect(at("perm:perm-tail")).toBe(at("user:u1490") + 1);
+    expect(afterTwo[0]).toBe("user:u1341");
+    expect(afterTwo.at(-1)).toBe("user:u1500");
+  }, 20_000);
+});
+
