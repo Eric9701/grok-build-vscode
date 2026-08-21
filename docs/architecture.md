@@ -600,6 +600,13 @@ history remain deletable. This prevents an owner
 from retaining a rendered transcript after its backing process and disk session have
 been destroyed.
 
+Loading a conversation renders only its most recent turns and keeps the earlier
+prefix unrendered, so a long history opens immediately instead of building every
+turn up front; scrolling to the top hydrates the next chunk in place, with plan
+and permission cards partitioned to the chunk that owns their turn. Remote
+clients never reach that path - `bracketRemoteSnapshot` already caps a remote
+snapshot at the last ten user messages, so there is no prefix to page through.
+
 Relay IDs change after a network reconnect, so `media/chat.js` persists both the logical
 tab token and `{repoCwd, id, cwd}` in device-scoped `sessionStorage`. Its `ready` binds
 the fresh relay id before re-posting `selectRepo` + `resumeSession`; the host immediately
