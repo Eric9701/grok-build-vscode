@@ -529,3 +529,109 @@ describe("cold load identity-restoring", () => {
     expect(showsEmptyState(doc)).toBe(true);
   });
 });
+
+describe("pending clear while identity-restoring", () => {
+  function paintConversation(window: Window, doc: Document) {
+    seedConnected(window);
+    dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
+    dispatch(window, { type: "userMessage", text: "still here" });
+    expect(welcome(doc).hidden).toBe(true);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("still here");
+  }
+
+  it("holds the conversation across frames while a restore is in flight", async () => {
+    const { window, doc } = bootWebview({ remote: true });
+    paintConversation(window, doc);
+    doc.body.classList.add("identity-restoring");
+    dispatch(window, { type: "clearMessages" });
+    // The new-socket snapshot is a fresh empty session: clear + an empty replay.
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBe("1");
+
+    let sawWelcomeUnhidden = false;
+    let sawEmptyState = false;
+    const obs = new window.MutationObserver(() => {
+      if (!welcome(doc).hidden) sawWelcomeUnhidden = true;
+      if (showsEmptyState(doc)) sawEmptyState = true;
+    });
+    obs.observe(messages(doc), {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["hidden", "data-pending-clear", "data-status"],
+    });
+
+    await raf(window);
+    await raf(window);
+    await raf(window);
+    obs.disconnect();
+
+    expect(sawWelcomeUnhidden).toBe(false);
+    expect(sawEmptyState).toBe(false);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("still here");
+    expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBe("1");
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    expect(welcomeStatus(doc)).not.toBe("Starting");
+    expect(doc.getElementById("session-head-title")?.textContent).toBe("Keep this");
+  });
+
+  it("keeps the welcome hidden when the class is removed after content arrived", async () => {
+    const { window, doc } = bootWebview({ remote: true });
+    paintConversation(window, doc);
+    doc.body.classList.add("identity-restoring");
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessage", text: "still here" });
+    dispatch(window, { type: "historyReplay", active: false });
+    dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
+    expect(welcome(doc).hidden).toBe(true);
+    expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBeNull();
+
+    doc.body.classList.remove("identity-restoring");
+    await raf(window);
+    await raf(window);
+
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    expect(welcomeStatus(doc)).not.toBe("Starting");
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("still here");
+    expect(doc.getElementById("session-head-title")?.textContent).toBe("Keep this");
+  });
+
+  it("reveals the welcome with its status when the class is removed and nothing arrived", async () => {
+    const { window, doc } = bootWebview({ remote: true });
+    paintConversation(window, doc);
+    doc.body.classList.add("identity-restoring");
+    dispatch(window, { type: "clearMessages" });
+    await raf(window);
+    await raf(window);
+    expect(welcome(doc).hidden).toBe(true);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("still here");
+
+    doc.body.classList.remove("identity-restoring");
+    expect(welcome(doc).hidden).toBe(true);
+    await Promise.resolve();
+    expect(welcome(doc).hidden).toBe(true);
+    expect(doc.querySelector(".msg.user")).not.toBeNull();
+    await raf(window);
+
+    expect(doc.querySelector(".msg.user")).toBeNull();
+    expect(welcome(doc).hidden).toBe(false);
+    expect(welcomeStatus(doc)).toBe("Starting");
+  });
+
+  it("flushes to the welcome on the next frame when no restore is in flight", async () => {
+    const { window, doc } = bootWebview({ remote: true });
+    paintConversation(window, doc);
+    dispatch(window, { type: "clearMessages" });
+    expect(welcome(doc).hidden).toBe(true);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("still here");
+
+    await raf(window);
+    expect(doc.querySelector(".msg.user")).toBeNull();
+    expect(welcome(doc).hidden).toBe(false);
+    expect(welcomeStatus(doc)).toBe("Starting");
+  });
+});

@@ -233,10 +233,12 @@ session keeps streaming into its own *view buffer* (every webview post that buil
 its chat, in order), so re-focusing it is a `clearMessages` + replay of that
 buffer — no backend reload, no process kill, even mid-turn or mid-approval.
 The webview defers destroying those nodes until the first replacement append
-(`appendTranscriptChild`) or the next animation frame (`flushPendingTranscriptClear`),
-and holds the welcome hidden (`welcomeHoldActive`: a painted conversation, not
-a `clearMessages` mark; also `body.identity-restoring` on a cold restore of a
-remembered conversation, which must hide the welcome because it starts visible;
+(`appendTranscriptChild`) or the next animation frame (`flushPendingTranscriptClear`).
+`body.identity-restoring` suspends that next-frame flush until the class lifts,
+and only then reveals the welcome if nothing replaced the nodes. The welcome
+stays hidden (`welcomeHoldActive`: a painted conversation, not a `clearMessages`
+mark; also `body.identity-restoring` on a cold restore of a remembered
+conversation, which must hide the welcome because it starts visible;
 `pendingWelcomeReveal`) and the title / composer
 focus (`pendingSessionChromeReset`) until that same moment.
 
