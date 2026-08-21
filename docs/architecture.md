@@ -240,7 +240,7 @@ stays hidden (`welcomeHoldActive`: a painted conversation, not a `clearMessages`
 mark; also `body.identity-restoring` on a cold restore of a remembered
 conversation, which must hide the welcome because it starts visible;
 `pendingWelcomeReveal`) and the title / composer
-focus (`pendingSessionChromeReset`) until that same moment. Desktop launch still
+focus / reader's pin (`pendingSessionChromeReset`) until that same moment. Desktop launch still
 takes composer focus once (`takeDesktopLaunchComposerFocus`) so a restored
 conversation is ready to type into; a later resync of an already-open surface
 does not, and VS Code never takes this shot.
