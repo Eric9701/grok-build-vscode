@@ -254,13 +254,15 @@ describe("clearMessages defers destroying the transcript", () => {
   it("a same-conversation resync changes nothing the user can see", () => {
     // The rule, not a string: take a painted conversation, run a full
     // same-session resync burst, and observe no change — not even between
-    // clearMessages and the replay that puts the same conversation back.
-    // Symptom tests below still catch Starting / Loading conversation /
-    // Connected; this is what stops the next reset from blanking the title
-    // or stealing focus the way those strings used to leak.
+    // messages in the burst. Two orders: local (clearMessages first, as
+    // focusSession / rehydrateWebviewFromFocused) and remote (initialState
+    // first, as buildRemoteSnapshot). Keying the welcome hold on pending-clear
+    // made the remote order stamp Connected / Loading conversation while the
+    // transcript was still unmarked.
     const snapshot = (doc: Document) => ({
       transcript: [...doc.querySelectorAll("#messages .msg .body")].map((el) => (el.textContent || "").trim()),
       welcomeHidden: welcome(doc).hidden,
+      welcomeStatus: welcomeStatus(doc),
       sessionName: {
         label: doc.getElementById("session-name-label")?.textContent ?? null,
         chipHidden: (doc.getElementById("session-name-chip") as HTMLElement | null)?.hidden ?? null,
@@ -274,7 +276,21 @@ describe("clearMessages defers destroying the transcript", () => {
       },
       focused: (doc.activeElement as HTMLElement | null)?.id ?? null,
     });
-    const replaySame = (window: Window, remote: boolean) => {
+    const initialState = {
+      type: "initialState" as const,
+      effort: "",
+      cwd: "/work/repo",
+      useCtrlEnter: false,
+      extVersion: "0.0.0",
+      showThinking: false,
+      expandCommandOutputs: false,
+      steerByDefault: false,
+      soundNotifications: false,
+      processingSound: false,
+      readRepliesAloud: false,
+      capabilities: {},
+    };
+    const replaySame = (window: Window, remote: boolean, expectHeld: (label: string) => void) => {
       dispatch(window, {
         type: "session",
         sessionId: "keep-1",
@@ -282,14 +298,22 @@ describe("clearMessages defers destroying the transcript", () => {
         currentModelId: undefined,
         ...(remote ? { provider: "grok" as const } : {}),
       });
+      expectHeld("session");
       dispatch(window, { type: "historyReplay", active: true });
+      expectHeld("historyReplay start");
+      dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+      expectHeld("initialized");
+      dispatch(window, { type: "setBusy", value: false });
+      expectHeld("setBusy");
       dispatch(window, { type: "userMessage", text: "keep me" });
+      expectHeld("userMessage");
       dispatch(window, { type: "historyReplay", active: false });
+      expectHeld("historyReplay end");
       dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
+      expectHeld("sessionName");
     };
-
-    for (const remote of [false, true]) {
-      const { window, doc } = bootWebview({ remote });
+    const run = (opts: { name: string; remote: boolean; prefix: (window: Window, expectHeld: (label: string) => void) => void }) => {
+      const { window, doc } = bootWebview({ remote: opts.remote });
       seedConnected(window);
       dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
       dispatch(window, { type: "userMessage", text: "keep me" });
@@ -298,18 +322,75 @@ describe("clearMessages defers destroying the transcript", () => {
       const before = snapshot(doc);
       expect(before.focused).toBe("history-btn");
       expect(before.transcript.join("\n")).toContain("keep me");
-      if (remote) expect(before.sessionName.title).toBe("Keep this");
+      if (opts.remote) expect(before.sessionName.title).toBe("Keep this");
       else {
         expect(before.sessionName.label).toBe("Keep this");
         expect(before.sessionName.chipHidden).toBe(false);
       }
 
-      dispatch(window, { type: "clearMessages" });
-      expect(snapshot(doc), remote ? "remote after clearMessages" : "local after clearMessages").toEqual(before);
+      let sawWelcomeUnhidden = false;
+      let sawEmptyState = false;
+      const obs = new window.MutationObserver(() => {
+        if (!welcome(doc).hidden) sawWelcomeUnhidden = true;
+        if (showsEmptyState(doc)) sawEmptyState = true;
+      });
+      obs.observe(messages(doc), {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["hidden", "data-pending-clear"],
+        characterData: true,
+      });
+      const expectHeld = (label: string) => {
+        expect(snapshot(doc), `${opts.name} after ${label}`).toEqual(before);
+      };
 
-      replaySame(window, remote);
-      expect(snapshot(doc), remote ? "remote after resync burst" : "local after resync burst").toEqual(before);
-    }
+      opts.prefix(window, expectHeld);
+      replaySame(window, opts.remote, expectHeld);
+      obs.disconnect();
+
+      expect(snapshot(doc), `${opts.name} after resync burst`).toEqual(before);
+      expect(sawWelcomeUnhidden, `${opts.name} unhid welcome`).toBe(false);
+      expect(sawEmptyState, `${opts.name} empty state`).toBe(false);
+    };
+
+    run({
+      name: "local",
+      remote: false,
+      prefix: (window, expectHeld) => {
+        dispatch(window, { type: "clearMessages" });
+        expectHeld("clearMessages");
+      },
+    });
+
+    run({
+      name: "remote",
+      remote: true,
+      prefix: (window, expectHeld) => {
+        // buildRemoteSnapshot: initialState → providerState → mcpConnectors →
+        // mcpServers → clearMessages → buffer. Status stamps in the unmarked
+        // window (initialized / setBusy / historyReplay) must not change a
+        // painted conversation.
+        dispatch(window, initialState);
+        expectHeld("initialState");
+        dispatch(window, { type: "providerState", providers: [{ id: "grok", connected: true }] });
+        expectHeld("providerState");
+        dispatch(window, { type: "mcpConnectors", connectors: [] });
+        expectHeld("mcpConnectors");
+        dispatch(window, { type: "mcpServers", servers: [], warning: "" });
+        expectHeld("mcpServers");
+        dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+        expectHeld("initialized before clearMessages");
+        dispatch(window, { type: "setBusy", value: false });
+        expectHeld("setBusy before clearMessages");
+        dispatch(window, { type: "historyReplay", active: true });
+        expectHeld("historyReplay start before clearMessages");
+        dispatch(window, { type: "historyReplay", active: false });
+        expectHeld("historyReplay end before clearMessages");
+        dispatch(window, { type: "clearMessages" });
+        expectHeld("clearMessages");
+      },
+    });
   });
 
   it("preserves scrollTop across a same-burst resync", () => {

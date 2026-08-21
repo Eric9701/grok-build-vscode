@@ -234,7 +234,8 @@ its chat, in order), so re-focusing it is a `clearMessages` + replay of that
 buffer — no backend reload, no process kill, even mid-turn or mid-approval.
 The webview defers destroying those nodes until the first replacement append
 (`appendTranscriptChild`) or the next animation frame (`flushPendingTranscriptClear`),
-and holds the welcome hidden (`pendingWelcomeReveal`) and the title / composer
+and holds the welcome hidden (`welcomeHoldActive`: a painted conversation, not
+a `clearMessages` mark; `pendingWelcomeReveal`) and the title / composer
 focus (`pendingSessionChromeReset`) until that same moment.
 
 Switching focus (`focusSession`) never touches the backend: it swaps `this.focused`,
