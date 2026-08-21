@@ -422,3 +422,110 @@ describe("clearMessages defers destroying the transcript", () => {
     expect(doc.querySelector(".msg.user")?.textContent).toContain("keep me");
   });
 });
+
+describe("cold load identity-restoring", () => {
+  const withIdentityRestoring = (win: Window) => {
+    win.document.body.classList.add("identity-restoring");
+  };
+  const stampedStatus = (doc: Document) =>
+    (doc.getElementById("welcome-version") as HTMLElement | null)?.dataset?.status || "";
+  const bootRestoring = () =>
+    bootWebview({ remote: true, ready: false, beforeScripts: withIdentityRestoring });
+
+  function watchPresentation(window: Window, doc: Document) {
+    let sawWelcomeUnhidden = false;
+    let sawEmptyState = false;
+    let sawStamp = false;
+    const check = () => {
+      if (!welcome(doc).hidden) sawWelcomeUnhidden = true;
+      if (showsEmptyState(doc)) sawEmptyState = true;
+      const stamped = stampedStatus(doc);
+      if (stamped === "Starting" || stamped === "Loading conversation") sawStamp = true;
+    };
+    const obs = new window.MutationObserver(check);
+    obs.observe(messages(doc), {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["hidden", "data-pending-clear", "data-status", "class"],
+    });
+    const ver = doc.getElementById("welcome-version");
+    if (ver) {
+      obs.observe(ver, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["data-status", "class"],
+      });
+    }
+    return {
+      disconnect: () => obs.disconnect(),
+      get sawWelcomeUnhidden() { return sawWelcomeUnhidden; },
+      get sawEmptyState() { return sawEmptyState; },
+      get sawStamp() { return sawStamp; },
+    };
+  }
+
+  it("never reveals the welcome or stamps Starting / Loading conversation", () => {
+    const { window, doc } = bootRestoring();
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    const watch = watchPresentation(window, doc);
+
+    dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+    dispatch(window, { type: "setBusy", value: false });
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "historyReplay", active: false });
+    dispatch(window, { type: "onboarding", state: "provider-connected", provider: "codex" });
+    watch.disconnect();
+
+    expect(welcome(doc).hidden).toBe(true);
+    expect(watch.sawWelcomeUnhidden).toBe(false);
+    expect(watch.sawEmptyState).toBe(false);
+    expect(watch.sawStamp).toBe(false);
+    expect(showsEmptyState(doc)).toBe(false);
+    expect(stampedStatus(doc)).not.toBe("Starting");
+    expect(stampedStatus(doc)).not.toBe("Loading conversation");
+  });
+
+  it("keeps the welcome hidden when the class is removed with content present", async () => {
+    const { window, doc } = bootRestoring();
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessage", text: "restored" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+
+    doc.body.classList.remove("identity-restoring");
+    await raf(window);
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("restored");
+  });
+
+  it("reveals the welcome with its status when the class is removed and nothing arrived", async () => {
+    const { window, doc } = bootRestoring();
+    dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+    expect(welcome(doc).hidden).toBe(true);
+
+    doc.body.classList.remove("identity-restoring");
+    expect(welcome(doc).hidden).toBe(true);
+    await Promise.resolve();
+    expect(welcome(doc).hidden).toBe(true);
+    await raf(window);
+    expect(welcome(doc).hidden).toBe(false);
+    expect(welcomeStatus(doc)).toBe("Starting");
+  });
+
+  it("a cold load without the class still shows Starting", () => {
+    const { window, doc } = bootWebview({ remote: true, ready: false });
+    expect(welcome(doc).hidden).toBe(false);
+    expect(welcomeStatus(doc)).toBe("Starting");
+    dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+    expect(welcome(doc).hidden).toBe(false);
+    expect(welcomeStatus(doc)).toBe("Starting");
+    expect(showsEmptyState(doc)).toBe(true);
+  });
+});

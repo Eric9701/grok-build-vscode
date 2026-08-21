@@ -235,7 +235,9 @@ buffer — no backend reload, no process kill, even mid-turn or mid-approval.
 The webview defers destroying those nodes until the first replacement append
 (`appendTranscriptChild`) or the next animation frame (`flushPendingTranscriptClear`),
 and holds the welcome hidden (`welcomeHoldActive`: a painted conversation, not
-a `clearMessages` mark; `pendingWelcomeReveal`) and the title / composer
+a `clearMessages` mark; also `body.identity-restoring` on a cold restore of a
+remembered conversation, which must hide the welcome because it starts visible;
+`pendingWelcomeReveal`) and the title / composer
 focus (`pendingSessionChromeReset`) until that same moment.
 
 Switching focus (`focusSession`) never touches the backend: it swaps `this.focused`,
