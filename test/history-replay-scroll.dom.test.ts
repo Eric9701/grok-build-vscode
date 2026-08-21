@@ -113,3 +113,81 @@ describe("history replay does not per-element scroll", () => {
     });
   });
 });
+
+function messagesOf(doc: Document) {
+  return doc.getElementById("messages") as HTMLElement;
+}
+
+function unpinAt(window: Window, messages: HTMLElement, top: number) {
+  messages.dispatchEvent(new window.WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+  messages.scrollTop = top;
+  messages.dispatchEvent(new window.Event("scroll"));
+}
+
+function replayTranscript(
+  window: Window,
+  setHeight: (height: number) => void,
+  height: number,
+  text: string,
+) {
+  dispatch(window, { type: "historyReplay", active: true });
+  setHeight(height);
+  dispatch(window, { type: "userMessageChunk", text });
+  dispatch(window, { type: "messageChunk", text: `answer ${text}` });
+  dispatch(window, { type: "historyReplay", active: false });
+}
+
+describe("history replay end follows the pin", () => {
+  it("leaves the place alone when the reader has scrolled up", () => {
+    const { window, doc, writes, resetWrites, setHeight } = bootWithScrollMeter();
+    dispatch(window, INIT);
+    replayTranscript(window, setHeight, 1200, "first");
+    const messages = messagesOf(doc);
+    unpinAt(window, messages, 80);
+    expect(messages.classList.contains("stick-to-bottom")).toBe(false);
+    resetWrites();
+
+    replayTranscript(window, setHeight, 1800, "second");
+    expect(writes()).toBe(0);
+    expect(messages.scrollTop).toBe(80);
+    expect(messages.classList.contains("stick-to-bottom")).toBe(false);
+  });
+
+  it("stays at the bottom so new messages are visible when the reader is pinned", () => {
+    const { window, doc, setHeight } = bootWithScrollMeter();
+    dispatch(window, INIT);
+    replayTranscript(window, setHeight, 800, "old");
+    expect(messagesOf(doc).scrollTop).toBe(800);
+    expect(messagesOf(doc).classList.contains("stick-to-bottom")).toBe(true);
+
+    replayTranscript(window, setHeight, 1600, "new");
+    expect(messagesOf(doc).scrollTop).toBe(1600);
+    expect(messagesOf(doc).classList.contains("stick-to-bottom")).toBe(true);
+  });
+
+  it("survives a snapshot replay then a resumeSession replay", () => {
+    const { window, doc, setHeight } = bootWithScrollMeter();
+    dispatch(window, INIT);
+    doc.body.classList.add("identity-restoring");
+    replayTranscript(window, setHeight, 1200, "snapshot");
+    const messages = messagesOf(doc);
+    // Cache restore is programmatic: it establishes a place without unpinning.
+    messages.scrollTop = 90;
+
+    // resumeSession rebuilds the same conversation: clear + a second replay.
+    dispatch(window, { type: "clearMessages" });
+    replayTranscript(window, setHeight, 2000, "resume");
+    expect(messages.scrollTop).toBe(90);
+  });
+
+  it("lands a fresh open with no established pin at the bottom", () => {
+    const { window, doc, setHeight } = bootWithScrollMeter();
+    dispatch(window, INIT);
+    dispatch(window, { type: "clearMessages" });
+    expect(messagesOf(doc).classList.contains("stick-to-bottom")).toBe(true);
+
+    replayTranscript(window, setHeight, 1400, "fresh");
+    expect(messagesOf(doc).scrollTop).toBe(1400);
+    expect(messagesOf(doc).classList.contains("stick-to-bottom")).toBe(true);
+  });
+});
