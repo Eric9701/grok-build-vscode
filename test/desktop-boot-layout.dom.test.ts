@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bootWebview } from "./webview-harness";
+import { bootWebview, dispatch } from "./webview-harness";
 
 /**
  * Desktop boot-layout race: CSS `--chat-zoom` must apply before the first
@@ -79,5 +79,79 @@ describe("desktop boot layout (zoom + preventScroll)", () => {
     doc.documentElement.scrollTop = 40;
     window.dispatchEvent(new window.Event("resize"));
     expect(doc.documentElement.scrollTop).toBe(40);
+  });
+});
+
+function bootDesktop() {
+  return bootWebview({
+    beforeScripts(w) {
+      (w as unknown as { grokDesktopShell: boolean }).grokDesktopShell = true;
+    },
+  });
+}
+
+function restoreConversation(window: Window, text = "kept from disk") {
+  dispatch(window, { type: "clearMessages" });
+  dispatch(window, { type: "historyReplay", active: true });
+  dispatch(window, { type: "userMessage", text });
+  dispatch(window, { type: "historyReplay", active: false });
+  dispatch(window, {
+    type: "sessionName",
+    sessionId: "keep-1",
+    name: "Keep this",
+    cwd: "/work/repo",
+  });
+}
+
+describe("desktop launch composer focus", () => {
+  it("puts the caret in the composer when the desktop app opens", () => {
+    const { doc } = bootDesktop();
+    expect(doc.activeElement).toBe(doc.getElementById("input"));
+  });
+
+  it("puts the caret in the composer when launch restores a conversation", () => {
+    // Force the pending-clear hold: a restore of a conversation that is already
+    // on screen skips resetSessionChrome (the phone-keyboard path). Desktop
+    // launch still has its one shot, taken when that first historyReplay settles.
+    const { window, doc } = bootDesktop();
+    dispatch(window, { type: "userMessage", text: "kept from disk" });
+    const historyBtn = doc.getElementById("history-btn") as HTMLButtonElement;
+    historyBtn.focus();
+    expect(doc.activeElement).toBe(historyBtn);
+
+    restoreConversation(window);
+    expect(doc.activeElement).toBe(doc.getElementById("input"));
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("kept from disk");
+  });
+
+  it("first window-focus claims the composer even if chrome already has it", () => {
+    const { window, doc } = bootDesktop();
+    const historyBtn = doc.getElementById("history-btn") as HTMLButtonElement;
+    historyBtn.focus();
+    expect(doc.activeElement).toBe(historyBtn);
+    window.dispatchEvent(new window.Event("focus"));
+    expect(doc.activeElement).toBe(doc.getElementById("input"));
+  });
+
+  it("a reconnect/resync of an already-open desktop surface does not move focus", () => {
+    const { window, doc } = bootDesktop();
+    window.dispatchEvent(new window.Event("focus"));
+    dispatch(window, { type: "sessionName", sessionId: "keep-1", name: "Keep this", cwd: "/work/repo" });
+    dispatch(window, { type: "userMessage", text: "keep me" });
+    const historyBtn = doc.getElementById("history-btn") as HTMLButtonElement;
+    historyBtn.focus();
+    expect(doc.activeElement).toBe(historyBtn);
+
+    restoreConversation(window, "keep me");
+    expect(doc.activeElement).toBe(historyBtn);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("keep me");
+  });
+
+  it("VS Code window-focus still does not steal from a control the user focused", () => {
+    const { window, doc } = bootWebview();
+    const historyBtn = doc.getElementById("history-btn") as HTMLButtonElement;
+    historyBtn.focus();
+    window.dispatchEvent(new window.Event("focus"));
+    expect(doc.activeElement).toBe(historyBtn);
   });
 });
