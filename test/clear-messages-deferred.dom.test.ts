@@ -1,9 +1,11 @@
 // clearMessages marks the transcript pending-clear instead of destroying it.
 // Replacement content in the same burst drops the old nodes after the new
 // ones are in (never an empty paint). No replacement → next-frame flush, and
-// the welcome appears as it always did.
+// the welcome appears as it always did. While nodes are pending, the welcome
+// stays hidden and unstamped — a resync must not paint Starting / Loading
+// conversation / Connected over a conversation that is about to come back.
 import { describe, it, expect } from "vitest";
-import { bootWebview, dispatch } from "./webview-harness";
+import { bootWebview, click, dispatch } from "./webview-harness";
 
 const raf = (window: Window) =>
   new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -20,19 +22,40 @@ const liveMsgs = (doc: Document) =>
   );
 const visualMsgs = (doc: Document) =>
   [...messages(doc).children].filter((el) => el.id !== "welcome");
+const shownText = (doc: Document) => {
+  const parts: string[] = [];
+  const w = welcome(doc);
+  if (!w.hidden) parts.push((w.textContent || "").trim());
+  for (const el of visualMsgs(doc)) {
+    if ((el as HTMLElement).hidden) continue;
+    parts.push((el.textContent || "").trim());
+  }
+  return parts.join("\n");
+};
+const EMPTY_STATE_STRINGS = ["Starting", "Loading conversation", "Connected"];
+const showsEmptyState = (doc: Document) =>
+  EMPTY_STATE_STRINGS.some((s) => shownText(doc).includes(s));
+
+function seedConnected(window: Window) {
+  dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+  dispatch(window, { type: "setBusy", value: false });
+}
 
 describe("clearMessages defers destroying the transcript", () => {
   it("same-burst replacement never observes an empty transcript or an unhidden welcome", async () => {
     const { window, doc } = bootWebview();
+    seedConnected(window);
     dispatch(window, { type: "userMessage", text: "hello from before" });
     expect(welcome(doc).hidden).toBe(true);
     expect(doc.querySelector(".msg.user")?.textContent).toContain("hello from before");
 
     let sawEmpty = false;
     let sawWelcomeUnhidden = false;
+    let sawEmptyState = false;
     const obs = new window.MutationObserver(() => {
       if (visualMsgs(doc).length === 0) sawEmpty = true;
       if (!welcome(doc).hidden) sawWelcomeUnhidden = true;
+      if (showsEmptyState(doc)) sawEmptyState = true;
     });
     obs.observe(messages(doc), {
       childList: true,
@@ -43,6 +66,7 @@ describe("clearMessages defers destroying the transcript", () => {
 
     dispatch(window, { type: "clearMessages" });
     expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
     expect(doc.querySelector(".msg.user")?.textContent).toContain("hello from before");
     expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBe("1");
     expect(liveMsgs(doc)).toHaveLength(0);
@@ -55,21 +79,87 @@ describe("clearMessages defers destroying the transcript", () => {
 
     expect(sawEmpty).toBe(false);
     expect(sawWelcomeUnhidden).toBe(false);
+    expect(sawEmptyState).toBe(false);
     expect(welcome(doc).hidden).toBe(true);
     expect(doc.querySelector(".msg.user")?.textContent).toContain("hello from before");
     expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBeNull();
     expect(visualMsgs(doc).some((el) => el.classList.contains("user"))).toBe(true);
   });
 
+  it("reconnect with a painted conversation never unhides the welcome", async () => {
+    const { window, doc } = bootWebview();
+    seedConnected(window);
+    dispatch(window, { type: "onboarding", state: "provider-connected", provider: "codex" });
+    dispatch(window, { type: "userMessage", text: "keep me" });
+    expect(welcome(doc).hidden).toBe(true);
+
+    let sawWelcomeUnhidden = false;
+    let sawEmptyState = false;
+    const obs = new window.MutationObserver(() => {
+      if (!welcome(doc).hidden) sawWelcomeUnhidden = true;
+      if (showsEmptyState(doc)) sawEmptyState = true;
+    });
+    obs.observe(messages(doc), {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["hidden", "data-pending-clear"],
+    });
+
+    dispatch(window, { type: "clearMessages" });
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    // The previous conversation is still in the tree; do not stamp empty-state
+    // copy onto the hidden welcome either — a later unhide would show it.
+    expect(welcomeStatus(doc)).not.toBe("Starting");
+    expect(welcomeStatus(doc)).not.toBe("Loading conversation");
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "onboarding", state: "provider-connected", provider: "codex" });
+    dispatch(window, { type: "initialized", info: { version: "0.2.40" } });
+    dispatch(window, { type: "userMessage", text: "keep me" });
+    dispatch(window, { type: "historyReplay", active: false });
+    await raf(window);
+    obs.disconnect();
+
+    expect(sawWelcomeUnhidden).toBe(false);
+    expect(sawEmptyState).toBe(false);
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("keep me");
+  });
+
+  it("holds the conversation across a frame while historyReplay is in flight", async () => {
+    const { window, doc } = bootWebview();
+    seedConnected(window);
+    dispatch(window, { type: "userMessage", text: "still here" });
+
+    dispatch(window, { type: "clearMessages" });
+    dispatch(window, { type: "historyReplay", active: true });
+    await raf(window);
+    expect(welcome(doc).hidden).toBe(true);
+    expect(showsEmptyState(doc)).toBe(false);
+    expect(doc.querySelector(".msg.user")?.textContent).toContain("still here");
+    expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBe("1");
+
+    dispatch(window, { type: "userMessage", text: "still here" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(welcome(doc).hidden).toBe(true);
+    expect(doc.querySelector(".msg.user")?.getAttribute("data-pending-clear")).toBeNull();
+  });
+
   it("flushes to the welcome on the next frame when no replacement arrives", async () => {
     const { window, doc } = bootWebview();
+    seedConnected(window);
     dispatch(window, { type: "userMessage", text: "soon gone" });
     expect(welcome(doc).hidden).toBe(true);
+    expect(welcomeStatus(doc)).toBe("Connected · v0.2.40");
 
     dispatch(window, { type: "clearMessages" });
     expect(welcome(doc).hidden).toBe(true);
     expect(doc.querySelector(".msg.user")?.textContent).toContain("soon gone");
-    expect(welcomeStatus(doc)).toBe("Starting");
+    expect(welcomeStatus(doc)).toBe("Connected · v0.2.40");
+    expect(showsEmptyState(doc)).toBe(false);
 
     await raf(window);
     expect(doc.querySelector(".msg.user")).toBeNull();
@@ -105,6 +195,51 @@ describe("clearMessages defers destroying the transcript", () => {
     expect(welcomeStatus(doc)).toBe("No project folder");
     expect(doc.getElementById("welcome-onboarding")!.textContent).toContain("No project folder");
     expect(doc.querySelector(".msg.user")).toBeNull();
+  });
+
+  it("a rail-transition open still shows Loading conversation, not Starting", () => {
+    const withRail = (win: Window) => {
+      const el = win.document.createElement("aside");
+      el.id = "projects-rail";
+      el.hidden = true;
+      win.document.body.appendChild(el);
+      const search = win.document.createElement("input");
+      search.id = "rail-search";
+      win.document.body.appendChild(search);
+    };
+    const { window, doc } = bootWebview({ remote: true, beforeScripts: withRail });
+    dispatch(window, {
+      type: "repos",
+      entries: [{ cwd: "/work/alpha", label: "alpha", available: true, pinned: false, updatedAt: 30 }],
+      selectedCwd: "/work/alpha",
+      activeCwd: "/work/alpha",
+    });
+    dispatch(window, {
+      type: "sessions",
+      entries: [
+        { id: "a1", cwd: "/work/alpha", displayName: "alpha one", rawSummary: "", updatedAt: 9, createdAt: 1, numMessages: 2 },
+        { id: "a2", cwd: "/work/alpha", displayName: "alpha two", rawSummary: "", updatedAt: 8, createdAt: 1, numMessages: 2 },
+      ],
+      activeId: "a1",
+      dots: {},
+      offset: 0,
+      total: 2,
+      hasMore: false,
+      nextOffset: 2,
+      query: "",
+    });
+    dispatch(window, { type: "sessionName", sessionId: "a1", name: "alpha one", cwd: "/work/alpha" });
+    dispatch(window, { type: "userMessage", text: "old transcript" });
+
+    const section = doc.querySelectorAll(".rail-repo")[0];
+    click(window, section.querySelectorAll(".rail-session")[1] as HTMLElement);
+    expect(welcomeStatus(doc)).toBe("Loading conversation");
+    expect(welcome(doc).hidden).toBe(false);
+
+    dispatch(window, { type: "clearMessages" });
+    expect(welcomeStatus(doc)).toBe("Loading conversation");
+    expect(welcomeStatus(doc)).not.toBe("Starting");
+    expect(welcome(doc).hidden).toBe(false);
   });
 
   it("preserves scrollTop across a same-burst resync", () => {
