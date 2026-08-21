@@ -44,7 +44,7 @@ The MIT notice above is the hard requirement for redistribution of those SVGs. D
 
 ### Connector vendor marks
 
-Settings → Connectors → On this computer uses the vendors' marks (Atlassian, Canva, Cloudflare, Linear, Notion, Sentry, Stripe) to identify those apps.
+Settings → Connectors → On this computer uses the vendors' marks (Airtable, Atlassian, Calendly, Canva, Cloudflare, GitHub, Linear, Notion, Sentry, Stripe) to identify those apps.
 
 | | |
 |---|---|

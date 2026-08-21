@@ -1,7 +1,7 @@
 // Shared settings surface: overlay in chat.js + the catalog in media/settings.js.
 import { describe, expect, it } from "vitest";
 import { Window } from "happy-dom";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TIER1_CONNECTORS } from "../src/mcp-connectors";
@@ -259,14 +259,15 @@ describe("settings catalog", () => {
     const logoIds = Object.keys(api.CONNECTOR_LOGO_IDS).sort();
     const catalog = new Set(TIER1_CONNECTORS.map((c) => c.id));
     expect(logoIds.every((id) => catalog.has(id))).toBe(true);
-    expect(logoIds).not.toContain("calendly");
-    expect(logoIds).not.toContain("airtable");
-    expect(logoIds).not.toContain("github");
+    // The registry and the directory must agree in BOTH directions. A
+    // registered id with no file renders a broken image; a file with no
+    // registered id is dead weight vendored to the relay forever, and the
+    // vendor manifest hashes that directory so it would ship regardless.
     for (const id of logoIds) {
       expect(existsSync(path.join(dir, `${id}.webp`)), id).toBe(true);
     }
-    expect(existsSync(path.join(dir, "calendly.webp"))).toBe(false);
-    expect(existsSync(path.join(dir, "airtable.webp"))).toBe(false);
+    const onDisk = readdirSync(dir).filter((f) => f.endsWith(".webp")).map((f) => f.replace(/\.webp$/, "")).sort();
+    expect(onDisk).toEqual(logoIds);
   });
 });
 
@@ -878,7 +879,7 @@ describe("settings overlay (chat.js)", () => {
     expect(row.querySelector(".settings-row-title")!.classList.contains("has-logo")).toBe(false);
   });
 
-  it("renders Calendly and Airtable without a blank logo slot", () => {
+  it("renders a connector with no vendor mark without a blank logo slot", () => {
     const h = bootWebview({
       beforeScripts(window) {
         const script = window.document.createElement("script");
@@ -890,15 +891,16 @@ describe("settings overlay (chat.js)", () => {
     dispatch(h.window, {
       type: "mcpConnectors",
       connectors: [
-        { id: "calendly", name: "Calendly", description: "Meetings.", endpoint: "https://mcp.calendly.com", connected: false, status: "idle" },
-        { id: "airtable", name: "Airtable", description: "Bases.", endpoint: "https://mcp.airtable.com/mcp", connected: false, status: "idle" },
+        // Every shipped catalog id now has a mark, so the no-mark path needs a
+        // synthetic row. It is the fallback that matters, not the vendor.
+        { id: "nomark", name: "No Mark", description: "Has no vendor logo.", endpoint: "https://example.invalid/mcp", connected: false, status: "idle" },
         { id: "linear", name: "Linear", description: "Issues.", endpoint: "https://mcp.linear.app/mcp", connected: true, status: "idle" },
       ],
     });
     openSettings(h);
     clickSettingsNav(h, "Connectors");
     const overlay = h.doc.getElementById("settings-overlay")!;
-    for (const id of ["calendly", "airtable"]) {
+    for (const id of ["nomark"]) {
       const row = overlay.querySelector(`[data-id="connector-${id}"]`) as HTMLElement;
       expect(row).toBeTruthy();
       expect(row.querySelector(".settings-connector-logo")).toBeNull();
