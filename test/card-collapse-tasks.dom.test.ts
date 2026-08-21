@@ -124,15 +124,22 @@ describe("restored permission cards (resumed session)", () => {
     dispatch(window, { type: "userMessageChunk", text: "run the tests" });
     dispatch(window, { type: "messageChunk", text: "sure" });
     dispatch(window, { type: "toolCall", call: { toolCallId: "tc-9", title: "Run npm test", kind: "execute" } });
-    // The card should already be present right after the gated tool — before the
-    // next user message / end of replay.
-    const permsAfterTool = doc.querySelectorAll(".card.permission.perm-resolved");
-    expect(permsAfterTool).toHaveLength(1);
-    expect(permsAfterTool[0].querySelector(".perm-resolved-what")!.textContent).toBe("Run npm test");
     dispatch(window, { type: "userMessageChunk", text: "thanks" });
     dispatch(window, { type: "historyReplay", active: false });
-    // Not duplicated by the end-of-replay flush.
-    expect(doc.querySelectorAll(".card.permission.perm-resolved")).toHaveLength(1);
+    const perms = [...doc.querySelectorAll(".card.permission.perm-resolved")];
+    expect(perms).toHaveLength(1);
+    expect(perms[0].querySelector(".perm-resolved-what")!.textContent).toBe("Run npm test");
+    const seq = (Array.from(doc.getElementById("messages")!.children) as HTMLElement[])
+      .filter((c) => c.id !== "welcome" && c.id !== "history-head")
+      .map((c) => {
+        if (c.classList.contains("perm-resolved")) return "perm";
+        if (c.classList.contains("user")) return "user:" + (c.querySelector(".body")?.textContent || "");
+        if (c.classList.contains("tool-group") || c.classList.contains("tool-flat")) return "tool";
+        if (c.classList.contains("agent")) return "agent";
+        return "other";
+      });
+    expect(seq.indexOf("perm")).toBeGreaterThan(seq.indexOf("tool"));
+    expect(seq.indexOf("perm")).toBeLessThan(seq.findIndex((s) => s.startsWith("user:thanks")));
   });
 
   it("anchors a card saved WITHOUT a toolCallId by matching the tool's title on its update", () => {
@@ -145,15 +152,12 @@ describe("restored permission cards (resumed session)", () => {
     dispatch(window, { type: "userMessageChunk", text: "remove it" });
     // tool_call is a generic "Shell" (no title match yet)…
     dispatch(window, { type: "toolCall", call: { toolCallId: "tc-x", title: "Shell", kind: "execute" } });
-    expect(doc.querySelectorAll(".card.permission.perm-resolved")).toHaveLength(0);
-    // …the update carries the real title → matches.
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "tc-x", title: "Execute `rm .env`" } });
+    dispatch(window, { type: "messageChunk", text: "done" });
+    dispatch(window, { type: "historyReplay", active: false });
     const perms = doc.querySelectorAll(".card.permission.perm-resolved");
     expect(perms).toHaveLength(1);
     expect(perms[0].querySelector(".perm-resolved-what")!.textContent).toBe("Execute `rm .env`");
-    dispatch(window, { type: "messageChunk", text: "done" });
-    dispatch(window, { type: "historyReplay", active: false });
-    expect(doc.querySelectorAll(".card.permission.perm-resolved")).toHaveLength(1); // not duplicated at flush
   });
 
   it("flushes permissions positioned after the last replayed user message at the end", () => {

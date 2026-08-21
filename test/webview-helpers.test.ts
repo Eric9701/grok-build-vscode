@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters } from "../media/webview-helpers.js";
 import { Window } from "happy-dom";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
@@ -1687,5 +1687,57 @@ describe("appendHighlightedText", () => {
     expect(hit!.textContent).toBe("design");
     expect(el.childNodes.length).toBe(2);
     expect(el.childNodes[0].nodeType).toBe(win.document.TEXT_NODE);
+  });
+});
+
+describe("splitHistoryWindow (#102)", () => {
+  function turns(n: number, start = 0) {
+    const out: { type: string; text?: string }[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push({ type: "userMessage", text: `u${start + i}` });
+      out.push({ type: "agentStart" });
+      out.push({ type: "messageChunk", text: `a${start + i}` });
+      out.push({ type: "agentEnd" });
+    }
+    return out;
+  }
+
+  it("keeps a short replay intact", () => {
+    const msgs = turns(3);
+    const split = splitHistoryWindow(msgs, 80);
+    expect(split.prefixUserCount).toBe(0);
+    expect(split.prefix).toEqual([]);
+    expect(split.suffix).toHaveLength(msgs.length);
+  });
+
+  it("splits on counted user bubbles and keeps the live tail", () => {
+    const msgs = turns(10);
+    const split = splitHistoryWindow(msgs, 4);
+    expect(split.prefixUserCount).toBe(6);
+    expect(countHistoryReplayCounters(split.prefix).userMsgCount).toBe(6);
+    expect(split.suffix.find((m) => m.type === "userMessage")?.text).toBe("u6");
+    expect(split.suffix.filter((m) => m.type === "userMessage")).toHaveLength(4);
+  });
+
+  it("flattens historyBatch and skips steer / primer user turns", () => {
+    const msgs = [
+      { type: "historyBatch", messages: turns(2) },
+      { type: "userMessage", text: "steer", steer: true },
+      { type: "userMessageChunk", text: "<system-reminder> plumbing" },
+      { type: "userMessage", text: "kept" },
+      { type: "messageChunk", text: "ok" },
+    ];
+    const flat = flattenHistoryMessages(msgs);
+    expect(flat.some((m) => m.type === "historyBatch")).toBe(false);
+    const split = splitHistoryWindow(msgs, 1);
+    expect(split.prefixUserCount).toBe(2);
+    expect(split.suffix.filter((m) => m.type === "userMessage" && !m.steer)).toHaveLength(1);
+    expect(split.suffix.find((m) => m.type === "userMessage" && !m.steer)?.text).toBe("kept");
+  });
+
+  it("windowTurns <= 0 parks everything in prefix", () => {
+    const split = splitHistoryWindow(turns(3), 0);
+    expect(split.suffix).toEqual([]);
+    expect(split.prefixUserCount).toBe(3);
   });
 });

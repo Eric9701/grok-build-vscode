@@ -1880,6 +1880,7 @@ describe("user message (regression: doubled on grok 0.2.33)", () => {
 
     dispatch(window, { type: "historyReplay", active: true });
     dispatch(window, { type: "userMessageChunk", text: "resumed prompt" });
+    dispatch(window, { type: "historyReplay", active: false });
 
     expect(users(doc).length).toBe(1);
     expect(users(doc)[0].textContent).toContain("resumed prompt");

@@ -11,7 +11,7 @@ In-webview find over the active transcript. One implementation serves VS Code, d
 
 ## Search
 
-The transcript is not virtualized — `#messages` holds the whole session. Collapsed tool / command / subagent rows stay in the DOM (`hidden` / class), so a `TreeWalker` reaches them. A match inside a collapsed row expands that row.
+A long restore may keep older turns out of the DOM until you scroll up (`splitHistoryWindow` / `expandHistoryAll` in `media/chat.js`, #102). Find expands that window first, then walks `#messages`. Silently missing an unrendered match is worse than a slow find. Collapsed tool / command / subagent rows stay in the DOM (`hidden` / class), so a `TreeWalker` reaches them. A match inside a collapsed row expands that row.
 
 `body.thinking-hidden` (Settings → **Show thinking traces**, or Knowledge work forcing that off) is a preference. Those matches are counted (`N in hidden thinking traces`) and kept out of next/prev until the user includes them. Including them adds `.find-reveal` on that block only — it does not flip the setting.
 

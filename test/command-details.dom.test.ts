@@ -415,6 +415,7 @@ describe("command details (#41)", () => {
       },
     });
     close(window);
+    dispatch(window, { type: "historyReplay", active: false });
     expect(doc.querySelector(".tool-cmd")!.textContent).toBe("echo MARKER");
     expect(doc.querySelector(".cmd-out")).toBeNull();
   });
