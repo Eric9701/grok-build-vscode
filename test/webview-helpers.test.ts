@@ -136,12 +136,11 @@ describe("isRelaySendRejection", () => {
     expect(isRelaySendRejection("Weekly prompt limit reached.")).toBe(false);
   });
 
-  // The quota sentence lost its trailing upsell when the relay stopped putting
-  // merchandising on the wire — an upsell cannot ship inside the native app.
-  // Pinning the full sentence here meant a refused send silently stopped
-  // becoming the editable "Not sent" block, losing the user's text. Both
-  // shapes must classify, so relay copy and this regex are no longer coupled.
-  it("classifies the quota refusal with or without the trailing upsell", () => {
+  // The relay shortened this sentence. Pinning the full text here meant a
+  // refused send silently stopped becoming the editable "Not sent" block,
+  // losing the user's text. Both shapes must classify, so the relay's exact
+  // wording and this regex are no longer coupled.
+  it("classifies the quota refusal with or without the trailing sentence", () => {
     expect(isRelaySendRejection("Free plan limit reached (100 messages this week). Resets in 2d.")).toBe(true);
     expect(isRelaySendRejection(
       "Free plan limit reached (100 messages this week). Resets in 2d. Upgrade to Remote Max for unlimited use.",
