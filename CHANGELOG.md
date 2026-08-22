@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## TBD
 
 ### Fixed
 
-- **View all on a Read row opens the file, not a copy of it ([#122](https://github.com/phuryn/grok-build-vscode/issues/122)).** A `Read src/app.ts lines 980-1009` row offered **View all**, and it opened an untitled document holding exactly those lines — the surrounding context, which is the whole reason to click, was the one thing it could not show. It now opens the real file with those lines selected. Command rows are unchanged: their output has no file to open.
+- **View all on a Read row opens the file, not a copy of it ([#122](https://github.com/phuryn/grok-build-vscode/issues/122)).** It opened an untitled document holding just the lines the agent had read; it now opens the real file with those lines selected.
 
 ## 3.14.0 — 2026-08-21
 
