@@ -887,6 +887,63 @@ describe("command details (#41)", () => {
     ]);
   });
 
+  it("a Claude-shaped Read row opens the file too — file_path + offset/limit (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    const body = Array.from({ length: 20 }, (_, i) => `line ${i + 40}`).join("\n");
+    // Claude names its tool "Read" and passes { file_path, offset, limit } —
+    // neither the grok `target_file` key nor its `read_file` name.
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "cl1",
+        kind: "read",
+        title: "Read",
+        rawInput: { file_path: "src/host.ts", offset: 40, limit: 20 },
+      },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "cl1",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: body } }],
+      },
+    });
+    close(window);
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
+      { type: "openFile", path: "src/host.ts#L40-L59" },
+    ]);
+  });
+
+  it("a Read row identified only by kind opens the file (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    const body = Array.from({ length: 20 }, (_, i) => `row ${i}`).join("\n");
+    // No recognisable tool name at all — only ACP's kind. This is the path any
+    // provider takes when it names its read something we have never seen.
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "k1", kind: "read", title: "Inspect", rawInput: { path: "docs/x.md" } },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "k1",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: body } }],
+      },
+    });
+    close(window);
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
+      { type: "openFile", path: "docs/x.md" },
+    ]);
+  });
+
   it("View all on a COMMAND row still opens the captured text — there is no file to open (#122)", () => {
     const { window, doc, posted } = bootWebview();
     const command = "npm run build";

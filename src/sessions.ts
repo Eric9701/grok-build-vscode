@@ -184,6 +184,19 @@ type UsageLogEntry = NonNullable<SessionMetaOverride["usageLog"]>[number];
  * as a number that is quietly too small. That is the existing, designed
  * degradation for incomplete coverage, not a new failure mode, and "unknown"
  * beats "wrong" for a figure the user reads as money.
+ *
+ * **Known limitation, accepted rather than fixed.** A rewind that lands INSIDE
+ * the folded prefix is lossy: `truncateResolvedAfter` filters entries by
+ * `afterUserMessage`, and the carry sits at the last dropped turn, so rewinding
+ * to an earlier turn discards the carry and with it the usage of turns that
+ * survive. No choice of carry position fixes this — placing it at the first
+ * dropped turn merely swaps under-reporting for over-reporting. Folding is
+ * inherently lossy for rewinds into the folded range.
+ *
+ * It is left alone because reaching it needs 401 uncompacted turns in one
+ * conversation and then a rewind to turn one or two, discarding 399 turns of
+ * work. Measured 2026-08-22 across 1,369 stored sessions: the longest log is 13
+ * entries. If that distribution ever changes, revisit the cap before the fold.
  */
 export function capUsageLog(entries: UsageLogEntry[]): UsageLogEntry[] {
   if (entries.length <= USAGE_LOG_MAX_ENTRIES) return entries;
