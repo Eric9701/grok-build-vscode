@@ -164,7 +164,7 @@ function readPackageMeta(extensionRoot: string): { version: string; id: string }
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8"),
-    ) as { version?: string; publisher?: string; name?: string; grokExtensionId?: string };
+    ) as { version?: string; publisher?: string; name?: string; grokExtensionName?: string };
     return {
       version: pkg.version ?? "0.0.0",
       id: extensionIdFromPackageMeta(pkg),

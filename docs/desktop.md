@@ -164,7 +164,7 @@ Full contract (relay rewrite rules, dual-arch `latest-mac.yml`, local
 electron-builder packs (into `app.asar` by default):
 
 ```
-package.json          # main → out/desktop/main.js; grokExtensionId (extraMetadata)
+package.json          # main → out/desktop/main.js; grokExtensionName (extraMetadata)
 out/**                # including out/desktop/*
 media/**              # chat.js, CSS, MathJax, Mermaid, …
 resources/**          # icon

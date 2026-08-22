@@ -11109,11 +11109,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         ? this.remoteClients.metadata(remoteClientId)
         : undefined;
       const cwd = this.sessionCwd(session);
-      // Read before installId() — getOrCreate would make every send look returning.
-      const returningInstall = this.state.get<string>(INSTALL_ID_KEY) !== undefined;
+      // Read before installId(): getOrCreate would create the id first and make
+      // every send look like a returning install. Reuse the value rather than
+      // asking twice — PersistedState.get() is a disk-backed read (refreshSync
+      // stats the file), so a second call would be a second probe on the send
+      // path for an answer we already hold. Only a genuine first run falls
+      // through to installId(), and only once ever.
+      const existingInstallId = this.state.get<string>(INSTALL_ID_KEY);
+      const returningInstall = existingInstallId !== undefined;
       const event = buildSessionStartEvent(
         {
-          installId: this.installId(),
+          installId: existingInstallId ?? this.installId(),
           mode: this.displayMode(session),
           model: session.client?.currentModelId || cfg.get<string>("defaultModel", "") || "",
           effort: session.client?.currentReasoningEffort || cfg.get<string>("defaultEffort", "") || "",

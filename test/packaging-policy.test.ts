@@ -307,7 +307,7 @@ describe("desktop artifact naming (electron-builder.yml)", () => {
     );
     expect(yml).toMatch(/productName:\s*Grok Build Desktop/);
     expect(yml).toMatch(/extraMetadata:[\s\S]*main:\s*out\/desktop\/main\.js/);
-    expect(yml).toMatch(/extraMetadata:[\s\S]*grokExtensionId:\s*PawelHuryn\.grok-vscode-phuryn/);
+    expect(yml).toMatch(/extraMetadata:[\s\S]*grokExtensionName:\s*grok-vscode-phuryn/);
   });
 
   // Comments in this file explain settings that are deliberately ABSENT, so a
