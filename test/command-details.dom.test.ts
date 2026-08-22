@@ -829,6 +829,80 @@ describe("command details (#41)", () => {
     expect(viewAll.textContent).toBe("View all (8 lines) →");
   });
 
+  it("View all on a Read row opens the FILE at its lines, not a copy of them (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    const body = Array.from({ length: 30 }, (_, i) => `${i + 980}→line ${i + 980}`).join("\n");
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "r1",
+        kind: "read",
+        title: "read_file",
+        rawInput: { target_file: "src/deep.ts", offset: 980, limit: 30 },
+      },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "r1",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: body } }],
+        rawOutput: { type: "ReadFile", FileContent: { content: body, offset: 980, limit: 30 } },
+      },
+    });
+    close(window);
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+
+    // The whole point of the fix: the excerpt is exactly the context you can't
+    // see, so an untitled copy of it is the one thing that doesn't help.
+    expect(posted.filter((m: any) => m.type === "openText")).toEqual([]);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
+      { type: "openFile", path: "src/deep.ts#L980-L1009" },
+    ]);
+  });
+
+  it("a Read row with no line range on the wire opens the file with no fragment (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "r2", kind: "read", title: "read_file", rawInput: { target_file: "notes.md" } },
+    });
+    dispatch(window, {
+      type: "toolCallUpdate",
+      call: {
+        toolCallId: "r2",
+        status: "completed",
+        content: [{ type: "content", content: { type: "text", text: "a\nb\nc\nd\ne\nf\ng\nh" } }],
+        rawOutput: { type: "ReadFile", FileContent: { content: "a\nb\nc\nd\ne\nf\ng\nh" } },
+      },
+    });
+    close(window);
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
+      { type: "openFile", path: "notes.md" },
+    ]);
+  });
+
+  it("View all on a COMMAND row still opens the captured text — there is no file to open (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    const command = "npm run build";
+    const output = Array.from({ length: 12 }, (_, i) => `out ${i}`).join("\n");
+    dispatch(window, exec("c1", command));
+    dispatch(window, out(command, output));
+    close(window);
+
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    for (const btn of [...details.querySelectorAll(".command-view-all")] as HTMLButtonElement[]) {
+      click(window, btn);
+    }
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([]);
+    expect(posted.filter((m: any) => m.type === "openText").length).toBeGreaterThan(0);
+  });
+
   it("a Codex MCP tool_call without detailInput is not a command row — name shows, no IN/OUT", () => {
     const { window, doc } = bootWebview();
     const { update } = normalizeCodexUpdate({
