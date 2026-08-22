@@ -13,13 +13,17 @@ The event carries:
 | Anonymous **install id** | a random GUID generated once on your machine | count distinct installs — **not** your account, email, or grok login |
 | **mode / model / effort** | `agent` / `grok-build` / `high` | which features are used (`yolo` is Auto accept; model ids are picker tokens, never paths) |
 | **Local UI preferences** | `showThinking: false`, `expandToolDetails: false`, `steerByDefault: true`, `chatFontScale: 100`, `readRepliesAloud: false`, `soundNotifications: false` | whether the webview defaults we picked are the ones people keep |
-| **App purpose** | `knowledge` / `coding` | which surface people use |
+| **App purpose** | `appPurpose: knowledge` / `coding` | which surface people use |
 | **Voice input available** | `voiceConfigured: false`, `voiceStreaming: true`, `voiceLanguageSet: false` | whether voice input is available and streaming; never the API key, send phrase, device name, or language code. `voiceConfigured` is true when STT would work (a dedicated key **or** a `grok login` token), not that the user set a voice-specific option |
 | **Provider connections** | `grokConnected: true`, `codexConnected: false`, `claudeConnected: false` | which agents are signed in on this machine. These three flags (and `voiceConfigured`) come from the last cached refresh and are **omitted entirely when no snapshot exists** — an unknown is never reported as `false` |
+| **Selected CLI** | `provider: grok` / `codex` / `claude` | which CLI this session is running on, as of the first user message. Independent of the connection flags (those are what is *available*; this is what was *chosen*) |
+| **Connector count** | `connectorCount: 0` … `10` | how many Tier-1 MCP connectors are connected on this machine (a count, never the id list) |
+| **Worktree session** | `worktree: false` | whether this session was started in an isolated git worktree |
+| **Returning install** | `returningInstall: true` / `false` | `true` when this machine already had its anonymous install id stored; `false` on the first `session_start` that also creates that id |
 | **AFK Pilot UI preferences** (when reported by a connected browser) | `remoteFontScale: 140`, `remoteReadRepliesAloud: true` | whether remote users adjust text size or enable spoken replies; omitted when no browser reports them |
 | **Session origin / client device** | `sessionOrigin: remote`, `clientDevice: mobile` | whether the first message came from the desk host or AFK Pilot, and whether that client was a desktop browser or looked touch/mobile; local desk sessions are always desktop |
-| **Host kind** | `vscode` / `desktop` | whether the session ran in a VS Code-compatible editor or the standalone desktop client |
-| **Host app** (allowlisted product names only) | `Visual Studio Code`, `Cursor`, `Antigravity`, `Grok Build Desktop` | which editor fork, when known; unknown names are omitted rather than forwarded as free text |
+| **Host kind** | `hostKind: vscode` / `desktop` | whether the session ran in a VS Code-compatible editor or the standalone desktop client |
+| **Host app** | `host: Visual Studio Code`, `Cursor`, `Antigravity IDE`, `Grok Build Desktop` | `vscode.env.appName` after a length / character / path check; omitted when missing or malformed. Product names we have not seen yet are forwarded — vocabulary is not allowlisted |
 | **OS name** | `Windows`, `macOS`, `Linux` | coarse platform label (`systemProps.osName`) |
 | **Kernel version** | `10.0.26200`, `23.6.0` | `systemProps.osVersion` is Node's `os.release()` string — a kernel/build id, not a marketing OS version such as "Windows 11" |
 | **Extension version** | `1.6.1` | `systemProps.appVersion` of this install |
@@ -36,7 +40,7 @@ Country is the only thing derived from your IP, and the **IP itself is discarded
 - **No message content** — nothing you type, and nothing grok replies.
 - **No code** — not a single line, ever.
 - **No file names or paths**, no workspace name, no repo/branch, no CLI binary paths (`grok.cliPath`, `grok.codexCliPath`, `grok.ffmpegPath`).
-- **No free-text settings** — voice send phrase, keyterms, language codes, microphone device names, and unknown host-app strings are not sent. A custom path is recorded at most as a boolean, and today those path settings are not sent at all.
+- **No free-text settings** — voice send phrase, keyterms, language codes, microphone device names, and path-like or malformed host-app strings are not sent. A host product name that passes the shape check is sent as the IDE reports it. A custom path is recorded at most as a boolean, and today those path settings are not sent at all.
 - **No personal identity** — no account, email, grok login, machine name, or any way to tie the install id back to you.
 
 There is no SDK and no third-party tracker — just one small, dependency-free HTTPS POST that is fire-and-forget (it can never slow down, surface to, or break a turn).

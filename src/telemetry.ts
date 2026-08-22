@@ -45,6 +45,7 @@ export type TelemetryMode = "agent" | "plan" | "yolo";
 export type TelemetryEffort = "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type TelemetrySessionOrigin = "local" | "remote";
 export type TelemetryClientDevice = "desktop" | "mobile";
+export type TelemetryProvider = "grok" | "codex" | "claude";
 
 export interface SessionStartProps {
   /** Anonymous, per-install GUID — a property like model/effort, not an identity. */
@@ -77,12 +78,22 @@ export interface SessionStartProps {
   grokConnected?: boolean;
   codexConnected?: boolean;
   claudeConnected?: boolean;
+  /** The CLI this session is running on, as of the first user message.
+   *  Independent of the *Connected flags (those are availability). */
+  provider?: TelemetryProvider;
+  /** Count of connected Tier-1 MCP connectors (0–10). Not the id list. */
+  connectorCount?: number;
+  /** Whether this session was started inside an isolated git worktree. */
+  worktree?: boolean;
+  /** Whether this machine already had an anonymous install id stored — a
+   *  returning install versus this session also creating the id. */
+  returningInstall?: boolean;
   /** Browser-owned AFK Pilot preferences. Omitted until a remote reports them. */
   remoteFontScale?: number;
   remoteReadRepliesAloud?: boolean;
-  /** Host application name (`vscode.env.appName`) — allowlisted product names
-   *  only ("Visual Studio Code", "Cursor", "Antigravity", "Grok Build Desktop").
-   *  Omitted when the host doesn't report one or the name is not in the list. */
+  /** Host application name (`vscode.env.appName`). Shape-validated product
+   *  names only — omitted when the host doesn't report one or the string
+   *  fails the length / character / path checks. Vocabulary is not allowlisted. */
   host?: string;
 }
 
@@ -121,6 +132,10 @@ export const SESSION_START_ALLOWED_KEYS = [
   "grokConnected",
   "codexConnected",
   "claudeConnected",
+  "provider",
+  "connectorCount",
+  "worktree",
+  "returningInstall",
 ] as const;
 
 const ALLOWED_MODES = new Set<string>(["agent", "plan", "yolo"]);
@@ -129,32 +144,25 @@ const ALLOWED_ORIGINS = new Set<string>(["local", "remote"]);
 const ALLOWED_DEVICES = new Set<string>(["desktop", "mobile"]);
 const ALLOWED_HOST_KINDS = new Set<string>(["desktop", "vscode"]);
 const ALLOWED_PURPOSES = new Set<string>(["knowledge", "coding"]);
-/** Product names we already distinguish in analytics. Unknown names are omitted
- *  rather than forwarded — `vscode.env.appName` is otherwise free text. */
-const ALLOWED_HOSTS = new Set<string>([
-  "Visual Studio Code",
-  "Visual Studio Code - Insiders",
-  "Cursor",
-  "Antigravity",
-  "Grok Build Desktop",
-  "VSCodium",
-  "Code - OSS",
-]);
+const ALLOWED_PROVIDERS = new Set<string>(["grok", "codex", "claude"]);
 
 const INSTALL_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 /** Picker / CLI model ids: `grok-build`, `grok-4.5`, `gpt-5.6-sol`. Empty = CLI default. */
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
+/** IDE product names (`vscode.env.appName`): letters, digits, spaces, hyphens,
+ *  underscores. Same 64-char cap as `model`. Silent about vocabulary. */
+const HOST_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/;
 
 const PATH_LIKE_RE = /[\\/]|^[A-Za-z]:|\.\./;
 
 /**
- * True when a string looks like a filesystem path, URI, or free-text sentence.
- * Allowlisted host product names are the only multi-word strings we ever send.
+ * True when a string looks like a filesystem path, URI, or an over-long value.
+ * Per-field character classes (`MODEL_ID_RE`, `HOST_NAME_RE`, `pickEnum`) are
+ * what constrain vocabulary; this gate does not.
  */
 export function telemetryStringLooksSensitive(value: string): boolean {
   if (!value) return false;
   if (PATH_LIKE_RE.test(value)) return true;
-  if (/\s/.test(value) && !ALLOWED_HOSTS.has(value)) return true;
   if (value.length > 80) return true;
   return false;
 }
@@ -166,6 +174,11 @@ function isSafeInstallId(value: string): boolean {
 function isSafeModelId(value: string): boolean {
   if (value === "") return true;
   return MODEL_ID_RE.test(value) && !telemetryStringLooksSensitive(value);
+}
+
+function isSafeHost(value: string): boolean {
+  if (value !== value.trim()) return false;
+  return HOST_NAME_RE.test(value) && !telemetryStringLooksSensitive(value);
 }
 
 function pickEnum(value: unknown, allowed: Set<string>): string | undefined {
@@ -233,8 +246,7 @@ export function sanitizeSessionStartProps(raw: unknown): Record<string, string |
   const remoteReadRepliesAloud = pickBoolean(src.remoteReadRepliesAloud);
   if (remoteReadRepliesAloud !== undefined) picked.remoteReadRepliesAloud = remoteReadRepliesAloud;
 
-  const host = pickEnum(src.host, ALLOWED_HOSTS);
-  if (host !== undefined) picked.host = host;
+  if (typeof src.host === "string" && isSafeHost(src.host)) picked.host = src.host;
 
   const hostKind = pickEnum(src.hostKind, ALLOWED_HOST_KINDS);
   if (hostKind !== undefined) picked.hostKind = hostKind;
@@ -254,6 +266,17 @@ export function sanitizeSessionStartProps(raw: unknown): Record<string, string |
   if (codexConnected !== undefined) picked.codexConnected = codexConnected;
   const claudeConnected = pickBoolean(src.claudeConnected);
   if (claudeConnected !== undefined) picked.claudeConnected = claudeConnected;
+
+  const provider = pickEnum(src.provider, ALLOWED_PROVIDERS);
+  if (provider !== undefined) picked.provider = provider;
+
+  const connectorCount = pickBoundedInt(src.connectorCount, 0, 10);
+  if (connectorCount !== undefined) picked.connectorCount = connectorCount;
+
+  const worktree = pickBoolean(src.worktree);
+  if (worktree !== undefined) picked.worktree = worktree;
+  const returningInstall = pickBoolean(src.returningInstall);
+  if (returningInstall !== undefined) picked.returningInstall = returningInstall;
 
   // The allowlist is the only way a key can leave. A picker for an unlisted
   // name writes into `picked` and is dropped here.

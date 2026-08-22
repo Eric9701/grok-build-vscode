@@ -11109,6 +11109,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         ? this.remoteClients.metadata(remoteClientId)
         : undefined;
       const cwd = this.sessionCwd(session);
+      // Read before installId() — getOrCreate would make every send look returning.
+      const returningInstall = this.state.get<string>(INSTALL_ID_KEY) !== undefined;
       const event = buildSessionStartEvent(
         {
           installId: this.installId(),
@@ -11136,6 +11138,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           grokConnected: this.lastProviderConnected?.grok,
           codexConnected: this.lastProviderConnected?.codex,
           claudeConnected: this.lastProviderConnected?.claude,
+          provider: session.provider,
+          connectorCount: Object.keys(this.connectedConnectorStore()).length,
+          worktree: !!session.worktree,
+          returningInstall: returningInstall,
         },
         {
           appVersion,

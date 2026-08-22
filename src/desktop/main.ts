@@ -47,6 +47,7 @@ import {
   DESKTOP_PUBLIC_REPO_URL,
 } from "./host-dialogs";
 import { createFileMemento } from "./memento";
+import { extensionIdFromPackageMeta } from "./package-meta";
 import {
   desktopUserHomeDir,
   provisionDefaultProjectDir,
@@ -163,10 +164,10 @@ function readPackageMeta(extensionRoot: string): { version: string; id: string }
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8"),
-    ) as { version?: string; publisher?: string; name?: string };
+    ) as { version?: string; publisher?: string; name?: string; grokExtensionId?: string };
     return {
       version: pkg.version ?? "0.0.0",
-      id: `${pkg.publisher ?? "PawelHuryn"}.${pkg.name ?? "grok-vscode-phuryn"}`,
+      id: extensionIdFromPackageMeta(pkg),
     };
   } catch {
     return { version: "0.0.0", id: "PawelHuryn.grok-vscode-phuryn" };

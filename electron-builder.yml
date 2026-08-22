@@ -15,6 +15,11 @@ directories:
 extraMetadata:
   main: out/desktop/main.js
   name: grok-build-desktop
+  # Telemetry identity. `name` above becomes the asar package name, so
+  # `${publisher}.${name}` would be PawelHuryn.grok-build-desktop and silently
+  # fail OFFICIAL_EXTENSION_ID. A fork that changes or drops this field opts
+  # out of the official Aptabase project (see src/desktop/package-meta.ts).
+  grokExtensionId: PawelHuryn.grok-vscode-phuryn
   # rcedit stamps `description` as the .exe FileDescription, which is the label
   # Windows shows in Task Manager and the UAC prompt. package.json's is the
   # marketplace blurb — a 300-character paragraph in a column meant for a name.
