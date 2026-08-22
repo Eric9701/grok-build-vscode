@@ -788,15 +788,19 @@ the steady-state fix.
 
 ## Subsystem notes
 
-One row per subsystem — what it does, and the constraint that is easy to miss.
-Distinct from § Module map above, which is one row per *file*. Both existed
-under the same name in two places until 2026-08-22; this half came from
-`CLAUDE.md`, where 60,000 characters of it were being loaded on every turn.
+Largely the same files as § Module map above, answering a different question.
+The Module map says **what a file is** in one line; this says **what is easy to
+get wrong about it** — the constraint, the ordering hazard, the reason the
+obvious change is unsafe. Measured 2026-08-22: of the files in both, only one
+row said the same thing twice (dropped); 27 carry genuinely different content,
+which is why both sections exist rather than one.
 
-| File | Role |
+It came from `CLAUDE.md`, where 60,000 characters of it were being loaded on
+every turn.
+
+| Subject | What is easy to get wrong |
 |---|---|
 | Remote repo/session switching (`src/sidebar.ts`, `media/chat.js`) | `selectRemoteRepo` selects the newest session in the chosen repo or starts a new one; `remoteSessionFor` reserves desk adoption for session-less arrivals in the same repo. Host-wide fan-out (voice-config refresh, session list, dots, repo catalog) reads `cwdIfPresent` and skips a tab with no project; `cwd()` stays the request-path accessor. `historyReplay` renders `Loading conversation` and locks the browser repo switcher until replay settles |
-| `src/extension.ts` | Entry point — registers commands, keybindings, output channel |
 | `src/host.ts` | Portable effectful host surface (`Host`) + value types (`Uri`, `HostWebview`, `HostContext`, disposables, editor/workspace watchers). **Does not import `vscode`**; a non-VS-Code host implements this. Paths are absolute strings; `Uri` is only for non-file schemes (diff preview) and command-arg round-trips |
 | `src/vscode-host.ts` | VS Code implementation of `Host` (`createVsCodeHost`) plus `createVsCodeHostContext` / `wrapWebviewView` — the only module that maps Host methods onto `vscode.window` / `workspace` / `commands` / `env` / `workspace.fs` |
 | `src/sidebar.ts` | Session/UI controller (`GrokSidebar`) — message routing, fs handlers, native diff editor opening (whole-file expansion delegated to `diff-view.ts`), `logout`, generated-media inlining (`postGeneratedMedia`), and the active-editor context chip (`refreshImplicitChip` mirrors the open file + live selection range, applies `grok.includeActiveFileByDefault` live). **Does not import `vscode`**; constructed with an injected `Host` + `HostContext` (extension entry wires the VS Code adapters). **Eye-off on that chip is a standing preference, not a per-file one** (#67): the chip is rebuilt on every file switch, so the choice is persisted to `IMPLICIT_CHIP_HIDDEN_KEY` in globalState on `toggleChip` and re-seeded by the pure `implicitChipStartsHidden(prev, remembered)` in `chips.ts` — the live chip wins when one exists (globalState writes are fire-and-forget), the store seeds a fresh webview/restart. Without it, dismissing the context was futile: the next file switch silently re-enabled it. Every attach flow (Send Selection/File, @-mention, the `+` picker, image paste) routes through `revealAndFocusComposer` → the `focusInput` host message, landing the caret in the composer so the user can type immediately (#43); `insertActiveMention` degrades a Command-Palette Send File with no active editor into the file picker instead of a silent no-op |
