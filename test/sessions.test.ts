@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { isPrimerSummary } from "../src/grok-primer";
+import { occupancyFromUsageLog, sumUsage } from "../src/acp-dispatch";
 import * as path from "node:path";
 import {
   AUTO_NAME_MAX_CHARS,
   capAutoName,
   capSessionMetaAutoNames,
+  capSessionMetaUsageLogs,
+  capUsageLog,
+  USAGE_LOG_MAX_ENTRIES,
   forkDisplayName,
   FsLike,
   SessionMetaOverrides,
@@ -132,6 +136,90 @@ describe("capSessionMetaAutoNames", () => {
     const second = capSessionMetaAutoNames(first.value);
     expect(second.changed).toBe(false);
     expect(second.value).toBe(first.value);
+  });
+});
+
+describe("capUsageLog", () => {
+  const entry = (n: number) => ({
+    afterUserMessage: n,
+    afterHistoryEvent: n * 10,
+    usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, costUsdTicks: 7 },
+    contextUsed: n * 1000,
+  });
+  const log = (count: number) => Array.from({ length: count }, (_, i) => entry(i + 1));
+
+  it("returns the SAME array below the ceiling, so a load sweep can skip the write", () => {
+    const under = log(USAGE_LOG_MAX_ENTRIES);
+    expect(capUsageLog(under)).toBe(under);
+  });
+
+  it("folds down to exactly the ceiling and keeps the newest turns intact", () => {
+    const over = log(USAGE_LOG_MAX_ENTRIES + 50);
+    const folded = capUsageLog(over);
+    expect(folded.length).toBe(USAGE_LOG_MAX_ENTRIES);
+    // The tail is untouched — a rewind still finds the turns it can reach.
+    expect(folded.slice(1)).toEqual(over.slice(51));
+  });
+
+  it("preserves the token total exactly — the carry entry is a sum, not a drop", () => {
+    const over = log(USAGE_LOG_MAX_ENTRIES + 50);
+    const before = sumUsage(over)!;
+    const after = sumUsage(capUsageLog(over))!;
+    expect(after.totalTokens).toBe(before.totalTokens);
+    expect(after.inputTokens).toBe(before.inputTokens);
+    expect(after.outputTokens).toBe(before.outputTokens);
+    expect(after.costUsdTicks).toBe(before.costUsdTicks);
+  });
+
+  it("preserves context occupancy — contextUsed is monotonic, so the boundary IS the max", () => {
+    const over = log(USAGE_LOG_MAX_ENTRIES + 50);
+    expect(occupancyFromUsageLog(capUsageLog(over)).used)
+      .toBe(occupancyFromUsageLog(over).used);
+  });
+
+  it("carries a compaction boundary rather than losing the reset", () => {
+    const over = log(USAGE_LOG_MAX_ENTRIES + 50);
+    over[50] = { ...over[50], compacted: true, contextUsed: 5 };
+    const folded = capUsageLog(over);
+    expect(folded[0].compacted).toBe(true);
+    expect(folded[0].contextUsed).toBe(5);
+    expect(occupancyFromUsageLog(folded).used).toBe(occupancyFromUsageLog(over).used);
+  });
+
+  it("is idempotent — folding an already-folded log changes nothing", () => {
+    const once = capUsageLog(log(USAGE_LOG_MAX_ENTRIES + 50));
+    expect(capUsageLog(once)).toBe(once);
+  });
+
+  it("survives entries with no usage at all (a zero-inference turn such as /compact)", () => {
+    const over = log(USAGE_LOG_MAX_ENTRIES + 2).map((e) => ({ ...e, usage: undefined }));
+    const folded = capUsageLog(over);
+    expect(folded.length).toBe(USAGE_LOG_MAX_ENTRIES);
+    expect(folded[0].usage).toBeUndefined();
+  });
+});
+
+describe("capSessionMetaUsageLogs", () => {
+  it("folds only the maps that need it and leaves the rest identical", () => {
+    const fat = Array.from({ length: USAGE_LOG_MAX_ENTRIES + 5 }, (_, i) => ({ afterUserMessage: i + 1 }));
+    const meta: SessionMetaOverrides = {
+      fat: { usageLog: fat, autoName: "a name" },
+      thin: { usageLog: [{ afterUserMessage: 1 }] },
+      none: { provider: "grok" },
+    };
+    const { value, changed } = capSessionMetaUsageLogs(meta);
+    expect(changed).toBe(true);
+    expect(value.fat.usageLog!.length).toBe(USAGE_LOG_MAX_ENTRIES);
+    expect(value.fat.autoName).toBe("a name");
+    expect(value.thin).toBe(meta.thin);
+    expect(value.none).toBe(meta.none);
+  });
+
+  it("is a no-op on an already-folded map", () => {
+    const meta: SessionMetaOverrides = { a: { usageLog: [{ afterUserMessage: 1 }] } };
+    const first = capSessionMetaUsageLogs(meta);
+    expect(first.changed).toBe(false);
+    expect(first.value).toBe(meta);
   });
 });
 

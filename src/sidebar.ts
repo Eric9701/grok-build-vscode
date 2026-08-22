@@ -220,6 +220,7 @@ import {
   RepoListEntry,
   RepoPins,
   capAutoName,
+  capUsageLog,
   capSessionMetaAutoNames,
   carrySessionName,
   clearSessions,
@@ -14610,7 +14611,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const cur = overrides[id] ?? {};
     const occupancy = this.adapterTurnOccupancy(session, meta);
     const compacted = isAdapterProvider(session.provider) && session.adapterCompactThisTurn;
-    const usageLog = [
+    const usageLog = capUsageLog([
       ...(cur.usageLog ?? []),
       {
         afterUserMessage: session.userMessageCount,
@@ -14623,7 +14624,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             : {}),
         ...(compacted ? { compacted: true } : {}),
       },
-    ];
+    ]);
     const sessionUsage = enforceCompleteSessionCost(
       sumUsage(usageLog),
       usageLog,

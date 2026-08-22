@@ -34,7 +34,7 @@
 // changed; capping an already-capped string is a no-op, so it converges after
 // one load. `customName` is never touched.
 
-import { capSessionMetaAutoNames } from "./sessions";
+import { capSessionMetaAutoNames, capSessionMetaUsageLogs } from "./sessions";
 
 /** The `fs` surface this needs, injected so tests never touch a real disk. */
 export interface StateFs {
@@ -101,13 +101,16 @@ export class PersistedState {
     return `${this.dir}/${DISK_KEYS[key]}`;
   }
 
-  /** Cap `autoName` on session-meta maps. Other keys pass through. Sync and
-   *  idempotent — a second ingest of already-capped data is a no-op. */
+  /** Cap `autoName` and `usageLog` on session-meta maps. Other keys pass
+   *  through. Sync and idempotent — a second ingest of already-capped data is a
+   *  no-op, which is what lets `loadSync` skip the write when nothing changed. */
   private ingest(key: string, value: unknown): { value: unknown; changed: boolean } {
     if (key !== "grok.sessionMeta" || !isRecordMap(value)) {
       return { value, changed: false };
     }
-    return capSessionMetaAutoNames(value);
+    const names = capSessionMetaAutoNames(value);
+    const logs = capSessionMetaUsageLogs(names.value);
+    return { value: logs.value, changed: names.changed || logs.changed };
   }
 
   private validValue(key: string, value: unknown): boolean {
@@ -270,10 +273,11 @@ export class PersistedState {
         }
         const disk = this.readDisk(key);
         let next = mergeRecord(previous, value, disk?.value);
-        // Rebase can revive a fat `autoName` from disk; cap the merged result
-        // so a concurrent client's new entries survive and their prompts don't.
+        // Rebase can revive a fat `autoName` or an unfolded `usageLog` from
+        // disk; cap the merged result so a concurrent client's new entries
+        // survive and their prompts don't.
         if (key === "grok.sessionMeta" && isRecordMap(next)) {
-          next = capSessionMetaAutoNames(next).value;
+          next = capSessionMetaUsageLogs(capSessionMetaAutoNames(next).value).value;
         }
         // Write-then-rename: a crash mid-write leaves the previous file intact
         // rather than a truncated one. Node's rename replaces an existing

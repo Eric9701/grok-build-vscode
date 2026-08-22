@@ -5,6 +5,7 @@ import { isPrimerText, isPrimerSummary } from "./grok-primer";
 import {
   applyContextOccupancy,
   occupancyFromUsageLog,
+  sumUsage,
   type ContextOccupancyEvent,
   type ContextOccupancyState,
   type PromptUsage,
@@ -153,6 +154,69 @@ export const AUTO_NAME_MAX_CHARS = 120;
 
 /** Prefer a word boundary this close to the cap rather than cutting mid-word. */
 const AUTO_NAME_WORD_LOOKBACK = 20;
+
+/** Storage ceiling for `usageLog`: one entry per user prompt, ~260 bytes each.
+ *  400 is far above anything observed — measured 2026-08-22 across 1,366 stored
+ *  sessions, the longest log was 13 entries and the median was 1. The cap is
+ *  here so a marathon session cannot grow `session-meta.json` without bound,
+ *  not because today's data needs trimming. */
+export const USAGE_LOG_MAX_ENTRIES = 400;
+
+type UsageLogEntry = NonNullable<SessionMetaOverride["usageLog"]>[number];
+
+/**
+ * Fold a `usageLog` back under {@link USAGE_LOG_MAX_ENTRIES} by summing its
+ * oldest entries into a single carry entry. Returns the SAME array when nothing
+ * needed folding, so a load-time sweep can skip the write.
+ *
+ * **Tokens survive exactly**: `sumUsage` over the folded log equals `sumUsage`
+ * over the original, so the session total is unchanged.
+ *
+ * **Context occupancy survives too.** `contextUsed` is monotonic between
+ * compactions, so the last dropped entry's value is already the maximum over
+ * everything dropped — which is what `occupancyFromUsageLog` would have folded
+ * those entries to. Carrying its `compacted` flag preserves the reset boundary.
+ *
+ * **The dollar SESSION cost is deliberately given up** on a folded log.
+ * `enforceCompleteSessionCost` judges coverage by counting distinct
+ * `afterUserMessage` coordinates, and a carry entry carries one where it used
+ * to carry many — so a folded session reports its cost as unknown rather than
+ * as a number that is quietly too small. That is the existing, designed
+ * degradation for incomplete coverage, not a new failure mode, and "unknown"
+ * beats "wrong" for a figure the user reads as money.
+ */
+export function capUsageLog(entries: UsageLogEntry[]): UsageLogEntry[] {
+  if (entries.length <= USAGE_LOG_MAX_ENTRIES) return entries;
+  // +1 so the carry entry itself fits inside the ceiling.
+  const dropCount = entries.length - USAGE_LOG_MAX_ENTRIES + 1;
+  const dropped = entries.slice(0, dropCount);
+  const boundary = dropped[dropped.length - 1];
+  const summed = sumUsage(dropped);
+  const carry: UsageLogEntry = summed === undefined
+    ? { ...boundary, usage: undefined }
+    : { ...boundary, usage: summed };
+  return [carry, ...entries.slice(dropCount)];
+}
+
+/** Cap every `usageLog` in a session-meta map. Same contract as
+ *  {@link capSessionMetaAutoNames}: the identical object back when nothing
+ *  changed. Never touches any other field. */
+export function capSessionMetaUsageLogs<T extends Record<string, { usageLog?: unknown }>>(
+  meta: T,
+): { value: T; changed: boolean } {
+  let changed = false;
+  let next: T | undefined;
+  for (const id of Object.keys(meta)) {
+    const entry = meta[id];
+    if (!entry || !Array.isArray(entry.usageLog)) continue;
+    const usageLog = capUsageLog(entry.usageLog as UsageLogEntry[]);
+    if (usageLog === entry.usageLog) continue;
+    if (!next) next = { ...meta };
+    (next as Record<string, unknown>)[id] = { ...entry, usageLog };
+    changed = true;
+  }
+  return { value: next ?? meta, changed };
+}
 
 /** Collapse whitespace and cut a candidate `autoName` to {@link AUTO_NAME_MAX_CHARS}.
  *  Cuts on a nearby word boundary when one exists; otherwise a hard cut.
