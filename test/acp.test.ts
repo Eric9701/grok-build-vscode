@@ -1,3 +1,4 @@
+import { MCP_REMOTE_PACKAGE } from "../src/mcp-connectors";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 import { describe, it, expect, vi } from "vitest";
@@ -257,7 +258,7 @@ describe("AcpClient session/info", () => {
 
 describe("AcpClient session mcpServers", () => {
   it("sends the host-owned list on session/new and session/load", async () => {
-    const servers = [{ name: "linear", command: "npx", args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"] }];
+    const servers = [{ name: "linear", command: "npx", args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"] }];
     const { client, written } = clientWithFakeProc();
     (client as any).opts.mcpServers = () => servers;
     replyToWrites(client, written, (msg) => {

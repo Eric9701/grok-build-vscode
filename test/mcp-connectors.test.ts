@@ -36,7 +36,7 @@ import {
   STATIC_OAUTH_CLIENT_METADATA_FLAG,
   summarizeConnectOutput,
   withMcpRemoteCallbackPort,
-} from "../src/mcp-connectors";
+  MCP_REMOTE_PACKAGE } from "../src/mcp-connectors";
 
 const GITHUB_ENDPOINT = "https://api.githubcopilot.com/mcp/";
 const PLANTED_PAT = "ghp_TESTSECRET_do_not_store";
@@ -98,7 +98,7 @@ describe("Tier-1 connector catalog", () => {
     expect(buildMcpRemoteEntry("linear", "https://mcp.linear.app/mcp")).toEqual({
       name: "linear",
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       // This assertion previously pinned the entry WITHOUT env, which is what
       // made the bug look intentional. grok refuses that shape outright — see
       // the wire-shape test at the bottom of this file.
@@ -108,38 +108,38 @@ describe("Tier-1 connector catalog", () => {
 
   it("appends a callback port only when it is a usable TCP port", () => {
     expect(mcpRemoteArgs("https://mcp.linear.app/mcp")).toEqual(
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
     );
     expect(mcpRemoteArgs("https://mcp.linear.app/mcp", 22227)).toEqual(
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp", "22227"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp", "22227"],
     );
     expect(mcpRemoteArgs("https://mcp.linear.app/mcp", 0)).toEqual(
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
     );
     expect(mcpRemoteArgs("https://mcp.linear.app/mcp", 70000)).toEqual(
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
     );
     expect(withMcpRemoteCallbackPort(
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       54321,
-    )).toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp", "54321"]);
+    )).toEqual(["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp", "54321"]);
     expect(withMcpRemoteCallbackPort(["-y", "something-else"], 54321)).toBeUndefined();
   });
 
   it("does not pin a callback port on the session/new entry", () => {
     expect(buildMcpRemoteEntry("linear", "https://mcp.linear.app/mcp").args)
-      .toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp"]);
+      .toEqual(["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"]);
   });
 
   it("attaches static OAuth client metadata only when a scoped connector has a file", () => {
     expect(oauthClientMetadataJson("mcp")).toBe('{"scope":"mcp"}');
     const meta = "/tmp/stripe-oauth.json";
     expect(mcpRemoteArgs("https://mcp.stripe.com", undefined, meta)).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
     ]);
     expect(mcpRemoteArgs("https://mcp.stripe.com", 22227, meta)).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com", "22227",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", "22227",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
     ]);
     expect(mcpRemoteArgs("https://mcp.linear.app/mcp")).not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
@@ -155,10 +155,10 @@ describe("Tier-1 connector catalog", () => {
     const stripe = servers.find((s) => s.name === "stripe");
     const linear = servers.find((s) => s.name === "linear");
     expect(stripe?.args).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
     ]);
-    expect(linear?.args).toEqual(["-y", "mcp-remote", "https://mcp.linear.app/mcp"]);
+    expect(linear?.args).toEqual(["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"]);
     expect(linear?.args).not.toContain(STATIC_OAUTH_CLIENT_METADATA_FLAG);
 
     const unscoped = hostMcpServers({
@@ -174,10 +174,10 @@ describe("Tier-1 connector catalog", () => {
 
   it("keeps static OAuth metadata when rebuilding args with a callback port", () => {
     expect(withMcpRemoteCallbackPort(
-      ["-y", "mcp-remote", "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
       54321,
     )).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com", "54321",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", "54321",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
     ]);
   });
@@ -186,11 +186,11 @@ describe("Tier-1 connector catalog", () => {
     const meta = "C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\oauth-client-metadata.json";
     const raw = `@${meta}`;
     expect(mcpRemoteArgs("https://mcp.stripe.com", undefined, meta)).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
     ]);
     expect(mcpRemoteArgs("https://mcp.stripe.com", 22227, meta)).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com", "22227",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", "22227",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
     ]);
     const stripe = hostMcpServers(
@@ -199,15 +199,15 @@ describe("Tier-1 connector catalog", () => {
       { stripe: meta },
     )[0];
     expect(stripe?.args).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
     ]);
     expect(stripe?.args.some((arg) => arg.includes('"'))).toBe(false);
     expect(withMcpRemoteCallbackPort(
-      ["-y", "mcp-remote", "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, raw],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, raw],
       54321,
     )).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com", "54321",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", "54321",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, raw,
     ]);
   });
@@ -262,7 +262,7 @@ describe("key-auth connectors", () => {
       readOnly: true,
     });
     expect(entry.args).toEqual([
-      "-y", "mcp-remote", GITHUB_ENDPOINT,
+      "-y", MCP_REMOTE_PACKAGE, GITHUB_ENDPOINT,
       MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_AUTH_HEADER_TEMPLATE,
       MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_READONLY_HEADER,
     ]);
@@ -309,7 +309,7 @@ describe("key-auth connectors", () => {
     const args = mcpRemoteArgs(GITHUB_ENDPOINT, undefined, undefined, { authorization: true, readOnly: true });
     expect(mcpRemoteHeadersFromArgs(args)).toEqual({ authorization: true, readOnly: true });
     expect(withMcpRemoteCallbackPort(args, 54321)).toEqual([
-      "-y", "mcp-remote", GITHUB_ENDPOINT, "54321",
+      "-y", MCP_REMOTE_PACKAGE, GITHUB_ENDPOINT, "54321",
       MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_AUTH_HEADER_TEMPLATE,
       MCP_REMOTE_HEADER_FLAG, MCP_REMOTE_READONLY_HEADER,
     ]);
@@ -453,7 +453,7 @@ describe("config identity collection", () => {
     expect(collectReservedMcpIdentity(JSON.stringify({
       mcpServers: {
         linear: { url: "https://mcp.linear.app/mcp" },
-        notes: { command: "npx", args: ["-y", "mcp-remote", "https://mcp.notion.com/mcp"] },
+        notes: { command: "npx", args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.notion.com/mcp"] },
       },
     }))).toEqual({
       names: ["linear", "notes"],
@@ -466,7 +466,7 @@ permission_mode = "default"
 
 [mcp_servers.canva]
 command = "npx"
-args = ["-y", "mcp-remote", "https://mcp.canva.com/mcp"]
+args = ["-y", MCP_REMOTE_PACKAGE, "https://mcp.canva.com/mcp"]
 
 [mcp_servers.other.env]
 FOO = "bar"

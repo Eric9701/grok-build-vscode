@@ -23,8 +23,9 @@ import {
   connectFailureMessage,
   mcpConnectorSecretKey,
   mcpRemoteArgs,
+  withMcpRemoteCallbackPort,
   MCP_CONNECTORS_KEY,
-} from "../src/mcp-connectors";
+  MCP_REMOTE_PACKAGE } from "../src/mcp-connectors";
 import { DISK_KEYS, PersistedState, type MementoLike, type StateFs } from "../src/persisted-state";
 import { GrokSidebar } from "../src/sidebar";
 
@@ -131,7 +132,7 @@ const SPACED_METADATA_PATH =
   "C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\grok-mcp-oauth-x\\oauth-client-metadata.json";
 const SPACED_METADATA_ARG = `@${SPACED_METADATA_PATH}`;
 const SPACED_MCP_ARGV = [
-  "-y", "mcp-remote", "https://mcp.stripe.com",
+  "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
   STATIC_OAUTH_CLIENT_METADATA_FLAG, SPACED_METADATA_ARG,
 ];
 
@@ -143,11 +144,11 @@ describe("quoteSpawnArgs", () => {
 
   it("wraps whitespace-bearing entries for a shell spawn and leaves the rest raw", () => {
     expect(quoteSpawnArgs(SPACED_MCP_ARGV, true)).toEqual([
-      "-y", "mcp-remote", "https://mcp.stripe.com",
+      "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
       STATIC_OAUTH_CLIENT_METADATA_FLAG, `"${SPACED_METADATA_ARG}"`,
     ]);
-    expect(quoteSpawnArgs(["-y", "mcp-remote", "https://mcp.stripe.com"], true))
-      .toEqual(["-y", "mcp-remote", "https://mcp.stripe.com"]);
+    expect(quoteSpawnArgs(["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com"], true))
+      .toEqual(["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com"]);
   });
 
   it("leaves argv unchanged for a non-shell spawn", () => {
@@ -210,7 +211,7 @@ describe("authorizeMcpRemote", () => {
     const proc = new FakeProc();
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       spawn: () => proc as never,
     });
@@ -225,7 +226,7 @@ describe("authorizeMcpRemote", () => {
     const proc = new FakeProc();
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       spawn: () => proc as never,
     });
@@ -238,7 +239,7 @@ describe("authorizeMcpRemote", () => {
     const err = Object.assign(new Error("spawn npx ENOENT"), { code: "ENOENT" });
     await expect(authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       spawn: () => { throw err; },
     })).resolves.toMatchObject({ ok: false, kind: "npx-missing" });
@@ -248,7 +249,7 @@ describe("authorizeMcpRemote", () => {
     const proc = new FakeProc();
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       spawn: () => proc as never,
     });
@@ -262,7 +263,7 @@ describe("authorizeMcpRemote", () => {
     const proc = new FakeProc();
     await expect(authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 20,
       spawn: () => proc as never,
     })).resolves.toMatchObject({ ok: false, kind: "timeout" });
@@ -273,7 +274,7 @@ describe("authorizeMcpRemote", () => {
     const proc = new FakeProc();
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       spawn: () => proc as never,
     });
@@ -293,7 +294,7 @@ describe("authorizeMcpRemote", () => {
     const spawned: string[][] = [];
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       pickFreeListenPort: async () => 54321,
       spawn: (_command, args) => {
@@ -307,8 +308,8 @@ describe("authorizeMcpRemote", () => {
       await new Promise((r) => setImmediate(r));
     }
     expect(spawned).toEqual([
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
-      ["-y", "mcp-remote", "https://mcp.linear.app/mcp", "54321"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp", "54321"],
     ]);
     second.stderr.write("Authentication successful! Caching credentials...\n");
     await expect(result).resolves.toEqual({ ok: true });
@@ -322,7 +323,7 @@ describe("authorizeMcpRemote", () => {
     let calls = 0;
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       pickFreeListenPort: async () => 54321,
       spawn: () => {
@@ -349,7 +350,7 @@ describe("authorizeMcpRemote", () => {
     let calls = 0;
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       pickFreeListenPort: async () => 0,
       spawn: () => {
@@ -368,7 +369,7 @@ describe("authorizeMcpRemote", () => {
     let calls = 0;
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp"],
       timeoutMs: 1_000,
       pickFreeListenPort: async () => { throw new Error("no port"); },
       spawn: () => {
@@ -415,7 +416,7 @@ describe("authorizeMcpRemote", () => {
     const proc = new FakeProc();
     const result = authorizeMcpRemote({
       command: "npx",
-      args: ["-y", "mcp-remote", "https://mcp.stripe.com"],
+      args: ["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com"],
       timeoutMs: 1_000,
       spawn: () => proc as never,
     });
@@ -438,7 +439,7 @@ describe("authorizeMcpRemote", () => {
     const result = authorizeMcpRemote({
       command: "npx",
       args: [
-        "-y", "mcp-remote", "https://mcp.stripe.com",
+        "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
         STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json",
       ],
       timeoutMs: 1_000,
@@ -454,8 +455,8 @@ describe("authorizeMcpRemote", () => {
       await new Promise((r) => setImmediate(r));
     }
     expect(spawned).toEqual([
-      ["-y", "mcp-remote", "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
-      ["-y", "mcp-remote", "https://mcp.stripe.com", "54321", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
+      ["-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", "54321", STATIC_OAUTH_CLIENT_METADATA_FLAG, "@/tmp/stripe-oauth.json"],
     ]);
     second.stderr.write("Authentication successful! Caching credentials...\n");
     await expect(result).resolves.toEqual({ ok: true });
@@ -483,11 +484,11 @@ describe("authorizeMcpRemote", () => {
     }
     expect(spawned).toEqual([
       [
-        "-y", "mcp-remote", "https://mcp.stripe.com",
+        "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com",
         STATIC_OAUTH_CLIENT_METADATA_FLAG, `"${SPACED_METADATA_ARG}"`,
       ],
       [
-        "-y", "mcp-remote", "https://mcp.stripe.com", "54321",
+        "-y", MCP_REMOTE_PACKAGE, "https://mcp.stripe.com", "54321",
         STATIC_OAUTH_CLIENT_METADATA_FLAG, `"${SPACED_METADATA_ARG}"`,
       ],
     ]);
@@ -726,3 +727,28 @@ describe("key cache across hosts sharing grok.mcpConnectors", () => {
   });
 });
 
+
+describe("mcp-remote version pin", () => {
+  // A floating spec resolves at spawn time, and mcp-remote namespaces its OAuth
+  // cache by its own version — so an upstream publish silently empties every
+  // credential on the machine and re-runs OAuth for every connected service.
+  // Measured 2026-08-22: six version directories under ~/.mcp-auth, the newest
+  // holding ~60 abandoned code_verifier files and zero tokens. It is also what
+  // keeps the desktop app and the editor hosts in ONE token directory.
+  it("pins an exact version rather than floating on latest", () => {
+    expect(MCP_REMOTE_PACKAGE).toMatch(/^mcp-remote@\d+\.\d+\.\d+$/);
+  });
+
+  it("puts the pinned spec on the wire, so npx cannot resolve something else", () => {
+    const args = mcpRemoteArgs("https://mcp.linear.app/mcp");
+    expect(args[0]).toBe("-y");
+    expect(args[1]).toBe(MCP_REMOTE_PACKAGE);
+    expect(args[1]).toContain("@");
+    expect(args[2]).toBe("https://mcp.linear.app/mcp");
+  });
+
+  it("still finds the package when rebuilding args with a callback port", () => {
+    const rebuilt = withMcpRemoteCallbackPort(mcpRemoteArgs("https://mcp.linear.app/mcp"), 22227);
+    expect(rebuilt).toEqual(["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp", "22227"]);
+  });
+});

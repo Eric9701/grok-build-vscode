@@ -15,7 +15,37 @@
 
 export const MCP_CONNECTORS_KEY = "grok.mcpConnectors";
 
-export const MCP_REMOTE_PACKAGE = "mcp-remote";
+/**
+ * **Pinned on purpose — do not float this back to bare `mcp-remote`.**
+ *
+ * mcp-remote namespaces its OAuth cache by its OWN version:
+ * `getConfigDir()` returns `<MCP_REMOTE_CONFIG_DIR | ~/.mcp-auth>/mcp-remote-${version}`,
+ * and the version segment is appended unconditionally — the env var overrides
+ * only the base, so it cannot be used to stabilise this.
+ *
+ * With a floating spec, `npx -y mcp-remote` resolves to whatever npm calls
+ * latest AT SPAWN TIME. Every upstream publish therefore lands the next spawn
+ * in an empty token directory and silently re-runs OAuth for every connected
+ * service. Measured on one machine, 2026-08-22: `~/.mcp-auth` held six version
+ * directories; 0.1.37 had 7 working tokens while 0.1.43, created that morning,
+ * had 4 client registrations, ~60 abandoned `code_verifier_<pid>` files and
+ * zero tokens — six connectors mid-reauthorisation at once, which also blew
+ * Codex's 30s `startup_timeout_sec` and surfaced as "MCP server failed to
+ * start". Three versions shipped in 24 hours, each a silent re-auth.
+ *
+ * The pin is also what makes connectors shared between the desktop app and the
+ * editor hosts: the connected list (`mcp-connectors.json`) and `~/.mcp-auth`
+ * are already machine-wide, so a single version is the only remaining thing
+ * keeping both hosts in one token directory.
+ *
+ * **Bumping is a deliberate release decision that costs every user one
+ * re-authorisation per connector.** That is the point: it is chosen rather than
+ * inflicted by an upstream publish.
+ */
+export const MCP_REMOTE_PACKAGE = "mcp-remote@0.1.37";
+
+/** The package name without a version, for recognising an existing invocation. */
+export const MCP_REMOTE_NAME = "mcp-remote";
 
 /** mcp-remote flag. Value is `@<absolute path>` to a JSON file we write (not inline JSON — Windows Connect uses `shell: true`). */
 export const STATIC_OAUTH_CLIENT_METADATA_FLAG = "--static-oauth-client-metadata";
@@ -338,7 +368,11 @@ export function withMcpRemoteCallbackPort(
   args: readonly string[],
   callbackPort: number,
 ): string[] | undefined {
-  const idx = args.indexOf(MCP_REMOTE_PACKAGE);
+  // Match the package by name, not by the exact pinned spec: an args array may
+  // legitimately carry a different pin (or none) and an exact compare would
+  // silently return undefined here, which reads to the caller as "not an
+  // mcp-remote invocation" and skips the retry rather than failing loudly.
+  const idx = args.findIndex((a) => a === MCP_REMOTE_PACKAGE || a === MCP_REMOTE_NAME || a.startsWith(MCP_REMOTE_NAME + "@"));
   const endpoint = idx >= 0 ? args[idx + 1] : undefined;
   if (!endpoint || /^\d+$/.test(endpoint)) return undefined;
   return mcpRemoteArgs(
