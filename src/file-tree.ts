@@ -437,8 +437,12 @@ export type ReadTreeFileResult =
       text?: string;
       /** data: URL for images. */
       dataUrl?: string;
-      /** Pretty-printed when kind is json. */
+      /** The JSON pretty-printer RAN (kind is json and it parsed). */
       pretty?: boolean;
+      /** The pretty-printer actually CHANGED the text. Most JSON in a repo is
+       *  already formatted this way, so `pretty` alone cannot tell a consumer
+       *  that numbers lines whether these are the bytes on disk. */
+      reformatted?: boolean;
       /** Version stamp sent back by the editor on save. */
       stamp?: TreeFileStamp;
       lineEnding?: TextFileLineEnding;
@@ -605,6 +609,7 @@ export function readTreeFile(
   if (!decoded) return { ok: false, reason: "invalid UTF-8", openExternal: true };
   let text = decoded.text;
   let pretty = false;
+  let reformatted = false;
   if (kind === "json") {
     try {
       text = JSON.stringify(JSON.parse(text), null, 2);
@@ -620,6 +625,11 @@ export function readTreeFile(
       // whether this file ends in one.
       if (/[\r\n]$/.test(decoded.text)) text += "\n";
       pretty = true;
+      // `pretty` says the pretty-printer RAN. `reformatted` says it actually
+      // changed something — most JSON in a repo is already formatted this way,
+      // and a consumer that NUMBERS lines needs the difference between "this is
+      // JSON" and "these are not the bytes on disk".
+      reformatted = text !== decoded.text;
     } catch {
       /* show raw */
     }
@@ -633,6 +643,7 @@ export function readTreeFile(
     absPath: rechecked.absPath,
     text,
     pretty,
+    reformatted,
     stamp: details.stamp,
     lineEnding: details.lineEnding,
     trailingNewline: details.trailingNewline,

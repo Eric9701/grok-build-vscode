@@ -246,7 +246,7 @@ const closeTurn = (window: Window) => dispatch(window, { type: "messageChunk", t
 async function answerProjectFile(
   h: { window: Window; posted: Array<{ type: string; [k: string]: unknown }> },
   text: string,
-  opts: { ok?: boolean; reason?: string; pretty?: boolean; kind?: string } = {},
+  opts: { ok?: boolean; reason?: string; pretty?: boolean; reformatted?: boolean; kind?: string } = {},
 ) {
   const req = h.posted.find((m) => m.type === "readProjectFile") as
     | { type: string; requestId?: string; cwd: string; relPath: string }
@@ -259,7 +259,7 @@ async function answerProjectFile(
     relPath: req!.relPath,
     ...(opts.ok === false
       ? { ok: false, reason: opts.reason || "path escapes workspace" }
-      : { ok: true, kind: opts.kind || "text", text, ...(opts.pretty ? { pretty: true } : {}) }),
+      : { ok: true, kind: opts.kind || "text", text, ...(opts.pretty ? { pretty: true } : {}), ...(opts.reformatted ? { reformatted: true } : {}) }),
   });
   await Promise.resolve();
   await Promise.resolve();
@@ -401,7 +401,7 @@ describe("preview overlay — file reads (#122 desktop)", () => {
     const excerpt = '{"n":1e3}';
     seedRead(h.window, "a.json", excerpt);
     click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
-    await answerProjectFile(h, ["{", '  "n": 1000', "}"].join("\n"), { kind: "json", pretty: true });
+    await answerProjectFile(h, ["{", '  "n": 1000', "}"].join("\n"), { kind: "json", pretty: true, reformatted: true });
 
     const overlay = h.doc.getElementById("preview-overlay")!;
     expect(overlay.querySelector(".preview-notice")!.textContent).toMatch(/reformatted/i);
@@ -432,5 +432,36 @@ describe("preview overlay — file reads (#122 desktop)", () => {
     expect(marked[0]!.dataset.line).toBe("9000");
     const notice = overlay.querySelector(".preview-notice")!;
     expect(notice.textContent).toMatch(/Showing lines .* of 20000/);
+  });
+
+  // Most JSON in a repo is ALREADY formatted the way the pretty-printer would
+  // write it, so `pretty` alone would have withdrawn the whole-file view from
+  // nearly every JSON file — and told the user it was reformatted when it was
+  // byte-for-byte the file on disk.
+  it("still numbers a JSON file the pretty-printer left unchanged", async () => {
+    const h = bootPreview();
+    seedRead(h.window, "b.json", lines(3), { offset: 1, limit: 3 });
+    click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
+    await answerProjectFile(h, lines(30), { kind: "json", pretty: true });
+
+    const overlay = h.doc.getElementById("preview-overlay")!;
+    expect(overlay.querySelectorAll(".tdl").length).toBe(30);
+    expect(overlay.querySelector(".preview-notice")).toBeNull();
+    expect(overlay.querySelector(".preview-code")).toBeNull();
+  });
+
+  // A range larger than the context budget must still be shown in full — the
+  // context is what gives way, never the lines the user asked to see.
+  it("never drops requested lines to make room for context", async () => {
+    const h = bootPreview();
+    seedRead(h.window, "big.log", lines(4, 5000), { offset: 5000, limit: 3900 });
+    click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
+    await answerProjectFile(h, lines(10000));
+
+    const overlay = h.doc.getElementById("preview-overlay")!;
+    const marked = [...overlay.querySelectorAll(".tdl-read")] as HTMLElement[];
+    expect(marked[0]!.dataset.line).toBe("5000");
+    expect(marked[marked.length - 1]!.dataset.line).toBe("8899");
+    expect(marked.length).toBe(3900);
   });
 });

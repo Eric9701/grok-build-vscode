@@ -195,6 +195,9 @@ export type RemoteProjectFileWire =
       text?: string;
       dataUrl?: string;
       pretty?: boolean;
+      /** The JSON pretty-printer changed the text; line numbers would not
+       *  describe the file on disk. */
+      reformatted?: boolean;
       stamp?: TreeFileStamp;
       absPath?: string;
     }
@@ -230,6 +233,7 @@ export function projectFileContentForWire(
     ...(result.text !== undefined ? { text: result.text } : {}),
     ...(result.dataUrl !== undefined ? { dataUrl: result.dataUrl } : {}),
     ...(result.pretty !== undefined ? { pretty: result.pretty } : {}),
+    ...(result.reformatted !== undefined ? { reformatted: result.reformatted } : {}),
   };
   // Edit meta: only text kinds, only when the host offers a write path. Without
   // both, the client must not paint an Edit control that cannot save safely.

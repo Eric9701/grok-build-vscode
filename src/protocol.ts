@@ -335,6 +335,9 @@ export type HostMsg =
       text?: string;
       dataUrl?: string;
       pretty?: boolean;
+      /** The JSON pretty-printer actually CHANGED the text, so line numbers
+       *  here do not describe the file on disk. `pretty` only says it ran. */
+      reformatted?: boolean;
       /** Present for editable text when host advertises edit — mtime+size. */
       stamp?: { mtimeMs: number; size: number };
       /**

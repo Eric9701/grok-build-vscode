@@ -9155,6 +9155,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             ...(wire.text !== undefined ? { text: wire.text } : {}),
             ...(wire.dataUrl !== undefined ? { dataUrl: wire.dataUrl } : {}),
             ...(wire.pretty !== undefined ? { pretty: wire.pretty } : {}),
+            ...(wire.reformatted !== undefined ? { reformatted: wire.reformatted } : {}),
             ...(wire.stamp !== undefined ? { stamp: wire.stamp } : {}),
             ...(wire.absPath !== undefined ? { absPath: wire.absPath } : {}),
           });
