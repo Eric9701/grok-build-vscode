@@ -946,7 +946,7 @@ describe("command details (#41)", () => {
     expect(details.hidden).toBe(true);
   });
 
-  it("the DESKTOP app shows the SAME row; the link opens its preview window (#122)", () => {
+  it("the DESKTOP app shows the SAME row; the link opens its preview window (#122)", async () => {
     const { window, doc, posted } = bootWebview();
     dispatch(window, {
       type: "initialState",
@@ -954,11 +954,12 @@ describe("command details (#41)", () => {
       showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
       capabilities: { previewInApp: true },
     });
-    const body = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n");
+    const excerpt = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n");
+    const whole = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n");
     dispatch(window, readCall("dd", { target_file: "src/a.ts", offset: 1, limit: 12 }));
-    dispatch(window, readDone("dd", body, {
+    dispatch(window, readDone("dd", excerpt, {
       type: "ReadFile",
-      FileContent: { content: body, offset: 1, limit: 12 },
+      FileContent: { content: excerpt, offset: 1, limit: 12 },
     }));
     close(window);
 
@@ -969,11 +970,25 @@ describe("command details (#41)", () => {
     expect(doc.getElementById("preview-overlay")).toBeNull();
 
     // openTextFile cannot honour a line selection there, so the in-app preview
-    // is the best it can do — and it never posts openFile or openText.
+    // fetches the file and marks the agent's lines — never posts openFile.
     click(window, link);
+    const req = posted.find((m: any) => m.type === "readProjectFile");
+    expect(req).toMatchObject({ type: "readProjectFile", cwd: "/w", relPath: "src/a.ts" });
+    dispatch(window, {
+      type: "projectFileContent",
+      requestId: (req as any).requestId,
+      cwd: "/w",
+      relPath: "src/a.ts",
+      ok: true,
+      kind: "text",
+      text: whole,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
     const overlay = doc.getElementById("preview-overlay");
     expect(overlay).not.toBeNull();
-    expect(overlay!.textContent).toContain("line 12"); // the text actually got there
+    expect(overlay!.textContent).toContain("line 40");
+    expect(overlay!.querySelectorAll(".tdl-read").length).toBe(12);
     expect(details.hidden).toBe(true); // the carrier stays out of the transcript
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([]);
     expect(posted.filter((m: any) => m.type === "openText")).toEqual([]);

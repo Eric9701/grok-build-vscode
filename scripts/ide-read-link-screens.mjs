@@ -1,12 +1,11 @@
-// Screens check for the IDE webview's Read rows (#122) — real Chromium layout,
-// screenshots left behind for a person to look at.
+// Screens check for Read rows (#122) — real Chromium layout, screenshots left
+// behind for a person to look at.
 //
-// WHY A THIRD HARNESS. `e2e:screens` here drives the DESKTOP app and the relay's
-// drives the BROWSER client — and the linked Read row is deliberately OFF on
-// both (the desktop cannot open a file at a line; a remote cannot send openFile
-// at all). Neither existing harness can photograph the thing this change does,
-// so this one boots the same shipped media/ scripts in the IDE configuration:
-// no window.grokRemoteClient, no previewInApp capability.
+// WHY A THIRD HARNESS. `e2e:screens` drives the DESKTOP app (and the relay's
+// drives the BROWSER client). This boots the same shipped media/ scripts twice:
+// first as the IDE (no previewInApp — the link posts openFile with a range),
+// then as the desktop overlay (previewInApp — the numbered whole-file preview
+// with the agent's lines marked). A remote still cannot send openFile.
 //
 // happy-dom proves the DOM; this proves it has a size and a colour.
 // Run: npm run e2e:read-link   (frames land in .screens/, gitignored)
@@ -45,12 +44,30 @@ body { margin: 0; background: var(--vscode-editor-background); color: var(--vsco
   const __posted = [];
   window.__posted = __posted;
   window.acquireVsCodeApi = () => ({
-    postMessage: (m) => __posted.push(m), setState: () => {}, getState: () => undefined,
+    postMessage: (m) => {
+      __posted.push(m);
+      if (m && m.type === "readProjectFile") {
+        queueMicrotask(() => {
+          window.dispatchEvent(new MessageEvent("message", { data: {
+            type: "projectFileContent",
+            requestId: m.requestId,
+            cwd: m.cwd,
+            relPath: m.relPath,
+            ok: true,
+            kind: "text",
+            text: window.__previewFileText || "",
+          }}));
+        });
+      }
+    },
+    setState: () => {},
+    getState: () => undefined,
   });
 </script>
 ${BODY}
 <script src="${path.join(media, "webview-helpers.js")}"></script>
 <script src="${path.join(media, "settings.js")}"></script>
+<script src="${path.join(media, "syntax-highlight.js")}"></script>
 <script src="${path.join(media, "file-panel.js")}"></script>
 <script src="${path.join(media, "chat.js")}"></script>
 </body></html>`);
@@ -200,6 +217,74 @@ await win.evaluate(() => document.querySelectorAll(".tool-label-ref")[2].click()
 const posted = await win.evaluate(() => window.__posted.filter((m) => m.type === "openFile"));
 assert.deepEqual(posted, [{ type: "openFile", path: "media/chat.js#L8400-L8459" }],
   "the link opens the real file at its lines");
+
+// Desktop overlay — the surface this harness originally skipped. Switch the
+// same page to previewInApp, click a Read, and photograph the numbered file
+// with the agent's range marked, then the out-of-workspace fallback.
+await send({ type: "initialState", effort: "", cwd: "/w", useCtrlEnter: false,
+             extVersion: "3.14.1", showThinking: false, expandCommandOutputs: true,
+             appPurpose: "coding", capabilities: { previewInApp: true } });
+const wholeFile = Array.from({ length: 80 }, (_, i) =>
+  i + 1 >= 20 && i + 1 <= 35 ? "the agent read this line" : "context around the read",
+).join("\n");
+await win.evaluate((text) => {
+  window.__previewFileText = text;
+  window.__grokDeskFilePanel = { openPath: () => {} };
+}, wholeFile);
+await send(readCall("desk", "media/chat.js", 20, 16));
+await send(readDone("desk", body(16)));
+await send({ type: "messageChunk", text: "desktop overlay read." });
+await win.waitForTimeout(150);
+await win.evaluate(() => {
+  const links = document.querySelectorAll(".tool-label-ref");
+  links[links.length - 1].click();
+});
+await win.waitForSelector("#preview-overlay .tdl-read");
+await win.screenshot({ path: path.join(OUT, "read-link-5-desktop-overlay.png") });
+const overlay = await win.evaluate(() => {
+  const el = document.getElementById("preview-overlay");
+  if (!el) return null;
+  return {
+    rows: el.querySelectorAll(".tdl").length,
+    marked: el.querySelectorAll(".tdl-read").length,
+    panelBtn: [...el.querySelectorAll(".preview-action-btn")].some((b) => b.textContent === "Open in file panel"),
+    start: el.querySelector("#preview-read-start") && el.querySelector("#preview-read-start").dataset.line,
+  };
+});
+log(`desktop overlay: ${JSON.stringify(overlay)}`);
+assert.equal(overlay.rows, 80, "the overlay shows the whole file, not the excerpt");
+assert.equal(overlay.marked, 16, "the agent's 16 lines are marked");
+assert.equal(overlay.start, "20");
+assert.ok(overlay.panelBtn, "Open in file panel is offered for an in-workspace path");
+
+await win.evaluate(() => {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+});
+await send(readCall("out", "~/Downloads/x.md", 1, 8));
+await send(readDone("out", body(8)));
+await send({ type: "messageChunk", text: "outside the project." });
+await win.waitForTimeout(150);
+await win.evaluate(() => {
+  const links = document.querySelectorAll(".tool-label-ref");
+  links[links.length - 1].click();
+});
+await win.waitForSelector("#preview-overlay .preview-notice");
+await win.screenshot({ path: path.join(OUT, "read-link-6-desktop-fallback.png") });
+const fallback = await win.evaluate(() => {
+  const el = document.getElementById("preview-overlay");
+  if (!el) return null;
+  return {
+    notice: (el.querySelector(".preview-notice") || {}).textContent || "",
+    excerpt: !!(el.querySelector(".preview-code")),
+    panelBtn: [...el.querySelectorAll(".preview-action-btn")].some((b) => b.textContent === "Open in file panel"),
+    numbered: el.querySelectorAll(".tdl").length,
+  };
+});
+log(`desktop fallback: ${JSON.stringify(fallback)}`);
+assert.match(fallback.notice, /outside the project/);
+assert.ok(fallback.excerpt, "the excerpt is still there");
+assert.equal(fallback.numbered, 0, "fallback must not pretend to be the file");
+assert.equal(fallback.panelBtn, false, "no Open in file panel when the path is out of scope");
 
 log(`frames in ${OUT}/`);
 await el.close();
