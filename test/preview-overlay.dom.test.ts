@@ -246,7 +246,7 @@ const closeTurn = (window: Window) => dispatch(window, { type: "messageChunk", t
 async function answerProjectFile(
   h: { window: Window; posted: Array<{ type: string; [k: string]: unknown }> },
   text: string,
-  opts: { ok?: boolean; reason?: string } = {},
+  opts: { ok?: boolean; reason?: string; pretty?: boolean; kind?: string } = {},
 ) {
   const req = h.posted.find((m) => m.type === "readProjectFile") as
     | { type: string; requestId?: string; cwd: string; relPath: string }
@@ -259,7 +259,7 @@ async function answerProjectFile(
     relPath: req!.relPath,
     ...(opts.ok === false
       ? { ok: false, reason: opts.reason || "path escapes workspace" }
-      : { ok: true, kind: "text", text }),
+      : { ok: true, kind: opts.kind || "text", text, ...(opts.pretty ? { pretty: true } : {}) }),
   });
   await Promise.resolve();
   await Promise.resolve();
@@ -391,5 +391,46 @@ describe("preview overlay — file reads (#122 desktop)", () => {
     click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
     await answerProjectFile(h, lines(40));
     expect(h.doc.querySelector(".preview-open-panel")).toBeNull();
+  });
+
+  // readProjectFile pretty-prints JSON for the file panel's benefit, so its
+  // text is NOT the bytes on disk. Numbering it would put a gutter beside lines
+  // the file does not have and mark the wrong ones as the agent's read.
+  it("does not number a JSON file the host reformatted — it says so and keeps the excerpt", async () => {
+    const h = bootPreview();
+    const excerpt = '{"n":1e3}';
+    seedRead(h.window, "a.json", excerpt);
+    click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
+    await answerProjectFile(h, ["{", '  "n": 1000', "}"].join("\n"), { kind: "json", pretty: true });
+
+    const overlay = h.doc.getElementById("preview-overlay")!;
+    expect(overlay.querySelector(".preview-notice")!.textContent).toMatch(/reformatted/i);
+    expect(overlay.querySelector(".preview-code")!.textContent).toBe(excerpt);
+    // No gutter, and no panel button: the numbers would be a lie either way.
+    expect(overlay.querySelector(".tdl")).toBeNull();
+    expect(overlay.querySelector(".preview-open-panel")).toBeNull();
+  });
+
+  // The host serves text up to 2 MiB; a file of one-character lines is a
+  // million rows at four DOM nodes each, built synchronously. Render a window
+  // around the read instead, and SAY what was left out.
+  it("windows a very long file around the read range and reports the clipping", async () => {
+    const h = bootPreview();
+    const excerpt = lines(4, 9000);
+    const whole = lines(20000);
+    seedRead(h.window, "big.log", excerpt, { offset: 9000, limit: 4 });
+    click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
+    await answerProjectFile(h, whole);
+
+    const overlay = h.doc.getElementById("preview-overlay")!;
+    const rows = overlay.querySelectorAll(".tdl");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThanOrEqual(4000);
+    // The lines the agent read must be inside the window — that is the point.
+    const marked = [...overlay.querySelectorAll(".tdl-read")] as HTMLElement[];
+    expect(marked.length).toBeGreaterThan(0);
+    expect(marked[0]!.dataset.line).toBe("9000");
+    const notice = overlay.querySelector(".preview-notice")!;
+    expect(notice.textContent).toMatch(/Showing lines .* of 20000/);
   });
 });
