@@ -112,7 +112,15 @@ jobs:
       # id stays PawelHuryn.grok-build-desktop, fails the official-id check,
       # and reports nothing — which is the behaviour a fork should have and
       # which no file in the source tree can enforce.
-      - run: npm run ${{ matrix.script }} -- -c.extraMetadata.grokExtensionName=grok-vscode-phuryn
+      #
+      # The flag is QUOTED, and must stay quoted. The Windows leg runs under
+      # pwsh, which splits a bare `-c.extraMetadata.…=…` into `-c` and
+      # `.extraMetadata.…=…` before npm ever sees it — electron-builder then
+      # reads `-c` as its config-FILE flag and dies with ENOENT on a file named
+      # after the value. macOS passes the same token through intact, so this
+      # breaks exactly one leg of the matrix and only when the flag is present:
+      # v3.15.0's Windows installer failed this way on the first run with it.
+      - run: npm run ${{ matrix.script }} -- '-c.extraMetadata.grokExtensionName=grok-vscode-phuryn'
         if: github.repository == 'phuryn/grok-build-vscode'
         env:
           # Harmless on the Windows leg — empty and ignored — so one env block on

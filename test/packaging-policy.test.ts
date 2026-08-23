@@ -314,7 +314,12 @@ describe("desktop artifact naming (electron-builder.yml)", () => {
     // injected by the workflow, gated on the repository it runs in.
     expect(yml).not.toMatch(/grokExtensionName:\s*\S/);
     const wf = read(".github/workflows/desktop-release.yml");
-    expect(wf).toMatch(/grokExtensionName=grok-vscode-phuryn/);
+    // QUOTED, and the quotes are the point: the Windows leg runs under pwsh,
+    // which splits a bare `-c.extraMetadata.…=…` at the `-c.` and leaves
+    // electron-builder reading `-c` as a config-FILE path. v3.15.0's Windows
+    // installer failed exactly this way; macOS passed the same token through
+    // intact, so the matrix only half-broke and the release looked complete.
+    expect(wf).toMatch(/-- '-c\.extraMetadata\.grokExtensionName=grok-vscode-phuryn'/);
     expect(wf).toMatch(/if:\s*github\.repository == 'phuryn\/grok-build-vscode'/);
     expect(wf).toMatch(/if:\s*github\.repository != 'phuryn\/grok-build-vscode'/);
   });
