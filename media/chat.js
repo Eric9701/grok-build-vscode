@@ -2295,36 +2295,6 @@
     return { from, to, clipped: from > 1 || to < total };
   }
 
-  // The blue band asserts "these are the lines the agent read". The file we
-  // just fetched is the CURRENT one, and an agent edits as often as it reads —
-  // insert a line above the range and those numbers now point at something
-  // else entirely, which the band would then vouch for. Before the whole-file
-  // preview existed this could not happen: the excerpt shown WAS what was read.
-  //
-  // We already hold that excerpt, so this is checkable rather than a guess.
-  // Compare it with the same span of the fetched file; if it has moved, mark
-  // nothing and say the file changed. Whitespace-only differences are ignored
-  // (an editor may have retrimmed), but content differences are not.
-  function readRangeStillMatches(fileText, excerptText, range) {
-    if (!range || !range.start || !range.end) return false;
-    var excerpt = String(excerptText == null ? "" : excerptText);
-    if (!excerpt.trim()) return false; // nothing to check against
-    var norm = function (s) {
-      return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-        .split("\n").map(function (l) { return l.replace(/\s+$/, ""); });
-    };
-    var want = norm(excerpt);
-    while (want.length && want[want.length - 1] === "") want.pop();
-    if (!want.length) return false;
-    var have = norm(fileText).slice(range.start - 1, range.end);
-    // The excerpt may be shorter than the span (a limit that ran past EOF).
-    if (have.length < want.length) return false;
-    for (var i = 0; i < want.length; i++) {
-      if (have[i] !== want[i]) return false;
-    }
-    return true;
-  }
-
   function buildNumberedFilePreview(text, language, pathStr, range) {
     const wrap = document.createElement("div");
     wrap.className = "tool-diff-region preview-file-region";
@@ -2557,19 +2527,22 @@
         } else if (result && result.ok && typeof result.text === "string") {
           payload.text = result.text;
           clearPreviewBody(body);
-          // Only claim the range when the file still reads that way there.
-          const fresh = readRangeStillMatches(result.text, excerpt, opts.range);
-          const region = buildNumberedFilePreview(
-            result.text, language, opts.path, fresh ? opts.range : null,
-          );
+          // The band marks the line numbers the agent asked for. That is a
+          // POSITIONAL reference, exactly what an editor host does when it
+          // opens the file at those lines, and it stays true whether or not the
+          // file has moved on since.
+          //
+          // A guard that tried to verify the content still matched was removed
+          // rather than tuned: the excerpt is the CLI's rendered transcript,
+          // not the file's bytes. A ranged read arrives decorated —
+          // `... 2219 lines not shown ...` and `  2220|  }` — so comparing it
+          // against raw file lines never matched, and the guard fired on every
+          // ordinary ranged read, stripped the markers, and announced a change
+          // that had not happened. Parsing those decorations would mean
+          // tracking a format that differs per CLI, to defend against a
+          // staleness the editor host has always had and nobody minds.
+          const region = buildNumberedFilePreview(result.text, language, opts.path, opts.range);
           body.appendChild(region);
-          if (!fresh && opts.range) {
-            const moved = document.createElement("div");
-            moved.className = "preview-notice";
-            moved.textContent =
-              "This file has changed since the agent read it, so the lines it read are not marked.";
-            body.insertBefore(moved, region);
-          }
           if (region._window && region._window.clipped) {
             const clip = document.createElement("div");
             clip.className = "preview-notice";
