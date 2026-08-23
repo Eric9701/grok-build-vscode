@@ -183,13 +183,21 @@ if [ -z "$vsix" ]; then
     command -v npm >/dev/null 2>&1 || { echo "npm is not on PATH. Install Node.js, then re-run." >&2; exit 1; }
     [ -d node_modules ] || npm install
 
+    if [ -z "$prod_mode" ] && [ ! -f "$repo_root/.env" ]; then
+        # No .env at all: an ordinary contributor following docs/INSTALL.md.
+        # Build against production rather than refusing the documented command.
+        echo "No .env at the repo root - building against PRODUCTION." >&2
+        echo "Maintainers testing against staging: add GROK_RELAY_URL=wss://... to .env" >&2
+        prod_mode=1
+    fi
+
     if [ -z "$prod_mode" ]; then
         dev_url=$(dev_relay_url) || {
             cat >&2 <<'NOENV'
-No usable staging relay found for a test build.
-Add a line to the gitignored .env at the repo root:
+.env exists but carries no usable staging relay.
+Fix the line, or build against production explicitly:
     GROK_RELAY_URL=wss://your-staging-relay.example
-Or build against production explicitly: ./scripts/install.sh --prod
+    ./scripts/install.sh --prod
 NOENV
             exit 1
         }

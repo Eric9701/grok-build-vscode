@@ -71,14 +71,22 @@ $devUrl = $null
 $relayLabel = "production"
 
 if (-not $VsixPath) {
+    if ((-not $Prod) -and (-not (Test-Path (Join-Path $repoRoot '.env')))) {
+        # No .env at all: an ordinary contributor following docs/INSTALL.md.
+        # Build against production rather than refusing the documented command.
+        Write-Host "No .env at the repo root - building against PRODUCTION."
+        Write-Host "Maintainers testing against staging: add GROK_RELAY_URL=wss://... to .env"
+        $Prod = $true
+    }
+
     if (-not $Prod) {
         $devUrl = Get-DevRelayUrl
         if (-not $devUrl) {
             throw @"
-No usable staging relay found for a test build.
-Add a line to the gitignored .env at the repo root:
+.env exists but carries no usable staging relay.
+Fix the line, or build against production explicitly:
     GROK_RELAY_URL=wss://your-staging-relay.example
-Or build against production explicitly: pwsh scripts\install.ps1 -Prod
+    pwsh scripts\install.ps1 -Prod
 "@
         }
         $current = Read-TextFile $framesPath

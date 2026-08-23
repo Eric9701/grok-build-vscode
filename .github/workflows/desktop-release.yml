@@ -107,12 +107,30 @@ jobs:
           chmod 600 "$key"
           echo "APPLE_API_KEY=$key" >> "$GITHUB_ENV"
 
-      - run: npm run ${{ matrix.script }}
+      # Telemetry identity is injected HERE, not committed, and only for
+      # this repository. A fork gets no `grokExtensionName`, so its packaged
+      # id stays PawelHuryn.grok-build-desktop, fails the official-id check,
+      # and reports nothing — which is the behaviour a fork should have and
+      # which no file in the source tree can enforce.
+      - run: npm run ${{ matrix.script }} -- -c.extraMetadata.grokExtensionName=grok-vscode-phuryn
+        if: github.repository == 'phuryn/grok-build-vscode'
         env:
           # Harmless on the Windows leg — empty and ignored — so one env block on
           # the matrix step is enough; no need to branch per OS. APPLE_API_KEY is
           # deliberately absent: it comes from GITHUB_ENV above, and a step-level
           # env entry would override it back to the raw key contents.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: L6TFKRX6QQ
+
+      # A fork builds the same installers, signed with its own credentials if
+      # it has them, and simply carries no telemetry identity. Same command,
+      # minus the injected name.
+      - run: npm run ${{ matrix.script }}
+        if: github.repository != 'phuryn/grok-build-vscode'
+        env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}

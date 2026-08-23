@@ -307,7 +307,16 @@ describe("desktop artifact naming (electron-builder.yml)", () => {
     );
     expect(yml).toMatch(/productName:\s*Grok Build Desktop/);
     expect(yml).toMatch(/extraMetadata:[\s\S]*main:\s*out\/desktop\/main\.js/);
-    expect(yml).toMatch(/extraMetadata:[\s\S]*grokExtensionName:\s*grok-vscode-phuryn/);
+    // The telemetry identity must NOT be committed. Nothing in the source
+    // tree can tell our build from a fork's — a fork copies every file, and
+    // a desktop-only fork has no reason to change `publisher` — so a build
+    // made from this config alone reports nothing, and the official value is
+    // injected by the workflow, gated on the repository it runs in.
+    expect(yml).not.toMatch(/grokExtensionName:\s*\S/);
+    const wf = read(".github/workflows/desktop-release.yml");
+    expect(wf).toMatch(/grokExtensionName=grok-vscode-phuryn/);
+    expect(wf).toMatch(/if:\s*github\.repository == 'phuryn\/grok-build-vscode'/);
+    expect(wf).toMatch(/if:\s*github\.repository != 'phuryn\/grok-build-vscode'/);
   });
 
   // Comments in this file explain settings that are deliberately ABSENT, so a

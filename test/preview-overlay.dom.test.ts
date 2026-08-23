@@ -464,4 +464,39 @@ describe("preview overlay — file reads (#122 desktop)", () => {
     expect(marked[marked.length - 1]!.dataset.line).toBe("8899");
     expect(marked.length).toBe(3900);
   });
+
+  // The blue band asserts "these are the lines the agent read". An agent edits
+  // as often as it reads, so by the time someone scrolls back and clicks, those
+  // numbers can point at something else entirely — and the band would vouch for
+  // it. Before the whole-file preview existed this could not happen: what was
+  // shown WAS what was read.
+  it("does not mark a range the file no longer matches, and says why", async () => {
+    const h = bootPreview();
+    const excerpt = lines(4, 10);           // "line 10".."line 13" as read
+    seedRead(h.window, "src/a.ts", excerpt, { offset: 10, limit: 4 });
+    click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
+    // Two lines inserted above shift everything down; lines 10-13 now hold
+    // different content.
+    const shifted = ["inserted A", "inserted B", ...lines(40).split("\n")].join("\n");
+    await answerProjectFile(h, shifted);
+
+    const overlay = h.doc.getElementById("preview-overlay")!;
+    expect(overlay.querySelectorAll(".tdl").length).toBeGreaterThan(0);
+    expect(overlay.querySelectorAll(".tdl-read").length).toBe(0);
+    expect(overlay.querySelector(".preview-notice")!.textContent).toMatch(/changed since the agent read it/i);
+  });
+
+  it("still marks the range when the file is unchanged there", async () => {
+    const h = bootPreview();
+    const whole = lines(40);
+    const excerpt = lines(4, 10);
+    seedRead(h.window, "src/a.ts", excerpt, { offset: 10, limit: 4 });
+    click(h.window, h.doc.querySelector(".tool-label-ref") as HTMLElement);
+    await answerProjectFile(h, whole);
+
+    const overlay = h.doc.getElementById("preview-overlay")!;
+    const marked = [...overlay.querySelectorAll(".tdl-read")] as HTMLElement[];
+    expect(marked.map((el) => el.dataset.line)).toEqual(["10", "11", "12", "13"]);
+    expect(overlay.querySelector(".preview-notice")).toBeNull();
+  });
 });
