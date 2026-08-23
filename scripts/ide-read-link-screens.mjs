@@ -159,6 +159,42 @@ assert.equal(seen.commandViewAll, 1, "the COMMAND row keeps its View all — old
 assert.equal(seen.visibleExcerpts, 1, "only the command row shows an excerpt");
 assert.ok(!seen.bodyScrollsSideways, "the transcript must not scroll sideways");
 
+// A SUBAGENT's read row carries the same link, and its CSS is the thing a DOM
+// test cannot see: the rule was once scoped to .tool-item-label / .tool-flat,
+// which left this one an unstyled default <button>.
+await send({ type: "toolCall", call: { toolCallId: "spawn-1", title: "spawn_subagent",
+  _meta: { "x.ai/tool": { name: "spawn_subagent" } },
+  rawInput: { description: "Look around", subagent_type: "explore" } } });
+await send({ type: "subagentUpdate",
+  update: { sessionUpdate: "subagent_spawned", subagent_id: "kid", child_session_id: "kid" } });
+await send({ type: "childStream", childSessionId: "kid", event: "toolCall",
+  call: { toolCallId: "s1", kind: "read", title: "read_file",
+          rawInput: { target_file: "src/worker.ts", offset: 1, limit: 40 } } });
+await win.waitForTimeout(200);
+await win.evaluate(() => {
+  const card = document.querySelector(".subagent-card");
+  const stream = card && card.querySelector(".subagent-stream");
+  if (stream) stream.hidden = false; // cards start collapsed; we want to photograph it
+});
+await win.waitForTimeout(100);
+await win.screenshot({ path: path.join(OUT, "read-link-4-subagent.png") });
+
+const child = await win.evaluate(() => {
+  const link = document.querySelector(".subagent-tool .tool-label-ref");
+  if (!link) return null;
+  const cs = getComputedStyle(link);
+  const r = link.getBoundingClientRect();
+  const plain = getComputedStyle(document.querySelector(".tool-item-label .tool-label-ref")
+    || document.querySelector(".tool-flat .tool-label .tool-label-ref"));
+  return { w: Math.round(r.width), h: Math.round(r.height), border: cs.borderTopStyle,
+           color: cs.color, matchesRowLink: cs.color === plain.color, font: cs.fontFamily };
+});
+log(`subagent link: ${JSON.stringify(child)}`);
+assert.ok(child, "a subagent Read row must carry the same link on an editor host");
+assert.ok(child.w > 40 && child.h > 6, `subagent link has no size: ${JSON.stringify(child)}`);
+assert.equal(child.border, "none", "an unstyled <button> would draw a border here");
+assert.ok(child.matchesRowLink, "the subagent link must look like every other Read link");
+
 // Clicking the link asks the host for the FILE at those lines, nothing else.
 await win.evaluate(() => document.querySelectorAll(".tool-label-ref")[2].click());
 const posted = await win.evaluate(() => window.__posted.filter((m) => m.type === "openFile"));
