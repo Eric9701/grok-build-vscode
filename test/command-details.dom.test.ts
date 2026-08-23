@@ -798,150 +798,233 @@ describe("command details (#41)", () => {
     expect(doc.querySelector(".has-details")).toBeNull();
   });
 
-  it("a completed Read row shows the file text and View all (#122)", () => {
-    const { window, doc } = bootWebview();
-    const body = Array.from({ length: 8 }, (_, i) => `${i + 1}→line ${i + 1}`).join("\n");
-    dispatch(window, {
-      type: "toolCall",
-      call: { toolCallId: "r1", kind: "read", title: "read_file", rawInput: { target_file: "hello.txt" } },
-    });
-    dispatch(window, {
-      type: "toolCallUpdate",
-      call: {
-        toolCallId: "r1",
-        status: "completed",
-        content: [{ type: "content", content: { type: "text", text: body } }],
-        rawOutput: {
-          type: "ReadFile",
-          FileContent: { content: body, offset: null, raw_output: body, total_lines: 8 },
-        },
-      },
-    });
-    close(window);
-
-    const flat = doc.querySelector(".tool-flat.has-details") as HTMLElement;
-    expect(flat).not.toBeNull();
-    expect(flat.querySelector(".tool-label")!.textContent).toBe("Read hello.txt lines 1-8");
-    const details = flat.querySelector(".tool-item-details") as HTMLElement;
-    expect(details.querySelector(".tool-cmd-output")!.textContent).toBe(body);
-    const viewAll = details.querySelector(".command-view-all") as HTMLElement;
-    expect(viewAll).not.toBeNull();
-    expect(viewAll.textContent).toBe("View all (8 lines) →");
+  const readCall = (id: string, rawInput: Record<string, unknown>, title = "read_file") => ({
+    type: "toolCall",
+    call: { toolCallId: id, kind: "read", title, rawInput },
+  });
+  const readDone = (id: string, text: string, rawOutput?: unknown) => ({
+    type: "toolCallUpdate",
+    call: {
+      toolCallId: id,
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text } }],
+      ...(rawOutput ? { rawOutput } : {}),
+    },
   });
 
-  it("View all on a Read row opens the FILE at its lines, not a copy of them (#122)", () => {
+  it("a completed Read row IS its linked path and range — no excerpt (#122)", () => {
     const { window, doc, posted } = bootWebview();
-    const body = Array.from({ length: 30 }, (_, i) => `${i + 980}→line ${i + 980}`).join("\n");
-    dispatch(window, {
-      type: "toolCall",
-      call: {
-        toolCallId: "r1",
-        kind: "read",
-        title: "read_file",
-        rawInput: { target_file: "src/deep.ts", offset: 980, limit: 30 },
-      },
-    });
-    dispatch(window, {
-      type: "toolCallUpdate",
-      call: {
-        toolCallId: "r1",
-        status: "completed",
-        content: [{ type: "content", content: { type: "text", text: body } }],
-        rawOutput: { type: "ReadFile", FileContent: { content: body, offset: 980, limit: 30 } },
-      },
-    });
+    const body = Array.from({ length: 8 }, (_, i) => `${i + 1}\u2192line ${i + 1}`).join("\n");
+    dispatch(window, readCall("r1", { target_file: "hello.txt" }));
+    dispatch(window, readDone("r1", body, {
+      type: "ReadFile",
+      FileContent: { content: body, offset: null, raw_output: body, total_lines: 8 },
+    }));
     close(window);
 
-    const details = doc.querySelector(".tool-item-details") as HTMLElement;
-    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    const flat = doc.querySelector(".tool-flat") as HTMLElement;
+    const label = flat.querySelector(".tool-label") as HTMLElement;
+    expect(label.textContent).toBe("Read hello.txt lines 1-8");
 
-    // The whole point of the fix: the excerpt is exactly the context you can't
-    // see, so an untitled copy of it is the one thing that doesn't help.
+    // The path + range is the control; there is nothing else to click, and no
+    // six-line excerpt of the file under it.
+    const link = label.querySelector(".tool-label-ref") as HTMLElement;
+    expect(link.textContent).toBe("hello.txt lines 1-8");
+    expect(flat.querySelector(".tool-item-details")).toBeNull();
+    expect(doc.querySelector(".command-view-all")).toBeNull();
+    expect(doc.querySelector(".tool-cmd-output")).toBeNull();
+
+    click(window, link);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
+      { type: "openFile", path: "hello.txt#L1-L8" },
+    ]);
+  });
+
+  it("the linked range opens the FILE at those lines, never a copy of them (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    const body = Array.from({ length: 30 }, (_, i) => `${i + 980}\u2192line ${i + 980}`).join("\n");
+    dispatch(window, readCall("r1", { target_file: "src/deep.ts", offset: 980, limit: 30 }));
+    dispatch(window, readDone("r1", body, {
+      type: "ReadFile",
+      FileContent: { content: body, offset: 980, limit: 30 },
+    }));
+    close(window);
+
+    click(window, doc.querySelector(".tool-label-ref") as HTMLElement);
+    // The excerpt is exactly the context you cannot see, so an untitled copy of
+    // it is the one thing that does not help.
     expect(posted.filter((m: any) => m.type === "openText")).toEqual([]);
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
       { type: "openFile", path: "src/deep.ts#L980-L1009" },
     ]);
   });
 
-  it("a Read row with no line range on the wire opens the file with no fragment (#122)", () => {
+  it("a Read row with no line range on the wire links the file with no fragment (#122)", () => {
     const { window, doc, posted } = bootWebview();
-    dispatch(window, {
-      type: "toolCall",
-      call: { toolCallId: "r2", kind: "read", title: "read_file", rawInput: { target_file: "notes.md" } },
-    });
-    dispatch(window, {
-      type: "toolCallUpdate",
-      call: {
-        toolCallId: "r2",
-        status: "completed",
-        content: [{ type: "content", content: { type: "text", text: "a\nb\nc\nd\ne\nf\ng\nh" } }],
-        rawOutput: { type: "ReadFile", FileContent: { content: "a\nb\nc\nd\ne\nf\ng\nh" } },
-      },
-    });
+    dispatch(window, readCall("r2", { target_file: "notes.md" }));
+    dispatch(window, readDone("r2", "a\nb\nc\nd\ne\nf\ng\nh", {
+      type: "ReadFile",
+      FileContent: { content: "a\nb\nc\nd\ne\nf\ng\nh" },
+    }));
     close(window);
 
-    const details = doc.querySelector(".tool-item-details") as HTMLElement;
-    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    const link = doc.querySelector(".tool-label-ref") as HTMLElement;
+    expect(link.textContent).toBe("notes.md");
+    click(window, link);
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
       { type: "openFile", path: "notes.md" },
     ]);
   });
 
-  it("a Claude-shaped Read row opens the file too — file_path + offset/limit (#122)", () => {
+  it("a Claude-shaped Read row links too — file_path + offset/limit (#122)", () => {
     const { window, doc, posted } = bootWebview();
-    const body = Array.from({ length: 20 }, (_, i) => `line ${i + 40}`).join("\n");
     // Claude names its tool "Read" and passes { file_path, offset, limit } —
     // neither the grok `target_file` key nor its `read_file` name.
-    dispatch(window, {
-      type: "toolCall",
-      call: {
-        toolCallId: "cl1",
-        kind: "read",
-        title: "Read",
-        rawInput: { file_path: "src/host.ts", offset: 40, limit: 20 },
-      },
-    });
-    dispatch(window, {
-      type: "toolCallUpdate",
-      call: {
-        toolCallId: "cl1",
-        status: "completed",
-        content: [{ type: "content", content: { type: "text", text: body } }],
-      },
-    });
+    dispatch(window, readCall("cl1", { file_path: "src/host.ts", offset: 40, limit: 20 }, "Read"));
+    dispatch(window, readDone("cl1", Array.from({ length: 20 }, (_, i) => `line ${i + 40}`).join("\n")));
     close(window);
 
-    const details = doc.querySelector(".tool-item-details") as HTMLElement;
-    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    click(window, doc.querySelector(".tool-label-ref") as HTMLElement);
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
       { type: "openFile", path: "src/host.ts#L40-L59" },
     ]);
   });
 
-  it("a Read row identified only by kind opens the file (#122)", () => {
+  it("a Read row identified only by kind links the file (#122)", () => {
     const { window, doc, posted } = bootWebview();
-    const body = Array.from({ length: 20 }, (_, i) => `row ${i}`).join("\n");
     // No recognisable tool name at all — only ACP's kind. This is the path any
     // provider takes when it names its read something we have never seen.
-    dispatch(window, {
-      type: "toolCall",
-      call: { toolCallId: "k1", kind: "read", title: "Inspect", rawInput: { path: "docs/x.md" } },
-    });
-    dispatch(window, {
-      type: "toolCallUpdate",
-      call: {
-        toolCallId: "k1",
-        status: "completed",
-        content: [{ type: "content", content: { type: "text", text: body } }],
-      },
-    });
+    dispatch(window, readCall("k1", { path: "docs/x.md" }, "Inspect"));
+    dispatch(window, readDone("k1", Array.from({ length: 20 }, (_, i) => `row ${i}`).join("\n")));
     close(window);
 
-    const details = doc.querySelector(".tool-item-details") as HTMLElement;
-    click(window, details.querySelector(".command-view-all") as HTMLButtonElement);
+    click(window, doc.querySelector(".tool-label-ref") as HTMLElement);
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
       { type: "openFile", path: "docs/x.md" },
     ]);
+  });
+
+  it("a Read row with NO path stays plain text — the gate is the ref, not the kind (#122)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, readCall("np", {}, "read_file"));
+    dispatch(window, readDone("np", Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n")));
+    close(window);
+
+    // Nothing to link to, so nothing is linked. (Such a row carries no detail
+    // either — that is pre-existing: without a path there is no IN to attach.)
+    expect(doc.querySelector(".tool-label-ref")).toBeNull();
+    expect((doc.querySelector(".tool-label") as HTMLElement).textContent).toBe("Read");
+  });
+
+  it("REMOTE shows the SAME row; the link reveals the text in place (#122)", () => {
+    const { window, doc, posted } = bootWebview({ remote: true });
+    const body = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n");
+    dispatch(window, readCall("rr", { target_file: "src/a.ts", offset: 1, limit: 12 }));
+    dispatch(window, readDone("rr", body, {
+      type: "ReadFile",
+      FileContent: { content: body, offset: 1, limit: 12 },
+    }));
+    close(window);
+
+    // Identical shape to the IDE — one line, path + range as the link.
+    const link = doc.querySelector(".tool-label-ref") as HTMLElement;
+    expect(link.textContent).toBe("a.ts lines 1-12");
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    expect(details.classList.contains("tool-read-carrier")).toBe(true);
+    expect(details.hidden).toBe(true); // costs no space until asked for
+
+    // A phone cannot send openFile (host-local in remote-policy), so the link
+    // reveals what is already on the wire instead — and toggles back.
+    click(window, link);
+    expect(details.hidden).toBe(false);
+    expect(details.querySelector(".tool-cmd-output")!.textContent).toBe(body);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([]);
+    click(window, link);
+    expect(details.hidden).toBe(true);
+  });
+
+  it("the DESKTOP app shows the SAME row; the link opens its preview window (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
+      capabilities: { previewInApp: true },
+    });
+    const body = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n");
+    dispatch(window, readCall("dd", { target_file: "src/a.ts", offset: 1, limit: 12 }));
+    dispatch(window, readDone("dd", body, {
+      type: "ReadFile",
+      FileContent: { content: body, offset: 1, limit: 12 },
+    }));
+    close(window);
+
+    const link = doc.querySelector(".tool-label-ref") as HTMLElement;
+    expect(link.textContent).toBe("a.ts lines 1-12");
+    const details = doc.querySelector(".tool-item-details") as HTMLElement;
+    expect(details.hidden).toBe(true);
+    expect(doc.getElementById("preview-overlay")).toBeNull();
+
+    // openTextFile cannot honour a line selection there, so the in-app preview
+    // is the best it can do — and it never posts openFile or openText.
+    click(window, link);
+    const overlay = doc.getElementById("preview-overlay");
+    expect(overlay).not.toBeNull();
+    expect(overlay!.textContent).toContain("line 12"); // the text actually got there
+    expect(details.hidden).toBe(true); // the carrier stays out of the transcript
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([]);
+    expect(posted.filter((m: any) => m.type === "openText")).toEqual([]);
+  });
+
+  it("a carrier is never an affordance — no chevron, no row toggle (#122)", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    dispatch(window, readCall("c1", { target_file: "src/a.ts", offset: 1, limit: 12 }));
+    dispatch(window, readDone("c1", "one\ntwo\nthree"));
+    close(window);
+
+    const flat = doc.querySelector(".tool-flat") as HTMLElement;
+    expect(flat.querySelector(".tool-chevron")).toBeNull();
+    expect(flat.classList.contains("has-details")).toBe(false);
+    const details = flat.querySelector(".tool-item-details") as HTMLElement;
+    click(window, flat);
+    expect(details.hidden).toBe(true); // only the link opens it
+  });
+
+  it("a read batch expands WHILE it runs, not only when it finishes (#122)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
+    });
+    dispatch(window, readCall("g1", { target_file: "one.ts", offset: 1, limit: 150 }));
+    dispatch(window, readCall("g2", { target_file: "two.ts", offset: 20, limit: 31 }));
+
+    // Mid-run: no close() yet. This is the report — the details only appeared
+    // once the command was done, because the group was settled at close time.
+    const group = doc.querySelector(".tool-group") as HTMLElement;
+    const groupBody = group.querySelector(".tool-group-body") as HTMLElement;
+    expect(groupBody.hidden).toBe(false);
+    expect(group.classList.contains("expanded")).toBe(true);
+
+    const links = [...group.querySelectorAll(".tool-label-ref")].map((e) => e.textContent);
+    expect(links).toEqual(["one.ts lines 1-150", "two.ts lines 20-50"]);
+  });
+
+  it("a user who collapses a running group is not overridden when rows arrive (#122)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true, appPurpose: "coding",
+    });
+    dispatch(window, readCall("u1", { target_file: "one.ts", offset: 1, limit: 10 }));
+    const group = doc.querySelector(".tool-group") as HTMLElement;
+    click(window, group.querySelector(".tool-group-header") as HTMLElement);
+    expect((group.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
+
+    dispatch(window, readCall("u2", { target_file: "two.ts", offset: 1, limit: 10 }));
+    expect((group.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
   });
 
   it("View all on a COMMAND row still opens the captured text — there is no file to open (#122)", () => {
