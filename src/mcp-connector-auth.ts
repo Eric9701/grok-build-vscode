@@ -8,15 +8,14 @@
  * `persistConnectorOAuthClientMetadata` so grok's later spawn agrees.
  *
  * A live Grok session already running the same endpoint holds the OAuth
- * callback port pinned in mcp-remote's client registration. Windows also
- * skips mcp-remote's lockfile, so a second instance cannot learn the first
- * exists. On `EADDRINUSE` we retry once with a free loopback port as
- * `mcp-remote <url> <port>`, which forces re-registration. The first
- * failure never reaches the UI. `quoteSpawnArgs` wraps whitespace-bearing
- * argv entries only for this shell spawn — never in `mcpRemoteArgs`.
+ * callback port pinned in mcp-remote's client registration, and Windows skips
+ * mcp-remote's lockfile so a second instance cannot learn the first exists.
+ * That collision is REPORTED, never worked around — see
+ * {@link authorizeMcpRemote} for why retrying on another port re-authorised
+ * every host on the machine. `quoteSpawnArgs` wraps whitespace-bearing argv
+ * entries only for this shell spawn — never in `mcpRemoteArgs`.
  */
 import { createInterface } from "node:readline";
-import { createServer as defaultCreateServer } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,11 +29,9 @@ import {
   connectOutputLooksLikeOAuthIncompatible,
   connectOutputLooksLikePortConflict,
   connectOutputLooksSuccessful,
-  isUsableListenPort,
   oauthClientMetadataJson,
   parseInitializeResult,
   summarizeConnectOutput,
-  withMcpRemoteCallbackPort,
   type ConnectedConnectorStore,
   type ConnectFailureKind,
   type ConnectorAuth,
@@ -63,28 +60,10 @@ export interface AuthorizeMcpRemoteOpts {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   /**
-   * I/O seam for the port-conflict retry. Bind port 0, take what the OS
-   * gives, close it, pass that as mcp-remote's callback port. Tests inject
-   * this so they never open a real socket. Omit it and a port-conflict is
-   * returned as-is (no retry).
-   */
-  pickFreeListenPort?: PickFreeListenPort;
-  /**
    * Key-auth connectors: a DCR-incompatibility failure means the pasted
    * token was rejected, not that the app can never work.
    */
   auth?: ConnectorAuth;
-}
-
-export type PickFreeListenPort = () => Promise<number>;
-
-/** Minimal listen-server surface so tests can drive {@link listenFreeLoopbackPort} without `net`. */
-export interface FreePortProbe {
-  unref(): void;
-  listen(port: number, host: string, cb: () => void): void;
-  close(cb?: (err?: Error) => void): void;
-  address(): { port: number } | string | null;
-  once(event: "error", listener: (err: Error) => void): void;
 }
 
 export type AuthorizeMcpRemoteResult =
@@ -151,60 +130,34 @@ export function persistConnectorOAuthClientMetadata(
 }
 
 /**
- * Bind loopback port 0, read the OS-assigned port, close. mcp-remote's
- * `specifiedPort` cannot be 0 (falsy in its own check), so we have to
- * materialize a real port before spawning.
+ * A port conflict is REPORTED, never worked around.
+ *
+ * This used to retry on a free port, and that retry is what made connectors
+ * re-authorise whenever more than one host was open. The chain, measured
+ * 2026-08-20/23:
+ *
+ *  1. The callback port is pinned by the OAuth registration — mcp-remote reads
+ *     `client_info.json` and takes the port out of the registered
+ *     `redirect_uris` (Linear: 22227). It is not ours to choose.
+ *  2. mcp-remote's cross-instance lockfile coordination is disabled on
+ *     Windows, so a second instance never learns the first exists.
+ *  3. The holder is one of OUR OWN live proxies — grok's ACP session running
+ *     the `mcpServers` entry we handed it. Already authorised, working.
+ *
+ * Handing mcp-remote a DIFFERENT port then means, by its own rule, "delete
+ * `client_info.json` and re-register" — a brand-new OAuth client and a fresh
+ * consent screen. Worse, `~/.mcp-auth` is shared by every host, so that
+ * deletion invalidates the registration the OTHER windows were using, and they
+ * re-authorise in turn. The retry did not recover from the conflict; it
+ * converted a harmless collision into a machine-wide re-authorisation.
+ *
+ * So there is nothing to retry. A conflict means this connector is already
+ * signed in and in use, which is the good case — the caller says so and stops.
  */
-export function listenFreeLoopbackPort(
-  createServer: () => FreePortProbe = () => defaultCreateServer() as unknown as FreePortProbe,
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.unref();
-    const fail = (err: Error) => {
-      try { server.close(); } catch { /* already closed */ }
-      reject(err);
-    };
-    server.once("error", fail);
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      server.close((err) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        if (!isUsableListenPort(port)) {
-          reject(new Error("Could not allocate a local callback port"));
-          return;
-        }
-        resolve(port);
-      });
-    });
-  });
-}
-
 export async function authorizeMcpRemote(
   opts: AuthorizeMcpRemoteOpts,
 ): Promise<AuthorizeMcpRemoteResult> {
-  const first = await runAuthorizeMcpRemote(opts);
-  if (first.ok || first.kind !== "port-conflict" || !opts.pickFreeListenPort) {
-    return first;
-  }
-  let port: number;
-  try {
-    port = await opts.pickFreeListenPort();
-  } catch {
-    return first;
-  }
-  if (!isUsableListenPort(port)) return first;
-  const retryArgs = withMcpRemoteCallbackPort(opts.args, port);
-  if (!retryArgs) return first;
-  return runAuthorizeMcpRemote({
-    ...opts,
-    args: retryArgs,
-    pickFreeListenPort: undefined,
-  });
+  return runAuthorizeMcpRemote(opts);
 }
 
 function runAuthorizeMcpRemote(

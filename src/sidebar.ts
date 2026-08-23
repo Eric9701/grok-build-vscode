@@ -364,7 +364,6 @@ import {
 } from "./mcp-connectors";
 import {
   authorizeMcpRemote,
-  listenFreeLoopbackPort,
   npxSpawnPlan,
   persistConnectorOAuthClientMetadata,
   writeOAuthClientMetadataFile,
@@ -9476,7 +9475,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         args: mcpRemoteArgs(endpoint, undefined, metadata?.path),
         shell: npx.shell,
         env: npx.env,
-        pickFreeListenPort: listenFreeLoopbackPort,
       });
       if (this.mcpConnectingId !== id) return;
       if (!result.ok) {
@@ -9545,7 +9543,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         shell: npx.shell,
         env: withAuthHeaderEnv(npx.env, token),
         auth: "key",
-        pickFreeListenPort: listenFreeLoopbackPort,
       });
       if (this.mcpConnectingId !== id) return;
       if (!result.ok) {

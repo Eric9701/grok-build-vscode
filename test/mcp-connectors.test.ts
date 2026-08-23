@@ -548,8 +548,12 @@ describe("connect failure taxonomy", () => {
     expect(connectFailureMessage("npx-missing")).toMatch(/npx/i);
     expect(connectFailureMessage("cancelled")).toMatch(/browser/i);
     expect(connectFailureMessage("timeout")).toMatch(/timed out/i);
-    expect(connectFailureMessage("port-conflict")).toMatch(/login port/i);
+    // A conflict is the GOOD case — the connector is already signed in and
+    // running elsewhere on this machine — so the copy must not read as a
+    // failure the user has to repair.
+    expect(connectFailureMessage("port-conflict")).toMatch(/already signed in/i);
     expect(connectFailureMessage("port-conflict")).not.toMatch(/EADDRINUSE/i);
+    expect(connectFailureMessage("port-conflict")).not.toMatch(/couldn.t|failed/i);
     expect(classifyConnectFailure({
       output: "InvalidClientMetadataError: Not supported: openid, email, profile",
     })).toBe("oauth-incompatible");
