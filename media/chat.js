@@ -8527,6 +8527,15 @@
     // Split only when the rendered label really ends with the target: a row that
     // fell back to grok's own title (nothing synthesized) stays plain text.
     if (!target || !full.endsWith(target)) return;
+    // Off the editor the link acts on a CARRIER, and only a real tool row ever
+    // gets one — a subagent's row is painted by this same function (the row IS
+    // the label) and never does. Rendering a link there would give those hosts a
+    // control that looks clickable and does nothing. Decided by what the label
+    // IS, not where it sits: this runs BEFORE the label is appended to its row,
+    // so closest() would see nothing yet.
+    const carrierCapable = el.classList.contains("tool-item-label")
+      || el.classList.contains("tool-label");
+    if (readLinkMode() !== "file" && !carrierCapable) return;
     el.textContent = full.slice(0, full.length - target.length);
     const link = document.createElement("button");
     link.type = "button";

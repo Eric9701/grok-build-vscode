@@ -990,6 +990,57 @@ describe("command details (#41)", () => {
     expect(details.hidden).toBe(true); // only the link opens it
   });
 
+  // A subagent's rows are painted by applyToolLabel too — the row IS the label —
+  // and they never get a carrier, so off the editor a link there would be a
+  // control that does nothing.
+  const spawnSubagentReadingA = (window: Window) => {
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "spawn-1",
+        title: "spawn_subagent",
+        _meta: { "x.ai/tool": { name: "spawn_subagent" } },
+        rawInput: { description: "Look around", subagent_type: "explore" },
+      },
+    });
+    dispatch(window, {
+      type: "subagentUpdate",
+      update: { sessionUpdate: "subagent_spawned", subagent_id: "kid", child_session_id: "kid" },
+    });
+    dispatch(window, {
+      type: "childStream",
+      childSessionId: "kid",
+      event: "toolCall",
+      call: { toolCallId: "s1", kind: "read", title: "read_file",
+              rawInput: { target_file: "src/a.ts", offset: 1, limit: 12 } },
+    });
+  };
+
+  it("a SUBAGENT read row links on an editor — openFile needs no carrier (#122)", () => {
+    const { window, doc, posted } = bootWebview();
+    spawnSubagentReadingA(window);
+
+    const row = doc.querySelector(".subagent-tool") as HTMLElement;
+    expect(row).not.toBeNull(); // the sequence really built the row
+    expect(row.textContent).toBe("Read a.ts lines 1-12");
+    const link = row.querySelector(".tool-label-ref") as HTMLElement;
+    expect(link).not.toBeNull();
+    click(window, link);
+    expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
+      { type: "openFile", path: "src/a.ts#L1-L12" },
+    ]);
+  });
+
+  it("a SUBAGENT read row stays plain on a remote — a link there would be dead (#122)", () => {
+    const { window, doc } = bootWebview({ remote: true });
+    spawnSubagentReadingA(window);
+
+    const row = doc.querySelector(".subagent-tool") as HTMLElement;
+    expect(row).not.toBeNull(); // same sequence, so the absence below means something
+    expect(row.textContent).toBe("Read a.ts lines 1-12");
+    expect(row.querySelector(".tool-label-ref")).toBeNull();
+  });
+
   it("a read batch expands WHILE it runs, not only when it finishes (#122)", () => {
     const { window, doc } = bootWebview();
     dispatch(window, {
