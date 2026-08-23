@@ -28,9 +28,31 @@ if [ -n "$all_mode" ] && [ -n "$cli_override" ]; then
     exit 1
 fi
 
+# macOS ships no CLI on PATH unless the user ran "Install 'code' command in
+# PATH", so a bare `command -v` finds nothing there. Both the single-target and
+# --all paths have to consult the app bundles, or --all silently installs into
+# NOTHING: it packaged a vsix, found no targets, exited 1, and the IDEs kept
+# running the previous build while the run LOOKED like it had done the work.
+mac_cli_paths() {
+    cat <<'PATHS'
+/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code
+/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders
+/Applications/Cursor.app/Contents/Resources/app/bin/cursor
+/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide
+PATHS
+}
+
+# One line per target. Names resolve on PATH; anything else is a full path, so
+# callers must read this line-by-line — an app path contains spaces.
 find_known_clis() {
     for name in $known_clis; do
         command -v "$name" >/dev/null 2>&1 && echo "$name"
+    done
+    mac_cli_paths | while IFS= read -r path; do
+        [ -x "$path" ] || continue
+        # Skip one already found on PATH, so it is not installed into twice.
+        name="${path##*/}"
+        command -v "$name" >/dev/null 2>&1 || echo "$path"
     done
 }
 
@@ -48,14 +70,11 @@ find_code_cli() {
         fi
     done
     # macOS install paths
-    for path in \
-        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
-        "/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/bin/code-insiders" \
-        "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" \
-        "/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide" \
-    ; do
+    while IFS= read -r path; do
         [ -x "$path" ] && { echo "$path"; return 0; }
-    done
+    done <<PATHS
+$(mac_cli_paths)
+PATHS
     echo "Could not find a code-compatible CLI. Install VS Code, or pass one: ./scripts/install.sh <cli-name-or-path>" >&2
     return 1
 }
@@ -87,9 +106,13 @@ install_to() {
 }
 
 if [ -n "$all_mode" ]; then
-    targets=$(find_known_clis)   # known command names only — safe to word-split
+    targets=$(find_known_clis)   # one per line: a name, or a path containing spaces
     [ -n "$targets" ] || { echo "No known code-compatible CLI detected ($known_clis)." >&2; exit 1; }
-    for code in $targets; do install_to "$code"; done
+    while IFS= read -r code; do
+        [ -n "$code" ] && install_to "$code"
+    done <<TARGETS
+$targets
+TARGETS
 else
     code=$(find_code_cli)        # may be a full path with spaces — keep quoted
     install_to "$code"
