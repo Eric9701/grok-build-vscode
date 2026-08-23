@@ -311,6 +311,53 @@ describe("resolveChatOpenFilePath", () => {
   const exists = (p: string) => existing.has(path.resolve(p));
   const realpath = (p: string) => path.resolve(p);
 
+  // #125: `~/Downloads/x.md` is not absolute, so it used to fall through to
+  // path.resolve(cwd, "~/Downloads/x.md") — a directory literally named `~`
+  // inside the workspace — and the click reported "file not found".
+  it("expands a leading ~ to the home directory (#125)", () => {
+    existing.clear();
+    const home = path.join(path.resolve("."), "fake-home");
+    const got = resolveChatOpenFilePath({
+      rawPath: "~/Downloads/grok-link-demo.md",
+      workspaceRoots: [workspace],
+      exists,
+      realpath,
+      homeDir: home,
+    });
+    expect(got).toBe(path.join(home, "Downloads", "grok-link-demo.md"));
+    // and it must NOT have been treated as a workspace-relative name
+    expect(got.startsWith(workspace)).toBe(false);
+  });
+
+  it("leaves ~otheruser and a mid-path ~ alone, and passes ~ through with no homeDir", () => {
+    existing.clear();
+    const home = path.join(path.resolve("."), "fake-home");
+    // Another user's home needs the password database to resolve; guessing a
+    // sibling of ours would be wrong, so it stays as written.
+    expect(resolveChatOpenFilePath({
+      rawPath: "~someone/notes.md",
+      workspaceRoots: [workspace],
+      exists,
+      realpath,
+      homeDir: home,
+    })).toBe(path.resolve(workspace, "~someone/notes.md"));
+    // A tilde that is not the first character is an ordinary filename.
+    expect(resolveChatOpenFilePath({
+      rawPath: "docs/~draft.md",
+      workspaceRoots: [workspace],
+      exists,
+      realpath,
+      homeDir: home,
+    })).toBe(path.resolve(workspace, "docs/~draft.md"));
+    // No homeDir supplied → nothing to expand to, so behaviour is unchanged.
+    expect(resolveChatOpenFilePath({
+      rawPath: "~/Downloads/x.md",
+      workspaceRoots: [workspace],
+      exists,
+      realpath,
+    })).toBe(path.resolve(workspace, "~/Downloads/x.md"));
+  });
+
   it("resolves relative images/1.jpg to the session dir when workspace file is absent", () => {
     existing.clear();
     // Session media exists for trust lexical fallback; exists check on workspace misses.

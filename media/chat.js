@@ -8290,7 +8290,11 @@
     if (start != null && limit != null && limit > 0) return { start, end: start + limit - 1 };
     if (start == null && limit != null && limit > 0) return { start: 1, end: limit };
     if (start != null && total != null && total >= start) return { start, end: total };
-    if (start == null && total != null && total > 0) return { start: 1, end: total };
+    // No offset, no limit, no end — the agent asked for the WHOLE file, and
+    // `total_lines` is then just how long the file happens to be. Rendering it
+    // as "lines 1-26" reads like a range the agent chose, which it did not, and
+    // costs the row space the path needs (owner, 2026-08-23). The row shows the
+    // path alone and the link opens the file with nothing selected.
     return null;
   }
   // `path#Lstart-Lend` — the syntax `parseFileRef` already accepts, so the host

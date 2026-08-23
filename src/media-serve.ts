@@ -295,6 +295,19 @@ export function resolveSessionGeneratedMediaPath(
   return joined;
 }
 
+/**
+ * `~` / `~/rest` → `<home>/rest`. Anything else — including `~user/…` and a
+ * `~` that is not the first character — is returned untouched.
+ */
+export function expandLeadingHome(rawPath: string, homeDir?: string | undefined): string {
+  if (!homeDir || !rawPath.startsWith("~")) return rawPath;
+  const rest = rawPath.slice(1);
+  if (rest === "") return homeDir;
+  if (rest[0] !== "/" && rest[0] !== "\\") return rawPath; // ~otheruser/…
+  // slice(2) drops the separator so join cannot produce a doubled one.
+  return path.join(homeDir, rest.slice(1));
+}
+
 export type ResolveChatOpenFilePathOpts = {
   /** Bare filesystem path (suffixes like `#L12` already stripped). */
   rawPath: string;
@@ -307,6 +320,9 @@ export type ResolveChatOpenFilePathOpts = {
   /** True when the absolute path is an existing regular file. */
   exists: (absPath: string) => boolean;
   realpath?: RealpathFn;
+  /** Home directory for a leading `~`. Injected rather than read here so this
+   *  stays pure and testable; omit it and `~` is left alone. */
+  homeDir?: string | undefined;
 };
 
 /**
@@ -319,10 +335,20 @@ export type ResolveChatOpenFilePathOpts = {
  * non-media paths fall back to joining the first workspace root.
  */
 export function resolveChatOpenFilePath(opts: ResolveChatOpenFilePathOpts): string {
-  const raw = opts.rawPath;
-  if (!raw || typeof raw !== "string" || raw.includes("\0")) {
-    return raw || "";
+  const rawInput = opts.rawPath;
+  if (!rawInput || typeof rawInput !== "string" || rawInput.includes("\0")) {
+    return rawInput || "";
   }
+
+  // A leading `~` is the user's home (#125). Expand FIRST so the result takes
+  // the absolute branch below — otherwise `~/Downloads/x.md` is treated as a
+  // relative name and resolves to `<cwd>/~/Downloads/x.md`, which is why
+  // clicking such a link reported "file not found".
+  //
+  // Only a bare `~` counts. `~user/…` means somebody else's home, which we
+  // cannot resolve without consulting the password database, and guessing a
+  // sibling of our own home would be wrong. It is left as written.
+  const raw = expandLeadingHome(rawInput, opts.homeDir);
 
   const realpath = opts.realpath ?? ((p: string) => path.resolve(p));
   const roots = opts.workspaceRoots.filter((r) => typeof r === "string" && r.length > 0);

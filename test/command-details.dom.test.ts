@@ -824,19 +824,22 @@ describe("command details (#41)", () => {
 
     const flat = doc.querySelector(".tool-flat") as HTMLElement;
     const label = flat.querySelector(".tool-label") as HTMLElement;
-    expect(label.textContent).toBe("Read hello.txt lines 1-8");
+    expect(label.textContent).toBe("Read hello.txt");
 
     // The path + range is the control; there is nothing else to click, and no
     // six-line excerpt of the file under it.
     const link = label.querySelector(".tool-label-ref") as HTMLElement;
-    expect(link.textContent).toBe("hello.txt lines 1-8");
+    expect(link.textContent).toBe("hello.txt");
     expect(flat.querySelector(".tool-item-details")).toBeNull();
     expect(doc.querySelector(".command-view-all")).toBeNull();
     expect(doc.querySelector(".tool-cmd-output")).toBeNull();
 
     click(window, link);
+    // No `#L1-L8`: the agent read the whole file, so there is no range it
+    // chose and nothing to select. Opening with the first 8 lines highlighted
+    // would invent an emphasis the read never had.
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
-      { type: "openFile", path: "hello.txt#L1-L8" },
+      { type: "openFile", path: "hello.txt" },
     ]);
   });
 

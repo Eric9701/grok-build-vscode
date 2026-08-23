@@ -145,7 +145,9 @@ describe("tool-call labels (single-call flat line)", () => {
     expect(flatLabel(doc)).toBe("Read hello.txt");
   });
 
-  it("read_file completed FileContent.total_lines fills the range", () => {
+  // A whole-file read has no range the agent chose — total_lines is just the
+  // file's length, and showing it as "lines 1-3" reads like a chosen range.
+  it("read_file completed with no offset/limit shows the path alone", () => {
     const { window, doc } = bootWebview();
     dispatch(window, tc({ toolCallId: "1", kind: "read", title: "read_file", rawInput: { target_file: "hello.txt" } }));
     dispatch(window, {
@@ -157,7 +159,7 @@ describe("tool-call labels (single-call flat line)", () => {
       },
     });
     close(window);
-    expect(flatLabel(doc)).toBe("Read hello.txt lines 1-3");
+    expect(flatLabel(doc)).toBe("Read hello.txt");
   });
 
   it("web_fetch shows the page URL ('Fetch <host/path>'), protocol stripped", () => {

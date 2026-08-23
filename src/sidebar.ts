@@ -3483,6 +3483,7 @@ Only continue if you trust this code.`,
         }
       },
       realpath: (candidate) => fs.realpathSync(candidate),
+      homeDir: os.homedir(),
     });
     return { ref, path: resolved };
   }
