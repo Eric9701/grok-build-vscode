@@ -179,6 +179,42 @@ describe("MCP remote inventory projection", () => {
     ]));
   });
 
+  it("clears a stale error when a later status reports no failure", () => {
+    // Nothing ever cleared `error`, so a server that failed once carried the
+    // text for the life of the session. Both renderers short-circuit on it, so
+    // a recovered server stayed red at the desk — and once the projection
+    // started translating a failure into `unavailable` for the phone, it
+    // stayed red there too. The error belongs to the event that reported it.
+    const failed = mergeMcpNotification(
+      [{ name: "linear", enabled: true }],
+      "_x.ai/mcp/init_progress",
+      { name: "linear", status: "unavailable", detail: "connection refused" },
+    );
+    expect(failed[0].error).toBe("connection refused");
+
+    const recovered = mergeMcpNotification(
+      failed,
+      "_x.ai/mcp/init_progress",
+      { name: "linear", status: "ready" },
+    );
+    expect(recovered[0].status).toBe("ready");
+    expect(recovered[0].error).toBeUndefined();
+    // And the phone sees the recovery rather than a frozen failure.
+    expect(projectMcpServerForRemote(recovered[0]).status).toBe("ready");
+  });
+
+  it("keeps a fresh failure, and does not let a status-only note erase it", () => {
+    const failed = mergeMcpNotification(
+      [{ name: "linear", enabled: true }],
+      "_x.ai/mcp/init_progress",
+      { name: "linear", status: "unavailable", detail: "connection refused" },
+    );
+    // A notification carrying neither status nor error changes neither.
+    const noise = mergeMcpNotification(failed, "_x.ai/mcp/init_progress", { name: "linear" });
+    expect(noise[0].error).toBe("connection refused");
+    expect(projectMcpServerForRemote(noise[0]).status).toBe("unavailable");
+  });
+
   it("keeps a failure visible to a remote after the error text is stripped", () => {
     // `status` and `error` arrive from the CLI as INDEPENDENT optionals, so a
     // server can carry an error and no status at all. Dropping the error text

@@ -331,6 +331,16 @@ export function mergeMcpNotification(
     ...(typeof payload.enabled === "boolean" ? { enabled: payload.enabled } : {}),
     ...(Array.isArray(payload.tools) ? { tools: parseTools(payload.tools), toolCount: payload.tools.length } : {}),
   };
+  // An error belongs to the event that reported it. A later notification that
+  // states a status and reports no error supersedes it, so the old text must
+  // not survive into the new state — nothing else ever cleared it, and a
+  // server that failed once kept its error for the life of the session. Both
+  // renderers short-circuit on `error`, so a recovered server stayed red at
+  // the desk, and once a failure is projected to the phone as `unavailable`
+  // it stayed red there too. If the fresh status is itself a failure it still
+  // renders as one; it just does it on the current status rather than on a
+  // sentence about something that has already stopped being true.
+  if (status && !error) update.error = undefined;
   if (existing) return current.map((server) => server === existing ? { ...server, ...update } : server);
   return [...current, { name, enabled: true, ...update }].sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name));
 }
