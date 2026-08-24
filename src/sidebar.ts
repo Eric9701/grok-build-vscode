@@ -1076,6 +1076,18 @@ export class GrokSidebar {
     // What actually decides whether a run can happen is whether the provider is
     // usable. The model is a preference, applied below and harmless if it no
     // longer exists.
+    //
+    // A review asked for the exact gate back for CONCRETE models, so that a
+    // routine pinned to a retired model skips rather than running on the
+    // agent's default. Declined, deliberately, and this note exists so it is
+    // not re-litigated every round. The two failure modes are not symmetric:
+    // the exact gate skips FOREVER and blames a provider that is connected,
+    // triggered by an ordinary cache refresh; the provider gate produces one
+    // run on a slightly different model, triggered only when a vendor retires
+    // a model the user pinned. Interactive sessions fall back the same way when
+    // that happens, so this is the product behaving consistently rather than an
+    // exception. A routine that quietly stops for months is the failure a user
+    // actually notices, and only after it has cost them something.
     if (!this.usableProviders().includes(routine.provider)) {
       finish("skipped", { detail: `Skipped — ${providerDisplayName(routine.provider)} was not connected` });
       return;
