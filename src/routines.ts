@@ -37,6 +37,7 @@
  */
 
 import type { AcpProvider } from "./acp-backend";
+import { AUTO_NAME_MAX_CHARS } from "./sessions";
 
 /** `PersistedState` key — routine definitions. Runs live in their own files. */
 export const ROUTINES_KEY = "grok.routines";
@@ -418,6 +419,24 @@ export function interruptStaleRuns(runs: readonly RoutineRun[], now: number): Ro
       ? { ...run, outcome: "interrupted" as const, endedAt: now, detail: "Interrupted — the app closed mid-run" }
       : run,
   );
+}
+
+/**
+ * Session name for a run.
+ *
+ * A routine's session otherwise looks exactly like one the user started, and
+ * arrives in the rail with an auto-summary that says nothing about where it
+ * came from. The tag answers "why is this here" at a glance; the routine's own
+ * title answers "which one", which a bare `[Routine]` prefix would not.
+ */
+export const ROUTINE_SESSION_TAG = "[Routine]";
+
+export function routineSessionName(title: string): string {
+  const clean = title.trim().replace(/\s+/g, " ");
+  if (!clean) return ROUTINE_SESSION_TAG;
+  // Already tagged — renaming a routine must not stack tags on its next run.
+  if (clean.startsWith(ROUTINE_SESSION_TAG)) return clean.slice(0, AUTO_NAME_MAX_CHARS);
+  return `${ROUTINE_SESSION_TAG} ${clean}`.slice(0, AUTO_NAME_MAX_CHARS);
 }
 
 /* ------------------------------------------------------------------- wire */

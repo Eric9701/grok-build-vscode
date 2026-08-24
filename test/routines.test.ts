@@ -22,6 +22,7 @@
  *  17.  A routine created in the future yields nothing due
  */
 import { describe, it, expect } from "vitest";
+import { AUTO_NAME_MAX_CHARS } from "../src/sessions";
 import {
   ROUTINE_MIN_INTERVAL_MS,
   ROUTINE_RUN_HISTORY_LIMIT,
@@ -34,6 +35,8 @@ import {
   manualWindowKey,
   parseTimeOfDay,
   routineWindow,
+  routineSessionName,
+  ROUTINE_SESSION_TAG,
   summarizeRuns,
   validateRoutine,
   type LocalClock,
@@ -348,6 +351,27 @@ describe("run history", () => {
       failed: 0,
       total: 1,
     });
+  });
+});
+
+describe("naming a routine's session", () => {
+  it("tags it and says which routine", () => {
+    // A bare "[Routine]" answers why it is there but not which one, and the
+    // rail can hold several.
+    expect(routineSessionName("Morning brief")).toBe("[Routine] Morning brief");
+    expect(routineSessionName("  Morning   brief  ")).toBe("[Routine] Morning brief");
+  });
+
+  it("does not stack tags when a routine is renamed", () => {
+    expect(routineSessionName("[Routine] Morning brief")).toBe("[Routine] Morning brief");
+  });
+
+  it("degrades to the bare tag rather than a dangling prefix", () => {
+    expect(routineSessionName("   ")).toBe(ROUTINE_SESSION_TAG);
+  });
+
+  it("stays inside the session-name cap", () => {
+    expect(routineSessionName("x".repeat(500)).length).toBe(AUTO_NAME_MAX_CHARS);
   });
 });
 

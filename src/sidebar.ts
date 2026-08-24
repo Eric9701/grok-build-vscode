@@ -51,6 +51,7 @@ import {
   toRoutineView,
   validateRoutine,
   manualWindowKey,
+  routineSessionName,
   type Routine,
   type RoutineModelOption,
   type RoutineProjectOption,
@@ -1097,6 +1098,22 @@ export class GrokSidebar {
         cwd: routine.cwd,
         ...(sessionId ? { sessionId } : {}),
       });
+      // Name it before the turn, not after. A run that errors or is interrupted
+      // still leaves a session in the rail, and an untitled one is the hardest
+      // to account for — "why is this here" is exactly the question the tag
+      // answers.
+      if (sessionId) {
+        const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+        await this.state.update(SESSION_META_KEY, {
+          ...overrides,
+          [sessionId]: {
+            ...(overrides[sessionId] ?? {}),
+            customName: routineSessionName(routine.title),
+          },
+        });
+        this.sessionCache.delete(sessionId);
+        this.postSessionName(session);
+      }
       this.postRepoCatalog();
       this.postSessionsList();
       this.postRoutines();
