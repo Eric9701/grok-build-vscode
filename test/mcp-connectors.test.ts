@@ -74,9 +74,15 @@ describe("Tier-1 connector catalog", () => {
     expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.endpoint).toBe(
       "https://mcp.zapier.com/api/v1/connect",
     );
-    expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.auth).toBe("key");
+    // OAuth via DCR, like every other Tier-1 row: the live endpoint answers a
+    // 401 Bearer challenge and its authorization server publishes a
+    // registration_endpoint, so there is nothing to paste and nothing to
+    // pre-register. Sources claiming a per-user token describe an older path.
+    expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.auth).toBeUndefined();
+    expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.keyHint).toBeUndefined();
+    expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.oauthScope).toBeUndefined();
     expect(TIER1_CONNECTORS.filter((c) => c.oauthScope).map((c) => c.id)).toEqual(["stripe"]);
-    expect(TIER1_CONNECTORS.filter((c) => c.auth === "key").map((c) => c.id)).toEqual(["github", "zapier"]);
+    expect(TIER1_CONNECTORS.filter((c) => c.auth === "key").map((c) => c.id)).toEqual(["github"]);
     // Append-only walk order: new ids go at the end, not alphabetically.
     expect(TIER1_CONNECTORS.map((c) => c.id).slice(-3)).toEqual(["airtable", "github", "zapier"]);
   });
