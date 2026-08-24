@@ -451,6 +451,9 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.textContent).not.toContain("grok.com managed");
     expect(overlay.textContent).toContain("32 tools");
     expect(overlay.textContent).toContain("Disabled · ready · 0 tools");
+    const lists = overlay.querySelectorAll('[data-id="mcpCatalog"] .settings-mcp-list');
+    const localStatus = lists[1]?.querySelector(".settings-mcp-status");
+    expect(localStatus?.classList.contains("is-ready")).toBe(false);
     expect(overlay.textContent).toMatch(/follow your Grok account/);
     expect(overlay.textContent).toMatch(/Grok config files/);
     expect(overlay.querySelector(".settings-switch")).toBeNull();
@@ -472,6 +475,28 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.querySelectorAll(".settings-mcp-list .settings-mcp-open")).toHaveLength(0);
     click(h.window, fileOpen);
     expect(h.posted).toContainEqual({ type: "openGlobalConfig" });
+  });
+
+  it("marks an enabled local server ready when its inventory omits health status", () => {
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [{
+        name: "chrome-devtools",
+        source: "local",
+        enabled: true,
+        command: "npx",
+        args: ["chrome-devtools-mcp@latest"],
+      }],
+      warning: "This list is read-only.",
+    });
+    const row = h.doc.querySelector('[data-id="mcpCatalog"] .settings-mcp-list .settings-mcp-server')!;
+    expect(row.querySelector(".settings-mcp-status")?.classList.contains("is-ready")).toBe(true);
+    expect(row.textContent).not.toContain("Disabled");
+    expect(row.textContent).toContain("npx chrome-devtools-mcp@latest");
   });
 
   it("shows Local Open in the section header even when the section is empty", () => {
