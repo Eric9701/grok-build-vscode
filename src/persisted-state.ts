@@ -74,6 +74,12 @@ export const DISK_KEYS: Readonly<Record<string, string>> = {
   // tokens or PATs; those live in HostSecrets). Shared with the desktop host
   // because `~/.mcp-auth` is already machine-wide.
   "grok.mcpConnectors": "mcp-connectors.json",
+  // Routine DEFINITIONS only. Their runs are one file each under
+  // `routine-runs/`, deliberately outside this class: a run record is a claim,
+  // and a claim's whole value is being an uncached atomic create — which is the
+  // opposite of what the cache, the globalState shadow and the rebase-on-write
+  // in here are for. See src/routine-store.ts.
+  "grok.routines": "routines.json",
 };
 
 export class PersistedState {

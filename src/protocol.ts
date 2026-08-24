@@ -28,6 +28,7 @@ import type { Dot } from "./session-pool";
 import type { RunProgressUpdate } from "./run-progress";
 import type { McpServerView } from "./mcp";
 import type { ConnectorView } from "./mcp-connectors";
+import type { RoutineDraft, RoutineModelOption, RoutineProjectOption, RoutineView } from "./routines";
 
 /** grok's tool-call payload as it comes off the wire (acp emits it untyped). The
  *  webview reads a handful of fields; the index signature keeps assignment from
@@ -241,6 +242,24 @@ export type HostMsg =
    *  and key-auth HostSecrets live on the machine running the host). Views
    *  never carry the key. */
   | { type: "mcpConnectors"; connectors: ConnectorView[] }
+  /**
+   * The Routines page, whole. Carries its own pickers rather than leaning on
+   * the chat state, because the VS Code settings TAB loads settings.js and
+   * nothing else — and because `projects` is then filtered by the same
+   * authorization pass that filters `entries`, so a remote cannot be offered a
+   * project it may not reach.
+   *
+   * `error` is the last save/delete refusal, cleared by the next successful
+   * write. Folded in here rather than given its own type, matching `mcpServers`.
+   */
+  | {
+      type: "routines";
+      entries: RoutineView[];
+      projects: RoutineProjectOption[];
+      models: RoutineModelOption[];
+      error?: string;
+      errorId?: string;
+    }
   | { type: "codexInstallProgress"; phase: "downloading" | "verifying" | "installing" | "idle"; receivedBytes?: number; totalBytes?: number; reason?: string }
   /** Plan picker gate. `recheckable` means the version probe failed (not a
    *  verified-old CLI) — the row stays clickable so a later pick re-probes. */
@@ -627,6 +646,16 @@ export type WebviewMsg =
   | { type: "openGlobalConfig" }
   | { type: "openProjectConfig" }
   | { type: "listMcpServers" }
+  /** Open the Routines page — the host answers with a `routines` frame. */
+  | { type: "listRoutines" }
+  /** Create when `id` is absent, replace when it is present. The host
+   *  validates: a draft that cannot run is refused rather than stored. */
+  | { type: "saveRoutine"; id?: string; draft: RoutineDraft }
+  | { type: "deleteRoutine"; id: string }
+  | { type: "setRoutinePaused"; id: string; paused: boolean }
+  /** Fire once, now. Deliberately takes no window key — a manual run must not
+   *  consume the scheduled one. */
+  | { type: "runRoutineNow"; id: string }
   /** Desk-only: OAuth opens a browser; key-auth sends `key` once (never echoed). */
   | { type: "connectMcpConnector"; id: string; key?: string; readOnly?: boolean }
   /** Desk-only: drop the id from our list. Key-auth also deletes the HostSecrets entry. OAuth does not delete ~/.mcp-auth tokens. */
@@ -853,7 +882,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, moveViewHint: true, providerState: true, mcpServers: true, mcpConnectors: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
+  initialState: true, moveViewHint: true, providerState: true, mcpServers: true, mcpConnectors: true, routines: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -877,7 +906,8 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setMode: true, removeChip: true, toggleChip: true, openFile: true, showInFolder: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   addProjectFolder: true, removeProjectFolder: true,
-  openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, moveView: true,
+  openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true,
+  listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,

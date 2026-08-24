@@ -335,6 +335,20 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // and disconnect stay host-local. Mirroring the last fetch is not enough if
   // the desk never opened Settings, so a remote may ask when it opens the page.
   listMcpServers: "view",
+  // Reading the page is a view op. Everything that WRITES is "full": a routine
+  // schedules unattended agent runs, which is the same class as the other host
+  // state a remote may change (pins, archives), not turn control.
+  //
+  // Unlike connectors, these are NOT host-local. A phone is exactly where
+  // someone thinks "I should get a morning brief", and a remote can already
+  // send arbitrary prompts — a routine adds persistence, not reach. Reach is
+  // bounded separately, by `cwd` being checked against the authorized set at
+  // the point of the write.
+  listRoutines: "view",
+  saveRoutine: "full",
+  deleteRoutine: "full",
+  setRoutinePaused: "full",
+  runRoutineNow: "full",
   // OAuth opens a browser on the desk and writes ~/.mcp-auth there. Key-auth
   // pastes a secret into HostSecrets. A phone cannot complete either flow,
   // must never set/read/clear a key, and must not change which tools every
@@ -559,6 +573,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   // look, they cannot Connect/Disconnect (inbound host-local above).
   mcpServers: "allowlist",
   mcpConnectors: "mirror",
+  // Mirrored, but the project-auth pass above trims both cwd-bearing lists
+  // first, so a tab sees only routines and projects it may already reach.
+  routines: "mirror",
   codexInstallProgress: "host-local",
   // Placement is a property of the machine running the extension, and `moveView`
   // is host-local anyway — a remote could neither act on the hint nor need it.
@@ -703,6 +720,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   providerState: "none",
   mcpServers: "none",
   mcpConnectors: "none",
+  routines: "entries",
   codexInstallProgress: "none",
   expandCommandOutputs: "none",
   steerByDefault: "none",
@@ -847,6 +865,15 @@ export function mayDeliverRemoteHostMsg(
     case "none":
       return true;
     case "entries": {
+      // `routines` carries TWO cwd-bearing lists — the rows and the project
+      // picker feeding the form. Checking only `entries` would hand a remote
+      // the name of every project on the machine through the dropdown.
+      if (msg.type === "routines") {
+        return (
+          msg.entries.every((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd)) &&
+          msg.projects.every((p) => cwdIsAuthorized(p.cwd, authorizedCwds, sameCwd))
+        );
+      }
       const entries =
         msg.type === "sessions" || msg.type === "pinnedSessions"
           ? msg.entries
