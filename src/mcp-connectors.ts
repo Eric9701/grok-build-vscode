@@ -82,7 +82,8 @@ export type ConnectorId =
   | "cloudflare"
   | "calendly"
   | "airtable"
-  | "github";
+  | "github"
+  | "zapier";
 
 export interface ConnectorDef {
   id: ConnectorId;
@@ -240,6 +241,18 @@ export const TIER1_CONNECTORS: readonly ConnectorDef[] = [
     auth: "key",
     keyHint: "Paste a GitHub personal access token. Fine-grained tokens are recommended; classic tokens also work.",
     keyDocsUrl: "https://github.com/settings/personal-access-tokens",
+  },
+  {
+    id: "zapier",
+    name: "Zapier",
+    endpoint: "https://mcp.zapier.com/api/v1/connect",
+    // Deliberately describes the shape rather than listing apps: what this
+    // reaches is whatever the user turned on in their own Zapier server, and a
+    // fixed list here would be wrong for everyone the day after it was written.
+    description: "Run the actions you have enabled in your Zapier MCP server — Gmail, Calendar, Slack and the rest.",
+    auth: "key",
+    keyHint: "Open your server's Connect tab in Zapier and generate a token. Zapier shows it once.",
+    keyDocsUrl: "https://mcp.zapier.com/",
   },
 ];
 

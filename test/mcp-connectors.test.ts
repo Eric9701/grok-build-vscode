@@ -71,10 +71,14 @@ describe("Tier-1 connector catalog", () => {
     expect(TIER1_CONNECTORS.find((c) => c.id === "airtable")?.endpoint).toBe("https://mcp.airtable.com/mcp");
     expect(TIER1_CONNECTORS.find((c) => c.id === "github")?.endpoint).toBe(GITHUB_ENDPOINT);
     expect(TIER1_CONNECTORS.find((c) => c.id === "github")?.auth).toBe("key");
+    expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.endpoint).toBe(
+      "https://mcp.zapier.com/api/v1/connect",
+    );
+    expect(TIER1_CONNECTORS.find((c) => c.id === "zapier")?.auth).toBe("key");
     expect(TIER1_CONNECTORS.filter((c) => c.oauthScope).map((c) => c.id)).toEqual(["stripe"]);
-    expect(TIER1_CONNECTORS.filter((c) => c.auth === "key").map((c) => c.id)).toEqual(["github"]);
+    expect(TIER1_CONNECTORS.filter((c) => c.auth === "key").map((c) => c.id)).toEqual(["github", "zapier"]);
     // Append-only walk order: new ids go at the end, not alphabetically.
-    expect(TIER1_CONNECTORS.map((c) => c.id).slice(-3)).toEqual(["calendly", "airtable", "github"]);
+    expect(TIER1_CONNECTORS.map((c) => c.id).slice(-3)).toEqual(["airtable", "github", "zapier"]);
   });
 
   it("resolves calendly and airtable by id with no scope override", () => {
