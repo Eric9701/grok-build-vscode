@@ -298,6 +298,21 @@ describe("the page as a whole", () => {
     expect(posted.filter((m) => m.type === "listRoutines")).toHaveLength(1);
   });
 
+  it("waits rather than claiming there are none (noticed on remote)", () => {
+    // The empty state is an invitation — "create your first routine". Showing
+    // it before the host has answered tells the reader something false at the
+    // one moment they are deciding what to do, and on a phone the frame takes
+    // long enough to see. Empty and unknown are different states.
+    const { root, update } = boot();
+    expect(root.querySelector(".settings-routines-loading")).toBeTruthy();
+    expect(root.textContent).not.toContain("No routines yet");
+    expect(root.querySelector(".settings-routine-new")).toBeNull();
+
+    update({ routines: [] });
+    expect(root.querySelector(".settings-routines-loading")).toBeNull();
+    expect(root.textContent).toContain("No routines yet");
+  });
+
   it("invites rather than announcing emptiness (req 11)", () => {
     const { root, posted } = boot({ routines: [] });
     const copy = root.querySelector(".settings-routines-empty-copy")?.textContent || "";

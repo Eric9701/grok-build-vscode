@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.17.0 — 2026-08-24
+
+### Added
+
+- **Routines.** A prompt, a project, a model, and a cadence — saved once and run on a schedule. Settings → Routines. Each firing opens its own session named after the routine (`[Routine] Morning brief`), so the answer is waiting in the rail rather than needing you to be there when it arrives. The last twenty runs are kept per routine, as a strip you can read at a glance: a run that worked opens its session, one that was skipped says which model was missing, one that failed says why. A daily cadence takes a time of day and holds it through daylight saving; anything shorter runs at most once every fifteen minutes. Routines run while any Grok window is open — this extension, or the desktop app — and nothing runs once they are all closed, which the page says rather than leaving you to discover. On a phone you can create, edit, pause and remove them for any project that phone can already reach.
+- **Zapier connector.** Reaches whatever apps you have added to your own Zapier MCP server — Gmail, Calendar, Slack and thousands more. Sign in through the browser like the other connectors; there is nothing to paste. Build the server and pick its apps in Zapier first, since one with no apps added exposes no tools.
+
+### Fixed
+
+- **A connector that fails to start now says what went wrong.** The report took the last line of the failure, and for anything Node itself throws that line is the version banner — so a broken install surfaced as `Could not connect: Node.js v20.19.0`, which named nothing. It now reports the error.
+- **Every connector's "get a token" link pointed at GitHub.** The address came from the connector; the words next to it were hardcoded, so any connector but GitHub sent you to the wrong place.
+- **Settings no longer jumps back to the top while you are using it.** Anything that refreshed the page — connecting a connector, saving a change — scrolled it to the beginning and moved the row out from under you.
+
 ## 3.16.0 — 2026-08-24
 
 ### Added
