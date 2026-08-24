@@ -57,6 +57,21 @@ describe("CLI startup compatibility", () => {
     expect(sessionStart).toContain("await this.maybeUpdateCliOnUpgrade(cliPath)");
   });
 
+  it("bounds the silent update at 20s and spends it ONCE per extension version", () => {
+    // This runs before the spawn with the composer locked, so its budget is
+    // the user's typing time. It used to get 180s AND leave the marker
+    // unwritten on failure so the next window retried — correct for a Windows
+    // binary lock (instant, free to retry), pathological for an unreachable
+    // x.ai, where a no-op `grok update` costs ~68s and the retry re-charged it
+    // on every window forever (funkpopo, PR #129).
+    expect(update).toContain("execGrokCli(cliPath, args, { timeout: 20_000 })");
+    // No conditional around the marker write: a failed attempt still counts.
+    expect(update).not.toContain("updateFailed");
+    const finallyBlock = update.slice(update.indexOf("} finally {"));
+    expect(finallyBlock).toMatch(/void this\.state\.update\(CLI_UPDATE_VERSION_KEY, current\);/);
+    expect(finallyBlock).not.toMatch(/if\s*\(/);
+  });
+
   it("keeps version gating separate from all update orchestration", () => {
     expect(compatibility).toContain("resolvePlanModeAvailability");
     expect(compatibility).toContain("readCliBinaryIdentity(cliPath)");

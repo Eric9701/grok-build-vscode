@@ -307,7 +307,14 @@ and the update retries once if a lingering lock still slips through.
 
 `maybeUpdateCliOnUpgrade` retains the normal session-start trigger: once per
 activation it compares `CLI_UPDATE_VERSION_KEY`, updating only after an extension
-version change; a fresh install records its baseline without updating. After that,
+version change; a fresh install records its baseline without updating. The update
+is bounded at **20 seconds** and attempted **once per extension version whether or
+not it succeeds** — it is awaited before the spawn with the composer locked, so a
+network that cannot reach `x.ai` (where a no-op `grok update` costs ~68s rather
+than ~0.8s) would otherwise re-charge that wait on every new window forever. A
+skipped update is self-correcting: the version floor and Plan gating still run
+against whatever is installed, and the CLI's own `autoUpdate` catches it up.
+After that,
 every session start reads `grok --version` through `resolvePlanModeAvailability`
 (one short retry when the first read is empty/unparseable, then the last verified
 banner in `grok.cliVersionCache` when that binary's mtime/size still match). A live

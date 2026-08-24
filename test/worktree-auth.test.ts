@@ -518,19 +518,34 @@ describe("worktree validation reads git first", () => {
     expect(body).toMatch(/finally \{\s*this\.worktreeCreateInFlight = false;/);
   });
 
-  it("a failed CLI update does not count as done", () => {
-    // The likeliest failure is transient — on Windows another grok.exe holds
-    // the binary's lock, which is the state a worktree create leaves for a
-    // moment. Recording the version anyway suppressed every retry for the rest
-    // of the release. A `return` in the catch would not fix it: finally runs
-    // on the way out.
+  it("a failed CLI update still counts as this extension version's one attempt", () => {
+    // REVERSED DELIBERATELY (owner's call, PR #129). This used to assert the
+    // opposite — a failed update must not count — because the likeliest failure
+    // is transient: on Windows another grok.exe holds the binary's lock, which
+    // is the state a worktree create leaves for a moment, and recording the
+    // version anyway suppressed every retry for the rest of the release.
+    //
+    // That reasoning only holds for a LOCK, which fails instantly and costs
+    // nothing to retry. It is false for a network that cannot reach x.ai: there
+    // a no-op `grok update` costs ~68s rather than ~0.8s (measured by funkpopo
+    // in mainland China), this call is awaited before the spawn with the
+    // composer locked, and leaving the marker unwritten re-charged that wait to
+    // session startup on EVERY new window, forever. One user paying a
+    // permanent multi-minute startup stall is worse than another missing one
+    // optional update until the next release.
+    //
+    // Losing the lock retry is the accepted cost. It is self-correcting: the
+    // update is optional, the version floor and Plan gating still run against
+    // whatever is installed, and the CLI's own autoUpdate catches it up.
     const src = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
     const start = src.indexOf("private async maybeUpdateCliOnUpgrade");
     const body = src.slice(start, src.indexOf("\n  }", src.indexOf("finally", start)));
-    expect(body).toContain("updateFailed = true;");
-    expect(body).toContain(
-      "if (!updateFailed) void this.state.update(CLI_UPDATE_VERSION_KEY, current);",
-    );
+    expect(body).not.toContain("updateFailed");
+    expect(body).toContain("void this.state.update(CLI_UPDATE_VERSION_KEY, current);");
+    // Unconditional: no flag, no branch guarding the write.
+    expect(body.slice(body.indexOf("} finally {"))).not.toMatch(/if\s*\(/);
+    // And the wait it can cost is bounded to something a person will sit through.
+    expect(body).toContain("{ timeout: 20_000 }");
   });
 
   it("persists the worktree onto the session it created, not whatever is focused", () => {

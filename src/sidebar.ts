@@ -6516,14 +6516,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return this.claudeVersionProbe;
   }
 
-  /** Preserve the original silent-update contract: once per extension upgrade,
-   * from session start, with a fresh install only establishing the baseline. */
+  /** Once per extension upgrade, from session start, with a fresh install only
+   * establishing the baseline. Bounded at 20s and attempted ONCE per extension
+   * version whether or not it succeeds — it blocks the composer, and a network
+   * that cannot reach x.ai would otherwise re-charge that wait on every
+   * window. */
   private async maybeUpdateCliOnUpgrade(cliPath: string): Promise<void> {
     if (this.cliUpdateChecked) return;
     this.cliUpdateChecked = true;
     const current = this.context.extensionVersion;
     const lastSeen = this.state.get<string>(CLI_UPDATE_VERSION_KEY);
-    let updateFailed = false;
     try {
       if (!extensionWasUpgraded(lastSeen, current)) return;
       const policy = grokUpdatePolicy(await this.readGrokVersion(cliPath), process.platform);
@@ -6539,26 +6541,37 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       );
       this.post({ type: "cliUpdating" });
       try {
-        const { stdout, stderr } = await execGrokCli(cliPath, args, { timeout: 180_000 });
+        // 20s, not the 180s the manual update gets. This one is awaited BEFORE
+        // the CLI spawns, with the composer already locked, so every second of
+        // it is a second the user cannot type — and it is optional work: the
+        // installed binary is fine. A no-op `grok update` is ~0.8s where x.ai
+        // is reachable and 68s where it is not (measured by funkpopo behind a
+        // blocked x.ai, PR #129), so a short budget separates the two without
+        // needing to detect which network we are on.
+        const { stdout, stderr } = await execGrokCli(cliPath, args, { timeout: 20_000 });
         if (stdout?.trim()) this.host.appendLine(stdout.trim());
         if (stderr?.trim()) this.host.appendLine(stderr.trim());
       } catch (e) {
-        // A FAILED update must not count as having happened. Recording the
-        // version regardless suppressed every retry for the rest of the
-        // release — and the likeliest reason to fail is transient: on Windows
-        // another grok.exe still holds the binary's lock, which is exactly the
-        // state a worktree create leaves for a moment. Leaving the marker
-        // unwritten means the next window tries again.
-        //
-        // A `return` here would not do it: `finally` runs on the way out.
-        updateFailed = true;
         this.host.appendLine(`grok update failed (continuing with current binary): ${(e as Error).message}`);
       }
     } finally {
-      // Every path except a failed update: nothing to do, policy declined, or
-      // it succeeded. `cliUpdateChecked` still caps this at one attempt per
-      // window, so a failure retries on the next one rather than in a loop.
-      if (!updateFailed) void this.state.update(CLI_UPDATE_VERSION_KEY, current);
+      // ONE attempt per extension version, whatever the outcome.
+      //
+      // This used to leave the marker unwritten on failure so the next window
+      // would retry, reasoning that the likely cause was transient — on Windows
+      // another grok.exe holding the binary's lock, which a worktree create
+      // leaves for a moment. That is true of a lock, which fails instantly and
+      // costs nothing to retry. It is false of an unreachable x.ai: that
+      // failure is persistent, and retrying it charged the full timeout to
+      // session startup on EVERY new window, indefinitely. A user behind a
+      // blocked x.ai paid it forever (funkpopo, PR #129).
+      //
+      // So a failed attempt now counts as the attempt. The cost of being wrong
+      // is small and self-correcting: the update is optional, the version floor
+      // and Plan-mode checks still run against whatever is installed, and the
+      // CLI's own autoUpdate catches it up. The next extension version tries
+      // again.
+      void this.state.update(CLI_UPDATE_VERSION_KEY, current);
     }
   }
 
