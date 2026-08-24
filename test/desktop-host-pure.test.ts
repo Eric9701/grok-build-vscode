@@ -1229,6 +1229,54 @@ describe("app-resource serve policy (no credential leak)", () => {
   });
 });
 
+describe("webview message schema validation — routines", () => {
+  // This validator is a strict allowlist ending in `default: return null`, so
+  // TypeScript does NOT force a new message type to be handled here. The
+  // Routines page shipped without these five and every one of them was dropped
+  // silently on the desktop app: the page rendered, asked for its data, and got
+  // nothing back — empty project and model pickers, no error anywhere.
+  it("lets every routine message through", () => {
+    expect(parseWebviewMsg({ type: "listRoutines" })).toEqual({ type: "listRoutines" });
+    expect(parseWebviewMsg({ type: "deleteRoutine", id: "r1" })?.type).toBe("deleteRoutine");
+    expect(parseWebviewMsg({ type: "runRoutineNow", id: "r1" })?.type).toBe("runRoutineNow");
+    expect(parseWebviewMsg({ type: "setRoutinePaused", id: "r1", paused: true })?.type)
+      .toBe("setRoutinePaused");
+    expect(parseWebviewMsg({
+      type: "saveRoutine",
+      draft: {
+        title: "Morning brief", prompt: "What changed?", cwd: "C:/repo",
+        provider: "grok", model: "grok-4.6",
+        cadence: { every: 6, unit: "hours" },
+      },
+    })?.type).toBe("saveRoutine");
+    // Editing carries an id; creating does not.
+    expect(parseWebviewMsg({ type: "saveRoutine", id: "r1", draft: { title: "x" } })?.type)
+      .toBe("saveRoutine");
+  });
+
+  it("drops malformed routine messages", () => {
+    expect(parseWebviewMsg({ type: "deleteRoutine" })).toBeNull();
+    expect(parseWebviewMsg({ type: "deleteRoutine", id: 7 })).toBeNull();
+    expect(parseWebviewMsg({ type: "setRoutinePaused", id: "r1" })).toBeNull();
+    expect(parseWebviewMsg({ type: "setRoutinePaused", id: "r1", paused: "yes" })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine" })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine", draft: "nope" })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine", id: 7, draft: {} })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine", draft: { title: 7 } })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine", draft: { cadence: "daily" } })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine", draft: { cadence: { every: "six" } } })).toBeNull();
+  });
+
+  it("refuses an absurd prompt at the boundary rather than downstream", () => {
+    // The renderer is untrusted and validateRoutine's cap runs after this gate
+    // has already accepted whatever arrived.
+    const huge = "x".repeat(8000 * 4 + 1);
+    expect(parseWebviewMsg({ type: "saveRoutine", draft: { prompt: huge } })).toBeNull();
+    expect(parseWebviewMsg({ type: "saveRoutine", draft: { prompt: "x".repeat(9000) } })?.type)
+      .toBe("saveRoutine");
+  });
+});
+
 describe("webview message schema validation", () => {
   it("accepts known well-formed messages", () => {
     expect(parseWebviewMsg({ type: "ready" })).toEqual({ type: "ready" });

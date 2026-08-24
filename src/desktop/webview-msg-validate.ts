@@ -14,6 +14,11 @@ import {
   type WebviewMsg,
 } from "../protocol";
 import { MAX_CONNECTOR_KEY_CHARS } from "../mcp-connectors";
+import { ROUTINE_PROMPT_MAX } from "../routines";
+
+/** Generous next to {@link ROUTINE_PROMPT_MAX}: this gate rejects the absurd,
+ *  and validateRoutine does the real trimming once past the boundary. */
+const MAX_ROUTINE_PROMPT_CHARS = ROUTINE_PROMPT_MAX * 4;
 
 const TYPE_SET = new Set<string>(WEBVIEW_MESSAGE_TYPES);
 
@@ -93,6 +98,40 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
         if (!opt(raw.readOnly, isBoolean)) return null;
       }
       break;
+    // Routines. `listRoutines` carries nothing; the writers carry an id, and
+    // `saveRoutine` a draft object whose FIELDS are re-validated host-side by
+    // validateRoutine — this gate only has to establish the shape.
+    case "listRoutines":
+      break;
+    case "deleteRoutine":
+    case "runRoutineNow":
+      if (!isString(raw.id)) return null;
+      break;
+    case "setRoutinePaused":
+      if (!isString(raw.id) || !isBoolean(raw.paused)) return null;
+      break;
+    case "saveRoutine": {
+      if (!opt(raw.id, isString)) return null;
+      if (!isObject(raw.draft)) return null;
+      const draft = raw.draft;
+      if (!opt(draft.title, isString) || !opt(draft.prompt, isString)) return null;
+      if (!opt(draft.cwd, isString) || !opt(draft.provider, isString)) return null;
+      if (!opt(draft.model, isString)) return null;
+      // A prompt is the one unbounded field here, and it crosses an untrusted
+      // bridge before anything caps it. validateRoutine slices to
+      // ROUTINE_PROMPT_MAX, but that runs after this gate has already accepted
+      // whatever arrived, so bound it here too rather than trusting the cap
+      // downstream of the boundary.
+      if (isString(draft.prompt) && draft.prompt.length > MAX_ROUTINE_PROMPT_CHARS) return null;
+      if (isString(draft.title) && draft.title.length > MAX_ROUTINE_PROMPT_CHARS) return null;
+      if (draft.cadence !== undefined) {
+        if (!isObject(draft.cadence)) return null;
+        const cadence = draft.cadence;
+        if (!opt(cadence.every, isNumber) || !opt(cadence.unit, isString)) return null;
+        if (!opt(cadence.at, isString)) return null;
+      }
+      break;
+    }
     case "showLogs":
     case "toggleDevTools":
     case "restartToUpdate":

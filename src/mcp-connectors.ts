@@ -249,9 +249,14 @@ export const TIER1_CONNECTORS: readonly ConnectorDef[] = [
     // Deliberately describes the shape rather than listing apps: what this
     // reaches is whatever the user turned on in their own Zapier server, and a
     // fixed list here would be wrong for everyone the day after it was written.
-    description: "Run the actions you have enabled in your Zapier MCP server — Gmail, Calendar, Slack and the rest.",
+    description: "Run the apps you have added to your own Zapier MCP server — Gmail, Calendar, Slack and thousands more.",
     auth: "key",
-    keyHint: "Open your server's Connect tab in Zapier and generate a token. Zapier shows it once.",
+    // Zapier is two steps, not one. The token identifies a server the user
+    // builds first, and a server with no apps added exposes no tools at all —
+    // so a hint that only mentions the token sends people to an agent that
+    // connects successfully and can do nothing.
+    keyHint:
+      "In Zapier, create an MCP server and add the apps you want the agent to use, then generate a token on its Connect tab. Zapier shows the token once.",
     keyDocsUrl: "https://mcp.zapier.com/",
   },
 ];

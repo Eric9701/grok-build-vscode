@@ -25,6 +25,7 @@ function loadSettings() {
     GROK_CONNECTORS_URL: string;
     ICON_SETTINGS: string;
     CONNECTOR_LOGO_IDS: Record<string, boolean>;
+    keyDocsLabel: (url: string) => string;
     sortConnectorsForDisplay: (connectors: Array<{ name?: string; connected?: boolean }>) => Array<{ name?: string; connected?: boolean }>;
     CONNECTOR_SECTION_HERE: string;
     CONNECTOR_SECTION_GROK: string;
@@ -465,6 +466,17 @@ describe("settings overlay (chat.js)", () => {
     // A provider with no cached model list still offers its default, so an
     // empty picker can only mean no provider at all — never "no model".
     expect(overlay.textContent).not.toContain("No model is connected");
+  });
+
+  it("labels a key connector's docs link from its own URL", () => {
+    // This line was hardcoded to "github.com/settings/personal-access-tokens"
+    // under EVERY key connector, so Zapier told its users to go to GitHub.
+    const api = loadSettings();
+    expect(api.keyDocsLabel("https://mcp.zapier.com/")).toBe("mcp.zapier.com");
+    expect(api.keyDocsLabel("https://github.com/settings/personal-access-tokens"))
+      .toBe("github.com/settings/personal-access-tokens");
+    expect(api.keyDocsLabel("http://example.test/a/b/")).toBe("example.test/a/b");
+    expect(api.keyDocsLabel("")).toBe("");
   });
 
   it("says no PROVIDER is connected when the model list is empty", () => {
