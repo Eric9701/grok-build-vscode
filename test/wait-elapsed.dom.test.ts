@@ -37,14 +37,17 @@ function bootWaiting() {
 const counter = (doc: Document) => doc.querySelector(".grokking-elapsed") as HTMLElement | null;
 
 describe("the waiting indicator counts how long it has been waiting (#126)", () => {
-  it("shows nothing for an ordinary short wait", () => {
+  it("is there from the first frame, with no threshold to cross", () => {
+    // A delay meant nothing was on screen at exactly the moment someone starts
+    // wondering whether the turn is stuck. The row itself only lives from
+    // agentStart to the first content, so on a fast turn it already comes and
+    // goes in about a second — the number adds no churn the row does not have.
     const h = bootWaiting();
     expect(h.doc.querySelector(".grokking")).not.toBeNull();
-    h.advance(19_000);
-    expect(counter(h.doc)).toBeNull();
+    expect(counter(h.doc)!.textContent).toBe("\u00b7 0s");
   });
 
-  it("appears once the wait stops looking normal, and keeps counting", () => {
+  it("keeps counting, in units that stay readable as the wait grows", () => {
     const h = bootWaiting();
     h.advance(21_000);
     expect(counter(h.doc)!.textContent).toBe("\u00b7 21s");
@@ -54,7 +57,6 @@ describe("the waiting indicator counts how long it has been waiting (#126)", () 
 
   it("is hidden from screen readers, because it changes every second", () => {
     const h = bootWaiting();
-    h.advance(25_000);
     expect(counter(h.doc)!.getAttribute("aria-hidden")).toBe("true");
     // The announced label is still the verb alone, not the running number.
     expect(h.doc.querySelector(".grokking")!.getAttribute("aria-label")).not.toMatch(/\d+s/);
