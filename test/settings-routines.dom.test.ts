@@ -314,11 +314,19 @@ describe("the page as a whole", () => {
     expect(save.draft.provider).toBe("grok");
   });
 
-  it("says plainly that nothing runs while every window is closed", () => {
-    const { root } = boot({ routines: [routine()] });
-    expect(root.querySelector(".settings-routines-note")?.textContent).toContain(
-      "Nothing runs while they are all closed",
-    );
+  it("names the host the reader is actually looking at", () => {
+    // "a window is open" named nothing the reader controls, and on a phone —
+    // which never runs routines — it was simply wrong.
+    const { root, api } = boot({ routines: [routine()] });
+    expect(root.querySelector(".settings-routines-note")?.textContent).toContain("this app");
+
+    expect(api.routinesHostNote({ isDesktop: true })).toContain("this app or an editor window");
+    expect(api.routinesHostNote({ isDesktop: false })).toContain("this IDE or the desktop app");
+    // A phone runs nothing itself, so it must not be told to keep a window open.
+    const remote = api.routinesHostNote({ isRemote: true });
+    expect(remote).toContain("on your computer");
+    expect(remote).not.toContain("this app");
+    expect(remote).not.toContain("this IDE");
   });
 });
 

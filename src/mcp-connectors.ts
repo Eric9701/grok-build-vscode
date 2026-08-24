@@ -41,6 +41,18 @@ export const MCP_CONNECTORS_KEY = "grok.mcpConnectors";
  * **Bumping is a deliberate release decision that costs every user one
  * re-authorisation per connector.** That is the point: it is chosen rather than
  * inflicted by an upstream publish.
+ *
+ * **The directory name does NOT track this spec.** Measured 2026-08-24:
+ * `mcp-remote@0.1.37` bundles the literal `"0.1.36"` as its own version, so
+ * `getConfigDir()` returns `~/.mcp-auth/mcp-remote-0.1.36` — an upstream build
+ * mismatch, not ours. The `mcp-remote-0.1.37` directory on that machine held
+ * seven unused tokens from an older build that reported itself correctly.
+ *
+ * Two consequences for whoever bumps this next. The re-auth cost cannot be
+ * predicted from the spec — read the bundled string before promising anything.
+ * And a version whose string is correct moves the directory even if the number
+ * looks adjacent, so 0.1.36 -> 0.1.38 could cost a re-auth that 0.1.36 -> 0.1.37
+ * did not.
  */
 export const MCP_REMOTE_PACKAGE = "mcp-remote@0.1.37";
 

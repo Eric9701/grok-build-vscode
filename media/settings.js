@@ -1999,14 +1999,32 @@
     return wrap;
   }
 
-  function renderRoutines(snapshot) {
+  /**
+   * Who has to be running, said from where the reader is standing.
+   *
+   * "a window is open" named nothing the reader controls. It is also not simply
+   * "this IDE": routines fire if ANY host on the machine is running, so an
+   * editor-only sentence would be wrong whenever the desktop app is up, and on
+   * a phone — which never runs them — it would be wrong always.
+   */
+  function routinesHostNote(env) {
+    if (env && env.isRemote) {
+      return "Routines run on your computer, while the desktop app or an editor window is open.";
+    }
+    if (env && env.isDesktop) {
+      return "Routines run while this app or an editor window is open. Nothing runs once they are all closed.";
+    }
+    return "Routines run while this IDE or the desktop app is open. Nothing runs once they are all closed.";
+  }
+
+  function renderRoutines(snapshot, env) {
     const el = document.createElement("div");
     el.className = "settings-routines";
     el.dataset.id = "routinesList";
 
     const lease = document.createElement("div");
     lease.className = "settings-routines-note";
-    lease.textContent = "Routines run whenever a window is open. Nothing runs while they are all closed.";
+    lease.textContent = routinesHostNote(env);
     el.appendChild(lease);
 
     const routines = Array.isArray(snapshot.routines) ? snapshot.routines : [];
@@ -2175,7 +2193,7 @@
   function renderRow(row, snapshot, env, keyForm) {
     if (row.kind === "mcp") return renderMcpCatalog(snapshot, env);
     if (row.kind === "connectors") return renderConnectorsCatalog(snapshot, env, keyForm);
-    if (row.kind === "routines") return renderRoutines(snapshot);
+    if (row.kind === "routines") return renderRoutines(snapshot, env);
     const el = document.createElement("div");
     el.className = "settings-row";
     el.dataset.id = row.id;
@@ -3184,6 +3202,7 @@
     defaultEnv,
     defaultSnapshot,
     formatRoutineCountdown,
+    routinesHostNote,
     keyDocsLabel,
     routineRunLabel,
     mount,
