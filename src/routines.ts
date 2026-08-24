@@ -98,6 +98,16 @@ export interface RoutineRun {
   outcome: RoutineOutcome;
   /** Session the run opened — the row's link target. */
   sessionId?: string;
+  /**
+   * Project this run actually happened in.
+   *
+   * Recorded per-run rather than read off the routine, because the routine's
+   * project can be edited afterwards: point it at B and every retained A run
+   * would otherwise resolve its session against B, where that session does not
+   * exist. A run record has to describe what happened, not what is configured
+   * now.
+   */
+  cwd?: string;
   /** User-facing reason. Present on `skipped`, `failed` and `interrupted`. */
   detail?: string;
 }

@@ -373,3 +373,57 @@ describe("PersistedState autoName load sweep", () => {
     expect(onDisk.short.autoName).toBe(short);
   });
 });
+
+describe("PersistedState and routines", () => {
+  const routinesFile = `${DIR}/${DISK_KEYS["grok.routines"]}`;
+  const routine = (id: string) => ({
+    id, title: id, prompt: "p", cwd: "C:/repo",
+    provider: "grok", model: "grok-4.6",
+    cadence: { every: 6, unit: "hours" }, createdAt: 1,
+  });
+
+  // Routines are stored as a RECORD MAP keyed by id, never an array. An array
+  // is not a valid value for any disk key, so it is rejected on load and on the
+  // globalState shadow read alike: every routine would silently vanish on the
+  // next restart, which is the whole feature failing quietly.
+  it("survives a restart", async () => {
+    const first = make();
+    await first.state.update("grok.routines", { r1: routine("r1") });
+
+    const second = new PersistedState(new FakeMemento(), DIR, first.fs);
+    const back = second.get<Record<string, unknown>>("grok.routines", {});
+    expect(Object.keys(back)).toEqual(["r1"]);
+  });
+
+  it("refuses an array, which is why the map shape is load-bearing", () => {
+    const { state } = make((fs) => fs.setFile(routinesFile, JSON.stringify([routine("r1")])));
+    // Not a crash, a silent empty — exactly what made this worth a test.
+    expect(state.get<Record<string, unknown>>("grok.routines", {})).toEqual({});
+  });
+
+  // The write path is a three-way merge against the disk snapshot. A map gets
+  // that for free; an array would have clobbered, and only for people running
+  // two editors at once.
+  it("keeps a routine another client added while this one was editing", async () => {
+    const { state, fs } = make((f) =>
+      f.setFile(routinesFile, JSON.stringify({ mine: routine("mine") })),
+    );
+    expect(Object.keys(state.get<Record<string, unknown>>("grok.routines", {}))).toEqual(["mine"]);
+
+    // Another editor writes its own routine before this one saves.
+    fs.setFile(routinesFile, JSON.stringify({ mine: routine("mine"), theirs: routine("theirs") }));
+    await state.update("grok.routines", { mine: routine("mine"), fresh: routine("fresh") });
+
+    const merged = JSON.parse(fs.files.get(routinesFile)!);
+    expect(Object.keys(merged).sort()).toEqual(["fresh", "mine", "theirs"]);
+  });
+
+  it("still deletes", async () => {
+    const { state, fs } = make((f) =>
+      f.setFile(routinesFile, JSON.stringify({ a: routine("a"), b: routine("b") })),
+    );
+    expect(Object.keys(state.get<Record<string, unknown>>("grok.routines", {})).sort()).toEqual(["a", "b"]);
+    await state.update("grok.routines", { a: routine("a") });
+    expect(Object.keys(JSON.parse(fs.files.get(routinesFile)!))).toEqual(["a"]);
+  });
+});

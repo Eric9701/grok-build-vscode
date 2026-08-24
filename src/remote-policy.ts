@@ -1137,6 +1137,34 @@ export function transformHostMsgForRemote(msg: HostMsg, deps: MediaInlineDeps): 
   }
 }
 
+/**
+ * Trim a `routines` frame to what one connection may reach.
+ *
+ * Both lists carry cwds and both must be filtered, but for different reasons.
+ * The ROWS are the routines themselves. The PROJECTS are the form's picker, and
+ * the desk deliberately offers archived projects there — archiving hides a
+ * project from the rail, and a routine is not the rail. Remotes are the other
+ * way round: `remoteAuthorizedCwds` excludes archived projects on purpose, so
+ * archiving revokes remote access to them.
+ *
+ * Those two correct rules compose into a bug if the frame is merely CHECKED:
+ * one archived project anywhere makes `mayDeliverRemoteHostMsg` refuse the
+ * whole page, and a phone then sees nothing at all — including routines in
+ * projects it may perfectly well reach. Filtering first is what keeps the
+ * authorization check a backstop rather than an outage.
+ */
+export function routinesMessageForRemote(
+  msg: Extract<HostMsg, { type: "routines" }>,
+  authorizedCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean,
+): Extract<HostMsg, { type: "routines" }> {
+  return {
+    ...msg,
+    entries: msg.entries.filter((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd)),
+    projects: msg.projects.filter((p) => cwdIsAuthorized(p.cwd, authorizedCwds, sameCwd)),
+  };
+}
+
 /** Fail closed: an `allowlist` type with no rewriter is dropped, not ferried. */
 function allowlistHostMsgForRemote(msg: HostMsg): HostMsg | null {
   if (msg.type === "mcpServers") return projectMcpServersMessageForRemote(msg);

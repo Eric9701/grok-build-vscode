@@ -7,6 +7,7 @@ import {
   allowRemoteRepoTarget,
   bracketRemoteSnapshot,
   mayDeliverRemoteHostMsg,
+  routinesMessageForRemote,
   repoScopeFor,
   sessionForRequest,
   sessionCwdBelongsToRepo,
@@ -300,6 +301,53 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
 
     it("delivers an empty page", () => {
       expect(mayDeliverRemoteHostMsg(frame([], []), open, undefined, same)).toBe(true);
+    });
+
+    describe("routinesMessageForRemote", () => {
+      // The desk offers archived projects in the picker on purpose (archiving
+      // hides a project from the RAIL, and a routine is not the rail), while
+      // `remoteAuthorizedCwds` excludes them on purpose (archiving revokes
+      // remote access). Both rules are right; composed without a filter they
+      // meant one archived project anywhere blanked the whole page on a phone.
+      it("drops what a connection may not reach instead of dropping the page", () => {
+        const full = frame(
+          [routine(open[0]), routine(closed)],
+          [{ cwd: open[0], label: "open" }, { cwd: closed, label: "archived" }],
+        ) as Extract<HostMsg, { type: "routines" }>;
+
+        expect(mayDeliverRemoteHostMsg(full, open, undefined, same)).toBe(false);
+
+        const trimmed = routinesMessageForRemote(full, open, same);
+        expect(trimmed.entries.map((e) => e.cwd)).toEqual([open[0]]);
+        expect(trimmed.projects.map((p) => p.cwd)).toEqual([open[0]]);
+        // And what comes out always survives the gate, so the check stays a
+        // backstop rather than an outage.
+        expect(mayDeliverRemoteHostMsg(trimmed, open, undefined, same)).toBe(true);
+      });
+
+      it("leaves an already-authorized frame alone", () => {
+        const clean = frame([routine(open[0])], [{ cwd: open[0], label: "open" }]) as Extract<
+          HostMsg,
+          { type: "routines" }
+        >;
+        const trimmed = routinesMessageForRemote(clean, open, same);
+        expect(trimmed.entries).toHaveLength(1);
+        expect(trimmed.projects).toHaveLength(1);
+        expect(trimmed.models).toEqual(clean.models);
+      });
+
+      it("yields an empty page rather than nothing when NOTHING is reachable", () => {
+        const none = frame([routine(closed)], [{ cwd: closed, label: "archived" }]) as Extract<
+          HostMsg,
+          { type: "routines" }
+        >;
+        const trimmed = routinesMessageForRemote(none, open, same);
+        expect(trimmed.entries).toEqual([]);
+        expect(trimmed.projects).toEqual([]);
+        // An empty page says "no routines here"; a dropped frame says nothing
+        // at all and leaves the phone on a spinner.
+        expect(mayDeliverRemoteHostMsg(trimmed, open, undefined, same)).toBe(true);
+      });
     });
   });
 

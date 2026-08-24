@@ -57,6 +57,7 @@ import {
   type RoutineRun,
 } from "./routines";
 import { RoutineRunStore } from "./routine-store";
+import { routinesMessageForRemote } from "./remote-policy";
 import { PersistedState } from "./persisted-state";
 import {
   Session,
@@ -771,6 +772,11 @@ export class GrokSidebar {
   private static readonly DEVICE_GLOBAL_REMOTE_TYPES = new Set<HostMsg["type"]>([
     "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "cliUpdating",
     "onboarding", "providerState", "mcpServers", "mcpConnectors", "expandCommandOutputs", "steerByDefault", "soundNotifications",
+    // Device-global, not session-scoped: a phone reading conversation B asked
+    // for the routines page and must get it, even though the desk is focused on
+    // conversation A. Without this, `post` routes the answer through the
+    // FOCUSED session and the requesting tab stays empty for ever.
+    "routines",
     "telemetryEnabled",
     "thumbsFeedback",
   ]);
@@ -807,6 +813,15 @@ export class GrokSidebar {
   private static readonly SETTINGS_PANEL_TYPES = new Set<WebviewMsg["type"]>([
     "openSettingsSurface",
     "closeSettingsSurface",
+    // The standalone VS Code Settings tab is a first-class surface for this
+    // page — it loads settings.js and nothing else. Without these five it
+    // posts `listRoutines`, gets "[settings] ignored", and shows an empty
+    // Routines page with no projects, no models and no way to create one.
+    "listRoutines",
+    "saveRoutine",
+    "deleteRoutine",
+    "setRoutinePaused",
+    "runRoutineNow",
     "setShowThinking",
     "setAppPurpose",
     "setExpandCommandOutputs",
@@ -957,13 +972,27 @@ export class GrokSidebar {
 
   /* ------------------------------------------------------------ routines */
 
+  /**
+   * A record map keyed by id, NOT an array — twice over.
+   *
+   * `PersistedState.validValue` accepts a string or a record map and nothing
+   * else, so an array is rejected on load AND on the globalState shadow read:
+   * every routine would vanish on the next restart. And the write path is a
+   * three-way `mergeRecord` against the disk snapshot, which is what lets two
+   * hosts each add a routine without clobbering each other. An array would have
+   * broken that too, silently, and only for people running two editors.
+   */
   private loadRoutines(): Routine[] {
-    const raw = this.state.get<unknown>(ROUTINES_KEY);
-    return Array.isArray(raw) ? (raw as Routine[]).filter((r) => r && typeof r.id === "string") : [];
+    const raw = this.state.get<Record<string, Routine>>(ROUTINES_KEY, {});
+    return Object.values(raw || {})
+      .filter((r) => r && typeof r.id === "string" && typeof r.cwd === "string")
+      .sort((a, b) => a.createdAt - b.createdAt);
   }
 
   private async saveRoutines(routines: readonly Routine[]): Promise<void> {
-    await this.state.update(ROUTINES_KEY, [...routines]);
+    const map: Record<string, Routine> = {};
+    for (const routine of routines) map[routine.id] = routine;
+    await this.state.update(ROUTINES_KEY, map);
   }
 
   /**
@@ -1022,6 +1051,7 @@ export class GrokSidebar {
         startedAt,
         endedAt: Date.now(),
         outcome,
+        cwd: routine.cwd,
         ...extra,
       });
       this.routineRuns.prune(routine.id);
@@ -1062,6 +1092,7 @@ export class GrokSidebar {
         windowKey,
         startedAt,
         outcome: "running",
+        cwd: routine.cwd,
         ...(sessionId ? { sessionId } : {}),
       });
       this.postRepoCatalog();
@@ -1069,10 +1100,20 @@ export class GrokSidebar {
       this.postRoutines();
 
       await this.handleSend(routine.prompt, false, session, "local");
+      // `handleSend` CATCHES a failed turn — it renders the error and resolves
+      // normally — so awaiting it says nothing about whether the turn worked.
+      // Reporting every one of those as a success would put a green tick on the
+      // strip for a rate-limited run, which is precisely the lie this page
+      // exists to prevent.
+      const failed = session.status === "error";
       // Re-read rather than reusing the id captured above: a session that had
       // to restart mid-start carries a different id by now, and the run must
       // link to the conversation that actually holds the answer.
-      finish("ran", { ...(session.client?.sessionId ? { sessionId: session.client.sessionId } : {}) });
+      finish(failed ? "failed" : "ran", {
+        cwd: routine.cwd,
+        ...(session.client?.sessionId ? { sessionId: session.client.sessionId } : {}),
+        ...(failed ? { detail: "Failed — the turn ended in an error" } : {}),
+      });
     } catch (e) {
       finish("failed", { detail: `Failed — ${(e as Error).message}` });
     }
@@ -1103,7 +1144,7 @@ export class GrokSidebar {
     }));
   }
 
-  private buildRoutinesMessage(): HostMsg {
+  private buildRoutinesMessage(): Extract<HostMsg, { type: "routines" }> {
     const now = Date.now();
     const projects = this.routineProjectOptions();
     const byCwd = new Map(projects.map((p) => [normalizeRepoPath(p.cwd), p]));
@@ -1125,8 +1166,21 @@ export class GrokSidebar {
     };
   }
 
+  /**
+   * Three audiences, two frames.
+   *
+   * The desk (chat webview + the standalone Settings tab) gets everything,
+   * archived projects included. Remotes get the same frame trimmed to what they
+   * may reach — filtered rather than merely checked, so one archived project
+   * cannot blank the whole page for a phone. See `routinesMessageForRemote`.
+   */
   private postRoutines(): void {
-    this.post(this.buildRoutinesMessage());
+    const message = this.buildRoutinesMessage();
+    this.postLocal(message);
+    void this.settingsEditor?.webview.postMessage(message);
+    this.broadcastRemoteDevice(
+      routinesMessageForRemote(message, this.remoteAuthorizedSessionCwds(), pathsEqual),
+    );
   }
 
   /**

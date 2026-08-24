@@ -335,6 +335,84 @@ describe("the countdown", () => {
   });
 });
 
+describe("the three surfaces this page has to reach", () => {
+  // The Routines page renders in the chat overlay, in the standalone VS Code
+  // Settings tab, and on a phone. The render was copied from the connectors
+  // catalog; the ROUTING registration was not, and each of these three is a
+  // separate list that has to name the message or the surface goes dark.
+  const sidebarSrc = readFileSync(
+    fileURLToPath(new URL("../src/sidebar.ts", import.meta.url)),
+    "utf8",
+  );
+
+  function block(marker: string, terminator = "]);"): string {
+    const start = sidebarSrc.indexOf(marker);
+    expect(start, marker).toBeGreaterThan(-1);
+    const end = sidebarSrc.indexOf(terminator, start);
+    expect(end, marker).toBeGreaterThan(start);
+    return sidebarSrc.slice(start, end);
+  }
+
+  it("broadcasts routines device-wide, not down the focused conversation", () => {
+    // Without this the desk's focused conversation decides who gets the page:
+    // a phone reading a DIFFERENT conversation asks for routines and the answer
+    // is routed to tabs holding the focused one, so it never arrives.
+    expect(block("private static readonly DEVICE_GLOBAL_REMOTE_TYPES")).toContain('"routines"');
+  });
+
+  it("accepts every routine message from the standalone Settings tab", () => {
+    // That tab loads settings.js and nothing else. Anything missing here is
+    // answered with "[settings] ignored <type>" and the page cannot function.
+    const body = block("private static readonly SETTINGS_PANEL_TYPES");
+    for (const type of ["listRoutines", "saveRoutine", "deleteRoutine", "setRoutinePaused", "runRoutineNow"]) {
+      expect(body, type).toContain(`"${type}"`);
+    }
+  });
+
+  it("does not report a failed turn as a successful run", () => {
+    // `handleSend` catches a failed turn, renders the error and resolves
+    // normally, so awaiting it says nothing about whether the turn worked.
+    // Without this check a rate-limited run gets a green tick — the exact lie
+    // the run strip exists to prevent.
+    const body = block("private async runRoutine(", "\n  }\n\n  /** Connected models");
+    expect(body).toContain('session.status === "error"');
+    expect(body).not.toMatch(/finish\("ran"\)/);
+  });
+
+  it("posts the page to the settings tab and a trimmed copy to remotes", () => {
+    const body = block("private postRoutines(): void", "\n  }");
+    expect(body).toContain("this.settingsEditor?.webview.postMessage");
+    expect(body).toContain("routinesMessageForRemote");
+    // Not the blanket post(): the desk frame carries archived projects that a
+    // remote may not see, so the two audiences get different frames.
+    expect(body).not.toContain("this.post(message)");
+  });
+});
+
+describe("a run remembers its own project", () => {
+  it("links through the run's cwd, not the routine's current one (finding 6)", () => {
+    // Repointing a routine at another project must not break the links to what
+    // already ran there.
+    const moved = routine({ cwd: "C:/new-project" });
+    moved.runs = [
+      { routineId: "r1", windowKey: "i2", startedAt: Date.now(), outcome: "ran", sessionId: "s-2", cwd: "C:/repo" },
+    ] as never;
+    const { root, posted } = boot({ routines: [moved] });
+    click(root.querySelector(".settings-routine-toggle"));
+    click(root.querySelector(".settings-routine-open"));
+    expect(posted.find((m) => m.type === "resumeSession")).toEqual({
+      type: "resumeSession", id: "s-2", cwd: "C:/repo",
+    });
+  });
+
+  it("falls back to the routine's project for a run recorded before this existed", () => {
+    const { root, posted } = boot({ routines: [routine()] });
+    click(root.querySelector(".settings-routine-toggle"));
+    click(root.querySelector(".settings-routine-open"));
+    expect((posted.find((m) => m.type === "resumeSession") as any).cwd).toBe("C:/repo");
+  });
+});
+
 describe("style pins", () => {
   it("carries run state in shape as well as hue", () => {
     // A greyscale screenshot and a colourblind reader both have to be able to
