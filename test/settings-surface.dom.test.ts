@@ -431,6 +431,53 @@ describe("settings overlay (chat.js)", () => {
     ]));
   });
 
+  it("carries the routines frame through chat.js into the Routines page", () => {
+    // The whole point of going through chat.js: settings.js is a VIEW over a
+    // snapshot that chat.js builds, and `settingsSnapshot()` is a hand-written
+    // field list. A message can be handled, stored on `state`, and still never
+    // reach the page — which is exactly what happened. Mounting settings.js
+    // directly with a hand-built snapshot cannot see that gap, so this test
+    // takes the same route the product does.
+    const h = bootWebview();
+    seedChat(h);
+    openSettings(h);
+    clickSettingsNav(h, "Routines");
+    expect(h.posted).toContainEqual({ type: "listRoutines" });
+
+    dispatch(h.window, {
+      type: "routines",
+      entries: [],
+      projects: [{ cwd: "/w", label: "workspace" }],
+      models: [
+        { provider: "grok", model: "", label: "Grok default" },
+        { provider: "claude", model: "claude-opus-5", label: "Claude Opus 5" },
+      ],
+    });
+
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.textContent).toContain("No routines yet");
+    click(h.window, overlay.querySelector(".settings-routine-new")!);
+
+    const projects = [...overlay.querySelectorAll('[data-field="cwd"] option')].map((o) => o.textContent);
+    expect(projects).toEqual(["workspace"]);
+    const models = [...overlay.querySelectorAll('[data-field="model"] option')].map((o) => o.textContent);
+    expect(models).toEqual(["Grok default", "Claude Opus 5"]);
+    // A provider with no cached model list still offers its default, so an
+    // empty picker can only mean no provider at all — never "no model".
+    expect(overlay.textContent).not.toContain("No model is connected");
+  });
+
+  it("says no PROVIDER is connected when the model list is empty", () => {
+    const h = bootWebview();
+    seedChat(h);
+    openSettings(h);
+    clickSettingsNav(h, "Routines");
+    dispatch(h.window, { type: "routines", entries: [], projects: [], models: [] });
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    click(h.window, overlay.querySelector(".settings-routine-new")!);
+    expect(overlay.textContent).toContain("No provider connected");
+  });
+
   it("loads a read-only Grok inventory on the Connectors page and marks managed servers", () => {
     const h = bootWebview();
     seedChat(h, { capabilities: { mcpSettings: true } });

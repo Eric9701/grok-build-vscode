@@ -1082,7 +1082,9 @@ export class GrokSidebar {
         finish("failed", { detail: "Failed — the agent could not start" });
         return;
       }
-      await this.switchModel(routine.model, session, undefined, routine.provider);
+      // Empty means "this agent's default" — the session already has it, and
+      // asking to switch TO nothing is not a request the picker can serve.
+      if (routine.model) await this.switchModel(routine.model, session, undefined, routine.provider);
       // Recorded BEFORE the turn: the session exists and is the run's result
       // even if the prompt errors, and a link to a half-finished conversation
       // beats a run with nothing to open.
@@ -1124,16 +1126,21 @@ export class GrokSidebar {
     // `usableProviders`, not merely connected: a provider that cannot answer
     // must not be offerable, or a routine saves against a model that will skip
     // every time it fires.
+    // Keep the `defaultImplied` rows, which carry an EMPTY modelId on purpose:
+    // a provider whose model list has not been fetched yet still contributes
+    // "<Provider> default", meaning "whatever that agent picks". Filtering on a
+    // non-empty modelId dropped every one of them, so a fresh desktop — where
+    // nothing has opened the model picker and the cache is empty — offered no
+    // models at all and read as "nothing is connected". An empty model is a
+    // valid routine: it means the same as not choosing one in the composer.
     return modelsForConnectedProviders(
       this.usableProviders(),
       this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {}),
-    )
-      .filter((m) => !!m.modelId)
-      .map((m) => ({
-        provider: m.provider,
-        model: m.modelId,
-        label: m.name || m.modelId,
-      }));
+    ).map((m) => ({
+      provider: m.provider,
+      model: m.modelId,
+      label: m.name || m.modelId,
+    }));
   }
 
   private routineProjectOptions(): RoutineProjectOption[] {
