@@ -247,6 +247,62 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
     ).toBe(true);
   });
 
+  describe("the routines frame", () => {
+    // Same class of bug as the `message-cwd` one above, mirrored: `entries` was
+    // hardcoded to sessions/pinnedSessions and returned [] for anything else,
+    // so a newly-classified type would `.every()` over nothing and pass. That
+    // fails OPEN rather than closed, which is the worse direction.
+    const routine = (cwd: string) => ({
+      id: "r1", title: "Brief", prompt: "p", cwd,
+      provider: "grok" as const, model: "grok-4.6",
+      cadence: { every: 6, unit: "hours" as const },
+      createdAt: 0, cadenceLabel: "Every 6 hours", nextRunAt: 0,
+      runs: [], health: { ran: 0, skipped: 0, failed: 0, total: 0 },
+      projectLabel: "open",
+    });
+    const frame = (entries: ReturnType<typeof routine>[], projects: { cwd: string; label: string }[]) =>
+      ({ type: "routines", entries, projects, models: [] }) as never;
+
+    it("delivers routines for an authorized project", () => {
+      expect(
+        mayDeliverRemoteHostMsg(frame([routine(open[0])], [{ cwd: open[0], label: "open" }]), open, undefined, same),
+      ).toBe(true);
+    });
+
+    it("refuses a routine that names a project this tab may not reach", () => {
+      expect(
+        mayDeliverRemoteHostMsg(frame([routine(closed)], [{ cwd: open[0], label: "open" }]), open, undefined, same),
+      ).toBe(false);
+    });
+
+    it("refuses when only the PICKER names an unreachable project", () => {
+      // The rows are all fine here. Checking `entries` alone would pass this
+      // and hand the phone the name of every project on the machine through
+      // the dropdown — which is a leak with no row attached to it.
+      expect(
+        mayDeliverRemoteHostMsg(
+          frame([routine(open[0])], [{ cwd: open[0], label: "open" }, { cwd: closed, label: "secret" }]),
+          open,
+          undefined,
+          same,
+        ),
+      ).toBe(false);
+    });
+
+    it("refuses a routine carrying no cwd at all", () => {
+      // Unlike the session lists, an empty cwd is not a legitimate state here:
+      // every routine has a project by construction, so a blank one is
+      // malformed and must not be treated as "nothing to check".
+      expect(
+        mayDeliverRemoteHostMsg(frame([routine("")], []), open, undefined, same),
+      ).toBe(false);
+    });
+
+    it("delivers an empty page", () => {
+      expect(mayDeliverRemoteHostMsg(frame([], []), open, undefined, same)).toBe(true);
+    });
+  });
+
   it("still refuses a file-browser answer for a project that has since closed", () => {
     // The whole point of classifying them `message-cwd`: the request was let in
     // while the project was open, and the answer must be re-checked against the
