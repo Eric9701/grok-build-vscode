@@ -870,8 +870,13 @@ export function mayDeliverRemoteHostMsg(
       // the name of every project on the machine through the dropdown.
       if (msg.type === "routines") {
         return (
-          msg.entries.every((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd)) &&
-          msg.projects.every((p) => cwdIsAuthorized(p.cwd, authorizedCwds, sameCwd))
+          msg.entries.every(
+            (e) =>
+              cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd) &&
+              // A retained run can name a project the routine no longer points
+              // at, so the entry's own cwd does not vouch for it.
+              e.runs.every((run) => !run.cwd || cwdIsAuthorized(run.cwd, authorizedCwds, sameCwd)),
+          ) && msg.projects.every((p) => cwdIsAuthorized(p.cwd, authorizedCwds, sameCwd))
         );
       }
       const entries =
@@ -1160,9 +1165,39 @@ export function routinesMessageForRemote(
 ): Extract<HostMsg, { type: "routines" }> {
   return {
     ...msg,
-    entries: msg.entries.filter((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd)),
+    entries: msg.entries
+      .filter((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd))
+      .map((e) => ({ ...e, runs: e.runs.map((run) => redactRun(run, authorizedCwds, sameCwd)) })),
     projects: msg.projects.filter((p) => cwdIsAuthorized(p.cwd, authorizedCwds, sameCwd)),
   };
+}
+
+/**
+ * A run whose own project is out of reach keeps only the fact that it happened.
+ *
+ * A routine's project can be edited, so its retained runs can name a DIFFERENT
+ * project from the one it points at now — and that older project may since have
+ * been archived, which is how a remote loses access to it. Filtering the
+ * routine's current cwd is then not enough: the entry passes under its new
+ * project while a retained run still carries the old path, its session id, and
+ * a `detail` string that may quote either.
+ *
+ * Redacted rather than dropped, because the run DID happen and the health count
+ * beside it is computed host-side from the full list. Removing the row would
+ * make the strip disagree with its own total; blanking its identity leaves the
+ * strip honest and the tick simply unclickable, which is what it should be when
+ * it points somewhere this connection may not go.
+ */
+function redactRun<T extends { cwd?: string; sessionId?: string; detail?: string }>(
+  run: T,
+  authorizedCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean,
+): T {
+  // No cwd at all is a record written before runs carried one. Its session
+  // resolves against the routine's current project, which is already checked.
+  if (!run.cwd || cwdIsAuthorized(run.cwd, authorizedCwds, sameCwd)) return run;
+  const { cwd: _cwd, sessionId: _sessionId, detail: _detail, ...rest } = run;
+  return rest as T;
 }
 
 /** Fail closed: an `allowlist` type with no rewriter is dropped, not ferried. */
