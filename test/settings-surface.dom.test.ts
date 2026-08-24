@@ -485,6 +485,28 @@ describe("settings overlay (chat.js)", () => {
     expect(after.scrollTop).toBe(420);
   });
 
+  it("shows a quota refusal on the Routines page, not only in the transcript", () => {
+    // A quota-refused save never reaches the host, so the host never answers.
+    // The relay bounces a plain `error`, which renders in the transcript —
+    // behind the settings overlay. At the paywall that made Create look like it
+    // did nothing, which is the worst possible moment to be silent.
+    const h = bootWebview();
+    seedChat(h);
+    openSettings(h);
+    clickSettingsNav(h, "Routines");
+    dispatch(h.window, { type: "routines", entries: [], projects: [{ cwd: "/w", label: "w" }], models: [{ provider: "grok", model: "", label: "Grok default" }] });
+
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    click(h.window, overlay.querySelector(".settings-routine-new")!);
+    click(h.window, overlay.querySelector(".settings-routine-save")!);
+
+    dispatch(h.window, { type: "error", text: "Free plan limit reached (100 messages this week). Resets in 3d." });
+
+    expect(overlay.textContent).toContain("Free plan limit reached");
+    // And the form stays put, so the typed prompt is not lost.
+    expect(overlay.querySelector(".settings-routine.is-new")).toBeTruthy();
+  });
+
   it("labels a key connector's docs link from its own URL", () => {
     // This line was hardcoded to "github.com/settings/personal-access-tokens"
     // under EVERY key connector, so Zapier told its users to go to GitHub.
