@@ -949,7 +949,12 @@ export function connectOutputLooksSuccessful(output: string): boolean {
 
 const CONNECT_LOG_PREFIX =
   /^(?:Connection error|Error from remote server|Error from local client|Authorization error):\s+/i;
-const CONNECT_ERROR_TEXT = /(?:[A-Za-z_$][\w$]*Error|Error):\s+\S/;
+// Node's own crashes read `Error [ERR_MODULE_NOT_FOUND]: …` — a bracketed
+// code between the name and the colon, which the original pattern missed.
+// That is how a broken npx install surfaced as "Could not connect: Node.js
+// v20.19.0": the only informative line did not match, so the fallback took
+// the last line, which is Node's version footer.
+const CONNECT_ERROR_TEXT = /(?:[A-Za-z_$][\w$]*Error|Error)(?:\s+\[[^\]]+\])?:\s+\S/;
 
 function normalizeConnectLine(line: string): string {
   return line
@@ -961,6 +966,14 @@ function normalizeConnectLine(line: string): string {
 function isConnectStackNoise(line: string): boolean {
   if (!line) return true;
   if (/^npm\s+warn/i.test(line)) return true;
+  // The footer Node prints after an uncaught exception. Never a diagnosis, and
+  // being the LAST line it beat every real message to the fallback.
+  if (/^Node\.js\s+v?\d+\./i.test(line)) return true;
+  // The rest of that footer: the caret rule, the closing brace of the dumped
+  // error object, and its `code:` / `errno:` fields.
+  if (/^\^+$/.test(line)) return true;
+  if (/^[}\])]+,?$/.test(line)) return true;
+  if (/^(?:code|errno|syscall|requireStack):\s/.test(line)) return true;
   if (/^at\s+/.test(line)) return true;
   if (/^file:\/\//i.test(line)) return true;
   if (/file:\/\//i.test(line) && !CONNECT_ERROR_TEXT.test(line)) return true;

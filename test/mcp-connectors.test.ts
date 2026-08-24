@@ -48,6 +48,43 @@ function assertNoSecretMaterial(value: unknown, planted = PLANTED_PAT) {
   expect(json).not.toMatch(/Bearer ghp_/);
 }
 
+describe("a broken npx install must name itself", () => {
+  // Verbatim from a real failure: `open@10.2.0` reached the npx cache without
+  // its `wsl-utils` dependency, so every OAuth connector died here. The user
+  // saw "Could not connect: Node.js v20.19.0" — the LAST line, and the only
+  // one carrying no information at all.
+  const CRASH = [
+    "node:internal/modules/esm/resolve:873",
+    "  throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);",
+    "        ^",
+    "",
+    "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'wsl-utils' imported from /npm-cache/_npx/open/index.js",
+    "    at packageResolve (node:internal/modules/esm/resolve:873:9)",
+    "    at moduleResolve (node:internal/modules/esm/resolve:946:18)",
+    "  code: 'ERR_MODULE_NOT_FOUND'",
+    "}",
+    "",
+    "Node.js v20.19.0",
+  ].join("\n");
+
+  it("reports the module error, not Node's version footer", () => {
+    const summary = summarizeConnectOutput(CRASH);
+    expect(summary).toContain("ERR_MODULE_NOT_FOUND");
+    expect(summary).toContain("wsl-utils");
+    expect(summary).not.toContain("Node.js v20.19.0");
+  });
+
+  it("never falls back to the crash footer's furniture", () => {
+    for (const noise of ["Node.js v20.19.0", "^", "}", "code: 'ERR_MODULE_NOT_FOUND'"]) {
+      expect(summarizeConnectOutput(noise), noise).toBe("");
+    }
+  });
+
+  it("still reports a plain Error: line", () => {
+    expect(summarizeConnectOutput("TypeError: fetch failed")).toContain("fetch failed");
+  });
+});
+
 describe("Tier-1 connector catalog", () => {
   it("ships only vendor-documented HTTPS endpoints and unique ids", () => {
     const ids = TIER1_CONNECTORS.map((c) => c.id);

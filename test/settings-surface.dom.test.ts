@@ -468,6 +468,23 @@ describe("settings overlay (chat.js)", () => {
     expect(overlay.textContent).not.toContain("No model is connected");
   });
 
+  it("keeps the scroll position when a host frame repaints the page", () => {
+    // Every repaint rebuilds the whole surface. Clicking Connect makes the host
+    // answer with a fresh mcpConnectors frame, and without this the row the
+    // user just clicked jumps off the top of the screen.
+    const h = bootWebview();
+    seedChat(h, { capabilities: { mcpSettings: true } });
+    openSettings(h);
+    clickSettingsNav(h, "Connectors");
+    const body = h.doc.querySelector("#settings-overlay .settings-body") as HTMLElement;
+    expect(body).toBeTruthy();
+    Object.defineProperty(body, "scrollTop", { value: 420, writable: true, configurable: true });
+
+    dispatch(h.window, { type: "mcpConnectors", connectors: [] });
+    const after = h.doc.querySelector("#settings-overlay .settings-body") as HTMLElement;
+    expect(after.scrollTop).toBe(420);
+  });
+
   it("labels a key connector's docs link from its own URL", () => {
     // This line was hardcoded to "github.com/settings/personal-access-tokens"
     // under EVERY key connector, so Zapier told its users to go to GitHub.

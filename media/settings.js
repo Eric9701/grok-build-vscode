@@ -2307,6 +2307,8 @@
     let providersChecked = false;
     let mcpChecked = false;
     let routinesChecked = false;
+    let lastPaintedCategory = "";
+    let lastPaintedQuery = "";
     const post = typeof opts.post === "function" ? opts.post : () => {};
     const apply = typeof opts.apply === "function" ? opts.apply : null;
     const onLocal = typeof opts.onLocal === "function" ? opts.onLocal : null;
@@ -2502,6 +2504,18 @@
         : visibleRows(snapshot, env).filter((row) => row.category === categoryId);
       const matchedCats = new Set(rows.map((row) => row.category));
 
+      // Every repaint rebuilds the whole surface, which puts the scroll back at
+      // the top. That is fine on a category switch and wrong on everything
+      // else: clicking Connect, saving a routine or any host frame arriving
+      // repaints, and the row the user was working on jumps off screen.
+      // Category and search deliberately DO reset — a new list starts at its
+      // beginning.
+      const keptScroll = categoryId === lastPaintedCategory && query === lastPaintedQuery
+        ? (container.querySelector(".settings-body") || {}).scrollTop || 0
+        : 0;
+      lastPaintedCategory = categoryId;
+      lastPaintedQuery = query;
+
       container.innerHTML = "";
       const shell = document.createElement("div");
       shell.className = "settings-shell";
@@ -2695,6 +2709,12 @@
       shell.appendChild(nav);
       shell.appendChild(main);
       container.appendChild(shell);
+      if (keptScroll) {
+        const body = container.querySelector(".settings-body");
+        // Clamped by the browser if the content got shorter, which is the
+        // honest outcome — better than snapping to the top.
+        if (body) body.scrollTop = keptScroll;
+      }
 
       search.oninput = () => {
         query = search.value;
