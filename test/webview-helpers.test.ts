@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters, partitionHistoryCards } from "../media/webview-helpers.js";
+import { formatWaitElapsed, WAIT_ELAPSED_AFTER_MS, looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelPickerLabel, modelDisplayName, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, createPendingOverlay, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters, partitionHistoryCards } from "../media/webview-helpers.js";
 import { Window } from "happy-dom";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
@@ -1775,5 +1775,34 @@ describe("partitionHistoryCards", () => {
     const { inChunk, rest } = partitionHistoryCards(cards, 1340, 1380);
     expect(inChunk.map((c: { text: string }) => c.text)).toEqual(["start"]);
     expect(rest.map((c: { text: string }) => c.text)).toEqual(["early", "mid", "end", "unpositioned"]);
+  });
+});
+
+describe("formatWaitElapsed", () => {
+  it("FLOORS, so it never shows time that has not passed", () => {
+    // Rounding would read 25s at 24.9s. A counter may lag reality; it may not
+    // run ahead of it.
+    expect(formatWaitElapsed(24_900)).toBe("24s");
+    expect(formatWaitElapsed(0)).toBe("0s");
+    expect(formatWaitElapsed(59_999)).toBe("59s");
+  });
+
+  it("switches to minutes and hours so a long stall stays readable", () => {
+    // The reason the hour tier exists: promptAbsoluteTimeoutMs is 24h, so a
+    // seconds-only counter would end up reading "86399s".
+    expect(formatWaitElapsed(60_000)).toBe("1m 0s");
+    expect(formatWaitElapsed(1_847_000)).toBe("30m 47s");
+    expect(formatWaitElapsed(3_600_000)).toBe("1h 0m");
+    expect(formatWaitElapsed(9_000_000)).toBe("2h 30m");
+  });
+
+  it("returns '' rather than NaN for junk", () => {
+    for (const bad of [undefined, null, "20000", NaN, Infinity, -1]) {
+      expect(formatWaitElapsed(bad as never)).toBe("");
+    }
+  });
+
+  it("keeps the threshold long enough that ordinary turns show nothing", () => {
+    expect(WAIT_ELAPSED_AFTER_MS).toBeGreaterThanOrEqual(10_000);
   });
 });
