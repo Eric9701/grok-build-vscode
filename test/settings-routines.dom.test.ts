@@ -44,7 +44,10 @@ function routine(over: Record<string, unknown> = {}) {
     cadence: { every: 6, unit: "hours" },
     createdAt: NOW - 3600_000,
     cadenceLabel: "Every 6 hours",
-    nextRunAt: NOW + 42 * 60_000,
+    // RELATIVE to real time, not to the fixed NOW below. The countdown is
+    // rendered against `Date.now()`, so a pinned timestamp quietly expires —
+    // this test passed all morning and started failing at 12:42 UTC.
+    nextRunAt: Date.now() + 42 * 60_000,
     projectLabel: "grok-remote",
     // Newest first, as the host sends them. Three DIFFERENT outcomes on
     // purpose: a symmetric fixture cannot tell a reversed strip from a correct
