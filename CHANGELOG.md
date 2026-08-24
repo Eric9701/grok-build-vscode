@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.16.0 — 2026-08-24
+
+### Added
+
+- **The waiting indicator says how long it has been waiting.** *Grokking* now carries a running count from the moment it appears — `Grokking · 4m 12s`. A turn has no deadline you can see (the extension tolerates 30 minutes of CLI silence before giving up, deliberately, so a long healthy turn is never killed as if it were stuck), which meant "working" and "wedged" looked identical. The count says nothing about whether anything is wrong, only how long the wait has lasted.
+
+### Fixed
+
+- **A slow network no longer holds up every session start.** The silent CLI update that runs once after an extension upgrade could block the composer for up to three minutes, and a failure left it to be retried on the *next* window — so where `x.ai` is unreachable, every new window paid that stall again, indefinitely. It now gets 20 seconds and one attempt per extension version. The update is optional; if it can't finish quickly the session starts on the CLI you already have. Thanks to [@funkpopo](https://github.com/funkpopo), whose measurements from a network that can't reach `x.ai` found this ([#129](https://github.com/phuryn/grok-build-vscode/pull/129)).
+- **A local connector that reports no health status is no longer shown as unavailable.** Servers declared in your Grok config files often report that they are enabled without a health field, and only an explicit `ready` earned the green dot — so a working server looked exactly like a broken one, on a row with nothing to click. Thanks to [@funkpopo](https://github.com/funkpopo) ([#128](https://github.com/phuryn/grok-build-vscode/pull/128)).
+- **A connector that recovered stops showing as failed.** A server's error message was never cleared once reported, so a connector that failed once kept that error for the rest of the session and its row stayed red even after it came back. A later status report now supersedes it. Connector status is also honest on the phone now: the error text deliberately stays on your machine (it can quote a launch command), but the fact of a failure travels, so a broken server no longer reads as ready there.
+- **The Windows desktop installer builds again.** The telemetry identity added in 3.15.0 was passed to the packager as a bare argument, and PowerShell split it in two — so the Windows leg of the release failed while macOS succeeded, and v3.15.0 shipped without a `.exe` until it was rebuilt.
+
 ## 3.15.0 — 2026-08-23
 
 ### Added
