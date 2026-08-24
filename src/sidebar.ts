@@ -1144,9 +1144,14 @@ export class GrokSidebar {
   }
 
   private routineProjectOptions(): RoutineProjectOption[] {
+    // Archived projects stay in this list on purpose. Archiving hides a project
+    // from the RAIL; a routine is not the rail, and one already scheduled
+    // against an archived project must keep running. `resolveLocalRepoTarget`
+    // does not filter on `archived` either, so the run path agrees.
     return this.localRepoCatalogEntries().map((entry) => ({
       cwd: entry.cwd,
       label: entry.label,
+      defaultProvider: this.defaultProviderForProject(entry.cwd),
       ...(entry.archived ? { archived: true } : {}),
     }));
   }

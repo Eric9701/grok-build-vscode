@@ -427,6 +427,13 @@ export function interruptStaleRuns(runs: readonly RoutineRun[], now: number): Ro
 export interface RoutineProjectOption {
   cwd: string;
   label: string;
+  /**
+   * Provider a fresh conversation in this project would use — the same value
+   * the rail puts on its rows. The form picks the first model of this provider,
+   * so creating a routine lands where the composer would have, instead of on
+   * whichever model the catalog happened to list first.
+   */
+  defaultProvider?: AcpProvider;
   /** Archived projects stay selectable at the desk — the rail hides them, and
    *  a routine is not the rail. They never reach a remote at all, because the
    *  authorized set already excludes them. */

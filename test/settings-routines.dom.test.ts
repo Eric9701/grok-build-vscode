@@ -70,7 +70,19 @@ function boot(snapshotOver: Record<string, unknown> = {}) {
   const root = doc.createElement("div");
   doc.body.appendChild(root);
   const posted: Array<Record<string, unknown>> = [];
-  api.mount(root, {
+  const env = api.defaultEnv({ isRemote: false, isDesktop: true, providersKnown: true });
+  const baseSnapshot = (over: Record<string, unknown>) => api.defaultSnapshot({
+    routineProjects: [
+      { cwd: "C:/repo", label: "grok-remote" },
+      { cwd: "C:/old", label: "notes", archived: true },
+    ],
+    routineModels: [
+      { provider: "grok", model: "grok-4.6", label: "Grok 4.6" },
+      { provider: "claude", model: "claude-opus-5", label: "Claude Opus 5" },
+    ],
+    ...over,
+  });
+  const surface = api.mount(root, {
     snapshot: api.defaultSnapshot({
       routineProjects: [
         { cwd: "C:/repo", label: "grok-remote" },
@@ -87,7 +99,9 @@ function boot(snapshotOver: Record<string, unknown> = {}) {
     category: "routines",
     post: (msg: Record<string, unknown>) => posted.push(msg),
   });
-  return { api, doc, root, posted, window };
+  /** Push a new snapshot exactly as chat.js does after a host frame arrives. */
+  const update = (over: Record<string, unknown>) => surface.update(baseSnapshot(over), env);
+  return { api, doc, root, posted, window, update };
 }
 
 function click(el: Element | null): void {
@@ -241,7 +255,7 @@ describe("writing", () => {
   it("fires an explicit run", () => {
     const { root, posted } = boot({ routines: [routine()] });
     click(root.querySelector(".settings-routine-toggle"));
-    click(root.querySelector(".settings-routine-run"));
+    click(root.querySelector(".settings-routine-run-now"));
     expect(posted.find((m) => m.type === "runRoutineNow")).toEqual({
       type: "runRoutineNow", id: "r1",
     });
@@ -410,6 +424,117 @@ describe("a run remembers its own project", () => {
     click(root.querySelector(".settings-routine-toggle"));
     click(root.querySelector(".settings-routine-open"));
     expect((posted.find((m) => m.type === "resumeSession") as any).cwd).toBe("C:/repo");
+  });
+});
+
+describe("things only a real layout engine caught", () => {
+  // All three shipped past the DOM tests in this file, because happy-dom has no
+  // layout: it will not tell you a control clipped, a label wrapped, or that a
+  // grid meant for one element is being applied to another.
+  it("gives Run now a class the run-log grid cannot claim", () => {
+    // Both the button and each log ROW were `.settings-routine-run`, so the
+    // row's `grid-template-columns: 10px 104px …` laid out the button and split
+    // "Run now" across two cells.
+    const { root } = boot({ routines: [routine()] });
+    click(root.querySelector(".settings-routine-toggle"));
+    const btn = root.querySelector(".settings-routine-run-now");
+    expect(btn).toBeTruthy();
+    expect(btn!.className).not.toMatch(/settings-routine-run(\s|$)/);
+    expect(settingsCss).toMatch(/\.settings-routine-foot \.settings-action\s*\{[^}]*white-space:\s*nowrap/s);
+  });
+
+  it("keeps the time control from being squeezed below its own text", () => {
+    // `.settings-routine-input` sets min-width: 0, which inside the cadence
+    // flex row let "09:00 AM" and its clock icon clip on a narrow window.
+    expect(settingsCss).toMatch(/\.settings-routine-time\s*\{[^}]*flex:\s*0 0 auto/s);
+    expect(settingsCss).toMatch(/\.settings-routine-time\s*\{[^}]*min-width:\s*8\.5rem/s);
+  });
+});
+
+describe("creating a routine", () => {
+  it("closes the form once the host confirms the save", () => {
+    // Left open with the same text, the obvious next act is to press Create
+    // again — and that is a duplicate routine on a schedule.
+    const { root, update } = boot({ routines: [] });
+    click(root.querySelector(".settings-routine-new"));
+    expect(root.querySelector(".settings-routine.is-new")).toBeTruthy();
+    click(root.querySelector(".settings-routine-save"));
+
+    // The host answers every write with a fresh frame; one with no error means
+    // the write landed.
+    update({ routines: [routine()] });
+    expect(root.querySelector(".settings-routine.is-new")).toBeNull();
+  });
+
+  it("keeps the form open when the host refuses", () => {
+    const { root, update } = boot({ routines: [] });
+    click(root.querySelector(".settings-routine-new"));
+    const title = root.querySelector('[data-field="title"]') as HTMLInputElement;
+    title.value = "Too fast";
+    title.dispatchEvent(new (root.ownerDocument.defaultView as any).Event("input", { bubbles: true }));
+    click(root.querySelector(".settings-routine-save"));
+
+    update({
+      routines: [],
+      routineError: "Routines run at most once every 15 minutes.",
+    });
+    expect(root.querySelector(".settings-routine.is-new")).toBeTruthy();
+    expect(root.textContent).toContain("Routines run at most once every 15 minutes.");
+  });
+});
+
+describe("the model picker", () => {
+  it("groups by provider", () => {
+    const { root } = boot({
+      routines: [],
+      routineModels: [
+        { provider: "grok", model: "grok-4.6", label: "Grok 4.6" },
+        { provider: "grok", model: "grok-4.6-fast", label: "Grok 4.6 Fast" },
+        { provider: "claude", model: "claude-opus-5", label: "Claude Opus 5" },
+      ],
+    });
+    click(root.querySelector(".settings-routine-new"));
+    const groups = [...root.querySelectorAll('[data-field="model"] optgroup')];
+    expect(groups.map((g) => g.getAttribute("label"))).toEqual(["Grok", "Claude"]);
+    expect(groups[0].querySelectorAll("option")).toHaveLength(2);
+  });
+
+  it("starts on the project's default provider, like the composer", () => {
+    const { root } = boot({
+      routines: [],
+      routineProjects: [{ cwd: "C:/repo", label: "repo", defaultProvider: "claude" }],
+      routineModels: [
+        { provider: "grok", model: "grok-4.6", label: "Grok 4.6" },
+        { provider: "claude", model: "claude-opus-5", label: "Claude Opus 5" },
+      ],
+    });
+    click(root.querySelector(".settings-routine-new"));
+    // Not simply the first model in the list — the one this project would use.
+    expect((root.querySelector('[data-field="model"]') as HTMLSelectElement).value)
+      .toBe("claude claude-opus-5");
+  });
+
+  it("re-picks the model when the project changes", () => {
+    const { root } = boot({
+      routines: [],
+      routineProjects: [
+        { cwd: "C:/a", label: "a", defaultProvider: "grok" },
+        { cwd: "C:/b", label: "b", defaultProvider: "claude" },
+      ],
+      routineModels: [
+        { provider: "grok", model: "grok-4.6", label: "Grok 4.6" },
+        { provider: "claude", model: "claude-opus-5", label: "Claude Opus 5" },
+      ],
+    });
+    click(root.querySelector(".settings-routine-new"));
+    expect((root.querySelector('[data-field="model"]') as HTMLSelectElement).value)
+      .toBe("grok grok-4.6");
+
+    const project = root.querySelector('[data-field="cwd"]') as HTMLSelectElement;
+    project.value = "C:/b";
+    project.dispatchEvent(new (root.ownerDocument.defaultView as any).Event("change", { bubbles: true }));
+    expect((root.querySelector('[data-field="model"]') as HTMLSelectElement).value)
+      .toBe("claude claude-opus-5");
   });
 });
 
