@@ -179,6 +179,29 @@ describe("MCP remote inventory projection", () => {
     ]));
   });
 
+  it("keeps a failure visible to a remote after the error text is stripped", () => {
+    // `status` and `error` arrive from the CLI as INDEPENDENT optionals, so a
+    // server can carry an error and no status at all. Dropping the error text
+    // (right — it can quote a launch recipe) then left the row with nothing
+    // negative on it, and the settings dot treats "enabled, no status, no
+    // error" as ready: green on the phone, red at the desk, for the same
+    // broken server. The fact of the failure has to survive; only the words
+    // are secret.
+    const remote = projectMcpServerForRemote({
+      name: "linear", enabled: true, source: "local", error: "spawn /usr/local/bin/linear-mcp --key sk-live-abc failed",
+    } as never);
+    expect(remote.status).toBe("unavailable");
+    expect(remote).not.toHaveProperty("error");
+    assertNoMcpLaunchLeak(remote);
+  });
+
+  it("lets a reported failure override a stale ready status", () => {
+    const remote = projectMcpServerForRemote({
+      name: "linear", enabled: true, status: "ready", error: "connection refused",
+    } as never);
+    expect(remote.status).toBe("unavailable");
+  });
+
   it("strips the reproduction leak and any extra key a future parser might add", () => {
     const [desk] = parseMcpListResponse({ servers: [leakyMcpWireServer()] });
     const before = JSON.stringify(desk);
