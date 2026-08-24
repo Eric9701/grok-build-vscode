@@ -298,6 +298,56 @@ describe("the page as a whole", () => {
     expect(posted.filter((m) => m.type === "listRoutines")).toHaveLength(1);
   });
 
+  it("repaints when the frame lands, not when the reader next touches the page", () => {
+    // A deferred paint waited for exactly one event — the nav select losing
+    // focus — but `navMenuOpen` is true whenever that select merely HAS focus,
+    // and picking a category leaves it focused. So on a phone the routines
+    // frame arrived, was deferred, and nothing flushed it: "Loading routines…"
+    // until the reader touched the screen for an unrelated reason. Pre-existing;
+    // the connectors page did the same with its own loading line.
+    const window = new Window({ url: "https://localhost/" });
+    // settings.js is evaluated inside this window, so its setTimeout is the
+    // window's — Node's fake timers never see it. Capture the callbacks here
+    // and fire them by hand.
+    const pending: Array<() => void> = [];
+    (window as any).setTimeout = (fn: () => void) => { pending.push(fn); return pending.length; };
+    (window as any).clearTimeout = () => {};
+    // The nav collapses into a <select> only under the phone media query, which
+    // happy-dom answers false for by default — so the deferral this test is
+    // about could never be reached without saying otherwise.
+    (window as any).matchMedia = () => ({
+      matches: true, addEventListener() {}, removeEventListener() {},
+      addListener() {}, removeListener() {},
+    });
+    (window as unknown as { eval: (src: string) => void }).eval(settingsSrc);
+    const api = (window as unknown as { GrokSettings: Record<string, any> }).GrokSettings;
+    const doc = window.document as unknown as Document;
+    const root = doc.createElement("div");
+    doc.body.appendChild(root);
+    const env = api.defaultEnv({ isRemote: true, isDesktop: false, providersKnown: true });
+    const surface = api.mount(root, {
+      snapshot: api.defaultSnapshot({}),
+      env, standalone: true, category: "routines", post: () => {},
+    });
+
+    const select = root.querySelector(".settings-nav-select") as HTMLSelectElement | null;
+    expect(select).toBeTruthy();
+    select!.focus();
+
+    surface.update(api.defaultSnapshot({ routines: [routine()] }), env);
+    // Deferred while the select holds focus — that part is deliberate.
+    expect(root.querySelector(".settings-routines-loading")).toBeTruthy();
+
+    // Choosing a category closes the dropdown, and that must flush.
+    // And with NO interaction at all — which is the reported case, since the
+    // reader is just looking at the page — the backstop must still flush it.
+    // Touching the screen used to be the only way out.
+    expect(pending.length, "deferring must arm a backstop").toBeGreaterThan(0);
+    pending.forEach((fn) => fn());
+    expect(root.querySelector(".settings-routines-loading")).toBeNull();
+    expect(root.querySelector(".settings-routine-name")?.textContent).toContain("Morning brief");
+  });
+
   it("waits rather than claiming there are none (noticed on remote)", () => {
     // The empty state is an invitation — "create your first routine". Showing
     // it before the host has answered tells the reader something false at the
