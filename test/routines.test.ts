@@ -274,6 +274,38 @@ describe("validation", () => {
     expect(bad).toEqual({ ok: false, error: "Enter a time like 08:00." });
   });
 
+  it("accepts the agent's default, before AND after model discovery", () => {
+    // The bug this pins: a routine saved as "Grok default" on a fresh host ran
+    // once, populated the model cache as it went, and then could never be saved
+    // or fired again — the exact-match gate could not find `model: ""` once the
+    // list held concrete models instead of the sentinel.
+    const emptyCache = [{ provider: "grok" as const, model: "", label: "Grok default" }];
+    const discovered = [
+      { provider: "grok" as const, model: "", label: "Grok default" },
+      { provider: "grok" as const, model: "grok-4.6", label: "Grok 4.6" },
+    ];
+    const noSentinel = [{ provider: "grok" as const, model: "grok-4.6", label: "Grok 4.6" }];
+
+    for (const models of [emptyCache, discovered, noSentinel]) {
+      const saved = validateRoutine(
+        { ...base, model: "", cadence: { every: 1, unit: "hours" } },
+        { ...opts, models },
+      );
+      expect(saved.ok, JSON.stringify(models)).toBe(true);
+      // And it stays the default rather than being pinned to a concrete row.
+      expect(saved.ok && saved.routine.model).toBe("");
+      expect(saved.ok && saved.routine.provider).toBe("grok");
+    }
+  });
+
+  it("still refuses a default for a provider that is not connected", () => {
+    const gone = validateRoutine(
+      { ...base, provider: "codex", model: "", cadence: { every: 1, unit: "hours" } },
+      opts,
+    );
+    expect(gone).toEqual({ ok: false, error: "Pick a model that is connected." });
+  });
+
   it("refuses a model that is not connected (req 12)", () => {
     const gone = validateRoutine(
       { ...base, provider: "codex", model: "gpt-5.6-codex", cadence: { every: 1, unit: "hours" } },

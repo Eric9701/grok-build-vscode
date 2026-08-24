@@ -1063,8 +1063,20 @@ export class GrokSidebar {
     // The model gate, and the reason a skip is a first-class outcome rather
     // than a failure: "Claude was not connected at 06:00" is a fact about the
     // machine, and the strip should say so plainly.
-    const models = this.routineModelOptions();
-    if (!models.some((m) => m.provider === routine.provider && m.model === routine.model)) {
+    // Gate on the PROVIDER, never on an exact model.
+    //
+    // The model list is a picker concern and its contents move: a provider with
+    // an empty cache contributes one "<Provider> default" row carrying an empty
+    // modelId, and once discovery populates the cache it contributes concrete
+    // models instead. Matching a saved routine against that list meant a
+    // routine created on a fresh host ran ONCE — populating the cache as it went
+    // — and then skipped every later firing, reporting "was not connected" about
+    // a provider that was connected the whole time.
+    //
+    // What actually decides whether a run can happen is whether the provider is
+    // usable. The model is a preference, applied below and harmless if it no
+    // longer exists.
+    if (!this.usableProviders().includes(routine.provider)) {
       finish("skipped", { detail: `Skipped — ${providerDisplayName(routine.provider)} was not connected` });
       return;
     }
@@ -1150,14 +1162,21 @@ export class GrokSidebar {
     // nothing has opened the model picker and the cache is empty — offered no
     // models at all and read as "nothing is connected". An empty model is a
     // valid routine: it means the same as not choosing one in the composer.
-    return modelsForConnectedProviders(
-      this.usableProviders(),
-      this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {}),
-    ).map((m) => ({
-      provider: m.provider,
-      model: m.modelId,
-      label: m.name || m.modelId,
-    }));
+    const cache = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
+    const providers = this.usableProviders();
+    const out: RoutineModelOption[] = [];
+    for (const provider of providers) {
+      // Offered ALWAYS, not only while the cache is empty. "Use this agent's
+      // default" is a real choice a routine can hold for months, so it has to
+      // survive model discovery — otherwise editing such a routine finds no
+      // matching option and silently re-points it at a concrete model.
+      out.push({ provider, model: "", label: `${providerDisplayName(provider)} default` });
+    }
+    for (const m of modelsForConnectedProviders(providers, cache)) {
+      if (!m.modelId) continue; // the sentinel, already emitted above
+      out.push({ provider: m.provider, model: m.modelId, label: m.name || m.modelId });
+    }
+    return out;
   }
 
   private routineProjectOptions(): RoutineProjectOption[] {

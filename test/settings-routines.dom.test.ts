@@ -401,6 +401,25 @@ describe("the three surfaces this page has to reach", () => {
     expect(body).not.toMatch(/finish\("ran"\)/);
   });
 
+  it("gates a run on the PROVIDER, never on an exact model", () => {
+    // The model list's contents change with cache state: a provider with no
+    // cached models offers one empty-modelId sentinel, and after discovery it
+    // offers concrete rows instead. Matching a saved routine against that list
+    // meant a "Grok default" routine ran once and then skipped for ever,
+    // reporting a provider that was connected as not connected.
+    const body = block("private async runRoutine(", "\n  }\n\n  /** Connected models");
+    expect(body).toContain("this.usableProviders().includes(routine.provider)");
+    expect(body).not.toMatch(/models\.some\(\(m\) =>[^)]*routine\.model/);
+  });
+
+  it("offers the agent default whether or not models were discovered", () => {
+    const body = block("private routineModelOptions()", "\n  }");
+    expect(body).toContain('model: ""');
+    expect(body).toContain("default");
+    // Not conditional on an empty cache.
+    expect(body).not.toContain("if (!cache");
+  });
+
   it("posts the page to the settings tab and a trimmed copy to remotes", () => {
     const body = block("private postRoutines(): void", "\n  }");
     expect(body).toContain("this.settingsEditor?.webview.postMessage");

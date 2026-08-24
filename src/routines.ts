@@ -362,7 +362,13 @@ export function validateRoutine(
 
   const provider = draft.provider;
   const model = typeof draft.model === "string" ? draft.model : "";
-  const match = opts.models.find((m) => m.provider === provider && m.model === model);
+  // An EMPTY model means "this agent's default" and is valid for any listed
+  // provider, whether or not that provider's concrete models have been
+  // discovered yet. Requiring an exact row here would refuse to save a routine
+  // that had been running happily for weeks, the moment discovery ran.
+  const match = model
+    ? opts.models.find((m) => m.provider === provider && m.model === model)
+    : opts.models.find((m) => m.provider === provider);
   if (!match) return { ok: false, error: "Pick a model that is connected." };
 
   return {
@@ -373,7 +379,10 @@ export function validateRoutine(
       prompt: prompt.slice(0, ROUTINE_PROMPT_MAX),
       cwd,
       provider: match.provider,
-      model: match.model,
+      // The DRAFT's model, not the matched row's: for an empty model the match
+      // is only there to vouch for the provider, and copying its model would
+      // silently pin the routine to whichever concrete row happened to be first.
+      model,
       cadence,
       createdAt: opts.createdAt,
       ...(draft.paused === true ? { paused: true } : {}),
