@@ -269,9 +269,13 @@ describe("empty-state advice", () => {
     const bulb = h.doc.querySelector("#welcome-tip .welcome-tip-bulb")!;
     expect(bulb.querySelector("svg")).toBeTruthy();
     expect(bulb.textContent).toBe("");
-    // currentColor, so it takes the tip's colour in both themes. The source
-    // paths carry no fill of their own and would otherwise render black.
-    expect(bulb.querySelector("svg")!.getAttribute("fill")).toBe("currentColor");
+    // Lucide's own conventions, which is what makes it consistent with every
+    // other glyph: a stroked 24 viewBox in currentColor, so it takes the tip's
+    // colour in both themes.
+    const svg = bulb.querySelector("svg")!;
+    expect(svg.getAttribute("stroke")).toBe("currentColor");
+    expect(svg.getAttribute("fill")).toBe("none");
+    expect(svg.getAttribute("viewBox")).toBe("0 0 24 24");
     expect(bulb.getAttribute("aria-hidden")).toBe("true");
   });
 
