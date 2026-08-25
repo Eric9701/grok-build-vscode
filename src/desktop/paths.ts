@@ -16,6 +16,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { DEFAULT_PROJECT_DIRNAME } from "../project-create";
 
 /**
  * Branded profile directory under the OS app-data root (e.g.
@@ -320,7 +321,7 @@ export function resolveExtensionRootFrom(
  * Downloads), so creating it does not raise a consent dialog, and it is
  * findable in Finder for a knowledge-work user.
  */
-export const DEFAULT_PROJECT_DIRNAME = "Grok Build";
+export { DEFAULT_PROJECT_DIRNAME } from "../project-create";
 
 /**
  * The user's home directory the way the desktop app should create folders in

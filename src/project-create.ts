@@ -16,7 +16,18 @@
  */
 
 import * as path from "node:path";
-import { DEFAULT_PROJECT_DIRNAME } from "./desktop/paths";
+
+/**
+ * The one folder new projects are created in, relative to home.
+ *
+ * Lives here rather than in `src/desktop/paths.ts` for two reasons. The .vsix
+ * does not pack `out/desktop/`, so an extension module importing from there
+ * installs cleanly and dies on activation — caught by `npm run check:vsix`, and
+ * the exact shape of issue #101. And the dependency was backwards: where
+ * projects go is a product decision that the desktop shell also happens to
+ * need, not a property of the shell.
+ */
+export const DEFAULT_PROJECT_DIRNAME = "Grok Build";
 
 /** Longest project name we will make a folder for. */
 export const PROJECT_NAME_MAX = 64;
