@@ -107,6 +107,23 @@ describe("empty-state advice", () => {
     expect(tipEl(h)).toBeNull();
   });
 
+  it("never flashes over an onboarding card that is still being built", () => {
+    // showOnboarding sets the mode, reveals the welcome — which stamps the
+    // status line, which re-renders this slot — and only THEN writes the card's
+    // HTML. Checking the node alone left a gap where a tip rendered over an
+    // empty state about to have a call to action in it, and spent its
+    // once-a-day turn doing so. A remote no-project card caught it: that card
+    // has no buttons, and the tip posted a frame from a screen that should have
+    // been silent.
+    const h = bootWebview({ ready: false, remote: true });
+    settle(h);
+    expect(tipEl(h)).toBeTruthy();
+    h.posted.length = 0;
+    dispatch(h.window, { type: "onboarding", state: "no-project" });
+    expect(tipEl(h)).toBeNull();
+    expect(h.posted).toEqual([]);
+  });
+
   it("yields the slot to the move-view hint while the host still offers it", () => {
     const h = bootWebview({ ready: false, vscode: true });
     dispatch(h.window, {
@@ -161,14 +178,34 @@ describe("empty-state advice", () => {
     });
   });
 
-  it("dismisses without opening anything", () => {
+  it("closes for TODAY, not for ever", () => {
+    // The owner's rule, and the one the first version got wrong: X means "not
+    // today". Tips already record themselves as shown when they render, so
+    // closing one only has to release the pin that keeps it on screen — it must
+    // never write a permanent retirement.
     const h = bootWebview({ ready: false });
     settle(h);
-    const first = tipId(h);
+    const first = tipId(h)!;
+    expect(dismiss(h)!.title).toBe("Not today");
     click(h.window, dismiss(h)!);
-    expect(h.posted).toContainEqual({ type: "dismissWelcomeTip", id: first });
-    expect(h.posted.some((m) => m.type === "openSettingsSurface")).toBe(false);
     expect(tipId(h)).not.toBe(first);
+    expect(h.posted).toContainEqual({ type: "welcomeTipShown", id: first });
+    expect(h.posted.some((m) => m.type === "dismissWelcomeTip")).toBe(false);
+    expect(h.posted.some((m) => m.type === "openSettingsSurface")).toBe(false);
+  });
+
+  it("still retires a tip for good when its link is TAKEN", () => {
+    // Acting on advice is different from closing it: you have been where it
+    // pointed, so it does not come back tomorrow either.
+    const h = bootWebview({ ready: false, vscode: true });
+    dispatch(h.window, {
+      ...INITIAL_STATE,
+      capabilities: { uploadFile: true, remoteVoice: true, settingsEditor: true },
+    });
+    settle(h);
+    const first = tipId(h)!;
+    click(h.window, action(h)!);
+    expect(h.posted).toContainEqual({ type: "dismissWelcomeTip", id: first });
   });
 
   it("empties the slot when every tip is retired", () => {
@@ -321,7 +358,7 @@ describe("empty-state advice", () => {
     expect(tipEl(h)).toBeNull();
   });
 
-  it("renders the worktree tip without a link, and only in Coding", () => {
+  it("starts a worktree session, and only in Coding", () => {
     const h = bootWebview({ ready: false });
     const allButWorktrees = [
       "providers", "routines", "connectors", "remote", "readAloud", "voice", "mentions",
@@ -332,10 +369,12 @@ describe("empty-state advice", () => {
     dispatch(h.window, { type: "appPurpose", value: "coding" });
     tips(h, { dismissed: allButWorktrees });
     expect(tipId(h)).toBe("worktrees");
-    // No destination an empty screen could reach, so emphasis rather than a
-    // link that would open nothing.
-    expect(action(h)).toBeNull();
-    expect(h.doc.querySelector("#welcome-tip b")?.textContent).toBe("its own worktree");
+    // The copy names what the click does. The menu path it used to describe
+    // ("… > Continue in a new chat > Use a new worktree") is three steps nobody
+    // remembers, which is what made the first version unactionable.
+    expect(action(h)?.textContent).toBe("Start it in a worktree");
+    click(h.window, action(h)!);
+    expect(h.posted).toContainEqual({ type: "newWorktreeSession" });
   });
 
   it("rotates on a new empty screen, not on a repaint", () => {

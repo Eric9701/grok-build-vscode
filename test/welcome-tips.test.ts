@@ -238,7 +238,7 @@ describe("tip catalogue (media/webview-helpers.js)", () => {
   });
 
   it("uses only targets the renderer knows how to open", () => {
-    const KNOWN = new Set(["mention"]);
+    const KNOWN = new Set(["mention", "worktree"]);
     for (const tip of WELCOME_TIPS as { id: string; target: string | null }[]) {
       if (tip.target === null) continue;
       if (tip.target.indexOf("settings:") === 0) continue;
@@ -283,6 +283,32 @@ describe("eligibility", () => {
   it("never offers worktrees in Knowledge work", () => {
     expect(ids({ ...FRESH, appPurpose: "knowledge" })).not.toContain("worktrees");
     expect(ids({ ...FRESH, appPurpose: "coding" })).toContain("worktrees");
+  });
+
+  it("offers worktrees only where the action would actually be accepted", () => {
+    // Every condition continueChatDestinations() applies. The first version of
+    // this checked only the mode, and then a later pass added two facts to the
+    // client without adding them here — where they read as undefined, so the
+    // tip silently vanished from the pool on every host.
+    const coding = { ...FRESH, appPurpose: "coding" };
+    expect(ids(coding)).toContain("worktrees");
+    // A CLI that answered "unsupported" to a create.
+    expect(ids({ ...coding, worktreeSupported: false })).not.toContain("worktrees");
+    // Worktrees do not nest, and the host refuses it with a message of its own.
+    expect(ids({ ...coding, inWorktree: true })).not.toContain("worktrees");
+    // Opt-OUT, like the client's own default: absence means supported, because
+    // most hosts never say either way.
+    expect(ids({ ...coding, worktreeSupported: undefined })).toContain("worktrees");
+  });
+
+  it("gives the worktree tip a real destination", () => {
+    // It shipped with none, on the reasoning that starting a worktree needs a
+    // conversation to continue FROM. That was wrong: `newWorktreeSession` takes
+    // no source session, it cuts from the current project — so it works from an
+    // empty screen, which is the only place this tip ever appears.
+    const tip = (WELCOME_TIPS as { id: string; target: string | null }[])
+      .find((t) => t.id === "worktrees")!;
+    expect(tip.target).toBe("worktree");
   });
 
   it("hides desk-only advice from a phone", () => {
