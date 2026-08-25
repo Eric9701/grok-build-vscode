@@ -95,6 +95,18 @@
      * that omits it gets no button, which is the safe way round.
      */
     canAddProject: false,
+    /**
+     * The other two ways in, on the same `repos` channel and for the same
+     * reason. Absent on an older host, which then offers the picker alone.
+     */
+    canCreateProject: false,
+    canCloneProject: false,
+    /** Global "Use this app for". Coding gains Clone from GitHub; nothing is
+     *  ever taken away by a mode. Absent on an older host = Knowledge work. */
+    appPurpose: "knowledge",
+    /** Display form of the one directory new projects land in (`~/Grok Build`),
+     *  from `projectSetup`. The form shows the destination as you type. */
+    projectRoot: "",
   };
 
   let menuEl = null;
@@ -515,7 +527,18 @@
       btn.setAttribute("role", "menuitem");
       btn.disabled = !!item.disabled;
       if (item.title) btn.title = item.title;
-      btn.textContent = item.label;
+      // Icon and a second line are optional and only the Add project menu uses
+      // them: its three entries differ by a verb, and "New project" against
+      // "Import a folder" is not self-explanatory until you have used both.
+      if (item.icon || item.description) {
+        btn.classList.add("rail-menu-item-rich");
+        btn.innerHTML = `<span class="rail-menu-icon">${item.icon || ""}</span>` +
+          `<span class="rail-menu-text"><span class="rail-menu-label"></span><small class="rail-menu-desc"></small></span>`;
+        btn.querySelector(".rail-menu-label").textContent = item.label;
+        btn.querySelector(".rail-menu-desc").textContent = item.description || "";
+      } else {
+        btn.textContent = item.label;
+      }
       btn.onclick = (e) => {
         e.stopPropagation();
         // Where the MENU was, for whatever replaces it. A submenu anchored to
@@ -793,8 +816,8 @@
         const add = document.createElement("button");
         add.type = "button";
         add.className = "rail-empty-action";
-        add.textContent = "Add a project folder";
-        add.onclick = () => vscode.postMessage({ type: "addProjectFolder" });
+        add.textContent = "Add a project";
+        add.onclick = () => openAddProjectMenu(add);
         note.appendChild(add);
       }
       root.appendChild(note);
@@ -865,13 +888,118 @@
     btn.type = "button";
     btn.className = "rail-action-btn rail-add-project";
     btn.innerHTML = ICON.plus;
-    btn.title = "Add project folder";
-    btn.setAttribute("aria-label", "Add project folder");
+    btn.title = "Add project";
+    btn.setAttribute("aria-label", "Add project");
     btn.onclick = (e) => {
       e.stopPropagation();
-      vscode.postMessage({ type: "addProjectFolder" });
+      openAddProjectMenu(btn);
     };
     return btn;
+  }
+
+  const ADD_PROJECT_ICON = {
+    "new": `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><path d="M12 10v6M9 13h6"/></svg>`,
+    "import": `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>`,
+    clone: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 15V9a3 3 0 0 1 3-3h6"/></svg>`,
+  };
+
+  /**
+   * Add project, this view's copy.
+   *
+   * The MENU and the FORM are shared with the chat rail (webview-helpers.js) so
+   * the two surfaces cannot drift into different wording or different rules;
+   * only the popover primitive differs, because these two views have different
+   * ones. A host too old to advertise the new entries falls straight through to
+   * the picker, with no menu at all.
+   */
+  function addProjectCaps() {
+    return {
+      appPurpose: state.appPurpose === "coding" ? "coding" : "knowledge",
+      canImport: state.canAddProject,
+      canCreate: state.canCreateProject,
+      canClone: state.canCloneProject,
+    };
+  }
+
+  function openAddProjectMenu(anchor) {
+    const helpers = window.GrokWebviewHelpers;
+    if (!helpers || typeof helpers.addProjectMenuItems !== "function") {
+      vscode.postMessage({ type: "addProjectFolder" });
+      return;
+    }
+    const spec = helpers.addProjectMenuItems(addProjectCaps());
+    const run = (id) => {
+      if (id === "import") vscode.postMessage({ type: "addProjectFolder" });
+      else openAddProjectForm(id);
+    };
+    // One way in is a click, not a menu that asks permission to be a click.
+    // NONE at all means the host has not said yet — the no-project onboarding
+    // card can be on screen before `initialState` lands, and its button has to
+    // do something. Falling through to the picker is what it did before.
+    if (spec.length <= 1) { run(spec.length ? spec[0].id : "import"); return; }
+    openMenu(
+      anchor,
+      spec.map((item) => ({
+        label: item.label,
+        description: item.description,
+        icon: ADD_PROJECT_ICON[item.id] || "",
+        onSelect: () => run(item.id),
+      })),
+    );
+  }
+
+  let addProjectFormApi = null;
+  let addProjectFormScrim = null;
+  let addProjectFormKeydown = null;
+
+  function closeAddProjectForm() {
+    if (addProjectFormScrim) addProjectFormScrim.remove();
+    // Capture-phase listener: leaving it attached would swallow Escape in this
+    // view for the rest of the window.
+    if (addProjectFormKeydown) document.removeEventListener("keydown", addProjectFormKeydown, true);
+    addProjectFormKeydown = null;
+    addProjectFormScrim = null;
+    addProjectFormApi = null;
+  }
+
+  function openAddProjectForm(kind) {
+    const helpers = window.GrokWebviewHelpers;
+    if (!helpers || typeof helpers.addProjectForm !== "function") return;
+    closeAddProjectForm();
+    closeMenu();
+    const api = helpers.addProjectForm({
+      kind,
+      root: state.projectRoot,
+      onSubmit: (value) => {
+        vscode.postMessage(
+          kind === "clone"
+            ? { type: "cloneProject", url: value }
+            : { type: "createProject", name: value },
+        );
+      },
+      onCancel: closeAddProjectForm,
+      onFix: (fix) => vscode.postMessage({
+        type: "setupGithubCli",
+        action: fix === "install-gh" ? "install" : "auth",
+      }),
+    });
+    if (!api) return;
+    const scrim = document.createElement("div");
+    scrim.className = "add-project-scrim";
+    scrim.appendChild(api.el);
+    scrim.addEventListener("mousedown", (e) => { if (e.target === scrim) closeAddProjectForm(); });
+    document.body.appendChild(scrim);
+    addProjectFormScrim = scrim;
+    addProjectFormApi = api;
+    addProjectFormKeydown = (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeAddProjectForm();
+    };
+    document.addEventListener("keydown", addProjectFormKeydown, true);
+    api.update({ root: state.projectRoot });
+    api.focus();
   }
 
   // Labels deliberately carry no counts: host totals, loaded rows and the cap
@@ -1416,6 +1544,17 @@
         state.showProviderGlyphs = Array.isArray(msg.providers) && msg.providers.filter((provider) => provider && provider.connected).length > 1;
         render();
         break;
+      case "appPurpose":
+        // Only the Add project menu reads this here — Coding gains cloning.
+        state.appPurpose = msg.value === "coding" ? "coding" : "knowledge";
+        break;
+      case "projectSetup":
+        if (typeof msg.root === "string" && msg.root) state.projectRoot = msg.root;
+        // `done` is the only close signal: a failed attempt also stops being
+        // busy, and closing on that would throw away the error to be read.
+        if (msg.done) { closeAddProjectForm(); break; }
+        if (addProjectFormApi) addProjectFormApi.update(msg);
+        break;
       case "repos": {
         const leaving = state.currentCwd;
         state.repos = Array.isArray(msg.entries) ? msg.entries : [];
@@ -1426,6 +1565,8 @@
         // and behave as before rather than losing the marker entirely.
         state.workspaceCwd = msg.workspaceCwd || msg.selectedCwd || "";
         state.canAddProject = msg.canAddProject === true;
+        state.canCreateProject = msg.canCreateProject === true;
+        state.canCloneProject = msg.canCloneProject === true;
         // Forget projects that have left the catalog — otherwise their rows keep
         // feeding Recent and the search index after they are gone, and the two
         // maps grow for the life of the window.

@@ -91,6 +91,24 @@ import { createMcpPrepareState, prepareMcpToolCall } from "./mcp-tool";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
+  WELCOME_TIPS_KEY,
+  parseDismissedTips,
+  withDismissedTip,
+} from "./welcome-tips";
+import { commandOnPath, runGitClone } from "./git-clone";
+import {
+  classifyCloneFailure,
+  cloneDestination,
+  cloneUrlError,
+  displayPath,
+  cloneFailureText,
+  githubCliInstallCommand,
+  offersGithubSetup,
+  projectDestination,
+  projectNameError,
+  projectRoot,
+} from "./project-create";
+import {
   GROK_VIEW_ID,
   MOVE_VIEW_HINT_USED_KEY,
   moveViewContainerFor,
@@ -780,6 +798,15 @@ export class GrokSidebar {
     "routines",
     "telemetryEnabled",
     "thumbsFeedback",
+    // Device-global for the same reason as routines: the counts and the retired
+    // list describe the MACHINE, not the conversation a tab happens to be
+    // reading, so routing them through the focused session would leave a
+    // second tab's welcome screen permanently without advice.
+    "welcomeTips",
+    // Same reason: the Add project form is a property of the machine, and a
+    // phone that opened it while the desk is focused elsewhere must still
+    // get the answer to what it just asked for.
+    "projectSetup",
   ]);
   private cliPath?: string;
   private codexCliPath?: string;
@@ -1241,6 +1268,29 @@ export class GrokSidebar {
     this.broadcastRemoteDevice(
       routinesMessageForRemote(message, this.remoteAuthorizedSessionCwds(), pathsEqual),
     );
+    // The routine count is one of the two facts the empty-state tip pool cannot
+    // observe for itself, and it just changed. Posted from here rather than
+    // from each of the seven call sites above, so the two can never disagree.
+    this.postWelcomeTips();
+  }
+
+  /**
+   * Facts for the empty-state tip pool: the two counts the chat client never
+   * receives on its own, plus the tips this machine is finished with.
+   *
+   * Counts, deliberately — not the routines or the connector list. A tip only
+   * asks whether the number is zero, and the chat client has no other reason to
+   * hold either list (only the settings surface requests them). Sending the
+   * lists here would put routine prompts on the wire for a client that never
+   * asked for them.
+   */
+  private postWelcomeTips(): void {
+    this.post({
+      type: "welcomeTips",
+      routineCount: this.loadRoutines().length,
+      connectorCount: Object.keys(this.connectedConnectorStore()).length,
+      dismissed: parseDismissedTips(this.state.get(WELCOME_TIPS_KEY, {})),
+    });
   }
 
   /**
@@ -5165,6 +5215,8 @@ Only continue if you trust this code.`,
       // project opens a native folder dialog on the desk, which a phone can
       // neither see nor answer (remote-policy: `addProjectFolder` is host-local).
       canAddProject: this.canAddProjectFolder(),
+      canCreateProject: this.canAddProjectFolder(),
+      canCloneProject: this.canAddProjectFolder(),
       // What the EDITOR has open, sent alongside the selection rather than
       // instead of it — the rail needs both to say "you are working here, your
       // window is there".
@@ -5525,6 +5577,175 @@ Only continue if you trust this code.`,
       }
       await this.startSession(undefined, this.focused, "ensure");
     }
+  }
+
+  /* ----------------------------------------------- making a project */
+
+  /**
+   * Home directory the way this host creates folders in it: USERPROFILE on
+   * Windows (HOME is often a git-bash overlay), HOME elsewhere. Never
+   * GROK_HOME — that is the CLI's store, not the user's.
+   */
+  private projectHomeDir(): string {
+    return process.env.USERPROFILE || process.env.HOME || os.homedir();
+  }
+
+  /** The one directory new and cloned projects land in. */
+  private projectRootPath(): string {
+    return projectRoot(this.projectHomeDir());
+  }
+
+  /**
+   * State of the Add project form.
+   *
+   * `root` goes out as `~/Grok Build`, never the real path: the client needs it
+   * only to show where the folder will be, and a remote has no business
+   * learning the desk's home directory.
+   */
+  private postProjectSetup(
+    extra: Omit<Extract<HostMsg, { type: "projectSetup" }>, "type" | "root"> = {},
+  ): void {
+    this.post({
+      type: "projectSetup",
+      root: displayPath(this.projectRootPath(), this.projectHomeDir()),
+      ...extra,
+    });
+  }
+
+  /**
+   * Make `<root>/<name>` and open it.
+   *
+   * A name, never a path — see src/project-create.ts for why that is the whole
+   * containment model. `mkdir` only: a project is a folder, and `git init` on
+   * something a knowledge-work user just named "Q3 Positioning" would be us
+   * deciding they are writing software.
+   */
+  async createProject(name: string): Promise<void> {
+    const nameError = projectNameError(name);
+    if (nameError) {
+      this.postProjectSetup({ error: nameError });
+      return;
+    }
+    const root = this.projectRootPath();
+    const dest = projectDestination(root, name);
+    if (!dest) {
+      // Unreachable via the validator above; kept because "cannot happen" is
+      // how the deleteSession traversal shipped.
+      this.postProjectSetup({ error: "That name can't be used for a folder." });
+      return;
+    }
+    this.postProjectSetup({ busy: "new" });
+    try {
+      // The root itself may not exist: provisionDefaultProjectDir only creates
+      // it on a first run where project discovery found nothing, so anyone
+      // whose checkouts were discovered has never had one.
+      fs.mkdirSync(root, { recursive: true });
+      if (fs.existsSync(dest)) {
+        this.postProjectSetup({ error: `"${name.trim()}" is already in ${displayPath(root, this.projectHomeDir())}.` });
+        return;
+      }
+      fs.mkdirSync(dest);
+    } catch (e) {
+      this.postProjectSetup({ error: `Could not create the folder: ${(e as Error).message}` });
+      return;
+    }
+    await this.addProjectFolder(dest);
+    this.postProjectSetup({ done: true });
+  }
+
+  /**
+   * Clone `url` into the same root, under the folder name the URL implies.
+   *
+   * Credentials are git's own — whatever the user's credential helper, SSH
+   * agent or `gh auth login` already set up. Nothing is minted, stored or
+   * forwarded here, which is why this needs no new threat model on a desk
+   * machine.
+   *
+   * `GIT_TERMINAL_PROMPT=0`: without it a private repo makes git block on a
+   * username prompt against a terminal that does not exist, and the form waits
+   * for ever instead of reporting an auth failure it could offer to fix.
+   */
+  async cloneProject(url: string): Promise<void> {
+    const urlError = cloneUrlError(url);
+    if (urlError) {
+      this.postProjectSetup({ error: urlError });
+      return;
+    }
+    const root = this.projectRootPath();
+    const dest = cloneDestination(root, url);
+    if (!dest) {
+      this.postProjectSetup({ error: "That URL doesn't name a repository." });
+      return;
+    }
+    this.postProjectSetup({ busy: "clone" });
+    try {
+      fs.mkdirSync(root, { recursive: true });
+      if (fs.existsSync(dest)) {
+        this.postProjectSetup({ error: `${path.basename(dest)} is already in ${displayPath(root, this.projectHomeDir())}.` });
+        return;
+      }
+    } catch (e) {
+      this.postProjectSetup({ error: `Could not create the folder: ${(e as Error).message}` });
+      return;
+    }
+    const trimmed = url.trim();
+    const failure = await runGitClone(trimmed, dest);
+    if (failure) {
+      // A half-written checkout is worse than none: the next attempt would fail
+      // on "already exists" and the rail would show an empty project.
+      try {
+        if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true, force: true });
+      } catch {
+        /* leave it — reporting the clone failure matters more */
+      }
+      const kind = classifyCloneFailure(failure);
+      const offer = offersGithubSetup(trimmed, kind);
+      const install = githubCliInstallCommand(process.platform);
+      this.postProjectSetup({
+        error: cloneFailureText(kind, failure),
+        ...(offer
+          ? commandOnPath("gh")
+            ? { fix: "auth-gh" as const }
+            : install
+              ? { fix: "install-gh" as const, fixCommand: install.display }
+              : {}
+          : {}),
+      });
+      return;
+    }
+    await this.addProjectFolder(dest);
+    this.postProjectSetup({ done: true });
+  }
+
+  /**
+   * Run the GitHub CLI step the failed clone needs, in a terminal on the desk.
+   *
+   * Both commands are interactive — `gh auth login` asks questions and opens a
+   * browser; a package manager asks for elevation — so this shows a terminal
+   * rather than pretending to do it silently. Host-local by policy: a remote
+   * could neither see the questions nor answer them.
+   */
+  async setupGithubCli(action: "install" | "auth"): Promise<void> {
+    if (action === "auth") {
+      const term = this.host.createTerminal({
+        name: "GitHub sign-in",
+        shellPath: "gh",
+        shellArgs: ["auth", "login"],
+      });
+      term.show();
+      return;
+    }
+    const install = githubCliInstallCommand(process.platform);
+    if (!install) {
+      this.postProjectSetup({ error: "Install the GitHub CLI from cli.github.com, then try again." });
+      return;
+    }
+    const term = this.host.createTerminal({
+      name: "Install GitHub CLI",
+      shellPath: install.file,
+      shellArgs: install.args,
+    });
+    term.show();
   }
 
   /**
@@ -9047,6 +9268,29 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // and this reports that rather than acting on it.
         await this.removeProjectFolder(msg.cwd);
         break;
+      case "createProject":
+        await this.createProject(msg.name);
+        break;
+      case "cloneProject":
+        await this.cloneProject(msg.url);
+        break;
+      case "setupGithubCli":
+        // host-local by policy, so `origin` is always local here.
+        await this.setupGithubCli(msg.action === "install" ? "install" : "auth");
+        break;
+      case "dismissWelcomeTip": {
+        // Id-shaped only, capped, and idempotent — `withDismissedTip` answers
+        // null for anything already retired or out of bounds, and a null means
+        // do not write and do not re-broadcast an identical frame. The host
+        // deliberately does NOT check the id against a catalogue: the catalogue
+        // lives in the client, and a newer client knowing a tip this host does
+        // not is the normal case, not an error.
+        const next = withDismissedTip(this.state.get(WELCOME_TIPS_KEY, {}), msg.id);
+        if (!next) break;
+        await this.state.update(WELCOME_TIPS_KEY, next);
+        this.postWelcomeTips();
+        break;
+      }
       case "openGlobalConfig": {
         // Intent only — host resolves ~/.grok/config.toml (never a renderer path).
         await this.host.openGlobalConfig();
@@ -9753,6 +9997,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const message = this.mcpConnectorsMessage();
     this.post(message);
     void this.settingsEditor?.webview.postMessage(message);
+    // Same reasoning as postRoutines: the connector count feeds the tip pool and
+    // has just changed. This is also the initial-state call site, so a fresh
+    // webview gets its first tip frame here without a separate trigger.
+    this.postWelcomeTips();
   }
 
   private mcpNameCatalogFor(cwd: string): {
@@ -13513,6 +13761,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // workspace is VS Code's to manage, so the extension never advertises
         // this and the rail never draws the control — capability, not a flag.
         addProjectFolder: this.canAddProjectFolder(),
+        // Add project can MAKE one as well as find one. Both are opt-in field
+        // presence, never a version check: a client older than this ignores the
+        // flags and keeps offering only the picker.
+        createProject: this.canAddProjectFolder(),
+        cloneProject: this.canAddProjectFolder(),
       },
     };
   }
@@ -13525,6 +13778,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.post(this.buildInitialStateMsg());
     this.postProviderState();
     this.postMcpConnectors();
+    // Where new projects go. Static per host, but the Add project form needs it
+    // before the user has done anything, so it rides the initial burst rather
+    // than waiting for a first attempt.
+    this.postProjectSetup();
     for (const provider of this.connectedProviders()) void this.probeProviderVersion(provider);
     this.post({
       type: "summarizeRepliesAloud",
@@ -13720,9 +13977,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     "session",
     "sessionName",
     "providerState",
+    // The Add project form lives in this view too, and it needs both: where
+    // folders go, and which mode decides whether cloning is on the menu.
+    "projectSetup",
+    "appPurpose",
   ]);
   /** Webview→host actions the rail may post. Closed set — never send/cancel/etc. */
   private static readonly PROJECTS_RAIL_WEBVIEW_TYPES = new Set<WebviewMsg["type"]>([
+    "createProject",
+    "cloneProject",
+    "setupGithubCli",
     "listSessions",
     "listRepoSessions",
     "selectRepo",
@@ -16724,6 +16988,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     </div>
     <div id="rail-scroll" class="rail-scroll"></div>
   </aside>
+  <script nonce="${nonce}" src="${mediaUri("webview-helpers.js")}"></script>
   <script nonce="${nonce}" src="${mediaUri("projects-rail.js")}"></script>
 </body>
 </html>`;

@@ -12,6 +12,8 @@ repository; start with its
 - [Install](INSTALL.md) — manual, build-from-source and multi-IDE paths.
 - [Grok Build Desktop](desktop.md) — the standalone app: download, install warnings, packaging.
 - [Slash commands](SLASH-COMMANDS.md) — what the running CLI exposes and how commands dispatch.
+- [Projects](projects.md) — the three ways to add one, where new folders go, and cloning from GitHub.
+- [Signing agents in](provider-login.md) — how Grok, Codex and Claude authenticate, including the headless paths for a machine you only reach remotely.
 - [Voice setup](voice-setup.md) — dictation, transcription and the hands-free send phrase.
 - [Privacy](privacy.md) — what leaves your machine, and what never does.
 - [Attribution](attribution.md) — licence and third-party notices.

@@ -146,7 +146,7 @@ describe("projects rail", () => {
     expect(rail(doc).textContent).not.toContain("Loading…");
     const add = doc.querySelector(".rail-empty-action") as HTMLButtonElement;
     expect(add).toBeTruthy();
-    expect(add.textContent).toBe("Add a project folder");
+    expect(add.textContent).toBe("Add a project");
     posted.length = 0;
     add.click();
     expect(posted).toEqual([{ type: "addProjectFolder" }]);

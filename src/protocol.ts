@@ -179,6 +179,18 @@ export type HostUiCapabilities = {
    */
   addProjectFolder?: boolean;
   /**
+   * Add project can also MAKE one: a typed name becomes a folder in the host's
+   * project root. OPT-IN — absent/false means the menu offers only the folder
+   * picker, which is what every host before this shipped.
+   */
+  createProject?: boolean;
+  /**
+   * …and clone one: a repository URL becomes a checkout in the same root.
+   * Independent of {@link createProject} so a host can offer one without the
+   * other. OPT-IN; absent/false hides the entry entirely.
+   */
+  cloneProject?: boolean;
+  /**
    * `queueSend` / `queuedSends` carry per-item attachments. OPT-IN: absent/false
    * = the webview posts text-only `queueSend` (and refuses to queue when the
    * composer holds a chip — everything or nothing). Older hosts omit the field
@@ -222,6 +234,52 @@ export type HostMsg =
    *  session swap, so without this the webview keeps a stale true and rebuilds
    *  the hint the user has already acted on. */
   | { type: "moveViewHint"; value: boolean }
+  /**
+   * Facts the empty-state tip pool needs and the client cannot observe itself,
+   * plus the tips the user is done with.
+   *
+   * Everything else the pool reads — connected agents, app purpose, read-aloud,
+   * voice, whether this machine is linked — already reaches the chat client on
+   * its own. Routines and connectors do NOT: only the settings surface asks for
+   * those, so a chat client that has never opened Settings would otherwise
+   * advertise routines to someone running twenty of them. Counts, never
+   * contents: the tip only needs to know whether the number is zero.
+   *
+   * Additive. An older host sends no frame at all, and the client suppresses
+   * the two count-dependent tips rather than reading an absent count as zero.
+   */
+  | { type: "welcomeTips"; routineCount: number; connectorCount: number; dismissed: string[] }
+  /**
+   * State of the Add project form: where new projects go, and how the last
+   * attempt went.
+   *
+   * One frame for both ways in (a typed name, a cloned URL) because they are
+   * the same form with a different field, and splitting them would be two
+   * registries to keep in step for no gain.
+   *
+   * `root` is the DISPLAY form (`~/Grok Build`), never a home path — the client
+   * only needs it to show where the folder will land, and a remote has no
+   * business learning the desk's home directory. Nothing here carries the
+   * created path either: the repo catalog delivers that, already filtered to
+   * what the receiving client may reach.
+   */
+  | {
+      type: "projectSetup";
+      root: string;
+      /** In flight — the form disables and says what it is doing. */
+      busy?: "new" | "clone";
+      /** Why the last attempt failed. Absent means nothing has gone wrong. */
+      error?: string;
+      /**
+       * A next step we can take FOR them rather than describe. Only ever set
+       * for github.com, because `gh auth login` cannot help a GitLab failure.
+       */
+      fix?: "install-gh" | "auth-gh";
+      /** The command `install-gh` would run, so the copy can name it. */
+      fixCommand?: string;
+      /** A project was actually made — the form closes on this, not on silence. */
+      done?: boolean;
+    }
   /** Connected agents plus host-observed, view-only version facts. Version
    * fields are additive so an older host/client keeps the connection UI.
    * `needsLogin` is the account that is still configured but answered an
@@ -557,6 +615,13 @@ export type HostMsg =
       activeCwd: string;
       canAddProject?: boolean;
       /**
+       * The other two ways in, on the same channel and for the same reason.
+       * Optional and additive: a rail that never sees them offers the picker
+       * alone, which is what it did before there was anything else.
+       */
+      canCreateProject?: boolean;
+      canCloneProject?: boolean;
+      /**
        * The folder the EDITOR has open, which since history started following
        * the rail is no longer the same thing as `selectedCwd`. The VS Code rail
        * marks this one "Your IDE" and pins it to the top: you can be working in
@@ -669,6 +734,39 @@ export type WebviewMsg =
   | { type: "openSettingsSurface"; category?: string }
   /** Close the Grok settings editor tab (Escape / Close on that page). */
   | { type: "closeSettingsSurface" }
+  /**
+   * Retire one empty-state tip, for good, on this machine.
+   *
+   * Sent when the reader either acts on a tip or dismisses it — both mean the
+   * same thing, which is why there is one message and not two. Most tips retire
+   * on their own when the thing they advertise gets set up; this covers the ones
+   * that never would (Plan mode, `@` mentions) and the reader who has decided
+   * twice that they are not interested.
+   */
+  | { type: "dismissWelcomeTip"; id: string }
+  /**
+   * Make a project folder called `name` inside the host's one project root.
+   *
+   * A NAME, never a path — which is the entire reason this can be reachable
+   * from a phone when `addProjectFolder` never could. The client says what to
+   * call it; the host decides where it goes and refuses anything that resolves
+   * outside the root. See src/project-create.ts.
+   */
+  | { type: "createProject"; name: string }
+  /**
+   * Clone `url` into the same root, under the folder name the URL implies.
+   *
+   * Same containment: a URL is not a destination. Git's own credential helper
+   * does the authenticating — nothing here mints, stores or forwards a token.
+   */
+  | { type: "cloneProject"; url: string }
+  /**
+   * Install or sign in to the GitHub CLI, in a terminal on the desk.
+   *
+   * Offered only after a clone failed in a way `gh` would fix. Host-local: it
+   * opens an interactive terminal, which a remote can neither see nor answer.
+   */
+  | { type: "setupGithubCli"; action: "install" | "auth" }
   // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;
   // plain `panel` leaves the layout alone (view-move.ts § panelPositionFor).
   //
@@ -882,7 +980,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, moveViewHint: true, providerState: true, mcpServers: true, mcpConnectors: true, routines: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
+  initialState: true, moveViewHint: true, welcomeTips: true, projectSetup: true, providerState: true, mcpServers: true, mcpConnectors: true, routines: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -905,9 +1003,9 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, showInFolder: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
-  addProjectFolder: true, removeProjectFolder: true,
+  addProjectFolder: true, removeProjectFolder: true, createProject: true, cloneProject: true, setupGithubCli: true,
   openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true,
-  listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, moveView: true,
+  listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, dismissWelcomeTip: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,

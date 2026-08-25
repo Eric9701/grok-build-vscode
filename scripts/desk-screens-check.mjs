@@ -228,9 +228,189 @@ try {
   await shot("desk-1-chat");
   await assertNoBlankIcons("desk chat");
   await assertBarIcons("desk chat");
+
+  // ---- empty-state advice -------------------------------------------------
+  // happy-dom proves the wiring; only a real engine can say whether the line
+  // fits. Three ways this fails invisibly to a DOM suite: the row overflows the
+  // 30ch measure, the dismiss glyph renders as a zero-size box (the exact bug
+  // that shipped three empty icons through a green suite), or the tip paints
+  // UNDER the composer because the welcome column ran out of room.
+  const tip = await page.evaluate(() => {
+    const el = document.getElementById("welcome-tip");
+    if (!el) return null;
+    const welcome = document.getElementById("welcome");
+    const body = el.querySelector(".welcome-tip-body");
+    const close = el.querySelector(".welcome-tip-dismiss");
+    const action = el.querySelector(".muted-link, b");
+    const composer = document.querySelector("footer.composer");
+    const r = el.getBoundingClientRect();
+    const wr = welcome ? welcome.getBoundingClientRect() : null;
+    const cr = composer ? composer.getBoundingClientRect() : null;
+    const clr = close ? close.getBoundingClientRect() : null;
+    const ar = action ? action.getBoundingClientRect() : null;
+    return {
+      id: el.dataset.tip || "",
+      text: (body?.textContent || "").replace(/\s+/g, " ").trim(),
+      width: Math.round(r.width),
+      height: Math.round(r.height),
+      scrollW: el.scrollWidth,
+      clientW: el.clientWidth,
+      insideWelcome: !!(wr && r.top >= wr.top - 1 && r.bottom <= wr.bottom + 1),
+      aboveComposer: !!(cr && r.bottom <= cr.top + 1),
+      close: clr ? { w: Math.round(clr.width), h: Math.round(clr.height) } : null,
+      action: ar ? { w: Math.round(ar.width), h: Math.round(ar.height), tag: action.tagName } : null,
+      actionColor: action ? getComputedStyle(action).color : "",
+      bodyColor: body ? getComputedStyle(body).color : "",
+    };
+  });
+  assert.ok(tip, "desk chat: empty-state advice must render on a settled welcome screen");
+  assert.ok(tip.id, "desk chat: the tip must carry its id, so a screenshot says WHICH tip it is");
+  assert.ok(tip.text.length > 10, `desk chat: tip text looks empty — ${JSON.stringify(tip)}`);
+  assert.ok(tip.height > 10 && tip.width > 80, `desk chat: tip has no box — ${JSON.stringify(tip)}`);
+  assert.ok(
+    tip.scrollW <= tip.clientW + 1,
+    `desk chat: tip text overflows its own box (${tip.scrollW} > ${tip.clientW}) — ${JSON.stringify(tip)}`,
+  );
+  assert.ok(tip.insideWelcome, `desk chat: tip must sit inside the welcome block — ${JSON.stringify(tip)}`);
+  assert.ok(tip.aboveComposer, `desk chat: tip must not paint under the composer — ${JSON.stringify(tip)}`);
+  assert.ok(
+    tip.close && tip.close.w >= 6 && tip.close.h >= 6,
+    `desk chat: dismiss control rendered with no size — ${JSON.stringify(tip)}`,
+  );
+  assert.ok(
+    tip.action && tip.action.w >= 20 && tip.action.h >= 6,
+    `desk chat: the actionable span rendered with no size — ${JSON.stringify(tip)}`,
+  );
+  log(`welcome tip: ${tip.id} — "${tip.text}" (${tip.width}x${tip.height})`);
+  await shot("desk-1b-welcome-tip");
+
+  // Taking the advice opens the settings page it names and retires the line.
+  await page.click("#welcome-tip .muted-link");
+  await page.waitForTimeout(400);
+  const afterTake = await page.evaluate(() => ({
+    settingsOpen: !!document.getElementById("settings-overlay"),
+    category: document.querySelector(".settings-nav-item.active")?.dataset.category || "",
+    tip: document.getElementById("welcome-tip")?.dataset.tip || null,
+  }));
+  assert.ok(afterTake.settingsOpen, `desk chat: taking a tip must open Settings — ${JSON.stringify(afterTake)}`);
+  // The whole point of the owner's third request: the link must land on the
+  // RIGHT page, not merely open Settings somewhere.
+  assert.equal(
+    afterTake.category,
+    "providers",
+    `desk chat: the agents tip must open Settings on Providers — ${JSON.stringify(afterTake)}`,
+  );
+  await shot("desk-1c-welcome-tip-target");
+  log(`welcome tip target: settings open on "${afterTake.category}"`);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  const retired = await page.evaluate(
+    () => document.getElementById("welcome-tip")?.dataset.tip || null,
+  );
+  assert.notEqual(retired, tip.id, "desk chat: acting on advice must retire that advice");
   // Proves the host actually READ the fixture store. Without this the check
   // passes just as happily against an empty rail, which is exactly what a wrong
   // session-directory encoding produces — silently.
+  // ---- Add project ---------------------------------------------------------
+  // The menu and the form are built from the shared spec, so what a DOM test
+  // cannot see is whether the three rows fit the rail's popover width and
+  // whether the modal is centred over the app rather than clipped by it.
+  await page.click(".rail-add-project");
+  await page.waitForSelector(".rail-menu", { timeout: 5000 });
+  const menu = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".rail-menu-item")];
+    const box = document.querySelector(".rail-menu").getBoundingClientRect();
+    return {
+      labels: rows.map((r) => r.querySelector(".rail-menu-label")?.textContent?.trim() || ""),
+      descriptions: rows.map((r) => r.querySelector(".rail-menu-desc")?.textContent?.trim() || ""),
+      clipped: rows.some((r) => r.scrollWidth > r.clientWidth + 1),
+      onScreen: box.left >= 0 && box.right <= window.innerWidth && box.bottom <= window.innerHeight,
+      iconSizes: rows.map((r) => {
+        const svg = r.querySelector("svg");
+        const b = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+        return [Math.round(b.width), Math.round(b.height)];
+      }),
+    };
+  });
+  // Knowledge work is the desktop default, so cloning is not on this menu.
+  assert.deepEqual(menu.labels, ["New project", "Import a folder"], `desk: add-project menu — ${JSON.stringify(menu)}`);
+  assert.ok(menu.descriptions.every(Boolean), `desk: every entry needs its second line — ${JSON.stringify(menu)}`);
+  assert.ok(!menu.clipped, `desk: menu rows are clipped — ${JSON.stringify(menu)}`);
+  assert.ok(menu.onScreen, `desk: menu runs off the window — ${JSON.stringify(menu)}`);
+  // Painted, not a specific size: the rail scales its own glyphs, and pinning
+  // the number here would fail the next time that scale is tuned. Zero is the
+  // failure worth catching — three empty boxes once shipped through a green
+  // suite and three review rounds.
+  assert.ok(
+    menu.iconSizes.every(([w, h]) => w >= 10 && h >= 10),
+    `desk: menu icons rendered with no size — ${JSON.stringify(menu)}`,
+  );
+  await shot("desk-1d-add-project-menu");
+  log(`add project menu: ${menu.labels.join(" / ")}`);
+
+  await page.click(".rail-menu-item");
+  await page.waitForSelector(".add-project-form", { timeout: 5000 });
+  await page.fill(".add-project-input", "Q3 Positioning");
+  const formBox = await page.evaluate(() => {
+    const el = document.querySelector(".add-project-form");
+    const b = el.getBoundingClientRect();
+    return {
+      dest: document.querySelector(".add-project-dest").textContent.trim(),
+      submitLabel: document.querySelector(".add-project-primary").textContent.trim(),
+      submitEnabled: !document.querySelector(".add-project-primary").disabled,
+      onScreen: b.top >= 0 && b.bottom <= window.innerHeight && b.left >= 0 && b.right <= window.innerWidth,
+      width: Math.round(b.width),
+      focused: document.activeElement?.className || "",
+      scrimCovers: (() => {
+        const s = document.querySelector(".add-project-scrim").getBoundingClientRect();
+        return Math.round(s.width) === window.innerWidth && Math.round(s.height) === window.innerHeight;
+      })(),
+    };
+  });
+  // The point of the whole feature: nobody types a path, and everybody sees one.
+  assert.equal(formBox.dest, "~/Grok Build/Q3 Positioning", `desk: destination preview — ${JSON.stringify(formBox)}`);
+  assert.ok(formBox.submitEnabled, `desk: Create stayed disabled — ${JSON.stringify(formBox)}`);
+  assert.ok(formBox.onScreen, `desk: the form is clipped by the window — ${JSON.stringify(formBox)}`);
+  assert.ok(formBox.scrimCovers, `desk: the scrim does not cover the window — ${JSON.stringify(formBox)}`);
+  assert.ok(
+    formBox.focused.includes("add-project-input"),
+    `desk: the form must open with the caret in the field — ${JSON.stringify(formBox)}`,
+  );
+  await shot("desk-1e-add-project-form");
+  log(`add project form: ${formBox.dest} (${formBox.width}px, focus ${formBox.focused})`);
+
+  // A failure keeps the form up with something to act on. Driven through the
+  // host frame rather than a real clone — the shape is what is being checked.
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent("message", { data: {
+    type: "projectSetup",
+    root: "~/Grok Build",
+    error: "Git couldn't authenticate. If the repository is private, you need to sign in first.",
+    fix: "auth-gh",
+  } })));
+  const failed = await page.evaluate(() => {
+    const err = document.querySelector(".add-project-error");
+    const fix = document.querySelector(".add-project-fix");
+    return {
+      stillOpen: !!document.querySelector(".add-project-form"),
+      error: err && !err.hidden ? err.textContent.trim() : "",
+      fix: fix && !fix.hidden ? fix.textContent.trim() : "",
+      fixBox: fix ? Math.round(fix.getBoundingClientRect().height) : 0,
+    };
+  });
+  assert.ok(failed.stillOpen, "desk: a failed attempt must not close the form");
+  assert.ok(failed.error.includes("sign in"), `desk: failure text — ${JSON.stringify(failed)}`);
+  assert.equal(failed.fix, "Sign in to GitHub", `desk: the offered fix — ${JSON.stringify(failed)}`);
+  assert.ok(failed.fixBox >= 10, `desk: the fix button has no box — ${JSON.stringify(failed)}`);
+  await shot("desk-1f-add-project-failure");
+  log(`add project failure: "${failed.error}" → ${failed.fix}`);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  assert.equal(
+    await page.evaluate(() => !!document.querySelector(".add-project-form")),
+    false,
+    "desk: Escape must close the form",
+  );
+
   const railTitles = await page.evaluate(
     () => [...document.querySelectorAll(".rail-session .rail-session-name, .rail-session")]
       .map((n) => (n.textContent || "").trim()).filter(Boolean),

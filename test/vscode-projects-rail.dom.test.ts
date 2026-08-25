@@ -746,7 +746,7 @@ describe("VS Code projects rail renderer", () => {
       });
       const link = doc.querySelector(".rail-empty-action") as HTMLButtonElement;
       expect(link).toBeTruthy();
-      expect(link.textContent).toBe("Add a project folder");
+      expect(link.textContent).toBe("Add a project");
       posted.length = 0;
       link.click();
       expect(posted).toEqual([{ type: "addProjectFolder" }]);

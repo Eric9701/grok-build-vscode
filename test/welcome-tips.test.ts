@@ -1,0 +1,234 @@
+/**
+ * Empty-state advice — the two pure halves.
+ *
+ *  - `src/welcome-tips.ts`: the host's bounded store of retired ids. Knows
+ *    nothing about which tips exist, on purpose.
+ *  - `media/webview-helpers.js`: the catalogue and the eligibility rule, which
+ *    is where every fact a tip reads actually lives.
+ *
+ * The seam between them is that an unknown id is harmless in both directions —
+ * the host stores anything id-shaped, the client skips anything it does not
+ * recognise — so the two never need a version check.
+ */
+import { describe, expect, it } from "vitest";
+import {
+  WELCOME_TIPS_DISMISS_LIMIT,
+  WELCOME_TIPS_KEY,
+  isWelcomeTipId,
+  parseDismissedTips,
+  withDismissedTip,
+} from "../src/welcome-tips";
+import {
+  WELCOME_TIPS,
+  splitWelcomeTipCopy,
+  welcomeTipById,
+  welcomeTipsFor,
+} from "../media/webview-helpers.js";
+
+/** A fully set-up desk user: every tip that CAN retire itself, has. */
+const SETTLED = {
+  appPurpose: "knowledge",
+  isRemote: false,
+  altAgentConnected: true,
+  routineCount: 3,
+  connectorCount: 2,
+  readRepliesAloud: true,
+  voiceConfigured: true,
+  remoteLinked: true,
+  dismissed: [] as string[],
+};
+
+/** A first-run desk user: nothing set up, everything eligible. */
+const FRESH = {
+  appPurpose: "knowledge",
+  isRemote: false,
+  altAgentConnected: false,
+  routineCount: 0,
+  connectorCount: 0,
+  readRepliesAloud: false,
+  voiceConfigured: false,
+  remoteLinked: false,
+  dismissed: [] as string[],
+};
+
+const ids = (facts: unknown) =>
+  (welcomeTipsFor(facts) as { id: string }[]).map((t) => t.id);
+
+describe("host store (src/welcome-tips.ts)", () => {
+  it("keys off client-state, not a VS Code-only globalState bucket", () => {
+    expect(WELCOME_TIPS_KEY).toBe("grok.welcomeTips");
+  });
+
+  it("accepts id-shaped strings and refuses anything path-like", () => {
+    expect(isWelcomeTipId("routines")).toBe(true);
+    expect(isWelcomeTipId("read_aloud-2")).toBe(true);
+    expect(isWelcomeTipId("")).toBe(false);
+    expect(isWelcomeTipId("../../etc/passwd")).toBe(false);
+    expect(isWelcomeTipId("a.b")).toBe(false);
+    expect(isWelcomeTipId("has space")).toBe(false);
+    expect(isWelcomeTipId("x".repeat(65))).toBe(false);
+    expect(isWelcomeTipId(42)).toBe(false);
+  });
+
+  it("reads a record map and ignores everything that is not id -> true", () => {
+    expect(parseDismissedTips({ plan: true, mentions: true })).toEqual(["mentions", "plan"]);
+    expect(parseDismissedTips({ plan: false })).toEqual([]);
+    expect(parseDismissedTips({ "../x": true })).toEqual([]);
+  });
+
+  it("degrades a legacy array (or junk) to nothing retired rather than throwing", () => {
+    // An array is exactly what PersistedState.validValue rejects, so this is the
+    // shape a hand-edited or pre-migration file would hold.
+    expect(parseDismissedTips(["plan"])).toEqual([]);
+    expect(parseDismissedTips(null)).toEqual([]);
+    expect(parseDismissedTips("plan")).toEqual([]);
+    expect(parseDismissedTips(undefined)).toEqual([]);
+  });
+
+  it("adds an id and carries the existing entries through verbatim", () => {
+    expect(withDismissedTip({ plan: true }, "mentions")).toEqual({ plan: true, mentions: true });
+  });
+
+  it("keeps an id a NEWER client wrote that this host has never heard of", () => {
+    // The whole reason the host holds no catalogue: a client one version ahead
+    // must not have its retirement dropped on the next write.
+    expect(withDismissedTip({ somethingNewer: true }, "plan")).toEqual({
+      somethingNewer: true,
+      plan: true,
+    });
+  });
+
+  it("answers null for a no-op write so the caller does not re-broadcast", () => {
+    expect(withDismissedTip({ plan: true }, "plan")).toBeNull();
+    expect(withDismissedTip({}, "../etc")).toBeNull();
+    expect(withDismissedTip({}, "")).toBeNull();
+    expect(withDismissedTip({}, undefined)).toBeNull();
+  });
+
+  it("refuses to grow past the ceiling", () => {
+    const full: Record<string, true> = {};
+    for (let i = 0; i < WELCOME_TIPS_DISMISS_LIMIT; i++) full[`tip${i}`] = true;
+    expect(withDismissedTip(full, "onemore")).toBeNull();
+    // One under the limit still writes.
+    delete full.tip0;
+    expect(withDismissedTip(full, "onemore")).not.toBeNull();
+  });
+});
+
+describe("tip catalogue (media/webview-helpers.js)", () => {
+  it("has unique ids and exactly one actionable span per line", () => {
+    const seen = new Set<string>();
+    for (const tip of WELCOME_TIPS as { id: string; copy: string }[]) {
+      expect(seen.has(tip.id), `duplicate id ${tip.id}`).toBe(false);
+      seen.add(tip.id);
+      expect(tip.copy.match(/\{/g)?.length, `${tip.id} braces`).toBe(1);
+      expect(tip.copy.match(/\}/g)?.length, `${tip.id} braces`).toBe(1);
+      expect(splitWelcomeTipCopy(tip.copy).action.length, `${tip.id} action`).toBeGreaterThan(0);
+    }
+  });
+
+  it("points every settings target at a category the settings page actually has", () => {
+    // The nav ids in media/settings.js. A tip linking to a category that does
+    // not exist opens the page on nothing, which is the failure this pins.
+    const CATEGORIES = new Set([
+      "general", "voice", "notifications", "providers",
+      "routines", "connectors", "account", "advanced", "about",
+    ]);
+    for (const tip of WELCOME_TIPS as { id: string; target: string | null }[]) {
+      if (!tip.target || tip.target.indexOf("settings:") !== 0) continue;
+      const category = tip.target.slice("settings:".length);
+      expect(CATEGORIES.has(category), `${tip.id} -> ${category}`).toBe(true);
+    }
+  });
+
+  it("uses only targets the renderer knows how to open", () => {
+    const KNOWN = new Set(["mode", "mention"]);
+    for (const tip of WELCOME_TIPS as { id: string; target: string | null }[]) {
+      if (tip.target === null) continue;
+      if (tip.target.indexOf("settings:") === 0) continue;
+      expect(KNOWN.has(tip.target), `${tip.id} -> ${tip.target}`).toBe(true);
+    }
+  });
+
+  it("returns undefined for an id from a newer host rather than throwing", () => {
+    expect(welcomeTipById("routines")).toBeTruthy();
+    expect(welcomeTipById("tip-from-the-future")).toBeUndefined();
+  });
+
+  it("splits copy into text, action, text", () => {
+    expect(splitWelcomeTipCopy("a {b} c")).toEqual({ before: "a ", action: "b", after: " c" });
+    // Copy with no braced span renders as a plain sentence rather than throwing.
+    expect(splitWelcomeTipCopy("no action here")).toEqual({
+      before: "no action here", action: "", after: "",
+    });
+    expect(splitWelcomeTipCopy(undefined)).toEqual({ before: "", action: "", after: "" });
+  });
+});
+
+describe("eligibility", () => {
+  it("offers the full desk pool to a first-run user", () => {
+    expect(ids(FRESH)).toEqual([
+      "providers", "routines", "connectors", "remote", "readAloud", "voice", "plan", "mentions",
+    ]);
+  });
+
+  it("keeps only the tips nothing can retire once everything is set up", () => {
+    // Plan and @ mentions are habits, not settings — they have no state to flip,
+    // so dismissal is the only thing that retires them.
+    expect(ids(SETTLED)).toEqual(["plan", "mentions"]);
+  });
+
+  it("drops the agents tip as soon as ONE of Codex or Claude is connected", () => {
+    // The owner's rule: a second agent existing is the whole lesson.
+    expect(ids(FRESH)).toContain("providers");
+    expect(ids({ ...FRESH, altAgentConnected: true })).not.toContain("providers");
+  });
+
+  it("never offers worktrees in Knowledge work", () => {
+    expect(ids({ ...FRESH, appPurpose: "knowledge" })).not.toContain("worktrees");
+    expect(ids({ ...FRESH, appPurpose: "coding" })).toContain("worktrees");
+  });
+
+  it("hides desk-only advice from a phone", () => {
+    const remote = ids({ ...FRESH, isRemote: true });
+    // Signing an agent in, linking a connector and starting a worktree are all
+    // host-local; "continue on your phone" is being read ON the phone.
+    for (const deskOnly of ["providers", "connectors", "remote", "worktrees"]) {
+      expect(remote, deskOnly).not.toContain(deskOnly);
+    }
+    expect(remote).toEqual(["routines", "readAloud", "voice", "plan", "mentions"]);
+  });
+
+  it("suppresses count-dependent tips when the host never sent the counts", () => {
+    // An older host posts no welcomeTips frame at all. Reading that absence as
+    // "zero routines" would advertise routines to someone running twenty.
+    const noCounts = { ...FRESH, routineCount: undefined, connectorCount: undefined };
+    expect(ids(noCounts)).not.toContain("routines");
+    expect(ids(noCounts)).not.toContain("connectors");
+    expect(ids(noCounts)).toContain("providers");
+  });
+
+  it("treats an unread device token (null) as no invitation to link", () => {
+    // remoteLinked is tri-state: null means the host has not answered yet, and
+    // inviting an already-linked machine to link again is the confusion that
+    // tri-state exists to prevent.
+    expect(ids({ ...FRESH, remoteLinked: null })).not.toContain("remote");
+    expect(ids({ ...FRESH, remoteLinked: false })).toContain("remote");
+    expect(ids({ ...FRESH, remoteLinked: true })).not.toContain("remote");
+  });
+
+  it("honours retirement, from either an array or a record map", () => {
+    expect(ids({ ...FRESH, dismissed: ["providers", "plan"] })).not.toContain("providers");
+    expect(ids({ ...FRESH, dismissed: { providers: true } })).not.toContain("providers");
+  });
+
+  it("can empty completely, which is what puts the screen back as it is today", () => {
+    const done = { ...SETTLED, dismissed: ["plan", "mentions"] };
+    expect(ids(done)).toEqual([]);
+  });
+
+  it("survives being handed nothing at all", () => {
+    expect(() => welcomeTipsFor(undefined)).not.toThrow();
+    expect(() => welcomeTipsFor({})).not.toThrow();
+  });
+});

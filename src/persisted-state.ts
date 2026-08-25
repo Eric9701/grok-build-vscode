@@ -80,6 +80,12 @@ export const DISK_KEYS: Readonly<Record<string, string>> = {
   // opposite of what the cache, the globalState shadow and the rebase-on-write
   // in here are for. See src/routine-store.ts.
   "grok.routines": "routines.json",
+  // Empty-state tips the user is finished with — a record map of id -> true,
+  // never an array (validValue accepts a string scalar or a record map, and an
+  // array is silently rejected; the routines list learned that the hard way).
+  // Machine-wide on purpose: the desk and a linked phone show subsets of the
+  // same pool to the same person.
+  "grok.welcomeTips": "welcome-tips.json",
 };
 
 export class PersistedState {

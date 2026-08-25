@@ -212,6 +212,23 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // Writes host state (globalState), same as the repo pin — classified with it
   // rather than as a view op, even though nothing is destroyed.
   toggleSessionPin: "full",
+  // Retires one empty-state tip machine-wide. Same class as the repo pin: it
+  // writes a host note and reaches nothing else. Deliberately NOT host-local —
+  // a phone is shown a filtered subset of the same tips, and a reader who can
+  // see a tip must be able to be done with it.
+  dismissWelcomeTip: "full",
+  // Making a project is NOT addProjectFolder, and the difference is the
+  // whole reason these two are reachable from a phone while that one is
+  // not. `addProjectFolder` opens a native picker (nothing for a remote to
+  // see) and accepts whatever path comes back. These accept a NAME and a
+  // URL; the host derives the destination inside its own single root and
+  // refuses anything that resolves outside it (src/project-create.ts). A
+  // remote can say what, never where.
+  createProject: "full",
+  cloneProject: "full",
+  // The follow-up when a clone failed on credentials: opens an INTERACTIVE
+  // terminal on the desk, which a remote can neither see nor answer.
+  setupGithubCli: "host-local",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
@@ -580,6 +597,16 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   // Placement is a property of the machine running the extension, and `moveView`
   // is host-local anyway — a remote could neither act on the hint nor need it.
   moveViewHint: "host-local",
+  // Empty-state advice. Mirrored because the pool is per-CLIENT, not per-host:
+  // the desk-only entries are filtered by the reader (welcomeTipsFor reads
+  // isRemote), and what is left here is two counts and a list of ids the user
+  // has finished with. No project data, no payload — see the type.
+  welcomeTips: "mirror",
+  // Where new projects go and how the last attempt went. `root` is the
+  // display form (`~/Grok Build`) and nothing here carries a created path —
+  // the repo catalog delivers that, already trimmed to what this client may
+  // reach. So there is no project data in the frame to authorize.
+  projectSetup: "mirror",
   showThinking: "mirror",
   appPurpose: "mirror",
   fontScale: "mirror",
@@ -707,6 +734,8 @@ export type OutboundProjectAuth =
 export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth> = {
   // Device-global / host chrome — not project data.
   moveViewHint: "none",
+  welcomeTips: "none",
+  projectSetup: "none",
   showThinking: "none",
   appPurpose: "none",
   fontScale: "none",

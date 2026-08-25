@@ -391,6 +391,23 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "uiConfirmAnswer":
       if (!isString(raw.id) || !isBoolean(raw.ok)) return null;
       break;
+    case "createProject":
+      // Bounded here as well as in the host: the name becomes a path segment,
+      // and an unbounded string should not reach the code that joins it.
+      if (!isString(raw.name) || !raw.name || raw.name.length > 256) return null;
+      break;
+    case "cloneProject":
+      if (!isString(raw.url) || !raw.url || raw.url.length > 2048) return null;
+      break;
+    case "setupGithubCli":
+      if (raw.action !== "install" && raw.action !== "auth") return null;
+      break;
+    case "dismissWelcomeTip":
+      // Bounded because it becomes a key in a persisted record map. The host
+      // also refuses ids it does not know, but a length cap here keeps an
+      // unbounded string out of that file in the first place.
+      if (!isString(raw.id) || !raw.id || raw.id.length > 64) return null;
+      break;
     case "workflowControl":
       if (raw.action !== "pause" && raw.action !== "resume" && raw.action !== "stop") {
         return null;
