@@ -259,6 +259,14 @@ try {
       aboveComposer: !!(cr && r.bottom <= cr.top + 1),
       close: clr ? { w: Math.round(clr.width), h: Math.round(clr.height) } : null,
       action: ar ? { w: Math.round(ar.width), h: Math.round(ar.height), tag: action.tagName } : null,
+      // A 512-viewBox SVG with no width/height renders as an empty box, which
+      // is precisely the defect class this harness was written for.
+      bulb: (() => {
+        const svg = el.querySelector(".welcome-tip-bulb svg");
+        if (!svg) return null;
+        const b = svg.getBoundingClientRect();
+        return { w: Math.round(b.width), h: Math.round(b.height), fill: getComputedStyle(svg).fill };
+      })(),
       actionColor: action ? getComputedStyle(action).color : "",
       bodyColor: body ? getComputedStyle(body).color : "",
     };
@@ -281,7 +289,11 @@ try {
     tip.action && tip.action.w >= 20 && tip.action.h >= 6,
     `desk chat: the actionable span rendered with no size — ${JSON.stringify(tip)}`,
   );
-  log(`welcome tip: ${tip.id} — "${tip.text}" (${tip.width}x${tip.height})`);
+  assert.ok(
+    tip.bulb && tip.bulb.w >= 8 && tip.bulb.h >= 8,
+    `desk chat: the advice mark rendered with no size — ${JSON.stringify(tip)}`,
+  );
+  log(`welcome tip: ${tip.id} — "${tip.text}" (${tip.width}x${tip.height}), mark ${tip.bulb.w}x${tip.bulb.h} ${tip.bulb.fill}`);
   await shot("desk-1b-welcome-tip");
 
   // Taking the advice opens the settings page it names and retires the line.

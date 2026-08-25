@@ -260,6 +260,33 @@ describe("empty-state advice", () => {
     expect(tipId(h)).not.toBe(first);
   });
 
+  it("marks the tip with a drawn icon, not an emoji", () => {
+    // An emoji is whatever the reader's OS decides — a saturated yellow
+    // cartoon on one platform, a flat outline on another, and never the muted
+    // colour of the sentence it introduces.
+    const h = bootWebview({ ready: false });
+    settle(h);
+    const bulb = h.doc.querySelector("#welcome-tip .welcome-tip-bulb")!;
+    expect(bulb.querySelector("svg")).toBeTruthy();
+    expect(bulb.textContent).toBe("");
+    // currentColor, so it takes the tip's colour in both themes. The source
+    // paths carry no fill of their own and would otherwise render black.
+    expect(bulb.querySelector("svg")!.getAttribute("fill")).toBe("currentColor");
+    expect(bulb.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("gives the move-view hint the same mark, since they share the slot", () => {
+    const h = bootWebview({ ready: false, vscode: true });
+    dispatch(h.window, {
+      ...INITIAL_STATE,
+      capabilities: { uploadFile: true, remoteVoice: true, moveViewHint: true },
+    });
+    settle(h);
+    expect(tipId(h)).toBe("moveView");
+    expect(h.doc.querySelector("#welcome-tip .welcome-tip-bulb svg")).toBeTruthy();
+    expect(tipText(h)).not.toContain("\u{1F4A1}");
+  });
+
   it("does not render tip copy as markup", () => {
     const h = bootWebview({ ready: false });
     settle(h);
