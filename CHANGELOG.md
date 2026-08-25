@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.17.2 — 2026-08-25
+
+### Fixed
+
+- **The routine model picker lists each agent once.** It was showing every provider twice — three headings holding a single "use this agent's default" row, then three more holding the real models. The default row is now offered only where it means something: when an agent has no other model to show yet, or when a routine is already set to it. New routines start on a real model, the way the composer does.
+
 ## 3.17.1 — 2026-08-25
 
 ### Fixed

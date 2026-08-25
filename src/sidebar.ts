@@ -1167,26 +1167,26 @@ export class GrokSidebar {
     // `usableProviders`, not merely connected: a provider that cannot answer
     // must not be offerable, or a routine saves against a model that will skip
     // every time it fires.
-    // Keep the `defaultImplied` rows, which carry an EMPTY modelId on purpose:
-    // a provider whose model list has not been fetched yet still contributes
-    // "<Provider> default", meaning "whatever that agent picks". Filtering on a
-    // non-empty modelId dropped every one of them, so a fresh desktop — where
-    // nothing has opened the model picker and the cache is empty — offered no
-    // models at all and read as "nothing is connected". An empty model is a
-    // valid routine: it means the same as not choosing one in the composer.
+    //
+    // Ordered PROVIDER BY PROVIDER, each provider's "<X> default" row first and
+    // its concrete models after. Emitting all the default rows and then all the
+    // models put every provider in the list twice, and the client groups by
+    // consecutive provider — so the picker showed six headings for three agents.
+    //
+    // The default row is always sent. Whether it is DISPLAYED is the client's
+    // call: it is meaningless clutter beside real models (the composer does not
+    // offer it either), but it must exist for a routine already saved with an
+    // empty model, or editing one would silently re-point it.
     const cache = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
     const providers = this.usableProviders();
+    const all = modelsForConnectedProviders(providers, cache);
     const out: RoutineModelOption[] = [];
     for (const provider of providers) {
-      // Offered ALWAYS, not only while the cache is empty. "Use this agent's
-      // default" is a real choice a routine can hold for months, so it has to
-      // survive model discovery — otherwise editing such a routine finds no
-      // matching option and silently re-points it at a concrete model.
       out.push({ provider, model: "", label: `${providerDisplayName(provider)} default` });
-    }
-    for (const m of modelsForConnectedProviders(providers, cache)) {
-      if (!m.modelId) continue; // the sentinel, already emitted above
-      out.push({ provider: m.provider, model: m.modelId, label: m.name || m.modelId });
+      for (const m of all) {
+        if (m.provider !== provider || !m.modelId) continue;
+        out.push({ provider, model: m.modelId, label: m.name || m.modelId });
+      }
     }
     return out;
   }
