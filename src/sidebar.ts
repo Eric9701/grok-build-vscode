@@ -1288,14 +1288,18 @@ export class GrokSidebar {
    * lists here would put routine prompts on the wire for a client that never
    * asked for them.
    */
-  private postWelcomeTips(): void {
-    this.post({
+  private welcomeTipsMessage(): Extract<HostMsg, { type: "welcomeTips" }> {
+    return {
       type: "welcomeTips",
       routineCount: this.loadRoutines().length,
       connectorCount: Object.keys(this.connectedConnectorStore()).length,
       dismissed: parseDismissedTips(this.state.get(WELCOME_TIPS_KEY, {})),
       shownToday: shownOn(this.state.get(WELCOME_TIPS_SHOWN_KEY, {}), localDayKey(new Date())),
-    });
+    };
+  }
+
+  private postWelcomeTips(): void {
+    this.post(this.welcomeTipsMessage());
   }
 
   /**
@@ -5607,14 +5611,20 @@ Only continue if you trust this code.`,
    * only to show where the folder will be, and a remote has no business
    * learning the desk's home directory.
    */
-  private postProjectSetup(
+  private projectSetupMessage(
     extra: Omit<Extract<HostMsg, { type: "projectSetup" }>, "type" | "root"> = {},
-  ): void {
-    this.post({
+  ): Extract<HostMsg, { type: "projectSetup" }> {
+    return {
       type: "projectSetup",
       root: displayPath(this.projectRootPath(), this.projectHomeDir()),
       ...extra,
-    });
+    };
+  }
+
+  private postProjectSetup(
+    extra: Omit<Extract<HostMsg, { type: "projectSetup" }>, "type" | "root"> = {},
+  ): void {
+    this.post(this.projectSetupMessage(extra));
   }
 
   /**
@@ -16922,6 +16932,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     snap.push(this.providerStateMessage());
     snap.push(this.mcpConnectorsMessage());
     snap.push(this.mcpServersMessage());
+    // SIXTH hand-written registry, and it is not the same one as
+    // DEVICE_GLOBAL_REMOTE_TYPES. That set decides how a frame is ROUTED once
+    // something posts it; this list decides whether a newly-connected browser
+    // ever receives it at all. Both are needed and TypeScript enforces neither.
+    //
+    // Without these two, a phone came up with no tip facts and no project root:
+    // every count read as unknown, the dismissed list read as empty, so a tip
+    // the user had retired weeks ago came back on every empty screen and the
+    // once-a-day rule never applied — the host was recording faithfully and
+    // nobody was listening.
+    snap.push(this.welcomeTipsMessage());
+    snap.push(this.projectSetupMessage());
     snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
