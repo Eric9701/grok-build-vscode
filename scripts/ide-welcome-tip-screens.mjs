@@ -303,6 +303,94 @@ try {
   log(`ide add project form (340px): ${ideForm.dest}, ${ideForm.width}px wide`);
   await page.keyboard.press("Escape");
 
+  // ---- happy path: New project, all the way to a closed form ---------------
+  // Every other shot stops at the form. This one follows it to the end, which
+  // is the only place the `done` frame is proved to close anything.
+  await page.setViewportSize({ width: 420, height: 760 });
+  await page.waitForTimeout(150);
+  await page.evaluate(() => {
+    const card = document.getElementById("welcome-onboarding");
+    card.innerHTML = '<button class="onb-action" type="button" data-act="addProjectFolder">Add project</button>';
+    card.querySelector("button").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await page.waitForSelector(".rail-menu", { timeout: 5000 });
+  const newRow = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll(".rail-menu-item")];
+    const i = rows.findIndex((r) => (r.querySelector(".rail-menu-label")?.textContent || "").trim() === "New project");
+    if (i >= 0) rows[i].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    return i;
+  });
+  assert.ok(newRow >= 0, "ide: New project must be on the menu");
+  await page.waitForSelector(".add-project-form", { timeout: 5000 });
+  await page.fill(".add-project-input", "Q3 Positioning");
+  const preview = await page.evaluate(() => document.querySelector(".add-project-dest").textContent.trim());
+  assert.equal(preview, "~/Grok Build/Q3 Positioning", `ide: destination preview — ${preview}`);
+  await shot("ide-8-new-project-typed");
+
+  // Busy, then done. Both frames drive the same form.
+  await send({ type: "projectSetup", root: "~/Grok Build", busy: "new" });
+  await page.waitForTimeout(120);
+  const busy = await page.evaluate(() => ({
+    label: document.querySelector(".add-project-primary").textContent.trim(),
+    disabled: document.querySelector(".add-project-primary").disabled,
+    inputDisabled: document.querySelector(".add-project-input").disabled,
+  }));
+  assert.equal(busy.label, "Creating…", `ide: busy label — ${JSON.stringify(busy)}`);
+  assert.ok(busy.disabled && busy.inputDisabled, `ide: busy must lock the form — ${JSON.stringify(busy)}`);
+  await shot("ide-9-new-project-busy");
+
+  await send({ type: "projectSetup", root: "~/Grok Build", done: true });
+  await page.waitForTimeout(200);
+  const closed = await page.evaluate(() => ({
+    form: !!document.querySelector(".add-project-form"),
+    scrim: !!document.querySelector(".add-project-scrim"),
+  }));
+  assert.ok(!closed.form && !closed.scrim, `ide: done must close the form AND its scrim — ${JSON.stringify(closed)}`);
+  log("new project: typed -> busy -> done -> form closed");
+
+  // ---- the worktree tip, which is Coding-only and now has an action --------
+  // Clear the button this harness injected to reach the menu: a non-empty
+  // onboarding card correctly suppresses tips, so leaving it there would be the
+  // harness hiding the thing it came to photograph.
+  await page.evaluate(() => { document.getElementById("welcome-onboarding").innerHTML = ""; });
+  await send({
+    type: "welcomeTips",
+    routineCount: 3,
+    connectorCount: 7,
+    dismissed: ["providers", "routines", "connectors", "remote", "readAloud", "voice", "mentions"],
+    shownToday: [],
+  });
+  await send({ type: "remoteStatus", linked: true });
+  await page.waitForTimeout(200);
+  const wt = await page.evaluate(() => {
+    const el = document.getElementById("welcome-tip");
+    if (!el) return null;
+    const act = el.querySelector(".muted-link");
+    const b = act ? act.getBoundingClientRect() : null;
+    return {
+      id: el.dataset.tip,
+      text: (el.querySelector(".welcome-tip-body")?.textContent || "").replace(/\s+/g, " ").trim(),
+      action: act ? act.textContent.trim() : null,
+      actionW: b ? Math.round(b.width) : 0,
+      closeTitle: el.querySelector(".welcome-tip-dismiss")?.title || "",
+    };
+  });
+  assert.ok(wt, "ide: the worktree tip must be the one left standing");
+  assert.equal(wt.id, "worktrees", `ide: expected the worktree tip — ${JSON.stringify(wt)}`);
+  assert.equal(wt.action, "Start it in a worktree", `ide: worktree action — ${JSON.stringify(wt)}`);
+  assert.ok(wt.actionW > 20, `ide: worktree action has no box — ${JSON.stringify(wt)}`);
+  // The owner's rule, visible in the tooltip.
+  assert.equal(wt.closeTitle, "Not today", `ide: X must say what it means — ${JSON.stringify(wt)}`);
+  await shot("ide-10-worktree-tip");
+  log(`worktree tip: "${wt.text}" -> ${wt.action}`);
+
+  // It fires the real thing.
+  await page.click("#welcome-tip .muted-link");
+  await page.waitForTimeout(150);
+  const fired = await page.evaluate(() => window.__posted.filter((m) => m.type === "newWorktreeSession").length);
+  assert.equal(fired, 1, "ide: the worktree link must start a worktree session");
+  log("worktree tip link posts newWorktreeSession");
+
   assert.deepEqual(errors, [], `page errors: ${JSON.stringify(errors)}`);
   log("ALL CHECKS PASSED — frames in .screens/");
 } finally {

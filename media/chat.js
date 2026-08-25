@@ -7482,8 +7482,8 @@
    * same mistake the dismiss control made, where an effect that depended on a
    * frame landing silently did nothing when it had not.
    */
-  function noteWelcomeTipShown(id) {
-    if (welcomeTipsNoted.has(id)) return;
+  function noteWelcomeTipShown(id, force) {
+    if (!force && welcomeTipsNoted.has(id)) return;
     welcomeTipsNoted.add(id);
     const host = state.welcomeTips;
     if (host && Array.isArray(host.shownToday) && host.shownToday.indexOf(id) < 0) {
@@ -7495,14 +7495,21 @@
   /** The X: done with this one for today. */
   function closeWelcomeTipForToday(id) {
     welcomeTipsClosedHere.add(id);
-    // Belt as well as braces: the render already noted it, but if that frame
-    // never reached the host there would be no record and tomorrow would look
-    // exactly like today.
-    noteWelcomeTipShown(id);
+    // `force`, because the render already noted this id and the once-guard
+    // would otherwise swallow the message. That guard exists to stop repaints
+    // rewriting the file all afternoon; a deliberate close is not a repaint,
+    // and if the render's note never reached the host then without this one
+    // tomorrow would look exactly like today. The host is idempotent per day,
+    // so the extra message costs nothing when the first one did arrive.
+    noteWelcomeTipShown(id, true);
   }
 
-  /** Where a tip's action goes. Every destination is real - a tip whose target
-   *  cannot be opened from an empty screen carries no link at all (worktrees). */
+  /**
+   * Where a tip's action goes. Every destination is real and reachable from an
+   * empty screen — that is the bar a tip has to clear to earn a link at all,
+   * and the reason the Plan tip was removed rather than given one: it pointed
+   * at a mode menu, which is a control, not work.
+   */
   function runWelcomeTipTarget(target) {
     if (typeof target !== "string") return;
     if (target.indexOf("settings:") === 0) {
