@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.17.1 — 2026-08-25
+
+### Fixed
+
+- **Routines now load in the VS Code Settings tab.** Opening Settings as a tab (rather than through the chat panel) left the Routines page saying "Loading routines…" and never finishing. The tab listens for its own updates and had never been told about routines, so the answer arrived and was dropped. The chat panel and the desktop app were unaffected.
+
 ## 3.17.0 — 2026-08-24
 
 ### Added

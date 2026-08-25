@@ -447,6 +447,24 @@ describe("the three surfaces this page has to reach", () => {
     expect(block("private static readonly DEVICE_GLOBAL_REMOTE_TYPES")).toContain('"routines"');
   });
 
+  it("the standalone Settings tab LISTENS for the routines frame", () => {
+    // Fifth hand-written registry the same message type has to be named in, and
+    // TypeScript enforces none of them. The tab renders settings.js with its own
+    // inline listener; a type missing there is received and silently dropped, so
+    // the page sat on "Loading routines…" for ever. Pre-existing — before the
+    // loading state it defaulted to [] and merely lied about having none.
+    const start = sidebarSrc.indexOf('window.addEventListener("message"');
+    expect(start).toBeGreaterThan(-1);
+    const listener = sidebarSrc.slice(start, sidebarSrc.indexOf("settingsCategory", start) + 40);
+    // The EXACT conditional, not just the string: a dead branch such as
+    // `false && msg.type === "routines"` still contains the substring.
+    expect(listener).toContain('if (msg.type === "routines") {');
+    expect(listener).toContain("routineProjects");
+    expect(listener).toContain("routineModels");
+    // And the relay's quota bounce, which is the only answer a refused save gets.
+    expect(listener).toContain('if (msg.type === "error") {');
+  });
+
   it("accepts every routine message from the standalone Settings tab", () => {
     // That tab loads settings.js and nothing else. Anything missing here is
     // answered with "[settings] ignored <type>" and the page cannot function.

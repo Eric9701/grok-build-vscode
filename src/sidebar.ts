@@ -16898,6 +16898,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             mcpConnectors: Array.isArray(msg.connectors) ? msg.connectors : [],
           });
         }
+        if (msg.type === "routines") {
+          surface.update({
+            routines: Array.isArray(msg.entries) ? msg.entries : [],
+            routineProjects: Array.isArray(msg.projects) ? msg.projects : [],
+            routineModels: Array.isArray(msg.models) ? msg.models : [],
+            routineError: msg.error || "",
+            routineErrorId: msg.errorId || "",
+          });
+        }
+        if (msg.type === "error") {
+          // Same reason as chat.js: a quota-refused save never reaches the host,
+          // so the relay's bounce is the only answer the page will get.
+          surface.update({ routineError: msg.text || "", routineErrorId: "" });
+        }
         if (msg.type === "settingsCategory" && msg.category) surface.setCategory(msg.category);
       });
     })();
