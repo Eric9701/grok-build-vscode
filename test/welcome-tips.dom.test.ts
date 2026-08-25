@@ -290,6 +290,29 @@ describe("empty-state advice", () => {
     expect(tipId(h)).toBe(first);
   });
 
+  it("dismisses even when the host has never sent a frame", () => {
+    // The X used to write only into the host's list, so with no frame it had
+    // nowhere to record anything: the next render recomputed the same pool and
+    // put the same tip straight back. Against a host too old to answer it was
+    // inert for ever — and the owner hit exactly that, on the last tip left,
+    // where there was nothing else for the slot to move on to.
+    const h = bootWebview({ ready: false, remote: true });
+    dispatch(h.window, { type: "providerState", providers: [{ id: "grok", connected: true }] });
+    connect(h);
+    const offered: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const id = tipId(h);
+      if (!id) break;
+      offered.push(id);
+      click(h.window, dismiss(h)!);
+      expect(tipId(h), `X did nothing on ${id}`).not.toBe(id);
+    }
+    expect(offered.length).toBeGreaterThan(0);
+    // …all the way to an empty slot, which is what the owner asked for: being
+    // able to close the last one even when nothing replaces it.
+    expect(tipEl(h)).toBeNull();
+  });
+
   it("goes quiet once every tip has had its turn today", () => {
     const h = bootWebview({ ready: false });
     settle(h, {
