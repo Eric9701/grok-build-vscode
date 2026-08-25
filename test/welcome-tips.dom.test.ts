@@ -24,12 +24,17 @@ const INITIAL_STATE = {
   soundNotifications: false, processingSound: false, readRepliesAloud: false,
 };
 
-type TipFacts = Partial<{ routineCount: number; connectorCount: number; dismissed: string[] }>;
+type TipFacts = Partial<{
+  routineCount: number;
+  connectorCount: number;
+  dismissed: string[];
+  shownToday: string[];
+}>;
 
 /** The host frame carrying the two counts and the retired list. */
 function tips(h: Harness, over: TipFacts = {}) {
   dispatch(h.window, {
-    type: "welcomeTips", routineCount: 0, connectorCount: 0, dismissed: [], ...over,
+    type: "welcomeTips", routineCount: 0, connectorCount: 0, dismissed: [], shownToday: [], ...over,
   });
 }
 
@@ -172,7 +177,7 @@ describe("empty-state advice", () => {
       routineCount: 4,
       connectorCount: 2,
       linked: true,
-      dismissed: ["providers", "readAloud", "voice", "plan", "mentions"],
+      dismissed: ["providers", "readAloud", "voice", "mentions"],
     });
     expect(tipEl(h)).toBeNull();
   });
@@ -205,7 +210,7 @@ describe("empty-state advice", () => {
     }
     // `voiceConfigured` starts optimistically true and only the host says
     // otherwise, so a phone whose desk has a voice key is not told to set one up.
-    expect(offered).toEqual(["routines", "readAloud", "plan", "mentions"]);
+    expect(offered).toEqual(["routines", "readAloud", "mentions"]);
   });
 
   it("offers voice setup only once the host says voice is unconfigured", () => {
@@ -221,18 +226,82 @@ describe("empty-state advice", () => {
   it("puts an @ in the composer and opens the mention popover", () => {
     const h = bootWebview({ ready: false });
     settle(h, {
-      dismissed: ["providers", "routines", "connectors", "remote", "readAloud", "voice", "plan"],
+      dismissed: ["providers", "routines", "connectors", "remote", "readAloud", "voice"],
     });
     expect(tipId(h)).toBe("mentions");
     click(h.window, action(h)!);
-    expect((h.doc.getElementById("input") as HTMLTextAreaElement).value).toBe("@");
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    expect(input.value).toBe("@");
+    // The OUTCOME, not the mechanism. An earlier version of this test asserted
+    // only the input value and passed while the popover never opened at all:
+    // the click bubbled to a document handler that closes every popover, so the
+    // affordance was built and hidden again in the same tick. Asking the host
+    // for matches is what proves the flow actually started.
+    expect(h.posted.some((m) => m.type === "mentionQuery")).toBe(true);
+    //  is a string[] on the wire, and the client only renders rows whose
+    // query still matches the token under the caret — so echo back the query it
+    // actually asked with rather than assuming one.
+    const asked = h.posted.find((m) => m.type === "mentionQuery") as { query: string };
+    dispatch(h.window, {
+      type: "mentionResults",
+      query: asked.query,
+      files: ["README.md", "src/app.ts"],
+    });
+    expect(h.doc.getElementById("mention-popover")!.hidden).toBe(false);
     expect(h.posted).toContainEqual({ type: "dismissWelcomeTip", id: "mentions" });
+  });
+
+  it("does not let a tip click reach the document popover closers", () => {
+    // The bug this pins cost the Plan tip its entire reason to exist: several
+    // document handlers close every popover on any outside click, they run
+    // after this one, and a target that opens a popover therefore opened and
+    // closed it in the same tick.
+    const h = bootWebview({ ready: false });
+    settle(h);
+    let reachedDocument = false;
+    h.doc.addEventListener("click", () => { reachedDocument = true; });
+    click(h.window, action(h)!);
+    expect(reachedDocument).toBe(false);
+  });
+
+  it("records a tip as shown, once, and stops offering it that day", () => {
+    const h = bootWebview({ ready: false });
+    settle(h);
+    const first = tipId(h)!;
+    expect(h.posted).toContainEqual({ type: "welcomeTipShown", id: first });
+    // Once. A repaint must not rewrite the file all afternoon.
+    tips(h);
+    tips(h);
+    expect(h.posted.filter((m) => m.type === "welcomeTipShown" && m.id === first)).toHaveLength(1);
+    // A new empty screen moves on rather than repeating it.
+    dispatch(h.window, { type: "clearMessages" });
+    connect(h);
+    expect(tipId(h)).not.toBe(first);
+  });
+
+  it("keeps the tip on screen when the host echoes it back as shown", () => {
+    // It joined that list the moment it rendered. Without the exemption the
+    // host's answering frame would blank the line the reader is halfway
+    // through.
+    const h = bootWebview({ ready: false });
+    settle(h);
+    const first = tipId(h)!;
+    tips(h, { shownToday: [first] });
+    expect(tipId(h)).toBe(first);
+  });
+
+  it("goes quiet once every tip has had its turn today", () => {
+    const h = bootWebview({ ready: false });
+    settle(h, {
+      shownToday: ["providers", "routines", "connectors", "remote", "readAloud", "voice", "mentions"],
+    });
+    expect(tipEl(h)).toBeNull();
   });
 
   it("renders the worktree tip without a link, and only in Coding", () => {
     const h = bootWebview({ ready: false });
     const allButWorktrees = [
-      "providers", "routines", "connectors", "remote", "readAloud", "voice", "plan", "mentions",
+      "providers", "routines", "connectors", "remote", "readAloud", "voice", "mentions",
     ];
     settle(h, { dismissed: allButWorktrees });
     // Knowledge work is the default — nothing left to say.

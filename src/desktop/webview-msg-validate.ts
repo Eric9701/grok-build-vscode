@@ -402,6 +402,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "setupGithubCli":
       if (raw.action !== "install" && raw.action !== "auth") return null;
       break;
+    case "welcomeTipShown":
     case "dismissWelcomeTip":
       // Bounded because it becomes a key in a persisted record map. The host
       // also refuses ids it does not know, but a length cap here keeps an

@@ -217,6 +217,10 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // a phone is shown a filtered subset of the same tips, and a reader who can
   // see a tip must be able to be done with it.
   dismissWelcomeTip: "full",
+  // Same class, and deliberately NOT host-local: a phone showing a tip is the
+  // same person seeing that advice, so it should not come round on the desk an
+  // hour later either.
+  welcomeTipShown: "full",
   // Making a project is NOT addProjectFolder, and the difference is the
   // whole reason these two are reachable from a phone while that one is
   // not. `addProjectFolder` opens a native picker (nothing for a remote to

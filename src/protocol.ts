@@ -248,7 +248,18 @@ export type HostMsg =
    * Additive. An older host sends no frame at all, and the client suppresses
    * the two count-dependent tips rather than reading an absent count as zero.
    */
-  | { type: "welcomeTips"; routineCount: number; connectorCount: number; dismissed: string[] }
+  | {
+      type: "welcomeTips";
+      routineCount: number;
+      connectorCount: number;
+      dismissed: string[];
+      /**
+       * Tips that have already had their turn today, in the HOST's timezone.
+       * Additive: an older host omits it and the pool behaves as it did before
+       * the once-a-day rule existed.
+       */
+      shownToday?: string[];
+    }
   /**
    * State of the Add project form: where new projects go, and how the last
    * attempt went.
@@ -745,6 +756,15 @@ export type WebviewMsg =
    */
   | { type: "dismissWelcomeTip"; id: string }
   /**
+   * One tip appeared. Recorded against the local day so it does not come round
+   * again before tomorrow — the pool is small, and a line seen three times in
+   * an afternoon has stopped being advice.
+   *
+   * Sent at most once per tip per day by the client, which keeps its own copy
+   * of the list; the host writes only when the day actually changes.
+   */
+  | { type: "welcomeTipShown"; id: string }
+  /**
    * Make a project folder called `name` inside the host's one project root.
    *
    * A NAME, never a path — which is the entire reason this can be reachable
@@ -1005,7 +1025,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   addProjectFolder: true, removeProjectFolder: true, createProject: true, cloneProject: true, setupGithubCli: true,
   openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true,
-  listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, dismissWelcomeTip: true, moveView: true,
+  listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, dismissWelcomeTip: true, welcomeTipShown: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,

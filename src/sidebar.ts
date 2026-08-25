@@ -92,8 +92,12 @@ import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
   WELCOME_TIPS_KEY,
+  WELCOME_TIPS_SHOWN_KEY,
+  localDayKey,
   parseDismissedTips,
+  shownOn,
   withDismissedTip,
+  withShownTip,
 } from "./welcome-tips";
 import { commandOnPath, runGitClone } from "./git-clone";
 import {
@@ -1290,6 +1294,7 @@ export class GrokSidebar {
       routineCount: this.loadRoutines().length,
       connectorCount: Object.keys(this.connectedConnectorStore()).length,
       dismissed: parseDismissedTips(this.state.get(WELCOME_TIPS_KEY, {})),
+      shownToday: shownOn(this.state.get(WELCOME_TIPS_SHOWN_KEY, {}), localDayKey(new Date())),
     });
   }
 
@@ -9278,6 +9283,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // host-local by policy, so `origin` is always local here.
         await this.setupGithubCli(msg.action === "install" ? "install" : "auth");
         break;
+      case "welcomeTipShown": {
+        // Idempotent per day: `withShownTip` answers null when this tip is
+        // already recorded for today, which means no write and no frame — the
+        // client posts at most once per tip per day, and this is the second
+        // gate so a client that forgets cannot rewrite the file all afternoon.
+        const seen = withShownTip(
+          this.state.get(WELCOME_TIPS_SHOWN_KEY, {}),
+          msg.id,
+          localDayKey(new Date()),
+        );
+        if (!seen) break;
+        await this.state.update(WELCOME_TIPS_SHOWN_KEY, seen);
+        this.postWelcomeTips();
+        break;
+      }
       case "dismissWelcomeTip": {
         // Id-shaped only, capped, and idempotent — `withDismissedTip` answers
         // null for anything already retired or out of bounds, and a null means

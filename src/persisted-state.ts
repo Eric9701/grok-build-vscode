@@ -86,6 +86,9 @@ export const DISK_KEYS: Readonly<Record<string, string>> = {
   // Machine-wide on purpose: the desk and a linked phone show subsets of the
   // same pool to the same person.
   "grok.welcomeTips": "welcome-tips.json",
+  // Companion to the above: id -> the local day that tip last appeared, so the
+  // same line does not come round twice in one day. Pruned to today on write.
+  "grok.welcomeTipsShown": "welcome-tips-shown.json",
 };
 
 export class PersistedState {

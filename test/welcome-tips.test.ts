@@ -14,9 +14,14 @@ import { describe, expect, it } from "vitest";
 import {
   WELCOME_TIPS_DISMISS_LIMIT,
   WELCOME_TIPS_KEY,
+  WELCOME_TIPS_SHOWN_KEY,
   isWelcomeTipId,
+  localDayKey,
   parseDismissedTips,
+  parseShownTips,
+  shownOn,
   withDismissedTip,
+  withShownTip,
 } from "../src/welcome-tips";
 import {
   WELCOME_TIPS,
@@ -115,6 +120,55 @@ describe("host store (src/welcome-tips.ts)", () => {
   });
 });
 
+describe("the once-a-day store", () => {
+  it("keys off client-state, beside the retirement list", () => {
+    expect(WELCOME_TIPS_SHOWN_KEY).toBe("grok.welcomeTipsShown");
+  });
+
+  it("reads the day from LOCAL parts, not from UTC", () => {
+    // toISOString is UTC: 23:30 on the 5th in Warsaw is already the 6th there,
+    // and anyone west of Greenwich would roll over mid-afternoon and see the
+    // whole pool again before dinner.
+    expect(localDayKey(new Date(2026, 0, 5, 23, 30))).toBe("2026-01-05");
+    expect(localDayKey(new Date(2026, 11, 31, 0, 1))).toBe("2026-12-31");
+    // Zero-padded, so string comparison and the regex both hold.
+    expect(localDayKey(new Date(2026, 8, 9, 12, 0))).toBe("2026-09-09");
+  });
+
+  it("reads a record of id -> day and ignores anything else", () => {
+    expect(parseShownTips({ routines: "2026-08-25" })).toEqual({ routines: "2026-08-25" });
+    expect(parseShownTips({ routines: true })).toEqual({});
+    expect(parseShownTips({ routines: "yesterday" })).toEqual({});
+    expect(parseShownTips({ "../x": "2026-08-25" })).toEqual({});
+    expect(parseShownTips(["routines"])).toEqual({});
+    expect(parseShownTips(null)).toEqual({});
+  });
+
+  it("answers which ids have already had their turn today", () => {
+    const store = { routines: "2026-08-25", voice: "2026-08-24", remote: "2026-08-25" };
+    expect(shownOn(store, "2026-08-25")).toEqual(["remote", "routines"]);
+    expect(shownOn(store, "2026-08-26")).toEqual([]);
+  });
+
+  it("records a tip and drops every other day on the way through", () => {
+    // No eviction policy needed: the only question ever asked of this store is
+    // "did this one already appear today", so yesterday has no reader.
+    expect(withShownTip({ voice: "2026-08-24" }, "routines", "2026-08-25")).toEqual({
+      routines: "2026-08-25",
+    });
+    expect(withShownTip({ voice: "2026-08-25" }, "routines", "2026-08-25")).toEqual({
+      voice: "2026-08-25",
+      routines: "2026-08-25",
+    });
+  });
+
+  it("answers null for a no-op write, so nothing touches the disk", () => {
+    expect(withShownTip({ routines: "2026-08-25" }, "routines", "2026-08-25")).toBeNull();
+    expect(withShownTip({}, "../etc", "2026-08-25")).toBeNull();
+    expect(withShownTip({}, "routines", "nonsense")).toBeNull();
+  });
+});
+
 describe("tip catalogue (media/webview-helpers.js)", () => {
   it("has unique ids and exactly one actionable span per line", () => {
     const seen = new Set<string>();
@@ -142,7 +196,7 @@ describe("tip catalogue (media/webview-helpers.js)", () => {
   });
 
   it("uses only targets the renderer knows how to open", () => {
-    const KNOWN = new Set(["mode", "mention"]);
+    const KNOWN = new Set(["mention"]);
     for (const tip of WELCOME_TIPS as { id: string; target: string | null }[]) {
       if (tip.target === null) continue;
       if (tip.target.indexOf("settings:") === 0) continue;
@@ -168,14 +222,14 @@ describe("tip catalogue (media/webview-helpers.js)", () => {
 describe("eligibility", () => {
   it("offers the full desk pool to a first-run user", () => {
     expect(ids(FRESH)).toEqual([
-      "providers", "routines", "connectors", "remote", "readAloud", "voice", "plan", "mentions",
+      "providers", "routines", "connectors", "remote", "readAloud", "voice", "mentions",
     ]);
   });
 
   it("keeps only the tips nothing can retire once everything is set up", () => {
-    // Plan and @ mentions are habits, not settings — they have no state to flip,
-    // so dismissal is the only thing that retires them.
-    expect(ids(SETTLED)).toEqual(["plan", "mentions"]);
+    // Mentions is a habit, not a setting — it has no state to flip, so being
+    // shown for the day and then dismissed are the only things that retire it.
+    expect(ids(SETTLED)).toEqual(["mentions"]);
   });
 
   it("drops the agents tip as soon as ONE of Codex or Claude is connected", () => {
@@ -196,7 +250,7 @@ describe("eligibility", () => {
     for (const deskOnly of ["providers", "connectors", "remote", "worktrees"]) {
       expect(remote, deskOnly).not.toContain(deskOnly);
     }
-    expect(remote).toEqual(["routines", "readAloud", "voice", "plan", "mentions"]);
+    expect(remote).toEqual(["routines", "readAloud", "voice", "mentions"]);
   });
 
   it("suppresses count-dependent tips when the host never sent the counts", () => {
@@ -218,12 +272,41 @@ describe("eligibility", () => {
   });
 
   it("honours retirement, from either an array or a record map", () => {
-    expect(ids({ ...FRESH, dismissed: ["providers", "plan"] })).not.toContain("providers");
+    expect(ids({ ...FRESH, dismissed: ["providers"] })).not.toContain("providers");
     expect(ids({ ...FRESH, dismissed: { providers: true } })).not.toContain("providers");
   });
 
+  it("does not offer a tip twice in the same day", () => {
+    // The pool is small. Without this the same two or three lines come round
+    // again every time a conversation ends, which is how advice becomes
+    // wallpaper.
+    expect(ids({ ...FRESH, shownToday: ["providers", "routines"] })).toEqual([
+      "connectors", "remote", "readAloud", "voice", "mentions",
+    ]);
+  });
+
+  it("exempts the tip currently on screen from the day filter", () => {
+    // It joined that list the moment it rendered. A repaint must not make the
+    // line the reader is halfway through vanish from under them.
+    const shown = { ...FRESH, shownToday: ["providers", "routines"] };
+    expect(ids(shown)).not.toContain("providers");
+    expect(ids({ ...shown, keepId: "providers" })[0]).toBe("providers");
+    // The pin exempts it from the DAY filter only — never from eligibility.
+    expect(ids({ ...shown, keepId: "providers", altAgentConnected: true }))
+      .not.toContain("providers");
+  });
+
+  it("empties for the day once every tip has had its turn", () => {
+    const all = ["providers", "routines", "connectors", "remote", "readAloud", "voice", "mentions"];
+    expect(ids({ ...FRESH, shownToday: all })).toEqual([]);
+  });
+
+  it("ignores a shownToday an older host never sent", () => {
+    expect(ids({ ...FRESH, shownToday: undefined }).length).toBeGreaterThan(0);
+  });
+
   it("can empty completely, which is what puts the screen back as it is today", () => {
-    const done = { ...SETTLED, dismissed: ["plan", "mentions"] };
+    const done = { ...SETTLED, dismissed: ["mentions"] };
     expect(ids(done)).toEqual([]);
   });
 
