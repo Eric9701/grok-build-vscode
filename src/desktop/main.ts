@@ -705,7 +705,12 @@ async function createApp(): Promise<void> {
     }
   };
   const desktopUpdate = attachDesktopAutoUpdate({
-    updater: autoUpdater,
+    // A thunk, not the value. `autoUpdater` is a getter that constructs the
+    // platform updater on first read, and on Linux that constructor rejects the
+    // `"0.0"` version an unpackaged app reports — so naming it here killed
+    // startup before attachDesktopAutoUpdate could decide Linux has no in-app
+    // updater at all. Found by running this app in a container.
+    updater: () => autoUpdater,
     platform: process.platform,
     currentVersion: appVersion,
     packaged: app.isPackaged,

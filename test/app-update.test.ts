@@ -384,6 +384,45 @@ function fakeUpdater(script?: {
 }
 
 describe("attachDesktopAutoUpdate", () => {
+  // These two exist because of a Linux-only, unpackaged-only startup crash that
+  // nothing here could see. `electron-updater` exports `autoUpdater` as a
+  // GETTER that builds the platform updater on first read; on Linux that is
+  // AppImageUpdater, whose constructor rejects the "0.0" version an unpackaged
+  // app reports. So `updater: autoUpdater` at the call site threw during
+  // startup — before this function could conclude that Linux has no in-app
+  // updater at all. It took running the desktop host in a container to find,
+  // because Windows and macOS construct happily and ship packaged.
+  it("does not touch the injected updater on a platform that has no feed", () => {
+    let built = 0;
+    const session = attachDesktopAutoUpdate({
+      updater: () => { built += 1; return fakeUpdater({ async check() {} }); },
+      platform: "linux",
+      currentVersion: "0.0",
+      packaged: false,
+      ui: { postNotice: () => {}, postReady: () => {}, log: () => {}, fetchNotice: async () => null },
+    });
+    expect(built).toBe(0);
+    expect(session.getState().phase).toBe("idle");
+  });
+
+  it("builds the injected updater at most once, and only when it is used", async () => {
+    let built = 0;
+    const real = fakeUpdater({
+      async check() { real.emit("update-not-available"); },
+    });
+    const session = attachDesktopAutoUpdate({
+      updater: () => { built += 1; return real; },
+      platform: "win32",
+      currentVersion: "3.7.0",
+      packaged: true,
+      ui: { postNotice: () => {}, postReady: () => {}, log: () => {}, fetchNotice: async () => null },
+    });
+    expect(built).toBe(0);
+    await session.check();
+    await session.check();
+    expect(built).toBe(1);
+  });
+
   it("configures the Windows generic feed and posts ready after download", async () => {
     const updater = fakeUpdater({
       async check() {

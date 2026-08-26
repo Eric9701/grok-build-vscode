@@ -312,9 +312,27 @@ function updaterLogLine(message: unknown): string {
   }
 }
 
-/** Wire an injected updater (or the notice-only path) to the rail. */
+/**
+ * Wire an injected updater (or the notice-only path) to the rail.
+ *
+ * `updater` may be a THUNK, and on Linux it has to be. `electron-updater`
+ * exports `autoUpdater` as a getter that builds the platform's updater the
+ * first time it is read, and on Linux that is `AppImageUpdater`, whose
+ * constructor rejects an app version that is not valid semver. An unpackaged
+ * run reports `"0.0"`, so merely NAMING `autoUpdater` at the call site threw
+ * before this function could decide it did not want one —
+ * `App version is not a valid semver version: "0.0"`, at startup, fatal.
+ *
+ * Nothing caught it for months because it is Linux-only and unpackaged-only,
+ * and this app is developed on Windows and macOS and shipped packaged. It
+ * surfaced the first time the desktop host was run in a container.
+ *
+ * So the decision comes first and the construction second, which is the order
+ * this module already claimed: "the updater itself is injected; this module
+ * never imports it."
+ */
 export function attachDesktopAutoUpdate(opts: {
-  updater: DesktopAutoUpdater;
+  updater: DesktopAutoUpdater | (() => DesktopAutoUpdater);
   platform: NodeJS.Platform | string;
   currentVersion: string;
   packaged: boolean;
@@ -324,6 +342,16 @@ export function attachDesktopAutoUpdate(opts: {
   let state = initialAppUpdateState();
   let configured = false;
   const enabled = desktopAutoUpdateEnabled(opts);
+  let resolvedUpdater: DesktopAutoUpdater | undefined;
+  /** Resolve the injected updater at most once, and only when it is wanted. */
+  const updater = (): DesktopAutoUpdater => {
+    if (!resolvedUpdater) {
+      resolvedUpdater = typeof opts.updater === "function"
+        ? (opts.updater as () => DesktopAutoUpdater)()
+        : opts.updater;
+    }
+    return resolvedUpdater;
+  };
 
   const apply = (event: AppUpdateEvent): AppUpdateState => {
     state = reduceAppUpdate(state, event);
@@ -346,37 +374,37 @@ export function attachDesktopAutoUpdate(opts: {
     if (configured) return true;
     const feed = desktopUpdateFeedConfig(opts.platform);
     if (!feed) return false;
-    opts.updater.autoDownload = true;
-    opts.updater.autoInstallOnAppQuit = true;
-    opts.updater.allowPrerelease = false;
+    updater().autoDownload = true;
+    updater().autoInstallOnAppQuit = true;
+    updater().allowPrerelease = false;
     // Unpackaged forceDev: leave the production URL unset so electron-updater
     // reads dev-app-update.yml from the app path. setFeedURL always wins over
     // that file, including when forceDevUpdateConfig is set. Packaged builds
     // never read the yml — they always take the relay feed.
     const forceDevUnpackaged = !!opts.forceDev && !opts.packaged;
-    if (forceDevUnpackaged) opts.updater.forceDevUpdateConfig = true;
-    opts.updater.logger = {
+    if (forceDevUnpackaged) updater().forceDevUpdateConfig = true;
+    updater().logger = {
       info: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
       warn: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
       error: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
       debug: (m: unknown) => opts.ui.log(`[update] ${updaterLogLine(m)}`),
     };
-    if (!forceDevUnpackaged) opts.updater.setFeedURL(feed);
-    opts.updater.on("checking-for-update", () => {
+    if (!forceDevUnpackaged) updater().setFeedURL(feed);
+    updater().on("checking-for-update", () => {
       apply({ type: "check-started" });
     });
-    opts.updater.on("update-available", (info: unknown) => {
+    updater().on("update-available", (info: unknown) => {
       apply({ type: "update-available", version: versionFromUpdaterInfo(info) });
       apply({ type: "download-started" });
     });
-    opts.updater.on("update-not-available", () => {
+    updater().on("update-not-available", () => {
       apply({ type: "update-not-available" });
     });
-    opts.updater.on("update-downloaded", (info: unknown) => {
+    updater().on("update-downloaded", (info: unknown) => {
       const next = apply({ type: "update-downloaded", version: versionFromUpdaterInfo(info) });
       if (next.phase === "ready" && next.version) opts.ui.postReady(next.version);
     });
-    opts.updater.on("error", (err: unknown) => {
+    updater().on("error", (err: unknown) => {
       opts.ui.log(`[update] ${updaterLogLine(err)}`);
       apply({ type: "error" });
       void fallbackNotice();
@@ -392,7 +420,7 @@ export function attachDesktopAutoUpdate(opts: {
       try {
         // Silent + force-run: a non-silent NSIS install (oneClick:false) runs
         // the full wizard and ignores isForceRunAfter. Squirrel.Mac ignores both.
-        opts.updater.quitAndInstall(true, true);
+        updater().quitAndInstall(true, true);
       } catch (e) {
         opts.ui.log(`[update] quitAndInstall failed: ${updaterLogLine(e)}`);
         void fallbackNotice();
@@ -409,7 +437,7 @@ export function attachDesktopAutoUpdate(opts: {
         return;
       }
       try {
-        await opts.updater.checkForUpdates();
+        await updater().checkForUpdates();
       } catch (e) {
         opts.ui.log(`[update] check failed: ${updaterLogLine(e)}`);
         apply({ type: "error" });
