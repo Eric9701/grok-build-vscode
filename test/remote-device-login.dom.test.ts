@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 import { bootWebview, click, dispatch, type Harness } from "./webview-harness";
 
-function boot(opts: { remote?: boolean } = {}) {
+function boot(opts: { remote?: boolean; caps?: Record<string, unknown> } = {}) {
   const h = bootWebview({ remote: opts.remote });
   dispatch(h.window, {
     type: "initialState",
@@ -22,7 +22,7 @@ function boot(opts: { remote?: boolean } = {}) {
     showThinking: false, expandCommandOutputs: false, steerByDefault: false,
     soundNotifications: false, processingSound: false, readRepliesAloud: false,
     appPurpose: "coding",
-    capabilities: {},
+    capabilities: opts.caps ?? { remoteAgentSignIn: true },
   });
   h.posted.length = 0;
   return h;
@@ -145,6 +145,32 @@ describe("when it ends", () => {
     onboarding(h, { device: { status: "failed", message: "<img src=x onerror=alert(1)>" } });
     expect(onb(h).querySelector("img")).toBeNull();
     expect(text(h)).toContain("<img src=x onerror=alert(1)>");
+  });
+});
+
+describe("a host that predates this feature", () => {
+  // The relay serves this page, so after a deploy every 3.18.0 user's phone is
+  // running THIS client against a host that classifies runGrokLogin as
+  // host-local and drops it without a word. Offering Connect there is a button
+  // that does nothing — strictly worse than the dead end it replaced, because a
+  // dead end tells you where to go.
+  it("falls back to the old guidance instead of offering a button that does nothing", () => {
+    const h = boot({ remote: true, caps: {} });
+    onboarding(h, {});
+    expect(byAct(h, "connectRemote")).toBeNull();
+    expect(text(h)).toContain("only be connected on the computer");
+  });
+
+  it("offers nothing on the connect-agent panel either", () => {
+    const h = boot({ remote: true, caps: {} });
+    dispatch(h.window, { type: "onboarding", state: "connect-agent", platform: "linux" });
+    expect(onb(h).querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("an explicit false is treated the same as absent", () => {
+    const h = boot({ remote: true, caps: { remoteAgentSignIn: false } });
+    onboarding(h, {});
+    expect(byAct(h, "connectRemote")).toBeNull();
   });
 });
 

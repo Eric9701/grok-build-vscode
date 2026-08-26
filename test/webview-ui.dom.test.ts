@@ -1259,7 +1259,20 @@ describe("provider onboarding", () => {
     //
     // What has NOT changed, and is the half still worth pinning: a remote is
     // offered no way to sign OUT, on any of these panels.
+    //
+    // The capability is not decoration here. Without it this panel falls back
+    // to the old desk-only guidance on purpose, because a host that predates
+    // remote sign-in drops the request silently — see
+    // test/remote-device-login.dom.test.ts for that half.
     const { window, doc, posted } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "3.18.0",
+      showThinking: false, expandCommandOutputs: false, steerByDefault: false,
+      soundNotifications: false, processingSound: false, readRepliesAloud: false,
+      capabilities: { remoteAgentSignIn: true },
+    });
+    posted.length = 0;
 
     for (const state of ["connect-agent", "auth-required", "codex-login", "claude-login"] as const) {
       dispatch(window, { type: "onboarding", state });

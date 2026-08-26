@@ -82,6 +82,18 @@ export const HOST_CAPABILITIES = {
   // Edit+save existing project files from a remote. Separate from browse so a
   // host can offer list/read without a write path. OPT-IN field presence.
   editProjectFiles: true,
+  // Whether this host can run an agent's headless sign-in for a remote and
+  // report back the URL and code.
+  //
+  // OPT-IN, and load-bearing rather than tidy. The relay serves the web client,
+  // so the client is always as new as the deploy while the extension is
+  // whatever the user installed. Every host built before this shipped
+  // classifies `runGrokLogin` as `host-local` and DROPS it — no error, no
+  // reply, nothing. A client that offered Connect unconditionally would give
+  // every 3.18.0 user a button that does nothing at all, which is worse than
+  // the dead end it replaced, because a dead end at least tells you where to
+  // go. Field presence, never a version check.
+  remoteAgentSignIn: true,
 } as const;
 
 /** Machine-readable `error.code` for a send abandoned after its userMessage echo. */
@@ -105,6 +117,13 @@ export type HostUiCapabilities = {
    * No create/delete/rename in this pass.
    */
   editProjectFiles?: boolean;
+  /**
+   * Whether this host can run an agent's headless sign-in on a remote's behalf.
+   * OPT-IN: absent/false = the remote empty state falls back to "connect it at
+   * your computer" instead of offering a control an older host would silently
+   * drop. See HOST_CAPABILITIES for why silence is the failure mode.
+   */
+  remoteAgentSignIn?: boolean;
   /**
    * Settings → Connectors. OPT-IN: absent/false = hide the nav row and keep
    * the page unreachable. Desktop and VS Code set true; remotes inherit the
