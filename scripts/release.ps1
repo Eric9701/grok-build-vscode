@@ -23,6 +23,10 @@
     8. gh release create vX.Y.Z       with the changelog section as notes
                                        AND the .vsix attached as a release asset
     9. npm run publish:ovsx           publish that .vsix to Open VSX
+   10. desktop installers             dispatch desktop-release.yml against the
+                                       TAG, wait, and assert the .exe/.dmg are
+                                       actually on the release (skip with
+                                       -SkipInstallers)
    10. install.ps1 -VsixPath ... -All install the released .vsix into every
                                        detected local editor (skip with
                                        -NoInstall; never fails the release)
@@ -48,6 +52,8 @@ param(
   [switch]$SkipCiWait,
   [int]$CiTimeoutMinutes = 20,
   [switch]$NoInstall,
+  [switch]$SkipInstallers,
+  [int]$InstallerTimeoutMinutes = 25,
   [switch]$DryRun
 )
 
@@ -144,6 +150,10 @@ $notesFile = Join-Path ([System.IO.Path]::GetTempPath()) "grok-release-notes-$ve
 if ($DryRun) {
   Write-Host "`n[dry-run] would commit, tag $tag, push main + tag, and run:" -ForegroundColor Yellow
   Write-Host "  gh release create $tag --title `"Release $tag`" --notes-file <notes> $vsix"
+  Write-Host "  npm run publish:ovsx"
+  if (-not $SkipInstallers) {
+    Write-Host "  gh workflow run desktop-release.yml --ref $tag -f release_tag=$tag   (then wait for the assets)"
+  }
   Write-Host "`n--- release notes ---`n$notes"
   return
 }
@@ -215,7 +225,76 @@ Run "gh release create $tag" { gh release create $tag --title "Release $tag" --n
 # owner's to run (`npm run publish`).
 Run "npm run publish:ovsx" { npm run publish:ovsx }
 
-# 10. Install what was just released into this machine's editors. The released
+# 10. The desktop installers, attached to the release that now exists.
+#
+# This used to be a manual second dispatch, remembered from the playbook, and
+# 3.2.9 shipped with only the .vsix because the FIRST dispatch had happened and
+# read like the job was done. The owner's question on 2026-08-26 was the right
+# one: a release should release everything. So the same argument the Open VSX
+# step above makes applies here — part of the release, not a reminder printed
+# after it.
+#
+# Two dispatches still exist and they are different things. The one BEFORE a
+# release (no release_tag, any branch) builds the owner's test installers and
+# creates nothing; that one stays manual because it is a testing choice. This is
+# the other one, and it was never a choice.
+#
+# `--ref $tag`, not main: the installers must be built from exactly what was
+# released, not from whatever landed on main in the meantime.
+#
+# Unconditional, rather than "only when src/desktop or media/chat.js changed".
+# That judgement has been got wrong once already, the workflow prunes installers
+# from all but the newest releases anyway, and a release whose assets are
+# consistent is worth five minutes of CI.
+#
+# What is asserted is the OUTCOME — the assets on the release — not that a run
+# was dispatched. `gh release view --json assets` is the check the playbook says
+# a release is not finished without, so the script makes it rather than asking a
+# human to remember to.
+if ($SkipInstallers) {
+  Step "skipping the desktop installers (-SkipInstallers)"
+} else {
+  Run "gh workflow run desktop-release.yml (release_tag=$tag)" {
+    gh workflow run desktop-release.yml --ref $tag -f release_tag=$tag
+  }
+  Step "waiting for the installers to be attached to $tag (up to $InstallerTimeoutMinutes min)"
+  $deadline = (Get-Date).AddMinutes($InstallerTimeoutMinutes)
+  $attached = $false
+  while ((Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 20
+    # No `2>$null` here. Redirecting a native command's stderr under
+    # $ErrorActionPreference = "Stop" turns any warning line into a terminating
+    # NativeCommandError, which the catch would swallow as "no assets yet" —
+    # and the wait would then run to its timeout on a release that was fine.
+    $names = @()
+    try {
+      $ErrorActionPreference = "Continue"
+      $names = @(gh release view $tag --json assets --jq '.assets[].name')
+    } catch {
+      $names = @()
+    } finally {
+      $ErrorActionPreference = "Stop"
+    }
+    $hasWin = @($names | Where-Object { $_ -like "*.exe" }).Count -gt 0
+    $hasMac = @($names | Where-Object { $_ -like "*.dmg" }).Count -gt 0
+    if ($hasWin -and $hasMac) { $attached = $true; break }
+  }
+  if ($attached) {
+    Step "installers attached to $tag"
+  } else {
+    # Everything above is published, so this must not read as a failed release —
+    # but it must not read as a finished one either.
+    Write-Host "  Installers did NOT appear on $tag within $InstallerTimeoutMinutes min." -ForegroundColor Yellow
+    Write-Host "  The release itself is published. Check the run, then re-run:" -ForegroundColor Yellow
+    Write-Host "    gh run list --workflow=desktop-release.yml --limit 3" -ForegroundColor Yellow
+    Write-Host "    gh workflow run desktop-release.yml --ref $tag -f release_tag=$tag" -ForegroundColor Yellow
+    Write-Host "  A release that touches src/desktop/ or media/chat.js is not finished until" -ForegroundColor Yellow
+    Write-Host "    gh release view $tag --json assets" -ForegroundColor Yellow
+    Write-Host "  lists them." -ForegroundColor Yellow
+  }
+}
+
+# 11. Install what was just released into this machine's editors. The released
 # .vsix is passed by path on purpose, so install.ps1 skips its own build AND its
 # staging-relay swap — the editors end up running the exact artifact users get,
 # production relay included, rather than a look-alike rebuilt afterwards.
