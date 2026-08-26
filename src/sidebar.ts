@@ -253,7 +253,8 @@ import {
   resolveRemoteFileRoot,
   writeRemoteProjectFile,
 } from "./remote-files";
-import { buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, RELAY_DEVICE_TOKEN_SECRET, resolveRelayUrl } from "./remote-frames";
+import {
+  CLOUD_ENVIRONMENT_ENV, buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, RELAY_DEVICE_TOKEN_SECRET, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
 import { historyImagePreviews } from "./image-history";
@@ -16821,6 +16822,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         release: os.release(),
         appName: this.host.appName,
         isDesktop: this.host.remoteInstallIdSuffix === ":desktop",
+        isCloud: process.env[CLOUD_ENVIRONMENT_ENV] === "1",
       },
       snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
       // Socket-level project gate — also covers the catch-up snapshot path,
@@ -16964,6 +16966,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         installId,
         appName: this.host.appName,
         isDesktop: this.host.remoteInstallIdSuffix === ":desktop",
+        isCloud: process.env[CLOUD_ENVIRONMENT_ENV] === "1",
       });
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
