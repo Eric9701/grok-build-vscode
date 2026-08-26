@@ -30,10 +30,26 @@ interface FindApi {
   hasHighlightApi: () => boolean;
 }
 
+/**
+ * Wait until the transcript has actually settled, not for one frame.
+ *
+ * This used to await a single `requestAnimationFrame`, which is enough on an
+ * idle machine and not enough on a busy one: chat.js appends across more than
+ * one turn of the loop, so under CPU contention `matchCount()` was being read
+ * against a transcript that was still arriving. The symptom was a suite that
+ * passed this file in isolation and failed A DIFFERENT TEST IN IT on each full
+ * run — which reads like flakiness in the feature and is really a race in the
+ * harness. Adding ~45 tests elsewhere in the repo was enough to tip it.
+ *
+ * Two frames with a macrotask between them covers a render deferred by a timer
+ * or a microtask chain. Still time-based, but it no longer assumes the whole
+ * append finishes inside the first frame.
+ */
 async function flushPaint(window: Window) {
-  await new Promise<void>((resolve) => {
-    window.requestAnimationFrame(() => resolve());
-  });
+  const frame = () => new Promise<void>((resolve) => { window.requestAnimationFrame(() => resolve()); });
+  await frame();
+  await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+  await frame();
 }
 
 async function playTurn(window: Window, user: string, agent: string, thought?: string) {

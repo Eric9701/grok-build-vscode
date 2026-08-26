@@ -101,6 +101,12 @@ import {
 } from "./welcome-tips";
 import { commandOnPath, runGitClone } from "./git-clone";
 import {
+  deviceLoginFailureText,
+  deviceLoginPlan,
+  deviceLoginUnavailable,
+} from "./device-login";
+import { runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
+import {
   GITHUB_CLI_DOWNLOAD,
   classifyCloneFailure,
   cloneDestination,
@@ -889,6 +895,14 @@ export class GrokSidebar {
     "unlinkRemoteDevice",
   ]);
   private readonly loginReprobeTimers = new Map<AcpProvider, ReturnType<typeof setTimeout>>();
+  /** Headless sign-ins in flight, one per provider, with the remote client that
+   *  asked. Keyed by provider rather than by client because the CREDENTIAL is
+   *  per-provider: two phones both connecting Grok want one flow and one code,
+   *  not two codes racing to write the same file. */
+  private readonly deviceLogins = new Map<
+    AcpProvider,
+    { handle: DeviceLoginHandle; clientId?: string }
+  >();
   /** A Settings → Providers refresh in flight. Reported on `providerState` so
    *  the button can say it is working, and guards re-entry: a second click (or
    *  the page's own open-refresh landing on top of a click) must not start a
@@ -1595,6 +1609,94 @@ export class GrokSidebar {
       if (probeId) this.removeSessionFromDisk(probeId, scratch);
       try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* leftover temp dir is harmless */ }
     }
+  }
+
+  /**
+   * The remote half of connecting an agent: run the CLI's headless sign-in and
+   * report the URL and code it prints.
+   *
+   * Sends only to the client that asked. A code is for the person holding that
+   * device, and broadcasting it to a desk webview nobody is sitting at would be
+   * both useless and, for something that is briefly a bearer credential, worse
+   * than useless.
+   *
+   * The panel is posted BEFORE the flow starts. `starting` is a real state with
+   * a real duration — a cold CLI takes a second or two to say anything — and
+   * without it a phone shows nothing at all between the tap and the code, which
+   * reads as a button that did not work.
+   */
+  private async startDeviceLogin(
+    provider: AcpProvider,
+    cliPath: string,
+    clientId?: string,
+  ): Promise<void> {
+    const displayName = providerDisplayName(provider);
+    const send = (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => {
+      const message: HostMsg = {
+        type: "onboarding",
+        state: providerLoginState(provider),
+        platform: process.platform,
+        provider,
+        launched: true,
+        device,
+      };
+      if (clientId) this.sendRemoteClient(clientId, message);
+      else this.post(message);
+    };
+
+    const unavailable = deviceLoginUnavailable(provider);
+    const plan = deviceLoginPlan(provider);
+    if (unavailable || !plan) {
+      // Not an error, and it must not read as one: the agent can still be
+      // connected, just not from here. Saying which is the difference between
+      // a dead end and a next step.
+      send({
+        status: "unavailable",
+        message: unavailable
+          ?? `${displayName} has no sign-in that works without a terminal. Connect it at your computer.`,
+      });
+      return;
+    }
+
+    // One flow per provider. A second tap while the first is polling would
+    // spawn a second child racing the first to write the same credential file,
+    // and would replace a code the user may already be typing.
+    const running = this.deviceLogins.get(provider);
+    if (running) {
+      running.clientId = clientId;
+      return;
+    }
+
+    send({ status: "starting" });
+    const handle = runDeviceLogin(cliPath, plan.args, {
+      onPrompt: (prompt) => {
+        send({ status: "waiting", url: prompt.url, code: prompt.code });
+      },
+      onDone: (result) => {
+        this.deviceLogins.delete(provider);
+        if (!result.ok && "cancelled" in result) return;
+        if (result.ok) {
+          send({ status: "done" });
+          // Same reprobe the desk path uses. The CLI exiting 0 says the vendor
+          // approved it; only a credential probe says this host can now use it.
+          this.watchProviderLogin(provider);
+          return;
+        }
+        this.host.appendLine(`[${provider}] device login failed: ${result.output.slice(-2000)}`);
+        send({
+          status: "failed",
+          message: deviceLoginFailureText(provider, result.failure, displayName),
+        });
+      },
+    });
+    this.deviceLogins.set(provider, { handle, clientId });
+  }
+
+  /** Stop every headless sign-in. Called on dispose so a child polling a device
+   *  endpoint does not outlive the window that started it. */
+  private cancelAllDeviceLogins(): void {
+    for (const { handle } of this.deviceLogins.values()) handle.cancel();
+    this.deviceLogins.clear();
   }
 
   /** Observe an interactive terminal login without requiring a reload. Terminal
@@ -6974,6 +7076,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (this.reaper) { clearInterval(this.reaper); this.reaper = undefined; }
     if (this.routineTimer) { clearInterval(this.routineTimer); this.routineTimer = undefined; }
     for (const timer of this.loginReprobeTimers.values()) clearTimeout(timer);
+    this.cancelAllDeviceLogins();
     this.loginReprobeTimers.clear();
     for (const timer of this.turnOrderTimers) clearTimeout(timer);
     this.turnOrderTimers.clear();
@@ -9475,6 +9578,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           });
           break;
         }
+        // A remote has no terminal to look at and no keyboard attached to the
+        // host, so the desk path is not merely worse there — it does nothing
+        // visible at all. Run the CLI's headless flow instead and put the URL
+        // and code in the transcript. Everything below this branch is the desk
+        // path and is deliberately unchanged.
+        if (origin === "remote") {
+          await this.startDeviceLogin(provider, cliPath, clientId);
+          break;
+        }
         // Official CLI owns login. For Claude this is `claude auth login`
         // without --claudeai — we never implement or proxy Claude.ai OAuth.
         const loginArgs = provider === "claude" ? ["auth", "login"] : ["login"];
@@ -9500,7 +9612,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // nowhere to start a session. Connecting still works — it only opens a
         // terminal — and the panel below still shows; the fresh session simply
         // waits until there is a project to put it in.
-        if (session.hasHistory && origin !== "remote" && this.workspaceRoot()) {
+        //
+        // The `origin !== "remote"` this used to carry is gone because the
+        // remote branch above returns before here — TypeScript pointed out the
+        // comparison could no longer be false, which is the check that the two
+        // paths really are separate rather than merely intended to be.
+        if (session.hasHistory && this.workspaceRoot()) {
           await this.newFocusedSession(origin);
         }
         // ALWAYS show this provider's login panel, and say the terminal was
@@ -9522,6 +9639,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           provider,
           launched: true,
         });
+        break;
+      }
+      case "cancelDeviceLogin": {
+        const provider: AcpProvider = isAcpProvider(msg.provider) ? msg.provider : "grok";
+        const running = this.deviceLogins.get(provider);
+        if (!running) break;
+        this.deviceLogins.delete(provider);
+        running.handle.cancel();
+        // Back to the plain sign-in panel, with no code and no failure. The
+        // person cancelled; telling them it failed would be a small lie.
+        const message: HostMsg = {
+          type: "onboarding",
+          state: providerLoginState(provider),
+          platform: process.platform,
+          provider,
+        };
+        if (clientId) this.sendRemoteClient(clientId, message);
+        else this.post(message);
         break;
       }
       case "recheckConnection": {

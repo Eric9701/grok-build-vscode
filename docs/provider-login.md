@@ -10,8 +10,11 @@ phone and on a machine with no screen.
 
 ## What the app does today
 
-**Settings → Providers → Connect** opens a terminal on the computer running the
-extension and runs the agent's own login command:
+It depends on where you press the button, and the difference is deliberate.
+
+**At the computer** — VS Code, Cursor, or the desktop app — **Settings →
+Providers → Connect** opens a terminal there and runs the agent's own login
+command:
 
 | Agent | Command | Credential lands in |
 |---|---|---|
@@ -19,12 +22,35 @@ extension and runs the agent's own login command:
 | Codex | `codex login` | `~/.codex/auth.json` |
 | Claude Code | `claude auth login` | `~/.claude/` (or the OS keychain) |
 
-Signing in is classified `host-local` in
-[`src/remote-policy.ts`](../src/remote-policy.ts) — a linked phone or browser
-can *see* that an agent is disconnected but cannot start the login, because the
-flow needs a terminal and a browser on the machine that will hold the token.
-The remote empty state says so rather than offering a control that would do
-nothing.
+A terminal is the better affordance there, because the CLI opens your browser
+for you.
+
+**From a phone or browser**, there is no terminal to look at, so the same button
+runs the agent's **headless device-code flow** instead and shows you the URL and
+the short code it prints. You open the link, confirm the code, and the page
+finishes on its own. The credential still lands on the computer running the
+extension — nothing is stored in the browser, and the relay never sees it.
+
+Signing in is classified `"full"` in
+[`src/remote-policy.ts`](../src/remote-policy.ts). It was `host-local` until remote
+sign-in shipped, and what changed was the implementation rather than the policy:
+a remote request no longer opens a terminal on your desk. It can only *add* a credential
+that you obtain yourself, in your own browser, from the vendor.
+
+**Signing out stays `host-local`.** The asymmetry is intentional — connecting
+adds an option, disconnecting takes one away from every other surface at once.
+
+Not every agent can do this, and the app tells you which:
+
+| Agent | From a phone? | Why |
+|---|---|---|
+| Grok Build | yes | `grok login --device-auth` prints a URL and a code and polls |
+| Codex | if your CLI and account allow it | needs `--device-auth` in your build **and** "Allow device code login" on the account |
+| Claude Code | no — connect it at your computer | `claude setup-token` is a terminal UI; with piped input it prints nothing at all |
+
+The app does not decide this from a version number. It runs the command and
+reports what came back, so a CLI that gains the flow starts working with no
+update here.
 
 ## Signing in without a browser on that machine
 
@@ -56,9 +82,15 @@ codex login --device-auth
 ```
 
 Documented by OpenAI as the preferred path for headless environments, and gated
-behind a ChatGPT security setting you have to enable on your account first.
-**Not present in `codex-cli 0.149.0`** — the flag is newer than that build, so
-check yours before planning around it. Until it lands there are three fallbacks:
+behind a ChatGPT security setting you have to enable first — **Settings →
+Security → "Allow device code login"** on a personal account, or the equivalent
+workspace permission, which only an admin can turn on.
+
+**Still not present in `codex-cli 0.149.0`** (re-checked 2026-08-26: `codex
+login` offers `--with-api-key` and `--with-access-token` and no device flag), so
+check yours before planning around it. Grok Build tries it anyway and reports
+what the CLI said, so it will start working the moment your build has it. Until
+then there are three fallbacks:
 
 - run `codex login` on a machine with a browser and copy `~/.codex/auth.json`
   across (documented, with the obvious warning — the file is a password);
@@ -72,8 +104,15 @@ claude setup-token
 ```
 
 Prints a URL, waits for the OAuth flow to finish, and stores a token valid for
-about a year. Requires a Claude subscription. Present in `claude 2.1.243`. The
+about a year. Requires a Claude subscription. Present in `claude 2.1.246`. The
 token can also be supplied as `CLAUDE_CODE_OAUTH_TOKEN`.
+
+**It needs a real terminal.** Measured on 2026-08-26: run with its input and
+output piped rather than attached to a terminal, `claude setup-token` printed
+**zero bytes on both streams** across 18 seconds while happily creating its
+config directory. It is a terminal UI, not a print-and-poll flow. That is why it
+is the one agent Grok Build cannot connect for you from a phone, and why a
+hosted environment would need a pty rather than pipes to drive it.
 
 Claude Code additionally accepts `ANTHROPIC_API_KEY` for anyone with API access,
 which is billed separately from a subscription.
@@ -114,12 +153,16 @@ leak in transit.
 ## What this means for remote control
 
 A phone can do almost everything the desk can — start conversations, answer
-permission prompts, schedule routines, browse and edit project files. It cannot
-sign an agent in, because the credential belongs to the desk and the flow needs
-a browser there.
+permission prompts, schedule routines, browse and edit project files. It can now
+also **connect an agent**, for the agents whose CLI offers a device-code flow
+(see the table above).
 
-If you are setting up a machine you will only ever reach remotely, sign the
-agents in **before** you walk away from it, using the headless commands above.
+What a phone still cannot do is sign an agent **out**, or connect Claude Code.
+
+If you are setting up a machine you will only ever reach remotely, it is still
+worth signing the agents in **before** you walk away from it — Claude in
+particular has no remote path, and a machine with nothing connected is a machine
+you may not be able to finish setting up from the road.
 
 ## Where the credentials live
 

@@ -527,7 +527,32 @@ export type HostMsg =
   // `launched` says the HOST already opened the login terminal, so the panel can
   // show it as done. Without it an automatically opened terminal leaves the
   // button looking untouched, which reads as "press it again".
-  | { type: "onboarding"; state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "provider-connected" | "no-project"; platform?: string; reason?: string; provider?: "grok" | "codex" | "claude"; launched?: boolean }
+  // `device` is the headless sign-in, and it is additive on purpose: a remote
+  // gets the same `onboarding` panel it always got, plus a URL and a code when
+  // the host is running a device-code flow for it. A client that predates the
+  // field ignores it and shows the panel exactly as before, which is the right
+  // fallback — it still says which agent needs connecting.
+  //
+  // Only the REMOTE path ever carries it. At a desk the CLI opens the browser
+  // itself and a terminal is the better affordance, so nothing changes there.
+  | {
+      type: "onboarding";
+      state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "provider-connected" | "no-project";
+      platform?: string;
+      reason?: string;
+      provider?: "grok" | "codex" | "claude";
+      launched?: boolean;
+      device?: {
+        /** starting: spawned, nothing printed yet. waiting: URL and code are on
+         *  screen and the CLI is polling. done/failed: terminal. unavailable:
+         *  this provider has no flow that works without a terminal. */
+        status: "starting" | "waiting" | "done" | "failed" | "unavailable";
+        url?: string;
+        code?: string;
+        /** Said to the person, not logged — a failure or an explanation. */
+        message?: string;
+      };
+    }
   // resumeFailed is additive: a remote resume refusal names the requested id so
   // the browser outbox can fail closed. Older clients ignore the extra field.
   // code is additive too — a harness must not match user-facing `text`.
@@ -834,6 +859,9 @@ export type WebviewMsg =
   | { type: "cancelCodexInstall" }
   | { type: "runInstallCmd" }
   | { type: "runGrokLogin"; provider?: "grok" | "codex" | "claude" }
+  // Stop a headless sign-in the host is running. Only reachable while one is in
+  // flight, and it kills a child process this same user started moments ago.
+  | { type: "cancelDeviceLogin"; provider?: "grok" | "codex" | "claude" }
   | { type: "logout"; provider?: "grok" | "codex" | "claude" }
   | { type: "checkGrokUpdate" }
   | { type: "updateGrok" }
@@ -1030,6 +1058,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runGrokLogin: true,
+  cancelDeviceLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, refreshProviders: true, retryProviderSession: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
   setRepoArchived: true, setRepoColor: true,

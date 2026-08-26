@@ -54,7 +54,15 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.permissionAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.exitPlanAnswer).toBe("full");
     expect(INBOUND_DISPOSITION.logout).toBe("host-local");
-    expect(INBOUND_DISPOSITION.runGrokLogin).toBe("host-local");
+    // Moved off host-local on 2026-08-26 when the handler stopped opening a
+    // terminal for a remote and started running the CLI's headless device-code
+    // flow instead. The asymmetry with `logout` directly above is the point:
+    // signing in adds an option using a credential the user obtains themselves
+    // from the vendor, and signing out takes one away from every surface at
+    // once. If a future change makes runGrokLogin spawn a terminal for a remote
+    // again, this line has to go back with it.
+    expect(INBOUND_DISPOSITION.runGrokLogin).toBe("full");
+    expect(INBOUND_DISPOSITION.cancelDeviceLogin).toBe("full");
     expect(INBOUND_DISPOSITION.recheckConnection).toBe("host-local");
     expect(INBOUND_DISPOSITION.retryProviderSession).toBe("propose");
     expect(INBOUND_DISPOSITION.clearAllSessions).toBe("full");
@@ -728,12 +736,23 @@ describe("allowFromRemote tier gating", () => {
     }
   });
 
-  it("refuses remote-origin provider logout and login-terminal actions at every tier", () => {
-    for (const type of ["logout", "runGrokLogin"] as const) {
-      expect(INBOUND_DISPOSITION[type]).toBe("host-local");
-      for (const tier of ["read-only", "propose", "full"] as const) {
-        expect(allowFromRemote(type, tier)).toBe(false);
-      }
+  it("refuses a remote-origin provider logout at every tier", () => {
+    // `runGrokLogin` used to be tested alongside this one and no longer belongs
+    // here: a remote may now START a sign-in (see below). Signing out is the
+    // half that stays refused, because it revokes a credential every other
+    // surface is using.
+    expect(INBOUND_DISPOSITION.logout).toBe("host-local");
+    for (const tier of ["read-only", "propose", "full"] as const) {
+      expect(allowFromRemote("logout", tier)).toBe(false);
+    }
+  });
+
+  it("lets a remote start a sign-in, but only at full", () => {
+    expect(allowFromRemote("runGrokLogin", "full")).toBe(true);
+    expect(allowFromRemote("cancelDeviceLogin", "full")).toBe(true);
+    for (const tier of ["read-only", "propose"] as const) {
+      expect(allowFromRemote("runGrokLogin", tier)).toBe(false);
+      expect(allowFromRemote("cancelDeviceLogin", tier)).toBe(false);
     }
   });
 

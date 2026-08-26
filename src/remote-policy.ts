@@ -324,7 +324,30 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   deleteSession: "full",
   clearAllSessions: "full",
   runInstallCmd: "full",
-  runGrokLogin: "host-local",
+  // WAS host-local until 2026-08-26, and the reason it moved is worth being
+  // precise about: the POLICY did not soften, the IMPLEMENTATION changed.
+  //
+  // The old comment said "it must never clear credentials or open a login
+  // terminal on the host", and that was exactly right about what the handler
+  // did — it spawned an interactive terminal on the desk, which a remote can
+  // neither see nor type into, and which nobody should be able to open on
+  // someone else's machine from a phone.
+  //
+  // The handler now branches on origin. A desk request still gets that
+  // terminal, unchanged, because at a desk it is the better affordance: the CLI
+  // opens the browser for you. A remote request instead runs the CLI's headless
+  // device-code flow with pipes and renders the URL and code into the
+  // transcript. No terminal is opened, nothing is typed on the host, and the
+  // only thing the flow can do is ADD a credential the user obtains themselves
+  // from the vendor, in their own browser, against their own account.
+  //
+  // `logout` stays host-local, and the asymmetry is deliberate rather than an
+  // oversight: signing in adds an option, signing out takes one away from every
+  // other surface at once.
+  runGrokLogin: "full",
+  // Stops a flow this same remote started. Refusing it would leave the only
+  // party who can see the panel unable to close it.
+  cancelDeviceLogin: "full",
   // host-local: native pickers/editors/config/mic on the dev box
   // Replacing the CLI binary belongs here, not in "full" (2026-08-11). The
   // binaries live on the desk machine and only the desk can replace them, so a

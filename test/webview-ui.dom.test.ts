@@ -1251,17 +1251,25 @@ describe("provider onboarding", () => {
     expect(posted).toEqual([]);
   });
 
-  it("shows desk sign-in guidance remotely and posts no provider-management action", () => {
+  it("offers a remote sign-in on every provider panel, and still no sign-out", () => {
+    // This test used to assert the opposite — "Sign in at the desk", and zero
+    // buttons — which was correct while `runGrokLogin` opened a terminal a
+    // remote could not see. The host now runs the CLI's headless device-code
+    // flow for a remote request, so a dead end became an offer.
+    //
+    // What has NOT changed, and is the half still worth pinning: a remote is
+    // offered no way to sign OUT, on any of these panels.
     const { window, doc, posted } = bootWebview({ remote: true });
 
     for (const state of ["connect-agent", "auth-required", "codex-login", "claude-login"] as const) {
       dispatch(window, { type: "onboarding", state });
       const onboarding = doc.getElementById("welcome-onboarding")!;
-      expect(onboarding.textContent).toContain("Sign in at the desk");
-      expect(onboarding.textContent).toContain("computer running this workspace");
-      expect(onboarding.querySelectorAll("button")).toHaveLength(0);
+      expect(onboarding.textContent).not.toContain("Sign in at the desk");
+      expect(onboarding.querySelectorAll('[data-act="connectRemote"]').length).toBeGreaterThan(0);
+      expect(onboarding.querySelectorAll('[data-act="logout"]')).toHaveLength(0);
     }
 
+    // Nothing is posted until something is pressed.
     expect(types(posted)).not.toContain("runGrokLogin");
     expect(types(posted)).not.toContain("logout");
   });
