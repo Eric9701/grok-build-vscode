@@ -10,8 +10,10 @@
 // So this does every part that is clicking and leaves the part that is
 // verification: it opens the page, finds the extension, opens the dialog, hands
 // over the right .vsix, presses Upload, and then WAITS for you to solve the
-// puzzle in the window it left open. After that it verifies the version
-// actually changed, which is the step people skip.
+// puzzle in the window it left open. After that it waits for Microsoft's
+// verification to clear and for the PUBLIC gallery to serve the new version,
+// because a row showing a version number and users being able to install it are
+// two different events.
 //
 // Why a browser at all: `vsce publish` wants a Personal Access Token, and the
 // owner would rather not mint and rotate one. `vsce publish --azure-credential`
@@ -82,7 +84,9 @@ try {
   const before = (await rowFor().textContent()).replace(/\s+/g, " ").trim();
   log(`row before: ${before}`);
   if (before.includes(VERSION)) {
-    log(`already on ${VERSION} — nothing to do.`);
+    log(/verif/i.test(before)
+      ? `${VERSION} is uploaded and still verifying — nothing to do.`
+      : `already on ${VERSION} — nothing to do.`);
     ok = true;
     await context.close();
     process.exit(0);
@@ -172,8 +176,39 @@ try {
       + "  If the puzzle was never solved, run this again.\n"
       + "  If it was, check the page for a red validation error on the extension.");
   }
-  log(`PUBLISHED ${VERSION}`);
+  // The row carrying the version means UPLOADED. Microsoft then verifies it, and
+  // until that clears nobody can install it — so "published" here is a stronger
+  // claim than the evidence supports. It was claimed anyway on 3.18.0 and the
+  // owner had to ask whether it was verified. The PUBLIC gallery is the
+  // authority, so ask it.
+  log("uploaded — waiting for Marketplace verification to clear");
+  const verifyDeadline = Date.now() + 30 * 60 * 1000;
+  let live = false;
+  while (Date.now() < verifyDeadline) {
+    const seen = await page.evaluate(async (id) => {
+      try {
+        const res = await fetch("https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json;api-version=7.2-preview.1" },
+          body: JSON.stringify({
+            filters: [{ criteria: [{ filterType: 7, value: id }] }],
+            flags: 914,
+          }),
+        });
+        const data = await res.json();
+        return data?.results?.[0]?.extensions?.[0]?.versions?.[0]?.version || "";
+      } catch { return ""; }
+    }, `${PUBLISHER}.${pkg.name}`).catch(() => "");
+    if (seen === VERSION) { live = true; break; }
+    await page.waitForTimeout(30000);
+  }
   ok = true;
+  if (live) {
+    log(`PUBLISHED ${VERSION} — live in the gallery`);
+  } else {
+    log(`uploaded, but the public gallery still does not serve ${VERSION}.`);
+    log("Verification sometimes runs long — check the publisher page for a validation error.");
+  }
 } finally {
   await context.close().catch(() => {});
   if (!ok) process.exitCode = 1;
