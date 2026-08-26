@@ -80,14 +80,35 @@ waiting for a username at a terminal that is not on screen, and the form would
 hang instead of telling you anything. So a private repository you are not signed
 in for fails quickly, and the form offers the next step:
 
-- **Sign in to GitHub** runs `gh auth login` in a terminal. Answer its
-  questions, finish in the browser it opens, then try the clone again.
+- **Sign in to GitHub** runs `gh auth login` **and then `gh auth setup-git`** in
+  a terminal. Answer the questions, finish in the browser it opens, then try the
+  clone again. The second command is the one that matters and is easy to miss:
+  `gh auth login` asks whether to configure Git and lets you say no, which would
+  leave the clone failing exactly as before. `gh auth setup-git` wires the CLI
+  into Git either way, and running it twice is harmless.
 - If the GitHub CLI is not installed, the button instead offers to install it
   and names the exact command first — `winget install --id GitHub.cli -e` on
   Windows, `brew install gh` on macOS, `sudo apt install gh` on Debian/Ubuntu.
+- If neither the CLI **nor** a package manager to install it with is on the
+  machine — a Mac without Homebrew, or Windows without winget — no button is
+  offered, because it would run a command that is not there either. The message
+  points at [cli.github.com](https://cli.github.com) instead.
 
-Both open a terminal on the computer running the extension, so both are desk
-actions even though the clone that needed them can be started from a phone.
+Both of the first two open a terminal on the computer running the extension, so
+both are desk actions even though the clone that needed them can be started from
+a phone.
+
+### Why signing out of `gh` may not seem to change anything
+
+If you already had credentials, `gh auth logout` will not necessarily stop
+clones working, and that is not a bug. On Windows, Git usually authenticates
+through **Git Credential Manager**, which keeps its own token in the Windows
+Credential Store. Git asks that helper, not `gh` — so signing out of `gh` leaves
+Git exactly as it was. The same is true anywhere Git has a credential helper or
+an SSH key configured.
+
+Which is worth knowing for the opposite reason too: **you may never need the
+GitHub CLI at all.** It is offered as a way out of a failure, not a requirement.
 
 GitHub answers a private repository you cannot see with "not found" rather than
 "not allowed", so a repository that exists but is invisible to you and a typo in

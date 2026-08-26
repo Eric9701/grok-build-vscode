@@ -481,6 +481,7 @@
     "test:desktop": "npm run compile && vitest run --config vitest.desktop.config.ts",
     "e2e:screens": "npm run compile && node scripts/desk-screens-check.mjs",
     "e2e:welcome-tip": "node scripts/ide-welcome-tip-screens.mjs",
+    "e2e:gh-unauth": "npm run compile && node scripts/gh-unauth-check.mjs",
     "e2e:lifecycle-host": "npm run compile && node scripts/lifecycle-host.mjs",
     "smoke:live": "npm run compile && node scripts/live-smoke.mjs",
     "telemetry:probe": "tsc -p . && node scripts/telemetry-probe.cjs",

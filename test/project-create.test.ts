@@ -16,7 +16,10 @@ import {
   cloneFailureText,
   cloneUrlError,
   displayPath,
+  GITHUB_CLI_DOWNLOAD,
   githubCliInstallCommand,
+  githubFixFor,
+  githubSignInCommand,
   offersGithubSetup,
   projectDestination,
   projectNameError,
@@ -206,6 +209,47 @@ describe("failed clones", () => {
     // `gh auth login` cannot help a GitLab failure, so it is not offered.
     expect(offersGithubSetup("https://gitlab.com/o/r", "auth")).toBe(false);
     expect(offersGithubSetup("https://notgithub.com.evil.example/o/r", "auth")).toBe(false);
+  });
+
+  it("signs in AND wires gh into git, because login alone may not", () => {
+    // `gh auth login` stores a token for gh and then ASKS whether to configure
+    // git. On a machine where git already authenticates through Git Credential
+    // Manager — which is the Windows default — answering no leaves the clone
+    // failing exactly as before while the user has every reason to believe they
+    // just signed in. Proved on the owner's box: `gh auth logout` changed
+    // nothing, because gh was never in git's path at all.
+    for (const p of ["darwin", "linux"] as NodeJS.Platform[]) {
+      expect(githubSignInCommand(p)).toBe("gh auth login && gh auth setup-git");
+    }
+    // Windows PowerShell 5.1 has no `&&`, and PowerShell is the shell both
+    // hosts open there.
+    expect(githubSignInCommand("win32")).toBe("gh auth login; if ($?) { gh auth setup-git }");
+    expect(githubSignInCommand("win32")).not.toContain("&&");
+  });
+
+  it("offers what the machine can actually do, in three flavours", () => {
+    const has = (...present: string[]) => (c: string) => present.includes(c);
+
+    // gh is there: signing in is the whole fix.
+    expect(githubFixFor("win32", has("gh", "winget"))).toEqual({ kind: "auth" });
+    expect(githubFixFor("darwin", has("gh"))).toEqual({ kind: "auth" });
+
+    // No gh, but a package manager we can drive.
+    expect(githubFixFor("win32", has("winget")))
+      .toEqual({ kind: "install", command: "winget install --id GitHub.cli -e" });
+    expect(githubFixFor("darwin", has("brew")))
+      .toEqual({ kind: "install", command: "brew install gh" });
+
+    // Neither. "Install it with brew" is useless advice to the many Mac users
+    // who have never installed Homebrew, and winget is absent on older Windows
+    // for the same reason — so the honest answer is where to download it.
+    expect(githubFixFor("darwin", has())).toEqual({ kind: "download", where: GITHUB_CLI_DOWNLOAD });
+    expect(githubFixFor("win32", has())).toEqual({ kind: "download", where: GITHUB_CLI_DOWNLOAD });
+    expect(githubFixFor("linux", has())).toEqual({ kind: "download", where: GITHUB_CLI_DOWNLOAD });
+    // A platform with no known package manager at all.
+    expect(githubFixFor("aix" as NodeJS.Platform, has("gh"))).toEqual({ kind: "auth" });
+    expect(githubFixFor("aix" as NodeJS.Platform, has()))
+      .toEqual({ kind: "download", where: GITHUB_CLI_DOWNLOAD });
   });
 
   it("knows how to install the CLI where it can", () => {

@@ -101,12 +101,15 @@ import {
 } from "./welcome-tips";
 import { commandOnPath, runGitClone } from "./git-clone";
 import {
+  GITHUB_CLI_DOWNLOAD,
   classifyCloneFailure,
   cloneDestination,
+  cloneFailureText,
   cloneUrlError,
   displayPath,
-  cloneFailureText,
   githubCliInstallCommand,
+  githubFixFor,
+  githubSignInCommand,
   offersGithubSetup,
   projectDestination,
   projectNameError,
@@ -5714,18 +5717,20 @@ Only continue if you trust this code.`,
         /* leave it — reporting the clone failure matters more */
       }
       const kind = classifyCloneFailure(failure);
-      const offer = offersGithubSetup(trimmed, kind);
-      const install = githubCliInstallCommand(process.platform);
-      this.postProjectSetup({
-        error: cloneFailureText(kind, failure),
-        ...(offer
-          ? commandOnPath("gh")
-            ? { fix: "auth-gh" as const }
-            : install
-              ? { fix: "install-gh" as const, fixCommand: install.display }
-              : {}
-          : {}),
-      });
+      let error = cloneFailureText(kind, failure);
+      let fix: { fix?: "auth-gh" | "install-gh"; fixCommand?: string } = {};
+      if (offersGithubSetup(trimmed, kind)) {
+        const offer = githubFixFor(process.platform, commandOnPath);
+        if (offer.kind === "auth") fix = { fix: "auth-gh" };
+        else if (offer.kind === "install") fix = { fix: "install-gh", fixCommand: offer.command };
+        else {
+          // No gh, and no package manager we could drive either — a Mac with no
+          // Homebrew, or Windows without winget. A button that runs a command
+          // which is not installed either is worse than saying where to get it.
+          error += ` Install the GitHub CLI from ${offer.where} first.`;
+        }
+      }
+      this.postProjectSetup({ error, ...fix });
       return;
     }
     await this.addProjectFolder(dest);
@@ -5741,26 +5746,28 @@ Only continue if you trust this code.`,
    * could neither see the questions nor answer them.
    */
   async setupGithubCli(action: "install" | "auth"): Promise<void> {
+    // `sendText`, not `shellPath`/`shellArgs`: both of these are command LINES
+    // rather than one binary with arguments. Signing in has to run two commands
+    // in order — see githubSignInCommand for why the second is not optional —
+    // and this is the seam that already exists for exactly that (the desktop
+    // host routes it through planRunCommandInTerminal, which keeps the window
+    // open so the outcome stays readable).
     if (action === "auth") {
-      const term = this.host.createTerminal({
-        name: "GitHub sign-in",
-        shellPath: "gh",
-        shellArgs: ["auth", "login"],
-      });
+      const term = this.host.createTerminal({ name: "GitHub sign-in" });
       term.show();
+      term.sendText(githubSignInCommand(process.platform));
       return;
     }
     const install = githubCliInstallCommand(process.platform);
     if (!install) {
-      this.postProjectSetup({ error: "Install the GitHub CLI from cli.github.com, then try again." });
+      this.postProjectSetup({
+        error: `Install the GitHub CLI from ${GITHUB_CLI_DOWNLOAD}, then try again.`,
+      });
       return;
     }
-    const term = this.host.createTerminal({
-      name: "Install GitHub CLI",
-      shellPath: install.file,
-      shellArgs: install.args,
-    });
+    const term = this.host.createTerminal({ name: "Install GitHub CLI" });
     term.show();
+    term.sendText(install.display);
   }
 
   /**

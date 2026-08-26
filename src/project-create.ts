@@ -278,6 +278,60 @@ export interface InstallCommand {
   args: string[];
 }
 
+/**
+ * The command that signs GitHub in AND wires it into git.
+ *
+ * `gh auth login` alone is not enough, which is the whole reason this exists as
+ * a named thing. It stores a token for `gh` and then ASKS whether to configure
+ * git — and on a machine where git already authenticates through Git Credential
+ * Manager, answering no leaves the clone failing exactly as before while the
+ * user has every reason to believe they just signed in. `gh auth setup-git`
+ * writes the `credential.https://github.com.helper` entry that actually puts gh
+ * in git's path, and it is idempotent, so running it when the prompt already
+ * did costs nothing.
+ *
+ * Windows gets PowerShell syntax because that is the shell both hosts open
+ * there — the desktop plan runs `powershell.exe -NoExit`, and it is VS Code's
+ * default on Windows. Windows PowerShell 5.1 has no `&&`.
+ */
+export function githubSignInCommand(platform: NodeJS.Platform): string {
+  return platform === "win32"
+    ? "gh auth login; if ($?) { gh auth setup-git }"
+    : "gh auth login && gh auth setup-git";
+}
+
+/** Where to send someone whose platform has no package manager we can drive. */
+export const GITHUB_CLI_DOWNLOAD = "cli.github.com";
+
+/**
+ * What to offer when a clone failed on credentials.
+ *
+ * Three answers, not two, because "install it with brew" is useless advice to
+ * the many Mac users who have never installed Homebrew — and `winget` is absent
+ * on older Windows for the same reason. So the package manager has to be on the
+ * machine before its command is worth naming; otherwise the honest answer is
+ * the download page.
+ *
+ * `onPath` is injected so this stays pure and the decision is testable without
+ * a particular machine's software installed.
+ */
+export type GithubFix =
+  | { kind: "auth" }
+  | { kind: "install"; command: string }
+  | { kind: "download"; where: string };
+
+export function githubFixFor(
+  platform: NodeJS.Platform,
+  onPath: (command: string) => boolean,
+): GithubFix {
+  if (onPath("gh")) return { kind: "auth" };
+  const install = githubCliInstallCommand(platform);
+  if (install && onPath(install.file)) {
+    return { kind: "install", command: install.display };
+  }
+  return { kind: "download", where: GITHUB_CLI_DOWNLOAD };
+}
+
 export function githubCliInstallCommand(platform: NodeJS.Platform): InstallCommand | null {
   if (platform === "win32") {
     return { display: "winget install --id GitHub.cli -e", file: "winget", args: ["install", "--id", "GitHub.cli", "-e"] };
