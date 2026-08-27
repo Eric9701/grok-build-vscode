@@ -98,12 +98,39 @@ Two things are worth knowing anyway:
   and good practice for the rest — a token that never moves cannot leak in
   transit — and it means the environment is a credential store.
 
+## How a cloud machine gets this app
+
+Not from an image. The hosted environments run on Fly Sprites, which hand you a
+stock Ubuntu box with a writable overlay and offer no way to supply a base image
+of your own — so a fresh machine has Node, git and a couple of agent CLIs, and
+none of a display server, Chromium's libraries, or this app. It installs itself.
+
+That install is why this repo publishes a **Linux AppImage** that no download
+page offers. Building from source on one of these machines was measured at 25
+minutes end to end — `apt` 58s, clone 77s, `npm ci` 20 minutes (I/O-bound on the
+VM's writable overlay, which is pathological for `node_modules`), compile 4.6
+minutes. Downloading a built artifact is seconds. The AppImage exists for
+machines nobody can walk up to, and for nothing else; it is unsigned, because
+there is nothing to sign it for.
+
+The bootstrap script is served by the relay rather than baked in, and prefers the
+published AppImage with a build-from-source fallback — so a release that is
+missing one still produces working machines, slowly.
+
+The relay keeps a pool of these built ahead of demand, so the 25 minutes is paid
+where nobody is waiting. Someone waits for a real build only when the pool is
+empty, and the picker says so with a clock rather than calling the machine
+offline. The pool, the claim and the token handover are the relay's side; see
+`docs/cloud-environments.md` in the relay repo.
+
 ## Running one yourself
 
-The image and its verification live in the relay repo (`cloud/`), because hosting
-is that side's concern. In short: a Linux container with Node, git, the agent
-CLIs and a display server, running this repo's desktop host under `Xvfb` with
-`--no-sandbox`, given `GROK_RELAY_URL`, `GROK_RELAY_DEVICE_TOKEN` and
+`cloud/Dockerfile` in the relay repo is a **container** version of the same idea,
+and it is a spike rather than what production runs — it predates the move to
+Sprites and cannot be used as a sprite's base image. It is still the clearest
+single statement of what a cloud machine needs: a Linux container with Node, git,
+the agent CLIs and a display server, running this repo's desktop host under
+`Xvfb` with `--no-sandbox`, given `GROK_RELAY_URL`, `GROK_RELAY_DEVICE_TOKEN` and
 `GROK_CLOUD_ENVIRONMENT=1`.
 
 Two things that will bite anyone reproducing it, both fixed here but worth
@@ -116,3 +143,9 @@ knowing:
   fails in the worst way: the node process vanishes while `xvfb-run` stays alive,
   so the container looks healthy and hosts nothing. Start `Xvfb` directly with
   `-ac`.
+- `npm ci` can report success and still leave a broken Electron. The download in
+  its postinstall failed silently on a sprite and the first sign of it was
+  `Error: Electron failed to install correctly` twenty-five minutes later, at
+  startup. Re-running `node node_modules/electron/install.js` afterwards is cheap
+  and is the difference between a machine that works and one that boots into a
+  stack trace.
