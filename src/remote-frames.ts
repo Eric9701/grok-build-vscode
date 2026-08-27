@@ -50,7 +50,19 @@ export type UplinkFrame =
   | { t: "hello"; proto: number; device?: { name?: string }; client?: RelayClientMeta }
   | { t: "host"; msg: HostMsg }
   | { t: "host-to"; clientIds: string[]; msg: HostMsg }
-  | { t: "snapshot"; clientId: string; msgs: HostMsg[] };
+  | { t: "snapshot"; clientId: string; msgs: HostMsg[] }
+  /**
+   * "I am mid-turn." No payload, no side effect at the other end — its only job
+   * is to ARRIVE. A cloud machine is held awake by traffic on its uplink, and a
+   * turn spends most of its life waiting on a tool with nothing to say, so
+   * streaming text keeps the machine alive only by accident. This does it on
+   * purpose.
+   *
+   * Additive, so REMOTE_PROTO_VERSION does not move: a relay that predates it
+   * does not recognise the frame, drops it, and says nothing. Sending it is
+   * therefore safe against every relay this extension can reach.
+   */
+  | { t: "working" };
 
 /** relay -> extension */
 export type RelayFrame =
@@ -80,6 +92,10 @@ export function hostToFrame(clientIds: string[], msg: HostMsg): UplinkFrame {
 
 export function snapshotFrame(clientId: string, msgs: HostMsg[]): UplinkFrame {
   return { t: "snapshot", clientId, msgs };
+}
+
+export function workingFrame(): UplinkFrame {
+  return { t: "working" };
 }
 
 /** Parse + shape-validate a relay->extension frame. null = drop (never throw). */

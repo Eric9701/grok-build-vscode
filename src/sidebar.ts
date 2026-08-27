@@ -17037,10 +17037,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private refreshKeepAwake(): void {
     try {
       const enabled = this.host.getConfiguration("grok").get<boolean>("remote.keepAwake", true);
+      const turnInFlight = this.anyTurnInFlight();
+      // The remote twin of the OS wake lock below, and the one that matters in
+      // the cloud: an OS wake lock cannot stop a hypervisor suspending the whole
+      // machine, and a suspended machine takes the turn down with it. Not gated
+      // on the opt-out — that setting is about a laptop's battery, and this
+      // costs a few bytes a minute on a socket that is already open.
+      try { this.uplink?.setWorking(turnInFlight); } catch { /* never worth failing over */ }
       if (shouldKeepAwake({
         enabled,
         linked: !!this.uplink,
-        turnInFlight: this.anyTurnInFlight(),
+        turnInFlight,
       })) {
         this.keepAwake.start();
       } else {

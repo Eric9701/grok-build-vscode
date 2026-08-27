@@ -17,6 +17,7 @@ import {
   hostFrame,
   hostToFrame,
   snapshotFrame,
+  workingFrame,
   parseRelayFrame,
   nextBackoffMs,
   INITIAL_BACKOFF_MS,
@@ -29,6 +30,16 @@ import { isSelfScopedOutbound, mayDeliverRemoteHostMsg } from "./remote-policy";
  * Live project-scope inputs for the outbound write gate. Re-read on every
  * send so a just-closed folder cannot leak through a stale snapshot of the set.
  */
+/**
+ * How often to say "still working" while a turn is in flight.
+ *
+ * The relay lets a cloud machine go back to sleep after 90 seconds of silence,
+ * so 30 leaves room for two lost beats before a working machine is dropped.
+ * Anything faster buys nothing: the hypervisor's own suspend timer is about a
+ * minute, and this only has to beat that.
+ */
+export const WORKING_HEARTBEAT_MS = 30_000;
+
 export interface RemoteUplinkAuth {
   /** Currently authorized session/repo cwds (open folders + worktrees). */
   authorizedCwds: () => readonly string[];
@@ -132,6 +143,7 @@ export class RemoteUplink {
   private reconnectTimer?: NodeJS.Timeout;
   private disposed = false;
   private awaitingRosterCount = false;
+  private workingTimer?: NodeJS.Timeout;
   private reconnectRoster?: { expected: number; clientIds: Set<string> };
 
   constructor(private readonly opts: RemoteUplinkOptions) {}
@@ -142,6 +154,42 @@ export class RemoteUplink {
 
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Tell the relay whether a turn is in flight.
+   *
+   * Only a cloud machine acts on this, and it is the difference between a long
+   * turn finishing and a long turn being frozen mid-tool: the hypervisor
+   * suspends a machine roughly a minute after its last interaction, and it
+   * decides that from traffic, not from what the machine believes it is doing.
+   * A turn that is compiling, installing, or waiting on a test run says nothing
+   * for minutes at a time, so the frames a streaming answer produces are not
+   * something to rely on.
+   *
+   * On a laptop this is a few bytes a minute to a socket that is already open.
+   * Idempotent — the callers re-assert state rather than tracking transitions.
+   */
+  setWorking(working: boolean): void {
+    if (!working) {
+      if (this.workingTimer) clearInterval(this.workingTimer);
+      this.workingTimer = undefined;
+      return;
+    }
+    if (this.workingTimer) return;
+    this.sendWorking();
+    this.workingTimer = setInterval(() => this.sendWorking(), WORKING_HEARTBEAT_MS);
+    this.workingTimer.unref?.();
+  }
+
+  /** Best-effort: a heartbeat is worth nothing if losing one can throw. */
+  private sendWorking(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify(workingFrame()));
+    } catch {
+      /* the reconnect path re-establishes the socket; the next beat rides it */
+    }
   }
 
   /** Fan a host->webview message out to the relay (which broadcasts to this
@@ -238,6 +286,8 @@ export class RemoteUplink {
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+    if (this.workingTimer) clearInterval(this.workingTimer);
+    this.workingTimer = undefined;
     try {
       this.ws?.close();
     } catch {

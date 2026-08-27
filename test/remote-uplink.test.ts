@@ -34,6 +34,7 @@ import {
   filterAuthorizedOutbound,
   filterRecipientsOwningScope,
   RemoteUplink,
+  WORKING_HEARTBEAT_MS,
   type RemoteUplinkAuth,
 } from "../src/remote-uplink";
 
@@ -537,5 +538,107 @@ describe("RemoteUplink socket-level project authorization", () => {
     const withGate = filterAuthorizedOutbound(raw, ["/work/open"], scopeClosed, pathsEqual);
     expect(withGate.some((m) => m.type === "messageChunk")).toBe(false);
     expect(withGate).toEqual([deviceOk]);
+  });
+});
+
+describe("saying \"still working\" while a turn is in flight", () => {
+  // A cloud machine is suspended by its hypervisor about a minute after its
+  // last interaction, and the hypervisor judges that from traffic, not from
+  // what the machine thinks it is doing. A turn that spends four minutes
+  // running a test suite sends nothing, so without this the machine freezes
+  // mid-tool — the exact failure remote control exists to prevent.
+  beforeEach(() => { wsMock.sockets.length = 0; });
+
+  const openUplink = () => {
+    const uplink = makeUplink();
+    uplink.start();
+    const ws = wsMock.sockets[wsMock.sockets.length - 1];
+    ws.emit("open");
+    ws.sent.length = 0; // drop the hello
+    return { uplink, ws };
+  };
+
+  it("beats immediately, then on the interval", () => {
+    vi.useFakeTimers();
+    try {
+      const { uplink, ws } = openUplink();
+      uplink.setWorking(true);
+      // The first beat is not deferred: a turn can be over inside 30 seconds
+      // and still have to survive its own tool call.
+      expect(ws.sent.map((s: string) => JSON.parse(s).t)).toEqual(["working"]);
+      vi.advanceTimersByTime(WORKING_HEARTBEAT_MS * 3);
+      expect(ws.sent).toHaveLength(4);
+      expect(ws.sent.every((s: string) => JSON.parse(s).t === "working")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops when the turn ends", () => {
+    vi.useFakeTimers();
+    try {
+      const { uplink, ws } = openUplink();
+      uplink.setWorking(true);
+      uplink.setWorking(false);
+      const after = ws.sent.length;
+      vi.advanceTimersByTime(WORKING_HEARTBEAT_MS * 5);
+      expect(ws.sent).toHaveLength(after);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not stack timers when re-asserted", () => {
+    // Callers re-assert state rather than tracking transitions, so setWorking
+    // runs on every session status change — a timer per call would be a beat
+    // per status change forever.
+    vi.useFakeTimers();
+    try {
+      const { uplink, ws } = openUplink();
+      for (let i = 0; i < 10; i += 1) uplink.setWorking(true);
+      expect(ws.sent).toHaveLength(1);
+      vi.advanceTimersByTime(WORKING_HEARTBEAT_MS);
+      expect(ws.sent).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips beats while the socket is down and resumes when it is back", () => {
+    vi.useFakeTimers();
+    try {
+      const { uplink, ws } = openUplink();
+      uplink.setWorking(true);
+      ws.readyState = 3; // CLOSED
+      vi.advanceTimersByTime(WORKING_HEARTBEAT_MS * 2);
+      expect(ws.sent).toHaveLength(1);
+      ws.readyState = 1;
+      vi.advanceTimersByTime(WORKING_HEARTBEAT_MS);
+      expect(ws.sent).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops beating when the uplink is disposed", () => {
+    // Unlinking must not leave a timer writing to a dead socket for the rest of
+    // the session.
+    vi.useFakeTimers();
+    try {
+      const { uplink, ws } = openUplink();
+      uplink.setWorking(true);
+      uplink.dispose();
+      const after = ws.sent.length;
+      vi.advanceTimersByTime(WORKING_HEARTBEAT_MS * 5);
+      expect(ws.sent).toHaveLength(after);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("survives a send that throws", () => {
+    const { uplink, ws } = openUplink();
+    ws.send = () => { throw new Error("socket gone"); };
+    expect(() => uplink.setWorking(true)).not.toThrow();
   });
 });
