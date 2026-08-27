@@ -11,9 +11,13 @@ rail — offers up to three:
 
 | | You give it | It makes |
 |---|---|---|
-| **New project** | A name | `~/Grok Build/<Name>` |
+| **New project** | A name | `~/AFK Pilot/<Name>` |
 | **Import a folder** | A folder | Nothing — it records the one you picked |
-| **Clone from GitHub** | A repository URL | `~/Grok Build/<repo>` |
+| **Clone from GitHub** | A repository URL | `~/AFK Pilot/<repo>` |
+
+Machines set up before this changed keep using `~/Grok Build` as that folder,
+and nothing moves — splitting your projects across two places to improve a
+folder name would be a poor trade.
 
 Which ones appear depends on two things. **Cloning is offered in Coding mode**
 (Settings → General → Use this app for) because that is where it belongs;

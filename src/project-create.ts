@@ -27,7 +27,39 @@ import * as path from "node:path";
  * projects go is a product decision that the desktop shell also happens to
  * need, not a property of the shell.
  */
-export const DEFAULT_PROJECT_DIRNAME = "Grok Build";
+/**
+ * The folder every project lives in, on a machine that has never run this
+ * before.
+ *
+ * The product is what people see on every session start, and leading with the
+ * agent's name there was a decision nobody made deliberately — it was simply
+ * the name the first folder happened to get.
+ */
+export const PROJECT_ROOT_DIRNAME = "AFK Pilot";
+
+/**
+ * What that folder was called before, and still is on machines that already
+ * have one.
+ *
+ * NOT a migration. Nothing moves, nothing is copied, and no existing project
+ * changes path — a rename that relocated somebody's work to make a name nicer
+ * would be a bad trade at any quality of name. An install that already has this
+ * folder keeps using it forever; only a fresh machine gets the new one.
+ */
+export const LEGACY_PROJECT_ROOT_DIRNAME = "Grok Build";
+
+/**
+ * The first-run project, created inside the root.
+ *
+ * Previously the root WAS the first project — one folder doing both jobs, which
+ * is why the projects list showed a folder named after the tool. They are
+ * separate now: a container, and a project inside it that says what it is.
+ */
+export const DEFAULT_PROJECT_NAME = "My First Project";
+
+/** @deprecated The root's name is no longer one constant — see
+ *  {@link projectRoot}, which has to look at the disk to answer. */
+export const DEFAULT_PROJECT_DIRNAME = LEGACY_PROJECT_ROOT_DIRNAME;
 
 /** Longest project name we will make a folder for. */
 export const PROJECT_NAME_MAX = 64;
@@ -56,8 +88,65 @@ const ILLEGAL_NAME_CHARS = /[\\/:*?"<>|\x00-\x1f]/;
  * A single root is not tidiness. It is what makes a remote-supplied name safe:
  * the client says what to call it, the host says where it goes.
  */
-export function projectRoot(homeDir: string): string {
-  return path.join(homeDir, DEFAULT_PROJECT_DIRNAME);
+export function projectRoot(
+  homeDir: string,
+  opts: { useLegacyRoot?: boolean } = {},
+): string {
+  // Which name applies depends on the disk, and this module does no I/O — the
+  // caller looks (see `shouldUseLegacyRoot` for exactly what to look at).
+  //
+  // It matters because getting it wrong splits somebody's projects across two
+  // roots: new ones landing in a fresh folder beside the one already holding
+  // all their work.
+  return path.join(
+    homeDir,
+    opts.useLegacyRoot ? LEGACY_PROJECT_ROOT_DIRNAME : PROJECT_ROOT_DIRNAME,
+  );
+}
+
+/**
+ * Whether this machine keeps the old root.
+ *
+ * `remembered` wins outright, and that is the whole design. An earlier version
+ * inferred the answer from the disk every time — legacy wins unless the new
+ * root exists — and the filesystem simply cannot carry that meaning: it cannot
+ * tell "an old install that also happens to have a folder by the new name"
+ * from "a new install that committed to it". Getting it wrong the first way
+ * splits an upgrading user's projects across two roots, which is the exact
+ * thing the legacy rule exists to prevent.
+ *
+ * So the decision is made ONCE, from the disk, and then written down. After
+ * that the disk is not consulted again and nothing anybody creates later can
+ * move where their projects go.
+ *
+ * The legacy path must be a DIRECTORY to count: `existsSync` alone is true for
+ * a plain file, which would declare a fresh machine "legacy" and then fail
+ * every create against a path that cannot hold projects.
+ */
+export function shouldUseLegacyRoot(facts: {
+  remembered?: "legacy" | "current";
+  legacyIsDirectory: boolean;
+}): boolean {
+  if (facts.remembered) return facts.remembered === "legacy";
+  return facts.legacyIsDirectory;
+}
+
+/** What to write down, given the answer. */
+export function rememberedRootFor(useLegacy: boolean): "legacy" | "current" {
+  return useLegacy ? "legacy" : "current";
+}
+
+/** globalState key holding {@link shouldUseLegacyRoot}'s `remembered`. */
+export const PROJECT_ROOT_CHOICE_KEY = "grok.projectRootChoice";
+
+/** The new root, for callers answering {@link shouldUseLegacyRoot}. */
+export function currentProjectRootPath(homeDir: string): string {
+  return path.join(homeDir, PROJECT_ROOT_DIRNAME);
+}
+
+/** What a caller must stat to answer {@link projectRoot}'s `legacyRootExists`. */
+export function legacyProjectRootPath(homeDir: string): string {
+  return path.join(homeDir, LEGACY_PROJECT_ROOT_DIRNAME);
 }
 
 /** `~/Grok Build`-style display form, so the UI never prints a home path. */

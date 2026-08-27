@@ -25,6 +25,7 @@ import {
   projectNameError,
   projectRoot,
   repoNameFromCloneUrl,
+  shouldUseLegacyRoot,
   withinRoot,
 } from "../src/project-create";
 import { CLONE_TIMEOUT_MS, commandOnPath, runGitClone } from "../src/git-clone";
@@ -35,13 +36,40 @@ import { CLONE_TIMEOUT_MS, commandOnPath, runGitClone } from "../src/git-clone";
 const HOME = process.platform === "win32"
   ? path.join("C:\\", "Users", "pawel")
   : path.join(path.sep + "home", "pawel");
-const ROOT = path.join(HOME, "Grok Build");
+const ROOT = path.join(HOME, "AFK Pilot");
 
 describe("where projects go", () => {
   it("uses the folder the first-run default already chose", () => {
-    // Not a new location: provisionDefaultProjectDir picked ~/Grok Build, and
-    // for reasons (macOS TCC, findable in Finder) that have not changed.
+    // Not a new location either time: the reasons for a single root under the
+    // home directory (macOS TCC, findable in Finder) have not changed — only
+    // its name has, and only for machines that do not already have one.
     expect(projectRoot(HOME)).toBe(ROOT);
+  });
+
+  it("REMEMBERS the choice, so nothing on disk can move it later", () => {
+    // Inference could not carry this. The filesystem cannot tell "an old
+    // install that also has a folder by the new name" from "a new install
+    // committed to it", and guessing wrong sends an upgrading user's next
+    // project into a second root, away from all their work.
+    expect(shouldUseLegacyRoot({ remembered: "legacy", legacyIsDirectory: false })).toBe(true);
+    expect(shouldUseLegacyRoot({ remembered: "current", legacyIsDirectory: true })).toBe(false);
+  });
+
+  it("decides from the disk only when nothing is remembered", () => {
+    expect(shouldUseLegacyRoot({ legacyIsDirectory: true })).toBe(true);
+    expect(shouldUseLegacyRoot({ legacyIsDirectory: false })).toBe(false);
+  });
+
+  it("does not treat a plain FILE as the old root", () => {
+    expect(shouldUseLegacyRoot({ legacyIsDirectory: false })).toBe(false);
+  });
+
+  it("keeps the OLD root on a machine that already has one", () => {
+    // Nothing is moved or copied. Relocating somebody's projects to improve a
+    // folder name would be a bad trade at any quality of name, and it would
+    // split their work across two roots for as long as they kept using it.
+    expect(projectRoot(HOME, { useLegacyRoot: true }))
+      .toBe(path.join(HOME, "Grok Build"));
   });
 
   it("shows a home-relative path rather than the user's home directory", () => {

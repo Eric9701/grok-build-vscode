@@ -16,7 +16,12 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { DEFAULT_PROJECT_DIRNAME } from "../project-create";
+import {
+  DEFAULT_PROJECT_NAME,
+  legacyProjectRootPath,
+  projectRoot,
+  shouldUseLegacyRoot,
+} from "../project-create";
 
 /**
  * Branded profile directory under the OS app-data root (e.g.
@@ -321,7 +326,41 @@ export function resolveExtensionRootFrom(
  * Downloads), so creating it does not raise a consent dialog, and it is
  * findable in Finder for a knowledge-work user.
  */
-export { DEFAULT_PROJECT_DIRNAME } from "../project-create";
+export {
+  DEFAULT_PROJECT_NAME,
+  LEGACY_PROJECT_ROOT_DIRNAME,
+  PROJECT_ROOT_DIRNAME,
+} from "../project-create";
+
+/**
+ * The projects root for THIS machine.
+ *
+ * A machine that already has the old folder keeps it, forever. Nothing is moved
+ * or copied: relocating somebody's work to improve a name is a bad trade at any
+ * quality of name.
+ */
+export function resolveProjectRoot(
+  homeDir: string,
+  io: {
+    existsSync(p: string): boolean;
+    statSync?(p: string): { isDirectory(): boolean };
+  } = fs,
+): string {
+  // No `remembered` here on purpose: this runs at first run, before any
+  // sidebar or globalState exists. A machine that already has the old root is
+  // an upgrade, and an upgrade keeps it.
+  let legacyIsDirectory = false;
+  try {
+    const legacy = legacyProjectRootPath(homeDir);
+    legacyIsDirectory = io.existsSync(legacy)
+      && (io.statSync ? io.statSync(legacy).isDirectory() : true);
+  } catch {
+    /* an unreadable home is not a reason to refuse to name a folder */
+  }
+  return projectRoot(homeDir, {
+    useLegacyRoot: shouldUseLegacyRoot({ legacyIsDirectory }),
+  });
+}
 
 /**
  * The user's home directory the way the desktop app should create folders in
@@ -340,7 +379,9 @@ export function desktopUserHomeDir(
 
 /** Preferred first-run project: `<home>/Grok Build`. */
 export function preferredDefaultProjectPath(homeDir: string): string {
-  return path.join(homeDir, DEFAULT_PROJECT_DIRNAME);
+  // Inside the root, not the root itself. The root is a container; this is a
+  // project, and the projects list should say so.
+  return path.join(resolveProjectRoot(homeDir), DEFAULT_PROJECT_NAME);
 }
 
 /**
@@ -353,19 +394,35 @@ export function preferredDefaultProjectPath(homeDir: string): string {
  * A default project must never be a directory that holds secrets.
  */
 export function fallbackDefaultProjectPath(userDataDir: string): string {
-  return path.join(userDataDir, DEFAULT_PROJECT_DIRNAME);
+  return path.join(userDataDir, DEFAULT_PROJECT_NAME);
 }
 
 export interface DefaultProjectFs {
   mkdirSync(p: string, opts?: { recursive?: boolean }): void;
   existsSync(p: string): boolean;
   statSync?(p: string): { isDirectory(): boolean };
+  /** Does NOT follow links — see {@link isUsableDirectory}. */
+  lstatSync?(p: string): { isSymbolicLink(): boolean };
 }
 
 function isUsableDirectory(p: string, io: DefaultProjectFs): boolean {
   if (!p) return false;
   try {
     if (!io.existsSync(p)) return false;
+    // A SYMLINK OR JUNCTION IS NOT REUSABLE, however good a directory it looks
+    // like through `statSync` — which follows links and would report the
+    // target.
+    //
+    // This path is deterministic and, being new, exists on nobody's machine
+    // yet: anything already sitting there was put there by something other
+    // than us. Adopting it makes it the authorized workspace, and canonical
+    // file authorization then resolves to the link's TARGET — so a junction
+    // pointing at the home directory hands a linked remote the whole of it.
+    // Reproduced during review against a junction holding `secret.txt`.
+    //
+    // Refusing costs a fallback directory. Accepting costs everything the link
+    // points at.
+    if (io.lstatSync && io.lstatSync(p).isSymbolicLink()) return false;
     return io.statSync ? io.statSync(p).isDirectory() : true;
   } catch {
     return false;

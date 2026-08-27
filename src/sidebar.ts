@@ -121,7 +121,11 @@ import {
   offersGithubSetup,
   projectDestination,
   projectNameError,
+  PROJECT_ROOT_CHOICE_KEY,
+  legacyProjectRootPath,
   projectRoot,
+  rememberedRootFor,
+  shouldUseLegacyRoot,
 } from "./project-create";
 import {
   GROK_VIEW_ID,
@@ -5767,7 +5771,36 @@ Only continue if you trust this code.`,
 
   /** The one directory new and cloned projects land in. */
   private projectRootPath(): string {
-    return projectRoot(this.projectHomeDir());
+    const home = this.projectHomeDir();
+    // Decided ONCE, then written down. Inferring it from the disk every time
+    // cannot distinguish "an old install that also has a folder by the new
+    // name" from "a new install committed to it", and guessing wrong sends an
+    // upgrading user's next project into a second root, away from all their
+    // work. A plain FILE named `~/Grok Build` is not a root either.
+    const remembered = this.context.globalState.get<"legacy" | "current">(
+      PROJECT_ROOT_CHOICE_KEY,
+    );
+    let legacyIsDirectory = false;
+    if (!remembered) {
+      try {
+        const legacy = legacyProjectRootPath(home);
+        legacyIsDirectory = fs.existsSync(legacy) && fs.statSync(legacy).isDirectory();
+      } catch {
+        /* unreadable home — fall through to the current name */
+      }
+    }
+    const useLegacyRoot = shouldUseLegacyRoot({ remembered, legacyIsDirectory });
+    if (!remembered) {
+      // Fire and forget: a failed write costs one more disk look next launch,
+      // and the answer it would record is the same one.
+      void Promise.resolve(
+        this.context.globalState.update(
+          PROJECT_ROOT_CHOICE_KEY,
+          rememberedRootFor(useLegacyRoot),
+        ),
+      ).catch(() => {});
+    }
+    return projectRoot(home, { useLegacyRoot });
   }
 
   /**
@@ -17570,7 +17603,7 @@ ${fileShellOpen}
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">
       <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
-      <h2>Grok Build (Community)</h2>
+      <h2>${isCloudEnvironment() ? "AFK Pilot (Cloud)" : "Grok Build (Community)"}</h2>
       <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm/" class="muted-link">The Product Compass</a>)</p>
       <p id="welcome-version" class="muted welcome-status-busy"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span>Starting</span></p>
       <div id="welcome-onboarding"></div>

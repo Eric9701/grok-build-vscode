@@ -934,6 +934,28 @@ try {
     },
   });
 
+  // The desktop app must have written a log somebody can actually retrieve.
+  //
+  // This runs the REAL startup path, which is the only thing that would have
+  // caught what 3.19.2 shipped: `startFileLogging` was called from the
+  // profile-resolution block while the `let` bindings it assigns still sat
+  // below it in the file. Function declarations hoist, `let` does not, so the
+  // assignment threw a temporal-dead-zone ReferenceError that the surrounding
+  // catch swallowed. The app launched fine, no sink was installed, and Show
+  // logs stayed a no-op. The unit tests passed throughout — they covered the
+  // log-file helper in isolation, never this module's initialization order.
+  const logFile = path.join(userData, "logs", "desktop.log");
+  assert.ok(
+    fs.existsSync(logFile),
+    `the desktop app must write ${logFile} — Show logs has nothing to open without it`,
+  );
+  const logged = fs.readFileSync(logFile, "utf8");
+  assert.ok(
+    logged.includes("[desktop "),
+    "the log file must carry the app's own lines, not just exist",
+  );
+  log(`log file written (${logged.length} bytes)`);
+
   log(`ALL CHECKS PASSED — frames in ${OUT}/`);
 } finally {
   await app.close().catch(() => {});

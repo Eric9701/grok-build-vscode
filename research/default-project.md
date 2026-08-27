@@ -15,8 +15,15 @@ project question is not asked.
 
 Default location, in order:
 
-1. `~/Grok Build` (`preferredDefaultProjectPath` + `desktopUserHomeDir` —
-   USERPROFILE on Windows, HOME elsewhere). Not TCC-protected on macOS.
+1. `~/AFK Pilot/My First Project` (`preferredDefaultProjectPath` +
+   `desktopUserHomeDir` — USERPROFILE on Windows, HOME elsewhere). Not
+   TCC-protected on macOS. The **root** and the **first project** are separate
+   now: the root contains every project, the first-run folder is one inside it.
+   A machine that already has `~/Grok Build` keeps that as its root
+   (`shouldUseLegacyRoot`), and nothing is moved. An existing symlink or
+   junction at the first-run path is REFUSED rather than adopted — it would
+   become the authorized workspace and canonical file authorization resolves to
+   the link's target.
 2. `app.getPath("userData")` (`fallbackDefaultProjectPath`) when creating (1)
    fails for any reason. Silent. The profile is already writable.
 
