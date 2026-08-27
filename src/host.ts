@@ -361,6 +361,15 @@ export interface HostContext {
   extensionVersion: string;
   /** True when running a production install (not Extension Development / Test). */
   isProduction: boolean;
+  /**
+   * True only for the build made to run as a CLOUD ENVIRONMENT.
+   *
+   * Such a build is packaged — `isProduction` is also true — but has no user at
+   * a keyboard, so it is allowed to take its relay and its device token from the
+   * environment. A VS Code extension is never one of these; the desktop app is
+   * one only when packaged with the flag.
+   */
+  isCloudBuild?: boolean;
   globalState: MementoLike;
   subscriptions: { push(...items: HostDisposable[]): void };
 }

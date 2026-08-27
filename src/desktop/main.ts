@@ -47,7 +47,7 @@ import {
   DESKTOP_PUBLIC_REPO_URL,
 } from "./host-dialogs";
 import { createFileMemento } from "./memento";
-import { extensionIdFromPackageMeta } from "./package-meta";
+import { extensionIdFromPackageMeta, isCloudBuildFromPackageMeta } from "./package-meta";
 import {
   desktopUserHomeDir,
   provisionDefaultProjectDir,
@@ -160,17 +160,25 @@ try {
   /* best-effort; createApp still resolves via resolveUserDataDir */
 }
 
-function readPackageMeta(extensionRoot: string): { version: string; id: string } {
+function readPackageMeta(
+  extensionRoot: string,
+): { version: string; id: string; cloudBuild: boolean } {
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8"),
-    ) as { version?: string; publisher?: string; name?: string; grokExtensionName?: string };
+    ) as {
+      version?: string; publisher?: string; name?: string;
+      grokExtensionName?: string; grokCloudBuild?: unknown;
+    };
     return {
       version: pkg.version ?? "0.0.0",
       id: extensionIdFromPackageMeta(pkg),
+      cloudBuild: isCloudBuildFromPackageMeta(pkg),
     };
   } catch {
-    return { version: "0.0.0", id: "PawelHuryn.grok-vscode-phuryn" };
+    // Unreadable metadata must not promote a build to one that trusts its
+    // environment. The safe answer to "is this a cloud build" is no.
+    return { version: "0.0.0", id: "PawelHuryn.grok-vscode-phuryn", cloudBuild: false };
   }
 }
 
@@ -360,11 +368,14 @@ async function createApp(): Promise<void> {
   const injectedToken = consumeInjectedDeviceToken({
     isProduction: app.isPackaged,
     env: process.env,
+    cloudBuild: pkg.cloudBuild,
   });
   if (envTokenPresent && !injectedToken) {
     log("ignoring GROK_RELAY_DEVICE_TOKEN (production build or relay URL not overridden)");
   } else if (injectedToken) {
-    log("using injected development device token (relay URL override active)");
+    log(pkg.cloudBuild
+      ? "using the device token this cloud environment was handed"
+      : "using injected development device token (relay URL override active)");
   }
   const hostContext: HostContext = {
     secrets: {
@@ -381,6 +392,7 @@ async function createApp(): Promise<void> {
     extensionId: pkg.id,
     extensionVersion: pkg.version,
     isProduction: app.isPackaged,
+    isCloudBuild: pkg.cloudBuild,
     globalState: createFileMemento(path.join(userData, "globalState.json")),
     subscriptions: {
       push(...items: HostDisposable[]) {

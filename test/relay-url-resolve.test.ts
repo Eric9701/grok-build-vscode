@@ -302,3 +302,98 @@ describe("injected-token consumers", () => {
     expect(src("sidebar.ts")).not.toContain('"grok.remoteControl.deviceToken"');
   });
 });
+
+/**
+ * The cloud-environment exception.
+ *
+ * A packaged build refuses the environment entirely: no relay override, no
+ * injected token, "no token, no uplink, regardless of env". That is exactly
+ * right for an app on somebody's desk and fatal for a machine with no keyboard,
+ * which can only ever be told who it is by the relay that created it.
+ *
+ * So ONE build is excepted — the Linux AppImage, marked at package time — and
+ * only while the machine also declares itself a cloud environment at runtime.
+ * The tests that matter here are the ones that stay CLOSED: an ordinary
+ * packaged build must be exactly as immovable as it was.
+ */
+describe("cloud builds, and everything that is still refused", () => {
+  const CLOUD = { GROK_CLOUD_ENVIRONMENT: "1" };
+  const token = "sk-device-abc.def";
+
+  it("lets a cloud machine take the relay it is pointed at", () => {
+    expect(resolveRelayUrl({
+      isProduction: true,
+      cloudBuild: true,
+      env: { ...CLOUD, [RELAY_URL_ENV]: STAGING },
+    })).toBe(STAGING);
+  });
+
+  it("lets a cloud machine take the device token it was handed", () => {
+    // Including when it dials the PRODUCTION relay, which is where a real one
+    // points. The desk-side interlock pairs a token to a relay override; here
+    // that would refuse a machine for pointing exactly where it should.
+    expect(resolveInjectedDeviceToken({
+      isProduction: true,
+      cloudBuild: true,
+      env: { ...CLOUD, [RELAY_DEVICE_TOKEN_ENV]: token },
+    })).toBe(token);
+  });
+
+  it("REFUSES an ordinary packaged build, exactly as before", () => {
+    // The property this whole file exists to protect. Nothing about adding a
+    // cloud build may move it.
+    expect(resolveRelayUrl({
+      isProduction: true,
+      env: { ...CLOUD, [RELAY_URL_ENV]: STAGING },
+    })).toBe(REMOTE_RELAY_URL);
+    expect(resolveInjectedDeviceToken({
+      isProduction: true,
+      env: { ...CLOUD, [RELAY_DEVICE_TOKEN_ENV]: token },
+    })).toBeUndefined();
+  });
+
+  it("REFUSES a cloud build that is not running as a cloud environment", () => {
+    // The artifact alone is not enough. If this AppImage ever reaches a desk,
+    // it behaves like every other packaged build.
+    expect(resolveRelayUrl({
+      isProduction: true,
+      cloudBuild: true,
+      env: { [RELAY_URL_ENV]: STAGING },
+    })).toBe(REMOTE_RELAY_URL);
+    expect(resolveInjectedDeviceToken({
+      isProduction: true,
+      cloudBuild: true,
+      env: { [RELAY_DEVICE_TOKEN_ENV]: token },
+    })).toBeUndefined();
+  });
+
+  it("REFUSES a cloud marker that is not exactly 1", () => {
+    for (const value of ["0", "true", "yes", ""]) {
+      expect(resolveInjectedDeviceToken({
+        isProduction: true,
+        cloudBuild: true,
+        env: { GROK_CLOUD_ENVIRONMENT: value, [RELAY_DEVICE_TOKEN_ENV]: token },
+      })).toBeUndefined();
+    }
+  });
+
+  it("still refuses an empty or absent token on a cloud machine", () => {
+    expect(resolveInjectedDeviceToken({
+      isProduction: true, cloudBuild: true, env: { ...CLOUD },
+    })).toBeUndefined();
+    expect(resolveInjectedDeviceToken({
+      isProduction: true, cloudBuild: true,
+      env: { ...CLOUD, [RELAY_DEVICE_TOKEN_ENV]: "   " },
+    })).toBeUndefined();
+  });
+
+  it("still deletes the token from the environment it read it from", () => {
+    // The reason consume exists: every ACP spawn copies process.env, and a
+    // credential left there reaches the agent binary and everything it runs.
+    const env: Record<string, string | undefined> = {
+      ...CLOUD, [RELAY_DEVICE_TOKEN_ENV]: token,
+    };
+    expect(consumeInjectedDeviceToken({ isProduction: true, cloudBuild: true, env })).toBe(token);
+    expect(env[RELAY_DEVICE_TOKEN_ENV]).toBeUndefined();
+  });
+});

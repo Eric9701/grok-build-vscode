@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extensionIdFromPackageMeta, PACKAGED_EXTENSION_NAME_FIELD } from "../src/desktop/package-meta";
+import { extensionIdFromPackageMeta, isCloudBuildFromPackageMeta, PACKAGED_EXTENSION_NAME_FIELD } from "../src/desktop/package-meta";
 import { OFFICIAL_EXTENSION_ID } from "../src/telemetry";
 
 describe("extensionIdFromPackageMeta", () => {
@@ -49,5 +49,25 @@ describe("extensionIdFromPackageMeta", () => {
       publisher: 7 as unknown as string,
       name: null as unknown as string,
     })).toBe(OFFICIAL_EXTENSION_ID);
+  });
+});
+
+describe("isCloudBuildFromPackageMeta", () => {
+  it("is true only for the flag electron-builder actually writes", () => {
+    // extraMetadata passes through whatever it is given, and a boolean or the
+    // string "true" both arrive depending on how the flag was written.
+    expect(isCloudBuildFromPackageMeta({ grokCloudBuild: true })).toBe(true);
+    expect(isCloudBuildFromPackageMeta({ grokCloudBuild: "true" })).toBe(true);
+  });
+
+  it("is false for anything else, including a stray falsy string", () => {
+    // A build that trusts its environment must never be reached by accident.
+    for (const v of [undefined, false, "false", "1", 1, null, {}, ""]) {
+      expect(isCloudBuildFromPackageMeta({ grokCloudBuild: v })).toBe(false);
+    }
+  });
+
+  it("is false for an ordinary package with no flag at all", () => {
+    expect(isCloudBuildFromPackageMeta({})).toBe(false);
   });
 });

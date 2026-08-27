@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "Grok Build for VS Code (Community)",
   "description": "GUI for Grok Build CLI (incl. Grok 4.6). Remote Control from your phone, voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT). Not affiliated with or endorsed by SpaceXAI (formerly xAI).",
-  "version": "3.19.0",
+  "version": "3.19.1",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -496,7 +496,7 @@
     "dist": "npm run compile && electron-builder --publish never",
     "dist:mac": "npm run compile && electron-builder --mac --publish never",
     "dist:win": "npm run compile && electron-builder --win --x64 --publish never",
-    "dist:linux": "npm run compile && electron-builder --linux --x64 --publish never",
+    "dist:linux": "npm run compile && electron-builder --linux --x64 --publish never -c.extraMetadata.grokCloudBuild=true",
     "dist:dir": "npm run compile && electron-builder --dir --publish never"
   },
   "devDependencies": {

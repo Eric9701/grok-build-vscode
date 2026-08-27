@@ -16875,6 +16875,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return resolveRelayUrl({
       isProduction: this.context.isProduction,
       env: process.env,
+      cloudBuild: this.context.isCloudBuild,
     });
   }
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.19.1 — 2026-08-27
+
+### Fixed
+
+- **Cloud environments can start.** The Linux build published in 3.19.0 could install itself on a hosted machine and then never come up: a packaged build refuses to take its relay or its device token from the environment, which is right for an app on your desk and impossible for a machine with no keyboard. That one build is now marked as a cloud build at package time and accepts an identity only when the machine also declares itself a cloud environment. **Nothing changes for the Mac and Windows apps** — they still refuse the environment exactly as before, and the Linux AppImage remains a cloud-only artifact rather than a desktop download.
+
 ## 3.19.0 — 2026-08-27
 
 ### Added

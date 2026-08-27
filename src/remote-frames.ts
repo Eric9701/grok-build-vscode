@@ -439,8 +439,19 @@ export const RELAY_DEVICE_TOKEN_SECRET = "grok.remoteControl.deviceToken";
 export function resolveRelayUrl(opts: {
   isProduction: boolean;
   env?: Record<string, string | undefined>;
+  /**
+   * A build made to run as a cloud environment — see
+   * `PACKAGED_CLOUD_BUILD_FIELD`. Such a build is packaged, so `isProduction`
+   * is true, but it has no user at a keyboard and is told where to dial by the
+   * relay that created it. Requires the machine to ALSO declare itself a cloud
+   * environment at runtime, so the artifact alone is not enough.
+   */
+  cloudBuild?: boolean;
 }): string {
-  if (opts.isProduction) return REMOTE_RELAY_URL;
+  const cloudManaged = !!opts.cloudBuild && isCloudEnvironment(
+    (opts.env ?? {}) as NodeJS.ProcessEnv,
+  );
+  if (opts.isProduction && !cloudManaged) return REMOTE_RELAY_URL;
   const raw = (opts.env ?? {})[RELAY_URL_ENV];
   if (typeof raw !== "string") return REMOTE_RELAY_URL;
   const trimmed = raw.trim();
@@ -494,9 +505,25 @@ export function resolveRelayUrl(opts: {
 export function resolveInjectedDeviceToken(opts: {
   isProduction: boolean;
   env?: Record<string, string | undefined>;
+  /** See {@link resolveRelayUrl}. A cloud build takes its identity from the
+   *  environment because nothing else can give it one. */
+  cloudBuild?: boolean;
 }): string | undefined {
-  if (opts.isProduction) return undefined;
   const env = opts.env ?? {};
+  // A cloud environment is the one case where a packaged build may take its
+  // identity from the environment: the relay created the machine, wrote the
+  // file over TLS, and there is nobody there to link it by hand.
+  //
+  // It also skips the URL interlock below. That interlock pairs the token to a
+  // relay override so the two cannot be split — good on a desk, wrong here,
+  // because a production cloud machine dials the PRODUCTION relay and would
+  // otherwise be refused for pointing exactly where it should.
+  if (opts.cloudBuild && isCloudEnvironment(env as NodeJS.ProcessEnv)) {
+    const injected = env[RELAY_DEVICE_TOKEN_ENV];
+    if (typeof injected !== "string") return undefined;
+    return injected.trim() || undefined;
+  }
+  if (opts.isProduction) return undefined;
   const resolved = resolveRelayUrl({ isProduction: false, env });
   const baseline = resolveRelayUrl({ isProduction: false, env: {} });
   if (resolved === baseline) return undefined;
@@ -519,6 +546,7 @@ export function resolveInjectedDeviceToken(opts: {
 export function consumeInjectedDeviceToken(opts: {
   isProduction: boolean;
   env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  cloudBuild?: boolean;
 }): string | undefined {
   const token = resolveInjectedDeviceToken(opts);
   delete opts.env[RELAY_DEVICE_TOKEN_ENV];
