@@ -211,6 +211,14 @@ export interface ElectronHostOptions {
   onWorkspaceFoldersChanged?: (roots: string[], active: string | undefined) => void;
   /** Packaged desktop: quit and install a downloaded app update. */
   installAppUpdate?: () => void;
+  /**
+   * The file this app is writing its log to, once one exists.
+   *
+   * Absent means logging to a file could not be set up, and `showOutput` then
+   * has nothing honest to offer — which is the state the whole app used to be
+   * in permanently.
+   */
+  getLogFile?: () => string | undefined;
 }
 
 function openHtmlDocumentWindow(
@@ -557,6 +565,7 @@ export function createBoundFileSystemWatcher(
 export function createElectronHost(opts: ElectronHostOptions): Host {
   const {
     config,
+    getLogFile,
     getWindow,
     log,
     remoteActions,
@@ -962,7 +971,21 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
       log(line);
     },
     showOutput(_preserveFocus?: boolean) {
-      // Desktop logs to stdout; nothing to show.
+      // Opens the folder with the log selected, rather than the file itself.
+      // `.log` has no reliable default application on Windows, so opening the
+      // file can silently do nothing — which is the exact failure this is
+      // fixing. A file manager with the file highlighted always works, and it
+      // is also what somebody needs in order to attach it to an issue.
+      //
+      // This menu item was a no-op for the whole life of the desktop app:
+      // people were asked for logs, went looking, and correctly reported that
+      // the button does nothing (#131). There was no log to find.
+      const file = getLogFile?.();
+      if (!file) {
+        log("show logs: no log file for this session");
+        return;
+      }
+      shell.showItemInFolder(file);
     },
     toggleDevTools() {
       if (app.isPackaged) return;

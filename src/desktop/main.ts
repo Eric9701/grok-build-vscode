@@ -27,6 +27,12 @@ import {
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  createLogFileSink,
+  desktopLogPath,
+  formatLogLine,
+  prepareLogFile,
+} from "./log-file";
 import { GrokSidebar } from "../sidebar";
 import { Uri } from "../host";
 import type { HostContext, HostDisposable } from "../host";
@@ -151,10 +157,13 @@ try {
     override: earlyArgs.userDataDir,
   });
   app.setPath("userData", ud);
+  // As early as the directory is known. Everything logged before this line is
+  // stdout-only, so the window is deliberately small: the interesting failures
+  // (a session that will not load, a window that stops painting) all happen
+  // long after startup.
+  startFileLogging(ud);
   if (migratedFrom) {
-    process.stdout.write(
-      `[desktop] migrated profile from ${migratedFrom} → ${ud}\n`,
-    );
+    log(`migrated profile from ${migratedFrom} → ${ud}`);
   }
 } catch {
   /* best-effort; createApp still resolves via resolveUserDataDir */
@@ -182,9 +191,38 @@ function readPackageMeta(
   }
 }
 
+/**
+ * Set once the user-data directory is known — see `log`.
+ *
+ * A `let` because `log()` is called before that point (argument parsing,
+ * profile resolution) and those lines must not be lost or crash the app for
+ * want of a directory that does not exist yet. Early lines go to stdout only.
+ */
+let logToFile: ((text: string) => void) | undefined;
+let desktopLogFile: string | undefined;
+
 function log(line: string): void {
   const stamp = new Date().toISOString();
-  process.stdout.write(`[desktop ${stamp}] ${line}\n`);
+  const text = formatLogLine(stamp, line);
+  process.stdout.write(text);
+  // Synchronous, deliberately. The lines that matter are the last few before a
+  // freeze, which is exactly what a buffered writer loses.
+  logToFile?.(text);
+}
+
+/**
+ * Start writing the log to a file the user can actually retrieve.
+ *
+ * Called as soon as the user-data directory is resolved. Failure is survivable
+ * and silent-ish: the app runs, stdout still works, and the only cost is that
+ * this session has no retrievable log.
+ */
+function startFileLogging(userDataDir: string): void {
+  const target = desktopLogPath(userDataDir);
+  if (!prepareLogFile(target, fs)) return;
+  desktopLogFile = target;
+  logToFile = createLogFileSink(target);
+  log(`logging to ${target}`);
 }
 
 /**
@@ -448,6 +486,7 @@ async function createApp(): Promise<void> {
   const host = createElectronHost({
     config,
     getWindow: () => mainWindow,
+    getLogFile: () => desktopLogFile,
     log,
     remoteActions,
     getAuthContext: () => authContext.get?.(),

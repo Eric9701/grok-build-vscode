@@ -95,6 +95,39 @@ describe("permission card diff preview (real chat.js in a DOM)", () => {
     });
   });
 
+  it("does NOT auto-open again when the same card is re-rendered (#132)", () => {
+    // The reported bug: close the proposed diff, switch conversations, come
+    // back, and it reopens — on top of the files you were actually working in.
+    // Re-entering a chat rebuilds its pending cards from the transcript, and
+    // that rebuild was firing auto-open a second time. A card being redrawn is
+    // not the card arriving.
+    const { window, posted, doc } = bootWebview();
+    seedDiffAndCard(window, 11);
+    expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(1);
+
+    // The same permission arriving again, exactly as a transcript replay
+    // delivers it.
+    seedDiffAndCard(window, 11);
+
+    expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(1);
+    // The card is still there and still offers the manual control — the fix
+    // removes the surprise, not the ability to look.
+    const btn = doc.querySelector(".card.permission .preview-link") as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+  });
+
+  it("still auto-opens a DIFFERENT request, because that is a new proposal", () => {
+    // The dedupe must be per request, not a one-shot for the whole window: a
+    // fresh edit is a fresh thing to look at.
+    const { window, posted } = bootWebview();
+    seedDiffAndCard(window, 21);
+    seedDiffAndCard(window, 22);
+
+    const openDiffs = posted.filter((m: any) => m.type === "openDiff");
+    expect(openDiffs).toHaveLength(2);
+    expect(openDiffs.map((m: any) => m.requestId)).toEqual([21, 22]);
+  });
+
   it("keeps a manual 'open diff' button that re-opens the same diff", () => {
     const { window, posted, doc } = bootWebview();
     seedDiffAndCard(window, 9);
