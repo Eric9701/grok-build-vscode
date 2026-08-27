@@ -67,6 +67,15 @@ jobs:
           - os: windows-latest
             script: dist:win
             name: windows
+          # Linux builds an AppImage and nothing else. It is not a platform the
+          # download page offers — it exists because a CLOUD ENVIRONMENT has to
+          # install the app on a machine nobody can walk up to, and building
+          # from source there took 25 minutes (npm ci alone was 20, I/O-bound on
+          # the VM's overlay filesystem). An artifact turns that into a
+          # download. Unsigned by design: there is nothing to sign it for.
+          - os: ubuntu-latest
+            script: dist:linux
+            name: linux
     runs-on: ${{ matrix.os }}
     # Measured, not guessed: a healthy signed+notarised run is ~6 minutes total,
     # with Apple answering each submission in about 90 seconds. This was briefly
@@ -157,9 +166,11 @@ jobs:
             dist-desktop/*.dmg
             dist-desktop/*.zip
             dist-desktop/*.exe
+            dist-desktop/*.AppImage
             dist-desktop/*.blockmap
             dist-desktop/latest.yml
             dist-desktop/latest-mac.yml
+            dist-desktop/latest-linux.yml
 
       - name: Verify updater metadata
         shell: bash
@@ -170,6 +181,13 @@ jobs:
             test -f "$f" || { echo "missing $f" >&2; exit 1; }
             grep -Eq 'mac-arm64\.zip\r?$' "$f" || { echo "$f missing mac-arm64.zip" >&2; exit 1; }
             grep -Eq 'mac-x64\.zip\r?$' "$f" || { echo "$f missing mac-x64.zip" >&2; exit 1; }
+          elif [ "${{ runner.os }}" = "Linux" ]; then
+            # Named explicitly rather than left to the else. That else branch
+            # used to BE "not macOS", so a third platform falling into it would
+            # have looked for win-x64.exe in a file that never mentions it.
+            f=dist-desktop/latest-linux.yml
+            test -f "$f" || { echo "missing $f" >&2; exit 1; }
+            grep -Eq '\.AppImage\r?$' "$f" || { echo "$f missing an AppImage" >&2; exit 1; }
           else
             f=dist-desktop/latest.yml
             test -f "$f" || { echo "missing $f" >&2; exit 1; }
@@ -185,10 +203,12 @@ jobs:
           # --clobber so re-running after a failed leg replaces a half-uploaded
           # asset instead of erroring on the name already being taken.
           shopt -s nullglob
-          files=(dist-desktop/*.dmg dist-desktop/*.zip dist-desktop/*.exe dist-desktop/*.blockmap)
-          # Per-platform yml: Windows emits latest.yml, macOS latest-mac.yml.
+          files=(dist-desktop/*.dmg dist-desktop/*.zip dist-desktop/*.exe dist-desktop/*.AppImage dist-desktop/*.blockmap)
+          # Per-platform yml: Windows emits latest.yml, macOS latest-mac.yml,
+          # Linux latest-linux.yml.
           if [ -f dist-desktop/latest.yml ]; then files+=(dist-desktop/latest.yml); fi
           if [ -f dist-desktop/latest-mac.yml ]; then files+=(dist-desktop/latest-mac.yml); fi
+          if [ -f dist-desktop/latest-linux.yml ]; then files+=(dist-desktop/latest-linux.yml); fi
           if [ ${#files[@]} -eq 0 ]; then
             echo "no installers produced" >&2
             exit 1
@@ -225,7 +245,7 @@ jobs:
           mapfile -t withInstallers < <(
             gh api "repos/$REPO/releases?per_page=100" \
               --jq '.[] | select(.draft | not)
-                    | select([.assets[].name] | map(test("-(win-x64[.]exe|mac-(arm64|x64)[.](dmg|zip))$")) | any)
+                    | select([.assets[].name] | map(test("-(win-x64[.]exe|mac-(arm64|x64)[.](dmg|zip)|linux-x64[.]AppImage)$")) | any)
                     | .tag_name'
           )
           echo "releases with installers: ${withInstallers[*]:-none}"
@@ -237,7 +257,7 @@ jobs:
             echo "pruning installers from $tag"
             mapfile -t assets < <(
               gh api "repos/$REPO/releases/tags/$tag" \
-                --jq '.assets[].name | select(test("[.](dmg|zip|exe)([.]blockmap)?$") or test("^latest(-mac)?[.]yml$"))'
+                --jq '.assets[].name | select(test("[.](dmg|zip|exe|AppImage)([.]blockmap)?$") or test("^latest(-mac|-linux)?[.]yml$"))'
             )
             for a in "${assets[@]:-}"; do
               [ -n "$a" ] || continue
