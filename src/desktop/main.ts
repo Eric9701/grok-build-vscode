@@ -112,6 +112,51 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+/**
+ * Set once the user-data directory is known — see `log`.
+ *
+ * A `let` because `log()` is called before that point (argument parsing,
+ * profile resolution) and those lines must not be lost or crash the app for
+ * want of a directory that does not exist yet. Early lines go to stdout only.
+ *
+ * DECLARED ABOVE THE STARTUP BLOCK THAT CALLS `startFileLogging`, and that is
+ * load-bearing rather than tidy. `function` declarations hoist; `let` bindings
+ * do not — they sit in the temporal dead zone until this line is evaluated. So
+ * calling `startFileLogging` from the profile-resolution block further down the
+ * file, while these still sat BELOW it, threw
+ * `ReferenceError: Cannot access 'desktopLogFile' before initialization` on the
+ * assignment. That block has its own `catch`, which swallowed it. The app
+ * launched, no sink was ever installed, and Show logs stayed the no-op it was
+ * supposed to stop being — shipped in 3.19.2, and invisible because the tests
+ * covered the helper module rather than this file's initialization order.
+ */
+let logToFile: ((text: string) => void) | undefined;
+let desktopLogFile: string | undefined;
+
+function log(line: string): void {
+  const stamp = new Date().toISOString();
+  const text = formatLogLine(stamp, line);
+  process.stdout.write(text);
+  // Synchronous, deliberately. The lines that matter are the last few before a
+  // freeze, which is exactly what a buffered writer loses.
+  logToFile?.(text);
+}
+
+/**
+ * Start writing the log to a file the user can actually retrieve.
+ *
+ * Called as soon as the user-data directory is resolved. Failure is survivable
+ * and silent-ish: the app runs, stdout still works, and the only cost is that
+ * this session has no retrievable log.
+ */
+function startFileLogging(userDataDir: string): void {
+  const target = desktopLogPath(userDataDir);
+  if (!prepareLogFile(target, fs)) return;
+  desktopLogFile = target;
+  logToFile = createLogFileSink(target);
+  log(`logging to ${target}`);
+}
+
 function parseArgs(argv: string[]): {
   workspace?: string;
   userDataDir?: string;
@@ -189,40 +234,6 @@ function readPackageMeta(
     // environment. The safe answer to "is this a cloud build" is no.
     return { version: "0.0.0", id: "PawelHuryn.grok-vscode-phuryn", cloudBuild: false };
   }
-}
-
-/**
- * Set once the user-data directory is known — see `log`.
- *
- * A `let` because `log()` is called before that point (argument parsing,
- * profile resolution) and those lines must not be lost or crash the app for
- * want of a directory that does not exist yet. Early lines go to stdout only.
- */
-let logToFile: ((text: string) => void) | undefined;
-let desktopLogFile: string | undefined;
-
-function log(line: string): void {
-  const stamp = new Date().toISOString();
-  const text = formatLogLine(stamp, line);
-  process.stdout.write(text);
-  // Synchronous, deliberately. The lines that matter are the last few before a
-  // freeze, which is exactly what a buffered writer loses.
-  logToFile?.(text);
-}
-
-/**
- * Start writing the log to a file the user can actually retrieve.
- *
- * Called as soon as the user-data directory is resolved. Failure is survivable
- * and silent-ish: the app runs, stdout still works, and the only cost is that
- * this session has no retrievable log.
- */
-function startFileLogging(userDataDir: string): void {
-  const target = desktopLogPath(userDataDir);
-  if (!prepareLogFile(target, fs)) return;
-  desktopLogFile = target;
-  logToFile = createLogFileSink(target);
-  log(`logging to ${target}`);
 }
 
 /**

@@ -107,6 +107,30 @@ describe("preparing the file", () => {
 });
 
 describe("the sink", () => {
+  it("rotates while the app is RUNNING, not only at startup", () => {
+    // Startup-only rotation was the first version and it was wrong: a desktop
+    // app stays open for days and a cloud machine for weeks, and provider
+    // stderr goes straight through — so a looping agent fills the volume long
+    // before the next restart, taking project and session-state writes with it.
+    const { io: f, files } = io();
+    const write = createLogFileSink("/d/logs/desktop.log", f, 10);
+    write("12345678\n");   // 9 bytes — under
+    write("12345678\n");   // would cross 10, so rotate first
+    expect(files.get("/d/logs/desktop.log.1")).toBe(9);
+    expect(files.get("/d/logs/desktop.log")).toBe(9);
+  });
+
+  it("counts what is already on disk, so restarts cannot dodge the cap", () => {
+    // Otherwise every restart resets the budget and an append-only file grows
+    // without limit across many short sessions.
+    const { io: f, files } = io();
+    files.set("/d/logs/desktop.log", 100);
+    const write = createLogFileSink("/d/logs/desktop.log", f, 10);
+    write("x\n");
+    expect(files.get("/d/logs/desktop.log.1")).toBe(100);
+  });
+
+
   it("appends what it is given", () => {
     const { io: f, files } = io();
     const write = createLogFileSink("/d/logs/desktop.log", f);

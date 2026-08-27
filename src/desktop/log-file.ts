@@ -23,11 +23,14 @@
  * Paying a synchronous write per line is the whole point rather than an
  * oversight.
  *
- * **Bounded, by rotation, at startup only.** One previous file is kept, so the
- * cap is roughly twice {@link MAX_LOG_BYTES}. Rotating on a size check per
- * line would mean a `stat` per line; rotating at startup is enough, because
- * the file only grows while the app runs and every report starts with a
- * restart anyway.
+ * **Bounded while the app RUNS, not merely at startup.** One previous file is
+ * kept, so the cap is roughly twice {@link MAX_LOG_BYTES}. Startup-only
+ * rotation was the first version and it was wrong: a desktop app is left open
+ * for days and a cloud machine for weeks, and provider stderr is forwarded
+ * straight through — so a looping agent can fill the volume long before the
+ * next restart, taking project and session-state writes down with it. The sink
+ * therefore counts what it has written and rotates when it crosses the cap. No
+ * `stat` per line: the count is already in hand.
  *
  * **stdout as well, still.** It costs nothing and it is what a developer
  * running from a terminal actually reads.
@@ -100,13 +103,54 @@ export function prepareLogFile(logPath: string, io: LogFileIo, maxBytes = MAX_LO
  */
 export function createLogFileSink(
   logPath: string,
-  io: Pick<LogFileIo, "appendFileSync"> = fs,
+  io: LogFileIo = fs,
+  maxBytes = MAX_LOG_BYTES,
 ): (text: string) => void {
   let broken = false;
+  // Seeded from what is already on disk, so a restart does not reset the budget
+  // and let an append-only file grow without limit across many short sessions.
+  let written = 0;
+  try {
+    written = io.existsSync(logPath) ? io.statSync(logPath).size : 0;
+  } catch {
+    written = 0;
+  }
   return (text: string) => {
     if (broken) return;
+    // BYTES, not string length. `statSync().size` is bytes and `text.length`
+    // counts UTF-16 units, so mixing them lets multibyte output — CJK provider
+    // stderr, say — reach roughly three times the advertised cap before this
+    // notices.
+    const size = Buffer.byteLength(text);
     try {
+      if (written + size > maxBytes) {
+        try {
+          const previous = rotatedLogPath(logPath);
+          if (io.existsSync(previous)) io.unlinkSync(previous);
+          io.renameSync(logPath, previous);
+          written = 0;
+        } catch {
+          // Rotation failed — a locked `.1` on Windows, or a directory that
+          // denies rename. Do NOT reset the budget: an earlier version did,
+          // which let the same oversized file grow by another cap every time
+          // the rename failed, without limit.
+          //
+          // Stop instead. Losing further log lines is bad; filling the volume
+          // is worse, because the writes that fail next are the session and
+          // project ones — somebody's work rather than their diagnostics.
+          broken = true;
+          try {
+            io.appendFileSync(
+              logPath,
+              "[desktop] log is at its size limit and cannot be rotated; "
+              + "no further lines will be written this run\n",
+            );
+          } catch { /* nothing left to say it with */ }
+          return;
+        }
+      }
       io.appendFileSync(logPath, text);
+      written += size;
     } catch {
       // Once. A disk that refuses one write refuses the next thousand, and a
       // logger that retries per line makes a slow problem into a frozen app.
