@@ -672,3 +672,14 @@ export const MAX_BACKOFF_MS = 30_000;
 export function nextBackoffMs(prev: number): number {
   return Math.min(Math.max(prev, INITIAL_BACKOFF_MS) * 2, MAX_BACKOFF_MS);
 }
+
+/**
+ * Is this host an AFK Pilot cloud environment?
+ *
+ * One env var, read in one place, so "am I hosted" is never re-derived from
+ * something adjacent like the platform or the relay URL. Both of those have
+ * other reasons to be true.
+ */
+export function isCloudEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[CLOUD_ENVIRONMENT_ENV] === "1";
+}

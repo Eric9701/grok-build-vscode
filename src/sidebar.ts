@@ -46,6 +46,7 @@ import {
   type ProviderHistoryCursor,
 } from "./provider-ui";
 import {
+  nextWakeAt,
   ROUTINES_KEY,
   routineWindow,
   toRoutineView,
@@ -254,6 +255,7 @@ import {
   writeRemoteProjectFile,
 } from "./remote-files";
 import {
+  isCloudEnvironment,
   CLOUD_ENVIRONMENT_ENV, buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, RELAY_DEVICE_TOKEN_SECRET, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
@@ -977,6 +979,9 @@ export class GrokSidebar {
    *  exactly once across every host sharing this `~/.grok`. */
   private readonly routineRuns: RoutineRunStore;
   private routineTimer?: ReturnType<typeof setInterval>;
+  /** Last wake time the relay accepted. `undefined` = never published, which is
+   *  distinct from `null` = published "nothing scheduled". */
+  private publishedWakeAt: number | null | undefined;
   /** Routines whose session is live right now, so a slow turn cannot be
    *  overlapped by the next tick even though its window is still current. */
   private readonly routinesInFlight = new Set<string>();
@@ -1294,6 +1299,51 @@ export class GrokSidebar {
     // observe for itself, and it just changed. Posted from here rather than
     // from each of the seven call sites above, so the two can never disagree.
     this.postWelcomeTips();
+    // Same reasoning, one layer out: this is the single choke point where the
+    // schedule can change, so it is the only honest place to tell the relay
+    // when this machine next needs to be awake.
+    void this.publishWakeAt();
+  }
+
+  /**
+   * Tell the relay when this environment next needs to be awake.
+   *
+   * ONLY a cloud environment does this, and only ever a timestamp. A laptop
+   * needs no such thing — it fires its own routines because somebody opened it
+   * — and sending one from a desk machine would put a schedule in a database
+   * that deliberately holds no payloads, for no benefit at all.
+   *
+   * `null` is a real and necessary value: a user who pauses or deletes their
+   * last routine must clear the standing wake, or the machine keeps starting up
+   * nightly for something that no longer exists.
+   *
+   * Best-effort by design. A relay that is unreachable, older than this
+   * endpoint, or serving no environments answers 404 or nothing, and the
+   * correct response is silence: routines still run when the machine is up, and
+   * catch-up is arithmetic. A failure here delays a routine; it never loses
+   * one, and it must never interrupt anybody.
+   */
+  private async publishWakeAt(): Promise<void> {
+    if (!isCloudEnvironment()) return;
+    // Through relayUrl(), like every other consumer: half the app on staging
+    // and half on production fails in a way that looks like a relay bug.
+    const base = httpBaseFromRelayUrl(this.relayUrl());
+    const token = await this.readDeviceToken().catch(() => undefined);
+    if (!base || !token) return;
+    const wakeAt = nextWakeAt(this.loadRoutines(), Date.now());
+    if (wakeAt === this.publishedWakeAt) return;
+    try {
+      const res = await fetch(`${base}/api/environment/wake-at`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ wakeAt }),
+      });
+      // Remembered only on success, so a transient failure is retried by the
+      // next schedule change rather than being assumed delivered.
+      if (res.ok) this.publishedWakeAt = wakeAt;
+    } catch {
+      /* the relay is unreachable; routines still run when this host is up */
+    }
   }
 
   /**
@@ -13916,7 +13966,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // DevTools is discoverable without the auto-hidden application menu.
         toggleDevTools: this.host.canToggleDevTools,
         // OPT-IN: absent/false hides Settings → Connectors.
-        ...(this.host.canShowMcpSettings ? { mcpSettings: true } : {}),
+        //
+        // A cloud environment withholds it. Connecting an MCP connector is a
+        // browser OAuth flow at the VENDOR, and there is no browser in a hosted
+        // machine — nor, unlike a desk, any computer to walk over to. Every
+        // other host-local capability re-homes to the remote client, which knows
+        // how to present a file or open a URL itself; this one genuinely cannot,
+        // until a connector offers a device-code flow.
+        //
+        // Withheld rather than shown-and-disabled: a control that explains why
+        // it will not work is still a control that does not work, and the page
+        // behind it would list servers nobody can connect.
+        ...(this.host.canShowMcpSettings && !isCloudEnvironment() ? { mcpSettings: true } : {}),
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
         openInEditor: this.host.canOpenInEditor,
@@ -16822,7 +16883,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         release: os.release(),
         appName: this.host.appName,
         isDesktop: this.host.remoteInstallIdSuffix === ":desktop",
-        isCloud: process.env[CLOUD_ENVIRONMENT_ENV] === "1",
+        isCloud: isCloudEnvironment(),
       },
       snapshot: (clientId) => this.buildRemoteSnapshot(clientId),
       // Socket-level project gate — also covers the catch-up snapshot path,
@@ -16966,7 +17027,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         installId,
         appName: this.host.appName,
         isDesktop: this.host.remoteInstallIdSuffix === ":desktop",
-        isCloud: process.env[CLOUD_ENVIRONMENT_ENV] === "1",
+        isCloud: isCloudEnvironment(),
       });
       const startRes = await fetch(`${base}/api/link/start`, {
         method: "POST",
