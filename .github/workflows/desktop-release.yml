@@ -245,7 +245,7 @@ jobs:
           mapfile -t withInstallers < <(
             gh api "repos/$REPO/releases?per_page=100" \
               --jq '.[] | select(.draft | not)
-                    | select([.assets[].name] | map(test("-(win-x64[.]exe|mac-(arm64|x64)[.](dmg|zip)|linux-x64[.]AppImage)$")) | any)
+                    | select([.assets[].name] | map(test("-(win-x64[.]exe|mac-(arm64|x64)[.](dmg|zip)|linux-x86_64[.]AppImage)$")) | any)
                     | .tag_name'
           )
           echo "releases with installers: ${withInstallers[*]:-none}"
