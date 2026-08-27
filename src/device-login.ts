@@ -72,10 +72,62 @@ export function deviceLoginPlan(provider: AcpProvider): DeviceLoginPlan | undefi
 }
 
 /** Why a provider has no remote sign-in, in a sentence a person can act on. */
-export function deviceLoginUnavailable(provider: AcpProvider): string | undefined {
+export function deviceLoginUnavailable(
+  provider: AcpProvider,
+  opts: { isCloud?: boolean } = {},
+): string | undefined {
   if (provider !== "claude") return undefined;
+  // In a CLOUD environment there is no computer to walk to, so the desk
+  // fallback is not advice — it is a dead end dressed as advice. The image
+  // carries a pty for exactly this, which is why the answer differs.
+  if (opts.isCloud) return undefined;
   return "Claude's sign-in needs a real terminal, so it has to be done at your computer. "
     + "Open Grok Build there and connect Claude, and this device picks it up straight away.";
+}
+
+/**
+ * What to tell somebody BEFORE they start a sign-in that is likely to fail.
+ *
+ * Codex device-code login is **off by default on every account**. OpenAI
+ * disables it deliberately — a device code is more social-engineerable than a
+ * browser redirect — so the first attempt fails for almost everyone, and the
+ * error arrives after a wait, in the middle of a flow they had already
+ * committed to.
+ *
+ * A person can fix it in about fifteen seconds, and only if they are told
+ * where. So this is shown BEFORE the button does anything, not after it fails.
+ *
+ * Cloud only, and that is the whole point of the flag: at a desk the browser
+ * flow works and this setting never comes up. Showing it there would be a
+ * warning about a problem the reader does not have.
+ */
+export interface DeviceLoginPreflight {
+  /** One sentence on why this is here. */
+  reason: string;
+  /** The exact path through the vendor's settings. */
+  steps: readonly string[];
+  /** Where to go and do it. */
+  url?: string;
+}
+
+export function deviceLoginPreflight(
+  provider: AcpProvider,
+  opts: { isCloud?: boolean } = {},
+): DeviceLoginPreflight | undefined {
+  if (!opts.isCloud) return undefined;
+  if (provider !== "codex") return undefined;
+  return {
+    reason:
+      "Codex needs one setting turned on before it can sign in here. It is off by "
+      + "default for everyone — OpenAI disables device-code sign-in unless you ask "
+      + "for it.",
+    steps: [
+      "Open ChatGPT and go to Settings → Security",
+      "Turn on \"Device code authorization for Codex\"",
+      "Come back and connect — the code appears here",
+    ],
+    url: "https://chatgpt.com/#settings/Security",
+  };
 }
 
 // Explicit escapes, not literal control bytes: an ESC written straight into

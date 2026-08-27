@@ -570,6 +570,16 @@ export type HostMsg =
         code?: string;
         /** Said to the person, not logged — a failure or an explanation. */
         message?: string;
+        /**
+         * Shown BEFORE the sign-in starts, when it is likely to fail for a
+         * reason the person can fix in seconds. Codex device-code login is off
+         * by default on every account; telling somebody that after a wait and a
+         * failure is telling them too late.
+         *
+         * Cloud environments only — at a desk the browser flow works and this
+         * setting never comes up.
+         */
+        preflight?: { reason: string; steps: string[]; url?: string };
       };
     }
   // resumeFailed is additive: a remote resume refusal names the requested id so

@@ -104,6 +104,7 @@ import { commandOnPath, runGitClone } from "./git-clone";
 import {
   deviceLoginFailureText,
   deviceLoginPlan,
+  deviceLoginPreflight,
   deviceLoginUnavailable,
 } from "./device-login";
 import { runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
@@ -1695,8 +1696,17 @@ export class GrokSidebar {
       else this.post(message);
     };
 
-    const unavailable = deviceLoginUnavailable(provider);
+    const isCloud = isCloudEnvironment();
+    const unavailable = deviceLoginUnavailable(provider, { isCloud });
     const plan = deviceLoginPlan(provider);
+    // Before anything is spawned. A person who reads this fixes a setting in
+    // fifteen seconds; a person who reads the failure afterwards has already
+    // waited for it.
+    const preflight = deviceLoginPreflight(provider, { isCloud });
+    if (preflight) {
+      send({ status: "unavailable", message: preflight.reason, preflight: { ...preflight, steps: [...preflight.steps] } });
+      return;
+    }
     if (unavailable || !plan) {
       // Not an error, and it must not read as one: the agent can still be
       // connected, just not from here. Saying which is the difference between

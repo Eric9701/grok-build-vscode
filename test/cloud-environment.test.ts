@@ -18,6 +18,7 @@ import {
   isCloudEnvironment,
   relayClientMeta,
 } from "../src/remote-frames";
+import { deviceLoginPreflight, deviceLoginUnavailable } from "../src/device-login";
 import { nextWakeAt, type Routine } from "../src/routines";
 
 const desk = {
@@ -102,5 +103,37 @@ describe("the one timestamp the relay is told", () => {
   it("says null when nothing is scheduled, so a stale wake can be cleared", () => {
     expect(nextWakeAt([], 1_700_000_000_000)).toBeNull();
     expect(nextWakeAt([routine({ paused: true })], 1_700_000_000_000)).toBeNull();
+  });
+});
+
+describe("telling somebody before they fail", () => {
+  it("warns about the Codex setting in a cloud environment", () => {
+    // Off by default on EVERY account — OpenAI disables device-code sign-in
+    // unless you ask for it. So the first attempt fails for almost everyone,
+    // and the fix takes about fifteen seconds if you know where to look.
+    const pf = deviceLoginPreflight("codex", { isCloud: true })!;
+    expect(pf.reason).toMatch(/off by default/i);
+    expect(pf.steps.join(" ")).toMatch(/Security/);
+    expect(pf.steps.join(" ")).toMatch(/Device code authorization/i);
+    expect(pf.url).toMatch(/chatgpt\.com/);
+  });
+
+  it("says nothing at a desk, where the browser flow just works", () => {
+    // A warning about a problem the reader does not have is noise.
+    expect(deviceLoginPreflight("codex", { isCloud: false })).toBeUndefined();
+    expect(deviceLoginPreflight("codex")).toBeUndefined();
+  });
+
+  it("has nothing to say about the agents that do not need it", () => {
+    expect(deviceLoginPreflight("grok", { isCloud: true })).toBeUndefined();
+    expect(deviceLoginPreflight("claude", { isCloud: true })).toBeUndefined();
+  });
+
+  it("stops sending cloud users to a computer that does not exist", () => {
+    // At a desk, Claude's answer is "connect it at your computer". In a cloud
+    // environment there IS no computer, so that sentence is a dead end dressed
+    // as advice — the image carries a pty for exactly this reason.
+    expect(deviceLoginUnavailable("claude")).toMatch(/at your computer/i);
+    expect(deviceLoginUnavailable("claude", { isCloud: true })).toBeUndefined();
   });
 });
