@@ -336,6 +336,23 @@ export class TerminalManager {
     for (const id of Array.from(this.terminals.keys())) this.release(id);
   }
 
+  /**
+   * Is any command still running?
+   *
+   * Asked by the keep-awake rules, and it is the only HONEST answer to "is this
+   * machine still doing something". Session status cannot answer it: the agent
+   * can start a twenty-five-minute build and then ask a question, at which
+   * point the session says it is waiting for a person while the build carries
+   * on. On a cloud machine, believing the status there freezes the build.
+   *
+   * `exitCode === null` is precisely "has not exited". A released terminal has
+   * already left the map.
+   */
+  anyRunning(): boolean {
+    for (const t of this.terminals.values()) if (t.exitCode === null) return true;
+    return false;
+  }
+
   private required(terminalId: string): TerminalEntry {
     const t = this.terminals.get(terminalId);
     if (!t) throw new Error(`unknown terminalId: ${terminalId}`);

@@ -401,3 +401,48 @@ describe("TerminalManager kill fallback (Windows taskkill failure)", () => {
     m.release(terminalId);
   }, 15000);
 });
+
+describe("anyRunning — the honest answer to 'is this machine still doing something'", () => {
+  /**
+   * Session status cannot answer that. An agent can start a twenty-five-minute
+   * build and THEN ask a question, at which point the session says it is
+   * waiting for a person while the build carries on — and on a cloud machine,
+   * believing the status there freezes the build.
+   */
+  it("is false with nothing to run", () => {
+    expect(new TerminalManager().anyRunning()).toBe(false);
+  });
+
+  it("is true while a command runs and false once it exits", async () => {
+    const m = new TerminalManager();
+    const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 300)") });
+    expect(m.anyRunning()).toBe(true);
+    await m.waitForExit(terminalId);
+    expect(m.anyRunning()).toBe(false);
+    m.release(terminalId);
+  });
+
+  it("stays true while ANY command is still going", async () => {
+    // The case that matters: a quick one finishing must not make a long one
+    // invisible.
+    const m = new TerminalManager();
+    const quick = m.create({ command: nodeEval("process.exit(0)") }).terminalId;
+    const slow = m.create({ command: nodeEval("setTimeout(() => {}, 600)") }).terminalId;
+    await m.waitForExit(quick);
+    expect(m.anyRunning()).toBe(true);
+    await m.waitForExit(slow);
+    expect(m.anyRunning()).toBe(false);
+    m.release(quick);
+    m.release(slow);
+  });
+
+  it("is false once a running command is released", async () => {
+    // Released means we have stopped tracking it; holding a machine awake for
+    // something nothing is watching would be a bill with no owner.
+    const m = new TerminalManager();
+    const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 5000)") });
+    expect(m.anyRunning()).toBe(true);
+    m.release(terminalId);
+    expect(m.anyRunning()).toBe(false);
+  });
+});

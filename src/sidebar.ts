@@ -267,10 +267,12 @@ import { KeepAwake, shouldKeepAwake } from "./keep-awake";
 /**
  * How long an unanswered card keeps a cloud machine awake.
  *
- * Long enough that a background test run or install started just before the
- * question was asked gets to finish; short enough that a card nobody comes back
- * to tonight stops costing money. Local wake locks are unaffected — this is
- * only about a machine somebody else is paying for.
+ * A backstop, not the main signal: a command that is still RUNNING keeps the
+ * machine awake for as long as it runs, however long that is. This covers the
+ * rest — an agent that has genuinely stopped and is waiting on a person. Long
+ * enough not to punish somebody who steps away mid-thought, short enough that a
+ * card nobody comes back to tonight stops costing money. Local wake locks are
+ * unaffected; this is only about a machine somebody else is paying for.
  */
 const NEEDS_YOU_KEEP_AWAKE_MS = 20 * 60 * 1000;
 
@@ -2910,7 +2912,9 @@ Only continue if you trust this code.`,
     function commitVerdict(): void {
       session.pendingExitPlans.delete(requestId);
       sidebar.persistPlanVerdict(session, verdict, planText);
-      sidebar.setStatus(session, "working");
+      // Same rule as answering a permission or a question: a plan verdict is
+      // activity, but it only resumes the turn if nothing else is outstanding.
+      sidebar.noteAnswered(session);
       if (verdict === "approved" && session.autoApprove) {
         sidebar.autoApprovePendingPermissions(session);
       }
@@ -9361,9 +9365,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           // costs money: `working` is what holds the machine awake, so a
           // half-answered pair would hold it open indefinitely while nothing
           // ran.
-          if (session.pendingPermissions.size === 0) {
-            this.setStatus(session, "working"); // turn resumes after the answer
-          }
+          this.noteAnswered(session);
           break;
         }
       case "exitPlanAnswer":
@@ -9371,12 +9373,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "questionAnswer":
         if (session.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {})) {
-          this.setStatus(session, "working");
+          // Answering a QUESTION is not answering a permission card that is
+          // also outstanding — the agent stays blocked on it, so `working`
+          // would be wrong and would hold a rented machine awake indefinitely.
+          this.noteAnswered(session);
         }
         break;
       case "questionCancel":
         if (session.client?.respondQuestionCancelled(msg.requestId)) {
-          this.setStatus(session, "working");
+          this.noteAnswered(session);
         }
         break;
       case "setModel":
@@ -15521,6 +15526,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private turnOrderTimers = new Set<ReturnType<typeof setTimeout>>();
 
   /** True when any live pool member is mid-turn or waiting on the user. */
+  /**
+   * The agent was waiting on a person and now it is not.
+   *
+   * Answering is ACTIVITY whether or not it unblocks the whole turn: the tool
+   * that was approved starts running immediately. Setting `working` is separate,
+   * and conditional — with another card still outstanding the turn is not
+   * resumed and saying so would be a lie — but the clock has to be re-armed
+   * either way, or a machine can freeze on work that has only just begun.
+   */
+  noteAnswered(session: Session): void {
+    if (session.pendingPermissions.size === 0) {
+      this.setStatus(session, "working"); // setStatus touches and re-asserts
+      return;
+    }
+    this.touch(session);
+    this.refreshKeepAwake();
+  }
+
   private anyTurnInFlight(): boolean {
     for (const s of this.pool) {
       if (hasLiveWork(s)) return true;
@@ -15547,6 +15570,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * the machine and the card is still there.
    */
   private anyTurnWorking(): boolean {
+    // A command that is still running is the one answer that does not depend on
+    // reading a status. An agent can start a twenty-five-minute build and THEN
+    // ask a question — the session then says it is waiting for a person while
+    // the build carries on, and any window we pick is a guess about how long
+    // that build takes. This is not a guess.
+    if (this.terminalManager.anyRunning()) return true;
     const now = Date.now();
     for (const s of this.pool) {
       if (!hasLiveWork(s)) continue;

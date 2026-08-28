@@ -110,7 +110,10 @@ describe("native plan verdict orchestration", () => {
 
     expect(commit).toBeGreaterThan(-1);
     expect(queue).toBeGreaterThan(commit);
-    expect(handleExitPlan).toContain('sidebar.setStatus(session, "working")');
+    // Resumed via noteAnswered, which sets `working` only when nothing else is
+    // outstanding — a plan verdict does not answer a permission card that is
+    // also waiting — but re-arms the activity clock either way.
+    expect(handleExitPlan).toContain("sidebar.noteAnswered(session)");
     expect(abandonVerdict).not.toContain("client.interject");
   });
 
