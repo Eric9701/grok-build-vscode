@@ -3625,16 +3625,26 @@ Only continue if you trust this code.`,
     // when somebody answers it, and `noteAnswered` drags a settled session back
     // to `working` with no turn left that could ever end it. On a rented
     // machine that holds it awake and billing for good.
-    // NOTHING it asked is outstanding any more — whichever kind of card it was.
-    // Clearing only one kind is worse than clearing none: with a question and a
-    // permission both on screen after Stop, emptying the question set alone
-    // means answering the leftover permission finds every map empty and marks
-    // the settled session `working`, with no turn left that could ever end it.
-    // Both other paths already refuse a card they cannot find, so clearing here
-    // is what makes a stale card inert rather than merely mis-scored.
-    session.pendingQuestions.clear();
-    session.pendingPermissions.clear();
-    session.pendingExitPlans.clear();
+    // NOTHING the ended turn asked is outstanding any more — whichever kind of
+    // card it was. Clearing only one kind is worse than clearing none: with a
+    // question and a permission both on screen after Stop, emptying the
+    // question set alone means answering the leftover permission finds every
+    // map empty and marks the settled session `working`, with no turn left that
+    // could ever end it. Both other paths already refuse a card they cannot
+    // find, so clearing here is what makes a stale card inert rather than
+    // merely mis-scored.
+    //
+    // ONLY when no newer turn has started, though. This runs from a completion
+    // path that can resume after an await — /compact yields while it refreshes
+    // context — and by then another tab or a remote send may have begun a turn
+    // of its own. Clearing then would delete a LIVE turn's cards, and the host
+    // would refuse to answer the card still on the reader's screen, leaving
+    // that agent blocked with no way back short of restarting the session.
+    if (!turnIsInFlight(session)) {
+      session.pendingQuestions.clear();
+      session.pendingPermissions.clear();
+      session.pendingExitPlans.clear();
+    }
     if (session.replaying || session.suppressContent) return;
     session.liveFeedbackEligible = true;
     session.turnRating = 0;
