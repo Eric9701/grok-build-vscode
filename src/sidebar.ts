@@ -3625,7 +3625,16 @@ Only continue if you trust this code.`,
     // when somebody answers it, and `noteAnswered` drags a settled session back
     // to `working` with no turn left that could ever end it. On a rented
     // machine that holds it awake and billing for good.
+    // NOTHING it asked is outstanding any more — whichever kind of card it was.
+    // Clearing only one kind is worse than clearing none: with a question and a
+    // permission both on screen after Stop, emptying the question set alone
+    // means answering the leftover permission finds every map empty and marks
+    // the settled session `working`, with no turn left that could ever end it.
+    // Both other paths already refuse a card they cannot find, so clearing here
+    // is what makes a stale card inert rather than merely mis-scored.
     session.pendingQuestions.clear();
+    session.pendingPermissions.clear();
+    session.pendingExitPlans.clear();
     if (session.replaying || session.suppressContent) return;
     session.liveFeedbackEligible = true;
     session.turnRating = 0;

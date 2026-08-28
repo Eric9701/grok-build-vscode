@@ -387,32 +387,31 @@ export class TerminalManager {
           }
         });
       } else if (plan.kind === "group") {
-        // ASK WHETHER THE GROUP IS STILL THERE, then signal it.
+        // ONLY WHILE THE WRAPPER IS ALIVE.
         //
-        // Two hazards pull in opposite directions, and the wrapper's exit code
-        // settles neither. Signalling blindly can hit a recycled pid and kill
-        // somebody else's work; NOT signalling because the wrapper exited
-        // abandons its descendants — `nohup long-job &` leaves the shell
-        // exiting 0 with the job still in its group, which on a rented machine
-        // then reads as "nothing running" and lets it freeze mid-job.
+        // Two previous versions each got half of this. Signalling whenever we
+        // are asked can reach a pid the OS has recycled and kill somebody
+        // else's work. Probing first with signal 0 does not help: it proves
+        // that *a* group holds that id, not that it is OURS — an empty group
+        // releases its id and the next one to get it answers the probe just as
+        // happily.
         //
-        // Signal 0 tests for the group without sending anything, and it
-        // distinguishes the two: a group with living members keeps its id
-        // reserved, so if the probe succeeds the id cannot have been reused,
-        // and if it fails there is nothing there to kill.
+        // The wrapper's own liveness is the one thing that settles it. While it
+        // is running, its group exists and is unambiguously ours, so the signal
+        // is safe. Once it has exited we cannot tell our surviving descendants
+        // from a stranger's group, and killing a stranger is the worse mistake.
+        //
+        // The cost is a command deliberately detached from its shell —
+        // `nohup job &`, `disown` — which outlives the wrapper and is neither
+        // tracked nor killed. That is what detaching MEANS, and it is a leak we
+        // can see rather than a signal we cannot aim.
+        if (t.exitCode != null) return;
         const killImpl = this.deps.killImpl ?? ((p: number, sig: NodeJS.Signals | 0) => process.kill(p, sig));
-        try {
-          killImpl(-plan.pid, 0);
-        } catch {
-          // No such group. Fall back to the child itself, which self-guards
-          // against an exited process — this covers a spawn that never became
-          // a group leader (a stub in a test, or a platform that refused).
-          try { t.proc.kill(plan.signal); } catch { /* already gone */ }
-          return;
-        }
         try {
           killImpl(-plan.pid, plan.signal);
         } catch {
+          // Never became a group leader — a stub in a test, or a platform that
+          // refused `detached`. The child self-guards against being exited.
           try { t.proc.kill(plan.signal); } catch { /* already gone */ }
         }
       } else {

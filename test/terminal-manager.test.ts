@@ -520,58 +520,56 @@ describe("commands belong to whoever started them", () => {
   });
 });
 
-describe("killing a group asks whether the group is still there", () => {
+describe("signalling a process group, and when not to", () => {
   /**
-   * Two hazards pull opposite ways and the wrapper's exit code settles neither.
-   * Signalling blindly can hit a recycled pid and kill somebody else's work.
-   * Not signalling because the wrapper exited abandons its descendants —
-   * `nohup long-job &` exits the shell 0 with the job still in its group, which
-   * on a rented machine reads as "nothing running" and lets it freeze mid-job.
+   * Three versions of this rule have now been wrong in three different ways, so
+   * the reasoning is worth keeping next to the tests.
    *
-   * Signal 0 tells them apart: a group with living members keeps its id
-   * reserved, so a successful probe proves the id was not reused.
+   * Signalling whenever asked can reach a pid the OS recycled and kill somebody
+   * else's work. Probing first with signal 0 does not save it: that proves *a*
+   * group holds the id, not that it is ours — an empty group releases its id
+   * and the next holder answers the probe just as happily.
+   *
+   * The wrapper's own liveness is the one thing that settles it. Alive, its
+   * group exists and is unambiguously ours. Exited, we cannot tell our
+   * surviving descendants from a stranger's group, and killing a stranger is
+   * the worse mistake.
    */
-  function manager(groupAlive: boolean) {
+  function manager() {
     const sent: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
     const m = new TerminalManager({
       platform: "linux",
-      killImpl: (pid, signal) => {
-        sent.push({ pid, signal });
-        if (signal === 0 && !groupAlive) throw new Error("ESRCH");
-      },
+      killImpl: (pid, signal) => { sent.push({ pid, signal }); },
     });
     return { m, sent };
   }
 
-  it("signals a group that still has members, even though the shell exited", async () => {
-    // The nohup case. Before the probe this was skipped entirely and the job
-    // was abandoned.
-    const { m, sent } = manager(true);
-    const { terminalId } = m.create({ command: nodeEval("process.exit(0)") });
-    await m.waitForExit(terminalId);
+  it("signals the group while the command is running", () => {
+    const { m, sent } = manager();
+    const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 3000)") });
     m.kill(terminalId);
-    expect(sent.some((c) => c.pid < 0 && c.signal === 0)).toBe(true);
     expect(sent.some((c) => c.pid < 0 && c.signal === "SIGTERM")).toBe(true);
     m.release(terminalId);
   });
 
-  it("sends NOTHING to a group that is gone", async () => {
-    // Where the pid may have been recycled, the probe fails and no real signal
-    // is sent — our cleanup must never kill somebody else's work.
-    const { m, sent } = manager(false);
+  it("sends NOTHING once the command has exited", async () => {
+    // Where the pid may since have been recycled. Our cleanup must never kill
+    // somebody else's work, and a detached job outliving its shell — which is
+    // what detaching means — is the accepted cost.
+    const { m, sent } = manager();
     const { terminalId } = m.create({ command: nodeEval("process.exit(0)") });
     await m.waitForExit(terminalId);
     m.kill(terminalId);
-    expect(sent.every((c) => c.signal === 0)).toBe(true);
+    expect(sent).toEqual([]);
     m.release(terminalId);
+    expect(sent).toEqual([]);
   });
 
-  it("probes before signalling a live command too", () => {
-    const { m, sent } = manager(true);
+  it("never probes — a probe cannot tell our group from a stranger's", async () => {
+    const { m, sent } = manager();
     const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 3000)") });
     m.kill(terminalId);
-    expect(sent[0].signal).toBe(0);
-    expect(sent.some((c) => c.signal === "SIGTERM")).toBe(true);
+    expect(sent.every((c) => c.signal !== 0)).toBe(true);
     m.release(terminalId);
   });
 });
