@@ -15366,6 +15366,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.pool.delete(session);
     this.remoteClients.deleteActiveValue(session);
     if (id) this.post({ type: "sessionDot", id, dot: this.dotForId(id) });
+    // A session can leave the pool while it is still WORKING — deleting the
+    // conversation you are watching is allowed, and reaping and worktree
+    // teardown end here too. Every one of those can take the last turn away, so
+    // the wake lock and the cloud heartbeat are re-asserted HERE rather than at
+    // each caller: setStatus covers a turn that finishes, and this covers a
+    // turn that is taken away. Without it the heartbeat outlives the work and
+    // holds a machine we rent awake until something else happens to stop it.
+    this.refreshKeepAwake();
     return exited ?? Promise.resolve();
   }
 
@@ -15470,6 +15478,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private anyTurnInFlight(): boolean {
     for (const s of this.pool) {
       if (s.status === "working" || s.status === "needs-you") return true;
+    }
+    return false;
+  }
+
+  /**
+   * Is an agent actually DOING something right now?
+   *
+   * Narrower than {@link anyTurnInFlight} on purpose, and the difference is
+   * `needs-you`. A permission card nobody has answered keeps a laptop awake for
+   * a good reason — you are about to come back and answer it — but on a machine
+   * we rent it would hold the thing running and billing for ever while no work
+   * happens at all. An unanswered card is exactly the state a machine should be
+   * allowed to sleep in: opening the page is what wakes it, and the card is
+   * still there when it does.
+   */
+  private anyTurnWorking(): boolean {
+    for (const s of this.pool) {
+      if (s.status === "working") return true;
     }
     return false;
   }
@@ -17043,7 +17069,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // machine, and a suspended machine takes the turn down with it. Not gated
       // on the opt-out — that setting is about a laptop's battery, and this
       // costs a few bytes a minute on a socket that is already open.
-      try { this.uplink?.setWorking(turnInFlight); } catch { /* never worth failing over */ }
+      try { this.uplink?.setWorking(this.anyTurnWorking()); } catch { /* never worth failing over */ }
       if (shouldKeepAwake({
         enabled,
         linked: !!this.uplink,

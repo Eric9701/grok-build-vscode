@@ -405,10 +405,43 @@ export interface DefaultProjectFs {
   lstatSync?(p: string): { isSymbolicLink(): boolean };
 }
 
-function isUsableDirectory(p: string, io: DefaultProjectFs): boolean {
+/**
+ * Is every step from `base` down to `p` a real directory rather than a link?
+ *
+ * Checking only the final folder is not enough, and that gap is what this
+ * exists to close. `mkdirSync(..., {recursive: true})` will happily create
+ * `<root>/My First Project` THROUGH a junction planted at `<root>`, and the
+ * leaf it creates is then a perfectly ordinary directory — an lstat of it sees
+ * nothing wrong. The workspace is authorized, canonical file authorization
+ * resolves it to the junction's target, and a linked remote reads and writes
+ * whatever the link points at.
+ *
+ * A path that is not under `base` at all — a different drive, or `..` — is
+ * refused for the same reason: we did not choose it.
+ */
+function isLinkFreeUnder(base: string, p: string, io: DefaultProjectFs): boolean {
+  if (!io.lstatSync) return true; // no way to tell; caller behaves as before
+  const rel = path.relative(base, p);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  let cur = path.resolve(base);
+  for (const part of rel.split(path.sep)) {
+    if (!part) continue;
+    cur = path.join(cur, part);
+    try {
+      if (io.existsSync(cur) && io.lstatSync(cur).isSymbolicLink()) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isUsableDirectory(p: string, io: DefaultProjectFs, base?: string): boolean {
   if (!p) return false;
   try {
     if (!io.existsSync(p)) return false;
+    // Every ANCESTOR below `base` has to be ours too — see isLinkFreeUnder.
+    if (base && !isLinkFreeUnder(base, p, io)) return false;
     // A SYMLINK OR JUNCTION IS NOT REUSABLE, however good a directory it looks
     // like through `statSync` — which follows links and would report the
     // target.
@@ -446,20 +479,20 @@ export function provisionDefaultProjectDir(opts: {
   const preferred = preferredDefaultProjectPath(opts.homeDir);
   const fallback = fallbackDefaultProjectPath(opts.userDataDir);
   try {
-    if (!isUsableDirectory(preferred, io)) {
+    if (!isUsableDirectory(preferred, io, opts.homeDir)) {
       io.mkdirSync(preferred, { recursive: true });
     }
-    if (isUsableDirectory(preferred, io)) {
+    if (isUsableDirectory(preferred, io, opts.homeDir)) {
       return { dir: path.resolve(preferred), usedFallback: false };
     }
   } catch {
     /* fall through */
   }
   try {
-    if (!isUsableDirectory(fallback, io)) {
+    if (!isUsableDirectory(fallback, io, opts.userDataDir)) {
       io.mkdirSync(fallback, { recursive: true });
     }
-    if (isUsableDirectory(fallback, io)) {
+    if (isUsableDirectory(fallback, io, opts.userDataDir)) {
       return { dir: path.resolve(fallback), usedFallback: true };
     }
   } catch {

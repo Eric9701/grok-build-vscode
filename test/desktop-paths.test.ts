@@ -461,7 +461,43 @@ describe("first-run default project paths", () => {
     }
   });
 
-  it("REFUSES a symlink already sitting at the first-run path", () => {
+  it("REFUSES a symlink planted at the ROOT, not just at the project", (ctx) => {
+    // The follow-up to the finding below, and the more dangerous half: a link
+    // at `~/AFK Pilot` is not seen by an lstat of `~/AFK Pilot/My First
+    // Project`, because mkdirSync -recursive happily creates that leaf THROUGH
+    // the link and the leaf it creates is a perfectly ordinary directory.
+    // Checking only the final folder therefore proves nothing about where the
+    // final folder actually is.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-default-root-link-"));
+    try {
+      const home = path.join(tmp, "home");
+      const userData = path.join(tmp, "userData");
+      const secrets = path.join(tmp, "secrets");
+      fs.mkdirSync(home, { recursive: true });
+      fs.mkdirSync(userData);
+      fs.mkdirSync(secrets);
+      fs.writeFileSync(path.join(secrets, "secret.txt"), "private");
+
+      try {
+        fs.symlinkSync(secrets, path.join(home, "AFK Pilot"), "junction");
+      } catch {
+        // Unprivileged Windows without Developer Mode cannot create one. The
+        // guard is still there; this environment cannot exercise it, and a
+        // silent pass would be a lie about coverage.
+        ctx.skip();
+        return;
+      }
+
+      const out = provisionDefaultProjectDir({ homeDir: home, userDataDir: userData });
+      expect(out?.dir).not.toBe(path.resolve(home, "AFK Pilot", "My First Project"));
+      expect(out?.usedFallback).toBe(true);
+      expect(fs.existsSync(path.join(secrets, "secret.txt"))).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("REFUSES a symlink already sitting at the first-run path", (ctx) => {
     // Found in review, with a working reproduction: a junction there became the
     // authorized workspace, and canonical file authorization resolved to its
     // TARGET — so a link pointing at the home directory handed a linked remote
@@ -487,7 +523,8 @@ describe("first-run default project paths", () => {
         // Unprivileged Windows without Developer Mode cannot create one. The
         // guard is still there; this environment just cannot exercise it.
       }
-      if (!linked) return;
+      // A silent pass would claim coverage this environment cannot give.
+      if (!linked) { ctx.skip(); return; }
 
       const out = provisionDefaultProjectDir({ homeDir: home, userDataDir: userData });
       // Anywhere but the link. Falling back costs a directory; adopting it
