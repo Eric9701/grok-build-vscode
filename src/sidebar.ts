@@ -7935,6 +7935,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // process has actually exited.
     const disposeAt = clock.now();
     if (replacedClient) {
+      // Its commands go with it, exactly as in detachClient — this path does
+      // not go through that function but tears a client down all the same.
+      // A cancel the CLI ignored replaces the client mid-turn, and without
+      // this its terminals stay in the manager with no agent that could ever
+      // release them: a running command with no owner, holding a rented
+      // machine awake for the rest of the session.
+      try {
+        const n = this.terminalManager.releaseOwnedBy(replacedClient);
+        if (n > 0) this.host.appendLine(`[terminal] released ${n} command(s) with the replaced client`);
+      } catch { /* teardown is not worth failing over */ }
       await replacedClient.dispose();
       if (gen !== session.gen) return undefined;
     }
@@ -7965,6 +7975,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.sawCompactNotification = false;
     session.lastPlanText = "";
     session.pendingExitPlans.clear();
+    session.pendingQuestions.clear();
     session.inFlightPlanComments.clear();
     if (session.planModeRecovery?.warningTimer) clearTimeout(session.planModeRecovery.warningTimer);
     session.planModeRecovery = undefined;
@@ -8567,6 +8578,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (gen !== session.gen) return;
       // Questions are read-only and need a human — surface them in every mode
       // (plan/YOLO included); there's no sensible auto-answer.
+      session.pendingQuestions.add(req.id);
       this.emit(session, { type: "questionRequest", req });
       this.setStatus(session, "needs-you");
     });
@@ -9374,6 +9386,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.handleExitPlan(msg.requestId, msg.verdict, msg.comment, session);
         break;
       case "questionAnswer":
+        session.pendingQuestions.delete(msg.requestId);
         if (session.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {})) {
           // Answering a QUESTION is not answering a permission card that is
           // also outstanding — the agent stays blocked on it, so `working`
@@ -9382,6 +9395,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         break;
       case "questionCancel":
+        session.pendingQuestions.delete(msg.requestId);
         if (session.client?.respondQuestionCancelled(msg.requestId)) {
           this.noteAnswered(session);
         }
@@ -15559,7 +15573,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // question and a plan review together, and answering one of them resumed
     // nothing — while `working` is what holds a rented machine awake, so the
     // claim cost money as well as being untrue.
-    if (session.pendingPermissions.size === 0 && session.pendingExitPlans.size === 0) {
+    if (session.pendingPermissions.size === 0
+      && session.pendingExitPlans.size === 0
+      && session.pendingQuestions.size === 0) {
       this.setStatus(session, "working"); // setStatus touches and re-asserts
       return;
     }

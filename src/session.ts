@@ -186,6 +186,18 @@ export class Session {
   /** Live exit_plan_mode requests awaiting one answer, keyed by ACP request id. */
   pendingExitPlans = new Map<number | string, PendingExitPlan>();
 
+  /**
+   * Live question requests awaiting an answer, by ACP request id.
+   *
+   * Tracked for the same reason as the two maps beside it: answering one card
+   * does not resume a turn that another card is still blocking. Questions had
+   * no record at all, so answering a plan review while a question was still up
+   * looked like "nothing outstanding" — the session was marked working, the
+   * agent stayed blocked, and on a rented machine the heartbeat that follows
+   * `working` kept it awake and billing indefinitely.
+   */
+  pendingQuestions = new Set<number | string>();
+
   /** Submitted plan comments still awaiting `_x.ai/interject` acceptance. */
   inFlightPlanComments = new Map<number | string, InFlightPlanComment>();
 

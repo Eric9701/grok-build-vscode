@@ -58,6 +58,8 @@ export function resolveExitCode(code: number | null, signal: NodeJS.Signals | nu
 
 export type KillPlan =
   | { kind: "signal"; signal: NodeJS.Signals }
+  /** Signal the whole process group — `process.kill(-pid, signal)` on POSIX. */
+  | { kind: "group"; signal: NodeJS.Signals; pid: number }
   | { kind: "taskkill"; file: string; args: string[] };
 
 /**
@@ -71,7 +73,13 @@ export function buildKillPlan(pid: number, platform: NodeJS.Platform = process.p
   if (platform === "win32") {
     return { kind: "taskkill", file: "taskkill", args: ["/pid", String(pid), "/T", "/F"] };
   }
-  return { kind: "signal", signal: "SIGTERM" };
+  // The whole GROUP, not the shell. `sh -c 'node build.js & wait'` is one
+  // wrapper and one long-lived child; signalling the wrapper alone leaves the
+  // child running with nothing tracking it — and since a running command is
+  // what keeps a cloud machine awake, we would stop paying for a machine that
+  // is still working, then freeze it. Spawned detached so the negative pid
+  // names the group.
+  return { kind: "group", signal: "SIGTERM", pid };
 }
 
 /**
@@ -225,6 +233,8 @@ function terminalShell(): string | true {
 export interface TerminalManagerDeps {
   execFileImpl?: typeof execFile;
   platform?: NodeJS.Platform;
+  /** Injected so a test can assert the GROUP is signalled, not just the shell. */
+  killImpl?: (pid: number, signal: NodeJS.Signals) => void;
 }
 
 export class TerminalManager {
@@ -271,7 +281,15 @@ export class TerminalManager {
     const env = this.envFromParams(params.env);
     const cwd = params.cwd || process.cwd();
     const byteLimit = params.outputByteLimit ?? DEFAULT_BYTE_LIMIT;
-    const proc = spawn(params.command, { cwd, env, shell: terminalShell() });
+    // `detached` on POSIX so the shell leads its own PROCESS GROUP, which is
+    // what makes killing the whole tree possible — see buildKillPlan. Without
+    // it a SIGTERM reaches the wrapper and every descendant it started keeps
+    // running: on a machine we rent that is an orphan burning CPU that nothing
+    // can reach, and on a laptop it is the battery. Not on Windows, where
+    // `taskkill /T` already walks the tree and `detached` would open a console
+    // window.
+    const detached = (this.deps.platform ?? process.platform) !== "win32";
+    const proc = spawn(params.command, { cwd, env, shell: terminalShell(), detached });
 
     const entry: TerminalEntry = {
       owner,
@@ -364,6 +382,16 @@ export class TerminalManager {
             }
           }
         });
+      } else if (plan.kind === "group") {
+        // A negative pid is the GROUP. If the group is already gone this
+        // throws ESRCH, and the fallback covers a child that was never
+        // detached (a stubbed spawn in a test, or a platform that refused).
+        const killImpl = this.deps.killImpl ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
+        try {
+          killImpl(-plan.pid, plan.signal);
+        } catch {
+          try { t.proc.kill(plan.signal); } catch { /* already gone */ }
+        }
       } else {
         t.proc.kill(plan.signal);
       }

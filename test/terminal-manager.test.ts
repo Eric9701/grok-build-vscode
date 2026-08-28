@@ -237,9 +237,31 @@ describe("buildKillPlan", () => {
     }
   });
 
-  it("uses a SIGTERM signal on POSIX", () => {
+  it("signals the whole process GROUP on POSIX, not just the shell", () => {
+    // `sh -c 'node build.js & wait'` is one wrapper and one long-lived child.
+    // Signalling the wrapper alone leaves the child running with nothing
+    // tracking it — and a running command is what keeps a cloud machine awake,
+    // so we would stop paying for a machine that is still working and then
+    // freeze it. On a laptop the orphan is the battery.
     const plan = buildKillPlan(1234, "linux");
-    expect(plan).toEqual({ kind: "signal", signal: "SIGTERM" });
+    expect(plan).toEqual({ kind: "group", signal: "SIGTERM", pid: 1234 });
+  });
+
+  it("kills the group by negative pid, and falls back to the child", () => {
+    const killed: number[] = [];
+    const m = new TerminalManager({
+      platform: "linux",
+      killImpl: (pid) => {
+        killed.push(pid);
+        if (pid < 0) throw new Error("ESRCH"); // group already gone
+      },
+    });
+    const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 3000)") });
+    m.kill(terminalId);
+    // The negative pid is the group; the throw proves the fallback path runs
+    // rather than leaving the command alive.
+    expect(killed.some((p) => p < 0)).toBe(true);
+    m.release(terminalId);
   });
 });
 
