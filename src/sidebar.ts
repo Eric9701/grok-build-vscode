@@ -4679,7 +4679,8 @@ Only continue if you trust this code.`,
     // Minimal handlers so the handshake doesn't hang on server requests.
     client.fsRead = async (p) => fs.readFileSync(p, "utf8");
     client.fsWrite = async () => { /* create-only client */ };
-    client.terminal = this.terminalManager;
+    // Owned by this client, so tearing it down takes its commands with it.
+    client.terminal = this.terminalManager.ownedBy(client);
     await client.start();
     await client.newSession();
     return { client, disposeAfter: true };
@@ -8114,7 +8115,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         fs.writeFileSync(p, content, "utf8");
       }
     };
-    client.terminal = this.terminalManager;
+    // Owned by this client, so tearing it down takes its commands with it.
+    client.terminal = this.terminalManager.ownedBy(client);
 
     client.on("initialized", (init) => {
       if (gen !== session.gen) return;
@@ -15400,6 +15402,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.gen++;
     session.client = undefined;
     session.turnToken = undefined;
+    // ITS COMMANDS GO WITH IT.
+    //
+    // A terminal is a child of the extension, not of the agent, so it outlives
+    // the client that asked for it — and once the client is gone nothing can
+    // ever send it `terminal/release`. That leaves a command running that
+    // nobody owns, and since a running command is what keeps a cloud machine
+    // awake, it holds one running and billing until the extension itself exits.
+    //
+    // Done HERE rather than in disposeSession because every teardown path goes
+    // through this one function: worktree removal, a crashed ACP process, pool
+    // disposal, and the session being deleted outright.
+    if (client) {
+      try {
+        const n = this.terminalManager.releaseOwnedBy(client);
+        if (n > 0) this.host.appendLine(`[terminal] released ${n} command(s) with their session`);
+      } catch { /* teardown is not worth failing over */ }
+    }
     return client;
   }
 
@@ -15536,7 +15555,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * either way, or a machine can freeze on work that has only just begun.
    */
   noteAnswered(session: Session): void {
-    if (session.pendingPermissions.size === 0) {
+    // EVERY kind of card, not just permissions. Parallel tool calls can raise a
+    // question and a plan review together, and answering one of them resumed
+    // nothing — while `working` is what holds a rented machine awake, so the
+    // claim cost money as well as being untrue.
+    if (session.pendingPermissions.size === 0 && session.pendingExitPlans.size === 0) {
       this.setStatus(session, "working"); // setStatus touches and re-asserts
       return;
     }

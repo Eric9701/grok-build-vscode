@@ -133,7 +133,7 @@ function makeSidebar(cwd: string): any {
     },
   };
   sidebar.context = { globalStorageUri: { fsPath: cwd }, subscriptions: [] };
-  sidebar.terminalManager = { create: vi.fn(), disposeAll: vi.fn() };
+  sidebar.terminalManager = { create: vi.fn(), disposeAll: vi.fn(), ownedBy: vi.fn(() => ({ create: vi.fn() })), releaseOwnedBy: vi.fn(() => 0) };
   sidebar.workspaceRoot = vi.fn(() => cwd);
   sidebar.sessionCwd = vi.fn((session: Session) => session.cwd || cwd);
   sidebar.locateProvider = vi.fn(() => "grok");

@@ -234,7 +234,7 @@ describe("reopening a conversation whose draft was parked", () => {
     sidebar.touch = vi.fn();
     sidebar.reapPool = vi.fn();
     sidebar.maybeFlushQueuedSends = vi.fn(async () => {});
-    sidebar.terminalManager = { create: vi.fn(), disposeAll: vi.fn() };
+    sidebar.terminalManager = { create: vi.fn(), disposeAll: vi.fn(), ownedBy: vi.fn(() => ({ create: vi.fn() })), releaseOwnedBy: vi.fn(() => 0) };
     sidebar.context = { globalStorageUri: { fsPath: workspace }, subscriptions: [] };
     sidebar.turnOrderTimers = new Set();
     sidebar.fullImagePaths = new Map();

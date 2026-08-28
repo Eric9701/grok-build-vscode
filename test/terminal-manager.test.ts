@@ -446,3 +446,54 @@ describe("anyRunning — the honest answer to 'is this machine still doing somet
     expect(m.anyRunning()).toBe(false);
   });
 });
+
+describe("commands belong to whoever started them", () => {
+  /**
+   * A terminal is a child of the extension, not of the agent, so it outlives the
+   * ACP client that asked for it — and once that client is gone nothing can
+   * send it `terminal/release`. Left alone it is a command nobody owns, and
+   * since a running command is what keeps a cloud machine awake, it holds one
+   * running and billing until the extension itself exits.
+   */
+  it("takes an owner's commands with it and leaves everyone else's", async () => {
+    const m = new TerminalManager();
+    const alice = {};
+    const bob = {};
+    const a = m.ownedBy(alice).create({ command: nodeEval("setTimeout(() => {}, 5000)") }).terminalId;
+    const b = m.ownedBy(bob).create({ command: nodeEval("setTimeout(() => {}, 5000)") }).terminalId;
+    expect(m.anyRunning()).toBe(true);
+
+    expect(m.releaseOwnedBy(alice)).toBe(1);
+    // Bob's is still going, so the machine is still busy.
+    expect(m.anyRunning()).toBe(true);
+    expect(() => m.output(a)).toThrow();
+
+    expect(m.releaseOwnedBy(bob)).toBe(1);
+    expect(m.anyRunning()).toBe(false);
+    void b;
+  });
+
+  it("stops reporting a machine as busy once the owner is gone", async () => {
+    // The whole point: this is what reopened the ghost path.
+    const m = new TerminalManager();
+    const owner = {};
+    m.ownedBy(owner).create({ command: nodeEval("setTimeout(() => {}, 5000)") });
+    expect(m.anyRunning()).toBe(true);
+    m.releaseOwnedBy(owner);
+    expect(m.anyRunning()).toBe(false);
+  });
+
+  it("releasing an owner with nothing running is a no-op", () => {
+    expect(new TerminalManager().releaseOwnedBy({})).toBe(0);
+  });
+
+  it("hands the agent the same interface either way", () => {
+    // The owned view must be indistinguishable from the manager, or the ACP
+    // side would need to know about ownership.
+    const m = new TerminalManager();
+    const view = m.ownedBy({});
+    for (const k of ["create", "output", "waitForExit", "kill", "release"]) {
+      expect(typeof (view as unknown as Record<string, unknown>)[k]).toBe("function");
+    }
+  });
+});

@@ -17,6 +17,16 @@ export interface TerminalOutputResult {
 }
 
 interface TerminalEntry {
+  /**
+   * Who asked for this command.
+   *
+   * A terminal outlives the ACP client that started it — the process is a child
+   * of the extension, not of the agent — so without an owner a deleted
+   * conversation leaves a command running that nothing can reach, and
+   * {@link TerminalManager.anyRunning} goes on reporting the machine as busy
+   * for ever.
+   */
+  owner?: object;
   proc: ChildProcess;
   buf: string;
   byteLen: number;
@@ -223,13 +233,48 @@ export class TerminalManager {
 
   constructor(private deps: TerminalManagerDeps = {}) {}
 
-  create(params: TerminalCreateParams): { terminalId: string } {
+  /**
+   * A view of this manager whose commands belong to `owner`.
+   *
+   * Handed to each ACP client instead of the manager itself, so tearing that
+   * client down can take its commands with it. Same interface — the agent side
+   * cannot tell the difference.
+   */
+  ownedBy(owner: object): {
+    create(params: TerminalCreateParams): { terminalId: string };
+    output(terminalId: string): TerminalOutputResult;
+    waitForExit(terminalId: string): Promise<{ exitCode: number }>;
+    kill(terminalId: string): void;
+    release(terminalId: string): void;
+  } {
+    return {
+      create: (params) => this.create(params, owner),
+      output: (id) => this.output(id),
+      waitForExit: (id) => this.waitForExit(id),
+      kill: (id) => this.kill(id),
+      release: (id) => this.release(id),
+    };
+  }
+
+  /** Kill and forget everything `owner` started. Returns how many. */
+  releaseOwnedBy(owner: object): number {
+    let n = 0;
+    for (const [id, t] of Array.from(this.terminals)) {
+      if (t.owner !== owner) continue;
+      this.release(id);
+      n += 1;
+    }
+    return n;
+  }
+
+  create(params: TerminalCreateParams, owner?: object): { terminalId: string } {
     const env = this.envFromParams(params.env);
     const cwd = params.cwd || process.cwd();
     const byteLimit = params.outputByteLimit ?? DEFAULT_BYTE_LIMIT;
     const proc = spawn(params.command, { cwd, env, shell: terminalShell() });
 
     const entry: TerminalEntry = {
+      owner,
       proc,
       buf: "",
       byteLen: 0,
