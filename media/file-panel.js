@@ -139,7 +139,10 @@
       activeRelPath: null,
       tree: null,
       rootLoad: null,
-      expanded: new Set(),
+      // Per-scope, because the panel element is shared: a refresh left running
+      // on the project you just left must not dim or freeze the one you
+      // switched to.
+      refreshing: false,
       filter: "",
     };
   }
@@ -347,6 +350,10 @@
     // pick over the -2 diagonal-arrow variants.
     maximize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
     restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>',
+    // lucide `refresh-cw` — re-list from disk. A listing is cached for the
+    // lifetime of the scope and nothing invalidates it, so a file the agent
+    // wrote a moment ago is invisible until somebody asks again (#134).
+    refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
     // book-open-text / code — the two Markdown modes, kept as the icon pair the
@@ -424,6 +431,19 @@
     closePanel.title = "Close";
     closePanel.setAttribute("aria-label", "Close file panel");
     closePanel.innerHTML = ICON.close;
+
+    // Re-list the tree. Present on every mount — the phone needs it most, since
+    // it is the surface watching an agent write files it did not open itself.
+    // It is also the control that pins the trailing group to the right edge
+    // when no tabs are open; see .gfp-refresh in file-panel.css.
+    const refreshBtn = doc.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "gfp-icon-button gfp-refresh desk-ft-refresh";
+    refreshBtn.innerHTML = ICON.refresh;
+    refreshBtn.title = "Refresh";
+    refreshBtn.setAttribute("aria-label", "Refresh file tree");
+    refreshBtn.addEventListener("click", () => void refreshTree());
+
     // Content-area maximize. The mount opts in (desktop and the wide browser);
     // the phone overlay already goes full-viewport at the 899 dock breakpoint,
     // so applyPresentation hides the control there rather than fighting that
@@ -436,9 +456,9 @@
       maximizeBtn.type = "button";
       maximizeBtn.className = "gfp-icon-button gfp-maximize desk-ft-maximize";
       maximizeBtn.setAttribute("aria-pressed", "false");
-      header.append(title, tabsEl, maximizeBtn, closePanel);
+      header.append(title, tabsEl, refreshBtn, maximizeBtn, closePanel);
     } else {
-      header.append(title, tabsEl, closePanel);
+      header.append(title, tabsEl, refreshBtn, closePanel);
     }
 
     const filter = doc.createElement("input");
@@ -567,6 +587,33 @@
       maximizeBtn.setAttribute("aria-pressed", String(maximized));
     }
 
+    /**
+     * The refresh control is a property of the TREE, so it goes away with the
+     * tree. In the viewer there is no listing on screen to re-list, and the
+     * viewer's own Reload already covers the open file — a second button there
+     * would either do nothing visible or reload something you cannot see.
+     *
+     * Hiding it is safe for the strip layout because it is only ever hidden
+     * while a file is open, and an open file means a tab, and `.gfp-tabs` grows
+     * to hold the trailing controls against the right edge.
+     */
+    function paintRefresh() {
+      const wasHidden = refreshBtn.hidden;
+      refreshBtn.hidden = !treeMode;
+      // In flight covers both loads: pressing refresh during the first listing
+      // would ask for the same thing twice.
+      refreshBtn.disabled = !currentState || !!currentState.rootLoad;
+      refreshBtn.classList.toggle("gfp-busy", !!(currentState && currentState.rootLoad));
+      // Read from the scope on screen, never left behind by the one that
+      // started it. `rootEl` is shared, and a refresh whose requests are still
+      // outstanding on a project you have left would otherwise dim — and, via
+      // pointer-events, freeze — the project you moved to. The adapters ignore
+      // the abort signal, so that wait is 30s on a remote and open-ended on
+      // the desk.
+      rootEl.classList.toggle("gfp-refreshing", !!(currentState && currentState.refreshing));
+      if (refreshBtn.hidden !== wasHidden) applyStripShrink();
+    }
+
     function applyMaximizedBodyClass() {
       // Shared key for desktop (.desk-ft-chat) and the browser (#chat-stack).
       // Owned here so chat.js never has to mention a desk-ft- class.
@@ -637,6 +684,7 @@
         trailingWidth += box.width
           + (cs ? (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0) : 0);
       }
+      addTrailing(refreshBtn);
       addTrailing(maximizeBtn);
       addTrailing(closePanel);
       // Gap floor on the tab row (padding-right on .gfp-tabs) is measured
@@ -978,6 +1026,7 @@
       renderTabs();
       if (!currentState) {
         renderedTreeState = null;
+        paintRefresh();
         tree.textContent = "No repository selected.";
         viewer.textContent = "";
         viewer.hidden = true;
@@ -1014,30 +1063,153 @@
         }
         renderRootTree(state);
       })();
+      paintRefresh();
       try {
         await state.rootLoad;
       } finally {
         state.rootLoad = null;
+        paintRefresh();
       }
     }
 
-    function renderRootTree(state) {
-      renderDirectory(tree, state.tree, "");
+    /**
+     * Re-list the whole tree, keeping the place you were in.
+     *
+     * The old tree stays on screen, dimmed, until the replacement is complete:
+     * the root AND every folder you had expanded are fetched together, then the
+     * DOM is rebuilt once. Wiping to "Loading…" first would make a fast refresh
+     * flash and a slow one look broken, and rebuilding level by level would
+     * collapse the tree in front of you and grow it back.
+     *
+     * Everything else is deliberately untouched — open tabs, the filter text,
+     * scroll position. A refresh that cost you your place is not worth pressing.
+     */
+    async function refreshTree() {
+      if (destroyed || !currentScope || !currentState) return;
+      const state = currentState;
+      // A first listing already in flight is as fresh as anything we would ask
+      // for, so join it rather than racing a second request against it.
+      if (state.rootLoad) return state.rootLoad;
+      const scopeId = state.scope.id;
+      const remembered = expandedPaths();
+      const scrollTop = tree.scrollTop;
+      state.refreshing = true;
+      state.rootLoad = (async () => {
+        const [rootResult, ...folderResults] = await Promise.all([
+          callAccess("list", scopeId, ""),
+          ...remembered.map((relPath) => callAccess("list", scopeId, relPath)),
+        ]);
+        if (destroyed || currentState !== state) return;
+        if (!rootResult || !rootResult.ok) {
+          // Keep the tree you had. A refresh that failed is a failed refresh,
+          // not a reason to lose the listing that was working — so the message
+          // goes under the rows rather than over them, replacing only the
+          // message a previous failed refresh left there.
+          const previous = tree.querySelector(":scope > .gfp-refresh-error");
+          if (previous) previous.remove();
+          const status = statusLine(rootResult && rootResult.reason || "Could not list folder.", true);
+          status.classList.add("gfp-refresh-error");
+          tree.appendChild(status);
+          return;
+        }
+        const listings = new Map();
+        remembered.forEach((relPath, index) => {
+          const result = folderResults[index];
+          if (result && result.ok) listings.set(relPath, result);
+        });
+        state.tree = rootResult;
+        renderRootTree(state, listings);
+        tree.scrollTop = scrollTop;
+      })();
+      paintRefresh();
+      try {
+        await state.rootLoad;
+      } finally {
+        state.rootLoad = null;
+        state.refreshing = false;
+        paintRefresh();
+      }
+    }
+
+    /**
+     * The folders open ON SCREEN, deepest path last, read from the tree itself.
+     *
+     * Deliberately not a remembered Set. Bookkeeping kept alongside the DOM has
+     * to be corrected at every point the two can diverge — collapsing a parent,
+     * a folder deleted on disk, a listing that failed, a listing truncated
+     * before the folder appeared — and each correction was its own defect. The
+     * tree already knows which folders are open, so ask it: descending only
+     * into expanded nodes means a folder inside a collapsed parent is never
+     * reached, and one no longer on disk is not there to find.
+     */
+    function expandedPaths() {
+      const out = [];
+      (function walk(container) {
+        for (const node of container.querySelectorAll(":scope > .gfp-node")) {
+          if (node.dataset.kind !== "dir") continue;
+          if (!node.classList.contains("gfp-expanded")) continue;
+          out.push(node.dataset.rel);
+          const children = node.querySelector(":scope > .gfp-children");
+          if (children) walk(children);
+        }
+      })(tree);
+      return out;
+    }
+
+    /**
+     * Re-list one folder in place, from the row's ⋯ menu or its empty state.
+     * Dropping `data-loaded` is what makes the expand re-fetch; clearing the
+     * expanded class hands the work to `toggleDirectory`, which re-sets it
+     * synchronously, so the folder never visibly closes.
+     */
+    async function refreshFolder(relPath) {
+      if (destroyed || !currentScope || !currentState) return;
+      const node = findNode(relPath);
+      if (!node || node.dataset.kind !== "dir") return;
+      const lead = node.querySelector(":scope > .gfp-row > .gfp-lead");
+      const children = node.querySelector(":scope > .gfp-children");
+      if (!lead || !children) return;
+      children.removeAttribute("data-loaded");
+      node.classList.remove("gfp-expanded", "desk-ft-open");
+      await toggleDirectory(node, { name: node.dataset.name, relPath, kind: "dir" }, lead);
+    }
+
+    function findNode(relPath) {
+      for (const node of tree.querySelectorAll(".gfp-node")) {
+        if (node.dataset.rel === relPath) return node;
+      }
+      return null;
+    }
+
+    function renderRootTree(state, listings) {
+      renderDirectory(tree, state.tree, "", listings);
       renderedTreeState = state;
       applyTreeFilter();
     }
 
-    function renderDirectory(container, result, parentRelPath) {
+    function renderDirectory(container, result, parentRelPath, listings) {
       container.textContent = "";
       if (!result.entries || !result.entries.length) {
         appendStatus(container, "Empty folder");
+        // An empty folder is exactly where somebody suspects the panel is
+        // wrong, so the cure is offered where the doubt is rather than up in
+        // the header.
+        const actions = doc.createElement("div");
+        actions.className = "gfp-status-actions";
+        const rel = String(parentRelPath || "");
+        actions.appendChild(actionButton("Refresh", "", () => {
+          void (rel ? refreshFolder(rel) : refreshTree());
+        }));
+        container.appendChild(actions);
         return;
       }
-      for (const entry of result.entries) container.appendChild(makeTreeNode(entry, parentRelPath));
-      if (result.truncated) appendStatus(container, "Folder truncated — more entries exist.");
+      for (const entry of result.entries) container.appendChild(makeTreeNode(entry, parentRelPath, listings));
+      // Below the rows, not instead of them: appendStatus clears its host, so
+      // this used to throw away every entry of a folder big enough to be cut.
+      if (result.truncated) container.appendChild(statusLine("Folder truncated — more entries exist."));
     }
 
-    function makeTreeNode(entry) {
+    function makeTreeNode(entry, parentRelPath, listings) {
       const node = doc.createElement("div");
       node.className = "gfp-node desk-ft-node";
       node.dataset.name = entry.name;
@@ -1083,6 +1255,16 @@
         const children = doc.createElement("div");
         children.className = "gfp-children desk-ft-children";
         node.appendChild(children);
+        // A refresh hands the whole tree over at once: this folder was open
+        // before, and its new listing came back with the root's, so it is
+        // rebuilt already open rather than re-fetched on the way past.
+        const reopened = listings && listings.get(entry.relPath);
+        if (reopened) {
+          node.classList.add("gfp-expanded", "desk-ft-open");
+          lead.innerHTML = ICON.chevronDown;
+          children.dataset.loaded = "1";
+          renderDirectory(children, reopened, entry.relPath, listings);
+        }
       }
       const activate = () => entry.kind === "dir" ? toggleDirectory(node, entry, lead) : openFile(entry.relPath);
       row.addEventListener("click", (event) => {
@@ -1109,11 +1291,7 @@
       node.classList.toggle("gfp-expanded", opening);
       node.classList.toggle("desk-ft-open", opening);
       lead.innerHTML = opening ? ICON.chevronDown : ICON.chevronRight;
-      if (!opening) {
-        currentState.expanded.delete(entry.relPath);
-        return;
-      }
-      currentState.expanded.add(entry.relPath);
+      if (!opening) return;
       if (children.dataset.loaded === "1") return;
       appendStatus(children, "Loading…");
       const state = currentState;
@@ -1331,6 +1509,7 @@
       tree.hidden = false;
       viewer.hidden = true;
       renderTabs();
+      paintRefresh();
       if (currentState && currentState.tree && renderedTreeState !== currentState) {
         renderRootTree(currentState);
       } else if (currentState && !currentState.tree && open) {
@@ -1492,6 +1671,7 @@
         : null;
       editingTabKey = tab.editing ? tab.key : null;
       treeMode = false;
+      paintRefresh();
       rootEl.classList.add("gfp-viewing");
       if (mount.viewingBodyClass) doc.body.classList.add(mount.viewingBodyClass);
       tree.hidden = true;
@@ -1931,6 +2111,11 @@
       menu = doc.createElement("div");
       menu.className = "gfp-menu desk-ft-overflow-menu desk-ft-open";
       menu.setAttribute("role", "menu");
+      // Folders only: it is the folder's own listing being re-read, and a file
+      // row has none. The header control covers the whole tree.
+      if (entry.kind === "dir") {
+        menu.appendChild(menuItem("Refresh this folder", () => refreshFolder(entry.relPath)));
+      }
       if (entry.kind !== "dir" && access.openExternal) {
         menu.appendChild(menuItem("Open in default app", () => access.openExternal(currentScope.id, entry.relPath)));
       }
@@ -2052,12 +2237,18 @@
       if (chip) chip.setAttribute("aria-expanded", "false");
     }
 
-    function appendStatus(host, message, error) {
-      host.textContent = "";
+    function statusLine(message, error) {
       const status = doc.createElement("div");
       status.className = "gfp-status desk-ft-empty" + (error ? " gfp-error desk-ft-error" : "");
       status.textContent = message;
-      host.appendChild(status);
+      return status;
+    }
+
+    /** Replaces whatever the host was showing. Use `statusLine` directly for a
+     *  note that belongs BESIDE the content rather than instead of it. */
+    function appendStatus(host, message, error) {
+      host.textContent = "";
+      host.appendChild(statusLine(message, error));
     }
 
     function confirmClose() {
@@ -2160,6 +2351,7 @@
 
     paintTitle();
     paintMaximize();
+    paintRefresh();
     setPanelWidth(options.preferences && options.preferences.getWidth
       ? options.preferences.getWidth() : DEFAULT_WIDTH, true);
     if (typeof access.onScopeChanged === "function") {

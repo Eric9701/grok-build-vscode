@@ -1283,8 +1283,7 @@ describe("copy path on the file-panel row menu", () => {
       bubbles: true, cancelable: true,
     }));
     await settle();
-    expect(menuLabels(h.document)[0]).toBe("Copy relative path");
-    expect(menuLabels(h.document)).toEqual(["Copy relative path", "Copy path"]);
+    expect(menuLabels(h.document)).toEqual(["Refresh this folder", "Copy relative path", "Copy path"]);
     click(h.window, menuItem(h.document, "Copy relative path"));
     await settle();
     expect(copied.value).toBe("src");
@@ -1321,7 +1320,10 @@ describe("copy path on the file-panel row menu", () => {
       bubbles: true, cancelable: true,
     }));
     await settle();
+    // Re-listing is a folder's action, so it leads a directory menu and is
+    // absent from the file menu above.
     expect(menuLabels(h.document)).toEqual([
+      "Refresh this folder",
       "Reveal in file manager",
       "Copy relative path",
       "Copy path",
@@ -1857,6 +1859,335 @@ describe("file-tree row actions stay on hover / keyboard / open menu, not a mous
     expect(more.getAttribute("aria-expanded")).toBe("false");
     expect(row.classList.contains("gfp-menu-open")).toBe(false);
     expect(h.document.querySelector(".gfp-menu")).toBeNull();
+    h.panel.destroy();
+  });
+});
+
+/**
+ * A listing is cached for the lifetime of the scope and nothing invalidates it,
+ * so a file the agent wrote while you were reading is invisible until somebody
+ * asks for the folder again (#134). These cover the asking.
+ */
+function refreshButton(document: Document): HTMLButtonElement {
+  const button = document.querySelector(".gfp-refresh") as HTMLButtonElement | null;
+  expect(button).toBeTruthy();
+  return button!;
+}
+
+type Entry = { name: string; kind: string; relPath: string };
+
+function listingHarness(options?: { truncated?: string[] }) {
+  const calls: string[] = [];
+  const gates = new Map<string, ReturnType<typeof deferred<void>>>();
+  const dirs: Record<string, Entry[]> = {
+    "": [
+      { name: "src", kind: "dir", relPath: "src" },
+      { name: "notes.md", kind: "file", relPath: "notes.md" },
+    ],
+    src: [{ name: "a.ts", kind: "file", relPath: "src/a.ts" }],
+  };
+  const failing = new Set<string>();
+  const h = harness({
+    list: async (_scopeId: string, relPath: string) => {
+      calls.push(relPath);
+      const gate = gates.get(relPath);
+      if (gate) await gate.promise;
+      if (failing.has(relPath)) return { ok: false, reason: "listing failed" };
+      const entries = dirs[relPath];
+      if (!entries) return { ok: false, reason: "not found" };
+      return { ok: true, entries, truncated: !!options?.truncated?.includes(relPath) };
+    },
+  });
+  return {
+    ...h,
+    calls,
+    dirs,
+    fail: (relPath: string) => failing.add(relPath),
+    /** Hold a listing open so the in-flight state can be observed. */
+    hold(relPath: string) {
+      const gate = deferred<void>();
+      gates.set(relPath, gate);
+      return () => { gates.delete(relPath); gate.resolve(); };
+    },
+  };
+}
+
+describe("refreshing the file tree", () => {
+  it("picks up what was written since, and leaves your folders open", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    expect(treeRow(h.document, "a.ts")).toBeTruthy();
+
+    // The agent writes at the root and inside the folder you are looking at.
+    h.dirs[""].push({ name: "Card.tsx", kind: "file", relPath: "Card.tsx" });
+    h.dirs.src.push({ name: "b.ts", kind: "file", relPath: "src/b.ts" });
+    expect(treeRow(h.document, "Card.tsx")).toBeFalsy();
+
+    click(h.window, refreshButton(h.document));
+    await settle();
+
+    expect(treeRow(h.document, "Card.tsx")).toBeTruthy();
+    // Both halves matter: an expanded folder that came back collapsed, or came
+    // back open but stale, would make the button not worth pressing.
+    const src = h.document.querySelector('.gfp-node[data-rel="src"]')!;
+    expect(src.classList.contains("gfp-expanded")).toBe(true);
+    expect(treeRow(h.document, "b.ts")).toBeTruthy();
+    h.panel.destroy();
+  });
+
+  it("keeps open tabs and the filter you typed", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    await h.panel.openPath("notes.md");
+    await settle();
+    h.panel.element.querySelector(".gfp-title")?.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    const filter = h.document.querySelector(".gfp-filter") as HTMLInputElement;
+    filter.value = "note";
+    filter.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    await settle();
+
+    click(h.window, refreshButton(h.document));
+    await settle();
+
+    expect(h.document.querySelector(".gfp-tab")).toBeTruthy();
+    expect((h.document.querySelector(".gfp-filter") as HTMLInputElement).value).toBe("note");
+    // The filter is still doing its job on the rebuilt rows, not just sitting
+    // in the input.
+    expect((h.document.querySelector('.gfp-node[data-rel="src"]') as HTMLElement).hidden).toBe(true);
+    h.panel.destroy();
+  });
+
+  it("goes away in the viewer, where the file's own Reload is the answer", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    expect(refreshButton(h.document).hidden).toBe(false);
+
+    await h.panel.openPath("notes.md");
+    await settle();
+    expect(refreshButton(h.document).hidden).toBe(true);
+
+    h.panel.element.querySelector(".gfp-title")?.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(refreshButton(h.document).hidden).toBe(false);
+    h.panel.destroy();
+  });
+
+  it("dims the listing it is replacing and refuses a second press meanwhile", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    const release = h.hold("");
+    const before = h.calls.length;
+
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(h.panel.element.classList.contains("gfp-refreshing")).toBe(true);
+    expect(refreshButton(h.document).disabled).toBe(true);
+    // The old rows are still there — dimmed, not wiped to "Loading…".
+    expect(treeRow(h.document, "notes.md")).toBeTruthy();
+
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(h.calls.length).toBe(before + 1);
+
+    release();
+    await settle();
+    expect(h.panel.element.classList.contains("gfp-refreshing")).toBe(false);
+    expect(refreshButton(h.document).disabled).toBe(false);
+    h.panel.destroy();
+  });
+
+  it("keeps the tree it had when the refresh fails", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    h.fail("");
+
+    click(h.window, refreshButton(h.document));
+    await settle();
+
+    // A failed refresh is a failed refresh, not a reason to lose a listing that
+    // was working.
+    expect(treeRow(h.document, "notes.md")).toBeTruthy();
+    expect(h.document.querySelector(".gfp-error")?.textContent).toBe("listing failed");
+    h.panel.destroy();
+  });
+
+  it("re-lists one folder from its row menu", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    h.dirs.src.push({ name: "b.ts", kind: "file", relPath: "src/b.ts" });
+
+    treeRow(h.document, "src")!.dispatchEvent(new h.window.MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true,
+    }));
+    await settle();
+    click(h.window, menuItem(h.document, "Refresh this folder"));
+    await settle();
+
+    expect(treeRow(h.document, "b.ts")).toBeTruthy();
+    // Re-listing a folder never closes it.
+    expect(h.document.querySelector('.gfp-node[data-rel="src"]')!.classList.contains("gfp-expanded")).toBe(true);
+    h.panel.destroy();
+  });
+
+  it("offers the cure inside an empty folder, where the doubt is", async () => {
+    const h = listingHarness();
+    h.dirs.src = [];
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    const children = h.document.querySelector('.gfp-node[data-rel="src"] > .gfp-children')!;
+    expect(children.textContent).toContain("Empty folder");
+
+    h.dirs.src = [{ name: "b.ts", kind: "file", relPath: "src/b.ts" }];
+    click(h.window, children.querySelector(".gfp-status-actions .gfp-action"));
+    await settle();
+
+    expect(treeRow(h.document, "b.ts")).toBeTruthy();
+    h.panel.destroy();
+  });
+
+  it("stops asking for a folder its parent no longer lists", async () => {
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+
+    h.dirs[""] = [{ name: "notes.md", kind: "file", relPath: "notes.md" }];
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(treeRow(h.document, "src")).toBeFalsy();
+
+    // A deleted folder would otherwise cost a request on every refresh from
+    // here on.
+    const before = h.calls.length;
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(h.calls.slice(before)).toEqual([""]);
+    h.panel.destroy();
+  });
+
+  it("refreshes a nested folder that a collapse-and-reopen left open", async () => {
+    // Reopening a still-loaded parent does not rebuild its children, so the
+    // folder inside it comes back visibly open. What is on screen open must be
+    // what gets refreshed — otherwise refresh quietly closes it and throws away
+    // the very listing the user was looking at.
+    const h = listingHarness();
+    h.dirs.src = [{ name: "deep", kind: "dir", relPath: "src/deep" }];
+    h.dirs["src/deep"] = [{ name: "x.ts", kind: "file", relPath: "src/deep/x.ts" }];
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    click(h.window, treeRow(h.document, "deep"));
+    await settle();
+    click(h.window, treeRow(h.document, "src")); // collapse
+    await settle();
+    click(h.window, treeRow(h.document, "src")); // and reopen
+    await settle();
+
+    const before = h.calls.length;
+    click(h.window, refreshButton(h.document));
+    await settle();
+
+    expect(h.calls.slice(before)).toEqual(["", "src", "src/deep"]);
+    expect(h.document.querySelector('.gfp-node[data-rel="src/deep"]')!.classList.contains("gfp-expanded")).toBe(true);
+    expect(treeRow(h.document, "x.ts")).toBeTruthy();
+    h.panel.destroy();
+  });
+});
+
+describe("a refresh left running on a project you left", () => {
+  it("never dims or freezes the project you switched to", async () => {
+    // The panel element is shared between scopes, so a class parked on it by
+    // A's refresh lands on B's tree — and it carries pointer-events: none, so
+    // B becomes untappable. The adapters ignore the abort signal, which makes
+    // that wait 30s on a remote and open-ended on the desk.
+    const h = listingHarness();
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    const release = h.hold("src");
+
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(h.panel.element.classList.contains("gfp-refreshing")).toBe(true);
+
+    await h.switchScope(h.scopes.b);
+    expect(h.panel.element.classList.contains("gfp-refreshing")).toBe(false);
+
+    release();
+    await settle();
+    // And the straggler must not reach back and re-dim the scope on screen.
+    expect(h.panel.element.classList.contains("gfp-refreshing")).toBe(false);
+    h.panel.destroy();
+  });
+});
+
+describe("forgetting a deleted subtree", () => {
+  it("drops the children of a folder that is gone, not just the folder", async () => {
+    // Pruning the parent removes the listing that would have proved the child
+    // gone, so judging children after parents — without carrying the verdict
+    // down — leaves them remembered and re-requested on every later refresh.
+    const h = listingHarness();
+    h.dirs.src = [{ name: "deep", kind: "dir", relPath: "src/deep" }];
+    h.dirs["src/deep"] = [{ name: "x.ts", kind: "file", relPath: "src/deep/x.ts" }];
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    click(h.window, treeRow(h.document, "deep"));
+    await settle();
+
+    h.dirs[""] = [{ name: "notes.md", kind: "file", relPath: "notes.md" }];
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(treeRow(h.document, "src")).toBeFalsy();
+
+    const before = h.calls.length;
+    click(h.window, refreshButton(h.document));
+    await settle();
+    expect(h.calls.slice(before)).toEqual([""]);
+    h.panel.destroy();
+  });
+});
+
+describe("collapsing a folder", () => {
+  it("stops remembering what was open inside it", async () => {
+    // Otherwise a descendant outlives its parent in `expanded`, and once the
+    // parent is collapsed no refresh ever fetches the listing that would prove
+    // the child gone — so a deleted subtree is re-requested for ever.
+    const h = listingHarness();
+    h.dirs.src = [{ name: "deep", kind: "dir", relPath: "src/deep" }];
+    h.dirs["src/deep"] = [{ name: "x.ts", kind: "file", relPath: "src/deep/x.ts" }];
+    h.panel.setOpen(true);
+    await settle();
+    click(h.window, treeRow(h.document, "src"));
+    await settle();
+    click(h.window, treeRow(h.document, "deep"));
+    await settle();
+
+    click(h.window, treeRow(h.document, "src")); // collapse the parent
+    await settle();
+
+    const before = h.calls.length;
+    click(h.window, refreshButton(h.document));
+    await settle();
+    // Only the root: neither the collapsed folder nor anything under it.
+    expect(h.calls.slice(before)).toEqual([""]);
     h.panel.destroy();
   });
 });
