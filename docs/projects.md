@@ -34,7 +34,7 @@ that one thing.
 Type a name. The destination appears underneath as you type, and the folder is
 created when you press Create.
 
-`~/Grok Build` is where it goes — the same folder the desktop app uses for its
+`~/AFK Pilot` is where it goes — the same folder the desktop app uses for its
 first-run project. It sits directly in your home directory on purpose: on macOS
 that location is not privacy-protected the way Desktop, Documents and Downloads
 are, so creating it raises no consent dialog, and it stays easy to find in Finder
@@ -69,7 +69,7 @@ What happens next differs by app, and deliberately:
 ## Clone from GitHub
 
 Paste any `https://` or `git@` repository URL. The folder name comes from the
-URL — `https://github.com/you/project` becomes `~/Grok Build/project` — and is
+URL — `https://github.com/you/project` becomes `~/AFK Pilot/project` — and is
 shown before you commit to it.
 
 **Credentials are git's own.** Whatever you already have set up — a credential
