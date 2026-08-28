@@ -3619,6 +3619,13 @@ Only continue if you trust this code.`,
    * turn and no earlier one; a cold `session/load` never sets this.
    */
   private noteLiveTurnEnded(session: Session): void {
+    // The turn is over, so nothing it asked is outstanding any more — whether
+    // it ended by finishing or by being cancelled. Without this, a question
+    // card left on screen after Stop still passes the "is it outstanding" check
+    // when somebody answers it, and `noteAnswered` drags a settled session back
+    // to `working` with no turn left that could ever end it. On a rented
+    // machine that holds it awake and billing for good.
+    session.pendingQuestions.clear();
     if (session.replaying || session.suppressContent) return;
     session.liveFeedbackEligible = true;
     session.turnRating = 0;

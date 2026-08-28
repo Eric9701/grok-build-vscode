@@ -234,7 +234,7 @@ export interface TerminalManagerDeps {
   execFileImpl?: typeof execFile;
   platform?: NodeJS.Platform;
   /** Injected so a test can assert the GROUP is signalled, not just the shell. */
-  killImpl?: (pid: number, signal: NodeJS.Signals) => void;
+  killImpl?: (pid: number, signal: NodeJS.Signals | 0) => void;
 }
 
 export class TerminalManager {
@@ -360,20 +360,15 @@ export class TerminalManager {
   kill(terminalId: string): void {
     const t = this.terminals.get(terminalId);
     if (!t) return;
-    // ALREADY EXITED IS NOT KILLABLE — and on POSIX it is dangerous.
-    //
-    // `ChildProcess.kill()` refuses to signal a child it knows has exited.
-    // Signalling the process GROUP goes through `process.kill(-pid)` and has no
-    // such guard, so once the OS reuses that pid for an unrelated group, a
-    // release, a client replacement or a session teardown would SIGTERM
-    // somebody else's work. The exit code is the proof that there is nothing
-    // here to kill.
-    if (t.exitCode != null) return;
     const pid = t.proc.pid;
     try {
       const platform = this.deps.platform ?? process.platform;
       const plan: KillPlan =
         pid != null ? buildKillPlan(pid, platform) : { kind: "signal", signal: "SIGTERM" };
+      // Windows has no cheap way to ask whether a pid's tree still exists, and
+      // `taskkill /T` on a recycled pid would kill somebody else's tree. The
+      // exit code is the best answer available there.
+      if (plan.kind === "taskkill" && t.exitCode != null) return;
       if (plan.kind === "taskkill") {
         const exec = this.deps.execFileImpl ?? execFile;
         exec(plan.file, plan.args, (err) => {
@@ -392,10 +387,29 @@ export class TerminalManager {
           }
         });
       } else if (plan.kind === "group") {
-        // A negative pid is the GROUP. If the group is already gone this
-        // throws ESRCH, and the fallback covers a child that was never
-        // detached (a stubbed spawn in a test, or a platform that refused).
-        const killImpl = this.deps.killImpl ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
+        // ASK WHETHER THE GROUP IS STILL THERE, then signal it.
+        //
+        // Two hazards pull in opposite directions, and the wrapper's exit code
+        // settles neither. Signalling blindly can hit a recycled pid and kill
+        // somebody else's work; NOT signalling because the wrapper exited
+        // abandons its descendants — `nohup long-job &` leaves the shell
+        // exiting 0 with the job still in its group, which on a rented machine
+        // then reads as "nothing running" and lets it freeze mid-job.
+        //
+        // Signal 0 tests for the group without sending anything, and it
+        // distinguishes the two: a group with living members keeps its id
+        // reserved, so if the probe succeeds the id cannot have been reused,
+        // and if it fails there is nothing there to kill.
+        const killImpl = this.deps.killImpl ?? ((p: number, sig: NodeJS.Signals | 0) => process.kill(p, sig));
+        try {
+          killImpl(-plan.pid, 0);
+        } catch {
+          // No such group. Fall back to the child itself, which self-guards
+          // against an exited process — this covers a spawn that never became
+          // a group leader (a stub in a test, or a platform that refused).
+          try { t.proc.kill(plan.signal); } catch { /* already gone */ }
+          return;
+        }
         try {
           killImpl(-plan.pid, plan.signal);
         } catch {

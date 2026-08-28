@@ -520,29 +520,58 @@ describe("commands belong to whoever started them", () => {
   });
 });
 
-describe("an exited command is not killed again", () => {
-  it("does not signal anything once the exit code is known", async () => {
-    // `ChildProcess.kill()` refuses to signal a child it knows has exited.
-    // Signalling the process GROUP goes through `process.kill(-pid)`, which has
-    // no such guard — so once the OS reuses that pid, a release or a session
-    // teardown would SIGTERM somebody else's work.
-    const killed: number[] = [];
-    const m = new TerminalManager({ platform: "linux", killImpl: (pid) => { killed.push(pid); } });
+describe("killing a group asks whether the group is still there", () => {
+  /**
+   * Two hazards pull opposite ways and the wrapper's exit code settles neither.
+   * Signalling blindly can hit a recycled pid and kill somebody else's work.
+   * Not signalling because the wrapper exited abandons its descendants —
+   * `nohup long-job &` exits the shell 0 with the job still in its group, which
+   * on a rented machine reads as "nothing running" and lets it freeze mid-job.
+   *
+   * Signal 0 tells them apart: a group with living members keeps its id
+   * reserved, so a successful probe proves the id was not reused.
+   */
+  function manager(groupAlive: boolean) {
+    const sent: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const m = new TerminalManager({
+      platform: "linux",
+      killImpl: (pid, signal) => {
+        sent.push({ pid, signal });
+        if (signal === 0 && !groupAlive) throw new Error("ESRCH");
+      },
+    });
+    return { m, sent };
+  }
+
+  it("signals a group that still has members, even though the shell exited", async () => {
+    // The nohup case. Before the probe this was skipped entirely and the job
+    // was abandoned.
+    const { m, sent } = manager(true);
     const { terminalId } = m.create({ command: nodeEval("process.exit(0)") });
     await m.waitForExit(terminalId);
     m.kill(terminalId);
-    expect(killed).toEqual([]);
-    // ...and releasing it, which kills first, is equally quiet.
+    expect(sent.some((c) => c.pid < 0 && c.signal === 0)).toBe(true);
+    expect(sent.some((c) => c.pid < 0 && c.signal === "SIGTERM")).toBe(true);
     m.release(terminalId);
-    expect(killed).toEqual([]);
   });
 
-  it("still signals one that is genuinely running", () => {
-    const killed: number[] = [];
-    const m = new TerminalManager({ platform: "linux", killImpl: (pid) => { killed.push(pid); } });
+  it("sends NOTHING to a group that is gone", async () => {
+    // Where the pid may have been recycled, the probe fails and no real signal
+    // is sent — our cleanup must never kill somebody else's work.
+    const { m, sent } = manager(false);
+    const { terminalId } = m.create({ command: nodeEval("process.exit(0)") });
+    await m.waitForExit(terminalId);
+    m.kill(terminalId);
+    expect(sent.every((c) => c.signal === 0)).toBe(true);
+    m.release(terminalId);
+  });
+
+  it("probes before signalling a live command too", () => {
+    const { m, sent } = manager(true);
     const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 3000)") });
     m.kill(terminalId);
-    expect(killed.some((p) => p < 0)).toBe(true);
+    expect(sent[0].signal).toBe(0);
+    expect(sent.some((c) => c.signal === "SIGTERM")).toBe(true);
     m.release(terminalId);
   });
 });
