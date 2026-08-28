@@ -263,6 +263,35 @@ import {
   isCloudEnvironment,
   CLOUD_ENVIRONMENT_ENV, buildLinkStartBody, deviceDisplayName, httpBaseFromRelayUrl, parseRelayFrame, RELAY_DEVICE_TOKEN_SECRET, resolveRelayUrl } from "./remote-frames";
 import { KeepAwake, shouldKeepAwake } from "./keep-awake";
+
+/**
+ * How long an unanswered card keeps a cloud machine awake.
+ *
+ * Long enough that a background test run or install started just before the
+ * question was asked gets to finish; short enough that a card nobody comes back
+ * to tonight stops costing money. Local wake locks are unaffected — this is
+ * only about a machine somebody else is paying for.
+ */
+const NEEDS_YOU_KEEP_AWAKE_MS = 20 * 60 * 1000;
+
+/**
+ * Is this session actually holding work open?
+ *
+ * The status alone is not enough, and the gap is a real one: worktree teardown
+ * detaches and disposes a session's client while leaving its row in the pool
+ * with `working` still on it. That ghost then keeps the OS wake lock — and, on
+ * a rented machine, the keep-awake heartbeat — running for the rest of the
+ * session, long after everything it described was killed.
+ *
+ * Checking the CLIENT rather than patching that one caller is deliberate: a
+ * session with no client has no agent, so it cannot be working whatever its
+ * status says, and any other path that disposes a client without updating a
+ * status is covered by the same line.
+ */
+function hasLiveWork(s: { status: string; client?: unknown }): boolean {
+  if (!s.client) return false;
+  return s.status === "working" || s.status === "needs-you";
+}
 import { thumbnailImage, thumbnailMime } from "./image-thumbnail";
 import { historyImagePreviews } from "./image-history";
 import {
@@ -2079,7 +2108,15 @@ export class GrokSidebar {
     // Periodic idle-TTL sweep over the live-session pool (the LRU cap is enforced
     // eagerly on each new start; this catches sessions that simply went stale).
     if (!this.reaper) {
-      this.reaper = setInterval(() => this.reapPool(), GrokSidebar.REAP_INTERVAL_MS);
+      this.reaper = setInterval(() => {
+        this.reapPool();
+        // The only thing that re-evaluates keep-awake on the CLOCK rather than
+        // on an event. `needs-you` holds a cloud machine awake for a bounded
+        // window, and nothing else would ever notice that window closing —
+        // the heartbeat would run until the next status change, which on an
+        // abandoned permission card is never.
+        this.refreshKeepAwake();
+      }, GrokSidebar.REAP_INTERVAL_MS);
     }
     // Re-tell the webview whether voice is set up when the relevant settings
     // change, so the mic button's "needs setup" hint updates without a reload.
@@ -9317,7 +9354,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             this.persistPermissionAnswer(session, msg.requestId, msg.optionId);
           }
           this.closeDiffForRequest(session, msg.requestId); // tidy up the auto-opened diff (#21)
-          this.setStatus(session, "working"); // turn resumes after the answer
+          // Only once EVERY card is answered. Two tools can ask at the same
+          // time, and answering one leaves the agent blocked on the other — so
+          // saying "working" here was a lie that the auto-approval path (which
+          // checks the same thing) never told. On a cloud machine the lie also
+          // costs money: `working` is what holds the machine awake, so a
+          // half-answered pair would hold it open indefinitely while nothing
+          // ran.
+          if (session.pendingPermissions.size === 0) {
+            this.setStatus(session, "working"); // turn resumes after the answer
+          }
           break;
         }
       case "exitPlanAnswer":
@@ -15477,25 +15523,38 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   /** True when any live pool member is mid-turn or waiting on the user. */
   private anyTurnInFlight(): boolean {
     for (const s of this.pool) {
-      if (s.status === "working" || s.status === "needs-you") return true;
+      if (hasLiveWork(s)) return true;
     }
     return false;
   }
 
   /**
-   * Is an agent actually DOING something right now?
+   * Does a machine we rent still need to be awake?
    *
-   * Narrower than {@link anyTurnInFlight} on purpose, and the difference is
-   * `needs-you`. A permission card nobody has answered keeps a laptop awake for
-   * a good reason — you are about to come back and answer it — but on a machine
-   * we rent it would hold the thing running and billing for ever while no work
-   * happens at all. An unanswered card is exactly the state a machine should be
-   * allowed to sleep in: opening the page is what wakes it, and the card is
-   * still there when it does.
+   * `working` always counts. The hard case is `needs-you`, and it has been
+   * wrong in both directions:
+   *
+   * - Counting it for ever holds a machine running and billing while an
+   *   unanswered permission card sits there and nobody is coming back tonight.
+   * - Not counting it at all is worse, because `needs-you` does not mean the
+   *   machine is idle. Terminal work is deliberately asynchronous, so an agent
+   *   can start a long test run and THEN ask a question — and freezing the
+   *   machine underneath that kills exactly the work somebody walked away from.
+   *
+   * So a card holds the machine for a while and then stops. Anything a
+   * background process was going to finish, it finishes; an abandoned card
+   * stops costing money. Nothing is lost either way — opening the page wakes
+   * the machine and the card is still there.
    */
   private anyTurnWorking(): boolean {
+    const now = Date.now();
     for (const s of this.pool) {
+      if (!hasLiveWork(s)) continue;
       if (s.status === "working") return true;
+      // `lastActiveAt` is stamped when a session becomes working or needs-you,
+      // so this is "how long ago the agent last did something", not "how long
+      // the card has been on screen".
+      if (now - s.lastActiveAt < NEEDS_YOU_KEEP_AWAKE_MS) return true;
     }
     return false;
   }

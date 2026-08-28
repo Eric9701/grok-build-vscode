@@ -571,3 +571,31 @@ describe("first-run default project paths", () => {
     }
   });
 });
+
+describe("nothing is written outside the root we chose", () => {
+  it("refuses BEFORE creating, not after", (ctx) => {
+    // The order is the whole finding. `recursive: true` follows a junction at
+    // the root and creates the leaf inside its TARGET, so a check that runs
+    // afterwards correctly declines to adopt a directory it has already caused
+    // to be written somewhere nobody chose.
+    const created: string[] = [];
+    // Resolved, because the guard walks from `path.resolve(base)` and a bare
+    // "/mock/home" gains a drive letter on Windows — a fixture mismatch there
+    // would make this pass for the wrong reason.
+    const home = path.resolve("/mock/home");
+    const userData = path.resolve("/mock/data");
+    const root = path.join(home, "AFK Pilot");
+    const io = {
+      // A directory exists once something has made it — otherwise the fallback
+      // can never succeed and this would pass because EVERYTHING failed.
+      existsSync: (p: string) => p === root || p === home || p === userData || created.includes(p),
+      statSync: () => ({ isDirectory: () => true }),
+      lstatSync: (p: string) => ({ isSymbolicLink: () => p === root }),
+      mkdirSync: (p: string) => { created.push(p); },
+    };
+    const out = provisionDefaultProjectDir({ homeDir: home, userDataDir: userData, fs: io });
+    expect(created).not.toContain(path.join(root, "My First Project"));
+    expect(out?.usedFallback).toBe(true);
+    void ctx;
+  });
+});

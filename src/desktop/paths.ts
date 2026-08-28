@@ -478,21 +478,29 @@ export function provisionDefaultProjectDir(opts: {
   const io = opts.fs ?? fs;
   const preferred = preferredDefaultProjectPath(opts.homeDir);
   const fallback = fallbackDefaultProjectPath(opts.userDataDir);
+  /**
+   * Create it, but only where we would be willing to adopt it.
+   *
+   * The check has to come BEFORE the mkdir, not just after. `recursive: true`
+   * follows a junction planted at the root and creates the leaf inside its
+   * TARGET — so checking afterwards correctly refuses to adopt the result while
+   * the directory has already been written somewhere we never chose. Refusing
+   * first means nothing outside the intended root is touched at all.
+   */
+  const make = (p: string, base: string): boolean => {
+    if (!isLinkFreeUnder(base, p, io)) return false;
+    if (!isUsableDirectory(p, io, base)) io.mkdirSync(p, { recursive: true });
+    return isUsableDirectory(p, io, base);
+  };
   try {
-    if (!isUsableDirectory(preferred, io, opts.homeDir)) {
-      io.mkdirSync(preferred, { recursive: true });
-    }
-    if (isUsableDirectory(preferred, io, opts.homeDir)) {
+    if (make(preferred, opts.homeDir)) {
       return { dir: path.resolve(preferred), usedFallback: false };
     }
   } catch {
     /* fall through */
   }
   try {
-    if (!isUsableDirectory(fallback, io, opts.userDataDir)) {
-      io.mkdirSync(fallback, { recursive: true });
-    }
-    if (isUsableDirectory(fallback, io, opts.userDataDir)) {
+    if (make(fallback, opts.userDataDir)) {
       return { dir: path.resolve(fallback), usedFallback: true };
     }
   } catch {
