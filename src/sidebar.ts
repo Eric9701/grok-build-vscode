@@ -13844,7 +13844,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           if (gen !== session.gen) return;
         }
       }
-      this.emit(session, { type: "agentEnd", meta });
+      // Nor does it get to say the turn ENDED. Browsers treat agentEnd as
+      // authoritative and clear busy on it, so a stale compact handler
+      // resuming after a newer turn started would leave every remote tab
+      // showing that turn as idle, with no Stop control — and a refresh does
+      // not repair it, because the snapshot replays the same order. The newer
+      // turn emits its own end when it really ends. (The other agentEnd site
+      // needs no guard: nothing awaits between its endTurn check and its
+      // emit.)
+      if (!turnIsInFlight(session)) this.emit(session, { type: "agentEnd", meta });
       this.noteLiveTurnEnded(session);
       // "done" only if this is still the LAST word. /compact releases its turn
       // token before awaiting the context refresh, so a send from another tab
