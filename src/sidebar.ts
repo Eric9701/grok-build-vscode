@@ -15974,6 +15974,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (await this.refreshContextFromSessionInfo(session, gen, { force: true })) return;
     if (gen !== session.gen || !session.sessionInfoUnsupported) return;
     if (!client.availableCommands.some((command) => command?.name === "session-info")) return;
+    // NOT while somebody else's turn is running.
+    //
+    // This is a real `session/prompt`, and a second prompt ends the active one.
+    // The compact path released its turn token before the RPC above, so another
+    // tab can have started a genuine turn during that await — and sending this
+    // would cancel it mid-work, silently, to refresh a context number. The
+    // guards further down run only after this returns and cannot undo it.
+    //
+    // Skipping costs a stale context reading until the next turn refreshes it.
+    // That is the cheaper of the two by a wide margin.
+    if (turnIsInFlight(session)) return;
     session.suppressContent = true;
     session.captureAgentText = "";
     try {
