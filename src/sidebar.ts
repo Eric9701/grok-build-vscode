@@ -13846,7 +13846,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       this.emit(session, { type: "agentEnd", meta });
       this.noteLiveTurnEnded(session);
-      this.setStatus(session, "done");
+      // "done" only if this is still the LAST word. /compact releases its turn
+      // token before awaiting the context refresh, so a send from another tab
+      // can start a turn while this handler is suspended — and marking the
+      // session done then tells every view the agent is idle while it is not.
+      // On a cloud machine it also stops the heartbeat, which reads the status:
+      // a quiet long-running tool in the newer turn is then frozen ninety
+      // seconds later.
+      if (!turnIsInFlight(session)) this.setStatus(session, "done");
       // Again at the end: by now the transcript really has moved, so this is
       // the push that makes the row's position true rather than asserted.
       this.noteSessionActivity(session);
