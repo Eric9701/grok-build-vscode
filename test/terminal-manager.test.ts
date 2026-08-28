@@ -519,3 +519,30 @@ describe("commands belong to whoever started them", () => {
     }
   });
 });
+
+describe("an exited command is not killed again", () => {
+  it("does not signal anything once the exit code is known", async () => {
+    // `ChildProcess.kill()` refuses to signal a child it knows has exited.
+    // Signalling the process GROUP goes through `process.kill(-pid)`, which has
+    // no such guard — so once the OS reuses that pid, a release or a session
+    // teardown would SIGTERM somebody else's work.
+    const killed: number[] = [];
+    const m = new TerminalManager({ platform: "linux", killImpl: (pid) => { killed.push(pid); } });
+    const { terminalId } = m.create({ command: nodeEval("process.exit(0)") });
+    await m.waitForExit(terminalId);
+    m.kill(terminalId);
+    expect(killed).toEqual([]);
+    // ...and releasing it, which kills first, is equally quiet.
+    m.release(terminalId);
+    expect(killed).toEqual([]);
+  });
+
+  it("still signals one that is genuinely running", () => {
+    const killed: number[] = [];
+    const m = new TerminalManager({ platform: "linux", killImpl: (pid) => { killed.push(pid); } });
+    const { terminalId } = m.create({ command: nodeEval("setTimeout(() => {}, 3000)") });
+    m.kill(terminalId);
+    expect(killed.some((p) => p < 0)).toBe(true);
+    m.release(terminalId);
+  });
+});

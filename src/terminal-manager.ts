@@ -360,6 +360,15 @@ export class TerminalManager {
   kill(terminalId: string): void {
     const t = this.terminals.get(terminalId);
     if (!t) return;
+    // ALREADY EXITED IS NOT KILLABLE — and on POSIX it is dangerous.
+    //
+    // `ChildProcess.kill()` refuses to signal a child it knows has exited.
+    // Signalling the process GROUP goes through `process.kill(-pid)` and has no
+    // such guard, so once the OS reuses that pid for an unrelated group, a
+    // release, a client replacement or a session teardown would SIGTERM
+    // somebody else's work. The exit code is the proof that there is nothing
+    // here to kill.
+    if (t.exitCode != null) return;
     const pid = t.proc.pid;
     try {
       const platform = this.deps.platform ?? process.platform;

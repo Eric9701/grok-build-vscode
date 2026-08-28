@@ -3337,8 +3337,9 @@ Only continue if you trust this code.`,
       this.closeDiffForRequest(session, requestId);
       resolved += 1;
     }
-    // A leftover plan-review (or a card with no allow option) still needs the user.
-    if (resolved > 0 && session.pendingPermissions.size === 0) this.setStatus(session, "working");
+    // A leftover plan-review, question, or a card with no allow option still
+    // needs the user — `noteAnswered` is the one place that knows all three.
+    if (resolved > 0) this.noteAnswered(session);
   }
 
   /**
@@ -9386,7 +9387,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.handleExitPlan(msg.requestId, msg.verdict, msg.comment, session);
         break;
       case "questionAnswer":
-        session.pendingQuestions.delete(msg.requestId);
+        // A card that is no longer outstanding is a STALE card: a second tab
+        // still showing it, or one replayed from the session buffer after the
+        // turn ended. Answering it again would write a duplicate JSON-RPC
+        // response and drag a settled session back to `working` — with no turn
+        // left to ever end it, which on a rented machine bills for ever.
+        if (!session.pendingQuestions.delete(msg.requestId)) break;
         if (session.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {})) {
           // Answering a QUESTION is not answering a permission card that is
           // also outstanding — the agent stays blocked on it, so `working`
@@ -9395,7 +9401,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         break;
       case "questionCancel":
-        session.pendingQuestions.delete(msg.requestId);
+        if (!session.pendingQuestions.delete(msg.requestId)) break;
         if (session.client?.respondQuestionCancelled(msg.requestId)) {
           this.noteAnswered(session);
         }
@@ -17207,7 +17213,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.keepAwake.stop();
       }
     } catch (e) {
-      this.host.appendLine(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
+      // Keeping a machine awake is never worth failing a caller over, and this
+      // now runs from every path that answers a card — so the handler itself
+      // must not throw either.
+      try {
+        this.host.appendLine?.(`[keep-awake] skipped: ${(e as Error)?.message ?? e}`);
+      } catch { /* nothing left to say it with */ }
     }
   }
 
