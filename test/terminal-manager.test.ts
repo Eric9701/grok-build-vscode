@@ -271,18 +271,53 @@ describe("resolveTerminalShell", () => {
   const PWSH = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
   const POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-  it("returns true (/bin/sh) on POSIX without probing PATH", () => {
+  const ZSH = "/bin/zsh";
+  const yes = () => true;
+
+  it("returns true (/bin/sh) on POSIX with no $SHELL, without probing PATH", () => {
     let probed = false;
     const shell = resolveTerminalShell("linux", () => {
       probed = true;
       return undefined;
-    });
+    }, "auto", {}, yes);
     expect(shell).toBe(true);
     expect(probed).toBe(false); // never shell out to `where` off Windows
   });
 
-  it("returns true on darwin", () => {
-    expect(resolveTerminalShell("darwin", () => PWSH)).toBe(true);
+  it("returns true on darwin with no $SHELL", () => {
+    expect(resolveTerminalShell("darwin", () => PWSH, "auto", {}, yes)).toBe(true);
+  });
+
+  it("runs the login shell on POSIX when it is POSIX-compatible", () => {
+    // /bin/sh is bash 3.2 on macOS, so a profile takes a different branch than
+    // it does in the standalone CLI — the whole of #140.
+    expect(resolveTerminalShell("darwin", () => undefined, "auto", { SHELL: ZSH }, yes)).toBe(ZSH);
+    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: "/usr/bin/bash" }, yes))
+      .toBe("/usr/bin/bash");
+  });
+
+  it("refuses a $SHELL whose grammar is not POSIX", () => {
+    // Handing fish a command the agent wrote for sh breaks what works today.
+    for (const s of ["/usr/bin/fish", "/usr/local/bin/nu", "/bin/tcsh", "/usr/bin/pwsh"]) {
+      expect(resolveTerminalShell("darwin", () => undefined, "auto", { SHELL: s }, yes)).toBe(true);
+    }
+  });
+
+  it("refuses a $SHELL that is not an absolute path or is not there", () => {
+    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: "zsh" }, yes)).toBe(true);
+    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: "" }, yes)).toBe(true);
+    // A missing binary would fail every single command; /bin/sh is the safer answer.
+    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: ZSH }, () => false)).toBe(true);
+  });
+
+  it("still lets `cmd` force /bin/sh on POSIX, which is no longer a no-op", () => {
+    expect(resolveTerminalShell("darwin", () => undefined, "cmd", { SHELL: ZSH }, yes)).toBe(true);
+  });
+
+  it("never probes PATH on POSIX even when it does resolve a login shell", () => {
+    let probed = false;
+    resolveTerminalShell("darwin", () => { probed = true; return undefined; }, "auto", { SHELL: ZSH }, yes);
+    expect(probed).toBe(false);
   });
 
   it("prefers pwsh.exe (PowerShell 7) on Windows when available", () => {
@@ -338,9 +373,17 @@ describe("grokShellEnvValue (GROK_SHELL derived from the shell we run)", () => {
   it("maps the cmd.exe fallback (true) to 'cmd' on Windows", () => {
     expect(grokShellEnvValue(true, "win32")).toBe("cmd");
   });
-  it("returns undefined on POSIX (grok's host detection is correct there)", () => {
-    expect(grokShellEnvValue(true, "linux")).toBeUndefined();
+  it("stays out of the way on POSIX when we run the login shell", () => {
+    // grok reads $SHELL to describe the host, and that is the shell we ran —
+    // they already agree, so an override is only a chance to disagree.
     expect(grokShellEnvValue("/bin/bash", "darwin")).toBeUndefined();
+    expect(grokShellEnvValue("/bin/zsh", "linux")).toBeUndefined();
+  });
+  it("says 'bash' on POSIX when we fell back to /bin/sh", () => {
+    // The fallback happens for a fish or nushell $SHELL — which is exactly what
+    // grok would describe while we are running sh, so the model must be told.
+    expect(grokShellEnvValue(true, "linux")).toBe("bash");
+    expect(grokShellEnvValue(true, "darwin")).toBe("bash");
   });
   it("returns undefined for an unrecognized Windows shell path", () => {
     expect(grokShellEnvValue("C:\\weird\\thing.exe", "win32")).toBeUndefined();

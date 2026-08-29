@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.19.5 — 2026-08-30
+
+### Fixed
+
+- **Agent commands run in your own shell on macOS and Linux.** Every command the agent ran started under `/bin/sh` — which on macOS is bash 3.2, from 2007, and not the shell you log in to. Everything your shell sets up was therefore missing: version managers like sdkman, nvm and pyenv, `PATH` entries from your profile, and the environment your terminal has. sdkman printed a `bad substitution` error at the top of every command's output, because seeing bash 3.2 sends it down a branch that needs bash 4. Commands now run under your login shell when it is one the agent can drive (sh, bash, zsh, ksh, dash, ash) and fall back to `/bin/sh` otherwise, so a shell it cannot drive is still safe rather than broken. Windows is unchanged, and setting **Terminal shell** to `cmd` still forces the plain shell everywhere. Thanks to @russwyte (#140), whose report named the cause exactly.
+
+- **A slow conversation open now says where the time went.** The `session open:` line in the log listed phases that could add up to a small fraction of the time the open really took, with nothing admitting the gap — one report showed 5.2 seconds against 379ms of named work, and every phase on it looked fast. The line now accounts for its whole total: whatever the named phases do not claim is printed as `other`, and the clock starts when you click rather than partway through, so finding the conversation and reading its stored details are on the line too. That last part is not small — on a machine with a lot of history it was the largest single piece of the open, and it was invisible. Chasing #131, #133 and #138; if you have been hit by one of those, a fresh log now says considerably more.
+
 ## 3.19.4 — 2026-08-28
 
 ### Added

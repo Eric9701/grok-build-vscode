@@ -6,6 +6,24 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+
+/**
+ * A temp directory whose path is ALREADY CANONICAL.
+ *
+ * On macOS `os.tmpdir()` is `/var/folders/…`, which is a symlink to
+ * `/private/var/folders/…`. Every test below hands its temp root to code whose
+ * whole job is to canonicalise a path and compare it against that root — so an
+ * uncanonicalised root makes the containment check compare `/private/var/…`
+ * (what the product resolved) against `/var/…` (what the test passed in) and
+ * the product looks broken on macOS while behaving exactly as designed.
+ *
+ * These suites were red on macOS for at least ten days without anyone noticing,
+ * because CI is Ubuntu and the dev box is Windows and neither has that symlink.
+ */
+function mkdtempReal(prefix: string): string {
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
 import {
   ConfigStore,
   SensitiveConfigStore,
@@ -3729,7 +3747,7 @@ describe("editable file-tree writes", () => {
   let root: string;
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-write-tree-"));
+    root = mkdtempReal("grok-write-tree-");
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
@@ -4212,7 +4230,11 @@ describe("local workspace switch serialization (P1-2)", () => {
     const queueAt = openBody.indexOf("this.localWorkspaceSwitchQueue.run(open)");
     expect(reserveAt).toBeGreaterThanOrEqual(0);
     expect(queueAt).toBeGreaterThan(reserveAt);
-    expect(openBody).toContain("const open = () => this.openSessionReserved(id, sessionCwd)");
+    // Open-ended on purpose: the contract is that the queued operation is the
+    // reserved open, called with the id and the cwd in that order. Pinning the
+    // closing paren too made threading the open clock through (the `resolve`
+    // phase) look like a regression in workspace-switch serialisation.
+    expect(openBody).toContain("const open = () => this.openSessionReserved(id, sessionCwd");
 
     const reservedStart = sidebar.indexOf("private async openSessionReserved(");
     const reservedEnd = sidebar.indexOf("private revealAndFocusComposer", reservedStart);
@@ -4873,8 +4895,8 @@ describe("chat openFile / openDiff use-time revalidation (round 16)", () => {
   });
 
   it("revalidateOpenFileForUse refuses a symlink swap between checks", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-toctou-"));
-    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-toctou-out-"));
+    const root = mkdtempReal("grok-chat-toctou-");
+    const outside = mkdtempReal("grok-chat-toctou-out-");
     try {
       const safe = path.join(root, "safe.txt");
       const link = path.join(root, "link.txt");
@@ -4923,7 +4945,7 @@ describe("chat openFile / openDiff use-time revalidation (round 16)", () => {
   });
 
   it("revalidateOpenFileForUse refuses swap to an in-tree executable", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-chat-exe-"));
+    const root = mkdtempReal("grok-chat-exe-");
     try {
       const safe = path.join(root, "note.txt");
       const pe = path.join(root, "tool.exe");

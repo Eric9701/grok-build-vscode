@@ -32,6 +32,24 @@ import {
 } from "../src/desktop/electron-host";
 import { indexWellFormedSessions, isWellFormedSessionSummary, sessionsDirFor } from "../src/sessions";
 
+/**
+ * A temp directory whose path is ALREADY CANONICAL.
+ *
+ * On macOS `os.tmpdir()` is `/var/folders/…`, which is a symlink to
+ * `/private/var/folders/…`. Every test below hands its temp root to code whose
+ * whole job is to canonicalise a path and compare it against that root — so an
+ * uncanonicalised root makes the containment check compare `/private/var/…`
+ * (what the product resolved) against `/var/…` (what the test passed in) and
+ * the product looks broken on macOS while behaving exactly as designed.
+ *
+ * These suites were red on macOS for at least ten days without anyone noticing,
+ * because CI is Ubuntu and the dev box is Windows and neither has that symlink.
+ */
+function mkdtempReal(prefix: string): string {
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+
 const DAY = 24 * 60 * 60 * 1000;
 const now = Date.UTC(2026, 7, 1); // fixed clock
 
@@ -94,7 +112,7 @@ describe("canonicalizeSeedProjectPath / well-formed sessions", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-seed-canon-"));
+    tmp = mkdtempReal("grok-seed-canon-");
   });
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -258,7 +276,7 @@ describe("ensureWorkspaceRoot seeding (host-side)", () => {
   }
 
   beforeEach(() => {
-    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "grok-seed-"));
+    tmp = mkdtempReal("grok-seed-");
     prefsFile = path.join(tmp, "config.json");
     grokHome = path.join(tmp, "grok-home");
     hot = fs.mkdtempSync(path.join(tmp, "hot-"));

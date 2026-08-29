@@ -7811,18 +7811,27 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.emit(session, { type: "error", text: INTERRUPTED_SEND_TEXT, code: INTERRUPTED_SEND_CODE });
   }
 
+  /** `clock` lets a CALLER start the measurement where the user's click landed.
+   *  Opening a conversation resolves a cwd, reads session meta and waits on the
+   *  workspace queue before it ever reaches here, and a clock made in this
+   *  function cannot see any of it — measured at 86-131ms on the QA fixture and
+   *  225-352ms once `session-meta.json` reaches the 1.47MB a heavy real store
+   *  has (`npm run e2e:open-timing`). That window is where a slow open would
+   *  hide, so the callers that have a click to time pass their own. */
   private async startSession(
     resumeId?: string,
     target: Session = this.focused,
     intent: SessionStartIntent = "replace",
+    clock?: OpenClock,
   ): Promise<AcpClient | undefined> {
-    return this.runExclusiveSessionStart(target, () => this.startSessionBody(resumeId, target, intent));
+    return this.runExclusiveSessionStart(target, () => this.startSessionBody(resumeId, target, intent, clock));
   }
 
   private async startSessionBody(
     resumeId: string | undefined,
     target: Session,
     intent: SessionStartIntent,
+    startedClock?: OpenClock,
   ): Promise<AcpClient | undefined> {
     // Desktop with no open folder: empty rail is valid — do not spawn grok
     // against process.cwd(). Unlock the baked "Starting" welcome; returning
@@ -7929,7 +7938,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
     const session = target;
-    const clock = new OpenClock();
+    const clock = startedClock ?? new OpenClock();
+    // Everything the caller did before handing the clock over: the load
+    // reservation, the workspace-switch queue, resolving which cwd owns this
+    // conversation, and the `session-meta.json` read. Zero when the clock was
+    // made here, which is the honest answer for the paths that have no click
+    // to measure from (restart, model change, provider swap).
+    clock.record("resolve", clock.totalMs());
+    const openedAt = clock.now();
     const replacedClient = session.client;
     if (replacedClient) {
       this.queueInFlightPlanCommentsOnExit(session, replacedClient, session.gen);
@@ -7975,7 +7991,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       await replacedClient.dispose();
       if (gen !== session.gen) return undefined;
     }
-    clock.record("dispose", replacedClient ? clock.elapsed(disposeAt) : 0);
+    const disposeMs = replacedClient ? clock.elapsed(disposeAt) : 0;
+    clock.record("dispose", disposeMs);
     // A brand-new session starts in the remembered mode (#25) immediately, so the
     // toolbar shows the right one from the first paint — no Agent → Auto accept
     // flash while the session spins up and primes. Resumed sessions stay
@@ -8059,6 +8076,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Keep the established once-per-extension-upgrade update trigger, then read
     // the resulting version solely to decide whether Plan is safe to expose
     // and which initialize handshake to advertise.
+    // Everything before the version probe that is not the dispose itself. Cheap
+    // in principle — mode/flag resets — which is exactly why it needs measuring
+    // rather than assuming: an open that is slow here would otherwise land in
+    // `other` with nothing to point at.
+    clock.record("prep", Math.max(0, clock.elapsed(openedAt) - disposeMs));
     const versionAt = clock.now();
     let versionNote: string | undefined;
     let grokHandshakeVersion: string | undefined;
@@ -8083,6 +8105,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       session.planModeUnavailableReason = undefined;
     }
     clock.record("version", clock.elapsed(versionAt), versionNote);
+    const afterVersionAt = clock.now();
 
     // Worktree sessions pin cwd at creation/open; everyone else uses the workspace root.
     const cwd = session.cwd || this.workspaceRoot();
@@ -8652,6 +8675,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return client;
     };
 
+    // Version probe done to the first spawn attempt: resolving the environment
+    // (which on Windows can shell out to locate a shell) and building the ACP
+    // client. Recorded once, outside the retry loop, so a retry does not print
+    // this twice — `spawn+init` is the one that repeats per attempt.
+    clock.record("client", clock.elapsed(afterVersionAt));
     for (let attempt = 1; attempt <= startSpawnAttempts; attempt++) {
       if (gen !== session.gen) return undefined;
       const client = createBoundClient();
@@ -16387,6 +16415,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * session and load this one cold from grok's on-disk history into a fresh member.
    */
   private async openSession(id: string, sessionCwd?: string): Promise<void> {
+    // The user's open starts HERE, not in startSession. See the note there.
+    const clock = new OpenClock();
     const claim = this.reserveSessionLoad(id);
     if (!claim) {
       this.host.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
@@ -16402,7 +16432,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // progress. The queued operation calls the exclusive switch primitive
       // directly; calling switchLocalWorkspaceFolder here would wait on the
       // same queue and deadlock the resume transition.
-      const open = () => this.openSessionReserved(id, sessionCwd);
+      const open = () => this.openSessionReserved(id, sessionCwd, clock);
       if (this.host.canSwitchWorkspaceFolder) {
         await this.localWorkspaceSwitchQueue.run(open);
       } else {
@@ -16529,7 +16559,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     await this.switchLocalWorkspaceFolderExclusive(target, { warnOnRefusal: false });
   }
 
-  private async openSessionReserved(id: string, sessionCwd?: string): Promise<void> {
+  private async openSessionReserved(id: string, sessionCwd?: string, clock?: OpenClock): Promise<void> {
     // A session held by a remote tab is not off-limits here: the desk JOINS it
     // — focusSession replays the shared buffer into the webview and already
     // mirrors the replay to remote holders, and emit() keeps serving both
@@ -16574,7 +16604,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.focused = held;
       this.pool.add(this.focused);
       await this.followSessionWorkspace(this.focused);
-      await this.startSession(id, this.focused, "ensure");
+      await this.startSession(id, this.focused, "ensure", clock);
       this.markRead(this.focused);
       this.postRepoCatalog();
       return;
@@ -16638,7 +16668,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // answer we return first, and this bit stops a later re-check from
     // retargeting the row onto a different agent.
     this.focused.hasHistory = true;
-    await this.startSession(id, this.focused, "ensure");
+    await this.startSession(id, this.focused, "ensure", clock);
     this.markRead(this.focused); // opening a cold session clears its unread badge
     this.postRepoCatalog();
   }

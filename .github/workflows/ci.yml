@@ -14,9 +14,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # TWO operating systems, deliberately. The suite ran on Ubuntu only, the one
+  # dev box is Windows, and between them they share an assumption macOS breaks:
+  # `os.tmpdir()` there is `/var/folders/…`, a SYMLINK to `/private/var/…`. Six
+  # tests that hand a temp root to code whose job is to canonicalise paths were
+  # therefore red on macOS for at least ten days, and nothing in the pipeline
+  # could see it. The same blind spot hid a `dist/electron` path that does not
+  # exist on macOS (the binary lives inside `Electron.app`), which had made
+  # `npm run e2e:screens` unrunnable there since it was written.
+  # `fail-fast: false` so one platform's failure never hides the other's.
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,7 +39,9 @@ jobs:
       - run: npm ci
       - run: npm run compile
       - run: npm test
+      # The VSIX is platform-independent, so building it twice buys nothing.
       - run: npm run package
+        if: matrix.os == 'ubuntu-latest'
 
   # @vscode/test-electron smoke — boots a real VS Code, activates the extension, and
   # resolves the webview (missing-CLI onboarding path; no grok binary needed). Covers the

@@ -25,9 +25,27 @@ import { assertPinnedAfterZoomedExpandedTurn, hostMsg } from "./desk-stick-to-bo
 const root = process.cwd();
 const OUT = process.env.SCREENS_DIR || ".screens";
 const mainJs = path.join(root, "out", "desktop", "main.js");
-const electronExe = path.join(root, "node_modules", "electron", "dist", process.platform === "win32" ? "electron.exe" : "electron");
+const electronExe = await resolveElectronExe(root);
 const fixtureCli = path.join(root, "test", "fixtures", process.platform === "win32" ? "fake-grok-acp.cmd" : "fake-grok-acp.sh");
 const log = (m) => console.log(`[desk-screens] ${m}`);
+
+/** Electron's own binary, which is NOT `dist/electron` everywhere: macOS keeps
+ *  it inside `Electron.app`. The `electron` package exports the resolved path
+ *  for exactly this reason, so ask it rather than rebuilding the path here. */
+async function resolveElectronExe(root) {
+  try {
+    const mod = await import("electron");
+    const exe = typeof mod.default === "string" ? mod.default : undefined;
+    if (exe && fs.existsSync(exe)) return exe;
+  } catch {
+    // fall through to the layout-based guess
+  }
+  const dist = path.join(root, "node_modules", "electron", "dist");
+  if (process.platform === "win32") return path.join(dist, "electron.exe");
+  if (process.platform === "darwin") return path.join(dist, "Electron.app", "Contents", "MacOS", "Electron");
+  return path.join(dist, "electron");
+}
+
 
 assert.ok(fs.existsSync(mainJs), `Missing ${mainJs} — run \`npm run compile\` first`);
 assert.ok(fs.existsSync(electronExe), `Missing Electron at ${electronExe}`);
@@ -37,6 +55,26 @@ fs.mkdirSync(OUT, { recursive: true });
 
 // The shared grok-qa fixture: a fixed project AND a fixed session store, so the
 // rail has real history in it and the frames are comparable between runs.
+// Which root new projects go in is a per-machine decision the product makes
+// from the disk (`shouldUseLegacyRoot`), so ask the product rather than mirror
+// it — the same reason `qa-fixture.mjs` imports the real catalog encoder.
+const { projectRoot, shouldUseLegacyRoot, legacyProjectRootPath, displayPath } =
+  await import("../out/project-create.js");
+const home = os.homedir();
+const legacyRoot = legacyProjectRootPath(home);
+let legacyIsDirectory = false;
+try {
+  legacyIsDirectory = fs.statSync(legacyRoot).isDirectory();
+} catch {
+  legacyIsDirectory = false; // absent (or unreadable) is not legacy
+}
+const useLegacyRoot = shouldUseLegacyRoot({ legacyIsDirectory });
+const expectedProjectDest = displayPath(
+  path.join(projectRoot(home, { useLegacyRoot }), "Q3 Positioning"),
+  home,
+);
+log(`project root for this machine: ${expectedProjectDest} (legacy folder ${legacyIsDirectory ? "present" : "absent"})`);
+
 const qa = buildQaFixture();
 const workspace = qa.project;
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-screens-ud-"));
@@ -380,7 +418,13 @@ try {
     };
   });
   // The point of the whole feature: nobody types a path, and everybody sees one.
-  assert.equal(formBox.dest, "~/Grok Build/Q3 Positioning", `desk: destination preview — ${JSON.stringify(formBox)}`);
+  //
+  // The expected path is DERIVED from the product's own rule, not written out.
+  // It was written out — as `~/Grok Build/…` — and that only holds on a machine
+  // which already has the legacy folder. This dev box does; the macOS test box
+  // does not and correctly showed `~/AFK Pilot/…`, so the check failed on a
+  // product that was working. A CI runner would have failed the same way.
+  assert.equal(formBox.dest, expectedProjectDest, `desk: destination preview — ${JSON.stringify(formBox)}`);
   assert.ok(formBox.submitEnabled, `desk: Create stayed disabled — ${JSON.stringify(formBox)}`);
   assert.ok(formBox.onScreen, `desk: the form is clipped by the window — ${JSON.stringify(formBox)}`);
   assert.ok(formBox.scrimCovers, `desk: the scrim does not cover the window — ${JSON.stringify(formBox)}`);
@@ -701,7 +745,16 @@ try {
   await page.waitForTimeout(250);
 
   let stateC = null;
-  for (const width of [400, 320, 280, 240, 220, 200]) {
+  // A SWEEP, not a list of six magic widths. Which width flips the strip from
+  // one state to the next is a function of font metrics, and those are not the
+  // same on every platform: the old list walked straight over state B on macOS
+  // (saw a and c, never b) and failed a strip that was working correctly. Step
+  // finely enough that no state can fall between two probes; the loop still
+  // breaks as soon as B and C have both been seen, so this costs nothing on the
+  // platform where the old widths happened to line up.
+  const sweep = [];
+  for (let w = 420; w >= 180; w -= 10) sweep.push(w);
+  for (const width of sweep) {
     await setPanelWidth(width);
     const strip = await assertStripGeometry(`desk strip @${width}`);
     if (strip.state && !seenStates.has(strip.state)) {
@@ -732,6 +785,15 @@ try {
           fullW: Math.round(Number(el.dataset.fullW) || 0),
         })));
   };
+  // BOTH settles must follow the same bounce. This one used to measure straight
+  // out of the state sweep above while the second measured after a bounce to
+  // 220 — so the two sides of the comparison had different histories, and the
+  // check only passed because the sweep happened to end somewhere that produced
+  // the same number. Widening the sweep by a few widths broke it on Windows and
+  // macOS alike, reporting a 157→138 "ratchet" in a product that was fine. A
+  // ratchet still shows: it would make settled2 WIDER than settled1.
+  await setPanelWidth(220);
+  await page.waitForTimeout(300);
   const settled1 = await settleMeasure();
   await setPanelWidth(220);
   await page.waitForTimeout(300);
