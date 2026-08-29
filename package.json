@@ -362,11 +362,11 @@
             "cmd"
           ],
           "enumDescriptions": [
-            "PowerShell on Windows (pwsh, then Windows PowerShell 5.1) — matches the standalone Grok CLI",
-            "Force cmd.exe on Windows (legacy)"
+            "PowerShell on Windows; $SHELL on macOS/Linux — matches the standalone Grok CLI",
+            "Force cmd.exe on Windows, /bin/sh on macOS/Linux"
           ],
           "default": "auto",
-          "markdownDescription": "Which shell runs the agent's commands **on Windows**. `auto` (default) uses PowerShell — `pwsh.exe` if installed, else Windows PowerShell 5.1 — so your PowerShell profile functions and pipelines work like they do in the standalone Grok CLI (#46). `cmd` forces `cmd.exe` (the pre-1.5.13 behavior) if the PowerShell host causes trouble. **Tip: install PowerShell 7 (`pwsh`)** — the 5.1 fallback rejects `&&` chains and reports every failing command's exit code as 1. No effect on macOS/Linux (always `/bin/sh`)."
+          "markdownDescription": "Which shell runs the agent's commands. `auto` (default): on Windows, PowerShell (`pwsh.exe` if installed, else Windows PowerShell 5.1) so profile functions and pipelines match the standalone Grok CLI (#46). On macOS/Linux, your `$SHELL` (typically `/bin/zsh`) instead of `/bin/sh`, which on macOS is bash 3.2 and cannot run a modern sdkman init. `cmd` forces `cmd.exe` on Windows, `/bin/sh` on macOS/Linux. **Tip: install PowerShell 7 (`pwsh`)** — the 5.1 fallback rejects `&&` chains and reports every failing command's exit code as 1."
         },
         "grok.showThinking": {
           "type": "boolean",

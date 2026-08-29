@@ -109,21 +109,37 @@ function whichOnPath(name: string): string | undefined {
   }
 }
 
-/** How to pick the Windows host shell — `grok.terminalShell` (#46). */
+/** How to pick the host shell — `grok.terminalShell` (#46). */
 export type ShellPreference = "auto" | "cmd";
+
+/**
+ * `$SHELL` when it is an absolute path (the login shell the standalone TUI
+ * inherits). `/bin/sh` and `/usr/bin/sh` stay `true` so Node's default and
+ * `GROK_SHELL` unset remain the same no-op. Pure.
+ */
+export function posixShellFromEnv(shell: string | undefined): string | true {
+  if (typeof shell !== "string") return true;
+  const trimmed = shell.trim();
+  if (!trimmed.startsWith("/")) return true;
+  if (trimmed === "/bin/sh" || trimmed === "/usr/bin/sh") return true;
+  return trimmed;
+}
 
 /**
  * Choose the shell for the agent's `terminal/*` commands (spawn's `shell`
  * option). On Windows, mirror the standalone grok CLI by running under
  * PowerShell — PowerShell 7 (`pwsh.exe`) when installed, else Windows
  * PowerShell 5.1 (`powershell.exe`), else cmd.exe (Node's `shell: true`
- * default). On POSIX, `/bin/sh` (Node's `shell: true`). See issue #46.
+ * default). On POSIX, use `$SHELL` when it is an absolute path (typically
+ * `/bin/zsh` on macOS), else `/bin/sh` (Node's `shell: true`). See issue #46.
  *
  * The extension is the one running commands — grok delegates every one over ACP
  * `terminal/create` — so the host shell is *our* choice, not a CLI flag. Under
  * cmd.exe the agent couldn't reach the user's PowerShell profile functions or
  * run pipelines, so it had to re-wrap each command; matching PowerShell (as the
- * standalone CLI already does) removes that friction.
+ * standalone CLI already does) removes that friction. The POSIX half is the same
+ * idea: a GUI-launched VS Code host otherwise always gets `/bin/sh` (macOS:
+ * bash 3.2), which is not the zsh login shell the TUI runs under.
  *
  * Node runs a string shell as `<shell> -c "<command>"`, and both pwsh and
  * Windows PowerShell accept `-c` as the `-Command` alias, so the agent's
@@ -132,18 +148,19 @@ export type ShellPreference = "auto" | "cmd";
  * commands to reach (and what standalone grok reaches).
  *
  * `pref = "cmd"` is the escape hatch (`grok.terminalShell`): force cmd.exe on
- * Windows (a no-op on POSIX, where it's `/bin/sh` either way) for anyone the
- * PowerShell default bites — e.g. the `powershell.exe` 5.1 fallback rejects
- * `&&` chains and collapses non-zero native exits to 1 (pwsh 7 does neither).
- * Pure given `resolve`.
+ * Windows, `/bin/sh` on POSIX, for anyone the default host bites — e.g. the
+ * `powershell.exe` 5.1 fallback rejects `&&` chains and collapses non-zero
+ * native exits to 1 (pwsh 7 does neither).
+ * Pure given `resolve` and `posixShell`.
  */
 export function resolveTerminalShell(
   platform: NodeJS.Platform,
   resolve: (name: string) => string | undefined,
   pref: ShellPreference = "auto",
+  posixShell?: string,
 ): string | true {
   if (pref === "cmd") return true; // cmd.exe on Windows / /bin/sh on POSIX
-  if (platform !== "win32") return true;
+  if (platform !== "win32") return posixShellFromEnv(posixShell);
   return resolve("pwsh") ?? resolve("powershell") ?? true;
 }
 
@@ -156,15 +173,21 @@ export function resolveTerminalShell(
  * PowerShell syntax when we fall back to cmd) — setting `GROK_SHELL` in grok's
  * spawn env realigns the model's dialect hints with our shell (§2.9;
  * research/oss-surfaces-probe.cjs confirms it drives the first-message `Shell:`).
- * Pure. POSIX returns `undefined` — grok's own host detection is correct there,
- * so we don't override it. Windows maps the resolved shell to grok's accepted
- * override values (`pwsh` / `powershell` / `cmd`).
+ * Pure. POSIX maps a resolved `$SHELL` path (`zsh`, `bash`, …) and leaves
+ * `undefined` for the `/bin/sh` fallback so grok keeps detecting. Windows maps
+ * the resolved shell to grok's accepted override values (`pwsh` / `powershell` /
+ * `cmd`).
  */
 export function grokShellEnvValue(
   resolved: string | true,
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  if (platform !== "win32") return undefined;
+  if (platform !== "win32") {
+    if (resolved === true) return undefined; // /bin/sh fallback: let grok detect
+    const base = resolved.split(/[/\\]/).pop()?.toLowerCase() ?? "";
+    if (base === "zsh" || base === "bash" || base === "sh") return base;
+    return undefined;
+  }
   if (resolved === true) return "cmd"; // cmd.exe: forced pref, or no PowerShell found
   const base = resolved.toLowerCase();
   if (base.includes("pwsh")) return "pwsh";
@@ -218,7 +241,14 @@ export function setTerminalShellPreference(pref: ShellPreference): void {
 
 function terminalShell(): string | true {
   if (cachedTerminalShell === undefined) {
-    cachedTerminalShell = resolveTerminalShell(process.platform, whichOnPath, shellPreference);
+    const resolved = resolveTerminalShell(
+      process.platform,
+      whichOnPath,
+      shellPreference,
+      process.env.SHELL,
+    );
+    cachedTerminalShell =
+      typeof resolved === "string" && !existsSync(resolved) ? true : resolved;
   }
   return cachedTerminalShell;
 }
@@ -226,8 +256,9 @@ function terminalShell(): string | true {
 /**
  * Manages background processes spawned on behalf of the agent's `terminal/*`
  * ACP requests. Each terminal is a headless shell child process (PowerShell on
- * Windows, /bin/sh elsewhere — see `resolveTerminalShell`) whose stdout+stderr
- * is captured into a single rolling buffer respecting `outputByteLimit`.
+ * Windows, `$SHELL` / `/bin/sh` elsewhere — see `resolveTerminalShell`) whose
+ * stdout+stderr is captured into a single rolling buffer respecting
+ * `outputByteLimit`.
  */
 /** Injectable seams for tests — production callers pass nothing. */
 export interface TerminalManagerDeps {

@@ -17,10 +17,10 @@ entirely in `resolveTerminalShell` (`src/terminal-manager.ts`).
 
 ## Fix
 
-`resolveTerminalShell(platform, resolve, pref)`:
-- POSIX → `true` (`/bin/sh`, unchanged).
+`resolveTerminalShell(platform, resolve, pref, posixShell)`:
+- POSIX `auto` → `$SHELL` when it is an absolute path other than `/bin/sh`; else `true` (`/bin/sh`).
 - Windows `auto` → `pwsh.exe` → `powershell.exe` → cmd.exe (`true`).
-- `pref === "cmd"` (`grok.terminalShell`) → force `true` (cmd.exe) — escape hatch.
+- `pref === "cmd"` (`grok.terminalShell`) → force `true` (cmd.exe on Windows, `/bin/sh` on POSIX).
 
 Node runs a string shell as `<shell> -c "<command>"`; pwsh and Windows
 PowerShell both accept `-c` as the `-Command` alias. Resolution is cached

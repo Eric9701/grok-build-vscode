@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, grokShellEnvValue, commandLanguageForDialect } from "../src/terminal-manager";
+import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, posixShellFromEnv, grokShellEnvValue, commandLanguageForDialect } from "../src/terminal-manager";
 
 // Use `node -e` everywhere so tests are deterministic on Windows, macOS, and Linux.
 // Quoting strategy: single-quote the outer node script, escape inner single quotes if any.
@@ -271,7 +271,7 @@ describe("resolveTerminalShell", () => {
   const PWSH = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
   const POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-  it("returns true (/bin/sh) on POSIX without probing PATH", () => {
+  it("returns true (/bin/sh) on POSIX without probing PATH when $SHELL is unset", () => {
     let probed = false;
     const shell = resolveTerminalShell("linux", () => {
       probed = true;
@@ -281,7 +281,26 @@ describe("resolveTerminalShell", () => {
     expect(probed).toBe(false); // never shell out to `where` off Windows
   });
 
-  it("returns true on darwin", () => {
+  it("uses $SHELL on POSIX when it is an absolute path", () => {
+    let probed = false;
+    const shell = resolveTerminalShell(
+      "darwin",
+      () => {
+        probed = true;
+        return PWSH;
+      },
+      "auto",
+      "/bin/zsh",
+    );
+    expect(shell).toBe("/bin/zsh");
+    expect(probed).toBe(false);
+  });
+
+  it("falls back to /bin/sh when POSIX $SHELL is /bin/sh itself", () => {
+    expect(resolveTerminalShell("linux", () => undefined, "auto", "/bin/sh")).toBe(true);
+  });
+
+  it("returns true on darwin without $SHELL", () => {
     expect(resolveTerminalShell("darwin", () => PWSH)).toBe(true);
   });
 
@@ -316,8 +335,8 @@ describe("resolveTerminalShell", () => {
     expect(probed).toBe(false); // escape hatch short-circuits before `where`
   });
 
-  it("pref 'cmd' is a no-op on POSIX (still /bin/sh)", () => {
-    expect(resolveTerminalShell("linux", () => undefined, "cmd")).toBe(true);
+  it("pref 'cmd' forces /bin/sh on POSIX even when $SHELL is zsh", () => {
+    expect(resolveTerminalShell("linux", () => undefined, "cmd", "/bin/zsh")).toBe(true);
   });
 
   it("pref 'auto' matches the default (PowerShell on Windows)", () => {
@@ -338,12 +357,29 @@ describe("grokShellEnvValue (GROK_SHELL derived from the shell we run)", () => {
   it("maps the cmd.exe fallback (true) to 'cmd' on Windows", () => {
     expect(grokShellEnvValue(true, "win32")).toBe("cmd");
   });
-  it("returns undefined on POSIX (grok's host detection is correct there)", () => {
+  it("leaves GROK_SHELL unset on POSIX when the host is /bin/sh", () => {
     expect(grokShellEnvValue(true, "linux")).toBeUndefined();
-    expect(grokShellEnvValue("/bin/bash", "darwin")).toBeUndefined();
+  });
+  it("maps a POSIX $SHELL path to its basename so grok writes that dialect", () => {
+    expect(grokShellEnvValue("/bin/zsh", "darwin")).toBe("zsh");
+    expect(grokShellEnvValue("/opt/homebrew/bin/bash", "linux")).toBe("bash");
   });
   it("returns undefined for an unrecognized Windows shell path", () => {
     expect(grokShellEnvValue("C:\\weird\\thing.exe", "win32")).toBeUndefined();
+  });
+});
+
+describe("posixShellFromEnv", () => {
+  it("keeps Node's /bin/sh fallback for empty, relative, or sh paths", () => {
+    expect(posixShellFromEnv(undefined)).toBe(true);
+    expect(posixShellFromEnv("")).toBe(true);
+    expect(posixShellFromEnv("zsh")).toBe(true);
+    expect(posixShellFromEnv("/bin/sh")).toBe(true);
+    expect(posixShellFromEnv("/usr/bin/sh")).toBe(true);
+  });
+  it("returns an absolute login shell path", () => {
+    expect(posixShellFromEnv("/bin/zsh")).toBe("/bin/zsh");
+    expect(posixShellFromEnv("  /usr/bin/zsh  ")).toBe("/usr/bin/zsh");
   });
 });
 
