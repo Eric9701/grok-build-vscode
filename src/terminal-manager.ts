@@ -217,6 +217,14 @@ export function grokShellEnvValue(
     // Falling back to `/bin/sh`, which happens when `$SHELL` is fish, nushell
     // or anything else non-POSIX. Now the detection and the truth diverge:
     // grok would describe fish while we run sh, so the model must be told.
+    //
+    // `bash` is the closest of grok's ACCEPTED values, not a promise: on macOS
+    // `/bin/sh` really is bash, but on most Linux distributions it is dash, and
+    // a model told "bash" there can still emit `[[ ]]`, arrays or `${x^^}` that
+    // dash rejects. It is nonetheless strictly better than the alternative —
+    // saying nothing leaves grok describing FISH while we run sh, which is a
+    // whole wrong shell family rather than a wrong dialect of the right one.
+    // Narrowing it further needs a value grok would accept for `sh`/`dash`.
     return "bash";
   }
   if (resolved === true) return "cmd"; // cmd.exe: forced pref, or no PowerShell found

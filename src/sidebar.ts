@@ -7833,6 +7833,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     intent: SessionStartIntent,
     startedClock?: OpenClock,
   ): Promise<AcpClient | undefined> {
+    // Read the caller's clock BEFORE this function can add to it: the load
+    // reservation, the workspace-switch queue, the cwd resolution, the
+    // `session-meta.json` read and the wait for the exclusive start lock are
+    // all already on it, and all of them belong to `resolve`.
+    const clock = startedClock ?? new OpenClock();
+    const resolveMs = clock.totalMs();
+    let consentMs = 0;
     // Desktop with no open folder: empty rail is valid — do not spawn grok
     // against process.cwd(). Unlock the baked "Starting" welcome; returning
     // silently here left first-run / last-project-removed on that spinner
@@ -7916,9 +7923,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // A repository that ships its own always-approve config gets consent first.
     // Deliberately here, before anything is mutated: nothing has been touched
     // yet, so declining is a clean no-op rather than a half-started session.
+    const consentAt = clock.now();
     if (target.provider === "grok" && !(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
       return undefined;
     }
+    // A modal is a PERSON reading a dialog. Folded into `resolve` it would
+    // report a fast disk lookup as tens of seconds and send whoever reads the
+    // log hunting a phantom; given its own name it explains itself. Zero
+    // whenever the dialog did not appear, which is almost always.
+    consentMs = clock.elapsed(consentAt);
     // After the last await before ++gen: a send can have begun a turn (or
     // another start can have finished) while consent was up.
     const startDecision = decideSessionStart(target, resumeId, intent);
@@ -7938,13 +7951,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Step D passes a pool member. Its handlers close over `session`/`gen` so a
     // backgrounded session's events stay bound to it even after focus moves.
     const session = target;
-    const clock = startedClock ?? new OpenClock();
-    // Everything the caller did before handing the clock over: the load
-    // reservation, the workspace-switch queue, resolving which cwd owns this
-    // conversation, and the `session-meta.json` read. Zero when the clock was
-    // made here, which is the honest answer for the paths that have no click
-    // to measure from (restart, model change, provider swap).
-    clock.record("resolve", clock.totalMs());
+    // `resolve` is zero when the clock was made in this function, which is the
+    // honest answer for the paths with no click to measure from (restart, model
+    // change, provider swap).
+    clock.record("resolve", resolveMs);
+    clock.record("consent", consentMs);
     const openedAt = clock.now();
     const replacedClient = session.client;
     if (replacedClient) {
@@ -8675,14 +8686,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return client;
     };
 
-    // Version probe done to the first spawn attempt: resolving the environment
-    // (which on Windows can shell out to locate a shell) and building the ACP
-    // client. Recorded once, outside the retry loop, so a retry does not print
-    // this twice — `spawn+init` is the one that repeats per attempt.
-    clock.record("client", clock.elapsed(afterVersionAt));
     for (let attempt = 1; attempt <= startSpawnAttempts; attempt++) {
       if (gen !== session.gen) return undefined;
       const client = createBoundClient();
+      // Version probe done to the first spawn attempt: resolving the
+      // environment (which on Windows can shell out to locate a shell) AND
+      // building the ACP client with its handlers. Recorded after
+      // `createBoundClient`, not before the loop, because recording it first
+      // charged the client construction to `other` while the phase named after
+      // it reported 0-1ms — a confident wrong number, which is the one thing
+      // this line must never print. First attempt only: a retry repeats
+      // `spawn+init`, and that is the phase allowed to repeat.
+      if (attempt === 1) clock.record("client", clock.elapsed(afterVersionAt));
       // Once the resume branch starts emitting (queued plan/permission cards,
       // then streamed history), a retry would replay onto the partial
       // transcript and duplicate every message (review find, 2026-08-15) —
@@ -8922,7 +8937,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             const detected = parseGrokVersion(version)?.join(".") ?? version;
             if (await this.downgradeBrokenCli(cliPath, detected, "reactive")) {
               if (gen !== session.gen) return undefined;
-              return await this.startSessionBody(resumeId, session, intent); // same exclusive; do not re-enter the tail
+              // Same clock: a downgrade re-entry that started a fresh one
+              // reported only the successful second attempt and silently
+              // dropped the timeout, the version read and the downgrade —
+              // which is the slowest part of the open it was meant to explain.
+              return await this.startSessionBody(resumeId, session, intent, clock); // same exclusive; do not re-enter the tail
             }
           } finally {
             this.reactiveDowngradeInFlight = false;
@@ -16235,6 +16254,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     sessionCwd?: string,
     notifyCatalog = true,
   ): Promise<void> {
+    // Same reason the local open owns its clock: a phone tapping a conversation
+    // waits through the reservation, the repo adoption and the metadata reads
+    // before `startSession` is reached, and a clock made down there reports
+    // `resolve 0ms` however long that took.
+    const clock = new OpenClock();
     const claim = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
     if (!claim) {
       const selectedCwd = this.remoteClients.cwd(clientId);
@@ -16254,7 +16278,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     let failure: unknown;
     try {
-      await this.openRemoteSessionReserved(clientId, id, claim.reservation, sessionCwd, notifyCatalog);
+      await this.openRemoteSessionReserved(clientId, id, claim.reservation, sessionCwd, notifyCatalog, clock);
     } catch (error) {
       failure = error;
       throw error;
@@ -16298,6 +16322,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     reservation: SessionLoadReservation,
     sessionCwd?: string,
     notifyCatalog = true,
+    clock?: OpenClock,
   ): Promise<void> {
     // A remote may name a session that lives in a DIFFERENT repo of the catalog
     // it was shown — the projects rail lists every repo's sessions at once, so
@@ -16403,7 +16428,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // whichever provider just signed in.
     session.hasHistory = true;
     this.sendRemoteClient(clientId, { type: "clearMessages" });
-    await this.startSession(id, session, "ensure");
+    await this.startSession(id, session, "ensure", clock);
     this.markRead(session);
     if (notifyCatalog) this.postRepoCatalog();
     this.sendRemoteSessionList(session, reservation.ownerTabToken);

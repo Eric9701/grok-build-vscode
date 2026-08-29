@@ -232,7 +232,7 @@ describe("startSession open-timing line", () => {
     // but the named phases and their order are the contract a pasted log is
     // grepped against.
     expect(lines[0]).toMatch(
-      /^session open: resolve \d+ms · dispose \d+ms · prep \d+ms · version \d+ms \(cached\) · client \d+ms · spawn\+init \d+ms · load \d+ms · replay\(post\) \d+ms(?: · other \d+ms)? · total \d+ms \(events: \d+\)$/,
+      /^session open: resolve \d+ms · consent \d+ms · dispose \d+ms · prep \d+ms · version \d+ms \(cached\) · client \d+ms · spawn\+init \d+ms · load \d+ms · replay\(post\) \d+ms(?: · other \d+ms)? · total \d+ms \(events: \d+\)$/,
     );
     expect(lines[0]).toContain("events: 1");
   });

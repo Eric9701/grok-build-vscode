@@ -89,7 +89,11 @@ describe("consent gate wiring", () => {
     // Wide enough to reach ++session.gen past startSession's early-return
     // blocks as they grow; the assertions below still pin the ordering, the
     // slice only bounds the search.
-    const body = src.slice(start, start + 6000);
+    // Search bound only (see below) — and one that has to clear `++session.gen`
+    // at ~6400 chars, which 6000 stopped doing when the open clock grew the
+    // prologue. Too small a bound does not weaken this test, it BREAKS it: the
+    // mutation reads as absent and the ordering assertion has nothing to compare.
+    const body = src.slice(start, start + 9000);
     const asked = body.indexOf("confirmRepoForcedAutoApprove");
     expect(asked).toBeGreaterThan(0);
     // Before ++session.gen — nothing is mutated yet, so declining is a clean

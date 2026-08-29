@@ -50,15 +50,18 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-timing-ud-"));
 fs.writeFileSync(path.join(userData, "test-config.json"), JSON.stringify({ "grok.cliPath": fixtureCli }), "utf8");
 const logPath = path.join(userData, "logs", "desktop.log");
 
-// A heavy `session-meta.json`, on demand. This machine's real one is 1.47 MB
+// A heavy `session-meta.json`, BY DEFAULT. This machine's real one is 1.47 MB
 // and `PersistedState.get` re-reads and re-parses the whole file whenever its
-// stamp has moved — and the cold-open path reads that key before it starts the
-// clock. BIG_META=1 reproduces the size (never the contents; synthesised here,
-// never copied from a real store).
-if (process.env.BIG_META) {
+// stamp has moved — and the cold-open path reads that key before `startSession`
+// is reached. Making it heavy every run is deliberate: it is what turns the
+// pre-clock window from a handful of milliseconds into a couple of hundred, and
+// so what lets the assertion below actually SEE the clock wiring disappear.
+// Size only; contents are synthesised, never copied from a real store.
+// `SMALL_META=1` opts out, for comparing the two.
+if (!process.env.SMALL_META) {
   const dir = path.join(qa.grokHome, "client-state");
   fs.mkdirSync(dir, { recursive: true });
-  const target = Number(process.env.BIG_META_BYTES || 1468603);
+  const target = Number(process.env.META_BYTES || 1468603);
   const meta = {};
   let i = 0;
   while (JSON.stringify(meta).length < target) {
@@ -71,7 +74,7 @@ if (process.env.BIG_META) {
   }
   const file = path.join(dir, "session-meta.json");
   fs.writeFileSync(file, JSON.stringify(meta), "utf8");
-  log(`BIG_META: wrote ${fs.statSync(file).size} bytes (${i} entries) to ${file}`);
+  log(`meta: wrote ${fs.statSync(file).size} bytes (${i} entries) to ${file}`);
 }
 
 const env = { ...process.env, GROK_HOME: qa.grokHome };
@@ -160,7 +163,8 @@ try {
     }
   };
 
-  const openByName = async (name) => {
+  const clicked = [];
+  const openByName = async (name, { requireLine = true } = {}) => {
     await settle();
     // Count FIRST. The app opens a conversation of its own on startup, so the
     // log already has a line in it whose clock started before this click — and
@@ -172,10 +176,12 @@ try {
     const got = await waitForOpenLines(page, before + 1);
     const line = got[before];
     if (!line) {
-      // Not a probe failure. Returning to a conversation whose client is still
-      // alive takes the `focusSession` branch — a pure re-focus, no reopen, and
-      // so NO TIMING LINE AT ALL. Worth stating plainly: a user who freezes on
-      // that path has nothing to send us.
+      // Returning to a conversation whose client is still alive takes the
+      // `focusSession` branch — a pure re-focus, no reopen, and so NO TIMING
+      // LINE AT ALL. Expected on that one click and stated plainly (a user who
+      // freezes there has nothing to send us); a FAILURE anywhere else, because
+      // "the app logged nothing" must never be a way for this check to pass.
+      assert.ok(!requireLine, `opening "${name}" produced no timing line at all`);
       log(`opened "${name}" — no timing line: the app re-focused a live conversation instead of reopening it`);
       return got;
     }
@@ -185,6 +191,7 @@ try {
     const prelude = Math.round(emittedAt - totalMs - clickedAt);
     const resolveMs = parse(line).phases.find((x) => x.name === "resolve")?.ms ?? 0;
     preludes.push({ name, totalMs, prelude, resolveMs });
+    clicked.push({ name, line, totalMs, resolveMs });
     log(`opened "${name}" — total ${totalMs}ms (resolve ${resolveMs}ms); still unmeasured before the clock: ${prelude}ms`);
     return got;
   };
@@ -201,7 +208,7 @@ try {
   // started loading and then froze" — and it is the only open of the three with
   // a client already bound to the target, so it is the only one that can put a
   // non-zero number in `dispose`.
-  lines = await openByName(first);
+  lines = await openByName(first, { requireLine: false });
 
   console.log("\n----- lines the app actually wrote -----");
   for (const l of lines) console.log(l);
@@ -216,7 +223,7 @@ try {
     const sum = phases.reduce((a, p) => a + p.ms, 0);
     const drift = Math.abs(sum - totalMs);
     assert.ok(drift <= 1, `phases do not tile the total (sum ${sum}ms vs total ${totalMs}ms): ${line}`);
-    for (const want of ["resolve", "dispose", "prep", "version", "client", "spawn+init", "load", "replay(post)"]) {
+    for (const want of ["resolve", "consent", "dispose", "prep", "version", "client", "spawn+init", "load", "replay(post)"]) {
       assert.ok(named.some((p) => p.name === want), `phase "${want}" missing from: ${line}`);
     }
     log(
@@ -239,7 +246,20 @@ try {
       ? `dispose measured ${switched.phases.find((x) => x.name === "dispose").ms}ms`
       : "dispose was 0ms on every open — expected here: a rail open builds a fresh session object",
   );
-  log(`PASS — ${lines.length} real lines, every one accounting for its own total`);
+  // THE REGRESSION THIS CHECK EXISTS FOR. Counting lines proves nothing: the
+  // app logs a line whether or not the clock starts at the click, and `resolve`
+  // is printed as `0ms` when no caller owned one. With a heavy
+  // `session-meta.json` in place the pre-start window is hundreds of
+  // milliseconds, so a wired clock CANNOT report a near-zero resolve — and
+  // unwiring it reports exactly zero.
+  assert.ok(clicked.length >= 2, `only ${clicked.length} click(s) produced a timing line`);
+  const widestResolve = Math.max(...clicked.map((c) => c.resolveMs));
+  assert.ok(
+    process.env.SMALL_META || widestResolve >= 25,
+    `resolve never exceeded ${widestResolve}ms against a 1.4MB session-meta.json — ` +
+      `the open clock is no longer started by openSession`,
+  );
+  log(`PASS — ${lines.length} real lines, every one accounting for its own total; widest resolve ${widestResolve}ms`);
   console.log("\n----- what the line does NOT cover -----");
   for (const p of preludes) {
     const share = p.prelude + p.totalMs > 0 ? Math.round((100 * p.prelude) / (p.prelude + p.totalMs)) : 0;
@@ -257,5 +277,9 @@ try {
   }
 } finally {
   await app.close().catch(() => {});
+  // Both trees, not just the app's. Left behind, each run cost a QA fixture
+  // plus a multi-megabyte synthesised metadata store.
+  try { qa.cleanup(); } catch { /* best effort */ }
+  fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5 });
 }
 process.exit(failure ? 1 : 0);

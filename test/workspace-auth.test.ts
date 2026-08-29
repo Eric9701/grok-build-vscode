@@ -205,7 +205,11 @@ describe("sidebar close-revocation wiring (source)", () => {
 
     // startSession refuses unauthorized target.cwd even with resumeId.
     const startStart = src.indexOf("private async startSessionBody(");
-    const startBody = src.slice(startStart, startStart + 1200);
+    // A SEARCH BOUND, not a measurement: it only has to reach past the
+    // method's prologue. 1200 stopped doing that the moment the open clock
+    // added a few lines at the top, and the gate it looks for (at ~1460 chars)
+    // read as deleted when it had merely moved.
+    const startBody = src.slice(startStart, startStart + 2400);
     expect(startBody).toContain("isAuthorizedCwd(target.cwd)");
     expect(startBody).toContain("refused startSession");
 
