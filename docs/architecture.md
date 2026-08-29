@@ -670,11 +670,12 @@ the steady-state fix.
   runs them under PowerShell (`pwsh.exe`→`powershell.exe`→cmd.exe) to match the
   standalone grok CLI (#46 — cmd couldn't run the user's PowerShell profile
   functions or pipelines); on POSIX it uses `$SHELL` (typically `/bin/zsh` on
-  macOS) instead of `/bin/sh`. It also sets
-  **`GROK_SHELL`** in grok's spawn env (the pure `grokShellEnvValue`) to match
-  that shell, so the agent writes the correct dialect instead of guessing from its
-  own host detection (§2.9). `cli-locator.ts` prefers `HOME`/`USERPROFILE` env over
-  `os.homedir()` so tests can override paths.
+  macOS) instead of `/bin/sh`, peels grok's `/bin/bash -lc` wrapper, and spawns
+  `[host, '-c', script]` so the host cannot exec that wrapper (issue #140). It
+  also sets **`GROK_SHELL`** in grok's spawn env (the pure `grokShellEnvValue`)
+  to match that shell, so the agent writes the correct dialect instead of
+  guessing from its own host detection (§2.9). `cli-locator.ts` prefers
+  `HOME`/`USERPROFILE` env over `os.homedir()` so tests can override paths.
 - **Reasoning effort switches live where the CLI supports it.** Changing effort no
   longer restarts the process: `client.setReasoningEffort` sends `session/set_model`
   with `_meta.reasoningEffort` when the model advertises `supportsReasoningEffort`

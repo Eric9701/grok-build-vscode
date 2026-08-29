@@ -126,6 +126,94 @@ export function posixShellFromEnv(shell: string | undefined): string | true {
 }
 
 /**
+ * Peel a single POSIX quoted word. Used only when grok wrapped the entire
+ * inner script in one pair of quotes (`bash -lc 'script'`). A remainder that
+ * is not one quoted word is returned as-is by the caller.
+ */
+function peelOneQuotedString(s: string): string | undefined {
+  if (s.length < 2) return undefined;
+  if (s.startsWith("'") && s.endsWith("'")) {
+    const inner = s.slice(1, -1);
+    // POSIX: a quote inside a single-quoted string is written `'\''`.
+    if (inner.replace(/'\\''/g, "").includes("'")) return undefined;
+    return inner.replace(/'\\''/g, "'");
+  }
+  if (s.startsWith('"') && s.endsWith('"')) {
+    const inner = s.slice(1, -1);
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === "\\") {
+        i++;
+        continue;
+      }
+      if (inner[i] === '"') return undefined;
+    }
+    return inner.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return undefined;
+}
+
+/**
+ * If `command` is grok's POSIX login-bash wrapper, return the inner script.
+ * Otherwise `undefined` (caller keeps `command`).
+ *
+ * Grok 1.0.x still sends `terminal/create` as `/bin/bash -lc <script>` even
+ * when `GROK_SHELL=zsh`. Node `spawn(cmd, { shell: zsh })` is then
+ * `zsh -c '/bin/bash -lc …'`; zsh execs bash, and macOS bash 3.2 sources
+ * `~/.bash_profile` (sdkman `${var^^}`).
+ *
+ * Matches `bash` / `/bin/bash` / `/usr/bin/env bash` plus login+command flags
+ * (`-lc`, `-cl`, `-l -c`, `--login -c`). One layer only: a script that itself
+ * starts with `bash -lc` is the model's command, not grok's wrapper.
+ * Pure.
+ */
+export function unwrapGrokBashLoginWrapper(command: string): string | undefined {
+  let s = command.trimStart();
+  const envPrefix = /^\/usr\/bin\/env\s+/;
+  const envMatch = s.match(envPrefix);
+  if (envMatch) s = s.slice(envMatch[0].length);
+  const exeMatch = s.match(/^(\S+)(\s+|$)/);
+  if (!exeMatch) return undefined;
+  const base = exeMatch[1].split("/").pop() ?? "";
+  if (base !== "bash") return undefined;
+  s = s.slice(exeMatch[0].length).trimStart();
+
+  let sawLogin = false;
+  let sawCommand = false;
+  while (s.startsWith("-")) {
+    const tokMatch = s.match(/^(--[a-zA-Z0-9-]+|-[a-zA-Z]+)(?:\s+|$)/);
+    if (!tokMatch) break;
+    const tok = tokMatch[1];
+    if (tok === "--login" || (/^-[a-zA-Z]+$/.test(tok) && tok.includes("l"))) {
+      sawLogin = true;
+    }
+    if (/^-[a-zA-Z]+$/.test(tok) && tok.includes("c")) {
+      sawCommand = true;
+    }
+    s = s.slice(tokMatch[0].length).trimStart();
+    if (sawCommand) break;
+  }
+  if (!sawLogin || !sawCommand || s === "") return undefined;
+  return peelOneQuotedString(s) ?? s;
+}
+
+export interface PosixSpawnArgv {
+  file: string;
+  args: [string, string];
+}
+
+/**
+ * POSIX argv for `terminal/create`. Always `shell: false`: an explicit
+ * `[file, '-c', script]` so the host shell cannot exec grok's `bash -lc`
+ * wrapper. `hostShell === true` is `/bin/sh` (Node's old default / `cmd` pref).
+ * Pure.
+ */
+export function posixSpawnArgv(command: string, hostShell: string | true): PosixSpawnArgv {
+  const script = unwrapGrokBashLoginWrapper(command) ?? command;
+  const file = hostShell === true ? "/bin/sh" : hostShell;
+  return { file, args: ["-c", script] };
+}
+
+/**
  * Choose the shell for the agent's `terminal/*` commands (spawn's `shell`
  * option). On Windows, mirror the standalone grok CLI by running under
  * PowerShell — PowerShell 7 (`pwsh.exe`) when installed, else Windows
@@ -141,11 +229,13 @@ export function posixShellFromEnv(shell: string | undefined): string | true {
  * idea: a GUI-launched VS Code host otherwise always gets `/bin/sh` (macOS:
  * bash 3.2), which is not the zsh login shell the TUI runs under.
  *
- * Node runs a string shell as `<shell> -c "<command>"`, and both pwsh and
- * Windows PowerShell accept `-c` as the `-Command` alias, so the agent's
- * command string runs with PowerShell semantics. We deliberately don't force
- * `-NoProfile`: profile-defined functions/modules are exactly what users expect
- * commands to reach (and what standalone grok reaches).
+ * POSIX actually spawns `[host, '-c', script]` (`posixSpawnArgv`); Node's
+ * `shell:` option is Windows-only here. Node runs a string shell as
+ * `<shell> -c "<command>"`, and both pwsh and Windows PowerShell accept `-c`
+ * as the `-Command` alias, so the agent's command string runs with PowerShell
+ * semantics. We deliberately don't force `-NoProfile`: profile-defined
+ * functions/modules are exactly what users expect commands to reach (and what
+ * standalone grok reaches).
  *
  * `pref = "cmd"` is the escape hatch (`grok.terminalShell`): force cmd.exe on
  * Windows, `/bin/sh` on POSIX, for anyone the default host bites — e.g. the
@@ -320,7 +410,17 @@ export class TerminalManager {
     // `taskkill /T` already walks the tree and `detached` would open a console
     // window.
     const detached = (this.deps.platform ?? process.platform) !== "win32";
-    const proc = spawn(params.command, { cwd, env, shell: terminalShell(), detached });
+    // Windows still uses Node `shell:` (pwsh/powershell/cmd). POSIX uses an
+    // explicit argv so `$SHELL -c` cannot exec grok's `/bin/bash -lc` wrapper.
+    // `process.platform` (not `deps.platform`): kill-plan tests inject win32
+    // on a POSIX box and still have to spawn a real local command.
+    let proc: ChildProcess;
+    if (process.platform === "win32") {
+      proc = spawn(params.command, { cwd, env, shell: terminalShell(), detached });
+    } else {
+      const { file, args } = posixSpawnArgv(params.command, terminalShell());
+      proc = spawn(file, args, { cwd, env, detached });
+    }
 
     const entry: TerminalEntry = {
       owner,

@@ -138,7 +138,7 @@ The wire format is the highest-value test surface: ACP changes break everything 
 - `isAlwaysApprovePermission` matches the hyphen/underscore spellings grok writes
 - `configForcesAlwaysApprove` applies project-over-global precedence (#31)
 
-### `test/terminal-manager.test.ts` — terminal handler (35 tests)
+### `test/terminal-manager.test.ts` — terminal handler
 
 These actually spawn real shell children (the resolved POSIX `$SHELL` or `/bin/sh`, or real PowerShell on Windows) — fast enough to keep in the unit suite.
 
@@ -153,6 +153,7 @@ These actually spawn real shell children (the resolved POSIX `$SHELL` or `/bin/s
 - `kill` / `release` on missing id is a no-op
 - `disposeAll` kills outstanding terminals
 - **`resolveTerminalShell` (#46)** — POSIX → `$SHELL` when set (else `/bin/sh`, no PATH probe); Windows → `pwsh.exe`→`powershell.exe`→cmd.exe, in that order
+- **`unwrapGrokBashLoginWrapper` / `posixSpawnArgv` (#140)** — peel grok's `/bin/bash -lc` wrapper; POSIX spawn is `[host, '-c', script]` (`shell: false`) so `$SHELL` cannot exec bash 3.2; skipped-on-Windows live test asserts `$0` is the host shell
 - **Windows PowerShell host (#46, Windows-only, skipped on CI)** — real PowerShell pipeline (`… | Measure-Object`), a non-builtin cmdlet (`Get-Date`), `$PSVersionTable`, and a `Format-List` pipeline all run through `TerminalManager` (cmd.exe would fail these); the resolved host shell is never cmd.exe
 
 ### `test/cli-locator.test.ts` — CLI discovery + upgrade detection (9 tests)

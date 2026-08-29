@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, posixShellFromEnv, grokShellEnvValue, commandLanguageForDialect } from "../src/terminal-manager";
+import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, posixShellFromEnv, grokShellEnvValue, commandLanguageForDialect, unwrapGrokBashLoginWrapper, posixSpawnArgv } from "../src/terminal-manager";
 
 // Use `node -e` everywhere so tests are deterministic on Windows, macOS, and Linux.
 // Quoting strategy: single-quote the outer node script, escape inner single quotes if any.
@@ -380,6 +380,82 @@ describe("posixShellFromEnv", () => {
   it("returns an absolute login shell path", () => {
     expect(posixShellFromEnv("/bin/zsh")).toBe("/bin/zsh");
     expect(posixShellFromEnv("  /usr/bin/zsh  ")).toBe("/usr/bin/zsh");
+  });
+});
+
+describe("unwrapGrokBashLoginWrapper", () => {
+  it("unwraps grok's /bin/bash -lc payload", () => {
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "echo hi"')).toBe("echo hi");
+  });
+
+  it("unwraps bash -l -c, -cl, and --login -c", () => {
+    expect(unwrapGrokBashLoginWrapper("bash -l -c echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("bash -cl 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("bash --login -c echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/usr/bin/env bash -lc echo hi")).toBe("echo hi");
+  });
+
+  it("peels POSIX nested single quotes in the inner script", () => {
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'it'\\''s'")).toBe("it's");
+  });
+
+  it("leaves non-wrappers alone", () => {
+    expect(unwrapGrokBashLoginWrapper("echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("bash --version")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("bash script.sh")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("bash -c echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/zsh -lc echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("echo /bin/bash -lc foo")).toBeUndefined();
+  });
+
+  it("unwraps only the outer grok layer", () => {
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc '/bin/bash -lc echo hi'")).toBe(
+      "/bin/bash -lc echo hi",
+    );
+  });
+});
+
+describe("posixSpawnArgv", () => {
+  it("runs the inner script under $SHELL, not bash -lc", () => {
+    expect(posixSpawnArgv("/bin/bash -lc 'echo hi'", "/bin/zsh")).toEqual({
+      file: "/bin/zsh",
+      args: ["-c", "echo hi"],
+    });
+  });
+
+  it("passes a raw command through to $SHELL -c", () => {
+    expect(posixSpawnArgv("echo hi", "/bin/zsh")).toEqual({
+      file: "/bin/zsh",
+      args: ["-c", "echo hi"],
+    });
+  });
+
+  it("uses /bin/sh when the host is Node's fallback", () => {
+    expect(posixSpawnArgv("/bin/bash -lc echo hi", true)).toEqual({
+      file: "/bin/sh",
+      args: ["-c", "echo hi"],
+    });
+  });
+});
+
+const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
+  it("reports $0 as the host shell, not /bin/bash", async () => {
+    const m = new TerminalManager();
+    const { terminalId } = m.create({
+      command: `/bin/bash -lc 'printf %s "$0"'`,
+    });
+    const { exitCode } = await m.waitForExit(terminalId);
+    expect(exitCode).toBe(0);
+    const out = m.output(terminalId).output.trim();
+    expect(out).not.toMatch(/bash$/);
+    const host = posixShellFromEnv(process.env.SHELL);
+    const expected = host === true ? "/bin/sh" : host;
+    expect(out).toBe(expected);
+    m.release(terminalId);
   });
 });
 
