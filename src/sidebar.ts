@@ -5678,6 +5678,13 @@ Only continue if you trust this code.`,
     options: { warnOnRefusal?: boolean } = {},
   ): Promise<void> {
     const prevRoot = this.workspaceRoot();
+    // What the LIST depends on: which folder is active, and which project the
+    // rail has selected. Following a session into the project you are already in
+    // moves neither, and rebuilding for that walked the whole session catalog to
+    // produce the list already on screen. Captured before either can move.
+    const prevSelected = this.selectedRepoCwd;
+    const listMayHaveChanged = () =>
+      !pathsEqual(target, prevRoot) || !pathsEqual(prevSelected ?? "", this.selectedRepoCwd ?? "");
     if (!pathsEqual(target, prevRoot)) {
       // A rejected host call must abort — never treat setActive as advisory
       // and then open history / spawn an agent against the refused path.
@@ -5701,7 +5708,7 @@ Only continue if you trust this code.`,
 
     // Already focused on this folder's live conversation — just refresh chrome.
     if (pathsEqual(this.sessionCwd(this.focused), target) && this.focused.client) {
-      this.postSessionsList();
+      if (listMayHaveChanged()) this.postSessionsList();
       return;
     }
 
@@ -5721,7 +5728,7 @@ Only continue if you trust this code.`,
     // (see desktopAuthRoots), so a conversation in another project keeps
     // reaching its own files and only its own.
     this.postRepoCatalog();
-    this.postSessionsList();
+    if (listMayHaveChanged()) this.postSessionsList();
   }
 
   /**
@@ -15348,7 +15355,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     this.postMode();
     this.postRepoCatalog();
-    this.postSessionsList();
+    // NOT postSessionsList. Focusing a conversation does not change which
+    // conversations exist or what order they are in — only which one is
+    // highlighted, and both clients take that from the `sessionName` frame this
+    // path already sends (chat.js `case "sessionName"`, projects-rail.js the
+    // same). Rebuilding the list here walked every session directory on disk to
+    // produce a list identical to the one already on screen, on the thread that
+    // paints the window (#133/#131).
   }
 
   /**
@@ -15389,6 +15402,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.disposeSession(cur);
     if (isAdapterProvider(provider)) void this.discardAdapterEmptySession(provider, id, cwd);
     else this.removeSessionFromDisk(id, cwd);
+    // This one KEEPS its rebuild, unlike focusSession above: a row genuinely
+    // disappeared. Abandoning an empty session deletes its directory, so the
+    // list on screen is now wrong and no other frame says so.
     this.postSessionsList();
   }
 
