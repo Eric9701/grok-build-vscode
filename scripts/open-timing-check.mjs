@@ -50,6 +50,52 @@ let userData;
 let logPath;
 
 /**
+ * Extra conversations on disk, because the catalog is walked SYNCHRONOUSLY.
+ *
+ * The QA fixture ships three, and three is not a load test. Every open indexes
+ * the session catalog and then sweeps it for empties — `stat`ing each directory
+ * and, for candidates, reading the transcript — all on the Electron main
+ * thread. At three conversations that is invisible. A real store has hundreds,
+ * and the same code then holds the thread that paints the window.
+ *
+ * FILLER_SESSIONS=N writes N synthesised conversations beside the real ones so
+ * the heartbeat can say whether that cost is flat or grows. Contents are
+ * generated; nothing is ever copied from a real store. Off by default: it makes
+ * the check slower and the assertions above are about the LINE, not about load.
+ */
+function writeFillerSessions(fixture) {
+  const NL = String.fromCharCode(10); // literal newline, no escape to lose
+  const n = Number(process.env.FILLER_SESSIONS || 0);
+  if (!(n > 0)) return 0;
+  const sessionsRoot = path.join(fixture.grokHome, "sessions");
+  // The catalog leaf is an encoding of the project path; read it back rather
+  // than rebuilding it, so this cannot drift from the fixture's own encoder.
+  const [leaf] = fs.readdirSync(sessionsRoot);
+  assert.ok(leaf, `no session catalog under ${sessionsRoot}`);
+  const dirRoot = path.join(sessionsRoot, leaf);
+  const base = Date.UTC(2026, 0, 1);
+  for (let i = 0; i < n; i += 1) {
+    const id = `filler-${String(i).padStart(6, "0")}-0000-4000-8000-000000000000`;
+    const dir = path.join(dirRoot, id);
+    fs.mkdirSync(dir, { recursive: true });
+    const at = base + i * 1000;
+    fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({
+      info: { id, cwd: fixture.project },
+      session_summary: `Synthesised conversation ${i}`,
+      generated_title: `Synthesised conversation ${i}`,
+      created_at: new Date(at).toISOString(),
+      updated_at: new Date(at).toISOString(),
+      num_messages: 2,
+      current_model_id: "grok-build",
+    }) + NL);
+    fs.writeFileSync(path.join(dir, "events.jsonl"),
+      `{"type":"user","text":"filler ${i}"}${NL}{"type":"agent","text":"Acknowledged."}${NL}`);
+    fs.utimesSync(path.join(dir, "events.jsonl"), new Date(at), new Date(at));
+  }
+  return n;
+}
+
+/**
  * A heavy `session-meta.json`. This machine's real one is 1.47 MB and
  * `PersistedState.get` re-reads and re-parses the whole file whenever its stamp
  * has moved — and the cold-open path reads that key before `startSession` is
@@ -136,6 +182,8 @@ try {
   logPath = path.join(userData, "logs", "desktop.log");
   fs.writeFileSync(path.join(userData, "test-config.json"), JSON.stringify({ "grok.cliPath": fixtureCli }), "utf8");
   writeHeavyMeta(qa);
+  const filler = writeFillerSessions(qa);
+  if (filler) log(`wrote ${filler} synthesised conversations beside the fixture's ${qa.sessions.length}`);
   const env = { ...process.env, GROK_HOME: qa.grokHome };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({
@@ -151,6 +199,37 @@ try {
   });
   const page = await app.firstWindow({ timeout: 60000 });
   await page.setViewportSize({ width: 1440, height: 900 });
+
+  // A HEARTBEAT ON THE MAIN PROCESS — because the timing line cannot tell a
+  // spinner from a freeze.
+  //
+  // `total` is wall time. An open that waits 3 seconds on the agent's
+  // `session/new` reply and an open that spends 3 seconds doing synchronous
+  // filesystem and JSON work print the same number, and only the second one is
+  // what #133 reports: the title bar goes white because the Electron MAIN
+  // process — where `GrokSidebar` lives — stopped servicing its loop.
+  //
+  // A timer that should fire every 50ms cannot fire while that thread is busy,
+  // so how LATE it is measures exactly the thing the line is blind to. Read
+  // back after the opens. `app.evaluate` runs in main, so this needs no product
+  // code and ships nothing.
+  const BEAT_MS = 50;
+  await app.evaluate(({ app: electronApp }, beat) => {
+    const state = { max: 0, stalls: [], beat, startedAt: Date.now() };
+    globalThis.__mainHeartbeat = state;
+    let last = Date.now();
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const late = now - last - beat;
+      last = now;
+      if (late > state.max) state.max = late;
+      // Only what a person would notice. Sub-frame jitter is scheduler noise.
+      if (late >= 100) state.stalls.push({ at: now, late });
+    }, beat);
+    // Never hold the app open on account of the probe.
+    timer.unref?.();
+    electronApp.once("will-quit", () => clearInterval(timer));
+  }, BEAT_MS);
 
   await page.waitForSelector(".rail-session", { timeout: 60000 });
   const titles = await page.evaluate(
@@ -301,6 +380,34 @@ try {
       `the open clock is no longer started by openSession, so the pre-start ` +
       `window is unmeasured again`,
   );
+  // What the heartbeat saw. REPORTED, not asserted by default: the number is a
+  // property of the machine as much as of the code, and a threshold that fails
+  // on a loaded CI box would be a check nobody trusts. Set MAIN_STALL_MS to turn
+  // it into a gate once a healthy range is known on the hardware that matters.
+  const beat = await app.evaluate(() => globalThis.__mainHeartbeat || null);
+  if (beat) {
+    const worst = [...beat.stalls].sort((a, b) => b.late - a.late).slice(0, 5);
+    console.log("\n----- main-process responsiveness -----");
+    console.log(`  heartbeat every ${beat.beat}ms; worst lateness ${beat.max}ms; ${beat.stalls.length} stall(s) over 100ms`);
+    for (const s of worst) {
+      const rel = Math.round((s.at - beat.startedAt) / 100) / 10;
+      // ABSOLUTE time as well, because the useful question is WHICH phase was
+      // running: the log lines above carry absolute stamps, and a stall that
+      // lands inside an open's clock window is a different bug from one that
+      // lands after the summary was printed (the post-open sweep).
+      console.log(`    +${rel}s into the run (ended ${new Date(s.at).toISOString()}): main thread unresponsive for ${s.late}ms`);
+    }
+    console.log(`  (a freeze is lateness here, not a big total on the line above —`);
+    console.log(`   run with FAKE_NEW_SESSION_DELAY_MS=3000 to see the difference)`);
+    console.log("---------------------------------------");
+    const gate = Number(process.env.MAIN_STALL_MS || 0);
+    if (gate > 0) {
+      assert.ok(
+        beat.max < gate,
+        `main process was unresponsive for ${beat.max}ms (limit ${gate}ms) — that is a frozen window, not a slow open`,
+      );
+    }
+  }
   log(`PASS — ${lines.length} real lines, every one accounting for its own total; widest resolve ${widestResolve}ms`);
   console.log("\n----- what the line does NOT cover -----");
   for (const p of preludes) {

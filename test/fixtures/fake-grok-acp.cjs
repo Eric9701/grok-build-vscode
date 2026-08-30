@@ -207,6 +207,22 @@ rl.on("line", async (line) => {
     case "session/new": {
       const sid = sessions.onNew();
       persistNewSession(sid, params?.cwd);
+      // FAKE_NEW_SESSION_DELAY_MS makes the agent slow ON PURPOSE.
+      //
+      // #133/#131 report the window freezing on open, and the host's own timing
+      // line cannot tell two very different causes apart: an ASYNCHRONOUS wait
+      // on this response, which leaves the message loop free and merely spins,
+      // and SYNCHRONOUS work on the Electron main thread, which is what a white
+      // title bar actually is. Both print as one number.
+      //
+      // Stalling only this reply separates them. Pair it with the main-process
+      // heartbeat in scripts/open-timing-check.mjs: if the delay lands in `new`
+      // and the heartbeat stays smooth, the wait is not the freeze.
+      const delayMs = Number(process.env.FAKE_NEW_SESSION_DELAY_MS || 0);
+      if (delayMs > 0) {
+        setTimeout(() => respondOk(id, sessionHandle(sid)), delayMs);
+        return;
+      }
       return respondOk(id, sessionHandle(sid));
     }
     case "session/load": {
