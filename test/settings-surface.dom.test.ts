@@ -1837,6 +1837,43 @@ describe("Providers refresh", () => {
     expect(connected.root.querySelector('[data-id="providerGrokStatus"] button')).toBeNull();
   });
 
+  it("offers Sign out on a cloud environment, where the remote is the only surface", () => {
+    // `logout` is host-local everywhere else: it revokes a credential every
+    // surface on that machine shares, and a phone must not do that to a desk.
+    // A cloud box has no other surface, so a credential you can grant and never
+    // revoke is the worse answer (owner, 2026-08-30).
+    const cloudCaps = {
+      hostCaps: {
+        relocateView: false, showOutput: false, toggleDevTools: true,
+        remoteAgentSignIn: true, remoteAgentSignOut: true,
+      },
+    };
+    const h = mountAt("providers", {
+      env: { isRemote: true, ...cloudCaps },
+      snapshot: { providers: [{ id: "grok", connected: true }] },
+    });
+    const action = h.root.querySelector('[data-id="providerGrokRemote"] button');
+    expect(action?.textContent).toBe("Sign out");
+    (action as HTMLButtonElement).click();
+    expect(h.types()).toContain("logout");
+  });
+
+  it("still refuses Sign out on a remote attached to a DESK", () => {
+    // The desk keeps its read-only row: same page, same provider, no button.
+    const h = mountAt("providers", {
+      env: {
+        isRemote: true,
+        hostCaps: {
+          relocateView: false, showOutput: false, toggleDevTools: true,
+          remoteAgentSignIn: true,
+        },
+      },
+      snapshot: { providers: [{ id: "grok", connected: true }] },
+    });
+    expect(h.root.querySelector('[data-id="providerGrokRemote"]')).toBeNull();
+    expect(h.root.querySelector('[data-id="providerGrokStatus"] button')).toBeNull();
+  });
+
   it("keeps the read-only row against a host that cannot sign in for a remote", () => {
     // The relay serves the client, so the client is always as new as the deploy
     // while the extension is whatever the user installed. A host from before

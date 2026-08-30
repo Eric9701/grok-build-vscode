@@ -1345,3 +1345,25 @@ describe("capabilities a remote may see", () => {
     expect(original).toHaveProperty("showInFolder");
   });
 });
+
+describe("a cloud environment is its own desk", () => {
+  it("admits logout there, and only there", () => {
+    // host-local means "this acts on the LOCAL machine", and what it protects
+    // is the person sitting at it. A cloud box has no such person — the remote
+    // is its only surface — so a credential that can be granted and never
+    // revoked is the worse answer (cloud-environments.md; owner, 2026-08-30).
+    expect(allowFromRemote("logout", "full")).toBe(false);
+    expect(allowFromRemote("logout", "full", { isCloud: true })).toBe(true);
+    // Tier still applies: the override changes the disposition, not the rank.
+    expect(allowFromRemote("logout", "propose", { isCloud: true })).toBe(false);
+  });
+
+  it("promotes nothing else", () => {
+    // The override table is the whole difference. If something else starts
+    // passing on cloud, it was added here deliberately or it is a leak.
+    const promoted = (Object.keys(INBOUND_DISPOSITION) as (keyof typeof INBOUND_DISPOSITION)[])
+      .filter((type) => !allowFromRemote(type, "full")
+        && allowFromRemote(type, "full", { isCloud: true }));
+    expect(promoted).toEqual(["logout"]);
+  });
+});

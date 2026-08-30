@@ -6956,7 +6956,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * CLI owns auth, so we shell out to it, tear down the live session, and drop
    * the webview back to the auth-required onboarding state. Resolves issue #13.
    */
-  async logout(provider: AcpProvider = "grok"): Promise<void> {
+  async logout(
+    provider: AcpProvider = "grok",
+    opts: { fromRemote?: boolean } = {},
+  ): Promise<void> {
     if (isAdapterProvider(provider)) {
       const cliPath = this.locateProvider(provider);
       const name = providerDisplayName(provider);
@@ -6964,12 +6967,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.host.showErrorMessage(`${name} sign-out could not run because the ${name} CLI was not found. The account remains connected.`);
         return;
       }
-      const choice = await this.host.showWarningMessage(
-        `Sign out of ${name}? This clears the ${name} CLI's cached credentials.`,
-        { modal: true },
-        "Sign Out",
-      );
-      if (choice !== "Sign Out") return;
+      // The modal is the DESK's confirmation step. A cloud environment has
+      // nobody at its desk, so showing one there asks a question no one can
+      // answer and the sign-out simply never happens. The remote already
+      // clicked Sign out on the only surface that host has.
+      if (!opts.fromRemote) {
+        const choice = await this.host.showWarningMessage(
+          `Sign out of ${name}? This clears the ${name} CLI's cached credentials.`,
+          { modal: true },
+          "Sign Out",
+        );
+        if (choice !== "Sign Out") return;
+      }
       const logoutArgs = provider === "claude" ? ["auth", "logout"] : ["logout"];
       try {
         await execGrokCli(cliPath, logoutArgs, { timeout: 30_000, windowsHide: true });
@@ -6993,15 +7002,30 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.post({ type: "onboarding", state: "missing-cli", platform: process.platform, provider: "grok" });
       return;
     }
-    const choice = await this.host.showWarningMessage(
-      "Sign out of Grok? This clears the CLI's cached credentials.",
-      { modal: true },
-      "Sign Out",
-    );
-    if (choice !== "Sign Out") return;
-    // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
-    // is parsed as a string literal rather than an invocation.
-    this.host.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
+    if (!opts.fromRemote) {
+      const choice = await this.host.showWarningMessage(
+        "Sign out of Grok? This clears the CLI's cached credentials.",
+        { modal: true },
+        "Sign Out",
+      );
+      if (choice !== "Sign Out") return;
+      // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
+      // is parsed as a string literal rather than an invocation.
+      this.host.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
+      await this.finishProviderLogout("grok");
+      return;
+    }
+    // A terminal nobody can see is not evidence. Run it and WAIT, so the
+    // disconnected state is recorded only if the CLI actually cleared the
+    // credential — the desk path can be optimistic because a person is watching
+    // the terminal it opened.
+    try {
+      await execGrokCli(cliPath, ["logout"], { timeout: 30_000, windowsHide: true });
+    } catch (error) {
+      this.host.appendLine(`[providers] Grok sign-out failed: ${errorDetail(error)}`);
+      this.postProviderState();
+      return;
+    }
     await this.finishProviderLogout("grok");
   }
 
@@ -10041,7 +10065,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "logout":
-        await this.logout(isAcpProvider(msg.provider) ? msg.provider : "grok");
+        // `fromRemote` is not a permission — the gate above already decided
+        // that, and it only lets this through on a cloud environment. It says
+        // there is NOBODY AT THE MACHINE to answer a modal.
+        await this.logout(
+          isAcpProvider(msg.provider) ? msg.provider : "grok",
+          { fromRemote: origin === "remote" },
+        );
         break;
       case "refreshProviders":
         await this.refreshProviderStates();
@@ -14271,6 +14301,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // it will not work is still a control that does not work, and the page
         // behind it would list servers nobody can connect.
         ...(this.host.canShowMcpSettings && !isCloudEnvironment() ? { mcpSettings: true } : {}),
+        // Sign OUT from a remote, cloud only. See HostUiCapabilities and the
+        // CLOUD_DISPOSITION override in remote-policy.ts, which is the half that
+        // actually admits the message — this flag only decides whether the page
+        // offers the control.
+        ...(isCloudEnvironment() ? { remoteAgentSignOut: true } : {}),
         // Absent/true = host opens files in an editor tab; false = no editor
         // (desktop → in-app lightbox for generated images). See Host.canOpenInEditor.
         openInEditor: this.host.canOpenInEditor,
@@ -17126,7 +17161,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         return;
       }
-      if (!allowFromRemote(m.type, GrokSidebar.REMOTE_TIER)) {
+      if (!allowFromRemote(m.type, GrokSidebar.REMOTE_TIER, { isCloud: isCloudEnvironment() })) {
         this.host.appendLine(`[remote] dropped ${m.type} (not allowed from a remote client)`);
         return;
       }

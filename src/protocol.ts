@@ -125,6 +125,18 @@ export type HostUiCapabilities = {
    */
   remoteAgentSignIn?: boolean;
   /**
+   * Whether a remote may sign an agent OUT on this host.
+   *
+   * OPT-IN, and set only where the host IS a cloud environment. `logout` is
+   * host-local everywhere else because it revokes a credential every surface on
+   * that machine shares, and a phone must not be able to do that to somebody's
+   * desk. A cloud environment has no other surface — the remote is the only way
+   * in — so a credential you could grant and never revoke would be the worse
+   * answer. Field presence, never a version check: a host that does not send it
+   * keeps the read-only row.
+   */
+  remoteAgentSignOut?: boolean;
+  /**
    * Settings → Connectors. OPT-IN: absent/false = hide the nav row and keep
    * the page unreachable. Desktop and VS Code set true; remotes inherit the
    * desk machine's capabilities. The webview still keys on this field so an

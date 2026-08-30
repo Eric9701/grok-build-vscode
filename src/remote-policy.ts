@@ -457,11 +457,35 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
 
 const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full: 2 };
 
+/**
+ * Dispositions that CHANGE when this host IS a cloud environment.
+ *
+ * `host-local` means "this acts on the LOCAL machine", and the protection it
+ * buys is for the person sitting at that machine. A cloud environment has no
+ * such person: the remote client is the only surface it has, and it belongs to
+ * the account that rented it. So the argument for holding `logout` back does
+ * not merely weaken there, it inverts — a box you can sign IN to and never out
+ * of is a box with a credential you cannot revoke from the only place you can
+ * reach it. cloud-environments.md called this one out before it was built.
+ *
+ * Named as an override table rather than folded into INBOUND_DISPOSITION so the
+ * desk classification stays readable as the default, and so anything added here
+ * has to be added deliberately. Everything not listed keeps its desk answer.
+ */
+const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
+  logout: "full",
+};
+
 /** May this WebviewMsg type, arriving from a remote connection of `tier`, be
  *  routed into the host's onMessage? `control` and `host-local` are never
- *  routed regardless of tier. */
-export function allowFromRemote(type: WebviewMsg["type"], tier: RemoteTier): boolean {
-  const d = INBOUND_DISPOSITION[type];
+ *  routed regardless of tier — except where {@link CLOUD_DISPOSITION} says the
+ *  answer differs on a host that IS a cloud environment. */
+export function allowFromRemote(
+  type: WebviewMsg["type"],
+  tier: RemoteTier,
+  opts: { isCloud?: boolean } = {},
+): boolean {
+  const d = (opts.isCloud ? CLOUD_DISPOSITION[type] : undefined) ?? INBOUND_DISPOSITION[type];
   switch (d) {
     case "view":
       return true;
