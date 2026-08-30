@@ -45,21 +45,23 @@ async function resolveElectronExe(root) {
 assert.ok(fs.existsSync(mainJs), `Missing ${mainJs} — run \`npm run compile\` first`);
 assert.ok(fs.existsSync(electronExe), `Missing Electron at ${electronExe}`);
 
-const qa = buildQaFixture();
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-timing-ud-"));
-fs.writeFileSync(path.join(userData, "test-config.json"), JSON.stringify({ "grok.cliPath": fixtureCli }), "utf8");
-const logPath = path.join(userData, "logs", "desktop.log");
+let qa;
+let userData;
+let logPath;
 
-// A heavy `session-meta.json`, BY DEFAULT. This machine's real one is 1.47 MB
-// and `PersistedState.get` re-reads and re-parses the whole file whenever its
-// stamp has moved — and the cold-open path reads that key before `startSession`
-// is reached. Making it heavy every run is deliberate: it is what turns the
-// pre-clock window from a handful of milliseconds into a couple of hundred, and
-// so what lets the assertion below actually SEE the clock wiring disappear.
-// Size only; contents are synthesised, never copied from a real store.
-// `SMALL_META=1` opts out, for comparing the two.
-if (!process.env.SMALL_META) {
-  const dir = path.join(qa.grokHome, "client-state");
+/**
+ * A heavy `session-meta.json`. This machine's real one is 1.47 MB and
+ * `PersistedState.get` re-reads and re-parses the whole file whenever its stamp
+ * has moved — and the cold-open path reads that key before `startSession` is
+ * reached. Writing it every run is deliberate: it is what turns the pre-clock
+ * window from a handful of milliseconds into a couple of hundred, and so what
+ * lets the assertion below actually SEE the clock wiring disappear. Size only;
+ * contents are synthesised, never copied from a real store. `SMALL_META=1` opts
+ * out, for comparing the two.
+ */
+function writeHeavyMeta(fixture) {
+  if (process.env.SMALL_META) return;
+  const dir = path.join(fixture.grokHome, "client-state");
   fs.mkdirSync(dir, { recursive: true });
   const target = Number(process.env.META_BYTES || 1468603);
   // Built by APPENDING, not by re-serialising the whole map each pass. The
@@ -86,9 +88,6 @@ if (!process.env.SMALL_META) {
   JSON.parse(fs.readFileSync(file, "utf8")); // it has to be a map the app can read
   log(`meta: wrote ${fs.statSync(file).size} bytes (${i} entries) to ${file}`);
 }
-
-const env = { ...process.env, GROK_HOME: qa.grokHome };
-delete env.ELECTRON_RUN_AS_NODE;
 
 /** Every `session open:` line the app has written so far. */
 function openLines() {
@@ -126,9 +125,19 @@ function parse(line) {
 // The launch lives INSIDE the try: a launch that throws or times out used to
 // skip the cleanup entirely and leave both temporary trees on disk — the QA
 // fixture and a multi-megabyte synthesised metadata store, every failed run.
-let failure;
+let failed = false;
 let app;
 try {
+  // Every line that CREATES something lives in here, so the finally below is
+  // actually a cleanup guarantee rather than a claim: a disk-full, a permission
+  // error or a failed launch used to leave both temporary trees on disk.
+  qa = buildQaFixture();
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), "grok-timing-ud-"));
+  logPath = path.join(userData, "logs", "desktop.log");
+  fs.writeFileSync(path.join(userData, "test-config.json"), JSON.stringify({ "grok.cliPath": fixtureCli }), "utf8");
+  writeHeavyMeta(qa);
+  const env = { ...process.env, GROK_HOME: qa.grokHome };
+  delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({
     executablePath: electronExe,
     args: [
@@ -239,7 +248,7 @@ try {
     const sum = phases.reduce((a, p) => a + p.ms, 0);
     const drift = Math.abs(sum - totalMs);
     assert.ok(drift <= 1, `phases do not tile the total (sum ${sum}ms vs total ${totalMs}ms): ${line}`);
-    for (const want of ["resolve", "consent", "dispose", "prep", "version", "client", "spawn+init", "load", "replay(post)"]) {
+    for (const want of ["resolve", "approve-gate", "dispose", "prep", "version", "client", "spawn+init", "load", "replay(post)"]) {
       assert.ok(named.some((p) => p.name === want), `phase "${want}" missing from: ${line}`);
     }
     log(
@@ -288,7 +297,9 @@ try {
   }
   console.log("----------------------------------------");
 } catch (e) {
-  failure = e;
+  // A FLAG, not the thrown value: JavaScript lets you throw `undefined`, and
+  // `failure ? 1 : 0` then printed FAIL and exited 0 — a red run reported green.
+  failed = true;
   console.error(`[open-timing] FAIL ${e && e.message}`);
   console.error("log tail:");
   try {
@@ -300,7 +311,7 @@ try {
   if (app) await app.close().catch(() => {});
   // Both trees, not just the app's. Left behind, each run cost a QA fixture
   // plus a multi-megabyte synthesised metadata store.
-  try { qa.cleanup(); } catch { /* best effort */ }
-  fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5 });
+  if (qa) { try { qa.cleanup(); } catch { /* best effort */ } }
+  if (userData) fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5 });
 }
-process.exit(failure ? 1 : 0);
+process.exit(failed ? 1 : 0);

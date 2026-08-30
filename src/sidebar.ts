@@ -7839,11 +7839,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // all already on it, and all of them belong to `resolve`.
     const clock = startedClock ?? new OpenClock();
     // A re-entry (the reactive downgrade below) arrives with the first pass's
-    // phases already on it. Drop them: `resolveMs` is measured from the clock's
-    // start, so it absorbs that whole failed attempt rather than duplicating it.
-    clock.resetPhases();
-    const resolveMs = clock.totalMs();
-    let consentMs = 0;
+    // phases already on it. Fold them into one NAMED phase and subtract it, so
+    // the failed attempt keeps its own number instead of being reported as
+    // session resolution. Zero on every ordinary open.
+    const priorMs = clock.collapse("downgrade");
+    const resolveMs = clock.totalMs() - priorMs;
+    let approveGateMs = 0;
     // Desktop with no open folder: empty rail is valid — do not spawn grok
     // against process.cwd(). Unlock the baked "Starting" welcome; returning
     // silently here left first-run / last-project-removed on that spinner
@@ -7931,11 +7932,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (target.provider === "grok" && !(await this.confirmRepoForcedAutoApprove(this.sessionCwd(target)))) {
       return undefined;
     }
-    // A modal is a PERSON reading a dialog. Folded into `resolve` it would
-    // report a fast disk lookup as tens of seconds and send whoever reads the
-    // log hunting a phantom; given its own name it explains itself. Zero
-    // whenever the dialog did not appear, which is almost always.
-    consentMs = clock.elapsed(consentAt);
+    // Its own phase because a modal is a PERSON reading a dialog, and folded
+    // into `resolve` that would report a fast disk lookup as tens of seconds.
+    // Named `approve-gate` rather than `consent` because the call also reads
+    // project and global config to decide WHETHER to ask — on a slow or network
+    // filesystem that is real I/O, and calling it consent would blame a human
+    // who was never shown anything.
+    approveGateMs = clock.elapsed(consentAt);
     // After the last await before ++gen: a send can have begun a turn (or
     // another start can have finished) while consent was up.
     const startDecision = decideSessionStart(target, resumeId, intent);
@@ -7959,7 +7962,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // honest answer for the paths with no click to measure from (restart, model
     // change, provider swap).
     clock.record("resolve", resolveMs);
-    clock.record("consent", consentMs);
+    clock.record("approve-gate", approveGateMs);
     const openedAt = clock.now();
     const replacedClient = session.client;
     if (replacedClient) {

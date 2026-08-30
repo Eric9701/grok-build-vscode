@@ -4,8 +4,9 @@
  *
  * The costs, in order: `resolve` (everything the CALLER spent before
  * `startSession` — reservation, workspace queue, cwd resolution, the
- * `session-meta.json` read), `consent` (the forced-auto-approve modal, i.e. a
- * person reading a dialog), previous process exit, `prep`, `grok --version`,
+ * `session-meta.json` read), `approve-gate` (deciding whether a
+ * repo's forced auto-approve needs consent, including the config reads that
+ * decide it and any modal that results), previous process exit, `prep`, `grok --version`,
  * building the ACP client, spawn+initialize, CLI `session/load`, host replay
  * posts. Replay is labelled `replay(post)` because there is no
  * webview-complete signal; the clock stops at the last replayed event posted.
@@ -61,7 +62,10 @@ export class OpenClock {
   private readonly phases: OpenPhase[] = [];
   private readonly startedAt: number;
 
-  constructor(private readonly nowFn: () => number = () => Date.now()) {
+  // MONOTONIC by default. `Date.now()` steps when NTP or a person corrects the
+  // clock, and a step during an open prints negative phases (`?`) or an
+  // invented delay — defeating the diagnostic on exactly the run that had one.
+  constructor(private readonly nowFn: () => number = () => performance.now()) {
     this.startedAt = this.nowFn();
   }
 
@@ -78,18 +82,25 @@ export class OpenClock {
   }
 
   /**
-   * Forget the phases, keep the start.
+   * Replace everything recorded so far with ONE phase of that name, and return
+   * how long it covers. A no-op (returning 0) on a clock with no phases yet.
    *
    * For the one caller that RE-ENTERS `startSessionBody` on the same clock (the
-   * Windows reactive downgrade). Without this the second pass appends its own
-   * `resolve`, `consent`, `dispose`… beside the first pass's, and the
+   * Windows reactive downgrade). Without it the second pass appends its own
+   * `resolve`, `approve-gate`, `dispose`… beside the first pass's, and the
    * fixed-shape line comes out with every name twice and phases that overlap.
-   * Dropping them instead lets the next `resolve` — which is measured from the
-   * clock's start — absorb the failed attempt, the timeout and the downgrade as
-   * one honest number, and the line tiles its total again.
+   *
+   * Naming it rather than dropping it is the point: simply forgetting the
+   * phases left the next `resolve` — measured from the clock's start —
+   * swallowing a 120s initialize timeout and reporting it as session
+   * resolution, which points a reader at the wrong subsystem entirely.
    */
-  resetPhases(): void {
+  collapse(name: string): number {
+    if (this.phases.length === 0) return 0;
+    const ms = this.totalMs();
     this.phases.length = 0;
+    this.phases.push({ name, ms });
+    return ms;
   }
 
   totalMs(): number {

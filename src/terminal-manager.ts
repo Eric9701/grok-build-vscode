@@ -152,8 +152,29 @@ export function resolveTerminalShell(
   exists: (p: string) => boolean = existsSync,
 ): string | true {
   if (pref === "cmd") return true; // cmd.exe on Windows / /bin/sh on POSIX
-  if (platform !== "win32") return posixUserShell(env, exists) ?? true;
+  if (platform !== "win32") return posixUserShell(env, exists) ?? posixFallbackShell(exists);
   return resolve("pwsh") ?? resolve("powershell") ?? true;
+}
+
+/**
+ * What to run when `$SHELL` is one we cannot drive (fish, nushell, tcsh) or is
+ * missing: a real `bash` if the machine has one, else `/bin/sh`.
+ *
+ * This exists to make the DIALECT HINT TRUE. We have to tell the agent which
+ * grammar to write — leaving it unset lets grok's own detection read `$SHELL`
+ * and describe fish while we run sh, a wrong shell family — and `bash` is the
+ * only POSIX value grok accepts. Running `/bin/sh` and *claiming* bash was a
+ * rounding that three review rounds flagged: on Linux `/bin/sh` is usually
+ * dash, which rejects `[[ ]]`, arrays and `${x^^}`; on macOS it is bash 3.2,
+ * which rejects the bash 4 syntax that "bash" invites — the very trap #140
+ * reported. Running the bash we advertise removes the gap wherever bash
+ * exists, and bash reads everything `/bin/sh` would.
+ *
+ * `grok.terminalShell: "cmd"` still forces `/bin/sh` — that escape hatch is
+ * documented as the plain shell, and an explicit choice is not ours to widen.
+ */
+function posixFallbackShell(exists: (p: string) => boolean): string | true {
+  return exists("/bin/bash") ? "/bin/bash" : true;
 }
 
 /**
@@ -169,7 +190,8 @@ const POSIX_SHELL_NAMES = new Set(["sh", "bash", "zsh", "ksh", "ksh93", "mksh", 
  *
  * NOT a login shell, despite what `$SHELL` suggests: Node invokes it as
  * `<shell> -c`, so `~/.zshrc` and `~/.bash_profile` are not sourced and a PATH
- * set up there is not inherited. What changes is WHICH shell interprets the
+ * set up there is not inherited. (`~/.zshenv` and `$BASH_ENV` still are — a
+ * non-interactive shell is not a shell with no configuration at all.) What changes is WHICH shell interprets the
  * command — which is the whole of #140, because sdkman branches on it.
  *
  * Node's `shell: true` is `/bin/sh`, which on macOS is bash 3.2 — so a command
@@ -213,13 +235,18 @@ function posixUserShell(
 export function grokShellEnvValue(
   resolved: string | true,
   platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   if (platform !== "win32") {
+    // Which of the two POSIX cases we are in is answerable from `$SHELL`: we
+    // either run the shell it names, or we ran a fallback because we could not.
+    if (resolved !== true && resolved !== (env.SHELL ?? "").trim()) return "bash";
     // Running the shell `$SHELL` names: grok's own detection reads `$SHELL` and
     // so already names the shell we run — the two agree, and an override would
     // only be a second chance to disagree. (Running it is not LOGGING IN to it:
-    // Node invokes `<shell> -c`, so no profile is sourced. That is unchanged
-    // from `/bin/sh` and is why this fix moves the dialect, not the PATH.)
+    // Node invokes `<shell> -c`, so the interactive/login files are skipped and
+    // this fix moves the DIALECT, not the PATH. Not nothing runs, though: zsh
+    // still reads `~/.zshenv` every invocation and bash reads `$BASH_ENV`.)
     if (resolved !== true) return undefined;
     // Falling back to `/bin/sh`, which happens when `$SHELL` is fish, nushell
     // or anything else non-POSIX. Now the detection and the truth diverge:
