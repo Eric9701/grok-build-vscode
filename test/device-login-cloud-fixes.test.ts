@@ -442,10 +442,14 @@ describe("a settled flow's explanation survives the refresh that Providers sends
   it("keeps a failed mirror on a disconnected provider, and drops only done", () => {
     const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
     const start = chatSrc.indexOf("A confirmed account retires its device-flow mirror");
-    const block = chatSrc.slice(start, start + 900);
+    const block = chatSrc.slice(start, start + 2000);
     expect(block).toContain('mirrored.status === "done"');
     // Nothing may key the retirement on the live states any more: that
     // erased the reason a login had just failed (review round 2).
     expect(block).not.toContain('mirrored.status !== "waiting"');
+    // But a healthy account retires its old failure too, or the row offers
+    // Sign out above the reason an earlier attempt failed (review round 3).
+    expect(block).toContain("provider.needsLogin !== true");
+    expect(block).toContain("healthy && terminal");
   });
 });

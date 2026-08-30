@@ -15079,13 +15079,18 @@
         for (const provider of state.providers) {
           const mirrored = state.deviceLoginByProvider[provider.id];
           if (!mirrored) continue;
-          // ONLY a terminal "done" can lie: connected, it is redundant with the
-          // snapshot; disconnected, it claims an account the user just signed
-          // out of. A `failed` or `unavailable` mirror is the explanation for
-          // what just happened and must survive the refresh that Providers
-          // sends on open — dropping those erased the reason and left a bare
-          // Connect row (review round 2).
-          if (mirrored.status === "done") {
+          // A terminal "done" can always lie: connected, it is redundant with
+          // the snapshot; disconnected, it claims an account the user just
+          // signed out of. A `failed` or `unavailable` mirror is the
+          // explanation for what just happened, so it survives the refresh
+          // Providers sends on open (round 2) — but only while the provider is
+          // still unhealthy. Once a snapshot says the account is connected and
+          // working, that explanation is history, and keeping it left a row
+          // offering Sign out above the reason a previous attempt failed
+          // (round 3).
+          var healthy = provider.connected && provider.needsLogin !== true;
+          var terminal = mirrored.status === "failed" || mirrored.status === "unavailable";
+          if (mirrored.status === "done" || (healthy && terminal)) {
             delete state.deviceLoginByProvider[provider.id];
           }
         }
