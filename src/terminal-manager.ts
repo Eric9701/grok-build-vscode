@@ -223,8 +223,13 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
   if (!sawLogin || !sawCommand || s === "") return undefined;
   const peeled = peelOneQuotedString(s);
   if (peeled !== undefined) return peeled;
-  // Nothing quoted at all: the remainder is already the script.
-  if (!/['"]/.test(s)) return s;
+  // Nothing quoted at all. POSIX gives `-c` only the NEXT WORD as the script;
+  // everything after it becomes `$0`, `$1`… So `bash -lc rm -rf target` runs
+  // `rm` with NO operands — verified on a real bash: a usage error, and the
+  // directory survives — while treating the whole remainder as the script runs
+  // `rm -rf target` and deletes it. A lone word is the only case where the two
+  // readings agree; anything with whitespace we decline to touch.
+  if (!/['"]/.test(s)) return /\s/.test(s) ? undefined : s;
   // Quoted, but not as one segment we can decode. Grok builds this with Rust's
   // `shlex::try_quote`, which CONCATENATES quoting styles — `echo '$HOME'` is
   // encoded `"echo '"'$HOME'"'"` — and handing that raw text to the host shell

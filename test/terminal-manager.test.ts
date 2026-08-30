@@ -402,16 +402,25 @@ describe("posixShellFromEnv", () => {
 
 describe("unwrapGrokBashLoginWrapper", () => {
   it("unwraps grok's /bin/bash -lc payload", () => {
-    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo hi")).toBe("echo hi");
+    // NOT `bash -lc echo hi` -> `echo hi`: POSIX hands `-c` only the next word,
+    // so bash runs `echo` and `hi` becomes `$0`. Rewriting it to `echo hi`
+    // changes what the command does — harmless there, destructive for
+    // `bash -lc rm -rf target`, which really does run `rm` with no operands.
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo")).toBe("echo");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc rm -rf target")).toBeUndefined();
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
     expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "echo hi"')).toBe("echo hi");
   });
 
   it("unwraps bash -l -c, -cl, and --login -c", () => {
-    expect(unwrapGrokBashLoginWrapper("bash -l -c echo hi")).toBe("echo hi");
+    // Quoted payloads, which is what grok actually sends. The unquoted
+    // multi-word spellings that used to be asserted here are refused now: POSIX
+    // gives `-c` only the next word, so rewriting them changes the command.
+    expect(unwrapGrokBashLoginWrapper("bash -l -c 'echo hi'")).toBe("echo hi");
     expect(unwrapGrokBashLoginWrapper("bash -cl 'echo hi'")).toBe("echo hi");
-    expect(unwrapGrokBashLoginWrapper("bash --login -c echo hi")).toBe("echo hi");
-    expect(unwrapGrokBashLoginWrapper("/usr/bin/env bash -lc echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("bash --login -c 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/usr/bin/env bash -lc 'echo hi'")).toBe("echo hi");
   });
 
   it("peels POSIX nested single quotes in the inner script", () => {
@@ -456,9 +465,9 @@ describe("posixSpawnArgv", () => {
     // Linux it is dash — and a script grok deliberately wrote for bash would
     // newly fail on `[[ ]]`, arrays or process substitution. Leaving the
     // wrapper is what v3.19.5 did, and for this host it was right.
-    expect(posixSpawnArgv("/bin/bash -lc echo hi", true)).toEqual({
+    expect(posixSpawnArgv("/bin/bash -lc echo", true)).toEqual({
       file: "/bin/sh",
-      args: ["-c", "/bin/bash -lc echo hi"],
+      args: ["-c", "/bin/bash -lc echo"],
     });
   });
 });
