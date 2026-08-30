@@ -356,3 +356,18 @@ describe("an outdated host cannot describe its own age, so the client does", () 
     expect(chatSrc).toContain("addError(errorTextForHostAge(msg.text), msg.code)");
   });
 });
+
+describe("a newly connected agent reaches the picker you are looking at", () => {
+  it("refreshes every live session when a provider appears for the first time", () => {
+    const body = methodBody("private cacheProviderModels(");
+    // Connected Codex from a conversation with history: Providers said
+    // connected, the model picker did not list it until a reload (owner,
+    // 2026-08-31). A first-time provider is additive, so every live session
+    // gets the catalog; an ordinary re-cache keeps the empty-session rule.
+    expect(body).toContain("providerIsNew");
+    expect(body).toContain("this.sessionsForModelRefresh()");
+    expect(body).toContain("this.emptySessionsForModelRefresh()");
+    const post = methodBody("private postSessionModels(");
+    expect(post).not.toContain("session.hasHistory) return");
+  });
+});

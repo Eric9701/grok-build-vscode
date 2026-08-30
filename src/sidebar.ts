@@ -2174,14 +2174,35 @@ export class GrokSidebar {
     // connected agent appeared in the picker only after a New session, which is
     // exactly what the owner saw with Codex. Push the catalog again once the
     // models actually exist.
+    // A provider the cache had NOTHING for is a newly connected agent, and it
+    // must appear in the picker of the conversation the person is looking at —
+    // not only in an empty one. The owner connected Codex from a session with
+    // history and it stayed missing until he reloaded (2026-08-31). Adding
+    // options cannot disturb a live thread: the current model is re-sent
+    // unchanged, so nothing about the running conversation moves.
+    const providerIsNew = !current[provider] || (current[provider].models ?? []).length === 0;
     void Promise.resolve(stored).then(() => {
-      for (const session of this.emptySessionsForModelRefresh()) this.postSessionModels(session);
+      const sessions = providerIsNew
+        ? this.sessionsForModelRefresh()
+        : this.emptySessionsForModelRefresh();
+      for (const session of sessions) this.postSessionModels(session);
     });
     return stored;
   }
 
   /** Sessions whose picker may be refreshed in place: no history, so there is
    *  nothing a changed model list could disturb. */
+  /** Every session with a live client. Used only when a provider appears for
+   *  the first time, where the change is purely additive. */
+  private sessionsForModelRefresh(): Session[] {
+    const seen = new Set<Session>();
+    for (const session of [this.focused, ...this.pool]) {
+      if (!session || seen.has(session)) continue;
+      seen.add(session);
+    }
+    return [...seen].filter((session) => session.client?.sessionId);
+  }
+
   private emptySessionsForModelRefresh(): Session[] {
     const seen = new Set<Session>();
     for (const session of [this.focused, ...this.pool]) {
@@ -2202,7 +2223,10 @@ export class GrokSidebar {
    */
   private postSessionModels(session: Session): void {
     const client = session.client;
-    if (!client?.sessionId || session.hasHistory) return;
+    // `hasHistory` no longer disqualifies a session: a NEW provider's models
+    // are additive and the selection is re-sent unchanged (see
+    // cacheProviderModels). Callers decide which sessions to refresh.
+    if (!client?.sessionId) return;
     this.emit(session, {
       type: "session",
       sessionId: client.sessionId,
