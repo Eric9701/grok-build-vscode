@@ -105,6 +105,7 @@ import {
   deviceLoginFailureText,
   deviceLoginPlan,
   deviceLoginPreflight,
+  deviceLoginCodeNote,
   noRemoteSignInMessage,
   deviceLoginUnavailable,
 } from "./device-login";
@@ -1751,6 +1752,7 @@ export class GrokSidebar {
       preflight?: Extract<HostMsg, { type: "onboarding" }>["device"] extends infer D
         ? D extends { preflight?: infer P } ? P : never
         : never;
+      note?: string;
       send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void;
     } = {
       clientId,
@@ -1759,6 +1761,9 @@ export class GrokSidebar {
         // still on screen when the code is.
         if (device && entry.preflight && !device.preflight) {
           device = { ...device, preflight: entry.preflight };
+        }
+        if (device && entry.note && device.status === "waiting" && !device.note) {
+          device = { ...device, note: entry.note };
         }
         entry.last = device;
         const message: HostMsg = {
@@ -1799,9 +1804,24 @@ export class GrokSidebar {
     // Now the first click starts the sign-in and the card carries the setting
     // to check, which is the only ordering where the advice arrives in time to
     // be useful — the code is worthless until that setting is on.
+    // Step 1 of 2, and it is a GATE on purpose. The code is worthless until
+    // the account setting is on, and a person who has just been handed a code
+    // does not go and read a settings page first. It shows once per provider
+    // per session; the button posts `runGrokLogin` again and lands past here.
     const preflight = deviceLoginPreflight(provider, { isCloud });
-    if (preflight) this.deviceLoginPreflightShown.add(provider);
+    if (preflight && !this.deviceLoginPreflightShown.has(provider)) {
+      this.deviceLoginPreflightShown.add(provider);
+      send({
+        status: "unavailable",
+        message: preflight.reason,
+        preflight: { ...preflight, steps: [...preflight.steps] },
+      });
+      return;
+    }
+    // Step 2 keeps the setting visible next to the code it gates, and adds the
+    // heads-up about the vendor's own security warning.
     entry.preflight = preflight ? { ...preflight, steps: [...preflight.steps] } : undefined;
+    entry.note = deviceLoginCodeNote(provider);
     if (unavailable || !plan) {
       // Not an error, and it must not read as one: the agent can still be
       // connected, just not from here. Saying which is the difference between

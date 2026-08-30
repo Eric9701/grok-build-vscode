@@ -481,6 +481,11 @@ const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>>
   // and the page offered Connect again for an account that was signed in
   // (owner, 2026-08-31). Read-only observation, promoting only on evidence.
   refreshProviders: "full",
+  // Preferences about the machine the person is looking at. Read-only on a
+  // remote because a desk owner can set them at the desk; on a cloud machine
+  // there is no desk, so read-only means never (owner, 2026-08-31).
+  setTelemetryEnabled: "full",
+  setThumbsFeedback: "full",
 };
 
 /** May this WebviewMsg type, arriving from a remote connection of `tier`, be

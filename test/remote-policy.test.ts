@@ -1369,6 +1369,12 @@ describe("a cloud environment is its own desk", () => {
     // stick runs from this frame, and on a cloud machine nobody else can send
     // it — withholding it made connected accounts read as disconnected after
     // a refresh (owner, 2026-08-31).
-    expect([...promoted].sort()).toEqual(["logout", "refreshProviders"]);
+    // Every entry is here because a cloud machine has no desk to do it from:
+    // signing an agent OUT, re-observing the accounts (the promotion that makes
+    // a sign-in stick), and the two General preferences about this machine
+    // which were otherwise read-only forever (owner, 2026-08-31).
+    expect([...promoted].sort()).toEqual([
+      "logout", "refreshProviders", "setTelemetryEnabled", "setThumbsFeedback",
+    ]);
   });
 });
