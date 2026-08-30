@@ -436,6 +436,22 @@ describe("unwrapGrokBashLoginWrapper", () => {
     expect(unwrapGrokBashLoginWrapper("echo /bin/bash -lc foo")).toBeUndefined();
   });
 
+  it("unwraps a bare one-word payload, which shlex leaves unquoted", () => {
+    // `try_quote` only quotes what needs it, so the commands most likely to be
+    // typed arrive naked. These have nothing to expand, glob or split.
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc ls")).toBe("ls");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc pwd")).toBe("pwd");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc ./scripts/build.sh")).toBe("./scripts/build.sh");
+  });
+
+  it("still refuses unquoted text a shell would read differently", () => {
+    // Each of these means one thing to the outer shell we used to hand it to and
+    // another to the host we would hand it to instead, so the wrapper stays.
+    for (const payload of ["echo hi", "$HOME", "*.ts", "a&&b", "a|b", "a>b", "~/x", "a;b", "`id`", "a\b"]) {
+      expect(unwrapGrokBashLoginWrapper(`/bin/bash -lc ${payload}`)).toBeUndefined();
+    }
+  });
+
   it("unwraps only the outer grok layer", () => {
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc '/bin/bash -lc echo hi'")).toBe(
       "/bin/bash -lc echo hi",
@@ -578,13 +594,13 @@ describe("posixSpawnArgv only unwraps where it is safe", () => {
     expect(unwrapGrokBashLoginWrapper(" /bin/bash -lc 'printf HIT'")).toBe("printf HIT");
   });
 
-  it("only unwraps a quoted payload", () => {
-    // Every payload captured from a real grok starts with a quote, because
-    // `shlex::try_quote` quotes anything containing a shell character. Unquoted
-    // text is where the readings diverge — the old path let the OUTER shell
-    // expand `$VAR` before bash saw it, while unwrapping makes it the script
-    // the host expands — so we decline rather than change what runs.
-    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo")).toBeUndefined();
+  it("unwraps a quoted payload, or an unquoted one that cannot be read two ways", () => {
+    // `shlex::try_quote` quotes anything containing a shell character and passes
+    // everything else through, so `echo` really does arrive naked. Unquoted text
+    // is where the readings CAN diverge — the old path let the OUTER shell expand
+    // `$VAR` before bash saw it, while unwrapping makes it the script the host
+    // expands — so the test is whether there is anything to expand at all.
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo")).toBe("echo");
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc $PAYLOAD")).toBeUndefined();
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
   });

@@ -283,12 +283,24 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
     if (sawCommand) break;
   }
   if (!sawLogin || !sawCommand || s === "") return undefined;
-  // QUOTED, or we leave it alone. `shlex::try_quote` quotes anything with a
-  // shell character in it, and every payload captured from a real grok starts
-  // with a quote. Unquoted text is where the two readings diverge: our old path
-  // let the outer shell expand `$VAR` before bash saw it, while unwrapping makes
-  // it the script the host expands. Refusing keeps that difference impossible.
-  if (s[0] !== "'" && s[0] !== '"') return undefined;
+  // QUOTED, or a single word that cannot mean anything but itself.
+  //
+  // `shlex::try_quote` quotes anything with a shell character in it and returns
+  // everything else UNCHANGED, so a one-word command — `ls`, `pwd`, `make`,
+  // `pytest` — arrives as a bare `/bin/bash -lc ls` with no quotes at all.
+  // Refusing those kept the wrapper on exactly the commands people run most,
+  // leaving them on the bash-3.2 path this whole change exists to get off (#140).
+  //
+  // The bar for accepting unquoted text is that the two readings cannot differ.
+  // Our old path let the OUTER shell expand `$VAR`, glob a `*` or split on a
+  // space before bash ever saw it; unwrapping makes the host expand it instead.
+  // A word built only from characters no shell treats specially has nothing to
+  // expand, glob or split, so `-c ls` and `-c '/bin/bash -lc ls'` run the same
+  // program. Anything else — whitespace, `$`, a backtick, `~`, a glob, an
+  // operator, a redirect — keeps the wrapper.
+  if (s[0] !== "'" && s[0] !== '"') {
+    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : undefined;
+  }
   const parsed = parseOneShellWord(s);
   if (!parsed) return undefined; // unterminated quoting — do not rewrite it
   // Exactly one word, or nothing to unwrap. POSIX hands `-c` only the FIRST
