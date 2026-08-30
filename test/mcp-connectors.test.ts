@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONNECTOR_REAUTH_MESSAGE,
   TIER1_CONNECTORS,
   connectorById,
   isConnectorId,
@@ -698,5 +699,49 @@ describe("ACP stdio wire shape", () => {
       expect(s.env).toEqual([]);
       expect(Object.keys(s).sort()).toEqual(["args", "command", "env", "name"]);
     }
+  });
+});
+
+describe("a connector with no OAuth token is withheld, not handed to the CLI", () => {
+  const store = {
+    linear: { endpoint: "https://mcp.linear.app/mcp" },
+    notion: { endpoint: "https://mcp.notion.com/mcp" },
+  };
+
+  it("keeps the lapsed one out of session/new entirely", () => {
+    // Passing it would make the CLI spawn mcp-remote, which starts a full
+    // authorization and opens a browser nobody clicked for — every session.
+    const names = hostMcpServers(store, { names: [], urls: [] }, {}, {}, new Set(["linear"]))
+      .map((s) => s.name);
+    expect(names).toEqual(["notion"]);
+    expect(hostMcpServers(store).map((s) => s.name).sort()).toEqual(["linear", "notion"]);
+  });
+
+  it("reports it as disconnected, with the reason, so the row is not a silent hole", () => {
+    const views = connectorViews(store, { lapsed: new Set(["linear"]) });
+    const linear = views.find((v) => v.id === "linear");
+    const notion = views.find((v) => v.id === "notion");
+    expect(linear?.connected).toBe(false);
+    expect(linear?.status).toBe("error");
+    expect(linear?.error).toBe(CONNECTOR_REAUTH_MESSAGE);
+    expect(notion?.connected).toBe(true);
+    expect(notion?.status).toBe("idle");
+  });
+
+  it("does not shout over a real failure the user just caused", () => {
+    // A live connect error is about the thing they just did; the lapse is not.
+    const views = connectorViews(store, {
+      lapsed: new Set(["linear"]),
+      errorId: "linear",
+      error: "Sign-in timed out.",
+    });
+    expect(views.find((v) => v.id === "linear")?.error).toBe("Sign-in timed out.");
+    expect(views.find((v) => v.id === "linear")?.connected).toBe(true);
+  });
+
+  it("leaves a connector that is not in the store alone", () => {
+    const views = connectorViews({}, { lapsed: new Set(["linear"]) });
+    expect(views.find((v) => v.id === "linear")?.status).toBe("idle");
+    expect(views.find((v) => v.id === "linear")?.connected).toBe(false);
   });
 });

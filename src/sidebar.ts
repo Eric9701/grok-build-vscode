@@ -448,6 +448,7 @@ import {
 } from "./mcp-connectors";
 import {
   authorizeMcpRemote,
+  connectorsLackingOAuthToken,
   npxSpawnPlan,
   persistConnectorOAuthClientMetadata,
   writeOAuthClientMetadataFile,
@@ -10413,13 +10414,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private mcpConnectorsMessage(): Extract<HostMsg, { type: "mcpConnectors" }> {
+    const store = this.connectedConnectorStore();
     return {
       type: "mcpConnectors",
-      connectors: connectorViews(this.connectedConnectorStore(), {
+      connectors: connectorViews(store, {
         connectingId: this.mcpConnectingId,
         errorId: this.mcpConnectError?.id,
         error: this.mcpConnectError?.message,
         keySet: new Set((this.mcpConnectorKeys ?? new Map()).keys()),
+        lapsed: this.lapsedOAuthConnectors(store),
       }),
     };
   }
@@ -10513,7 +10516,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.reservedMcpIdentityFor(session),
       persistConnectorOAuthClientMetadata(store),
       keyAuth,
+      this.lapsedOAuthConnectors(store),
     );
+  }
+
+  /**
+   * Connectors we withhold from `session/new` because their token is gone.
+   *
+   * Read fresh rather than cached: a person can finish a sign-in in the browser
+   * between two sessions, and a cached "lapsed" would keep the connector off
+   * until the window was reloaded. It is one readdir and a few existsSync calls.
+   */
+  private lapsedOAuthConnectors(store = this.connectedConnectorStore()): ReadonlySet<string> {
+    return connectorsLackingOAuthToken({ store });
   }
 
   private async loadMcpConnectorKeys(): Promise<void> {

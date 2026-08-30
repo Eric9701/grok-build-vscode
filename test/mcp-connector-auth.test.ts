@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
+  activeMcpRemoteDir,
   authorizeMcpRemote,
+  connectorsLackingOAuthToken,
+  mcpServerUrlHash,
   npxSpawnPlan,
   persistConnectorOAuthClientMetadata,
   quoteSpawnArgs,
@@ -629,5 +632,94 @@ describe("mcp-remote version pin", () => {
   it("still finds the package when rebuilding args with a callback port", () => {
     const rebuilt = withMcpRemoteCallbackPort(mcpRemoteArgs("https://mcp.linear.app/mcp"), 22227);
     expect(rebuilt).toEqual(["-y", MCP_REMOTE_PACKAGE, "https://mcp.linear.app/mcp", "22227"]);
+  });
+});
+
+describe("connectorsLackingOAuthToken — never re-prompt a connector we cannot refresh (#owner 2026-08-30)", () => {
+  const LINEAR = "https://mcp.linear.app/mcp";
+  const NOTION = "https://mcp.notion.com/mcp";
+  const store = { linear: { endpoint: LINEAR }, notion: { endpoint: NOTION } } as never;
+
+  function fakeFs(dirs: { name: string; mtimeMs: number }[], files: string[]) {
+    const set = new Set(files);
+    return { versionDirs: () => dirs, hasFile: (p: string) => set.has(p) };
+  }
+
+  it("takes the most recently written version directory, not the pinned spec", () => {
+    // mcp-remote@0.1.37 reports itself as "0.1.36", so the spec cannot name the
+    // directory. The one being written is the one in use.
+    expect(activeMcpRemoteDir([
+      { name: "mcp-remote-0.2.5", mtimeMs: 100 },
+      { name: "mcp-remote-0.1.36", mtimeMs: 900 },
+      { name: "not-ours", mtimeMs: 9999 },
+    ])).toBe("mcp-remote-0.1.36");
+    expect(activeMcpRemoteDir([])).toBeUndefined();
+    expect(activeMcpRemoteDir([{ name: "unrelated", mtimeMs: 5 }])).toBeUndefined();
+  });
+
+  it("hashes an endpoint the way the real store does", () => {
+    // Measured: this is the directory name mcp-remote actually used for Linear.
+    expect(mcpServerUrlHash(LINEAR)).toBe("fcc436b0d1e0a1ed9a2b15bbd638eb13");
+  });
+
+  it("names only the connector whose token file is gone", () => {
+    const root = join("/home/dev", ".mcp-auth", "mcp-remote-0.1.36");
+    const lapsed = connectorsLackingOAuthToken({
+      store,
+      home: "/home/dev",
+      env: {},
+      fs: fakeFs(
+        [{ name: "mcp-remote-0.1.36", mtimeMs: 1 }],
+        [join(root, `${mcpServerUrlHash(NOTION)}_tokens.json`)],
+      ),
+    });
+    expect([...lapsed]).toEqual(["linear"]);
+  });
+
+  it("does not care that a token has EXPIRED — only that it is absent", () => {
+    // These live 1-24 hours and carry a refresh_token mcp-remote uses silently.
+    // Treating expiry as failure would disconnect connectors that work.
+    const root = join("/home/dev", ".mcp-auth", "mcp-remote-0.1.36");
+    const lapsed = connectorsLackingOAuthToken({
+      store,
+      home: "/home/dev",
+      env: {},
+      fs: fakeFs(
+        [{ name: "mcp-remote-0.1.36", mtimeMs: 1 }],
+        [
+          join(root, `${mcpServerUrlHash(LINEAR)}_tokens.json`),
+          join(root, `${mcpServerUrlHash(NOTION)}_tokens.json`),
+        ],
+      ),
+    });
+    expect([...lapsed]).toEqual([]);
+  });
+
+  it("fails OPEN when it cannot tell", () => {
+    // No store directory at all: withholding everything would break every
+    // connector on a machine whose layout we simply do not recognise.
+    expect([...connectorsLackingOAuthToken({
+      store, home: "/home/dev", env: {}, fs: fakeFs([], []),
+    })]).toEqual([]);
+    expect([...connectorsLackingOAuthToken({
+      store,
+      home: "/home/dev",
+      env: {},
+      fs: { versionDirs: () => { throw new Error("EACCES"); }, hasFile: () => false },
+    })]).toEqual([]);
+  });
+
+  it("honours MCP_REMOTE_CONFIG_DIR as the BASE, with the version segment still appended", () => {
+    const base = "/custom/store";
+    const root = join(base, "mcp-remote-0.1.36");
+    expect([...connectorsLackingOAuthToken({
+      store,
+      home: "/home/dev",
+      env: { MCP_REMOTE_CONFIG_DIR: base },
+      fs: fakeFs(
+        [{ name: "mcp-remote-0.1.36", mtimeMs: 1 }],
+        [join(root, `${mcpServerUrlHash(LINEAR)}_tokens.json`)],
+      ),
+    })]).toEqual(["notion"]);
   });
 });

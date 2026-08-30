@@ -1,6 +1,9 @@
 /**
  * One-shot `mcp-remote` spawn that drives the vendor OAuth flow. Credentials
- * land in `~/.mcp-auth`; we never read that directory. Injected spawn keeps
+ * land in `~/.mcp-auth`. We used to say "we never read that directory", and
+ * {@link connectorsLackingOAuthToken} at the bottom of this file deliberately
+ * reverses that: it is the only way to know a connector will open a browser
+ * before the CLI spawns one. It reads presence, never contents. Injected spawn keeps
  * this testable without npx or a browser. A connector with `oauthScope`
  * writes that JSON to a temp `@file` (`writeOAuthClientMetadataFile`) because
  * Windows Connect uses `shell: true` and inline `{...}` is mangled; dispose
@@ -16,8 +19,9 @@
  * entries only for this shell spawn — never in `mcpRemoteArgs`.
  */
 import { createInterface } from "node:readline";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import {
@@ -29,6 +33,7 @@ import {
   connectOutputLooksLikeOAuthIncompatible,
   connectOutputLooksLikePortConflict,
   connectOutputLooksSuccessful,
+  connectorAuth,
   oauthClientMetadataJson,
   parseInitializeResult,
   summarizeConnectOutput,
@@ -294,4 +299,117 @@ function runAuthorizeMcpRemote(
       // The process may still be authenticating; output watchers remain.
     }
   });
+}
+
+
+/* ------------------------------------------------------------------------- *
+ * Which connectors would open a browser if we handed them to the CLI
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The parts of the token store we look at. Injected so the tests never touch a
+ * real home directory, and so the whole thing is decidable from two facts:
+ * which version directories exist, and whether one file is in one of them.
+ */
+export interface McpAuthStoreFs {
+  /** Immediate subdirectories of `root`, with each one's modification time. */
+  versionDirs(root: string): { name: string; mtimeMs: number }[];
+  hasFile(path: string): boolean;
+}
+
+const defaultAuthStoreFs: McpAuthStoreFs = {
+  versionDirs(root) {
+    try {
+      return readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => {
+          let mtimeMs = 0;
+          try { mtimeMs = statSync(join(root, entry.name)).mtimeMs; } catch { /* oldest */ }
+          return { name: entry.name, mtimeMs };
+        });
+    } catch {
+      return []; // no store yet, or unreadable — the caller treats that as "cannot tell"
+    }
+  },
+  hasFile(path) {
+    try { return existsSync(path); } catch { return false; }
+  },
+};
+
+/** `MCP_REMOTE_CONFIG_DIR` overrides only the BASE; mcp-remote appends its own
+ *  version segment unconditionally, which is the whole reason for the pin. */
+export function mcpAuthRoot(env: NodeJS.ProcessEnv, home: string): string {
+  const configured = env.MCP_REMOTE_CONFIG_DIR?.trim();
+  return configured || join(home, ".mcp-auth");
+}
+
+/**
+ * Which `mcp-remote-<version>` directory the proxy is actually writing.
+ *
+ * NOT derived from `MCP_REMOTE_PACKAGE`. The pinned `mcp-remote@0.1.37` reports
+ * its own version as the string `0.1.36`, so the spec does not name the
+ * directory — that is measured, and it is exactly the coupling that makes
+ * guessing wrong. The one thing that is reliably true is that the directory in
+ * use is the one being written, so take the most recently touched.
+ *
+ * `undefined` when there is nothing to choose from, and every caller must treat
+ * that as "cannot tell" rather than "nothing is authorized".
+ */
+export function activeMcpRemoteDir(
+  dirs: readonly { name: string; mtimeMs: number }[],
+): string | undefined {
+  let best: { name: string; mtimeMs: number } | undefined;
+  for (const dir of dirs) {
+    if (!dir.name.startsWith("mcp-remote-")) continue;
+    if (!best || dir.mtimeMs > best.mtimeMs) best = dir;
+  }
+  return best?.name;
+}
+
+/**
+ * mcp-remote's own name for a server's files: md5 of the endpoint URL.
+ *
+ * Confirmed against a real store rather than read off its source: all seven
+ * hashes in `~/.mcp-auth/mcp-remote-0.1.36` on the dev box matched md5 of an
+ * endpoint in TIER1_CONNECTORS (2026-08-30).
+ */
+export function mcpServerUrlHash(endpoint: string): string {
+  return createHash("md5").update(endpoint).digest("hex");
+}
+
+/**
+ * OAuth connectors in `store` that have NO token file — the ones mcp-remote
+ * would re-authorize, with a browser, on the next spawn.
+ *
+ * **Fails open, always.** No store directory, an unreadable one, no md5 (a
+ * FIPS-restricted Node), anything unexpected: the answer is the empty set and
+ * every connector is passed through exactly as before. A false positive here
+ * silently removes a working connector, which is worse than the prompt this
+ * exists to prevent — so uncertainty resolves toward doing nothing.
+ */
+export function connectorsLackingOAuthToken(opts: {
+  store: ConnectedConnectorStore;
+  home?: string;
+  env?: NodeJS.ProcessEnv;
+  fs?: McpAuthStoreFs;
+}): ReadonlySet<string> {
+  const empty: ReadonlySet<string> = new Set();
+  try {
+    const fs = opts.fs ?? defaultAuthStoreFs;
+    const root = mcpAuthRoot(opts.env ?? process.env, opts.home ?? homedir());
+    const versionDir = activeMcpRemoteDir(fs.versionDirs(root));
+    if (!versionDir) return empty;
+    const out = new Set<string>();
+    for (const connector of TIER1_CONNECTORS) {
+      if (connectorAuth(connector) !== "oauth") continue;
+      const record = opts.store[connector.id];
+      if (!record) continue;
+      const endpoint = record.endpoint || connector.endpoint;
+      const file = join(root, versionDir, `${mcpServerUrlHash(endpoint)}_tokens.json`);
+      if (!fs.hasFile(file)) out.add(connector.id);
+    }
+    return out;
+  } catch {
+    return empty;
+  }
 }
