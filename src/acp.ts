@@ -239,7 +239,7 @@ export interface FsWriteHandler {
   (path: string, content: string): Promise<void>;
 }
 export interface TerminalHandler {
-  create(params: { command: string; args?: string[]; env?: Array<{ name: string; value: string }>; cwd?: string; outputByteLimit?: number }): { terminalId: string };
+  create(params: { command: string; env?: Array<{ name: string; value: string }>; cwd?: string; outputByteLimit?: number }): { terminalId: string };
   output(terminalId: string): { output: string; exitStatus: { exitCode: number } | null; truncated: boolean };
   waitForExit(terminalId: string): Promise<{ exitCode: number }>;
   kill(terminalId: string): void;

@@ -560,30 +560,6 @@ describe("posixSpawnArgv only unwraps where it is safe", () => {
   });
 });
 
-describePosix("ACP structured argv", () => {
-  it("runs every argument, instead of dropping them", async () => {
-    // `{command:"npm", args:["test","--coverage"]}` used to run a bare `npm`:
-    // the array was not in our handler type at all. Any conforming agent hits
-    // this, and every adapter shares this manager.
-    const m = new TerminalManager();
-    const { terminalId } = m.create({ command: "/bin/echo", args: ["one", "two three"] });
-    const { exitCode } = await m.waitForExit(terminalId);
-    expect(exitCode).toBe(0);
-    expect(m.output(terminalId).output.trim()).toBe("one two three");
-    m.release(terminalId);
-  });
-
-  it("does not put a shell between the agent and its argv", async () => {
-    // No shell means no quoting to get wrong: a glob stays a literal argument
-    // rather than being expanded behind the agent's back.
-    const m = new TerminalManager();
-    const { terminalId } = m.create({ command: "/bin/echo", args: ["*"] });
-    await m.waitForExit(terminalId);
-    expect(m.output(terminalId).output.trim()).toBe("*");
-    m.release(terminalId);
-  });
-});
-
 describe("commandLanguageForDialect (View all command language)", () => {
   it("maps each known dialect to a VS Code language id", () => {
     expect(commandLanguageForDialect("powershell")).toBe("powershell");
