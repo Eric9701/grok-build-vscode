@@ -388,7 +388,13 @@ try {
   if (beat) {
     const worst = [...beat.stalls].sort((a, b) => b.late - a.late).slice(0, 5);
     console.log("\n----- main-process responsiveness -----");
+    // TOTAL, not just the worst. Moving work out of a measured phase and into
+    // the gap between two opens improves the line and changes nothing for the
+    // person watching the window — only the sum says whether the thread got its
+    // time back. Reading a single favourable `max` is how that mistake is made.
+    const totalLate = beat.stalls.reduce((a2, s2) => a2 + s2.late, 0);
     console.log(`  heartbeat every ${beat.beat}ms; worst lateness ${beat.max}ms; ${beat.stalls.length} stall(s) over 100ms`);
+    console.log(`  TOTAL time the main thread was unresponsive: ${totalLate}ms`);
     for (const s of worst) {
       const rel = Math.round((s.at - beat.startedAt) / 100) / 10;
       // ABSOLUTE time as well, because the useful question is WHICH phase was

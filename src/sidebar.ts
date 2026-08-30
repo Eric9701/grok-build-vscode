@@ -752,6 +752,14 @@ export class GrokSidebar {
   // delay is what keeps it from being routine. Costs nothing in return: an orphan
   // is stamped when its window opened, so by the next activation it is already old.
   private static readonly SWEEP_MIN_AGE_MS = 30 * 60 * 1000;
+  /** How often the sweep may actually walk, per repo. Well under
+   *  SWEEP_MIN_AGE_MS, so a shell waits at most SWEEP_MIN_AGE_MS + this before
+   *  it is collected — while the walk stops being something a click pays for. */
+  private static readonly SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+  /** Last real sweep per repo, for SWEEP_INTERVAL_MS. */
+  private readonly lastSweepAt = new Map<string, number>();
+  /** A whole-list refresh is already queued for this tick. See postSessionsList. */
+  private sessionsListScheduled = false;
   private reaper?: ReturnType<typeof setInterval>;
   private oauthShadowWarningShown = false;
   private get chips(): FileChip[] { return this.focused.chips; }
@@ -10870,7 +10878,38 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Refresh local history plus each connected remote tab. */
+  /**
+   * Rebuild and fan out the conversation list — COALESCED.
+   *
+   * Twenty-odd sites call this, because every catalog mutation funnels here on
+   * purpose. That is the right shape, and it meant one click ran the rebuild
+   * about twice, each time walking every session directory to sort by mtime:
+   * ~380ms per walk at 3000 conversations, synchronously, on the thread that
+   * paints the window (#133/#131).
+   *
+   * Every call posts a COMPLETE snapshot, so collapsing the ones that land in a
+   * single tick loses nothing — the earlier frames were superseded before
+   * anyone saw them. What the rail shows is unchanged; it is painted once
+   * instead of twice, a tick later.
+   *
+   * A paged request is NOT coalesced. `opts` means the webview asked for a
+   * specific slice and is waiting for it: merging that into a later
+   * whole-list refresh would answer a scroll with the wrong page, or not at all.
+   */
   private postSessionsList(opts?: SessionsListOptions): void {
+    if (opts) {
+      this.postSessionsListNow(opts);
+      return;
+    }
+    if (this.sessionsListScheduled) return;
+    this.sessionsListScheduled = true;
+    setImmediate(() => {
+      this.sessionsListScheduled = false;
+      this.postSessionsListNow();
+    });
+  }
+
+  private postSessionsListNow(opts?: SessionsListOptions): void {
     const localCwd = this.historyCwdFor("local");
     const local = this.buildSessionsList(localCwd, opts, undefined, "local");
     this.postLocal(local);
@@ -15411,6 +15450,29 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  throughout: a locked directory is logged and skipped. */
   private sweepEmptySessions(cwd: string = this.workspaceRoot()): void {
     if (!cwd) return;
+    const repoKey = normalizeRepoPath(cwd);
+    // THROTTLED, because the per-open frequency was buying nothing.
+    //
+    // Every call walks the whole catalog to sort it by mtime — `readdirSync`
+    // plus up to three `statSync` per session directory — and then reads
+    // `summary.json` and `chat_history.jsonl` for each surviving candidate. At
+    // 3000 conversations that measured 200-380ms of walking plus the reads, on
+    // the Electron MAIN thread, which is the thread that paints the window.
+    // Callers put it on the open path, so it ran on every click (#133/#131).
+    //
+    // And it could not have found anything: SWEEP_MIN_AGE_MS is THIRTY MINUTES,
+    // so a session that was not sweepable half an hour ago is not sweepable now.
+    // Running it dozens of times an hour deletes exactly what running it once
+    // would have.
+    //
+    // This is not the "tidy up the conversation I just abandoned" path — that is
+    // `discardRestartedEmptySession` / `removeSessionFromDisk`, which delete one
+    // known id immediately and are untouched here. This is the periodic sweep of
+    // shells left by earlier runs, and periodic is what it now is.
+    const startedAt = Date.now();
+    const lastSweep = this.lastSweepAt.get(repoKey) ?? 0;
+    if (startedAt - lastSweep < GrokSidebar.SWEEP_INTERVAL_MS) return;
+    this.lastSweepAt.set(repoKey, startedAt);
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.host.appendLine(m);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -15430,7 +15492,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     for (const id of this.sessionLoadReservations.keys()) liveIds.add(id);
 
-    const repoKey = normalizeRepoPath(cwd);
     let proven = this.provenNonEmpty.get(repoKey);
     if (!proven) {
       proven = new Set<string>();
