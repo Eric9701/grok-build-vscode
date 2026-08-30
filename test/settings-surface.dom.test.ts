@@ -1808,8 +1808,47 @@ describe("Providers refresh", () => {
     expect(root.querySelector(".settings-refresh")).toBeNull();
     expect(types()).toEqual([]);
     // The rows themselves still render — a phone reads provider state, it just
-    // cannot make the desk go looking.
+    // cannot make the desk go looking. This host does not advertise
+    // remoteAgentSignIn, so it is the read-only half of the pair.
     expect(root.querySelector('[data-id="providerGrokStatus"]')).toBeTruthy();
+  });
+
+  const signInCaps = { hostCaps: { relocateView: false, showOutput: false, toggleDevTools: true, remoteAgentSignIn: true } };
+
+  it("offers Connect on a remote, and never Sign out", () => {
+    // `runGrokLogin` from a remote is the headless device-code flow, so a phone
+    // or a cloud environment can connect an agent from the page that lists them
+    // — not only from the onboarding card. Signing OUT stays desk-only.
+    const disconnected = mountAt("providers", {
+      env: { isRemote: true, ...signInCaps },
+      snapshot: { providers: [{ id: "grok", connected: false }] },
+    });
+    const action = disconnected.root.querySelector('[data-id="providerGrokRemote"] button');
+    expect(action?.textContent).toBe("Connect");
+    (action as HTMLButtonElement).click();
+    expect(disconnected.types()).toContain("runGrokLogin");
+
+    const connected = mountAt("providers", {
+      env: { isRemote: true, ...signInCaps },
+      snapshot: { providers: [{ id: "grok", connected: true }] },
+    });
+    expect(connected.root.querySelector('[data-id="providerGrokRemote"]')).toBeNull();
+    expect(connected.root.querySelector('[data-id="providerGrokStatus"]')).toBeTruthy();
+    expect(connected.root.querySelector('[data-id="providerGrokStatus"] button')).toBeNull();
+  });
+
+  it("keeps the read-only row against a host that cannot sign in for a remote", () => {
+    // The relay serves the client, so the client is always as new as the deploy
+    // while the extension is whatever the user installed. A host from before
+    // `remoteAgentSignIn` DROPS runGrokLogin silently — a Connect button there
+    // would do nothing at all, which is worse than the row it replaced.
+    const old = mountAt("providers", {
+      env: { isRemote: true },
+      snapshot: { providers: [{ id: "grok", connected: false }] },
+    });
+    expect(old.root.querySelector('[data-id="providerGrokRemote"]')).toBeNull();
+    expect(old.root.querySelector('[data-id="providerGrokStatus"]')).toBeTruthy();
+    expect(old.root.querySelector('[data-id="providerGrokStatus"] button')).toBeNull();
   });
 
   it("stays off a host that never reported its providers", () => {
