@@ -42,21 +42,36 @@ export function formatOpenTimings(opts: {
   phases: readonly OpenPhase[];
   events: number;
 }): string {
+  // Rounded ALONG THE TIMELINE, not one phase at a time. `performance.now()` is
+  // fractional, and rounding each phase independently does not preserve the
+  // sum: ten phases of 0.51ms print as ten `1ms` against a `5ms` total, and
+  // nine of 0.49ms print as nine `0ms` against `4ms`. Either way the line stops
+  // adding up, which is the one guarantee it makes. Rounding the running total
+  // and taking differences makes the printed phases sum to the printed elapsed
+  // time exactly, whatever the fractions.
+  let cumulative = 0;
+  let shown = 0;
   const parts = opts.phases.map((p) => {
     const note = p.note ? ` (${p.note})` : "";
-    return `${p.name} ${formatMs(p.ms)}${note}`;
+    if (!Number.isFinite(p.ms) || p.ms < 0) return `${p.name} ${formatMs(p.ms)}${note}`;
+    cumulative += p.ms;
+    const display = Math.round(cumulative) - shown;
+    shown += display;
+    return `${p.name} ${formatMs(display)}${note}`;
   });
-  const other = unclaimedMs(opts.totalMs, opts.phases);
+  const total = Math.round(opts.totalMs);
+  const other = total - shown;
   // Sub-millisecond slack is rounding, not a phase worth naming.
   if (other >= 1) parts.push(`other ${formatMs(other)}`);
-  return `session open: ${parts.join(" · ")} · total ${formatMs(opts.totalMs)} (events: ${opts.events})`;
+  return `session open: ${parts.join(" · ")} · total ${formatMs(total)} (events: ${opts.events})`;
 }
 
-/** Wall time the named phases do not account for. 0 when they tile the total. */
+/** Wall time the named phases do not account for, in the same whole
+ *  milliseconds the line prints. 0 when they tile the total. */
 export function unclaimedMs(totalMs: number, phases: readonly OpenPhase[]): number {
   if (!Number.isFinite(totalMs)) return 0;
-  const claimed = phases.reduce((sum, p) => sum + (Number.isFinite(p.ms) ? p.ms : 0), 0);
-  return totalMs - claimed;
+  const claimed = phases.reduce((sum, p) => sum + (Number.isFinite(p.ms) && p.ms > 0 ? p.ms : 0), 0);
+  return Math.round(totalMs) - Math.round(claimed);
 }
 
 export class OpenClock {
@@ -78,19 +93,8 @@ export class OpenClock {
     return this.nowFn() - started;
   }
 
-  /**
-   * Rounded ON THE WAY IN, and `totalMs` rounds too, so every number the line
-   * prints is the number the arithmetic used.
-   *
-   * `performance.now()` is fractional. Rounding each phase and the total
-   * independently at print time means nine phases of 0.49ms print as nine
-   * `0ms` while their 4.41ms total prints as `4ms` — the line stops adding up,
-   * which is the one guarantee it exists to make. Rounding here instead lets
-   * that sub-millisecond dust land in `other`, where unclaimed time belongs.
-   */
   record(name: string, ms: number, note?: string): void {
-    const whole = Number.isFinite(ms) ? Math.round(ms) : ms;
-    this.phases.push(note ? { name, ms: whole, note } : { name, ms: whole });
+    this.phases.push(note ? { name, ms, note } : { name, ms });
   }
 
   /**

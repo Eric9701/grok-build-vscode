@@ -136,6 +136,22 @@ describe("OpenClock", () => {
     expect(line).toContain("total 1ms");
   });
 
+  it("keeps adding up when the fractions round UP as well as down", () => {
+    // The other half of the same trap, and the one that survived the first fix:
+    // ten phases of 0.51ms each round up to ten `1ms` while their 5.1ms total
+    // rounds to `5ms`, so the phases out-total the total. Rounding along the
+    // running timeline is what makes both directions safe.
+    let t = 0;
+    const clock = new OpenClock(() => t);
+    for (let i = 0; i < 10; i++) clock.record(`p${i}`, 0.51);
+    t += 5.1;
+    const line = clock.summary(0);
+    const parts = [...line.matchAll(/(\S[^·]*?) (\d+)ms/g)].map((m) => ({ name: m[1].trim(), ms: Number(m[2]) }));
+    const total = parts.find((p) => p.name.endsWith("total"));
+    const phases = parts.filter((p) => p !== total);
+    expect(phases.reduce((a, p) => a + p.ms, 0)).toBe(total!.ms);
+  });
+
   it("prints phases that add up to the printed total, whatever the fractions", () => {
     // The guarantee, checked on the arithmetic rather than on one example:
     // nine fractional phases must not drift away from the total they came from.
