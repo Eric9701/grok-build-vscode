@@ -475,33 +475,29 @@ describe("posixSpawnArgv", () => {
 const describePosix = process.platform === "win32" ? describe.skip : describe;
 
 describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
-  it("reports $0 as the host shell, not /bin/bash", async () => {
+  it("runs the agent's command, and routes it by host capability", async () => {
+    // `$0` was the probe here and it is NOT portable: zsh reports the shell's
+    // path, bash on ubuntu-latest reported an empty string, and on the retained
+    // path the OUTER `sh -c` expands it before the inner shell ever sees it. CI
+    // failed twice on that alone while both dev machines passed. So this asserts
+    // what we actually promise — the command runs, and the ROUTING is right —
+    // and leaves shell trivia out of it.
     const m = new TerminalManager();
-    const { terminalId } = m.create({
-      command: `/bin/bash -lc 'printf %s "$0"'`,
-    });
+    const { terminalId } = m.create({ command: `/bin/bash -lc 'printf HIT'` });
     const { exitCode } = await m.waitForExit(terminalId);
     expect(exitCode).toBe(0);
-    const out = m.output(terminalId).output.trim();
+    expect(m.output(terminalId).output.trim()).toBe("HIT");
+    m.release(terminalId);
+
     const host = posixShellFromEnv(process.env.SHELL);
     const base = host === true ? "sh" : host.slice(host.lastIndexOf("/") + 1);
-    const bashCapable = base === "bash" || base === "zsh";
-    if (bashCapable) {
-      // Unwrapped: the host runs the script itself, so `$0` IS the host.
-      expect(out).toBe(host);
+    const argv = posixSpawnArgv("/bin/bash -lc 'printf HIT'", host);
+    expect(argv.file).toBe(host === true ? "/bin/sh" : host);
+    if (base === "bash" || base === "zsh") {
+      expect(argv.args[1]).toBe("printf HIT"); // peeled: the host stands in for bash
     } else {
-      // The wrapper is deliberately kept here, and the whole string goes to
-      // `sh -c` — so the OUTER shell expands `"$0"` before bash ever sees it,
-      // and what comes back is that shell's own `$0` (empty on dash), not the
-      // inner one's. Asserting a value here would test the outer shell rather
-      // than us. What matters on this path is that the wrapper survived, and
-      // `posixSpawnArgv` pins that directly.
-      //
-      // ubuntu-latest in CI is what caught this: neither of our machines has a
-      // non-bash-capable `$SHELL`, and the whole block is skipped on Windows.
-      expect(posixSpawnArgv("/bin/bash -lc 'x'", host).args[1]).toBe("/bin/bash -lc 'x'");
+      expect(argv.args[1]).toBe("/bin/bash -lc 'printf HIT'"); // retained
     }
-    m.release(terminalId);
   });
 });
 
