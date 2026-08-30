@@ -99,9 +99,8 @@ export function noRemoteSignInMessage(
   opts: { isCloud?: boolean } = {},
 ): string {
   if (opts.isCloud) {
-    return `${displayName} cannot be connected from a cloud environment yet: its sign-in needs `
-      + "a real terminal, and there is no desk machine here to fall back to. "
-      + "Grok and Codex both sign in here.";
+    return `${displayName} isn't available on cloud machines yet — we're working on adding it. `
+      + "Grok and Codex both sign in right here.";
   }
   return `${displayName} has no sign-in that works without a terminal. Connect it at your computer.`;
 }

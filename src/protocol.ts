@@ -577,7 +577,7 @@ export type HostMsg =
         /** starting: spawned, nothing printed yet. waiting: URL and code are on
          *  screen and the CLI is polling. done/failed: terminal. unavailable:
          *  this provider has no flow that works without a terminal. */
-        status: "starting" | "waiting" | "done" | "failed" | "unavailable";
+        status: "starting" | "waiting" | "verifying" | "done" | "failed" | "unavailable";
         url?: string;
         code?: string;
         /** Said to the person, not logged — a failure or an explanation. */

@@ -19,6 +19,7 @@ import { shouldKeepAwake } from "../src/keep-awake";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sidebar = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8").replace(/\r\n/g, "\n");
+const modelCache = fs.readFileSync(path.join(root, "src", "codex-model-cache.ts"), "utf8");
 
 function methodBody(signature: string): string {
   const start = sidebar.indexOf(signature);
@@ -175,5 +176,72 @@ describe("host-config wording knows there is no desk in the cloud", () => {
     const deskRow = desk.container.querySelector('.settings-row[data-id="hostConfigRemote"]');
     expect(deskRow!.textContent).toContain("machine running this workspace");
     expect(deskRow!.textContent).not.toContain("desk");
+  });
+});
+
+describe("the codex warm-up survives its own cleanup", () => {
+  it("never lets the throwaway delete fail the warm-up — that read a valid sign-in as no credential", () => {
+    const start = modelCache.indexOf("await client.deleteSession(created.sessionId);");
+    expect(start).toBeGreaterThan(-1);
+    const before = modelCache.slice(0, start);
+    // The delete sits inside its own try. codex 0.147 answers it with
+    // "Internal error: no rollout found" for a session that never rolled out.
+    expect(before.lastIndexOf("try {")).toBeGreaterThan(before.lastIndexOf("await options.onModels"));
+    expect(modelCache).toContain("models already cached, continuing");
+  });
+});
+
+describe("the verdict never blames a credential that landed", () => {
+  it("announces verifying, and separates probe failure from a missing credential", () => {
+    const start = methodBody("private async startDeviceLogin(");
+    expect(start).toContain('send({ status: "verifying" })');
+    const confirm = methodBody("private async confirmDeviceLogin(");
+    expect(confirm).toContain("providerCredentialFilePresent(");
+    expect(confirm).toContain("does not need repeating");
+    const present = methodBody("private providerCredentialFilePresent(");
+    expect(present).toContain("auth.json");
+  });
+});
+
+describe("one row per provider, whatever the flow state", () => {
+  it("hides the ordinary rows while a flow row owns the space", () => {
+    const { container } = mountSettings(remoteEnv({
+      deviceLogin: { codex: { status: "waiting", url: "https://auth.openai.com/codex/device", code: "AB12-CD34" } },
+    }));
+    expect(container.querySelector('[data-id="providerCodexFlow"]')).toBeTruthy();
+    expect(container.querySelector('[data-id="providerCodexRemote"]')).toBeNull();
+    expect(container.querySelector('[data-id="providerCodexStatus"]')).toBeNull();
+    expect(container.querySelector('[data-id="providerCodexFlow"] [data-device-copy]')).toBeTruthy();
+  });
+
+  it("folds a failure into the ordinary row instead of doubling it", () => {
+    const { container } = mountSettings(remoteEnv({
+      deviceLogin: { codex: { status: "failed", message: "Codex approved the sign-in, but nothing landed." } },
+    }));
+    expect(container.querySelector('[data-id="providerCodexFlow"]')).toBeNull();
+    const row = container.querySelector('[data-id="providerCodexRemote"]');
+    expect(row).toBeTruthy();
+    expect(row!.textContent).toContain("nothing landed");
+  });
+});
+
+describe("a cloud machine tells the truth about its agents up front", () => {
+  it("gives Claude its answer with no Connect button, and recommends Grok", () => {
+    const { container } = mountSettings(remoteEnv());
+    const claude = container.querySelector('[data-id="providerClaudeCloud"]');
+    expect(claude).toBeTruthy();
+    expect(claude!.textContent).toContain("working on adding it");
+    expect(claude!.querySelector(".settings-action")).toBeNull();
+    expect(container.querySelector('[data-id="providerClaudeRemote"]')).toBeNull();
+    const grok = container.querySelector('[data-id="providerGrokRemote"]');
+    expect(grok!.textContent).toContain("Recommended");
+  });
+
+  it("keeps the desk remote unchanged: Claude offers Connect, Grok carries no tag", () => {
+    const { container } = mountSettings(remoteEnv({ hostCaps: { remoteAgentSignIn: true } }));
+    expect(container.querySelector('[data-id="providerClaudeCloud"]')).toBeNull();
+    expect(container.querySelector('[data-id="providerClaudeRemote"]')).toBeTruthy();
+    const grok = container.querySelector('[data-id="providerGrokRemote"]');
+    expect(grok!.textContent).not.toContain("Recommended");
   });
 });

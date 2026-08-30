@@ -28,7 +28,18 @@ async function readModelsIn(cwd: string, options: WarmCodexModelCacheOptions): P
     await client.start();
     const created = await client.newSession();
     await options.onModels(client.availableModels, client.currentModelId);
-    await client.deleteSession(created.sessionId);
+    try {
+      await client.deleteSession(created.sessionId);
+    } catch (error) {
+      // codex 0.147 answers session/delete with "Internal error: no rollout
+      // found for thread id …" for a throwaway that never wrote one. The
+      // models are already delivered by this point — hygiene must not fail
+      // the warm-up. It did: this doubles as the post-login credential probe,
+      // so a perfectly valid sign-in read as "no usable credential" on every
+      // cloud machine (first real cloud test, 2026-08-31). Nothing rolled out
+      // also means there is nothing to clean.
+      options.log?.(`[codex] throwaway session cleanup failed (${(error as Error).message}); models already cached, continuing`);
+    }
   } finally {
     await client.dispose();
   }

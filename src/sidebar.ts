@@ -1848,6 +1848,9 @@ export class GrokSidebar {
           // The card is still on "waiting", whose own copy promises the flow
           // finishes on its own.
           this.host.appendLine(`[${provider}] device login approved by the vendor after ${elapsed}s; verifying the credential`);
+          // The page must change when the vendor approves — "nothing happened"
+          // during a silent 30s probe was the owner's very first retest note.
+          send({ status: "verifying" });
           void this.confirmDeviceLogin(provider, send, displayName);
           return;
         }
@@ -1887,11 +1890,37 @@ export class GrokSidebar {
         return;
       }
     }
+    // Two very different failures share this exit, and the message must not
+    // blame the credential when the credential is fine: the first real cloud
+    // test's sign-in was valid the whole time — the PROBE was failing (a
+    // session/delete quirk) while the verdict said "no usable credential".
+    if (this.providerCredentialFilePresent(provider)) {
+      this.host.appendLine(`[${provider}] device login: credential present but the probe never passed`);
+      send({
+        status: "failed",
+        message: `${displayName} is signed in, but the agent did not answer this machine's check yet. Try again in a moment — the sign-in itself does not need repeating.`,
+      });
+      return;
+    }
     this.host.appendLine(`[${provider}] device login: vendor approved, but no usable credential landed on this machine`);
     send({
       status: "failed",
       message: `${displayName} approved the sign-in, but no usable credential landed on this machine. Try connecting again.`,
     });
+  }
+
+  /** Does the provider's own credential file exist? Deliberately shallow —
+   *  presence only, no validity claim: it separates "sign-in never landed"
+   *  from "landed, but our probe is unhappy", which lead a person to
+   *  different next actions. */
+  private providerCredentialFilePresent(provider: AcpProvider): boolean {
+    try {
+      if (provider === "codex") return fs.existsSync(path.join(resolveCodexHome(), "auth.json"));
+      if (provider === "grok") return fs.existsSync(path.join(os.homedir(), ".grok", "auth.json"));
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   /** Stop every headless sign-in. Called on dispose so a child polling a device
