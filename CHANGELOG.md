@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.19.7 — 2026-08-30
+
+### Fixed
+
+- **Less of the freeze when you have a lot of conversations.** Reported as a hard lock with a white title bar (#133, #131) and as session switching going wrong (#138). We reproduced it here rather than guessing: with 3000 conversations on disk the app's main thread — the one that paints the window — stopped responding for about a second at a time. The cause was not the agent being slow. A test that stalled the agent by three seconds left the window perfectly responsive; that is a spinner, not a freeze. It was us, walking your entire conversation folder to sort it by date, **up to four times for every click**, on the thread that draws the app — and nothing on screen changed as a result of any of those walks. Opening a conversation no longer rebuilds the list at all, because the set of conversations does not change when you open one, and the periodic tidy-up of abandoned empty conversations no longer runs on every click, because it ignores anything under 30 minutes old and so could never have found something a run half an hour earlier had missed. Measured on one machine at 3000 conversations, before and after, back to back: catalog walks over three conversation opens **from 11 down to 4**, total time the window spent unresponsive **roughly halved** (4.8s to 2.3s), and the worst single stall from about 1.1s to 0.8s. **This is an improvement, not a cure** — a stall you can still notice remains, one walk per open is still there, and the change that removes it is written down and waiting. If you have a large history, this release should feel better; please say so on #133 if it does not.
+
+- **Dark High Contrast made the effort dots and the check mark invisible.** They were painted in VS Code's button colour, which that theme defines as pure black, so they vanished into the popover behind them (#139, thanks @HubKing). They now use the link colour, which every theme guarantees is readable as text. A test now enforces the rule across the whole UI, and it immediately found a third place with the same bug that nobody had reported: the settings toggle switch, which could have rendered "on" identically to "off".
+
+- **One-word commands run in your shell too.** 3.19.6 unwrapped the agent's `bash -lc` wrapper only when the command inside was quoted — and the tool that builds those wrappers leaves anything simple unquoted. So `ls`, `pwd`, `make` and `pytest` kept the old path and stayed on macOS's bash 3.2, which is most of what anyone actually types (#140, thanks @russwyte). A bare command built only from characters no shell treats specially is now unwrapped too; anything with whitespace, a variable, a glob, a tilde, a pipe or a redirect still keeps the wrapper, because those are where the two readings could differ.
+
+- **"Connect Codex" opened a terminal that could not start.** Installing Codex with npm leaves two files side by side: one for Git Bash and one for Windows. We were finding the Git Bash one first, and Windows cannot execute it at all — so the sign-in terminal failed to launch with nothing to click, and the same unusable path was handed to the agent process. We now look for the Windows one first, which is what the Grok CLI lookup has always done.
+
+- **Connectors stop asking you to sign in again out of nowhere.** A connector whose stored credential has gone missing cannot refresh it, so the proxy starts a fresh sign-in and opens a browser — unprompted, on every new conversation, for ever, because nothing recorded that it failed. One connector in that state reads as the app demanding sign-ins at random. Those connectors are now left out until you reconnect them: the row says so and offers a Connect button, and no browser opens unless you press it. This is deliberately not about expiry — credentials expire every few hours by design and are renewed silently; only a credential that is actually gone counts.
+
+### Fixed — cloud environments
+
+- **Providers can be connected and disconnected from the page that lists them.** Settings → Providers was read-only for a remote, which was true when it was written and stopped being true when headless sign-in shipped — leaving the onboarding card as the only way to connect an agent from a phone or a cloud machine. Signing **out** now works too, but only on a cloud environment, where the remote is the machine's only surface: a credential you can grant and never revoke is the worse answer there. At a desk it stays local, because signing out revokes a credential every window on that machine shares.
+
+- **The Codex sign-in card's own button did nothing.** The card that explains the one account setting Codex needs was shown unconditionally, so pressing "I've turned it on — connect" re-drew the same card. It could never be got past. The advice is still shown first — it saves a wait for a failure almost every account hits — but it is advice, not a gate, and the second attempt now runs for real. The step naming the setting also says **at the very bottom**, because that is where it is on the page.
+
+- **A new machine no longer says it is broken while it is still starting.** Opening a cloud environment straight after creating or resetting it announced that it was not responding — a message written for a machine that went away, shown to one that had not arrived yet, which is the first thing a new user sees. Starting up and having gone offline are now separate states with separate words, and a first boot that genuinely never finishes still says so after 90 seconds rather than reassuring you for ever.
+
+- **A provider that cannot be signed in from a cloud machine no longer tells you to go and do it at your computer.** There is no computer to walk to. It now says what does work there.
+
 ## 3.19.6 — 2026-08-30
 
 ### Fixed
