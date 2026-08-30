@@ -1,5 +1,5 @@
 import { ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import * as os from "node:os";
 
@@ -149,32 +149,27 @@ export function resolveTerminalShell(
   resolve: (name: string) => string | undefined,
   pref: ShellPreference = "auto",
   env: NodeJS.ProcessEnv = process.env,
-  exists: (p: string) => boolean = existsSync,
+  exists: (p: string) => boolean = isRegularFile,
 ): string | true {
   if (pref === "cmd") return true; // cmd.exe on Windows / /bin/sh on POSIX
-  if (platform !== "win32") return posixUserShell(env, exists) ?? posixFallbackShell(exists);
+  if (platform !== "win32") return posixUserShell(env, exists) ?? true;
   return resolve("pwsh") ?? resolve("powershell") ?? true;
 }
 
 /**
- * What to run when `$SHELL` is one we cannot drive (fish, nushell, tcsh) or is
- * missing: a real `bash` if the machine has one, else `/bin/sh`.
+ * A regular file, not merely a path that resolves.
  *
- * This exists to make the DIALECT HINT TRUE. We have to tell the agent which
- * grammar to write — leaving it unset lets grok's own detection read `$SHELL`
- * and describe fish while we run sh, a wrong shell family — and `bash` is the
- * only POSIX value grok accepts. Running `/bin/sh` and *claiming* bash was a
- * rounding that three review rounds flagged: on Linux `/bin/sh` is usually
- * dash, which rejects `[[ ]]`, arrays and `${x^^}`; on macOS it is bash 3.2,
- * which rejects the bash 4 syntax that "bash" invites — the very trap #140
- * reported. Running the bash we advertise removes the gap wherever bash
- * exists, and bash reads everything `/bin/sh` would.
- *
- * `grok.terminalShell: "cmd"` still forces `/bin/sh` — that escape hatch is
- * documented as the plain shell, and an explicit choice is not ours to widen.
+ * `existsSync` says yes to a DIRECTORY named `zsh`, and to a non-executable
+ * file — either of which we would then hand to `spawn` as the shell, failing
+ * every agent command with `EISDIR` or `EACCES`. Before #140 POSIX always used
+ * Node's own `/bin/sh` and could not get this wrong.
  */
-function posixFallbackShell(exists: (p: string) => boolean): string | true {
-  return exists("/bin/bash") ? "/bin/bash" : true;
+function isRegularFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -184,11 +179,6 @@ function posixFallbackShell(exists: (p: string) => boolean): string | true {
  * command breaks things that work today. Anything unrecognized falls back.
  */
 const POSIX_SHELL_NAMES = new Set(["sh", "bash", "zsh", "ksh", "ksh93", "mksh", "dash", "ash"]);
-
-/** The ones that ARE `/bin/sh` for dialect purposes — a `$SHELL` naming one of
- *  these needs no `GROK_SHELL`, because grok's own detection then describes the
- *  very shell we fall back to. */
-const SH_FAMILY_NAMES = new Set(["sh", "dash", "ash"]);
 
 /**
  * The shell `$SHELL` names, when we can safely run the agent's commands in it.
@@ -243,38 +233,21 @@ export function grokShellEnvValue(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   if (platform !== "win32") {
-    // Which of the two POSIX cases we are in is answerable from `$SHELL`: we
-    // either run the shell it names, or we ran a fallback because we could not.
-    if (resolved !== true && resolved !== (env.SHELL ?? "").trim()) return "bash";
-    if (resolved === true) {
-      // We are on `/bin/sh` — `grok.terminalShell: "cmd"`, or a machine with no
-      // bash. Grok's own detection will describe `$SHELL`, and when that is
-      // ALREADY an sh-family shell its description matches what we run, so
-      // saying `bash` would replace an accurate hint with a wrong one. Forcing
-      // `cmd` used to leave POSIX untouched entirely, so this is a regression
-      // the same comparison can simply avoid.
-      const shBase = (env.SHELL ?? "").trim().split("/").pop()?.toLowerCase() ?? "";
-      if (SH_FAMILY_NAMES.has(shBase)) return undefined;
-    }
-    // Running the shell `$SHELL` names: grok's own detection reads `$SHELL` and
-    // so already names the shell we run — the two agree, and an override would
-    // only be a second chance to disagree. (Running it is not LOGGING IN to it:
-    // Node invokes `<shell> -c`, so the interactive/login files are skipped and
-    // this fix moves the DIALECT, not the PATH. Not nothing runs, though: zsh
-    // still reads `~/.zshenv` every invocation and bash reads `$BASH_ENV`.)
-    if (resolved !== true) return undefined;
-    // Falling back to `/bin/sh`, which happens when `$SHELL` is fish, nushell
-    // or anything else non-POSIX. Now the detection and the truth diverge:
-    // grok would describe fish while we run sh, so the model must be told.
+    // NOTHING, deliberately, and this is the third thing three review rounds
+    // kept flagging — correctly, but the fix is not a better value.
     //
-    // `bash` is the closest of grok's ACCEPTED values, not a promise: on macOS
-    // `/bin/sh` really is bash, but on most Linux distributions it is dash, and
-    // a model told "bash" there can still emit `[[ ]]`, arrays or `${x^^}` that
-    // dash rejects. It is nonetheless strictly better than the alternative —
-    // saying nothing leaves grok describing FISH while we run sh, which is a
-    // whole wrong shell family rather than a wrong dialect of the right one.
-    // Narrowing it further needs a value grok would accept for `sh`/`dash`.
-    return "bash";
+    // Upstream builds the model-facing `Shell:` from `$SHELL` on Unix
+    // (`resolve_shell_display`: `std::env::var("SHELL")`), and treats
+    // `GROK_SHELL` there as a PATH to a shell binary, which it validates with
+    // an executable check — so the bare string `bash` never applied in the
+    // first place. It steers the dialect on Windows only.
+    //
+    // Which means running the shell `$SHELL` names IS the alignment: grok
+    // describes `$SHELL`, we run `$SHELL`, and no override can improve on two
+    // things that already agree. The residual is the fallback — a fish `$SHELL`
+    // has grok describing fish while we run `/bin/sh` — and no value of this
+    // variable closes it on Unix.
+    return undefined;
   }
   if (resolved === true) return "cmd"; // cmd.exe: forced pref, or no PowerShell found
   const base = resolved.toLowerCase();

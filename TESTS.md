@@ -156,7 +156,7 @@ These actually spawn real shell children (a real POSIX shell, or real PowerShell
 - Throws on unknown terminalId
 - `kill` / `release` on missing id is a no-op
 - `disposeAll` kills outstanding terminals
-- **`resolveTerminalShell` (#46, #140)** — POSIX → the shell `$SHELL` names when it is in the POSIX-grammar allowlist, else `/bin/bash` if present, else `/bin/sh` (never a PATH probe); Windows → `pwsh.exe`→`powershell.exe`→cmd.exe, in that order
+- **`resolveTerminalShell` (#46, #140)** — POSIX → the shell `$SHELL` names when it is an absolute path to a REGULAR FILE in the POSIX-grammar allowlist, else `/bin/sh` (never a PATH probe); Windows → `pwsh.exe`→`powershell.exe`→cmd.exe, in that order
 - **Windows PowerShell host (#46, Windows-only, skipped on CI)** — real PowerShell pipeline (`… | Measure-Object`), a non-builtin cmdlet (`Get-Date`), `$PSVersionTable`, and a `Format-List` pipeline all run through `TerminalManager` (cmd.exe would fail these); the resolved host shell is never cmd.exe
 
 ### `test/cli-locator.test.ts` — CLI discovery + upgrade detection (9 tests)
