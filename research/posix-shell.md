@@ -31,9 +31,18 @@ instead of cmd.exe).
 - POSIX `auto` → `posixShellFromEnv($SHELL)`: absolute path other than
   `/bin/sh` / `/usr/bin/sh`, else `true` (`/bin/sh`).
 - `pref === "cmd"` still forces `/bin/sh` on POSIX (escape hatch).
-- `grokShellEnvValue` maps `/bin/zsh` → `zsh` and `/…/bash` → `bash` so the
-  agent's `GROK_SHELL` matches the executor. The `/bin/sh` fallback still
-  leaves `GROK_SHELL` unset.
+- `grokShellEnvValue` sets **nothing on POSIX**. This document originally
+  described mapping `$SHELL` to `zsh`/`bash`; that was dropped before merge,
+  because upstream builds the model-facing `Shell:` from `$SHELL` on Unix
+  (`resolve_shell_display`) and reads `GROK_SHELL` there as a PATH to a shell
+  binary it validates as executable — a bare `zsh` never reached the model.
+  Running the shell `$SHELL` names is itself the alignment. `GROK_SHELL`
+  still carries the dialect on Windows.
+- `$SHELL` must also be in the POSIX-grammar allowlist (`POSIX_SHELL_NAMES`)
+  and be a regular executable file: `posixSpawnArgv` hands the agent's POSIX
+  script to it directly, so fish/nushell would break commands that work, and a
+  directory or non-executable named `zsh` would fail every one with
+  `EISDIR`/`EACCES`.
 
 That alone is not enough. Grok 1.0.x still sends `terminal/create` as
 `/bin/bash -lc <script>` even when `GROK_SHELL=zsh`. Node

@@ -468,11 +468,40 @@ describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
     const { exitCode } = await m.waitForExit(terminalId);
     expect(exitCode).toBe(0);
     const out = m.output(terminalId).output.trim();
-    expect(out).not.toMatch(/bash$/);
     const host = posixShellFromEnv(process.env.SHELL);
     const expected = host === true ? "/bin/sh" : host;
+    // The contract is `$0 === the host we chose`, NOT "not bash": `/bin/bash`
+    // is an allowed `$SHELL`, so a blanket `not.toMatch(/bash$/)` fails the
+    // suite on a perfectly valid bash-login machine while the very next line
+    // expects exactly that value.
     expect(out).toBe(expected);
     m.release(terminalId);
+  });
+});
+
+describe("unwrapGrokBashLoginWrapper refuses what it does not model", () => {
+  it("leaves a wrapper carrying any other flag completely alone", () => {
+    // Dropping a flag while still running the script is worse than not
+    // unwrapping: `-n` means syntax-check WITHOUT executing, so discarding it
+    // would turn a dry run into a real one.
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -n -l -c 'rm target'")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -e -lc 'x'")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -u -lc 'x'")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash --posix -lc 'x'")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash --restricted -lc 'x'")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lnc 'x'")).toBeUndefined();
+    // ...while the shapes grok actually sends still unwrap.
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -cl 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash --login -c 'echo hi'")).toBe("echo hi");
+  });
+
+  it("decodes a double-quoted payload the way the shell would", () => {
+    // POSIX drops the backslash before `$`, a backtick, a quote and a
+    // backslash. Leaving `\$` intact turned an expansion into literal text.
+    expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "printf %s \\"\$HOME\\""'))
+      .toBe('printf %s "$HOME"');
+    expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "echo \`date\`"')).toBe("echo `date`");
   });
 });
 

@@ -158,7 +158,12 @@ function peelOneQuotedString(s: string): string | undefined {
       }
       if (inner[i] === '"') return undefined;
     }
-    return inner.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    // POSIX double quotes drop the backslash before `$`, a backtick, `"`,
+    // a backslash and a newline, and keep it everywhere else. Unescaping only
+    // `\\"` and `\\\\` left `\\$` intact, so a payload like
+    // `printf %s "\\$HOME"` came back as the literal text rather than the
+    // value — a silent change to what the command does.
+    return inner.replace(/\\([$`"\\\n])/g, "$1");
   }
   return undefined;
 }
@@ -188,17 +193,29 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
   if (base !== "bash") return undefined;
   s = s.slice(exeMatch[0].length).trimStart();
 
+  // ONLY `-l` and `-c`, in any spelling. Every other flag is a refusal, not
+  // something to skip: bash flags CHANGE WHAT THE SCRIPT DOES, and dropping one
+  // while running the script anyway is worse than not unwrapping at all.
+  // `bash -n -l -c 'rm target'` asks bash to syntax-check WITHOUT executing;
+  // discarding `-n` turns that into a real `rm`. Same for `-e`, `-u`,
+  // `--posix`, `--restricted`. We recognise only the wrapper grok actually
+  // sends; anything else keeps its original command untouched.
   let sawLogin = false;
   let sawCommand = false;
   while (s.startsWith("-")) {
     const tokMatch = s.match(/^(--[a-zA-Z0-9-]+|-[a-zA-Z]+)(?:\s+|$)/);
-    if (!tokMatch) break;
+    if (!tokMatch) return undefined;
     const tok = tokMatch[1];
-    if (tok === "--login" || (/^-[a-zA-Z]+$/.test(tok) && tok.includes("l"))) {
+    if (tok === "--login") {
       sawLogin = true;
-    }
-    if (/^-[a-zA-Z]+$/.test(tok) && tok.includes("c")) {
-      sawCommand = true;
+    } else if (/^-[a-zA-Z]+$/.test(tok)) {
+      for (const ch of tok.slice(1)) {
+        if (ch === "l") sawLogin = true;
+        else if (ch === "c") sawCommand = true;
+        else return undefined; // a flag we do not model — do not rewrite it away
+      }
+    } else {
+      return undefined;
     }
     s = s.slice(tokMatch[0].length).trimStart();
     if (sawCommand) break;
