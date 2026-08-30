@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, grokShellEnvValue, commandLanguageForDialect } from "../src/terminal-manager";
+import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, posixShellFromEnv, grokShellEnvValue, commandLanguageForDialect, unwrapGrokBashLoginWrapper, posixSpawnArgv } from "../src/terminal-manager";
 
 // Use `node -e` everywhere so tests are deterministic on Windows, macOS, and Linux.
 // Quoting strategy: single-quote the outer node script, escape inner single quotes if any.
@@ -271,54 +271,37 @@ describe("resolveTerminalShell", () => {
   const PWSH = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
   const POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-  const ZSH = "/bin/zsh";
-const BASH = "/bin/bash";
-  const yes = () => true;
-
-  it("returns true (/bin/sh) on POSIX with no $SHELL, without probing PATH", () => {
+  it("returns true (/bin/sh) on POSIX without probing PATH when $SHELL is unset", () => {
     let probed = false;
     const shell = resolveTerminalShell("linux", () => {
       probed = true;
       return undefined;
-    }, "auto", {}, yes);
-    expect(shell).toBe(true); // no $SHELL -> Node's own /bin/sh
+    });
+    expect(shell).toBe(true);
     expect(probed).toBe(false); // never shell out to `where` off Windows
   });
 
-  it("falls back to /bin/sh on darwin with no $SHELL", () => {
-    expect(resolveTerminalShell("darwin", () => PWSH, "auto", {}, yes)).toBe(true);
-  });
-
-  it("runs the login shell on POSIX when it is POSIX-compatible", () => {
-    // /bin/sh is bash 3.2 on macOS, so a profile takes a different branch than
-    // it does in the standalone CLI — the whole of #140.
-    expect(resolveTerminalShell("darwin", () => undefined, "auto", { SHELL: ZSH }, yes)).toBe(ZSH);
-    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: "/usr/bin/bash" }, yes))
-      .toBe("/usr/bin/bash");
-  });
-
-  it("refuses a $SHELL whose grammar is not POSIX", () => {
-    // Handing fish a command the agent wrote for sh breaks what works today.
-    for (const s of ["/usr/bin/fish", "/usr/local/bin/nu", "/bin/tcsh", "/usr/bin/pwsh"]) {
-      expect(resolveTerminalShell("darwin", () => undefined, "auto", { SHELL: s }, yes)).toBe(true);
-    }
-  });
-
-  it("refuses a $SHELL that is not an absolute path or is not there", () => {
-    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: "zsh" }, yes)).toBe(true);
-    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: "" }, yes)).toBe(true);
-    // A missing binary would fail every single command; /bin/sh is the safer answer.
-    expect(resolveTerminalShell("linux", () => undefined, "auto", { SHELL: ZSH }, () => false)).toBe(true);
-  });
-
-  it("still lets `cmd` force /bin/sh on POSIX, which is no longer a no-op", () => {
-    expect(resolveTerminalShell("darwin", () => undefined, "cmd", { SHELL: ZSH }, yes)).toBe(true);
-  });
-
-  it("never probes PATH on POSIX even when it does resolve a login shell", () => {
+  it("uses $SHELL on POSIX when it is an absolute path", () => {
     let probed = false;
-    resolveTerminalShell("darwin", () => { probed = true; return undefined; }, "auto", { SHELL: ZSH }, yes);
+    const shell = resolveTerminalShell(
+      "darwin",
+      () => {
+        probed = true;
+        return PWSH;
+      },
+      "auto",
+      "/bin/zsh",
+    );
+    expect(shell).toBe("/bin/zsh");
     expect(probed).toBe(false);
+  });
+
+  it("falls back to /bin/sh when POSIX $SHELL is /bin/sh itself", () => {
+    expect(resolveTerminalShell("linux", () => undefined, "auto", "/bin/sh")).toBe(true);
+  });
+
+  it("returns true on darwin without $SHELL", () => {
+    expect(resolveTerminalShell("darwin", () => PWSH)).toBe(true);
   });
 
   it("prefers pwsh.exe (PowerShell 7) on Windows when available", () => {
@@ -352,8 +335,8 @@ const BASH = "/bin/bash";
     expect(probed).toBe(false); // escape hatch short-circuits before `where`
   });
 
-  it("pref 'cmd' is a no-op on POSIX (still /bin/sh)", () => {
-    expect(resolveTerminalShell("linux", () => undefined, "cmd")).toBe(true);
+  it("pref 'cmd' forces /bin/sh on POSIX even when $SHELL is zsh", () => {
+    expect(resolveTerminalShell("linux", () => undefined, "cmd", "/bin/zsh")).toBe(true);
   });
 
   it("pref 'auto' matches the default (PowerShell on Windows)", () => {
@@ -374,32 +357,122 @@ describe("grokShellEnvValue (GROK_SHELL derived from the shell we run)", () => {
   it("maps the cmd.exe fallback (true) to 'cmd' on Windows", () => {
     expect(grokShellEnvValue(true, "win32")).toBe("cmd");
   });
-  it("stays out of the way on POSIX when we run the login shell", () => {
-    // grok reads $SHELL to describe the host, and that is the shell we ran —
-    // they already agree, so an override is only a chance to disagree.
-    expect(grokShellEnvValue("/bin/bash", "darwin", { SHELL: "/bin/bash" })).toBeUndefined();
-    expect(grokShellEnvValue("/bin/zsh", "linux", { SHELL: "/bin/zsh" })).toBeUndefined();
-    // POSIX sets NOTHING now, whatever we resolved: upstream builds the model's
-    // `Shell:` from `$SHELL` on Unix and reads GROK_SHELL there as a path to a
-    // shell binary, so no value of it steers the dialect. Running `$SHELL` is
-    // the alignment; the fish fallback mismatch is not closable this way.
-    expect(grokShellEnvValue(true, "linux", { SHELL: "/usr/bin/fish" })).toBeUndefined();
-    expect(grokShellEnvValue("/bin/bash", "linux", { SHELL: "/usr/bin/fish" })).toBeUndefined();
+  it("leaves GROK_SHELL unset on POSIX when the host is /bin/sh", () => {
+    expect(grokShellEnvValue(true, "linux")).toBeUndefined();
   });
   it("sets nothing on POSIX, whatever shell we resolved", () => {
-    // Upstream builds the model-facing `Shell:` from `$SHELL` on Unix, and
-    // reads GROK_SHELL there as a PATH to a shell binary that it validates as
-    // executable — so a bare `bash` never steered anything. Three review rounds
-    // flagged the mismatch it looked like it was fixing; the answer was that
-    // running `$SHELL` IS the alignment, not that a better value existed.
-    for (const shell of ["/bin/zsh", "/usr/bin/fish", "/bin/sh", ""]) {
-      expect(grokShellEnvValue(true, "linux", { SHELL: shell })).toBeUndefined();
-      expect(grokShellEnvValue("/bin/bash", "darwin", { SHELL: shell })).toBeUndefined();
-    }
+    // This replaces a PR assertion that GROK_SHELL carries the dialect on
+    // POSIX. It does not: upstream builds the model-facing `Shell:` from
+    // `$SHELL` on Unix (`resolve_shell_display`) and reads GROK_SHELL there as
+    // a PATH to a shell binary, validated as executable — so a bare `zsh`
+    // never reached the model. Running the shell `$SHELL` names is the
+    // alignment, which is what the rest of this PR does.
+    expect(grokShellEnvValue("/bin/zsh", "darwin")).toBeUndefined();
+    expect(grokShellEnvValue("/opt/homebrew/bin/bash", "linux")).toBeUndefined();
+    expect(grokShellEnvValue(true, "linux")).toBeUndefined();
   });
-
+  it("refuses a $SHELL whose grammar is not POSIX", () => {
+    // `posixSpawnArgv` hands the agent's POSIX script to this shell as an
+    // explicit `-c` argument, so an unrecognised grammar breaks commands that
+    // work today rather than merely running them somewhere else.
+    for (const s of ["/usr/bin/fish", "/usr/local/bin/nu", "/bin/tcsh", "/usr/bin/pwsh"]) {
+      expect(posixShellFromEnv(s)).toBe(true);
+    }
+    expect(posixShellFromEnv("/bin/zsh")).toBe("/bin/zsh");
+    expect(posixShellFromEnv("/opt/homebrew/bin/bash")).toBe("/opt/homebrew/bin/bash");
+  });
   it("returns undefined for an unrecognized Windows shell path", () => {
     expect(grokShellEnvValue("C:\\weird\\thing.exe", "win32")).toBeUndefined();
+  });
+});
+
+describe("posixShellFromEnv", () => {
+  it("keeps Node's /bin/sh fallback for empty, relative, or sh paths", () => {
+    expect(posixShellFromEnv(undefined)).toBe(true);
+    expect(posixShellFromEnv("")).toBe(true);
+    expect(posixShellFromEnv("zsh")).toBe(true);
+    expect(posixShellFromEnv("/bin/sh")).toBe(true);
+    expect(posixShellFromEnv("/usr/bin/sh")).toBe(true);
+  });
+  it("returns an absolute login shell path", () => {
+    expect(posixShellFromEnv("/bin/zsh")).toBe("/bin/zsh");
+    expect(posixShellFromEnv("  /usr/bin/zsh  ")).toBe("/usr/bin/zsh");
+  });
+});
+
+describe("unwrapGrokBashLoginWrapper", () => {
+  it("unwraps grok's /bin/bash -lc payload", () => {
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "echo hi"')).toBe("echo hi");
+  });
+
+  it("unwraps bash -l -c, -cl, and --login -c", () => {
+    expect(unwrapGrokBashLoginWrapper("bash -l -c echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("bash -cl 'echo hi'")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("bash --login -c echo hi")).toBe("echo hi");
+    expect(unwrapGrokBashLoginWrapper("/usr/bin/env bash -lc echo hi")).toBe("echo hi");
+  });
+
+  it("peels POSIX nested single quotes in the inner script", () => {
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'it'\\''s'")).toBe("it's");
+  });
+
+  it("leaves non-wrappers alone", () => {
+    expect(unwrapGrokBashLoginWrapper("echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("bash --version")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("bash script.sh")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("bash -c echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/zsh -lc echo hi")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("echo /bin/bash -lc foo")).toBeUndefined();
+  });
+
+  it("unwraps only the outer grok layer", () => {
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc '/bin/bash -lc echo hi'")).toBe(
+      "/bin/bash -lc echo hi",
+    );
+  });
+});
+
+describe("posixSpawnArgv", () => {
+  it("runs the inner script under $SHELL, not bash -lc", () => {
+    expect(posixSpawnArgv("/bin/bash -lc 'echo hi'", "/bin/zsh")).toEqual({
+      file: "/bin/zsh",
+      args: ["-c", "echo hi"],
+    });
+  });
+
+  it("passes a raw command through to $SHELL -c", () => {
+    expect(posixSpawnArgv("echo hi", "/bin/zsh")).toEqual({
+      file: "/bin/zsh",
+      args: ["-c", "echo hi"],
+    });
+  });
+
+  it("uses /bin/sh when the host is Node's fallback", () => {
+    expect(posixSpawnArgv("/bin/bash -lc echo hi", true)).toEqual({
+      file: "/bin/sh",
+      args: ["-c", "echo hi"],
+    });
+  });
+});
+
+const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
+  it("reports $0 as the host shell, not /bin/bash", async () => {
+    const m = new TerminalManager();
+    const { terminalId } = m.create({
+      command: `/bin/bash -lc 'printf %s "$0"'`,
+    });
+    const { exitCode } = await m.waitForExit(terminalId);
+    expect(exitCode).toBe(0);
+    const out = m.output(terminalId).output.trim();
+    expect(out).not.toMatch(/bash$/);
+    const host = posixShellFromEnv(process.env.SHELL);
+    const expected = host === true ? "/bin/sh" : host;
+    expect(out).toBe(expected);
+    m.release(terminalId);
   });
 });
 

@@ -16892,11 +16892,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // so the dialect hint realigns on the next session — acceptable for a rare
     // escape-hatch toggle.
     if (!("GROK_SHELL" in env)) {
-      // `env`, not `process.env`: the helper decides whether we ran `$SHELL`
-      // itself or a fallback by comparing the two, and a workspace `.env` that
-      // sets SHELL is the environment grok will actually see. Comparing against
-      // the host's own SHELL there would answer for the wrong process.
-      const grokShell = grokShellEnvValue(resolvedTerminalShell(), process.platform, env);
+      const grokShell = grokShellEnvValue(resolvedTerminalShell(), process.platform);
       if (grokShell) env["GROK_SHELL"] = grokShell;
     }
 

@@ -292,12 +292,12 @@ function assert(cond, msg) { if (!cond) throw new Error(msg); }
 // grok: it drives the REAL compiled `out/terminal-manager.js` the extension ships
 // against the actual OS shell, proving on Windows that a grok-issued command runs
 // under PowerShell (pwsh → powershell), where a PowerShell-only pipeline + cmdlet
-// succeed that cmd.exe would have failed. On POSIX it just confirms /bin/sh is
-// unchanged. Deterministic (we issue the commands), so it's a real release gate.
+// succeed that cmd.exe would have failed. On POSIX it confirms $SHELL (or
+// /bin/sh) is the host. Deterministic (we issue the commands), so it's a real release gate.
 async function testTerminalShell() {
-  let TerminalManager, resolveTerminalShell;
+  let TerminalManager, resolveTerminalShell, posixShellFromEnv;
   try {
-    ({ TerminalManager, resolveTerminalShell } = require(path.join(REPO, "out", "terminal-manager.js")));
+    ({ TerminalManager, resolveTerminalShell, posixShellFromEnv } = require(path.join(REPO, "out", "terminal-manager.js")));
   } catch (e) {
     throw new Skip("out/terminal-manager.js not built — run `npm run compile` (" + e.message + ")");
   }
@@ -314,7 +314,7 @@ async function testTerminalShell() {
       return undefined;
     }
   };
-  const shell = resolveTerminalShell(process.platform, which);
+  const shell = resolveTerminalShell(process.platform, which, "auto", process.env.SHELL);
 
   const m = new TerminalManager();
   const run = async (command) => {
@@ -326,10 +326,11 @@ async function testTerminalShell() {
 
   try {
     if (process.platform !== "win32") {
-      assert(shell === true, `POSIX host should be /bin/sh (true), got ${JSON.stringify(shell)}`);
+      const expected = posixShellFromEnv(process.env.SHELL);
+      assert(shell === expected, `POSIX host should be $SHELL or /bin/sh, got ${JSON.stringify(shell)}`);
       const r = await run("printf '%s' OK_POSIX");
-      assert(r.exitCode === 0 && /OK_POSIX/.test(r.output), `sh command failed: ${JSON.stringify(r)}`);
-      return "POSIX host = /bin/sh (unchanged); sh command ran";
+      assert(r.exitCode === 0 && /OK_POSIX/.test(r.output), `POSIX command failed: ${JSON.stringify(r)}`);
+      return `POSIX host = ${shell === true ? "/bin/sh" : shell}; command ran`;
     }
 
     // Windows: must resolve to a PowerShell, never cmd.exe.
