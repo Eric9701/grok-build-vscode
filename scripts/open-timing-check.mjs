@@ -287,10 +287,19 @@ try {
   // fast the machine is, and a fast enough machine would fail a correct build.
   // The heavy meta is still what makes the window comfortably measurable.
   const widestResolve = Math.max(...clicked.map((c) => c.resolveMs));
+  // A FLOOR, not just non-zero. With the wiring removed `startSessionBody`
+  // still makes its own clock a moment before measuring `resolve`, and a
+  // scheduler pause of half a millisecond rounds that to `1ms` — so `> 0` can
+  // pass on a broken build. The floor is justified by the fixture rather than
+  // by machine speed: the 1.4MB `session-meta.json` this check writes costs
+  // ~12ms to read and parse, and the cold-open path reads it before
+  // `startSession`. Measured 11-264ms across both platforms; 5ms is well under
+  // the smallest real value and well above the rounding it must reject.
   assert.ok(
-    widestResolve > 0,
-    `every rail open reported resolve 0ms — the open clock is no longer started ` +
-      `by openSession, so the pre-start window is unmeasured again`,
+    widestResolve >= 5,
+    `widest resolve was ${widestResolve}ms against a 1.4MB session-meta.json — ` +
+      `the open clock is no longer started by openSession, so the pre-start ` +
+      `window is unmeasured again`,
   );
   log(`PASS — ${lines.length} real lines, every one accounting for its own total; widest resolve ${widestResolve}ms`);
   console.log("\n----- what the line does NOT cover -----");

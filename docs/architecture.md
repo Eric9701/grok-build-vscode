@@ -676,11 +676,13 @@ the steady-state fix.
   `shell:true` -> `/bin/sh` when `$SHELL` is absent, relative, not a regular file, or outside the
   POSIX-grammar allowlist (fish/nushell/tcsh/pwsh — the agent writes POSIX). It
   also sets **`GROK_SHELL`** in grok's spawn env (the pure `grokShellEnvValue`)
-  to match that shell, so the agent writes the correct dialect instead of
-  guessing from its own host detection (§2.9) — on POSIX that means *unset* when
-  we run `$SHELL` (its detection already reads `$SHELL` and agrees) and `bash`
-  only on the `/bin/sh` fallback, where its detection would name a shell we are
-  not running. `cli-locator.ts` prefers `HOME`/`USERPROFILE` env over
+  to match that shell **on Windows**, so the agent writes the correct dialect
+  instead of guessing from its own host detection (§2.9). On POSIX it is never
+  set: upstream builds the model-facing `Shell:` from `$SHELL` on Unix and reads
+  `GROK_SHELL` there as a path to a shell binary, so running the shell `$SHELL`
+  names is itself the alignment. The residual is the fallback — a fish `$SHELL`
+  leaves grok describing fish while we run sh — and no value of the variable
+  closes it on Unix. `cli-locator.ts` prefers `HOME`/`USERPROFILE` env over
   `os.homedir()` so tests can override paths.
 - **Reasoning effort switches live where the CLI supports it.** Changing effort no
   longer restarts the process: `client.setReasoningEffort` sends `session/set_model`

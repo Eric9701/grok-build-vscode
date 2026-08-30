@@ -1,5 +1,5 @@
 import { ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, statSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import * as os from "node:os";
 
@@ -166,7 +166,12 @@ export function resolveTerminalShell(
  */
 function isRegularFile(p: string): boolean {
   try {
-    return statSync(p).isFile();
+    if (!statSync(p).isFile()) return false;
+    // And actually runnable. A regular file we cannot execute fails `spawn`
+    // with EACCES on every command instead of falling back — the comment above
+    // promised this and the check did not deliver it.
+    accessSync(p, fsConstants.X_OK);
+    return true;
   } catch {
     return false;
   }
