@@ -4,7 +4,19 @@ import { StringDecoder } from "node:string_decoder";
 import * as os from "node:os";
 
 export interface TerminalCreateParams {
-  command: string; // single shell-quoted string per ACP
+  command: string; // the program, or a shell-quoted string when `args` is absent
+  /**
+   * ACP's structured argv. We ignored it, which meant a conforming
+   * `{command:"npm", args:["test","--coverage"]}` ran a bare `npm` — a real bug
+   * for any agent that sends it, and every adapter here shares this manager.
+   *
+   * It is also the shape that makes the whole unwrapping problem disappear:
+   * when the boundaries survive, there is nothing to decode and nothing to
+   * guess. Grok flattens its wrapper into `command` today; if it sent
+   * `{command:"/bin/bash", args:["-lc", script]}` instead, `parseOneShellWord`
+   * would have no work to do.
+   */
+  args?: string[];
   env?: Array<{ name: string; value: string }>;
   cwd?: string;
   outputByteLimit?: number;
@@ -515,7 +527,12 @@ export class TerminalManager {
     // `process.platform` (not `deps.platform`): kill-plan tests inject win32
     // on a POSIX box and still have to spawn a real local command.
     let proc: ChildProcess;
-    if (process.platform === "win32") {
+    if (params.args && params.args.length > 0) {
+      // Structured argv: no shell, and nothing to parse. The agent has already
+      // told us where each argument begins and ends, so introducing a shell
+      // here would only create quoting to get wrong.
+      proc = spawn(params.command, params.args, { cwd, env, detached, shell: false });
+    } else if (process.platform === "win32") {
       proc = spawn(params.command, { cwd, env, shell: terminalShell(), detached });
     } else {
       const { file, args } = posixSpawnArgv(params.command, terminalShell());
