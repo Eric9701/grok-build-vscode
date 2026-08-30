@@ -314,7 +314,8 @@ describe("what we say when a provider cannot be signed in from here", () => {
 
     const cloud = noRemoteSignInMessage("Claude", { isCloud: true });
     expect(cloud).not.toContain("at your computer");
-    expect(cloud).toContain("cloud environment");
+    expect(cloud).toContain("cloud machines");
+    expect(cloud).toContain("working on adding it");
     // Says what DOES work, so it is a next step rather than a refusal.
     expect(cloud).toMatch(/Grok and Codex/);
   });
