@@ -15120,7 +15120,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       },
       remoteClientLeft: (clientId) => this.releaseRemoteClient(clientId),
       remoteClientRoster: (clientIds) => this.retainRemoteClients(clientIds),
-      sweepEmptySessions: (cwd) => this.sweepEmptySessions(cwd),
+      // Asking for the sweep by name means now — see the `force` note there.
+      sweepEmptySessions: (cwd) => this.sweepEmptySessions(cwd, { force: true }),
       workspaceRoot: () => this.workspaceRoot(),
     };
   }
@@ -15515,7 +15516,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  right now, one younger than {@link SWEEP_MIN_AGE_MS}, a renamed or pinned
    *  one, a worktree session, or a subagent's transcript. Best-effort
    *  throughout: a locked directory is logged and skipped. */
-  private sweepEmptySessions(cwd: string = this.workspaceRoot()): void {
+  private sweepEmptySessions(
+    cwd: string = this.workspaceRoot(),
+    opts: { force?: boolean } = {},
+  ): void {
     if (!cwd) return;
     const repoKey = normalizeRepoPath(cwd);
     // THROTTLED, because the per-open frequency was buying nothing.
@@ -15536,9 +15540,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // `discardRestartedEmptySession` / `removeSessionFromDisk`, which delete one
     // known id immediately and are untouched here. This is the periodic sweep of
     // shells left by earlier runs, and periodic is what it now is.
+    //
+    // `force` is for a caller that NAMES the sweep, which means now. The
+    // throttle is about the incidental callers on the open path; applying it to
+    // a deliberate request makes an explicit call silently do nothing, which is
+    // the shape of a bug nobody can find later. The integration gate caught
+    // exactly that: it calls the sweep to assert what it deletes, an earlier
+    // incidental sweep had already stamped the repo, and it deleted nothing.
     const startedAt = Date.now();
     const lastSweep = this.lastSweepAt.get(repoKey) ?? 0;
-    if (startedAt - lastSweep < GrokSidebar.SWEEP_INTERVAL_MS) return;
+    if (!opts.force && startedAt - lastSweep < GrokSidebar.SWEEP_INTERVAL_MS) return;
     this.lastSweepAt.set(repoKey, startedAt);
     const grokHome = resolveGrokHome(process.env);
     const log = (m: string) => this.host.appendLine(m);
