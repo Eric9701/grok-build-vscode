@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
-  activeMcpRemoteDir,
+  mcpRemoteDirs,
   authorizeMcpRemote,
   connectorsLackingOAuthToken,
   mcpServerUrlHash,
@@ -645,16 +645,38 @@ describe("connectorsLackingOAuthToken — never re-prompt a connector we cannot 
     return { versionDirs: () => dirs, hasFile: (p: string) => set.has(p) };
   }
 
-  it("takes the most recently written version directory, not the pinned spec", () => {
-    // mcp-remote@0.1.37 reports itself as "0.1.36", so the spec cannot name the
-    // directory. The one being written is the one in use.
-    expect(activeMcpRemoteDir([
+  it("considers every version directory, not a guess at the active one", () => {
+    // Picking one by directory mtime was wrong twice: mcp-remote@0.1.37 reports
+    // itself as "0.1.36" so the spec does not name the directory, AND a token
+    // refresh rewrites the file without touching the parent's mtime, so an
+    // unrelated directory can stay "newest" for ever.
+    expect(mcpRemoteDirs([
       { name: "mcp-remote-0.2.5", mtimeMs: 100 },
       { name: "mcp-remote-0.1.36", mtimeMs: 900 },
       { name: "not-ours", mtimeMs: 9999 },
-    ])).toBe("mcp-remote-0.1.36");
-    expect(activeMcpRemoteDir([])).toBeUndefined();
-    expect(activeMcpRemoteDir([{ name: "unrelated", mtimeMs: 5 }])).toBeUndefined();
+    ])).toEqual(["mcp-remote-0.1.36", "mcp-remote-0.2.5"]);
+    expect(mcpRemoteDirs([])).toEqual([]);
+    expect(mcpRemoteDirs([{ name: "unrelated", mtimeMs: 5 }])).toEqual([]);
+  });
+
+  it("does not withhold a connector whose token lives in another version directory", () => {
+    // The refresh case: the token is current, but it sits in a directory whose
+    // own mtime is older than an abandoned one. Guessing withheld a working
+    // connector from every session; looking everywhere cannot.
+    const root = join("/home/dev", ".mcp-auth");
+    const lapsed = connectorsLackingOAuthToken({
+      store,
+      home: "/home/dev",
+      env: {},
+      fs: fakeFs(
+        [{ name: "mcp-remote-0.2.9", mtimeMs: 9000 }, { name: "mcp-remote-0.1.36", mtimeMs: 10 }],
+        [
+          join(root, "mcp-remote-0.1.36", `${mcpServerUrlHash(LINEAR)}_tokens.json`),
+          join(root, "mcp-remote-0.1.36", `${mcpServerUrlHash(NOTION)}_tokens.json`),
+        ],
+      ),
+    });
+    expect([...lapsed]).toEqual([]);
   });
 
   it("hashes an endpoint the way the real store does", () => {
@@ -673,6 +695,7 @@ describe("connectorsLackingOAuthToken — never re-prompt a connector we cannot 
         [join(root, `${mcpServerUrlHash(NOTION)}_tokens.json`)],
       ),
     });
+    // Withheld only because there is no token for it in ANY version directory.
     expect([...lapsed]).toEqual(["linear"]);
   });
 

@@ -344,26 +344,27 @@ export function mcpAuthRoot(env: NodeJS.ProcessEnv, home: string): string {
 }
 
 /**
- * Which `mcp-remote-<version>` directory the proxy is actually writing.
+ * Every `mcp-remote-<version>` directory in the store, newest first.
  *
- * NOT derived from `MCP_REMOTE_PACKAGE`. The pinned `mcp-remote@0.1.37` reports
- * its own version as the string `0.1.36`, so the spec does not name the
- * directory — that is measured, and it is exactly the coupling that makes
- * guessing wrong. The one thing that is reliably true is that the directory in
- * use is the one being written, so take the most recently touched.
+ * ALL of them, deliberately — an earlier version of this picked the one with the
+ * newest directory mtime and treated a missing token there as authoritative.
+ * That premise is wrong twice over. The pinned `mcp-remote@0.1.37` reports its
+ * own version as `0.1.36`, so the spec does not name the directory; and a token
+ * REFRESH rewrites the token file with `fs.writeFile`, which does not touch the
+ * parent directory's mtime at all. So on a machine with several historical
+ * version directories an unrelated one can stay "newest" indefinitely, and a
+ * connector with a perfectly good token gets withheld from every session.
  *
- * `undefined` when there is nothing to choose from, and every caller must treat
- * that as "cannot tell" rather than "nothing is authorized".
+ * Found in review. The claim that the old code failed open was simply untrue:
+ * with more than one directory it guessed, and a wrong guess failed CLOSED.
  */
-export function activeMcpRemoteDir(
+export function mcpRemoteDirs(
   dirs: readonly { name: string; mtimeMs: number }[],
-): string | undefined {
-  let best: { name: string; mtimeMs: number } | undefined;
-  for (const dir of dirs) {
-    if (!dir.name.startsWith("mcp-remote-")) continue;
-    if (!best || dir.mtimeMs > best.mtimeMs) best = dir;
-  }
-  return best?.name;
+): string[] {
+  return dirs
+    .filter((dir) => dir.name.startsWith("mcp-remote-"))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .map((dir) => dir.name);
 }
 
 /**
@@ -378,14 +379,20 @@ export function mcpServerUrlHash(endpoint: string): string {
 }
 
 /**
- * OAuth connectors in `store` that have NO token file — the ones mcp-remote
- * would re-authorize, with a browser, on the next spawn.
+ * OAuth connectors in `store` that have NO token file ANYWHERE in the auth
+ * store — the ones mcp-remote would re-authorize, with a browser, on the next
+ * spawn.
  *
- * **Fails open, always.** No store directory, an unreadable one, no md5 (a
- * FIPS-restricted Node), anything unexpected: the answer is the empty set and
- * every connector is passed through exactly as before. A false positive here
- * silently removes a working connector, which is worse than the prompt this
- * exists to prevent — so uncertainty resolves toward doing nothing.
+ * **Anywhere is the whole design.** A token in any version directory means this
+ * connector has been authorized and there is something that can be refreshed, so
+ * it is passed through. Only a connector with no token in any of them is
+ * withheld, which is the state the owner actually hit: a `code_verifier` and a
+ * lock and no token at all, re-prompting on every spawn for ever.
+ *
+ * That makes failing open structural rather than a claim. No store directory, an
+ * unreadable one, several ambiguous ones, no md5 (a FIPS-restricted Node),
+ * anything unexpected: nothing is withheld. A false positive silently removes a
+ * working connector, which is worse than the prompt this exists to prevent.
  */
 export function connectorsLackingOAuthToken(opts: {
   store: ConnectedConnectorStore;
@@ -397,16 +404,17 @@ export function connectorsLackingOAuthToken(opts: {
   try {
     const fs = opts.fs ?? defaultAuthStoreFs;
     const root = mcpAuthRoot(opts.env ?? process.env, opts.home ?? homedir());
-    const versionDir = activeMcpRemoteDir(fs.versionDirs(root));
-    if (!versionDir) return empty;
+    const versionDirs = mcpRemoteDirs(fs.versionDirs(root));
+    if (!versionDirs.length) return empty;
     const out = new Set<string>();
     for (const connector of TIER1_CONNECTORS) {
       if (connectorAuth(connector) !== "oauth") continue;
       const record = opts.store[connector.id];
       if (!record) continue;
       const endpoint = record.endpoint || connector.endpoint;
-      const file = join(root, versionDir, `${mcpServerUrlHash(endpoint)}_tokens.json`);
-      if (!fs.hasFile(file)) out.add(connector.id);
+      const file = `${mcpServerUrlHash(endpoint)}_tokens.json`;
+      const authorizedSomewhere = versionDirs.some((dir) => fs.hasFile(join(root, dir, file)));
+      if (!authorizedSomewhere) out.add(connector.id);
     }
     return out;
   } catch {

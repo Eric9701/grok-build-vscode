@@ -6965,13 +6965,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    */
   async logout(
     provider: AcpProvider = "grok",
-    opts: { fromRemote?: boolean } = {},
+    opts: { fromRemote?: boolean; report?: (text: string) => void } = {},
   ): Promise<void> {
+    // Every failure below goes through here. A cloud environment has nobody at
+    // its desk: a modal blocks on an answer that never comes, and an error
+    // dialog is simply never seen — so the remote closed Settings believing it
+    // had signed out while the account stayed connected. Caught in review, after
+    // only the CONFIRMATION modal was made remote-aware.
+    const fail = (text: string) => {
+      this.host.appendLine(`[providers] ${text}`);
+      if (opts.report) opts.report(text);
+      else void this.host.showErrorMessage(text);
+    };
     if (isAdapterProvider(provider)) {
       const cliPath = this.locateProvider(provider);
       const name = providerDisplayName(provider);
       if (!cliPath) {
-        await this.host.showErrorMessage(`${name} sign-out could not run because the ${name} CLI was not found. The account remains connected.`);
+        fail(`${name} sign-out could not run because the ${name} CLI was not found. The account remains connected.`);
         return;
       }
       // The modal is the DESK's confirmation step. A cloud environment has
@@ -6992,16 +7002,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "EACCES" || code === "EPERM") {
-          this.host.createTerminal({ name: `${name} Logout`, shellPath: cliPath, shellArgs: logoutArgs }).show();
-          await this.host.showErrorMessage(
-            `${name} sign-out could not be observed, so it was opened in a terminal. The account remains connected until sign-out is confirmed.`,
-          );
+          // The terminal fallback is a DESK affordance: it works because someone
+          // is there to read it. On a cloud box it opens a window nobody sees and
+          // reports success that never happened, so that path is desk-only.
+          if (!opts.fromRemote) {
+            this.host.createTerminal({ name: `${name} Logout`, shellPath: cliPath, shellArgs: logoutArgs }).show();
+            fail(`${name} sign-out could not be observed, so it was opened in a terminal. The account remains connected until sign-out is confirmed.`);
+          } else {
+            fail(`${name} sign-out could not run here: ${errorDetail(error)}. The account remains connected.`);
+          }
         } else {
-          await this.host.showErrorMessage(`${name} sign-out failed: ${errorDetail(error)}. The account remains connected.`);
+          fail(`${name} sign-out failed: ${errorDetail(error)}. The account remains connected.`);
         }
+        this.postProviderState();
         return;
       }
-      await this.finishProviderLogout(provider);
+      await this.finishProviderLogout(provider, opts.report);
       return;
     }
     const cliPath = this.locateProvider("grok");
@@ -7019,7 +7035,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // shellPath/shellArgs, not sendText — a quoted path typed into PowerShell
       // is parsed as a string literal rather than an invocation.
       this.host.createTerminal({ name: "Grok Logout", shellPath: cliPath, shellArgs: ["logout"] });
-      await this.finishProviderLogout("grok");
+      await this.finishProviderLogout("grok", opts.report);
       return;
     }
     // A terminal nobody can see is not evidence. Run it and WAIT, so the
@@ -7029,14 +7045,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     try {
       await execGrokCli(cliPath, ["logout"], { timeout: 30_000, windowsHide: true });
     } catch (error) {
-      this.host.appendLine(`[providers] Grok sign-out failed: ${errorDetail(error)}`);
+      fail(`Grok sign-out failed: ${errorDetail(error)}. The account remains connected.`);
       this.postProviderState();
       return;
     }
-    await this.finishProviderLogout("grok");
+    await this.finishProviderLogout("grok", opts.report);
   }
 
-  private async finishProviderLogout(provider: AcpProvider): Promise<void> {
+  private async finishProviderLogout(
+    provider: AcpProvider,
+    report?: (text: string) => void,
+  ): Promise<void> {
     this.setProviderConnectedInMemory(provider, false);
     const reset = this.resetProviderSessionsAfterLogout(provider);
     try {
@@ -7045,9 +7064,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       const providerName = providerDisplayName(provider);
       const detail = errorDetail(error);
       this.host.appendLine(`[providers] ${providerName} signed out, but saving connection state failed: ${detail}`);
-      await this.host.showErrorMessage(
-        `${providerName} signed out and its conversations were reset, but the disconnected state could not be saved: ${detail}`,
-      );
+      const text = `${providerName} signed out and its conversations were reset, but the disconnected state could not be saved: ${detail}`;
+      // Same reason as the failures above: on a cloud box a dialog is nobody's.
+      if (report) report(text);
+      else await this.host.showErrorMessage(text);
     }
     await reset;
     this.postSessionsList();
@@ -10077,7 +10097,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // there is NOBODY AT THE MACHINE to answer a modal.
         await this.logout(
           isAcpProvider(msg.provider) ? msg.provider : "grok",
-          { fromRemote: origin === "remote" },
+          {
+            fromRemote: origin === "remote",
+            // Where a failure has to land. Host dialogs are invisible on a cloud
+            // box, so the requester is the only surface that can be told.
+            report: (text) => {
+              if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
+              else void this.host.showErrorMessage(text);
+            },
+          },
         );
         break;
       case "refreshProviders":
@@ -15356,13 +15384,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     this.postMode();
     this.postRepoCatalog();
-    // NOT postSessionsList. Focusing a conversation does not change which
-    // conversations exist or what order they are in — only which one is
-    // highlighted, and both clients take that from the `sessionName` frame this
-    // path already sends (chat.js `case "sessionName"`, projects-rail.js the
-    // same). Rebuilding the list here walked every session directory on disk to
-    // produce a list identical to the one already on screen, on the thread that
-    // paints the window (#133/#131).
+    // The IDENTITY frame, sent directly rather than as a side effect.
+    //
+    // Both clients hold their rail transition open until they learn which
+    // conversation is now active — from `sessionName`, or from a sessions list's
+    // `activeId` (chat.js `noteRailTransitionSessionName`, projects-rail.js
+    // `case "sessionName"`). That frame used to ride inside postSessionsList,
+    // which is a whole catalog walk to deliver one id, and dropping the walk
+    // dropped the id with it: switching to an already-live conversation hung the
+    // transition for its full timeout and then snapped the highlight back to the
+    // previous one while the host was focused on the new one. Caught in review,
+    // after a commit message asserted this path already sent it.
+    //
+    // Sending it here is the point of the change rather than an exception to it:
+    // the small frame the client actually needs, instead of rebuilding a list
+    // that has not changed.
+    this.postSessionName(session);
   }
 
   /**

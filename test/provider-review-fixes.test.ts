@@ -155,15 +155,20 @@ describe("multi-provider review regressions", () => {
   it("observes Codex logout success before entering the synchronous logout reset", () => {
     const body = sidebar.slice(sidebar.indexOf("async logout("), sidebar.indexOf("dispose(): void"));
     const exec = body.indexOf("await execGrokCli(cliPath, logoutArgs");
-    const disconnect = body.indexOf("await this.finishProviderLogout(provider)");
+    // Matched without its argument list: the invariant is the ORDER — the CLI is
+    // observed to succeed before the reset — not the call's exact shape. Pinning
+    // the full literal broke when a `report` callback was threaded through so a
+    // cloud environment's failures reach the person who asked, which changed
+    // nothing about the ordering this guards.
+    const disconnect = body.indexOf("await this.finishProviderLogout(provider");
     expect(exec).toBeGreaterThan(-1);
     expect(disconnect).toBeGreaterThan(exec);
     expect(body.slice(exec, disconnect)).toContain("catch (error)");
     expect(body).toContain("The account remains connected");
     expect(body).toContain("this.locateProvider(provider)");
     expect(body).toContain('this.locateProvider("grok")');
-    expect(body).toContain("await this.finishProviderLogout(provider)");
-    expect(body).toContain('await this.finishProviderLogout("grok")');
+    expect(body).toContain("await this.finishProviderLogout(provider");
+    expect(body).toContain('await this.finishProviderLogout("grok"');
   });
 
   it("posts provider-specific recovery UI after a second auth failure", () => {
