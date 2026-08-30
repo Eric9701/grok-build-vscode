@@ -292,8 +292,18 @@ describe("grok 1.0.3 multiplexed subagent stream (sanitized live capture)", () =
     expect(prosePaints).toBe(0);
     expect(thoughtPaints).toBe(0);
 
+    // The counters are fed by a MutationObserver, so "some paint happened" is a
+    // question about DELIVERY, not about the product — and delivery runs late
+    // under full-suite load, which failed this test on macOS while the
+    // coalescing it actually checks was working. Wait for the first paint,
+    // bounded; the assertion that matters is the UPPER bound below, which is
+    // the coalescing contract and is unaffected by waiting.
     await nextFrame(window);
     await Promise.resolve();
+    for (let i = 0; i < 60 && (prosePaints === 0 || thoughtPaints === 0); i++) {
+      await nextFrame(window);
+      await Promise.resolve();
+    }
     expect(prosePaints).toBeGreaterThan(0);
     expect(prosePaints).toBeLessThan(5);
     expect(thoughtPaints).toBeGreaterThan(0);

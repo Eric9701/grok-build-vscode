@@ -152,7 +152,7 @@ export function resolveTerminalShell(
   exists: (p: string) => boolean = existsSync,
 ): string | true {
   if (pref === "cmd") return true; // cmd.exe on Windows / /bin/sh on POSIX
-  if (platform !== "win32") return posixLoginShell(env, exists) ?? true;
+  if (platform !== "win32") return posixUserShell(env, exists) ?? true;
   return resolve("pwsh") ?? resolve("powershell") ?? true;
 }
 
@@ -165,7 +165,12 @@ export function resolveTerminalShell(
 const POSIX_SHELL_NAMES = new Set(["sh", "bash", "zsh", "ksh", "ksh93", "mksh", "dash", "ash"]);
 
 /**
- * The user's login shell, when we can safely run the agent's commands in it.
+ * The shell `$SHELL` names, when we can safely run the agent's commands in it.
+ *
+ * NOT a login shell, despite what `$SHELL` suggests: Node invokes it as
+ * `<shell> -c`, so `~/.zshrc` and `~/.bash_profile` are not sourced and a PATH
+ * set up there is not inherited. What changes is WHICH shell interprets the
+ * command — which is the whole of #140, because sdkman branches on it.
  *
  * Node's `shell: true` is `/bin/sh`, which on macOS is bash 3.2 — so a command
  * run by us takes a different profile branch than the same command in the
@@ -177,7 +182,7 @@ const POSIX_SHELL_NAMES = new Set(["sh", "bash", "zsh", "ksh", "ksh93", "mksh", 
  * Absolute path required — `$SHELL` is a path by definition, and resolving a
  * bare name against PATH would be a different (and guessier) feature.
  */
-function posixLoginShell(
+function posixUserShell(
   env: NodeJS.ProcessEnv,
   exists: (p: string) => boolean,
 ): string | undefined {
@@ -199,10 +204,10 @@ function posixLoginShell(
  * PowerShell syntax when we fall back to cmd) — setting `GROK_SHELL` in grok's
  * spawn env realigns the model's dialect hints with our shell (§2.9;
  * research/oss-surfaces-probe.cjs confirms it drives the first-message `Shell:`).
- * Pure. On POSIX the answer depends on whether we ran the login shell: if we
- * did, grok's own detection names the same shell and needs no override; if we
- * fell back to `/bin/sh` (a fish or nushell `$SHELL`), it would describe a
- * shell we are not running, so `bash` is set to realign it. Windows maps the
+ * Pure. On POSIX the answer depends on whether we ran the shell `$SHELL` names:
+ * if we did, grok's own detection names the same shell and needs no override;
+ * if we fell back to `/bin/sh` (a fish or nushell `$SHELL`), it would describe
+ * a shell we are not running, so `bash` is set to realign it. Windows maps the
  * resolved shell to grok's accepted override values (`pwsh`/`powershell`/`cmd`).
  */
 export function grokShellEnvValue(
@@ -210,9 +215,11 @@ export function grokShellEnvValue(
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
   if (platform !== "win32") {
-    // Running the login shell: grok's own detection reads `$SHELL` and so
-    // already names the shell we run — the two agree, and an override would
-    // only be a second chance to disagree.
+    // Running the shell `$SHELL` names: grok's own detection reads `$SHELL` and
+    // so already names the shell we run — the two agree, and an override would
+    // only be a second chance to disagree. (Running it is not LOGGING IN to it:
+    // Node invokes `<shell> -c`, so no profile is sourced. That is unchanged
+    // from `/bin/sh` and is why this fix moves the dialect, not the PATH.)
     if (resolved !== true) return undefined;
     // Falling back to `/bin/sh`, which happens when `$SHELL` is fish, nushell
     // or anything else non-POSIX. Now the detection and the truth diverge:

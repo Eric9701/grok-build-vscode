@@ -62,18 +62,28 @@ if (!process.env.SMALL_META) {
   const dir = path.join(qa.grokHome, "client-state");
   fs.mkdirSync(dir, { recursive: true });
   const target = Number(process.env.META_BYTES || 1468603);
-  const meta = {};
+  // Built by APPENDING, not by re-serialising the whole map each pass. The
+  // obvious `while (JSON.stringify(meta).length < target)` is quadratic and
+  // spent ~16 seconds here before Electron was even launched — long enough to
+  // look like the probe had hung.
+  const parts = [];
+  let size = 2; // the braces
   let i = 0;
-  while (JSON.stringify(meta).length < target) {
-    meta[`0000fill${String(i).padStart(4, "0")}-0000-4000-8000-0000000000${(i % 100).toString().padStart(2, "0")}`] = {
+  while (size < target) {
+    const key = `0000fill${String(i).padStart(4, "0")}-0000-4000-8000-0000000000${(i % 100).toString().padStart(2, "0")}`;
+    const entry = JSON.stringify({
       provider: "grok",
       providerCwd: `C:/Users/someone/projects/filler-project-${i}/nested/deeper/still`,
       autoName: `A synthesised conversation title number ${i}, long enough to weigh what a real one weighs`,
-    };
+    });
+    const chunk = `${parts.length ? "," : ""}${JSON.stringify(key)}:${entry}`;
+    parts.push(chunk);
+    size += chunk.length;
     i++;
   }
   const file = path.join(dir, "session-meta.json");
-  fs.writeFileSync(file, JSON.stringify(meta), "utf8");
+  fs.writeFileSync(file, `{${parts.join("")}}`, "utf8");
+  JSON.parse(fs.readFileSync(file, "utf8")); // it has to be a map the app can read
   log(`meta: wrote ${fs.statSync(file).size} bytes (${i} entries) to ${file}`);
 }
 
@@ -113,20 +123,23 @@ function parse(line) {
   return { phases, totalMs: Number(total[1]), events: Number(total[2]) };
 }
 
-const app = await electron.launch({
-  executablePath: electronExe,
-  args: [
-    mainJs,
-    `--workspace=${qa.project}`,
-    `--user-data-dir=${userData}`,
-    `--config-json=${path.join(userData, "test-config.json")}`,
-  ],
-  env,
-  timeout: 60000,
-});
-
+// The launch lives INSIDE the try: a launch that throws or times out used to
+// skip the cleanup entirely and leave both temporary trees on disk — the QA
+// fixture and a multi-megabyte synthesised metadata store, every failed run.
 let failure;
+let app;
 try {
+  app = await electron.launch({
+    executablePath: electronExe,
+    args: [
+      mainJs,
+      `--workspace=${qa.project}`,
+      `--user-data-dir=${userData}`,
+      `--config-json=${path.join(userData, "test-config.json")}`,
+    ],
+    env,
+    timeout: 60000,
+  });
   const page = await app.firstWindow({ timeout: 60000 });
   await page.setViewportSize({ width: 1440, height: 900 });
 
@@ -173,7 +186,10 @@ try {
     const before = openLines().length;
     const clickedAt = Date.now();
     await page.locator(".rail-session", { hasText: name }).first().click();
-    const got = await waitForOpenLines(page, before + 1);
+    // A click that is EXPECTED to log nothing must not wait the full timeout for
+    // it: the re-focus case is the documented success, and paying 60s for it
+    // made a passing run a minute longer for nothing.
+    const got = await waitForOpenLines(page, before + 1, requireLine ? 60000 : 4000);
     const line = got[before];
     if (!line) {
       // Returning to a conversation whose client is still alive takes the
@@ -253,11 +269,16 @@ try {
   // milliseconds, so a wired clock CANNOT report a near-zero resolve — and
   // unwiring it reports exactly zero.
   assert.ok(clicked.length >= 2, `only ${clicked.length} click(s) produced a timing line`);
+  // NON-ZERO, not "at least 25ms". The regression makes `resolve` exactly 0 —
+  // the phase is printed as 0ms when no caller owns a clock — so zero is the
+  // functional signal. A millisecond floor would have been a claim about how
+  // fast the machine is, and a fast enough machine would fail a correct build.
+  // The heavy meta is still what makes the window comfortably measurable.
   const widestResolve = Math.max(...clicked.map((c) => c.resolveMs));
   assert.ok(
-    process.env.SMALL_META || widestResolve >= 25,
-    `resolve never exceeded ${widestResolve}ms against a 1.4MB session-meta.json — ` +
-      `the open clock is no longer started by openSession`,
+    widestResolve > 0,
+    `every rail open reported resolve 0ms — the open clock is no longer started ` +
+      `by openSession, so the pre-start window is unmeasured again`,
   );
   log(`PASS — ${lines.length} real lines, every one accounting for its own total; widest resolve ${widestResolve}ms`);
   console.log("\n----- what the line does NOT cover -----");
@@ -276,7 +297,7 @@ try {
     console.error(`  (no log file at ${logPath})`);
   }
 } finally {
-  await app.close().catch(() => {});
+  if (app) await app.close().catch(() => {});
   // Both trees, not just the app's. Left behind, each run cost a QA fixture
   // plus a multi-megabyte synthesised metadata store.
   try { qa.cleanup(); } catch { /* best effort */ }

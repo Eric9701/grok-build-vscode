@@ -656,9 +656,13 @@ describe("desktop main wiring (source gates)", () => {
 
     const sidebar = fs.readFileSync(path.join(testRepoRoot, "src", "sidebar.ts"), "utf8");
     expect(sidebar).toContain("presentEmptyProjectState");
+    // Third fixed window into this one method, and the third to be broken by a
+    // few lines landing at its top rather than by anything it tests. It only
+    // has to clear the prologue and reach the refusal at ~1810 chars; the size
+    // is a search bound, not an assertion about layout.
     const startBody = sidebar.slice(
       sidebar.indexOf("private async startSessionBody("),
-      sidebar.indexOf("private async startSessionBody(") + 1800,
+      sidebar.indexOf("private async startSessionBody(") + 3000,
     );
     expect(startBody).toContain("presentEmptyProjectState(target)");
     expect(startBody).toContain("refused startSession");

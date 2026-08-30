@@ -2,10 +2,14 @@
  * Phase clock for opening a conversation. One in-memory summary line per open
  * on the Grok output channel — no store, no telemetry.
  *
- * The five costs, in order: previous process exit, `grok --version`, ACP
- * spawn+initialize, CLI `session/load`, host replay posts. Replay is labelled
- * `replay(post)` because there is no webview-complete signal; the clock stops
- * at the last replayed event posted. `now` is injectable so tests never sleep.
+ * The costs, in order: `resolve` (everything the CALLER spent before
+ * `startSession` — reservation, workspace queue, cwd resolution, the
+ * `session-meta.json` read), `consent` (the forced-auto-approve modal, i.e. a
+ * person reading a dialog), previous process exit, `prep`, `grok --version`,
+ * building the ACP client, spawn+initialize, CLI `session/load`, host replay
+ * posts. Replay is labelled `replay(post)` because there is no
+ * webview-complete signal; the clock stops at the last replayed event posted.
+ * `now` is injectable so tests never sleep.
  */
 
 export interface OpenPhase {
@@ -21,7 +25,7 @@ export function formatMs(ms: number): string {
 }
 
 /**
- * Fixed five-phase line so a paste always has the same names to grep.
+ * Fixed-shape line so a paste always has the same names to grep.
  * Zero-cost phases stay on the line (a missing name is not a 0ms name).
  *
  * The line ALWAYS ACCOUNTS FOR ITS OWN TOTAL: whatever the named phases do not
@@ -71,6 +75,21 @@ export class OpenClock {
 
   record(name: string, ms: number, note?: string): void {
     this.phases.push(note ? { name, ms, note } : { name, ms });
+  }
+
+  /**
+   * Forget the phases, keep the start.
+   *
+   * For the one caller that RE-ENTERS `startSessionBody` on the same clock (the
+   * Windows reactive downgrade). Without this the second pass appends its own
+   * `resolve`, `consent`, `dispose`… beside the first pass's, and the
+   * fixed-shape line comes out with every name twice and phases that overlap.
+   * Dropping them instead lets the next `resolve` — which is measured from the
+   * clock's start — absorb the failed attempt, the timeout and the downgrade as
+   * one honest number, and the line tiles its total again.
+   */
+  resetPhases(): void {
+    this.phases.length = 0;
   }
 
   totalMs(): number {

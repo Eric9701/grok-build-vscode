@@ -7838,6 +7838,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // `session-meta.json` read and the wait for the exclusive start lock are
     // all already on it, and all of them belong to `resolve`.
     const clock = startedClock ?? new OpenClock();
+    // A re-entry (the reactive downgrade below) arrives with the first pass's
+    // phases already on it. Drop them: `resolveMs` is measured from the clock's
+    // start, so it absorbs that whole failed attempt rather than duplicating it.
+    clock.resetPhases();
     const resolveMs = clock.totalMs();
     let consentMs = 0;
     // Desktop with no open folder: empty rail is valid — do not spawn grok
@@ -8941,6 +8945,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
               // reported only the successful second attempt and silently
               // dropped the timeout, the version read and the downgrade —
               // which is the slowest part of the open it was meant to explain.
+              // `startSessionBody` clears the phases on entry, so the second
+              // pass writes one set of names, not two.
               return await this.startSessionBody(resumeId, session, intent, clock); // same exclusive; do not re-enter the tail
             }
           } finally {
