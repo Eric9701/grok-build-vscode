@@ -138,15 +138,15 @@ export function deviceLoginPreflight(
   if (provider !== "codex") return undefined;
   return {
     reason:
-      "Codex needs one setting turned on before it can sign in here. It is off by "
-      + "default for everyone — OpenAI disables device-code sign-in unless you ask "
-      + "for it.",
+      "Codex needs one setting turned on before the code below will be accepted. "
+      + "It is off by default for everyone — OpenAI disables device-code sign-in "
+      + "unless you ask for it.",
     steps: [
       "Open ChatGPT and go to Settings → Security",
       // The setting sits at the very BOTTOM of a long page, and people reported
       // not finding it. `**` is rendered as bold by the panel.
       "Turn on \"Device code authorization for Codex\" **at the very bottom**",
-      "Come back and connect — the code appears here",
+      "Come back here and use the code to finish",
     ],
     url: "https://chatgpt.com/#settings/Security",
   };

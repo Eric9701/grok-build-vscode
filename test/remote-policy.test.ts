@@ -1364,6 +1364,11 @@ describe("a cloud environment is its own desk", () => {
     const promoted = (Object.keys(INBOUND_DISPOSITION) as (keyof typeof INBOUND_DISPOSITION)[])
       .filter((type) => !allowFromRemote(type, "full")
         && allowFromRemote(type, "full", { isCloud: true }));
-    expect(promoted).toEqual(["logout"]);
+    // logout: a cloud user must be able to sign an agent OUT from the only
+    // surface they have. refreshProviders: the promotion that makes a sign-in
+    // stick runs from this frame, and on a cloud machine nobody else can send
+    // it — withholding it made connected accounts read as disconnected after
+    // a refresh (owner, 2026-08-31).
+    expect([...promoted].sort()).toEqual(["logout", "refreshProviders"]);
   });
 });

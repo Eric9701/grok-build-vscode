@@ -1748,10 +1748,18 @@ export class GrokSidebar {
       handle?: DeviceLoginHandle;
       clientId?: string;
       last?: Extract<HostMsg, { type: "onboarding" }>["device"];
+      preflight?: Extract<HostMsg, { type: "onboarding" }>["device"] extends infer D
+        ? D extends { preflight?: infer P } ? P : never
+        : never;
       send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void;
     } = {
       clientId,
       send: (device) => {
+        // The setting-to-check travels with every card of this flow, so it is
+        // still on screen when the code is.
+        if (device && entry.preflight && !device.preflight) {
+          device = { ...device, preflight: entry.preflight };
+        }
         entry.last = device;
         const message: HostMsg = {
           type: "onboarding",
@@ -1785,12 +1793,15 @@ export class GrokSidebar {
     // wait for a failure almost everyone gets. It is advice, though, not a gate,
     // so the second attempt runs. If the setting is still off, the real failure
     // is classified and says so (classifyDeviceLoginFailure).
+    // Advice that RIDES ALONG with the flow rather than replacing it. It used
+    // to be sent on its own and return, so connecting Codex took two clicks:
+    // one to read the advice, another to actually start (owner, 2026-08-31).
+    // Now the first click starts the sign-in and the card carries the setting
+    // to check, which is the only ordering where the advice arrives in time to
+    // be useful — the code is worthless until that setting is on.
     const preflight = deviceLoginPreflight(provider, { isCloud });
-    if (preflight && !this.deviceLoginPreflightShown.has(provider)) {
-      this.deviceLoginPreflightShown.add(provider);
-      send({ status: "unavailable", message: preflight.reason, preflight: { ...preflight, steps: [...preflight.steps] } });
-      return;
-    }
+    if (preflight) this.deviceLoginPreflightShown.add(provider);
+    entry.preflight = preflight ? { ...preflight, steps: [...preflight.steps] } : undefined;
     if (unavailable || !plan) {
       // Not an error, and it must not read as one: the agent can still be
       // connected, just not from here. Saying which is the difference between
@@ -1886,6 +1897,11 @@ export class GrokSidebar {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       if (await this.reprobeProviderCredentials(provider)) {
         this.host.appendLine(`[${provider}] device login: credential verified`);
+        // Promote on evidence, exactly as the Providers refresh does. The probe
+        // just proved the account works; without this the persisted `connected`
+        // flag stays false, so Settings keeps offering Connect and never offers
+        // Sign out for an account that is plainly signed in (owner, 2026-08-31).
+        await this.setProviderConnected(provider, true);
         send({ status: "done" });
         return;
       }

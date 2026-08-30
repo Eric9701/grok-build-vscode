@@ -474,6 +474,13 @@ const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full
  */
 const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
   logout: "full",
+  // Re-observing the accounts is host-local on a desk because a phone should
+  // not be able to spawn CLI probes on somebody's laptop. On a cloud machine
+  // the remote is the ONLY user, and withholding it meant the promotion that
+  // makes a sign-in stick never ran there at all: connect an agent, refresh,
+  // and the page offered Connect again for an account that was signed in
+  // (owner, 2026-08-31). Read-only observation, promoting only on evidence.
+  refreshProviders: "full",
 };
 
 /** May this WebviewMsg type, arriving from a remote connection of `tier`, be

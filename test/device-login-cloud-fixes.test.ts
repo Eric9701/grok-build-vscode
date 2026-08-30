@@ -100,11 +100,12 @@ function mountSettings(env: Record<string, unknown>, opts: Record<string, unknow
   const doc = window.document as unknown as Document;
   const container = doc.createElement("div");
   doc.body.appendChild(container);
+  const { snapshotOverrides, ...mountOpts } = opts as { snapshotOverrides?: Record<string, unknown> };
   api.mount(container, {
-    snapshot: api.defaultSnapshot(),
+    snapshot: api.defaultSnapshot(snapshotOverrides || {}),
     env: api.defaultEnv(env),
     category: "providers",
-    ...opts,
+    ...mountOpts,
   });
   return { api, container, window };
 }
@@ -243,5 +244,94 @@ describe("a cloud machine tells the truth about its agents up front", () => {
     expect(container.querySelector('[data-id="providerClaudeRemote"]')).toBeTruthy();
     const grok = container.querySelector('[data-id="providerGrokRemote"]');
     expect(grok!.textContent).not.toContain("Recommended");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The whole state matrix, in one loop. The owner asked to see every button in
+// every configuration rather than reach them by clicking; these are the same
+// cases the scratchpad screenshot harness renders, asserted here so they stay
+// true.
+// ---------------------------------------------------------------------------
+
+const CLOUD = { remoteAgentSignIn: true, remoteAgentSignOut: true };
+const DESK = { remoteAgentSignIn: true };
+const prov = (id: string, extra: Record<string, unknown> = {}) => ({ id, connected: false, ...extra });
+const NONE = [prov("grok"), prov("codex"), prov("claude")];
+
+type Case = {
+  label: string;
+  providers: Array<Record<string, unknown>>;
+  deviceLogin: Record<string, unknown>;
+  caps: Record<string, unknown>;
+};
+
+const CASES: Case[] = [
+  { label: "fresh cloud machine", providers: NONE, deviceLogin: {}, caps: CLOUD },
+  { label: "grok starting", providers: NONE, deviceLogin: { grok: { status: "starting" } }, caps: CLOUD },
+  { label: "grok waiting", providers: NONE, deviceLogin: { grok: { status: "waiting", url: "https://x", code: "AAAA-1111" } }, caps: CLOUD },
+  { label: "grok verifying", providers: NONE, deviceLogin: { grok: { status: "verifying" } }, caps: CLOUD },
+  { label: "grok done, snapshot behind", providers: NONE, deviceLogin: { grok: { status: "done" } }, caps: CLOUD },
+  { label: "grok connected", providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")], deviceLogin: {}, caps: CLOUD },
+  { label: "grok lapsed", providers: [prov("grok", { connected: true, needsLogin: true }), prov("codex"), prov("claude")], deviceLogin: {}, caps: CLOUD },
+  { label: "grok failed", providers: NONE, deviceLogin: { grok: { status: "failed", message: "did not finish" } }, caps: CLOUD },
+  { label: "codex waiting", providers: NONE, deviceLogin: { codex: { status: "waiting", url: "https://y", code: "BBBB-2222" } }, caps: CLOUD },
+  { label: "both connected", providers: [prov("grok", { connected: true }), prov("codex", { connected: true }), prov("claude")], deviceLogin: {}, caps: CLOUD },
+  { label: "desk remote, nothing connected", providers: NONE, deviceLogin: {}, caps: DESK },
+  { label: "desk remote, grok connected", providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")], deviceLogin: {}, caps: DESK },
+];
+
+describe("every provider configuration a remote can be in", () => {
+  for (const testCase of CASES) {
+    it(`renders one row per provider: ${testCase.label}`, () => {
+      const { container } = mountSettings({
+        isRemote: true,
+        isDesktop: false,
+        providersKnown: true,
+        hostCaps: testCase.caps,
+        deviceLogin: testCase.deviceLogin,
+      }, { snapshotOverrides: { providers: testCase.providers } });
+      for (const provider of ["Grok", "Codex", "Claude"]) {
+        const rows = [...container.querySelectorAll(".settings-row")]
+          .filter((row) => ((row as HTMLElement).dataset.id || "").startsWith("provider" + provider));
+        expect(rows.length, `${testCase.label}: ${provider}`).toBe(1);
+        // A heading is the account's name, whatever is happening to it.
+        const title = rows[0].querySelector(".settings-row-title");
+        expect((title!.textContent || "").trim()).toBe(provider);
+      }
+    });
+  }
+
+  it("offers Sign out for every connected account, and never for a live flow", () => {
+    const connected = mountSettings({
+      isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD, deviceLogin: {},
+    }, { snapshotOverrides: { providers: [prov("grok", { connected: true }), prov("codex", { connected: true }), prov("claude")] } });
+    for (const id of ["providerGrokRemote", "providerCodexRemote"]) {
+      const row = connected.container.querySelector(`[data-id="${id}"]`);
+      expect([...row!.querySelectorAll("button")].map((b) => b.textContent)).toContain("Sign out");
+    }
+  });
+
+  it("keeps Codex's account-setting steps on screen with the code", () => {
+    const { container } = mountSettings({
+      isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
+      deviceLogin: {
+        codex: {
+          status: "waiting", url: "https://auth.openai.com/codex/device", code: "CCCC-3333",
+          preflight: {
+            reason: "Codex needs one setting turned on before the code below will be accepted.",
+            steps: ["Open ChatGPT and go to Settings → Security", 'Turn on "Device code authorization for Codex" **at the very bottom**'],
+            url: "https://chatgpt.com/#settings/Security",
+          },
+        },
+      },
+    }, { snapshotOverrides: { providers: NONE } });
+    const row = container.querySelector('[data-id="providerCodexFlow"]')!;
+    expect(row.textContent).toContain("one setting turned on");
+    expect(row.querySelectorAll(".settings-deviceflow-steps li").length).toBe(2);
+    // The emphasis is the point: the setting is at the bottom of a long page.
+    expect(row.querySelector(".settings-deviceflow-steps strong")!.textContent).toBe("at the very bottom");
+    expect(row.textContent).not.toContain("**");
+    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toContain("Copy");
   });
 });
