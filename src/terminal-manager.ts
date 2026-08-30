@@ -141,31 +141,65 @@ export function posixShellFromEnv(shell: string | undefined): string | true {
  * inner script in one pair of quotes (`bash -lc 'script'`). A remainder that
  * is not one quoted word is returned as-is by the caller.
  */
-function peelOneQuotedString(s: string): string | undefined {
-  if (s.length < 2) return undefined;
-  if (s.startsWith("'") && s.endsWith("'")) {
-    const inner = s.slice(1, -1);
-    // POSIX: a quote inside a single-quoted string is written `'\''`.
-    if (inner.replace(/'\\''/g, "").includes("'")) return undefined;
-    return inner.replace(/'\\''/g, "'");
-  }
-  if (s.startsWith('"') && s.endsWith('"')) {
-    const inner = s.slice(1, -1);
-    for (let i = 0; i < inner.length; i++) {
-      if (inner[i] === "\\") {
-        i++;
-        continue;
-      }
-      if (inner[i] === '"') return undefined;
+/**
+ * Decode ONE shell word from the front of `s`.
+ *
+ * This is what grok actually emits. It builds the wrapper with Rust's
+ * `shlex::try_quote`, which does not pick one quoting style for the whole
+ * script — it CONCATENATES segments whenever a single strategy cannot encode
+ * the string. `echo '$HOME'` comes out as `"echo '"'$HOME'"'"`: a
+ * double-quoted chunk, a single-quoted chunk and another double-quoted chunk,
+ * joined with no whitespace, forming one word.
+ *
+ * Handling that with special cases is what produced three separate defects
+ * here — a dropped `-n` flag, mangled `\$`, and `rm -rf target` being made
+ * destructive. One parser removes the whole class: single quotes are literal,
+ * double quotes honour the backslash only before `$`, a backtick, a quote, a
+ * backslash or a newline, and an unquoted backslash escapes the next
+ * character. Unquoted whitespace ends the word.
+ *
+ * Returns the decoded word and whatever follows it, or `undefined` if the
+ * quoting is unterminated — in which case the caller must not rewrite anything.
+ */
+export function parseOneShellWord(s: string): { word: string; rest: string } | undefined {
+  let word = "";
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch === " " || ch === "\t" || ch === "\n") break;
+    if (ch === "'") {
+      const close = s.indexOf("'", i + 1);
+      if (close === -1) return undefined; // unterminated
+      word += s.slice(i + 1, close);
+      i = close + 1;
+      continue;
     }
-    // POSIX double quotes drop the backslash before `$`, a backtick, `"`,
-    // a backslash and a newline, and keep it everywhere else. Unescaping only
-    // `\\"` and `\\\\` left `\\$` intact, so a payload like
-    // `printf %s "\\$HOME"` came back as the literal text rather than the
-    // value — a silent change to what the command does.
-    return inner.replace(/\\([$`"\\\n])/g, "$1");
+    if (ch === '"') {
+      i++;
+      let closed = false;
+      while (i < s.length) {
+        if (s[i] === '"') { closed = true; i++; break; }
+        if (s[i] === "\\" && i + 1 < s.length && '$`"\\\n'.includes(s[i + 1])) {
+          word += s[i + 1];
+          i += 2;
+          continue;
+        }
+        word += s[i];
+        i++;
+      }
+      if (!closed) return undefined; // unterminated
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= s.length) return undefined; // trailing backslash
+      word += s[i + 1];
+      i += 2;
+      continue;
+    }
+    word += ch;
+    i++;
   }
-  return undefined;
+  return { word, rest: s.slice(i) };
 }
 
 /**
@@ -221,20 +255,13 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
     if (sawCommand) break;
   }
   if (!sawLogin || !sawCommand || s === "") return undefined;
-  const peeled = peelOneQuotedString(s);
-  if (peeled !== undefined) return peeled;
-  // Nothing quoted at all. POSIX gives `-c` only the NEXT WORD as the script;
-  // everything after it becomes `$0`, `$1`… So `bash -lc rm -rf target` runs
-  // `rm` with NO operands — verified on a real bash: a usage error, and the
-  // directory survives — while treating the whole remainder as the script runs
-  // `rm -rf target` and deletes it. A lone word is the only case where the two
-  // readings agree; anything with whitespace we decline to touch.
-  if (!/['"]/.test(s)) return /\s/.test(s) ? undefined : s;
-  // Quoted, but not as one segment we can decode. Grok builds this with Rust's
-  // `shlex::try_quote`, which CONCATENATES quoting styles — `echo '$HOME'` is
-  // encoded `"echo '"'$HOME'"'"` — and handing that raw text to the host shell
-  // makes it one command name: exit 127, verified against a real zsh. Refusing
-  // to unwrap leaves grok's own wrapper in place, which still runs correctly.
+  const parsed = parseOneShellWord(s);
+  if (!parsed) return undefined; // unterminated quoting — do not rewrite it
+  // Exactly one word, or nothing to unwrap. POSIX hands `-c` only the FIRST
+  // word as the script and makes the rest `$0`, `$1`, so a remainder means
+  // rewriting would change what the command does — `bash -lc rm -rf target`
+  // really does run `rm` with no operands.
+  if (parsed.rest.trim() === "") return parsed.word;
   return undefined;
 }
 

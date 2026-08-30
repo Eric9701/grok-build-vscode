@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, posixShellFromEnv, grokShellEnvValue, commandLanguageForDialect, unwrapGrokBashLoginWrapper, posixSpawnArgv } from "../src/terminal-manager";
+import { TerminalManager, resolveExitCode, buildKillPlan, resolveTerminalShell, posixShellFromEnv, grokShellEnvValue, commandLanguageForDialect, unwrapGrokBashLoginWrapper, posixSpawnArgv, parseOneShellWord } from "../src/terminal-manager";
 
 // Use `node -e` everywhere so tests are deterministic on Windows, macOS, and Linux.
 // Quoting strategy: single-quote the outer node script, escape inner single quotes if any.
@@ -521,15 +521,28 @@ describe("unwrapGrokBashLoginWrapper refuses what it does not model", () => {
 });
 
 describe("posixSpawnArgv only unwraps where it is safe", () => {
-  it("refuses concatenated shlex quoting rather than mangling it", () => {
-    // Grok encodes the script with Rust's `shlex::try_quote`, which mixes
-    // quoting styles: `echo '$HOME'` becomes `"echo '"'$HOME'"'"`. Handing that
-    // raw text to the host made it a single command name — verified against a
-    // real zsh: exit 127, "no such file or directory: echo /Users/…". Leaving
-    // grok's wrapper alone runs it correctly instead.
+  it("decodes concatenated shlex quoting, which is what grok emits", () => {
+    // Rust's `shlex::try_quote` does not pick one style for the whole script:
+    // it CONCATENATES chunks when no single strategy encodes the string, so
+    // `echo '$HOME'` becomes `"echo '"'$HOME'"'"` — one word made of a
+    // double-quoted, a single-quoted and another double-quoted segment. An
+    // earlier version refused this shape, which left every command containing
+    // a quote on the old bash-3.2 path; the one before that passed the raw text
+    // through and a real zsh answered `exit 127, no such file or directory`.
     const mixed = String.raw`/bin/bash -lc "echo '"'$HOME'"'"`;
-    expect(unwrapGrokBashLoginWrapper(mixed)).toBeUndefined();
-    expect(posixSpawnArgv(mixed, "/bin/zsh").args[1]).toBe(mixed);
+    expect(unwrapGrokBashLoginWrapper(mixed)).toBe("echo '$HOME'");
+    expect(posixSpawnArgv(mixed, "/bin/zsh")).toEqual({
+      file: "/bin/zsh",
+      args: ["-c", "echo '$HOME'"],
+    });
+  });
+
+  it("parses a shell word the way a shell does", () => {
+    expect(parseOneShellWord("'a b'c")).toEqual({ word: "a bc", rest: "" });
+    expect(parseOneShellWord('"x\\"y" tail')).toEqual({ word: 'x"y', rest: " tail" });
+    expect(parseOneShellWord("plain rest")).toEqual({ word: "plain", rest: " rest" });
+    expect(parseOneShellWord("'unterminated")).toBeUndefined();
+    expect(parseOneShellWord('"unterminated')).toBeUndefined();
   });
 
   it("keeps grok's bash wrapper when the host cannot stand in for bash", () => {
