@@ -7204,6 +7204,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           // reports success that never happened, so that path is desk-only.
           if (!opts.fromRemote) {
             this.host.createTerminal({ name: `${name} Logout`, shellPath: cliPath, shellArgs: logoutArgs }).show();
+            // The cause, in the log, next to the sentence that hides it. This
+            // branch fires when the resolved CLI cannot be executed at all —
+            // on Windows that is almost always an extensionless npm shim run
+            // without a shell — and the user-facing text cannot say that, so
+            // for months the only record was "could not be observed" with no
+            // path and no errno (owner hit it on a stale extension host,
+            // 2026-08-31).
+            this.host.appendLine(`[providers] ${provider} logout spawn failed: ${cliPath} (${code}) ${errorDetail(error)}`);
             fail(`${name} sign-out could not be observed, so it was opened in a terminal. The account remains connected until sign-out is confirmed.`);
           } else {
             fail(`${name} sign-out could not run here: ${errorDetail(error)}. The account remains connected.`);
