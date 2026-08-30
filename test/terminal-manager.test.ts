@@ -612,6 +612,37 @@ describe("posixSpawnArgv only unwraps where it is safe", () => {
   });
 });
 
+describePosix("waitForExit waits for the output, but not forever", () => {
+  it("has the full output by the time it resolves", async () => {
+    // `exit` can fire before stdout reaches us. Three ubuntu-latest runs showed
+    // a clean `printf` returning nothing; resolving on the pipes instead is the
+    // difference between an agent reading a command's output and reading "".
+    for (let i = 0; i < 20; i++) {
+      const m = new TerminalManager();
+      const { terminalId } = m.create({ command: "/bin/sh -c 'printf PAYLOAD'" });
+      await m.waitForExit(terminalId);
+      expect(m.output(terminalId).output.trim()).toBe("PAYLOAD");
+      m.release(terminalId);
+    }
+  });
+
+  it("returns promptly when something is left holding the pipe", async () => {
+    // The regression the obvious fix would cause: waiting for `close` alone
+    // means a command that starts a daemon blocks until the DAEMON exits. The
+    // background `sleep` here inherits stdout, so `close` cannot arrive — and
+    // this must still come back.
+    const m = new TerminalManager();
+    const started = Date.now();
+    const { terminalId } = m.create({ command: "/bin/sh -c '(sleep 30 &) ; printf DONE'" });
+    const { exitCode } = await m.waitForExit(terminalId);
+    const took = Date.now() - started;
+    expect(exitCode).toBe(0);
+    expect(took, `waited ${took}ms for a command whose child holds stdout`).toBeLessThan(10000);
+    m.kill(terminalId);
+    m.release(terminalId);
+  }, 20000);
+});
+
 describe("commandLanguageForDialect (View all command language)", () => {
   it("maps each known dialect to a VS Code language id", () => {
     expect(commandLanguageForDialect("powershell")).toBe("powershell");

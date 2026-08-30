@@ -16,6 +16,11 @@ export interface TerminalOutputResult {
   truncated: boolean;
 }
 
+/** How long `waitForExit` lets stdout finish after the process has gone.
+ *  Long enough for a pipe already holding bytes, short enough that a command
+ *  which leaves a daemon on the other end still returns promptly. */
+const DRAIN_GRACE_MS = 2000;
+
 interface TerminalEntry {
   /**
    * Who asked for this command.
@@ -32,6 +37,11 @@ interface TerminalEntry {
   byteLen: number;
   truncated: boolean;
   exitCode: number | null;
+  /** The code `exit` reported, held while the pipes finish draining. */
+  pendingExitCode?: number;
+  /** Set once listeners have been told; `exit` and `close` race to be first. */
+  settled?: boolean;
+  drainTimer?: ReturnType<typeof setTimeout>;
   exitListeners: Array<(code: number) => void>;
   byteLimit: number;
   // Buffers incomplete multi-byte UTF-8 sequences across chunk boundaries so a
@@ -574,20 +584,53 @@ export class TerminalManager {
     proc.stdout?.on("data", onChunk);
     proc.stderr?.on("data", onChunk);
     proc.on("error", (err) => {
+      entry.settled = true;
       entry.buf += `\n[spawn error] ${err.message}`;
       entry.exitCode = -1;
       for (const l of entry.exitListeners) l(-1);
       entry.exitListeners = [];
     });
+    // FINISHING is two events, not one. Node's `exit` fires when the process
+    // ends, which can be BEFORE its stdout has been delivered to us; `close`
+    // fires once the pipes are drained. Resolving on `exit` alone means an
+    // agent can ask for the output of a command that ran fine and receive
+    // nothing — three CI runs on ubuntu-latest showed exactly that, with
+    // `printf HIT` exiting 0 and no output, while 65 spawns across macOS and a
+    // real Ubuntu never reproduced it.
+    //
+    // Waiting for `close` ALONE would be worse: a command that starts a
+    // background daemon leaves stdout open, and `waitForExit` would then block
+    // until the daemon died instead of returning promptly. So: take the exit
+    // code from `exit`, and give the pipes a bounded moment to finish.
+    const settle = (code: number) => {
+      if (entry.settled) return;
+      entry.settled = true;
+      if (entry.drainTimer) {
+        clearTimeout(entry.drainTimer);
+        entry.drainTimer = undefined;
+      }
+      if (!entry.truncated) entry.buf += entry.decoder.end();
+      entry.exitCode = code;
+      for (const l of entry.exitListeners) l(code);
+      entry.exitListeners = [];
+    };
+    proc.on("close", () => {
+      if (entry.exitCode != null && entry.settled) return;
+      if (entry.pendingExitCode != null) settle(entry.pendingExitCode);
+    });
     proc.on("exit", (code, signal) => {
       if (entry.exitCode != null) return; // spawn error already set it; don't clobber
-      // Flush any trailing complete bytes for a clean run. Skip when truncated:
-      // the decoder may hold a partial of a *dropped* char, and end() would turn
-      // that into a U+FFFD.
-      if (!entry.truncated) entry.buf += entry.decoder.end();
-      entry.exitCode = resolveExitCode(code, signal);
-      for (const l of entry.exitListeners) l(entry.exitCode!);
-      entry.exitListeners = [];
+      const resolved = resolveExitCode(code, signal);
+      entry.pendingExitCode = resolved;
+      // Already drained (`close` first, or no pipes to wait on): finish now.
+      const open = [proc.stdout, proc.stderr].filter((st) => st && !st.readableEnded);
+      if (open.length === 0) {
+        settle(resolved);
+        return;
+      }
+      // Otherwise let the reads finish, but never wait on them indefinitely.
+      entry.drainTimer = setTimeout(() => settle(resolved), DRAIN_GRACE_MS);
+      entry.drainTimer.unref?.();
     });
 
     const terminalId = `t-${this.nextId++}`;
