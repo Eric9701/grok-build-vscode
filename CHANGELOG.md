@@ -1,5 +1,41 @@
 # Changelog
 
+## 3.19.8 — 2026-08-31
+
+Almost everything here is about **cloud machines** — the hosted environment you reach from a browser — because that is where a week of real use found the gaps. At a desk, the one change you will notice is the model picker.
+
+### Fixed — connecting an agent from a browser
+
+- **A sign-in that did not survive a refresh.** Connect Grok, connect Codex, reload the page, and both accounts offered Connect again. Two things were wrong and both had to go: the sign-in verified the credential but never recorded the account as connected — only the Providers refresh and the Check button ever did that — and the refresh itself was withheld from remotes, which is right for a laptop that has a desk behind it and wrong for a cloud machine, where the browser is the only surface there is. Signing in now records what it proved, and a cloud machine can re-observe its own accounts.
+
+- **A machine that went to sleep in the middle of a sign-in.** Start a connection on a phone, switch to the vendor's page to approve it, and nothing on the machine is talking any more — so it was allowed to pause, which killed the connection the CLI was waiting on. Codex approvals that "worked" produced no credential. A sign-in now counts as work for as long as it runs, including while the credential is being checked afterwards.
+
+- **"Codex approved the sign-in, but no usable credential landed."** It had landed. The check that looks for it opens a throwaway session, reads the models, and deletes it — and Codex cannot delete a session that never wrote anything, so a working sign-in was declared a failure one step after it succeeded. Cleaning up can no longer fail the check that comes before it.
+
+- **Connecting Codex is now two numbered steps, and the security warning is not a surprise.** Codex needs one setting turned on in your OpenAI account before any code is accepted, and OpenAI's page then warns — correctly — that device codes are used in phishing and to continue only if a CLI started the sign-in. Step 1 gets you to the setting, with the link and the exact place it hides. Step 2 shows the code beside a note saying that warning is coming, that this machine's Codex CLI is what started this, and never to use a code you did not start yourself.
+
+- **Connecting from Settings looked like a button that did nothing.** The sign-in reported into the transcript's welcome card, which refuses to draw over a conversation — so on a machine with any history, the code, the progress and the failure were all invisible. Settings → Providers now shows the whole flow itself: the code, a Copy button, the sign-in link, and Cancel. Tapping Connect again while one is running repeats the current code to the tab you are holding instead of answering with silence.
+
+- **Success is announced only when it is true.** The CLI exiting cleanly means the vendor approved; it does not mean this machine can use the account. "Connected" now waits for the credential to answer, and when it does not, the message says which of the two failed — a sign-in that never landed, or a sign-in that landed and needs another moment.
+
+### Fixed — cloud machines
+
+- **A machine being built is no longer reported as broken.** A brand-new environment can take up to twenty-five minutes to install from scratch, and the page called it a failure after ninety seconds — advising a reset for a machine that was working perfectly. It now explains at ninety seconds, blames only after twenty-five minutes, and shows progress in the calm blue of a notice rather than the red of an error. Reopening the page for a machine that has worked for days no longer mistakes it for a first boot.
+
+- **Claude Code says so up front.** It cannot be connected on a cloud machine yet — its sign-in needs a terminal — so instead of a Connect button that always ends in a wall, the row and the start screen say we are working on adding it. Grok is marked as the recommended agent there, and a fresh machine offers all three rather than whichever one happened to be asked for.
+
+- **Anonymous usage stats and Thumbs feedback can be changed.** Both were read-only on any remote. A cloud machine has no desk to change them from, so read-only meant never.
+
+- **Settings stopped talking about "the desk"** on a machine that does not have one, and the tips stopped suggesting things a browser cannot do — dropping a file onto the composer works in the app's own window, not in a browser. The tip that suggests connecting a second agent now appears on remotes at all, which is where it matters most: on a cloud machine that is the only way to do it.
+
+### Fixed
+
+- **A newly connected agent appears in the model picker straight away.** Connect Codex from a conversation that already has messages in it and it was missing from the picker until you reloaded — the catalogue was refreshed only for conversations that had not started yet. A first-time agent is purely additive, so it now reaches the picker you are actually looking at.
+
+- **"Update Grok Build to preview"** read as an instruction to install a version called "preview". The rail now says the sessions it cannot list need a newer Grok Build, and when the chat reports that a project folder is no longer open, it adds that the machine is running an older build — the two halves of the same fact, previously on opposite sides of the screen.
+
+- **A sign-out that could not run now logs why.** The message said only that it "could not be observed"; the log now carries the path and the error, which is what the diagnosis actually needs.
+
 ## 3.19.7 — 2026-08-30
 
 ### Fixed
