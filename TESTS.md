@@ -35,6 +35,8 @@ The goal of layers (1)+(2) is to make the protocol surface and UI logic regressi
   session remains available.
 - Fixtures for external artifacts mirror the real artifact listing and layout, including multi-platform bundles and the Codex package structure; idealized fixture layouts are insufficient.
 - Every new filesystem or network stream has fault-injection coverage for its asynchronous error paths.
+- **A green `tsc --noEmit` says nothing about this directory.** `tsconfig.json` is `include: ["src/**/*"]`, and vitest transpiles with esbuild rather than typechecking — so a type error in a test file passes every gate we run. A duplicate import in a test survived six of them. Read test code as unchecked code.
+- A VS Code colour token is used in the ROLE it was defined for, and `test/theme-token-roles.test.ts` enforces it across `media/*.css`. `button.background` is a surface, legible only under `button.foreground`; Dark High Contrast sets it to pure black, which is how a check mark and the filled effort dots became invisible (#139). A foreground mark takes a foreground token.
 
 ---
 
