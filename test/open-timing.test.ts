@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { OpenClock } from "../src/open-timing";
 
 vi.mock("../src/acp", async (importOriginal) => {
   const { EventEmitter } = await import("node:events");

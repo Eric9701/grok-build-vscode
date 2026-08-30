@@ -386,6 +386,15 @@ describe("grokShellEnvValue (GROK_SHELL derived from the shell we run)", () => {
     // grok would describe while we are running sh, so the model must be told.
     expect(grokShellEnvValue(true, "linux")).toBe("bash");
     expect(grokShellEnvValue(true, "darwin")).toBe("bash");
+    // ...but NOT when grok's own detection would already name an sh-family
+    // shell. `cmd` on POSIX runs /bin/sh, and if `$SHELL` is sh/dash/ash the
+    // detection is already right — saying `bash` would replace a correct hint
+    // with a wrong one, which forcing `cmd` never used to do on POSIX at all.
+    expect(grokShellEnvValue(true, "linux", { SHELL: "/bin/sh" })).toBeUndefined();
+    expect(grokShellEnvValue(true, "linux", { SHELL: "/bin/dash" })).toBeUndefined();
+    expect(grokShellEnvValue(true, "linux", { SHELL: "/bin/ash" })).toBeUndefined();
+    // A zsh user who forced `cmd` still needs telling: we run sh, grok sees zsh.
+    expect(grokShellEnvValue(true, "darwin", { SHELL: "/bin/zsh" })).toBe("bash");
     // The fallback bash is not the user's $SHELL, so grok's own detection would
     // describe fish while we run bash — it still has to be told.
     expect(grokShellEnvValue("/bin/bash", "linux", { SHELL: "/usr/bin/fish" })).toBe("bash");

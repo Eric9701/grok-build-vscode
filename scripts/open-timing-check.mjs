@@ -247,7 +247,10 @@ try {
     const other = phases.find((p) => p.name === "other");
     const sum = phases.reduce((a, p) => a + p.ms, 0);
     const drift = Math.abs(sum - totalMs);
-    assert.ok(drift <= 1, `phases do not tile the total (sum ${sum}ms vs total ${totalMs}ms): ${line}`);
+    // EXACT. Every value on the line is a whole millisecond and the formatter
+    // rounds along the timeline, so equality is the contract — and a 1ms
+    // tolerance is precisely what let a double-rounding bug through.
+    assert.equal(drift, 0, `phases do not tile the total (sum ${sum}ms vs total ${totalMs}ms): ${line}`);
     for (const want of ["resolve", "approve-gate", "dispose", "prep", "version", "client", "spawn+init", "new", "load", "replay(post)"]) {
       assert.ok(named.some((p) => p.name === want), `phase "${want}" missing from: ${line}`);
     }

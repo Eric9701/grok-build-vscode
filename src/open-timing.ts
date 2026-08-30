@@ -119,8 +119,11 @@ export class OpenClock {
     return ms;
   }
 
+  /** RAW. The formatter is the only place that rounds — rounding here too made
+   *  `collapse()` store a pre-rounded phase that the timeline then rounded a
+   *  second time, and two roundings do not compose into an accurate one. */
   totalMs(): number {
-    return Math.round(this.nowFn() - this.startedAt);
+    return this.nowFn() - this.startedAt;
   }
 
   summary(events: number): string {

@@ -185,6 +185,11 @@ function posixFallbackShell(exists: (p: string) => boolean): string | true {
  */
 const POSIX_SHELL_NAMES = new Set(["sh", "bash", "zsh", "ksh", "ksh93", "mksh", "dash", "ash"]);
 
+/** The ones that ARE `/bin/sh` for dialect purposes — a `$SHELL` naming one of
+ *  these needs no `GROK_SHELL`, because grok's own detection then describes the
+ *  very shell we fall back to. */
+const SH_FAMILY_NAMES = new Set(["sh", "dash", "ash"]);
+
 /**
  * The shell `$SHELL` names, when we can safely run the agent's commands in it.
  *
@@ -241,6 +246,16 @@ export function grokShellEnvValue(
     // Which of the two POSIX cases we are in is answerable from `$SHELL`: we
     // either run the shell it names, or we ran a fallback because we could not.
     if (resolved !== true && resolved !== (env.SHELL ?? "").trim()) return "bash";
+    if (resolved === true) {
+      // We are on `/bin/sh` — `grok.terminalShell: "cmd"`, or a machine with no
+      // bash. Grok's own detection will describe `$SHELL`, and when that is
+      // ALREADY an sh-family shell its description matches what we run, so
+      // saying `bash` would replace an accurate hint with a wrong one. Forcing
+      // `cmd` used to leave POSIX untouched entirely, so this is a regression
+      // the same comparison can simply avoid.
+      const shBase = (env.SHELL ?? "").trim().split("/").pop()?.toLowerCase() ?? "";
+      if (SH_FAMILY_NAMES.has(shBase)) return undefined;
+    }
     // Running the shell `$SHELL` names: grok's own detection reads `$SHELL` and
     // so already names the shell we run — the two agree, and an override would
     // only be a second chance to disagree. (Running it is not LOGGING IN to it:

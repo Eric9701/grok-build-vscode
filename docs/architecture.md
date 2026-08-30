@@ -673,7 +673,7 @@ the steady-state fix.
   reason (#140 — `shell:true` is `/bin/sh`, which is **bash 3.2 on macOS**, so a
   profile took a different branch than it does in the CLI and sdkman printed a
   bash-4-only parse error onto every captured output), falling back to
-  `shell:true` when `$SHELL` is absent, relative, missing, or outside the
+  `/bin/bash` (and `shell:true` -> `/bin/sh` only when no bash is on disk) when `$SHELL` is absent, relative, missing, or outside the
   POSIX-grammar allowlist (fish/nushell/tcsh/pwsh — the agent writes POSIX). It
   also sets **`GROK_SHELL`** in grok's spawn env (the pure `grokShellEnvValue`)
   to match that shell, so the agent writes the correct dialect instead of
