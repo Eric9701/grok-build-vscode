@@ -383,7 +383,7 @@ describe("settings overlay (chat.js)", () => {
     clickSettingsNav(h, "Remote control");
     expect(overlay.textContent).toMatch(/Device manager/);
     clickSettingsNav(h, "Advanced");
-    expect(overlay.textContent).toMatch(/Host config is managed on the desk/);
+    expect(overlay.textContent).toMatch(/Host config is managed on the machine running this workspace/);
   });
 
   it("posts openSettingsSurface when the host advertises the editor tab", () => {
@@ -918,13 +918,13 @@ describe("settings overlay (chat.js)", () => {
     const overlay = h.doc.getElementById("settings-overlay")!;
     expect(overlay.textContent).toContain("Linear");
     expect(overlay.textContent).toContain("Notes");
-    expect(overlay.textContent).toMatch(/desk machine/);
+    expect(overlay.textContent).toMatch(/machine running this workspace/);
     expect(overlay.querySelector(".settings-connector-action")).toBeNull();
     expect(overlay.textContent).toContain("Connected");
     expect(overlay.textContent).toContain("On this computer");
     expect(overlay.textContent).toContain("Grok.com connectors");
     expect(overlay.textContent).toContain("Local Grok connectors");
-    expect(overlay.textContent).toMatch(/managed on the desk machine only/);
+    expect(overlay.textContent).toMatch(/managed on the host machine only/);
     expect(overlay.querySelector(".settings-mcp-open")).toBeNull();
     expect(overlay.querySelector('[data-id="mcpCatalog"]')).toBeTruthy();
     expect(overlay.querySelector(".settings-mcp-web")).toBeTruthy();

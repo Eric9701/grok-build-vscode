@@ -953,7 +953,16 @@ export class GrokSidebar {
    *  not two codes racing to write the same file. */
   private readonly deviceLogins = new Map<
     AcpProvider,
-    { handle: DeviceLoginHandle; clientId?: string }
+    {
+      handle: DeviceLoginHandle;
+      clientId?: string;
+      /** What the flow last told its client, so a re-tap — usually a client
+       *  that RECONNECTED while visiting the vendor's code page — can be
+       *  shown the same code instead of silence. */
+      last?: Extract<HostMsg, { type: "onboarding" }>["device"];
+      /** Sends to whichever client currently owns the flow. */
+      send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void;
+    }
   >();
   /** A Settings → Providers refresh in flight. Reported on `providerState` so
    *  the button can say it is working, and guards re-entry: a second click (or
@@ -1731,18 +1740,32 @@ export class GrokSidebar {
     clientId?: string,
   ): Promise<void> {
     const displayName = providerDisplayName(provider);
-    const send = (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => {
-      const message: HostMsg = {
-        type: "onboarding",
-        state: providerLoginState(provider),
-        platform: process.platform,
-        provider,
-        launched: true,
-        device,
-      };
-      if (clientId) this.sendRemoteClient(clientId, message);
-      else this.post(message);
+    // The entry is created before the runner so `send` reads the CURRENT
+    // client off it: a phone that visits the vendor's code page and comes
+    // back has reconnected under a fresh clientId, and the re-tap path below
+    // re-binds this entry to it.
+    const entry: {
+      handle?: DeviceLoginHandle;
+      clientId?: string;
+      last?: Extract<HostMsg, { type: "onboarding" }>["device"];
+      send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void;
+    } = {
+      clientId,
+      send: (device) => {
+        entry.last = device;
+        const message: HostMsg = {
+          type: "onboarding",
+          state: providerLoginState(provider),
+          platform: process.platform,
+          provider,
+          launched: true,
+          device,
+        };
+        if (entry.clientId) this.sendRemoteClient(entry.clientId, message);
+        else this.post(message);
+      },
     };
+    const send = entry.send;
 
     const isCloud = isCloudEnvironment();
     const unavailable = deviceLoginUnavailable(provider, { isCloud });
@@ -1782,35 +1805,93 @@ export class GrokSidebar {
     // One flow per provider. A second tap while the first is polling would
     // spawn a second child racing the first to write the same credential file,
     // and would replace a code the user may already be typing.
+    //
+    // But answering the tap with SILENCE made the button read as dead for up
+    // to fifteen minutes (the first real cloud test, 2026-08-31): on a phone,
+    // every trip to the vendor's code page reconnects this client, and the
+    // reconnected tab had no card and was sent nothing. Adopt the tapper and
+    // repeat the flow's current state to them.
     const running = this.deviceLogins.get(provider);
     if (running) {
       running.clientId = clientId;
+      if (running.last) running.send(running.last);
+      this.host.appendLine(`[${provider}] device login already in flight; repeated its state to the new tap`);
       return;
     }
 
     send({ status: "starting" });
+    this.host.appendLine(`[${provider}] device login started`);
+    const startedAt = Date.now();
+    // Set once onDone has run, which can happen SYNCHRONOUSLY on a spawn
+    // failure — and registering the entry after that would park a settled
+    // flow in the map forever, silently blocking every later attempt.
+    let settled = false;
     const handle = runDeviceLogin(cliPath, plan.args, {
       onPrompt: (prompt) => {
         send({ status: "waiting", url: prompt.url, code: prompt.code });
       },
       onDone: (result) => {
+        settled = true;
         this.deviceLogins.delete(provider);
-        if (!result.ok && "cancelled" in result) return;
-        if (result.ok) {
-          send({ status: "done" });
-          // Same reprobe the desk path uses. The CLI exiting 0 says the vendor
-          // approved it; only a credential probe says this host can now use it.
-          this.watchProviderLogin(provider);
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        if (!result.ok && "cancelled" in result) {
+          // Every settle leaves a line. The first real cloud test needed
+          // shell access to the machine to learn a flow had ended at all.
+          this.host.appendLine(`[${provider}] device login cancelled after ${elapsed}s`);
           return;
         }
-        this.host.appendLine(`[${provider}] device login failed: ${result.output.slice(-2000)}`);
+        if (result.ok) {
+          // The CLI exiting 0 says the vendor approved the code. It does NOT
+          // say a credential landed: codex 0.147 exited 0 on a flow that wrote
+          // no auth.json, and announcing "done" here told the user Connected
+          // while Settings said disconnected. Verify first, announce after.
+          // The card is still on "waiting", whose own copy promises the flow
+          // finishes on its own.
+          this.host.appendLine(`[${provider}] device login approved by the vendor after ${elapsed}s; verifying the credential`);
+          void this.confirmDeviceLogin(provider, send, displayName);
+          return;
+        }
+        this.host.appendLine(`[${provider}] device login failed (${result.failure}) after ${elapsed}s: ${result.output.slice(-2000)}`);
         send({
           status: "failed",
           message: deviceLoginFailureText(provider, result.failure, displayName),
         });
       },
     });
-    this.deviceLogins.set(provider, { handle, clientId });
+    if (!settled) {
+      entry.handle = handle;
+      this.deviceLogins.set(provider, entry as typeof entry & { handle: DeviceLoginHandle });
+    }
+  }
+
+  /**
+   * Announce a device login only once the credential is USABLE on this host.
+   *
+   * Bounded retries, because vendors write the file a beat after the CLI
+   * exits; a verdict either way, because "Connected" with no credential and
+   * silence were the two halves of the first real cloud test's worst bug.
+   * Runs detached from the flow entry — by the time this fails, offering the
+   * user a fresh attempt must not be blocked by the old one.
+   */
+  private async confirmDeviceLogin(
+    provider: AcpProvider,
+    send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void,
+    displayName: string,
+  ): Promise<void> {
+    const delays = [0, 2_000, 5_000, 10_000, 20_000];
+    for (const delay of delays) {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      if (await this.reprobeProviderCredentials(provider)) {
+        this.host.appendLine(`[${provider}] device login: credential verified`);
+        send({ status: "done" });
+        return;
+      }
+    }
+    this.host.appendLine(`[${provider}] device login: vendor approved, but no usable credential landed on this machine`);
+    send({
+      status: "failed",
+      message: `${displayName} approved the sign-in, but no usable credential landed on this machine. Try connecting again.`,
+    });
   }
 
   /** Stop every headless sign-in. Called on dispose so a child polling a device
@@ -17527,6 +17608,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         enabled,
         linked: !!this.uplink,
         turnInFlight,
+        cloudHost: isCloudEnvironment(),
       })) {
         this.keepAwake.start();
       } else {

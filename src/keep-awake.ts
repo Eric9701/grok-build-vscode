@@ -139,7 +139,14 @@ export function shouldKeepAwake(state: {
   linked: boolean;
   /** Any pooled session is `working` or `needs-you`. */
   turnInFlight?: boolean;
+  /** A hosted cloud machine. An OS wake lock cannot stop the hypervisor
+   *  pausing the whole VM — the uplink's `working` heartbeat is what does
+   *  that job there — and systemd-inhibit only fails and logs on every
+   *  wake. Sleeping between sessions is that machine's cost model, not a
+   *  problem to fight. */
+  cloudHost?: boolean;
 }): boolean {
+  if (state.cloudHost) return false;
   return state.enabled && (state.linked || !!state.turnInFlight);
 }
 

@@ -438,7 +438,7 @@ describe("app purpose + session menu (DOM)", () => {
     const advancedNav = [...overlay.querySelectorAll(".settings-nav-item")]
       .find((el) => (el.textContent || "").trim() === "Advanced")!;
     click(h.window, advancedNav);
-    expect(overlay.textContent).toContain("Host config is managed on the desk");
+    expect(overlay.textContent).toContain("Host config is managed on the machine running this workspace");
     expect(overlay.querySelector('[data-id="showThinking"]')).toBeNull();
   });
 });
