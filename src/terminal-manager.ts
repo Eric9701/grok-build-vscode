@@ -221,7 +221,16 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
     if (sawCommand) break;
   }
   if (!sawLogin || !sawCommand || s === "") return undefined;
-  return peelOneQuotedString(s) ?? s;
+  const peeled = peelOneQuotedString(s);
+  if (peeled !== undefined) return peeled;
+  // Nothing quoted at all: the remainder is already the script.
+  if (!/['"]/.test(s)) return s;
+  // Quoted, but not as one segment we can decode. Grok builds this with Rust's
+  // `shlex::try_quote`, which CONCATENATES quoting styles — `echo '$HOME'` is
+  // encoded `"echo '"'$HOME'"'"` — and handing that raw text to the host shell
+  // makes it one command name: exit 127, verified against a real zsh. Refusing
+  // to unwrap leaves grok's own wrapper in place, which still runs correctly.
+  return undefined;
 }
 
 export interface PosixSpawnArgv {
@@ -235,9 +244,21 @@ export interface PosixSpawnArgv {
  * wrapper. `hostShell === true` is `/bin/sh` (Node's old default / `cmd` pref).
  * Pure.
  */
+/** Hosts whose grammar covers what grok's bash wrapper could run: `[[ ]]`,
+ *  arrays, process substitution. Unwrapping into anything else would take a
+ *  script grok deliberately sent to BASH and hand it to a smaller shell. */
+const BASH_CAPABLE_HOSTS = new Set(["bash", "zsh"]);
+
 export function posixSpawnArgv(command: string, hostShell: string | true): PosixSpawnArgv {
-  const script = unwrapGrokBashLoginWrapper(command) ?? command;
   const file = hostShell === true ? "/bin/sh" : hostShell;
+  const base = file.slice(file.lastIndexOf("/") + 1).toLowerCase();
+  // Only peel the wrapper when the host can stand in for bash. On `/bin/sh`,
+  // dash or ksh — the fallback, the `cmd` preference, a dash `$SHELL` — grok's
+  // wrapper stays, so the script still reaches the bash it was written for.
+  // That is exactly what v3.19.5 did, and it is right for those hosts.
+  const script = BASH_CAPABLE_HOSTS.has(base)
+    ? unwrapGrokBashLoginWrapper(command) ?? command
+    : command;
   return { file, args: ["-c", script] };
 }
 

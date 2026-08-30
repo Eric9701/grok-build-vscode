@@ -449,10 +449,16 @@ describe("posixSpawnArgv", () => {
     });
   });
 
-  it("uses /bin/sh when the host is Node's fallback", () => {
+  it("uses /bin/sh when the host is Node's fallback, and keeps the wrapper there", () => {
+    // Corrects the PR's expectation, which peeled the wrapper here too. On
+    // `/bin/sh` there is nothing to gain and something to lose: macOS `/bin/sh`
+    // IS bash 3.2, so the script lands on the same shell either way, while on
+    // Linux it is dash — and a script grok deliberately wrote for bash would
+    // newly fail on `[[ ]]`, arrays or process substitution. Leaving the
+    // wrapper is what v3.19.5 did, and for this host it was right.
     expect(posixSpawnArgv("/bin/bash -lc echo hi", true)).toEqual({
       file: "/bin/sh",
-      args: ["-c", "echo hi"],
+      args: ["-c", "/bin/bash -lc echo hi"],
     });
   });
 });
@@ -502,6 +508,33 @@ describe("unwrapGrokBashLoginWrapper refuses what it does not model", () => {
     expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "printf %s \\"\$HOME\\""'))
       .toBe('printf %s "$HOME"');
     expect(unwrapGrokBashLoginWrapper('/bin/bash -lc "echo \`date\`"')).toBe("echo `date`");
+  });
+});
+
+describe("posixSpawnArgv only unwraps where it is safe", () => {
+  it("refuses concatenated shlex quoting rather than mangling it", () => {
+    // Grok encodes the script with Rust's `shlex::try_quote`, which mixes
+    // quoting styles: `echo '$HOME'` becomes `"echo '"'$HOME'"'"`. Handing that
+    // raw text to the host made it a single command name — verified against a
+    // real zsh: exit 127, "no such file or directory: echo /Users/…". Leaving
+    // grok's wrapper alone runs it correctly instead.
+    const mixed = String.raw`/bin/bash -lc "echo '"'$HOME'"'"`;
+    expect(unwrapGrokBashLoginWrapper(mixed)).toBeUndefined();
+    expect(posixSpawnArgv(mixed, "/bin/zsh").args[1]).toBe(mixed);
+  });
+
+  it("keeps grok's bash wrapper when the host cannot stand in for bash", () => {
+    // `/bin/sh`, dash and ksh cannot run `[[ ]]`, arrays or process
+    // substitution. Grok sent the script to BASH deliberately, so on those
+    // hosts the wrapper stays and the script still reaches bash — which is
+    // what v3.19.5 did and is right for them.
+    const wrapped = "/bin/bash -lc 'echo hi'";
+    expect(posixSpawnArgv(wrapped, true)).toEqual({ file: "/bin/sh", args: ["-c", wrapped] });
+    expect(posixSpawnArgv(wrapped, "/bin/dash").args[1]).toBe(wrapped);
+    expect(posixSpawnArgv(wrapped, "/bin/ksh").args[1]).toBe(wrapped);
+    // ...and is peeled for the hosts that can.
+    expect(posixSpawnArgv(wrapped, "/bin/zsh")).toEqual({ file: "/bin/zsh", args: ["-c", "echo hi"] });
+    expect(posixSpawnArgv(wrapped, "/opt/homebrew/bin/bash").args[1]).toBe("echo hi");
   });
 });
 
