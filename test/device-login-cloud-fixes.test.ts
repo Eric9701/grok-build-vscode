@@ -36,7 +36,7 @@ describe("device login: announce only what is verified", () => {
     expect(start).not.toContain('status: "done"');
     expect(start).toContain("this.confirmDeviceLogin(");
 
-    const confirm = methodBody("private async confirmDeviceLogin(");
+    const confirm = methodBody("private async confirmDeviceLoginInner(");
     expect(confirm).toContain("reprobeProviderCredentials(");
     expect(confirm).toContain('status: "done"');
     expect(confirm.indexOf("reprobeProviderCredentials(")).toBeLessThan(
@@ -196,7 +196,7 @@ describe("the verdict never blames a credential that landed", () => {
   it("announces verifying, and separates probe failure from a missing credential", () => {
     const start = methodBody("private async startDeviceLogin(");
     expect(start).toContain('send({ status: "verifying" })');
-    const confirm = methodBody("private async confirmDeviceLogin(");
+    const confirm = methodBody("private async confirmDeviceLoginInner(");
     expect(confirm).toContain("providerCredentialFilePresent(");
     expect(confirm).toContain("does not need repeating");
     const present = methodBody("private providerCredentialFilePresent(");
@@ -373,6 +373,39 @@ describe("a newly connected agent reaches the picker you are looking at", () => 
 });
 
 describe("a sign-in must not be paused underneath", () => {
+  it("holds the machine from BEFORE the spawn until AFTER verification", () => {
+    // The first attempt at this fix did not work and the test did not notice:
+    // it asserted that refreshKeepAwake appeared after a log line, while the
+    // flag it depended on was set later still, so the refresh ran with an
+    // empty map and asserted "not working" (found in review, 2026-08-31).
+    // Pin the ORDER that matters and the single exit door.
+    const start = methodBody("private async startDeviceLogin(");
+    const enter = start.indexOf("this.setDeviceLoginWork(provider, true)");
+    const spawn = start.indexOf("runDeviceLogin(");
+    expect(enter).toBeGreaterThan(-1);
+    expect(enter).toBeLessThan(spawn);
+
+    // Success must NOT release at onDone: verification is still to come.
+    expect(start).toContain("if (!result.ok) this.setDeviceLoginWork(provider, false)");
+
+    // The verification wrapper releases in a finally, whatever happened.
+    const confirm = methodBody("private async confirmDeviceLogin(");
+    expect(confirm).toContain("finally");
+    expect(confirm).toContain("this.setDeviceLoginWork(provider, false)");
+
+    // The flag the keep-awake reads is the operation's own set, never the
+    // guard map whose lifetime is shorter than the operation.
+    const inFlight = methodBody("private deviceLoginInFlight(");
+    expect(inFlight).toContain("this.deviceLoginWork.size > 0");
+    expect(inFlight).not.toContain("this.deviceLogins.size");
+  });
+
+  it("keeps the credential fallback on GROK_HOME rather than a hardcoded path", () => {
+    const present = methodBody("private providerCredentialFilePresent(");
+    expect(present).toContain("resolveGrokHome(process.env)");
+    expect(present).not.toContain('os.homedir(), ".grok"');
+  });
+
   it("counts a pending device login as work, so the cloud machine stays awake", () => {
     // The relay holds a machine awake only while frames arrive (90s idle).
     // A phone that switches to the vendor's page generates none, and the
@@ -381,15 +414,12 @@ describe("a sign-in must not be paused underneath", () => {
     // that failure with `grok login --device-auth`.
     const refresh = methodBody("private refreshKeepAwake(");
     expect(refresh).toContain("this.deviceLoginInFlight()");
-    const inFlight = methodBody("private deviceLoginInFlight(");
-    expect(inFlight).toContain("this.deviceLogins.size > 0");
 
-    // And the hold is asserted at the start of the flow, not after the first
-    // poll, because the dangerous window opens immediately.
-    const start = methodBody("private async startDeviceLogin(");
-    const started = start.indexOf("device login started");
-    expect(start.indexOf("this.refreshKeepAwake()", started)).toBeGreaterThan(started);
-    // Released when it settles, so an abandoned machine stops costing money.
-    expect(start).toMatch(/this\.deviceLogins\.delete\(provider\);[\s\S]{0,200}this\.refreshKeepAwake\(\)/);
+    // Cancel is the third exit and releases too.
+    const cancelBlock = sidebar.slice(sidebar.indexOf('case "cancelDeviceLogin"'));
+    const release = cancelBlock.indexOf("this.setDeviceLoginWork(provider, false)");
+    const cancelCall = cancelBlock.indexOf("running.handle.cancel()");
+    expect(release).toBeGreaterThan(-1);
+    expect(release).toBeLessThan(cancelCall);
   });
 });

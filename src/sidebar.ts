@@ -1832,9 +1832,10 @@ export class GrokSidebar {
 
     send({ status: "starting" });
     this.host.appendLine(`[${provider}] device login started`);
-    // Before the first poll, not after: the window that kills these flows opens
-    // immediately, while the person is walking to the vendor's page.
-    this.refreshKeepAwake();
+    // Before the CLI is even spawned: the window that kills these flows opens
+    // immediately, while the person is walking to the vendor's page. Held until
+    // the credential is verified, not merely until the CLI exits.
+    this.setDeviceLoginWork(provider, true);
     const startedAt = Date.now();
     // Set once onDone has run, which can happen SYNCHRONOUSLY on a spawn
     // failure — and registering the entry after that would park a settled
@@ -1847,8 +1848,10 @@ export class GrokSidebar {
       onDone: (result) => {
         settled = true;
         this.deviceLogins.delete(provider);
-        // Stop paying for a machine whose sign-in is over.
-        this.refreshKeepAwake();
+        // The hold is NOT released here on success: confirmDeviceLogin is still
+        // to come, it probes the CLI, and a machine paused underneath that is
+        // the same failure one step later. Its `finally` is the single exit.
+        if (!result.ok) this.setDeviceLoginWork(provider, false);
         const elapsed = Math.round((Date.now() - startedAt) / 1000);
         if (!result.ok && "cancelled" in result) {
           // Every settle leaves a line. The first real cloud test needed
@@ -1897,6 +1900,19 @@ export class GrokSidebar {
     send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void,
     displayName: string,
   ): Promise<void> {
+    try {
+      await this.confirmDeviceLoginInner(provider, send, displayName);
+    } finally {
+      // One door out, whatever happened above.
+      this.setDeviceLoginWork(provider, false);
+    }
+  }
+
+  private async confirmDeviceLoginInner(
+    provider: AcpProvider,
+    send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void,
+    displayName: string,
+  ): Promise<void> {
     const delays = [0, 2_000, 5_000, 10_000, 20_000];
     for (const delay of delays) {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -1937,7 +1953,10 @@ export class GrokSidebar {
   private providerCredentialFilePresent(provider: AcpProvider): boolean {
     try {
       if (provider === "codex") return fs.existsSync(path.join(resolveCodexHome(), "auth.json"));
-      if (provider === "grok") return fs.existsSync(path.join(os.homedir(), ".grok", "auth.json"));
+      // GROK_HOME, not a hardcoded ~/.grok: the CLI honours it and so does the
+      // rest of this host, so hardcoding made the fallback miss a credential
+      // that was plainly there and tell the user to sign in again (review).
+      if (provider === "grok") return fs.existsSync(path.join(resolveGrokHome(process.env), "auth.json"));
       return false;
     } catch {
       return false;
@@ -10136,6 +10155,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         const running = this.deviceLogins.get(provider);
         if (!running) break;
         this.deviceLogins.delete(provider);
+        this.setDeviceLoginWork(provider, false);
         running.handle.cancel();
         // Back to the plain sign-in panel, with no code and no failure. The
         // person cancelled; telling them it failed would be a small lie.
@@ -16070,10 +16090,26 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * stops costing money. Nothing is lost either way — opening the page wakes
    * the machine and the card is still there.
    */
-  /** A headless sign-in is polling a vendor right now. Counts as work for the
-   *  keep-awake above: the machine must not be paused underneath it. */
+  /** Providers with sign-in work in flight: spawning, polling a vendor, or
+   *  having their credential verified afterwards. Deliberately NOT the
+   *  `deviceLogins` guard map — that one is populated after the runner starts
+   *  and cleared before verification, so keep-awake read it as "no work" for
+   *  the whole dangerous window (found in review, 2026-08-31). */
+  private readonly deviceLoginWork = new Set<AcpProvider>();
+
+  /** A sign-in is in progress somewhere. Counts as work for the keep-awake
+   *  above: the machine must not be paused underneath it. */
   private deviceLoginInFlight(): boolean {
-    return this.deviceLogins.size > 0;
+    return this.deviceLoginWork.size > 0;
+  }
+
+  /** Enter/leave the keep-awake hold for a sign-in. Idempotent, and every exit
+   *  path goes through the same door. */
+  private setDeviceLoginWork(provider: AcpProvider, working: boolean): void {
+    const had = this.deviceLoginWork.has(provider);
+    if (working) this.deviceLoginWork.add(provider);
+    else this.deviceLoginWork.delete(provider);
+    if (had !== working) this.refreshKeepAwake();
   }
 
   private anyTurnWorking(): boolean {
