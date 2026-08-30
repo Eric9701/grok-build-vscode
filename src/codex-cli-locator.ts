@@ -125,7 +125,15 @@ export function locateCodexCli(options: CodexLocatorOptions = {}): string | unde
   const configured = options.configuredPath?.trim();
   if (configured) return fs.isFile(configured) ? configured : undefined;
 
-  const names = platform === "win32" ? ["codex", "codex.cmd", "codex.exe"] : ["codex"];
+  // Windows first, and the ORDER is the whole point. `npm i -g @openai/codex`
+  // installs two shims side by side: `codex` (a POSIX sh script, for Git Bash)
+  // and `codex.cmd`. Windows cannot execute the extensionless one — CreateProcess
+  // rejects it (`spawn` reports ENOENT), and only cmd.exe reaches it, by appending
+  // PATHEXT and finding the .cmd. Asking for the bare name first meant `where
+  // codex` returned that script and we handed an unlaunchable path to
+  // `createTerminal({ shellPath })` for `codex login`, which fails with nothing
+  // to click. `cli-locator.ts` has always put `grok.cmd` first for this reason.
+  const names = platform === "win32" ? ["codex.cmd", "codex.exe", "codex"] : ["codex"];
   for (const name of names) {
     const found = (options.which ?? ((candidate) => defaultWhich(candidate, platform)))(name);
     if (found && fs.isFile(found)) return found;

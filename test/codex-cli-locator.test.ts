@@ -30,7 +30,20 @@ describe("locateCodexCli", () => {
       fs: fakeFs([found]),
       which: (name) => { asked.push(name); return name === "codex.cmd" ? found : undefined; },
     })).toBe(found);
-    expect(asked).toEqual(["codex", "codex.cmd"]);
+    expect(asked).toEqual(["codex.cmd"]);
+  });
+
+  it("prefers codex.cmd over the extensionless npm shim Windows cannot launch", () => {
+    // What `npm i -g @openai/codex` actually leaves on PATH: both files, with
+    // `where codex` naming the sh script first. Handing that path to spawn or to
+    // a terminal's shellPath fails - cmd.exe is the only thing that resolves it.
+    const script = "C:\npm\codex";
+    const cmd = "C:\npm\codex.cmd";
+    expect(locateCodexCli({
+      platform: "win32",
+      fs: fakeFs([script, cmd]),
+      which: (name) => (name === "codex" ? script : name === "codex.cmd" ? cmd : undefined),
+    })).toBe(cmd);
   });
 
   it("selects the newest ChatGPT extension bundle and any platform bin directory", () => {
