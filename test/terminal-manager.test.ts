@@ -485,8 +485,23 @@ describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
     const m = new TerminalManager();
     const { terminalId } = m.create({ command: `/bin/bash -lc 'printf HIT'` });
     const { exitCode } = await m.waitForExit(terminalId);
-    expect(exitCode).toBe(0);
-    expect(m.output(terminalId).output.trim()).toBe("HIT");
+    const result = m.output(terminalId);
+    // SELF-DESCRIBING on failure. This assertion has now failed twice on
+    // ubuntu-latest and cannot be reproduced on macOS, on Windows (skipped), or
+    // on a real Ubuntu 26.04 under WSL where the same manager returns HIT
+    // 25 times out of 25. Guessing at the cause from a bare `expected '' to be
+    // 'HIT'` is what produced the two wrong fixes before this one, so let the
+    // failing machine say what it saw.
+    const seen = JSON.stringify({
+      shell: process.env.SHELL ?? null,
+      host: posixShellFromEnv(process.env.SHELL),
+      argv: posixSpawnArgv(`/bin/bash -lc 'printf HIT'`, posixShellFromEnv(process.env.SHELL)),
+      exitCode,
+      output: result.output,
+      truncated: result.truncated,
+    });
+    expect(exitCode, `command did not exit cleanly: ${seen}`).toBe(0);
+    expect(result.output.trim(), `no output from the agent's command: ${seen}`).toBe("HIT");
     m.release(terminalId);
 
     const host = posixShellFromEnv(process.env.SHELL);
