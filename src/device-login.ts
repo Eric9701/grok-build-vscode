@@ -86,6 +86,27 @@ export function deviceLoginUnavailable(
 }
 
 /**
+ * The sentence for a provider that cannot be signed in from here at all.
+ *
+ * Split out of the sidebar so it is testable, and because its cloud branch is
+ * the whole point: "connect it at your computer" is good advice at a desk and a
+ * DEAD END in a cloud environment, where there is no computer to walk to. The
+ * sidebar's inline fallback used to hand back exactly the advice that
+ * {@link deviceLoginUnavailable} withholds on cloud for that reason.
+ */
+export function noRemoteSignInMessage(
+  displayName: string,
+  opts: { isCloud?: boolean } = {},
+): string {
+  if (opts.isCloud) {
+    return `${displayName} cannot be connected from a cloud environment yet: its sign-in needs `
+      + "a real terminal, and there is no desk machine here to fall back to. "
+      + "Grok and Codex both sign in here.";
+  }
+  return `${displayName} has no sign-in that works without a terminal. Connect it at your computer.`;
+}
+
+/**
  * What to tell somebody BEFORE they start a sign-in that is likely to fail.
  *
  * Codex device-code login is **off by default on every account**. OpenAI
@@ -123,7 +144,9 @@ export function deviceLoginPreflight(
       + "for it.",
     steps: [
       "Open ChatGPT and go to Settings → Security",
-      "Turn on \"Device code authorization for Codex\"",
+      // The setting sits at the very BOTTOM of a long page, and people reported
+      // not finding it. `**` is rendered as bold by the panel.
+      "Turn on \"Device code authorization for Codex\" **at the very bottom**",
       "Come back and connect — the code appears here",
     ],
     url: "https://chatgpt.com/#settings/Security",

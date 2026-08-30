@@ -140,6 +140,52 @@ describe("when it ends", () => {
     expect(byAct(h, "cancelDeviceLogin")).toBeNull();
   });
 
+  it("bolds the part of a preflight step people could not find, and still escapes", () => {
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "codex-login",
+      provider: "codex",
+      device: {
+        status: "unavailable",
+        message: "Codex needs one setting turned on.",
+        preflight: {
+          reason: "Codex needs one setting turned on.",
+          steps: [
+            "Turn on \"Device code authorization for Codex\" **at the very bottom**",
+            "<img src=x onerror=alert(1)> **and this**",
+          ],
+          url: "https://chatgpt.com/#settings/Security",
+        },
+      },
+    });
+    const strong = [...onb(h).querySelectorAll("strong")].map((n) => n.textContent);
+    expect(strong).toContain("at the very bottom");
+    // Escape FIRST, then bold: the emphasis is re-admitted onto text that is
+    // already inert, so a step string still cannot become markup.
+    expect(onb(h).querySelector("img")).toBeNull();
+    expect(text(h)).toContain("<img src=x onerror=alert(1)>");
+    expect(strong).toContain("and this");
+  });
+
+  it("offers the connect button again on a preflight card, because the advice is not a gate", () => {
+    // The host shows this card once and then attempts for real. If the panel
+    // stopped offering the button, the person who fixed the setting would have
+    // no way to say so.
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "codex-login",
+      provider: "codex",
+      device: {
+        status: "unavailable",
+        message: "Codex needs one setting turned on.",
+        preflight: { reason: "Codex needs one setting turned on.", steps: ["Do the thing"] },
+      },
+    });
+    expect(byAct(h, "connectRemote")).not.toBeNull();
+  });
+
   it("escapes whatever the host put in the message", () => {
     const h = boot({ remote: true });
     onboarding(h, { device: { status: "failed", message: "<img src=x onerror=alert(1)>" } });

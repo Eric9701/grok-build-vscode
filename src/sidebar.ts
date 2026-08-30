@@ -105,6 +105,7 @@ import {
   deviceLoginFailureText,
   deviceLoginPlan,
   deviceLoginPreflight,
+  noRemoteSignInMessage,
   deviceLoginUnavailable,
 } from "./device-login";
 import { runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
@@ -760,6 +761,9 @@ export class GrokSidebar {
   private readonly lastSweepAt = new Map<string, number>();
   /** A whole-list refresh is already queued for this tick. See postSessionsList. */
   private sessionsListScheduled = false;
+  /** Providers whose device-login preflight advice has been shown this
+   *  activation. Advice, not a gate - see startDeviceLogin. */
+  private readonly deviceLoginPreflightShown = new Set<AcpProvider>();
   private reaper?: ReturnType<typeof setInterval>;
   private oauthShadowWarningShown = false;
   private get chips(): FileChip[] { return this.focused.chips; }
@@ -1746,8 +1750,21 @@ export class GrokSidebar {
     // Before anything is spawned. A person who reads this fixes a setting in
     // fifteen seconds; a person who reads the failure afterwards has already
     // waited for it.
+    // ONCE, then get out of the way.
+    //
+    // This used to return unconditionally, which made the flow impossible to
+    // finish: the panel's own "I've turned it on - connect" button posts
+    // `runGrokLogin` again, landed here again, and re-rendered the identical
+    // card. The button could never do anything, and to the person clicking it
+    // nothing happened at all (owner, on a cloud environment).
+    //
+    // The advice is still worth showing before the first attempt - it saves a
+    // wait for a failure almost everyone gets. It is advice, though, not a gate,
+    // so the second attempt runs. If the setting is still off, the real failure
+    // is classified and says so (classifyDeviceLoginFailure).
     const preflight = deviceLoginPreflight(provider, { isCloud });
-    if (preflight) {
+    if (preflight && !this.deviceLoginPreflightShown.has(provider)) {
+      this.deviceLoginPreflightShown.add(provider);
       send({ status: "unavailable", message: preflight.reason, preflight: { ...preflight, steps: [...preflight.steps] } });
       return;
     }
@@ -1757,8 +1774,7 @@ export class GrokSidebar {
       // a dead end and a next step.
       send({
         status: "unavailable",
-        message: unavailable
-          ?? `${displayName} has no sign-in that works without a terminal. Connect it at your computer.`,
+        message: unavailable ?? noRemoteSignInMessage(displayName, { isCloud }),
       });
       return;
     }

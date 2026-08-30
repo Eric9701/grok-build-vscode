@@ -15,7 +15,9 @@ import {
   deviceLoginEnv,
   deviceLoginFailureText,
   deviceLoginPlan,
+  deviceLoginPreflight,
   deviceLoginUnavailable,
+  noRemoteSignInMessage,
   DEVICE_LOGIN_PROMPT_TIMEOUT_MS,
   parseDeviceLoginPrompt,
   stripAnsi,
@@ -297,5 +299,40 @@ describe("running one", () => {
     const handle = runDeviceLogin("/nope", [], { onPrompt: vi.fn(), onDone }, io, {});
     expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: "failed" }));
     expect(() => handle.cancel()).not.toThrow();
+  });
+});
+
+describe("what we say when a provider cannot be signed in from here", () => {
+  it("does not send a cloud environment to a computer that does not exist", () => {
+    // The desk sentence is good advice at a desk and a dead end on a rented
+    // Linux box, which is exactly why deviceLoginUnavailable withholds its own
+    // desk sentence when isCloud. The sidebar's fallback used to hand the same
+    // advice straight back, so a cloud user was told to walk to a machine that
+    // is not there (owner, 2026-08-30).
+    const desk = noRemoteSignInMessage("Claude");
+    expect(desk).toContain("at your computer");
+
+    const cloud = noRemoteSignInMessage("Claude", { isCloud: true });
+    expect(cloud).not.toContain("at your computer");
+    expect(cloud).toContain("cloud environment");
+    // Says what DOES work, so it is a next step rather than a refusal.
+    expect(cloud).toMatch(/Grok and Codex/);
+  });
+});
+
+describe("the Codex preflight names where the setting actually is", () => {
+  it("marks up the location, because people could not find it", () => {
+    const pf = deviceLoginPreflight("codex", { isCloud: true });
+    const step = (pf?.steps ?? []).find((s) => s.includes("Device code authorization"));
+    expect(step).toBeDefined();
+    // `**` is the panel's inline-bold marker (media/chat.js), applied AFTER
+    // escaping so the host cannot inject markup through a step string.
+    expect(step).toContain("**at the very bottom**");
+  });
+
+  it("is cloud-only and codex-only", () => {
+    expect(deviceLoginPreflight("codex")).toBeUndefined();
+    expect(deviceLoginPreflight("grok", { isCloud: true })).toBeUndefined();
+    expect(deviceLoginPreflight("claude", { isCloud: true })).toBeUndefined();
   });
 });
