@@ -1832,6 +1832,9 @@ export class GrokSidebar {
 
     send({ status: "starting" });
     this.host.appendLine(`[${provider}] device login started`);
+    // Before the first poll, not after: the window that kills these flows opens
+    // immediately, while the person is walking to the vendor's page.
+    this.refreshKeepAwake();
     const startedAt = Date.now();
     // Set once onDone has run, which can happen SYNCHRONOUSLY on a spawn
     // failure — and registering the entry after that would park a settled
@@ -1844,6 +1847,8 @@ export class GrokSidebar {
       onDone: (result) => {
         settled = true;
         this.deviceLogins.delete(provider);
+        // Stop paying for a machine whose sign-in is over.
+        this.refreshKeepAwake();
         const elapsed = Math.round((Date.now() - startedAt) / 1000);
         if (!result.ok && "cancelled" in result) {
           // Every settle leaves a line. The first real cloud test needed
@@ -16065,6 +16070,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * stops costing money. Nothing is lost either way — opening the page wakes
    * the machine and the card is still there.
    */
+  /** A headless sign-in is polling a vendor right now. Counts as work for the
+   *  keep-awake above: the machine must not be paused underneath it. */
+  private deviceLoginInFlight(): boolean {
+    return this.deviceLogins.size > 0;
+  }
+
   private anyTurnWorking(): boolean {
     // A command that is still running is the one answer that does not depend on
     // reading a status. An agent can start a twenty-five-minute build and THEN
@@ -17672,7 +17683,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // machine, and a suspended machine takes the turn down with it. Not gated
       // on the opt-out — that setting is about a laptop's battery, and this
       // costs a few bytes a minute on a socket that is already open.
-      try { this.uplink?.setWorking(this.anyTurnWorking()); } catch { /* never worth failing over */ }
+      try {
+        // A device sign-in is WORK, even though no turn is running. The relay
+        // holds a cloud machine awake only while frames keep arriving, and a
+        // machine with nothing to say goes quiet, gets released after 90s and
+        // is paused by the platform seconds later — killing the CLI's polling
+        // connection mid-flow. cloud-environments.md recorded exactly that
+        // ("a grok login --device-auth was left polling, the sprite paused,
+        // and the login never completed"), and it is the likeliest cause of
+        // the first Codex attempt that approved at the vendor and wrote no
+        // credential. The phone is on another tab by then, so nothing else is
+        // generating traffic either (owner, 2026-08-31).
+        this.uplink?.setWorking(this.anyTurnWorking() || this.deviceLoginInFlight());
+      } catch { /* never worth failing over */ }
       if (shouldKeepAwake({
         enabled,
         linked: !!this.uplink,

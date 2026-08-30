@@ -371,3 +371,25 @@ describe("a newly connected agent reaches the picker you are looking at", () => 
     expect(post).not.toContain("session.hasHistory) return");
   });
 });
+
+describe("a sign-in must not be paused underneath", () => {
+  it("counts a pending device login as work, so the cloud machine stays awake", () => {
+    // The relay holds a machine awake only while frames arrive (90s idle).
+    // A phone that switches to the vendor's page generates none, and the
+    // platform pauses the sprite seconds after the hold is released, killing
+    // the CLI's polling connection. cloud-environments.md measured exactly
+    // that failure with `grok login --device-auth`.
+    const refresh = methodBody("private refreshKeepAwake(");
+    expect(refresh).toContain("this.deviceLoginInFlight()");
+    const inFlight = methodBody("private deviceLoginInFlight(");
+    expect(inFlight).toContain("this.deviceLogins.size > 0");
+
+    // And the hold is asserted at the start of the flow, not after the first
+    // poll, because the dangerous window opens immediately.
+    const start = methodBody("private async startDeviceLogin(");
+    const started = start.indexOf("device login started");
+    expect(start.indexOf("this.refreshKeepAwake()", started)).toBeGreaterThan(started);
+    // Released when it settles, so an abandoned machine stops costing money.
+    expect(start).toMatch(/this\.deviceLogins\.delete\(provider\);[\s\S]{0,200}this\.refreshKeepAwake\(\)/);
+  });
+});
