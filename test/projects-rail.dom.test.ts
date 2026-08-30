@@ -395,7 +395,7 @@ describe("projects rail", () => {
     const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
     // Every repo we are not in — including the ones never probed, which is the
     // half that used to hang.
-    expect(notes.filter((t) => t === "Update Grok Build to preview")).toHaveLength(2);
+    expect(notes.filter((t) => t === "Sessions need a newer Grok Build")).toHaveLength(2);
     expect(notes).not.toContain("Loading…");
     // The repo we ARE in still shows its sessions: that list needs no new frame.
     expect(sessionNames(h.doc, repoNames(h.doc).indexOf("alpha"))).toEqual(["alpha one"]);
@@ -414,7 +414,7 @@ describe("projects rail", () => {
     await new Promise((r) => setTimeout(r, 40));
 
     const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
-    expect(notes).not.toContain("Update Grok Build to preview");
+    expect(notes).not.toContain("Sessions need a newer Grok Build");
   });
 
   it("fans out to the remaining repos only once a preview comes back", () => {

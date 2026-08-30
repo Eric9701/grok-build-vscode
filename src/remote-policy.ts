@@ -911,7 +911,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
  * the projects rail asks for a preview of a SIBLING project on purpose, so
  * "the recipient does not own this cwd" is the normal case, not an attack.
  * Treating them alike silently dropped every `repoSessions` answer over the
- * relay — the phone's rail then sat on "Update Grok Build to preview" forever
+ * relay — the phone's rail then sat on its update-Grok-Build note forever
  * against a host that was perfectly current and had already answered.
  *
  * Authorization is unchanged either way: {@link mayDeliverRemoteHostMsg} checks
