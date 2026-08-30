@@ -56,6 +56,24 @@ export const MCP_CONNECTORS_KEY = "grok.mcpConnectors";
  */
 export const MCP_REMOTE_PACKAGE = "mcp-remote@0.1.37";
 
+/**
+ * The version segment `mcp-remote@0.1.37` actually writes under `~/.mcp-auth`.
+ *
+ * MEASURED, not derived — that is the whole point. 0.1.37 bundles the literal
+ * string `"0.1.36"` as its own version, so `getConfigDir()` returns
+ * `mcp-remote-0.1.36` and the spec above does not name the directory. Measured
+ * 2026-08-24 and again 2026-08-30, when every live token on the dev box was
+ * found there.
+ *
+ * **Re-measure this whenever MCP_REMOTE_PACKAGE moves.** Read the bundled
+ * string; do not assume it follows the spec, because it demonstrably does not.
+ * Anything that reads the token store must use THIS directory and no other: the
+ * proxy reads exactly one, derived from its own embedded version, and never
+ * looks at siblings. A token in any other version directory is unreachable to
+ * it, so it proves nothing about whether a connector can be used.
+ */
+export const MCP_REMOTE_STORE_VERSION = "0.1.36";
+
 /** The package name without a version, for recognising an existing invocation. */
 export const MCP_REMOTE_NAME = "mcp-remote";
 

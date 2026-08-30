@@ -10099,12 +10099,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           isAcpProvider(msg.provider) ? msg.provider : "grok",
           {
             fromRemote: origin === "remote",
-            // Where a failure has to land. Host dialogs are invisible on a cloud
-            // box, so the requester is the only surface that can be told.
-            report: (text) => {
-              if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
-              else void this.host.showErrorMessage(text);
-            },
+            // `requester`, NOT clientId. Host dialogs are invisible on a cloud
+            // box, so the asking client is the only surface that can be told —
+            // and a clientId is ephemeral: a same-tab reconnect replaces it, and
+            // sign-out can sit for 30 seconds, so one phone network blip is
+            // enough to address the failure to a dead connection while the
+            // credential stays on the machine. `reportRequester` is the
+            // reconnect-stable path and already falls back to a host dialog at a
+            // desk, which is what the first version of this reinvented badly.
+            report: (text) => this.reportRequester(requester, "error", text),
           },
         );
         break;

@@ -34,6 +34,7 @@ import {
   connectOutputLooksLikePortConflict,
   connectOutputLooksSuccessful,
   connectorAuth,
+  MCP_REMOTE_STORE_VERSION,
   oauthClientMetadataJson,
   parseInitializeResult,
   summarizeConnectOutput,
@@ -344,27 +345,29 @@ export function mcpAuthRoot(env: NodeJS.ProcessEnv, home: string): string {
 }
 
 /**
- * Every `mcp-remote-<version>` directory in the store, newest first.
+ * The ONE directory the running proxy reads, or `undefined` if it is not there.
  *
- * ALL of them, deliberately — an earlier version of this picked the one with the
- * newest directory mtime and treated a missing token there as authoritative.
- * That premise is wrong twice over. The pinned `mcp-remote@0.1.37` reports its
- * own version as `0.1.36`, so the spec does not name the directory; and a token
- * REFRESH rewrites the token file with `fs.writeFile`, which does not touch the
- * parent directory's mtime at all. So on a machine with several historical
- * version directories an unrelated one can stay "newest" indefinitely, and a
- * connector with a perfectly good token gets withheld from every session.
+ * Two wrong answers came before this one, and both are worth keeping written
+ * down. First: pick the directory with the newest MTIME. That fails because a
+ * token refresh rewrites the token file with `fs.writeFile`, which never touches
+ * the parent's mtime, so an abandoned directory can stay "newest" for ever —
+ * and picking wrong withheld a working connector from every session. Second:
+ * accept a token in ANY version directory. That fails the other way: the proxy
+ * reads exactly one directory, derived from its own embedded version, and never
+ * looks at siblings — so a token in an abandoned directory is unreachable to it
+ * and proves nothing. We would pass the connector through and it would open a
+ * browser anyway, which is the thing this whole mechanism exists to stop.
  *
- * Found in review. The claim that the old code failed open was simply untrue:
- * with more than one directory it guessed, and a wrong guess failed CLOSED.
+ * So: the directory is named, from a measured constant, and its ABSENCE fails
+ * open. Ambiguity is allowed to mean "do nothing"; a directory we know the proxy
+ * does not read is never allowed to prove authorization.
  */
-export function mcpRemoteDirs(
-  dirs: readonly { name: string; mtimeMs: number }[],
-): string[] {
-  return dirs
-    .filter((dir) => dir.name.startsWith("mcp-remote-"))
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .map((dir) => dir.name);
+export function mcpRemoteStoreDir(
+  dirs: readonly { name: string }[],
+  version = MCP_REMOTE_STORE_VERSION,
+): string | undefined {
+  const want = `mcp-remote-${version}`;
+  return dirs.some((dir) => dir.name === want) ? want : undefined;
 }
 
 /**
@@ -404,17 +407,16 @@ export function connectorsLackingOAuthToken(opts: {
   try {
     const fs = opts.fs ?? defaultAuthStoreFs;
     const root = mcpAuthRoot(opts.env ?? process.env, opts.home ?? homedir());
-    const versionDirs = mcpRemoteDirs(fs.versionDirs(root));
-    if (!versionDirs.length) return empty;
+    const versionDir = mcpRemoteStoreDir(fs.versionDirs(root));
+    if (!versionDir) return empty;
     const out = new Set<string>();
     for (const connector of TIER1_CONNECTORS) {
       if (connectorAuth(connector) !== "oauth") continue;
       const record = opts.store[connector.id];
       if (!record) continue;
       const endpoint = record.endpoint || connector.endpoint;
-      const file = `${mcpServerUrlHash(endpoint)}_tokens.json`;
-      const authorizedSomewhere = versionDirs.some((dir) => fs.hasFile(join(root, dir, file)));
-      if (!authorizedSomewhere) out.add(connector.id);
+      const file = join(root, versionDir, `${mcpServerUrlHash(endpoint)}_tokens.json`);
+      if (!fs.hasFile(file)) out.add(connector.id);
     }
     return out;
   } catch {
