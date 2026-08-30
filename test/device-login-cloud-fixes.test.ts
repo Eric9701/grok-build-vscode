@@ -335,3 +335,24 @@ describe("every provider configuration a remote can be in", () => {
     expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toContain("Copy");
   });
 });
+
+describe("an outdated host cannot describe its own age, so the client does", () => {
+  const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
+
+  it("appends the update hint only to the project-availability errors, and only when the host is behind", () => {
+    // The rail already knows: repoPreviewsUnsupported is the same signal that
+    // makes every project say it needs a newer Grok Build. The chat error next
+    // to it said nothing about age (owner, 2026-08-31).
+    const start = chatSrc.indexOf("function errorTextForHostAge(");
+    expect(start).toBeGreaterThan(-1);
+    const body = chatSrc.slice(start, chatSrc.indexOf("function addError(", start));
+    expect(body).toContain("state.repoPreviewsUnsupported");
+    expect(body).toContain("no longer open on the desktop");
+    expect(body).toContain("archived, so it is not available from here");
+    // Appended, never replaced: the folder may really be closed.
+    expect(body).toContain("return text");
+    expect(body).toContain("updating it there is worth trying first");
+    // And it is actually wired into the error path.
+    expect(chatSrc).toContain("addError(errorTextForHostAge(msg.text), msg.code)");
+  });
+});
