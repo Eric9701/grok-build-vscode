@@ -8789,7 +8789,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             );
           }
           // Events stream during session/load; replay(post) is the host wrap-up
-          // after the RPC settles (no webview-complete signal exists).
+          // after the RPC settles (no webview-complete signal exists). `new` is
+          // zero on this branch and printed anyway — a resume creates nothing,
+          // and a missing name is not a 0ms name in a line meant to be grepped.
+          clock.record("new", 0);
           clock.record("load", clock.elapsed(loadAt));
           replayAt = clock.now();
         });
@@ -8829,7 +8832,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // grok persists no per-turn usage anywhere.
         this.restoreUsage(session);
       } else {
+        // MEASURED, not assumed cheap. `session/new` also awaits the MCP server
+        // list, `setModel`, and for adapters `setReasoningEffort` — and in one
+        // reporter's log every `events: 0` open (i.e. every create) spent
+        // 2.2-4.8s here with no phase naming it. It reached `other` once this
+        // line started accounting for its own total; `new` says which call.
+        const newAt = clock.now();
         await client.newSession(defaultModel || undefined);
+        clock.record("new", clock.elapsed(newAt));
         clock.record("load", 0);
         clock.record("replay(post)", 0);
         session.activeSessionId = client.sessionId;
@@ -16882,7 +16892,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // so the dialect hint realigns on the next session — acceptable for a rare
     // escape-hatch toggle.
     if (!("GROK_SHELL" in env)) {
-      const grokShell = grokShellEnvValue(resolvedTerminalShell(), process.platform);
+      // `env`, not `process.env`: the helper decides whether we ran `$SHELL`
+      // itself or a fallback by comparing the two, and a workspace `.env` that
+      // sets SHELL is the environment grok will actually see. Comparing against
+      // the host's own SHELL there would answer for the wrong process.
+      const grokShell = grokShellEnvValue(resolvedTerminalShell(), process.platform, env);
       if (grokShell) env["GROK_SHELL"] = grokShell;
     }
 

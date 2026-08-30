@@ -248,7 +248,7 @@ try {
     const sum = phases.reduce((a, p) => a + p.ms, 0);
     const drift = Math.abs(sum - totalMs);
     assert.ok(drift <= 1, `phases do not tile the total (sum ${sum}ms vs total ${totalMs}ms): ${line}`);
-    for (const want of ["resolve", "approve-gate", "dispose", "prep", "version", "client", "spawn+init", "load", "replay(post)"]) {
+    for (const want of ["resolve", "approve-gate", "dispose", "prep", "version", "client", "spawn+init", "new", "load", "replay(post)"]) {
       assert.ok(named.some((p) => p.name === want), `phase "${want}" missing from: ${line}`);
     }
     log(

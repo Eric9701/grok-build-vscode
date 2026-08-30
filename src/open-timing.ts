@@ -7,8 +7,9 @@
  * `session-meta.json` read), `approve-gate` (deciding whether a
  * repo's forced auto-approve needs consent, including the config reads that
  * decide it and any modal that results), previous process exit, `prep`, `grok --version`,
- * building the ACP client, spawn+initialize, CLI `session/load`, host replay
- * posts. Replay is labelled `replay(post)` because there is no
+ * building the ACP client, spawn+initialize, `session/new` on a create, CLI
+ * `session/load` on a resume, host replay posts. Whichever of `new`/`load` did
+ * not apply prints 0ms rather than vanishing — a missing name is not a 0ms name. Replay is labelled `replay(post)` because there is no
  * webview-complete signal; the clock stops at the last replayed event posted.
  * `now` is injectable so tests never sleep.
  */
@@ -77,8 +78,19 @@ export class OpenClock {
     return this.nowFn() - started;
   }
 
+  /**
+   * Rounded ON THE WAY IN, and `totalMs` rounds too, so every number the line
+   * prints is the number the arithmetic used.
+   *
+   * `performance.now()` is fractional. Rounding each phase and the total
+   * independently at print time means nine phases of 0.49ms print as nine
+   * `0ms` while their 4.41ms total prints as `4ms` — the line stops adding up,
+   * which is the one guarantee it exists to make. Rounding here instead lets
+   * that sub-millisecond dust land in `other`, where unclaimed time belongs.
+   */
   record(name: string, ms: number, note?: string): void {
-    this.phases.push(note ? { name, ms, note } : { name, ms });
+    const whole = Number.isFinite(ms) ? Math.round(ms) : ms;
+    this.phases.push(note ? { name, ms: whole, note } : { name, ms: whole });
   }
 
   /**
@@ -104,7 +116,7 @@ export class OpenClock {
   }
 
   totalMs(): number {
-    return this.nowFn() - this.startedAt;
+    return Math.round(this.nowFn() - this.startedAt);
   }
 
   summary(events: number): string {

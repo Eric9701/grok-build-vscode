@@ -120,12 +120,37 @@ describe("OpenClock", () => {
     );
   });
 
-  it("does not name sub-millisecond rounding slack as a phase", () => {
+  it("puts sub-millisecond rounding slack in `other` rather than losing it", () => {
+    // The clock reads `performance.now()`, which is fractional. A phase of
+    // 0.4ms used to print `dispose 0ms · total 1ms` — a line that does not add
+    // up, which is the one thing this line promises. The fraction is dust, but
+    // dust that goes somewhere: phases are rounded on the way in, and whatever
+    // they no longer claim surfaces as `other`.
     let t = 1000;
     const clock = new OpenClock(() => t);
     clock.record("dispose", 0.4);
     t += 1;
-    expect(clock.summary(0)).not.toContain("other");
+    const line = clock.summary(0);
+    expect(line).toContain("dispose 0ms");
+    expect(line).toContain("other 1ms");
+    expect(line).toContain("total 1ms");
+  });
+
+  it("prints phases that add up to the printed total, whatever the fractions", () => {
+    // The guarantee, checked on the arithmetic rather than on one example:
+    // nine fractional phases must not drift away from the total they came from.
+    let t = 0;
+    const clock = new OpenClock(() => t);
+    for (const name of ["resolve", "approve-gate", "dispose", "prep", "version", "client", "new", "load", "replay(post)"]) {
+      clock.record(name, 0.49);
+    }
+    t += 4.41;
+    const line = clock.summary(0);
+    const parts = [...line.matchAll(/(\S[^·]*?) (\d+)ms/g)].map((m) => ({ name: m[1].trim(), ms: Number(m[2]) }));
+    const total = parts.find((p) => p.name.endsWith("total"));
+    const phases = parts.filter((p) => p !== total);
+    expect(total).toBeDefined();
+    expect(phases.reduce((a, p) => a + p.ms, 0)).toBe(total!.ms);
   });
 });
 
@@ -232,7 +257,7 @@ describe("startSession open-timing line", () => {
     // but the named phases and their order are the contract a pasted log is
     // grepped against.
     expect(lines[0]).toMatch(
-      /^session open: resolve \d+ms · approve-gate \d+ms · dispose \d+ms · prep \d+ms · version \d+ms \(cached\) · client \d+ms · spawn\+init \d+ms · load \d+ms · replay\(post\) \d+ms(?: · other \d+ms)? · total \d+ms \(events: \d+\)$/,
+      /^session open: resolve \d+ms · approve-gate \d+ms · dispose \d+ms · prep \d+ms · version \d+ms \(cached\) · client \d+ms · spawn\+init \d+ms · new \d+ms · load \d+ms · replay\(post\) \d+ms(?: · other \d+ms)? · total \d+ms \(events: \d+\)$/,
     );
     expect(lines[0]).toContain("events: 1");
   });
