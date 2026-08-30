@@ -141,6 +141,16 @@ export function posixShellFromEnv(shell: string | undefined): string | true {
  * inner script in one pair of quotes (`bash -lc 'script'`). A remainder that
  * is not one quoted word is returned as-is by the caller.
  */
+/** Space, tab and newline — the only blanks a POSIX shell separates tokens on.
+ *  `trimStart()` and `\s` also match NBSP and other Unicode spaces, which a
+ *  shell does not: a command starting with NBSP fails today as an invalid
+ *  pathname, and trimming it would make us recognise and RUN it instead. */
+function stripPosixBlanks(v: string): string {
+  let i = 0;
+  while (i < v.length && (v[i] === " " || v[i] === "\t" || v[i] === "\n")) i++;
+  return v.slice(i);
+}
+
 /**
  * Decode ONE shell word from the front of `s`.
  *
@@ -179,10 +189,17 @@ export function parseOneShellWord(s: string): { word: string; rest: string } | u
       let closed = false;
       while (i < s.length) {
         if (s[i] === '"') { closed = true; i++; break; }
-        if (s[i] === "\\" && i + 1 < s.length && '$`"\\\n'.includes(s[i + 1])) {
-          word += s[i + 1];
-          i += 2;
-          continue;
+        if (s[i] === "\\" && i + 1 < s.length) {
+          // A backslash-newline is a LINE CONTINUATION: POSIX removes both
+          // characters, it does not yield a newline. Decoding it as one made
+          // `printf '<%s>' foo\<newline>bar` print `<foo>` and then try to run
+          // `bar`, where the original prints `<foobar>`.
+          if (s[i + 1] === "\n") { i += 2; continue; }
+          if ('$`"\\'.includes(s[i + 1])) {
+            word += s[i + 1];
+            i += 2;
+            continue;
+          }
         }
         word += s[i];
         i++;
@@ -192,6 +209,7 @@ export function parseOneShellWord(s: string): { word: string; rest: string } | u
     }
     if (ch === "\\") {
       if (i + 1 >= s.length) return undefined; // trailing backslash
+      if (s[i + 1] === "\n") { i += 2; continue; } // line continuation
       word += s[i + 1];
       i += 2;
       continue;
@@ -217,7 +235,7 @@ export function parseOneShellWord(s: string): { word: string; rest: string } | u
  * Pure.
  */
 export function unwrapGrokBashLoginWrapper(command: string): string | undefined {
-  let s = command.trimStart();
+  let s = stripPosixBlanks(command);
   const envPrefix = /^\/usr\/bin\/env\s+/;
   const envMatch = s.match(envPrefix);
   if (envMatch) s = s.slice(envMatch[0].length);
@@ -225,7 +243,7 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
   if (!exeMatch) return undefined;
   const base = exeMatch[1].split("/").pop() ?? "";
   if (base !== "bash") return undefined;
-  s = s.slice(exeMatch[0].length).trimStart();
+  s = stripPosixBlanks(s.slice(exeMatch[0].length));
 
   // ONLY `-l` and `-c`, in any spelling. Every other flag is a refusal, not
   // something to skip: bash flags CHANGE WHAT THE SCRIPT DOES, and dropping one
@@ -251,17 +269,23 @@ export function unwrapGrokBashLoginWrapper(command: string): string | undefined 
     } else {
       return undefined;
     }
-    s = s.slice(tokMatch[0].length).trimStart();
+    s = stripPosixBlanks(s.slice(tokMatch[0].length));
     if (sawCommand) break;
   }
   if (!sawLogin || !sawCommand || s === "") return undefined;
+  // QUOTED, or we leave it alone. `shlex::try_quote` quotes anything with a
+  // shell character in it, and every payload captured from a real grok starts
+  // with a quote. Unquoted text is where the two readings diverge: our old path
+  // let the outer shell expand `$VAR` before bash saw it, while unwrapping makes
+  // it the script the host expands. Refusing keeps that difference impossible.
+  if (s[0] !== "'" && s[0] !== '"') return undefined;
   const parsed = parseOneShellWord(s);
   if (!parsed) return undefined; // unterminated quoting — do not rewrite it
   // Exactly one word, or nothing to unwrap. POSIX hands `-c` only the FIRST
   // word as the script and makes the rest `$0`, `$1`, so a remainder means
   // rewriting would change what the command does — `bash -lc rm -rf target`
   // really does run `rm` with no operands.
-  if (parsed.rest.trim() === "") return parsed.word;
+  if (stripPosixBlanks(parsed.rest) === "") return parsed.word;
   return undefined;
 }
 

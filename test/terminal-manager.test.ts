@@ -406,7 +406,7 @@ describe("unwrapGrokBashLoginWrapper", () => {
     // so bash runs `echo` and `hi` becomes `$0`. Rewriting it to `echo hi`
     // changes what the command does — harmless there, destructive for
     // `bash -lc rm -rf target`, which really does run `rm` with no operands.
-    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo")).toBe("echo");
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo'")).toBe("echo");
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo hi")).toBeUndefined();
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc rm -rf target")).toBeUndefined();
     expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
@@ -465,9 +465,9 @@ describe("posixSpawnArgv", () => {
     // Linux it is dash — and a script grok deliberately wrote for bash would
     // newly fail on `[[ ]]`, arrays or process substitution. Leaving the
     // wrapper is what v3.19.5 did, and for this host it was right.
-    expect(posixSpawnArgv("/bin/bash -lc echo", true)).toEqual({
+    expect(posixSpawnArgv("/bin/bash -lc 'echo'", true)).toEqual({
       file: "/bin/sh",
-      args: ["-c", "/bin/bash -lc echo"],
+      args: ["-c", "/bin/bash -lc 'echo'"],
     });
   });
 });
@@ -541,6 +541,36 @@ describe("posixSpawnArgv only unwraps where it is safe", () => {
       file: "/bin/zsh",
       args: ["-c", "echo '$HOME'"],
     });
+  });
+
+  it("treats backslash-newline as a line continuation, not a newline", () => {
+    // POSIX removes BOTH characters. Decoding it to a newline split the script:
+    // `printf '<%s>' foo\<newline>bar` prints `<foobar>`, but a real newline
+    // makes it print `<foo>` and then try to run `bar`.
+    const dq = '"foo' + String.fromCharCode(92) + String.fromCharCode(10) + 'bar"';
+    expect(parseOneShellWord(dq)).toEqual({ word: "foobar", rest: "" });
+    const bare = "foo" + String.fromCharCode(92) + String.fromCharCode(10) + "bar";
+    expect(parseOneShellWord(bare)).toEqual({ word: "foobar", rest: "" });
+  });
+
+  it("separates tokens on POSIX blanks only, never Unicode spaces", () => {
+    // `trimStart()` strips NBSP; a shell does not. A command starting with NBSP
+    // fails today as an invalid pathname, and trimming it would make us
+    // recognise the wrapper and RUN what previously could not run.
+    const nbsp = String.fromCharCode(0x00a0);
+    expect(unwrapGrokBashLoginWrapper(nbsp + "/bin/bash -lc 'printf HIT'")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper(" /bin/bash -lc 'printf HIT'")).toBe("printf HIT");
+  });
+
+  it("only unwraps a quoted payload", () => {
+    // Every payload captured from a real grok starts with a quote, because
+    // `shlex::try_quote` quotes anything containing a shell character. Unquoted
+    // text is where the readings diverge — the old path let the OUTER shell
+    // expand `$VAR` before bash saw it, while unwrapping makes it the script
+    // the host expands — so we decline rather than change what runs.
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc echo")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc $PAYLOAD")).toBeUndefined();
+    expect(unwrapGrokBashLoginWrapper("/bin/bash -lc 'echo hi'")).toBe("echo hi");
   });
 
   it("parses a shell word the way a shell does", () => {
