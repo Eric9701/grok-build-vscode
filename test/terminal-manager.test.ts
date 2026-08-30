@@ -484,18 +484,23 @@ describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
     expect(exitCode).toBe(0);
     const out = m.output(terminalId).output.trim();
     const host = posixShellFromEnv(process.env.SHELL);
-    // On a host that cannot stand in for bash — `/bin/sh`, dash, ksh — the
-    // wrapper is deliberately KEPT, so `$0` is bash and not the host. Asserting
-    // the host unconditionally failed on exactly the fallback configurations we
-    // support.
     const base = host === true ? "sh" : host.slice(host.lastIndexOf("/") + 1);
     const bashCapable = base === "bash" || base === "zsh";
-    const expected = bashCapable ? host : "/bin/bash";
-    // The contract is `$0 === the host we chose`, NOT "not bash": `/bin/bash`
-    // is an allowed `$SHELL`, so a blanket `not.toMatch(/bash$/)` fails the
-    // suite on a perfectly valid bash-login machine while the very next line
-    // expects exactly that value.
-    expect(out).toBe(expected);
+    if (bashCapable) {
+      // Unwrapped: the host runs the script itself, so `$0` IS the host.
+      expect(out).toBe(host);
+    } else {
+      // The wrapper is deliberately kept here, and the whole string goes to
+      // `sh -c` — so the OUTER shell expands `"$0"` before bash ever sees it,
+      // and what comes back is that shell's own `$0` (empty on dash), not the
+      // inner one's. Asserting a value here would test the outer shell rather
+      // than us. What matters on this path is that the wrapper survived, and
+      // `posixSpawnArgv` pins that directly.
+      //
+      // ubuntu-latest in CI is what caught this: neither of our machines has a
+      // non-bash-capable `$SHELL`, and the whole block is skipped on Windows.
+      expect(posixSpawnArgv("/bin/bash -lc 'x'", host).args[1]).toBe("/bin/bash -lc 'x'");
+    }
     m.release(terminalId);
   });
 });
