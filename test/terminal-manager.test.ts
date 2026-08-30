@@ -484,7 +484,13 @@ describePosix("POSIX host does not exec grok's bash -lc wrapper", () => {
     expect(exitCode).toBe(0);
     const out = m.output(terminalId).output.trim();
     const host = posixShellFromEnv(process.env.SHELL);
-    const expected = host === true ? "/bin/sh" : host;
+    // On a host that cannot stand in for bash — `/bin/sh`, dash, ksh — the
+    // wrapper is deliberately KEPT, so `$0` is bash and not the host. Asserting
+    // the host unconditionally failed on exactly the fallback configurations we
+    // support.
+    const base = host === true ? "sh" : host.slice(host.lastIndexOf("/") + 1);
+    const bashCapable = base === "bash" || base === "zsh";
+    const expected = bashCapable ? host : "/bin/bash";
     // The contract is `$0 === the host we chose`, NOT "not bash": `/bin/bash`
     // is an allowed `$SHELL`, so a blanket `not.toMatch(/bash$/)` fails the
     // suite on a perfectly valid bash-login machine while the very next line
