@@ -15079,10 +15079,13 @@
         for (const provider of state.providers) {
           const mirrored = state.deviceLoginByProvider[provider.id];
           if (!mirrored) continue;
-          // Connected: the snapshot is now the truth, so a finished flow has
-          // nothing left to say. Disconnected: a signed-out account must not
-          // keep a "Connected" card from an earlier session in this tab.
-          if (provider.connected ? mirrored.status === "done" : mirrored.status !== "waiting" && mirrored.status !== "starting" && mirrored.status !== "verifying") {
+          // ONLY a terminal "done" can lie: connected, it is redundant with the
+          // snapshot; disconnected, it claims an account the user just signed
+          // out of. A `failed` or `unavailable` mirror is the explanation for
+          // what just happened and must survive the refresh that Providers
+          // sends on open — dropping those erased the reason and left a bare
+          // Connect row (review round 2).
+          if (mirrored.status === "done") {
             delete state.deviceLoginByProvider[provider.id];
           }
         }
@@ -15090,11 +15093,6 @@
         // sends no frame at all, and a locally-set flag would spin forever.
         // Absent means idle, which is also what every pre-refresh host means.
         state.providersChecking = msg.checking === true;
-        // The page that ASKED for this refresh has to show its result. On a
-        // cloud machine that page is the only one there is, and without this
-        // the Refresh button sat still and the rows kept their old answer
-        // until the overlay was reopened (review, 2026-08-31).
-        refreshSettingsOverlay();
         // Connecting an additional account happens from the gear while the
         // current transcript stays mounted. The login/recovery view temporarily
         // borrows the welcome overlay; dismiss it when the provider it was

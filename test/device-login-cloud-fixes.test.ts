@@ -380,24 +380,38 @@ describe("a sign-in must not be paused underneath", () => {
     // empty map and asserted "not working" (found in review, 2026-08-31).
     // Pin the ORDER that matters and the single exit door.
     const start = methodBody("private async startDeviceLogin(");
-    const enter = start.indexOf("this.setDeviceLoginWork(provider, true)");
+    const enter = start.indexOf("this.beginDeviceLoginWork()");
     const spawn = start.indexOf("runDeviceLogin(");
     expect(enter).toBeGreaterThan(-1);
     expect(enter).toBeLessThan(spawn);
 
     // Success must NOT release at onDone: verification is still to come.
-    expect(start).toContain("if (!result.ok) this.setDeviceLoginWork(provider, false)");
+    expect(start).toContain("if (!result.ok) this.endDeviceLoginWork(workId)");
 
     // The verification wrapper releases in a finally, whatever happened.
     const confirm = methodBody("private async confirmDeviceLogin(");
     expect(confirm).toContain("finally");
-    expect(confirm).toContain("this.setDeviceLoginWork(provider, false)");
+    expect(confirm).toContain("this.endDeviceLoginWork(workId)");
 
     // The flag the keep-awake reads is the operation's own set, never the
     // guard map whose lifetime is shorter than the operation.
     const inFlight = methodBody("private deviceLoginInFlight(");
     expect(inFlight).toContain("this.deviceLoginWork.size > 0");
     expect(inFlight).not.toContain("this.deviceLogins.size");
+
+    // Ownership is per OPERATION, not per provider: a login that is still
+    // verifying has already left the guard map, so a second tab can start the
+    // same provider and a provider-keyed hold let the older one's cleanup
+    // release the newer one's machine (review round 2).
+    const begin = methodBody("private beginDeviceLoginWork(");
+    expect(begin).toContain("++this.deviceLoginWorkSeq");
+    const end = methodBody("private endDeviceLoginWork(");
+    expect(end).toContain("this.deviceLoginWork.delete(id)");
+    expect(start).toContain("const workId = this.beginDeviceLoginWork()");
+    expect(start).toContain("this.endDeviceLoginWork(workId)");
+    expect(confirm).toContain("this.endDeviceLoginWork(workId)");
+    // Nothing may release by provider any more.
+    expect(sidebar).not.toContain("setDeviceLoginWork(");
   });
 
   it("keeps the credential fallback on GROK_HOME rather than a hardcoded path", () => {
@@ -416,10 +430,22 @@ describe("a sign-in must not be paused underneath", () => {
     expect(refresh).toContain("this.deviceLoginInFlight()");
 
     // Cancel is the third exit and releases too.
-    const cancelBlock = sidebar.slice(sidebar.indexOf('case "cancelDeviceLogin"'));
-    const release = cancelBlock.indexOf("this.setDeviceLoginWork(provider, false)");
-    const cancelCall = cancelBlock.indexOf("running.handle.cancel()");
-    expect(release).toBeGreaterThan(-1);
-    expect(release).toBeLessThan(cancelCall);
+    // Cancel releases through onDone (cancel() settles the runner
+    // synchronously), so the handler must NOT release a token it does not own.
+    const cancelBlock = sidebar.slice(sidebar.indexOf('case "cancelDeviceLogin"'), sidebar.indexOf('case "recheckConnection"'));
+    expect(cancelBlock).toContain("running.handle.cancel()");
+    expect(cancelBlock).not.toContain("DeviceLoginWork");
+  });
+});
+
+describe("a settled flow's explanation survives the refresh that Providers sends", () => {
+  it("keeps a failed mirror on a disconnected provider, and drops only done", () => {
+    const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
+    const start = chatSrc.indexOf("A confirmed account retires its device-flow mirror");
+    const block = chatSrc.slice(start, start + 900);
+    expect(block).toContain('mirrored.status === "done"');
+    // Nothing may key the retirement on the live states any more: that
+    // erased the reason a login had just failed (review round 2).
+    expect(block).not.toContain('mirrored.status !== "waiting"');
   });
 });
