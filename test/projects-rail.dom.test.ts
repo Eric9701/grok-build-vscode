@@ -401,6 +401,37 @@ describe("projects rail", () => {
     expect(sessionNames(h.doc, repoNames(h.doc).indexOf("alpha"))).toEqual(["alpha one"]);
   });
 
+  it("paints the rail before any catalog on a cloud machine, and not on a laptop", () => {
+    // The rail waits for `repos` because an extension older than v2.0.5 never
+    // sends one. A cloud machine cannot be that: the relay provisions it and
+    // installs the host. Without this the old single-column layout — the one
+    // this product had before it had a rail — was the whole screen for as long
+    // as a sleeping machine took to wake (owner, 2026-08-31; measured at 4.2s
+    // against a host that answered in four seconds).
+    const cloud = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => { withRail(w); w.grokCloudHost = true; },
+    });
+    expect(cloud.doc.body.classList.contains("has-rail")).toBe(true);
+    expect((cloud.doc.getElementById("projects-rail") as HTMLElement).hidden).toBe(false);
+
+    // A linked laptop still waits: its host may predate the frame.
+    const laptop = bootWebview({ remote: true, beforeScripts: (w: any) => withRail(w) });
+    expect(laptop.doc.body.classList.contains("has-rail")).toBe(false);
+    expect((laptop.doc.getElementById("projects-rail") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("fills the cloud rail from the catalog when it finally arrives", () => {
+    const h = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => { withRail(w); w.grokCloudHost = true; },
+    });
+    dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    dispatch(h.window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+    expect(repoNames(h.doc)).toContain("alpha");
+    expect(sessionNames(h.doc, repoNames(h.doc).indexOf("alpha"))).toEqual(["alpha one"]);
+  });
+
   it("re-probes after a reconnect instead of libelling the host for ever", async () => {
     // The verdict is inferred from EIGHT SECONDS OF SILENCE, and a cloud
     // machine that is waking, or busy running a CLI sign-out, misses that
