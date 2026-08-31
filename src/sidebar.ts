@@ -10215,8 +10215,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         const pendingLoginProbe = this.loginReprobeTimers.get(provider);
         if (pendingLoginProbe) clearTimeout(pendingLoginProbe);
         this.loginReprobeTimers.delete(provider);
-        await this.setProviderConnected(provider, true);
-        await this.reprobeProviderCredentials(provider);
+        // Evidence, then promotion — never the other way round. Marking the
+        // account connected BEFORE the probe meant a failed check left it
+        // "connected but needs to sign in again" for an account that was
+        // never signed in at all, which is exactly what the owner saw on a
+        // fresh cloud machine (2026-08-31). The Providers refresh has always
+        // promoted this way; this handler was the one that did not.
+        //
+        // A failure never demotes, either: a lapsed account keeps its row and
+        // gets the sign-in action, which is what needsLogin is for.
+        const rechecked = await this.reprobeProviderCredentials(provider);
+        if (rechecked) await this.setProviderConnected(provider, true);
         // Every view stranded by a last-provider sign-out, not just this one.
         const adopted = await this.retargetNeedsProviderSessions(provider);
         // An empty conversation bound to a provider that cannot answer has

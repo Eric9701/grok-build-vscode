@@ -498,3 +498,45 @@ describe("the wizard and Settings share a screen", () => {
     expect(open).toContain('panel.setAttribute("aria-modal", "true")');
   });
 });
+
+describe("a success must not end on an invitation to start over", () => {
+  const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
+
+  it("keeps the settled panel painted after its mirror is retired", () => {
+    // A confirmed account retires its mirror, so between "connected" and the
+    // auto-close the wizard had nothing to render and fell back to the idle
+    // offer: the last thing a successful sign-in showed was "Connect Codex"
+    // (owner, on a phone, 2026-08-31).
+    const render = chatSrc.slice(chatSrc.indexOf("function renderConnectWizard("), chatSrc.indexOf("function syncConnectWizard("));
+    expect(render).toContain("connectWizard.lastDevice");
+    const sync = chatSrc.slice(chatSrc.indexOf("function syncConnectWizard("), chatSrc.indexOf("function showOnboarding("));
+    expect(sync).toContain("connectWizard.settled = true");
+    expect(sync).toContain("if (connectWizard.settled) return;");
+    // And the guard must sit BEFORE the repaint it is guarding.
+    expect(sync.indexOf("if (connectWizard.settled) return;")).toBeLessThan(sync.lastIndexOf("renderConnectWizard()"));
+  });
+
+  it("centres a button's label instead of leaving it to line-height", () => {
+    const chatCss = fs.readFileSync(path.join(root, "media", "chat.css"), "utf8");
+    const at = chatCss.indexOf(".onb-action {");
+    const block = chatCss.slice(at, chatCss.indexOf("}", at));
+    expect(block).toContain("align-items: center");
+    expect(block).toContain("justify-content: center");
+  });
+});
+
+describe("re-checking a connection proves it before claiming it", () => {
+  it("promotes only on a passing probe, and never demotes on a failing one", () => {
+    // Marking the provider connected first left a FAILED check reading
+    // "connected but needs to sign in again" for an account that was never
+    // signed in — seen on a fresh cloud machine (owner, 2026-08-31).
+    const at = sidebar.indexOf('case "recheckConnection": {');
+    expect(at).toBeGreaterThan(-1);
+    const body = sidebar.slice(at, sidebar.indexOf('case "', at + 40));
+    const probe = body.indexOf("const rechecked = await this.reprobeProviderCredentials(provider)");
+    const promote = body.indexOf("if (rechecked) await this.setProviderConnected(provider, true)");
+    expect(probe).toBeGreaterThan(-1);
+    expect(promote).toBeGreaterThan(probe);
+    expect(body).not.toContain("await this.setProviderConnected(provider, true);\n        await this.reprobeProviderCredentials");
+  });
+});
