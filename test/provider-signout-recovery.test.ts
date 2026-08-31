@@ -48,6 +48,9 @@ function makeSidebar(options: {
   sidebar.connectedProviders = vi.fn(() => connected);
   sidebar.defaultProviderForProject = vi.fn(() => connected[0] ?? "grok");
   sidebar.remoteClients = new RemoteClientState<Session>(cwd);
+  // A real instance has this from its field initialiser; signing out clears the
+  // provider's preflight latch so the next sign-in starts at step 1 again.
+  sidebar.deviceLoginPreflightShown = new Set<string>();
   sidebar.pool = new Set<Session>();
   sidebar.sessionCache = new Map();
   sidebar.sessionLoadReservations = new Map();

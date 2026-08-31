@@ -7262,6 +7262,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     report?: (text: string) => void,
   ): Promise<void> {
     this.setProviderConnectedInMemory(provider, false);
+    // Next sign-in starts at step 1 again. The latch stops the advice from
+    // repeating inside one flow; a sign-out ends the flow, and the account
+    // setting it names is the first thing to check before the next one.
+    this.deviceLoginPreflightShown.delete(provider);
     const reset = this.resetProviderSessionsAfterLogout(provider);
     try {
       await this.persistProviderConnections();

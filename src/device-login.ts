@@ -146,7 +146,7 @@ export interface DeviceLoginPreflight {
  */
 export function deviceLoginCodeNote(provider: AcpProvider): string | undefined {
   if (provider !== "codex") return undefined;
-  return "OpenAI will show a security warning about device codes. That is expected here: "
+  return "OpenAI will show a **security warning** about device codes. That is expected here: "
     + "the Codex CLI on this machine started this sign-in, and the code below is the one it printed. "
     + "Never use a code you did not start yourself.";
 }
@@ -164,7 +164,7 @@ export function deviceLoginPreflight(
       + "off by default for everyone — OpenAI disables device-code sign-in "
       + "unless you ask for it.",
     steps: [
-      "Open ChatGPT and go to Settings → Security",
+      "[Open ChatGPT](https://chatgpt.com/#settings/Security) and go to Settings → Security",
       // The setting sits at the very BOTTOM of a long page, and people reported
       // not finding it. `**` is rendered as bold by the panel.
       "Turn on \"Device code authorization for Codex\" **at the very bottom**",

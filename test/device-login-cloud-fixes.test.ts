@@ -107,8 +107,7 @@ function mountSettings(env: Record<string, unknown>, opts: Record<string, unknow
     category: "providers",
     ...mountOpts,
   });
-  void mounted;
-  return { api, container, window };
+  return { api, container, window, mounted };
 }
 
 const remoteEnv = (extra: Record<string, unknown> = {}) => ({
@@ -220,13 +219,20 @@ describe("every provider configuration a remote can be in", () => {
         hostCaps: testCase.caps,
         deviceLogin: testCase.deviceLogin,
       }, { snapshotOverrides: { providers: testCase.providers } });
+      // The row's id still keys on the agent; the heading is the product's own
+      // name and whose it is.
+      const HEADINGS: Record<string, string> = {
+        Grok: "Grok Build by SpaceXAI",
+        Codex: "Codex by OpenAI",
+        Claude: "Claude Code by Anthropic",
+      };
       for (const provider of ["Grok", "Codex", "Claude"]) {
         const rows = [...container.querySelectorAll(".settings-row")]
           .filter((row) => ((row as HTMLElement).dataset.id || "").startsWith("provider" + provider));
         expect(rows.length, `${testCase.label}: ${provider}`).toBe(1);
         // A heading is the account's name, whatever is happening to it.
         const title = rows[0].querySelector(".settings-row-title");
-        expect((title!.textContent || "").trim()).toBe(provider);
+        expect((title!.textContent || "").trim()).toBe(HEADINGS[provider]);
       }
     });
   }
@@ -261,6 +267,46 @@ describe("every provider configuration a remote can be in", () => {
     btn.dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
     expect(posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
     expect(locals).toContain("connectWizard:codex");
+  });
+
+  it("says it is disconnecting, because the answer is 10-15 seconds away", () => {
+    // A remote sign-out crosses the relay, wakes a machine that may have
+    // suspended, and runs the vendor CLI's own logout. The owner waited 10-15
+    // seconds with the button still reading "Sign out" and clicked it several
+    // times (2026-08-31).
+    const posted: unknown[] = [];
+    const { container, window, mounted } = mountSettings({
+      isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
+    }, {
+      snapshotOverrides: { providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")] },
+      post: (m: unknown) => posted.push(m),
+    });
+    const action = () => container.querySelector('[data-id="providerGrokRemote"] .settings-action') as HTMLButtonElement;
+    expect(action().textContent).toBe("Sign out");
+    action().dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
+    expect(posted).toContainEqual({ type: "logout", provider: "grok" });
+    expect(action().textContent).toBe("Disconnecting…");
+    expect(action().disabled).toBe(true);
+    expect(action().getAttribute("aria-busy")).toBe("true");
+
+    // A second click cannot reach the host — which is the point.
+    action().dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
+    expect(posted.filter((m) => (m as { type: string }).type === "logout")).toHaveLength(1);
+
+    // The host's answer is what puts the row back.
+    mounted.update({ providers: [prov("grok"), prov("codex"), prov("claude")] }, undefined);
+    expect(action().textContent).toBe("Connect");
+    expect(action().disabled).toBe(false);
+  });
+
+  it("leaves Connect alone — the wizard reports for itself", () => {
+    const { container, window } = mountSettings({
+      isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
+    }, { snapshotOverrides: { providers: NONE }, post: () => {}, onLocal: () => {} });
+    const action = () => container.querySelector('[data-id="providerCodexRemote"] .settings-action') as HTMLButtonElement;
+    action().dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
+    expect(action().textContent).toBe("Connect");
+    expect(action().disabled).toBe(false);
   });
 
   it("no longer renders a second copy of the flow", () => {
@@ -441,9 +487,39 @@ describe("one connect wizard, in a dialog, opened from anywhere", () => {
     expect(open.slice(onclick, onclick + 160)).not.toContain("cancelDeviceLogin");
   });
 
+  it("opens on \"starting\", never on the offer it was opened from", () => {
+    // On a cloud machine the first frame is seconds away. Rendering the
+    // empty-state offer in that gap put "Connect Codex" back in front of the
+    // person who had just clicked it, and they clicked it again (owner,
+    // 2026-08-31).
+    const open = chatSrc.slice(chatSrc.indexOf("function openConnectWizard("));
+    const seed = open.indexOf("connectWizard.lastDevice = { status: \"starting\" }");
+    const render = open.indexOf("renderConnectWizard()", open.indexOf("connectWizard = {"));
+    expect(seed).toBeGreaterThan(-1);
+    expect(render).toBeGreaterThan(seed);
+    // Only when there is nothing live: a wizard opened FOR a running flow
+    // renders that flow, not a fake first frame.
+    expect(open.slice(seed - 120, seed)).toContain("!state.deviceLoginByProvider[provider]");
+  });
+
   it("is reachable from Settings through the local-action channel", () => {
     expect(chatSrc).toContain('name.indexOf("connectWizard:") === 0');
     expect(chatSrc).toContain('openConnectWizard(name.slice("connectWizard:".length))');
+  });
+});
+
+describe("signing out resets what the next sign-in is told", () => {
+  const sidebarSrc = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8");
+
+  it("clears the preflight latch, so step 1 is shown again", () => {
+    // The latch stops the advice repeating inside ONE flow. A sign-out ends
+    // the flow, and the account setting the advice names is the first thing to
+    // check before the next one — the owner reconnected Codex and was taken
+    // straight to step 2 (2026-08-31).
+    const start = sidebarSrc.indexOf("private async finishProviderLogout(");
+    expect(start).toBeGreaterThan(-1);
+    const body = sidebarSrc.slice(start, sidebarSrc.indexOf("private async resetProviderSessionsAfterLogout(", start));
+    expect(body).toContain("this.deviceLoginPreflightShown.delete(provider)");
   });
 });
 

@@ -51,13 +51,13 @@ describe("a phone with nothing connected", () => {
     const h = boot({ remote: true });
     onboarding(h, {});
     expect(text(h)).not.toMatch(/only be connected on the computer/i);
-    expect(actions(h)).toContain("Connect Grok");
+    expect(actions(h)).toContain("Connect Grok Build");
   });
 
   it("offers every agent when none is connected, rather than guessing", () => {
     const h = boot({ remote: true });
     dispatch(h.window, { type: "onboarding", state: "connect-agent", platform: "linux" });
-    expect(actions(h)).toEqual(["Connect Grok", "Connect Codex", "Connect Claude"]);
+    expect(actions(h)).toEqual(["Connect Grok Build", "Connect Codex", "Connect Claude Code"]);
   });
 
   it("posts the same message the desk posts — one capability, not two", () => {
@@ -78,7 +78,7 @@ describe("while the flow runs", () => {
   it("says something between the tap and the code", () => {
     const h = boot({ remote: true });
     onboarding(h, { device: { status: "starting" } });
-    expect(text(h)).toMatch(/Connecting Grok/);
+    expect(text(h)).toMatch(/Connecting Grok Build/);
     expect(byAct(h, "cancelDeviceLogin")).toBeTruthy();
   });
 
@@ -123,7 +123,7 @@ describe("when it ends", () => {
   it("confirms success", () => {
     const h = boot({ remote: true });
     onboarding(h, { device: { status: "done" } });
-    expect(text(h)).toMatch(/Grok connected/);
+    expect(text(h)).toMatch(/Grok Build connected/);
   });
 
   it("offers a retry on a failure that retrying could fix", () => {
@@ -173,6 +173,55 @@ describe("when it ends", () => {
     expect(onb(h).querySelector("img")).toBeNull();
     expect(text(h)).toContain("<img src=x onerror=alert(1)>");
     expect(strong).toContain("and this");
+  });
+
+  it("makes step one a link, and refuses a link that is not https", () => {
+    // The step is a PLACE to go: ChatGPT's own security page. It arrives as
+    // `[label](url)` in host text and comes out as a new-tab link, on the same
+    // escape-first pass as the bold — so a javascript: or data: URL, or a
+    // quote-bearing one, stays inert text (owner asked for the link back,
+    // 2026-08-31).
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "codex-login",
+      provider: "codex",
+      device: {
+        status: "unavailable",
+        message: "Codex needs one setting turned on.",
+        preflight: {
+          reason: "Codex needs one setting turned on.",
+          steps: [
+            "[Open ChatGPT](https://chatgpt.com/#settings/Security) and go to Settings → Security",
+            "[Nope](javascript:alert(1)) stays text",
+          ],
+          url: "https://chatgpt.com/#settings/Security",
+        },
+      },
+    });
+    const links = [...onb(h).querySelectorAll(".onb-steps a")] as HTMLAnchorElement[];
+    expect(links.map((a) => a.textContent)).toEqual(["Open ChatGPT"]);
+    expect(links[0].getAttribute("href")).toBe("https://chatgpt.com/#settings/Security");
+    expect(links[0].getAttribute("target")).toBe("_blank");
+    expect(links[0].getAttribute("rel")).toContain("noopener");
+    expect(text(h)).toContain("[Nope](javascript:alert(1)) stays text");
+  });
+
+  it("bolds the warning the vendor is about to show, in the note beside the code", () => {
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "codex-login",
+      provider: "codex",
+      device: {
+        status: "waiting",
+        url: "https://auth.openai.com/codex/device",
+        code: "ABCD-1234",
+        note: "OpenAI will show a **security warning** about device codes.",
+      },
+    });
+    const strong = [...onb(h).querySelectorAll(".onb-note strong")].map((n) => n.textContent);
+    expect(strong).toEqual(["security warning"]);
   });
 
   it("offers the connect button again on a preflight card, because the advice is not a gate", () => {

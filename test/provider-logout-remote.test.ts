@@ -12,6 +12,9 @@ function makeSidebar(update: () => Promise<void> = async () => {}): any {
   sidebar.providerConnectionState = { grok: true, codex: true };
   sidebar.providerConnections = vi.fn(() => sidebar.providerConnectionState);
   sidebar.remoteClients = new RemoteClientState<Session>("/repo");
+  // A real instance has this from its field initialiser; signing out clears the
+  // provider's preflight latch so the next sign-in starts at step 1 again.
+  sidebar.deviceLoginPreflightShown = new Set<string>();
   sidebar.pool = new Set<Session>();
   sidebar.focused = new Session();
   sidebar.focused.provider = "codex";
