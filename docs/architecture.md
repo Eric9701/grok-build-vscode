@@ -547,8 +547,15 @@ host that never sends one gets no chip rather than a dead control.
 At desktop width that picker becomes a **projects rail**, which is the same
 capability-gated affordance in another shape: `#projects-rail` exists only in the
 relay's page, so the element lookup is the entire gate and the VS Code webview renders
-nothing new. Other projects' rows arrive on `repoSessions` (answering `listRepoSessions`);
-where that frame never comes the rail degrades to the selected repo's own list. A
+nothing new. The rail also waits for a `repos` frame before painting at all, because a host
+older than v2.0.5 never sends one and an empty sidebar is worse than a plain
+column — with two exemptions, both cases where there is no host version skew to
+protect against: the desktop app (renderer and host ship together) and a cloud
+machine (the relay provisioned it and installed the host, and says so to the
+page before the client boots). Other projects' rows arrive on `repoSessions`
+(answering `listRepoSessions`); where that frame never comes the rail degrades
+to the selected repo's own list, and a probe that goes unanswered is re-asked
+on the next reconnect rather than latched as "this host is too old". A
 session's visual section is resolved in precedence order (Pinned, an expanded
 Recent section, then project/archive) with one claimed-id set across the final render;
 the same id therefore cannot appear in two rail groups. Click and highlight state is
