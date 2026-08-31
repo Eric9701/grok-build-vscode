@@ -1956,7 +1956,15 @@ export class GrokSidebar {
         // a fresh cloud machine, 2026-08-31).
         const clientId = currentClientId();
         const target = clientId ? this.remoteSessionFor(clientId) : this.focused;
-        await this.adoptSessionsForConnectedProvider(provider, target);
+        try {
+          await this.adoptSessionsForConnectedProvider(provider, target);
+        } catch (error) {
+          // The sign-in itself SUCCEEDED and has already been announced. A
+          // failure to start the session afterwards is a worse screen, not a
+          // worse account — and this runs under `void` on a machine with
+          // nobody at it, where an unhandled rejection is the only trace.
+          this.host.appendLine(`[${provider}] connected, but starting the session failed: ${errorDetail(error)}`);
+        }
         return;
       }
     }
