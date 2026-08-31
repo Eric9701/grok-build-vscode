@@ -118,55 +118,6 @@ const remoteEnv = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
-describe("settings renders the device flow where the click happened", () => {
-  it("shows the code and the sign-in link for a waiting flow", () => {
-    const { container } = mountSettings(remoteEnv({
-      deviceLogin: { codex: { status: "waiting", url: "https://auth.openai.com/codex/device", code: "ABCD-1234" } },
-    }));
-    const row = container.querySelector('.settings-row[data-id="providerCodexFlow"]');
-    expect(row, "flow row must render").toBeTruthy();
-    expect(row!.textContent).toContain("ABCD-1234");
-    expect(row!.textContent).toContain("Open sign-in page");
-    expect(row!.querySelector("[data-device-cancel]")).toBeTruthy();
-  });
-
-  it("posts cancelDeviceLogin from the flow row's cancel", () => {
-    const posted: unknown[] = [];
-    const { container, window } = mountSettings(remoteEnv({
-      deviceLogin: { grok: { status: "waiting", url: "https://accounts.x.ai/oauth2/device", code: "WXYZ-9876" } },
-    }), { post: (m: unknown) => posted.push(m) });
-    const cancel = container.querySelector('[data-device-cancel]') as HTMLElement;
-    expect(cancel).toBeTruthy();
-    cancel.dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
-    expect(posted).toContainEqual({ type: "cancelDeviceLogin", provider: "grok" });
-  });
-
-  it("keeps the overlay open when a remote connect is clicked", () => {
-    // The flow reports into this very page; closing it on the click was how
-    // "Connect does nothing" happened.
-    const onClose = vi.fn();
-    const posted: unknown[] = [];
-    const { container, window } = mountSettings(remoteEnv(), {
-      post: (m: unknown) => posted.push(m),
-      closeOnAction: true,
-      onClose,
-    });
-    const row = container.querySelector('.settings-row[data-id="providerCodexRemote"]');
-    expect(row, "remote connect row must render").toBeTruthy();
-    const btn = row!.querySelector(".settings-action") as HTMLElement;
-    btn.dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
-    expect(posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
-    expect(onClose).not.toHaveBeenCalled();
-  });
-
-  it("hides the flow rows when nothing is in flight", () => {
-    const { container } = mountSettings(remoteEnv());
-    expect(container.querySelector('[data-id="providerGrokFlow"]')).toBeNull();
-    expect(container.querySelector('[data-id="providerCodexFlow"]')).toBeNull();
-    expect(container.querySelector('[data-id="providerClaudeFlow"]')).toBeNull();
-  });
-});
-
 describe("host-config wording knows there is no desk in the cloud", () => {
   it("says cloud on a cloud host and host-machine on a desk remote", () => {
     const cloud = mountSettings(remoteEnv(), { category: "advanced" });
@@ -201,28 +152,6 @@ describe("the verdict never blames a credential that landed", () => {
     expect(confirm).toContain("does not need repeating");
     const present = methodBody("private providerCredentialFilePresent(");
     expect(present).toContain("auth.json");
-  });
-});
-
-describe("one row per provider, whatever the flow state", () => {
-  it("hides the ordinary rows while a flow row owns the space", () => {
-    const { container } = mountSettings(remoteEnv({
-      deviceLogin: { codex: { status: "waiting", url: "https://auth.openai.com/codex/device", code: "AB12-CD34" } },
-    }));
-    expect(container.querySelector('[data-id="providerCodexFlow"]')).toBeTruthy();
-    expect(container.querySelector('[data-id="providerCodexRemote"]')).toBeNull();
-    expect(container.querySelector('[data-id="providerCodexStatus"]')).toBeNull();
-    expect(container.querySelector('[data-id="providerCodexFlow"] [data-device-copy]')).toBeTruthy();
-  });
-
-  it("folds a failure into the ordinary row instead of doubling it", () => {
-    const { container } = mountSettings(remoteEnv({
-      deviceLogin: { codex: { status: "failed", message: "Codex approved the sign-in, but nothing landed." } },
-    }));
-    expect(container.querySelector('[data-id="providerCodexFlow"]')).toBeNull();
-    const row = container.querySelector('[data-id="providerCodexRemote"]');
-    expect(row).toBeTruthy();
-    expect(row!.textContent).toContain("nothing landed");
   });
 });
 
@@ -268,10 +197,9 @@ type Case = {
 
 const CASES: Case[] = [
   { label: "fresh cloud machine", providers: NONE, deviceLogin: {}, caps: CLOUD },
-  { label: "grok starting", providers: NONE, deviceLogin: { grok: { status: "starting" } }, caps: CLOUD },
-  { label: "grok waiting", providers: NONE, deviceLogin: { grok: { status: "waiting", url: "https://x", code: "AAAA-1111" } }, caps: CLOUD },
-  { label: "grok verifying", providers: NONE, deviceLogin: { grok: { status: "verifying" } }, caps: CLOUD },
-  { label: "grok done, snapshot behind", providers: NONE, deviceLogin: { grok: { status: "done" } }, caps: CLOUD },
+  // A live flow no longer changes these rows — it renders in the wizard — so
+  // what is asserted here is the rows themselves, in every account state.
+  { label: "grok flow live in the wizard", providers: NONE, deviceLogin: { grok: { status: "waiting", url: "https://x", code: "AAAA-1111" } }, caps: CLOUD },
   { label: "grok connected", providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")], deviceLogin: {}, caps: CLOUD },
   { label: "grok lapsed", providers: [prov("grok", { connected: true, needsLogin: true }), prov("codex"), prov("claude")], deviceLogin: {}, caps: CLOUD },
   { label: "grok failed", providers: NONE, deviceLogin: { grok: { status: "failed", message: "did not finish" } }, caps: CLOUD },
@@ -312,27 +240,38 @@ describe("every provider configuration a remote can be in", () => {
     }
   });
 
-  it("keeps Codex's account-setting steps on screen with the code", () => {
+  it("asks the client to open the wizard, and still posts the sign-in message", () => {
+    // Connect must do BOTH: post `runGrokLogin` (the capability) and open the
+    // wizard (where the flow reports). A local action used to return before
+    // the message, so the dialog opened with nothing on its way to it.
+    const posted: unknown[] = [];
+    const locals: string[] = [];
+    const { container, window } = mountSettings({
+      isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
+    }, {
+      snapshotOverrides: { providers: NONE },
+      post: (m: unknown) => posted.push(m),
+      onLocal: (name: string) => locals.push(name),
+      closeOnAction: true,
+      onClose: () => { throw new Error("settings must stay open behind the wizard"); },
+    });
+    const row = container.querySelector('[data-id="providerCodexRemote"]')!;
+    const btn = row.querySelector(".settings-action") as HTMLElement;
+    btn.dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
+    expect(posted).toContainEqual({ type: "runGrokLogin", provider: "codex" });
+    expect(locals).toContain("connectWizard:codex");
+  });
+
+  it("no longer renders a second copy of the flow", () => {
+    // The whole point of the wizard. If these rows come back, two
+    // implementations of one auth flow have to be kept in step again.
     const { container } = mountSettings({
       isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
-      deviceLogin: {
-        codex: {
-          status: "waiting", url: "https://auth.openai.com/codex/device", code: "CCCC-3333",
-          preflight: {
-            reason: "Codex needs one setting turned on before the code below will be accepted.",
-            steps: ["Open ChatGPT and go to Settings → Security", 'Turn on "Device code authorization for Codex" **at the very bottom**'],
-            url: "https://chatgpt.com/#settings/Security",
-          },
-        },
-      },
+      deviceLogin: { codex: { status: "waiting", url: "https://x", code: "CCCC-3333" } },
     }, { snapshotOverrides: { providers: NONE } });
-    const row = container.querySelector('[data-id="providerCodexFlow"]')!;
-    expect(row.textContent).toContain("one setting turned on");
-    expect(row.querySelectorAll(".settings-deviceflow-steps li").length).toBe(2);
-    // The emphasis is the point: the setting is at the bottom of a long page.
-    expect(row.querySelector(".settings-deviceflow-steps strong")!.textContent).toBe("at the very bottom");
-    expect(row.textContent).not.toContain("**");
-    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toContain("Copy");
+    expect(container.querySelector('[data-id="providerCodexFlow"]')).toBeNull();
+    expect(container.querySelector(".settings-deviceflow")).toBeNull();
+    expect(container.querySelector("[data-device-copy]")).toBeNull();
   });
 });
 
@@ -451,5 +390,47 @@ describe("a settled flow's explanation survives the refresh that Providers sends
     // Sign out above the reason an earlier attempt failed (review round 3).
     expect(block).toContain("provider.needsLogin !== true");
     expect(block).toContain("healthy && terminal");
+  });
+});
+
+describe("one connect wizard, in a dialog, opened from anywhere", () => {
+  const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
+
+  it("renders the flow with the SAME builder the welcome card uses", () => {
+    // One renderer is the point. A wizard with its own markup restarts the
+    // drift that made the settings copy diverge in the first place.
+    const render = chatSrc.slice(chatSrc.indexOf("function renderConnectWizard("), chatSrc.indexOf("function syncConnectWizard("));
+    expect(render).toContain("remoteConnectPanel(");
+    // …and it must not rewrite the welcome status line, which belongs to the
+    // card, so `ver` goes in as null.
+    expect(render).toContain("null,");
+  });
+
+  it("keeps the welcome card as an entry point, never as a second renderer", () => {
+    const show = chatSrc.slice(chatSrc.indexOf("function showOnboarding("));
+    expect(show.slice(0, 1500)).toContain("device: undefined");
+  });
+
+  it("opens on any live flow and closes itself once connected", () => {
+    const sync = chatSrc.slice(chatSrc.indexOf("function syncConnectWizard("), chatSrc.indexOf("function showOnboarding("));
+    for (const status of ["starting", "waiting", "verifying", "failed"]) {
+      expect(sync).toContain(`"${status}"`);
+    }
+    expect(sync).toContain("openConnectWizard(provider)");
+    expect(sync).toContain("closeConnectWizard()");
+  });
+
+  it("closing the window does not cancel the sign-in", () => {
+    // The flow lives on the host and finishes on its own; cancelling is a
+    // separate, explicit button inside the panel.
+    const open = chatSrc.slice(chatSrc.indexOf("function openConnectWizard("));
+    const onclick = open.indexOf("closeBtn.onclick");
+    expect(open.slice(onclick, onclick + 160)).toContain("closeConnectWizard()");
+    expect(open.slice(onclick, onclick + 160)).not.toContain("cancelDeviceLogin");
+  });
+
+  it("is reachable from Settings through the local-action channel", () => {
+    expect(chatSrc).toContain('name.indexOf("connectWizard:") === 0');
+    expect(chatSrc).toContain('openConnectWizard(name.slice("connectWizard:".length))');
   });
 });

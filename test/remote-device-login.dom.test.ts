@@ -28,7 +28,14 @@ function boot(opts: { remote?: boolean; caps?: Record<string, unknown> } = {}) {
   return h;
 }
 
-const onb = (h: Harness) => h.doc.querySelector("#welcome-onboarding") as HTMLElement;
+// Where the connect flow renders. Since 3.19.9 a LIVE flow renders in the
+// connect wizard — one renderer, in a dialog, because the welcome card cannot
+// paint over a conversation and Settings had grown a second copy to work
+// around that. The card is still the empty-state OFFER, so this helper reads
+// whichever is showing and every assertion below keeps its original meaning.
+const onb = (h: Harness) =>
+  (h.doc.querySelector(".connect-wizard-body") as HTMLElement | null)
+  ?? (h.doc.querySelector("#welcome-onboarding") as HTMLElement);
 const text = (h: Harness) => (onb(h).textContent || "").replace(/\s+/g, " ").trim();
 const actions = (h: Harness) =>
   [...onb(h).querySelectorAll(".onb-action")].map((el) => (el.textContent || "").trim());
