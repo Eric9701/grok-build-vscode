@@ -408,15 +408,26 @@ describe("one connect wizard, in a dialog, opened from anywhere", () => {
   });
 
   it("keeps the welcome card as an entry point, never as a second renderer", () => {
-    const show = chatSrc.slice(chatSrc.indexOf("function showOnboarding("));
-    expect(show.slice(0, 1500)).toContain("device: undefined");
+    const show = chatSrc.slice(chatSrc.indexOf("function showOnboarding("), chatSrc.indexOf("function showOnboarding(") + 2500);
+    // A live flow is stripped from the card unconditionally — not merely when
+    // a wizard is already open, because this function runs BEFORE
+    // syncConnectWizard on the frame that starts one, and both painted it.
+    expect(show).toContain("const liveFlow =");
+    expect(show).toContain("device: undefined");
+    expect(show).toContain("liveFlow || wizardOwnsIt");
   });
 
   it("opens on any live flow and closes itself once connected", () => {
     const sync = chatSrc.slice(chatSrc.indexOf("function syncConnectWizard("), chatSrc.indexOf("function showOnboarding("));
-    for (const status of ["starting", "waiting", "verifying", "failed"]) {
+    // Only a RUNNING flow opens a dialog.
+    for (const status of ["starting", "waiting", "verifying"]) {
       expect(sync).toContain(`"${status}"`);
     }
+    // A settled outcome renders where the reader already is, so it must not
+    // open one of its own — that put the same retry button on the page twice.
+    const liveTest = sync.slice(sync.indexOf("const live ="), sync.indexOf("if (live)"));
+    expect(liveTest).not.toContain('"failed"');
+    expect(liveTest).not.toContain('"unavailable"');
     expect(sync).toContain("openConnectWizard(provider)");
     expect(sync).toContain("closeConnectWizard()");
   });
