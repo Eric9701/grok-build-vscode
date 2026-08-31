@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Window } from "happy-dom";
 import { shouldKeepAwake } from "../src/keep-awake";
+import { GrokSidebar } from "../src/sidebar";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sidebar = fs.readFileSync(path.join(root, "src", "sidebar.ts"), "utf8").replace(/\r\n/g, "\n");
@@ -505,6 +506,60 @@ describe("one connect wizard, in a dialog, opened from anywhere", () => {
   it("is reachable from Settings through the local-action channel", () => {
     expect(chatSrc).toContain('name.indexOf("connectWizard:") === 0');
     expect(chatSrc).toContain('openConnectWizard(name.slice("connectWizard:".length))');
+  });
+});
+
+describe("a device-code sign-in finishes the job", () => {
+  it("adopts the stranded session instead of waiting for a reload", async () => {
+    // The tab that signs in is the tab that must end up with an agent on it.
+    // Until this, `confirmDeviceLoginInner` promoted the account and stopped:
+    // the model picker stayed on "Loading…" and the card kept offering to
+    // connect until the page was reloaded (owner, on a fresh cloud machine,
+    // 2026-08-31).
+    const host = Object.create(GrokSidebar.prototype) as any;
+    const adopted: Array<{ provider: string; session: unknown }> = [];
+    const sent: Array<Record<string, unknown>> = [];
+    const bound = { id: "tab-1" };
+    host.host = { appendLine: vi.fn() };
+    host.reprobeProviderCredentials = vi.fn(async () => true);
+    host.setProviderConnected = vi.fn(async () => {});
+    host.remoteSessionFor = vi.fn(() => bound);
+    host.focused = { id: "desk" };
+    host.adoptSessionsForConnectedProvider = vi.fn(async (provider: string, session: unknown) => {
+      adopted.push({ provider, session });
+    });
+
+    await host.confirmDeviceLoginInner(
+      "grok",
+      (device: Record<string, unknown>) => sent.push(device),
+      "Grok Build",
+      () => "client-42",
+    );
+
+    expect(sent).toEqual([{ status: "done" }]);
+    expect(host.setProviderConnected).toHaveBeenCalledWith("grok", true);
+    // The flow's CURRENT client, read at confirm time — a phone that visited
+    // the vendor's page and came back has reconnected under a new id.
+    expect(host.remoteSessionFor).toHaveBeenCalledWith("client-42");
+    expect(adopted).toEqual([{ provider: "grok", session: bound }]);
+  });
+
+  it("falls back to the focused session when the flow has no client", async () => {
+    const host = Object.create(GrokSidebar.prototype) as any;
+    const adopted: unknown[] = [];
+    host.host = { appendLine: vi.fn() };
+    host.reprobeProviderCredentials = vi.fn(async () => true);
+    host.setProviderConnected = vi.fn(async () => {});
+    host.remoteSessionFor = vi.fn(() => ({ id: "remote" }));
+    host.focused = { id: "desk" };
+    host.adoptSessionsForConnectedProvider = vi.fn(async (_p: string, session: unknown) => {
+      adopted.push(session);
+    });
+
+    await host.confirmDeviceLoginInner("codex", () => {}, "Codex", () => undefined);
+
+    expect(host.remoteSessionFor).not.toHaveBeenCalled();
+    expect(adopted).toEqual([{ id: "desk" }]);
   });
 });
 

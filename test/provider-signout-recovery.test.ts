@@ -388,6 +388,57 @@ describe("signing back in after the last provider signed out", () => {
     expect(sidebar.remoteClients.detachedActiveValues()).toContain(replacement);
   });
 
+  it("deletes the empty shells it signed out, and keeps a conversation", async () => {
+    // Every sign-out replaced its sessions and left the old ones on disk, so a
+    // few connect/disconnect cycles put "Untitled" rows in the rail that
+    // nobody could account for — the owner counted three (2026-08-31). The
+    // periodic sweep is age-gated at thirty minutes, which is long after they
+    // have been read as a bug.
+    const sidebar = makeSidebar({ connected: ["grok"] });
+    sidebar.connectedProviders = vi.fn(() => []);
+    sidebar.removeSessionFromDisk = vi.fn();
+    sidebar.discardAdapterEmptySession = vi.fn(async () => {});
+
+    const empty = sidebar.focused as Session;
+    empty.provider = "grok";
+    empty.activeSessionId = "empty-shell";
+    empty.client = { dispose: vi.fn() } as any;
+
+    const real = new Session();
+    real.provider = "grok";
+    real.cwd = "/repo";
+    real.activeSessionId = "has-history";
+    real.hasHistory = true;
+    real.client = { dispose: vi.fn() } as any;
+    sidebar.pool = new Set([empty, real]);
+
+    await logout(sidebar);
+
+    const deleted = (sidebar.removeSessionFromDisk as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(deleted).toContain("empty-shell");
+    // A conversation is never collateral. This is the assertion that matters:
+    // the sweep-on-sign-out must not be able to take somebody's history.
+    expect(deleted).not.toContain("has-history");
+  });
+
+  it("keeps an empty session that is still holding a draft", async () => {
+    const sidebar = makeSidebar({ connected: ["grok"] });
+    sidebar.connectedProviders = vi.fn(() => []);
+    sidebar.removeSessionFromDisk = vi.fn();
+
+    const drafting = sidebar.focused as Session;
+    drafting.provider = "grok";
+    drafting.activeSessionId = "empty-with-draft";
+    drafting.queuedSends = [{ text: "the thing I was about to ask", chips: [] }] as any;
+    drafting.client = { dispose: vi.fn() } as any;
+    sidebar.pool = new Set([drafting]);
+
+    await logout(sidebar);
+
+    const deleted = (sidebar.removeSessionFromDisk as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(deleted).not.toContain("empty-with-draft");
+  });
+
   it("the real New-session entry parks an agent-less draft instead of discarding it", async () => {
     const sidebar = makeSidebar({ connected: ["grok"] });
     sidebar.connectedProviders = vi.fn(() => []);

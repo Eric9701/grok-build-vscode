@@ -401,6 +401,37 @@ describe("projects rail", () => {
     expect(sessionNames(h.doc, repoNames(h.doc).indexOf("alpha"))).toEqual(["alpha one"]);
   });
 
+  it("re-probes after a reconnect instead of libelling the host for ever", async () => {
+    // The verdict is inferred from EIGHT SECONDS OF SILENCE, and a cloud
+    // machine that is waking, or busy running a CLI sign-out, misses that
+    // window. The owner's host had just done both and the page then said
+    // "Sessions need a newer Grok Build" about a current build for as long as
+    // it stayed open — nothing ever asked again (2026-08-31).
+    const h = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => { withRail(w); w.__grokRailProbeTimeoutMs = 5; },
+    });
+    dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    dispatch(h.window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
+    await new Promise((r) => setTimeout(r, 40));
+    expect([...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent))
+      .toContain("Sessions need a newer Grok Build");
+
+    // A reconnect: every remote snapshot opens with initialState.
+    h.posted.length = 0;
+    dispatch(h.window, {
+      type: "initialState", effort: "", cwd: "/work/alpha", useCtrlEnter: false, extVersion: "3.19.9",
+      showThinking: false, expandCommandOutputs: false, steerByDefault: false, soundNotifications: false,
+      processingSound: false, readRepliesAloud: false, appPurpose: "coding", capabilities: {},
+    });
+    dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+
+    // It asks again rather than repeating a verdict about a host that is gone.
+    expect(h.posted.some((m: any) => m.type === "listRepoSessions")).toBe(true);
+    expect([...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent))
+      .not.toContain("Sessions need a newer Grok Build");
+  });
+
   it("never shows that hint to a host that does answer", async () => {
     const h = bootWebview({
       remote: true,

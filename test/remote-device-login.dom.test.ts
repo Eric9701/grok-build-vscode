@@ -250,6 +250,55 @@ describe("when it ends", () => {
   });
 });
 
+describe("after the sign-in succeeds", () => {
+  it("stops offering to connect an agent that is now connected", () => {
+    // The dismissal was keyed on the OLD recovery button, which a device-code
+    // card never draws — so the owner finished connecting Grok and the card
+    // underneath still said "Connect Grok Build" (2026-08-31).
+    const h = boot({ remote: true });
+    dispatch(h.window, { type: "onboarding", state: "connect-agent", platform: "linux" });
+    expect(actions(h).length).toBeGreaterThan(0);
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: true },
+        { id: "codex", connected: false },
+        { id: "claude", connected: false },
+      ],
+    });
+    expect((h.doc.getElementById("welcome") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("keeps offering while the account it asked about is still not connected", () => {
+    const h = boot({ remote: true });
+    onboarding(h, { provider: "codex" });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: false },
+        { id: "codex", connected: false },
+        { id: "claude", connected: false },
+      ],
+    });
+    expect(actions(h).length).toBeGreaterThan(0);
+    expect((h.doc.getElementById("welcome") as HTMLElement).hidden).toBe(false);
+  });
+
+  it("dismisses a provider-scoped card when THAT provider connects", () => {
+    const h = boot({ remote: true });
+    onboarding(h, { provider: "codex" });
+    dispatch(h.window, {
+      type: "providerState",
+      providers: [
+        { id: "grok", connected: false },
+        { id: "codex", connected: true },
+        { id: "claude", connected: false },
+      ],
+    });
+    expect((h.doc.getElementById("welcome") as HTMLElement).hidden).toBe(true);
+  });
+});
+
 describe("a host that predates this feature", () => {
   // The relay serves this page, so after a deploy every 3.18.0 user's phone is
   // running THIS client against a host that classifies runGrokLogin as

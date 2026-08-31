@@ -12,6 +12,11 @@ function makeSidebar(update: () => Promise<void> = async () => {}): any {
   sidebar.providerConnectionState = { grok: true, codex: true };
   sidebar.providerConnections = vi.fn(() => sidebar.providerConnectionState);
   sidebar.remoteClients = new RemoteClientState<Session>("/repo");
+  // Signing out now deletes the empty shells it replaces, and this harness has
+  // no session store — nor any business touching a real ~/.grok.
+  sidebar.sessionCache = new Map();
+  sidebar.removeSessionFromDisk = vi.fn();
+  sidebar.discardAdapterEmptySession = vi.fn(async () => {});
   // A real instance has this from its field initialiser; signing out clears the
   // provider's preflight latch so the next sign-in starts at step 1 again.
   sidebar.deviceLoginPreflightShown = new Set<string>();
