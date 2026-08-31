@@ -101,12 +101,13 @@ function mountSettings(env: Record<string, unknown>, opts: Record<string, unknow
   const container = doc.createElement("div");
   doc.body.appendChild(container);
   const { snapshotOverrides, ...mountOpts } = opts as { snapshotOverrides?: Record<string, unknown> };
-  api.mount(container, {
+  const mounted = api.mount(container, {
     snapshot: api.defaultSnapshot(snapshotOverrides || {}),
     env: api.defaultEnv(env),
     category: "providers",
     ...mountOpts,
   });
+  void mounted;
   return { api, container, window };
 }
 
@@ -432,5 +433,68 @@ describe("one connect wizard, in a dialog, opened from anywhere", () => {
   it("is reachable from Settings through the local-action channel", () => {
     expect(chatSrc).toContain('name.indexOf("connectWizard:") === 0');
     expect(chatSrc).toContain('openConnectWizard(name.slice("connectWizard:".length))');
+  });
+});
+
+describe("the wizard and Settings share a screen", () => {
+  const chatCss = fs.readFileSync(path.join(root, "media", "chat.css"), "utf8");
+  const settingsCss = fs.readFileSync(path.join(root, "media", "settings.css"), "utf8");
+  const zIndexOf = (css: string, selector: string) => {
+    const at = css.indexOf(selector);
+    expect(at, `${selector} must exist`).toBeGreaterThan(-1);
+    const block = css.slice(at, css.indexOf("}", at));
+    return Number(/z-index:\s*(\d+)/.exec(block)?.[1] ?? 0);
+  };
+
+  it("paints the wizard ABOVE the settings overlay it can be opened from", () => {
+    // It shipped at the confirm dialog's z-index (100) under the settings
+    // overlay's 120, so a Connect clicked in Settings opened the wizard
+    // behind the page that launched it — reproducing the exact invisibility
+    // the wizard was built to cure (review, 2026-08-31).
+    const wizard = zIndexOf(chatCss, ".connect-wizard-overlay");
+    const settings = zIndexOf(settingsCss, ".settings-overlay");
+    expect(settings).toBeGreaterThan(0);
+    expect(wizard).toBeGreaterThan(settings);
+  });
+
+  it("stands Settings' keyboard traps down while a modal is above it", () => {
+    // Both listen on document in the capture phase and Settings registers
+    // first, so without this its Escape closed the page underneath the dialog
+    // and its Tab trap pulled focus out of it.
+    const settingsSrc = fs.readFileSync(path.join(root, "media", "settings.js"), "utf8");
+    const onKey = settingsSrc.slice(settingsSrc.indexOf("function onKey(e) {"));
+    const guard = onKey.indexOf("document.body.dataset.modalAbove");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(onKey.indexOf('e.key === "Escape"'));
+
+    const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
+    expect(chatSrc).toContain('document.body.dataset.modalAbove = "connect-wizard"');
+    expect(chatSrc).toContain("delete document.body.dataset.modalAbove");
+  });
+
+  it("opens the wizard for Connect and never for Sign out", () => {
+    // The row's `local` used to fire whichever message it sent, so asking to
+    // disconnect opened a dialog offering to connect.
+    const connected = mountSettings({
+      isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
+    }, { snapshotOverrides: { providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")] } });
+    const rows = connected.api.ROWS as Array<{ id: string; local?: (s: unknown, e: unknown) => string }>;
+    const env = connected.api.defaultEnv({ isRemote: true, providersKnown: true, hostCaps: CLOUD });
+    const snap = connected.api.defaultSnapshot({
+      providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")],
+    });
+    const grokRow = rows.find((r) => r.id === "providerGrokRemote")!;
+    const codexRow = rows.find((r) => r.id === "providerCodexRemote")!;
+    // Grok is connected: this row signs OUT, so no wizard.
+    expect(grokRow.local!(snap, env)).toBe("");
+    // Codex is not: this row signs IN.
+    expect(codexRow.local!(snap, env)).toBe("connectWizard:codex");
+  });
+
+  it("carries dialog semantics, being long-lived and stacked", () => {
+    const chatSrc = fs.readFileSync(path.join(root, "media", "chat.js"), "utf8");
+    const open = chatSrc.slice(chatSrc.indexOf("function openConnectWizard("));
+    expect(open).toContain('panel.setAttribute("role", "dialog")');
+    expect(open).toContain('panel.setAttribute("aria-modal", "true")');
   });
 });

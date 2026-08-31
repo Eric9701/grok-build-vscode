@@ -323,7 +323,11 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   logout: "host-local",
   deleteSession: "full",
   clearAllSessions: "full",
-  runInstallCmd: "full",
+  // Host-local, because the handler it reaches is a NATIVE modal and a
+  // terminal on the host's own screen. A remote may not see either, so
+  // routing it was a promise the code cannot keep — the remote UI already
+  // hides the action (found while documenting what works where, 2026-08-31).
+  runInstallCmd: "host-local",
   // WAS host-local until 2026-08-26, and the reason it moved is worth being
   // precise about: the POLICY did not soften, the IMPLEMENTATION changed.
   //
