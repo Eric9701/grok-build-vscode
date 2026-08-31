@@ -300,6 +300,25 @@ describe("every provider configuration a remote can be in", () => {
     expect(action().disabled).toBe(false);
   });
 
+  it("never disables a DESK sign-out, which answers a modal and can be cancelled", () => {
+    // The wait "Disconnecting…" covers is the remote one. At a desk the modal
+    // is instant, and its Cancel returns without a provider frame — so the row
+    // sat disabled for the full backstop after a sign-out the user called off
+    // (review, 2026-08-31).
+    const posted: unknown[] = [];
+    const { container, window } = mountSettings({
+      isRemote: false, isDesktop: true, providersKnown: true,
+    }, {
+      snapshotOverrides: { providers: [prov("grok", { connected: true }), prov("codex"), prov("claude")] },
+      post: (m: unknown) => posted.push(m),
+    });
+    const action = () => container.querySelector('[data-id="providerGrok"] .settings-action') as HTMLButtonElement;
+    action().dispatchEvent(new (window as unknown as { MouseEvent: typeof MouseEvent }).MouseEvent("click", { bubbles: true }));
+    expect(posted).toContainEqual({ type: "logout", provider: "grok" });
+    expect(action().disabled).toBe(false);
+    expect(action().textContent).not.toBe("Disconnecting…");
+  });
+
   it("leaves Connect alone — the wizard reports for itself", () => {
     const { container, window } = mountSettings({
       isRemote: true, isDesktop: false, providersKnown: true, hostCaps: CLOUD,
@@ -524,6 +543,7 @@ describe("a device-code sign-in finishes the job", () => {
     host.reprobeProviderCredentials = vi.fn(async () => true);
     host.setProviderConnected = vi.fn(async () => {});
     host.remoteSessionFor = vi.fn(() => bound);
+    host.remoteClients = { isCurrent: () => true };
     host.focused = { id: "desk" };
     host.adoptSessionsForConnectedProvider = vi.fn(async (provider: string, session: unknown) => {
       adopted.push({ provider, session });
@@ -544,6 +564,31 @@ describe("a device-code sign-in finishes the job", () => {
     expect(adopted).toEqual([{ provider: "grok", session: bound }]);
   });
 
+  it("survives the tab that started the sign-in going away", async () => {
+    // The reconnect is ordinary: open the vendor's page to approve, come back,
+    // and the socket may have been replaced under a new client id. Resolving
+    // the target THREW there (`remoteClients.cwd` refuses an unknown client),
+    // and it sat outside the try — so a sign-in that had already said "done"
+    // adopted nothing and left the tab with no agent (review, 2026-08-31).
+    const host = Object.create(GrokSidebar.prototype) as any;
+    const adopted: unknown[] = [];
+    host.host = { appendLine: vi.fn() };
+    host.reprobeProviderCredentials = vi.fn(async () => true);
+    host.setProviderConnected = vi.fn(async () => {});
+    host.focused = { id: "desk" };
+    host.remoteClients = { isCurrent: () => false };
+    host.remoteSessionFor = vi.fn(() => { throw new Error("Remote client gone is not ready"); });
+    host.adoptSessionsForConnectedProvider = vi.fn(async (_p: string, s: unknown) => { adopted.push(s); });
+    const sent: Array<Record<string, unknown>> = [];
+
+    await host.confirmDeviceLoginInner("grok", (d: Record<string, unknown>) => sent.push(d), "Grok Build", () => "gone");
+
+    expect(sent).toEqual([{ status: "done" }]);
+    // It still adopts — against the focused session, since the asking tab left.
+    expect(adopted).toEqual([{ id: "desk" }]);
+    expect(host.remoteSessionFor).not.toHaveBeenCalled();
+  });
+
   it("falls back to the focused session when the flow has no client", async () => {
     const host = Object.create(GrokSidebar.prototype) as any;
     const adopted: unknown[] = [];
@@ -551,6 +596,7 @@ describe("a device-code sign-in finishes the job", () => {
     host.reprobeProviderCredentials = vi.fn(async () => true);
     host.setProviderConnected = vi.fn(async () => {});
     host.remoteSessionFor = vi.fn(() => ({ id: "remote" }));
+    host.remoteClients = { isCurrent: () => true };
     host.focused = { id: "desk" };
     host.adoptSessionsForConnectedProvider = vi.fn(async (_p: string, session: unknown) => {
       adopted.push(session);

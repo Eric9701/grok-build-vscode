@@ -1954,9 +1954,15 @@ export class GrokSidebar {
         // signed in is, and until this call the tab kept an empty model picker
         // and a card still offering to connect until it was reloaded (owner, on
         // a fresh cloud machine, 2026-08-31).
-        const clientId = currentClientId();
-        const target = clientId ? this.remoteSessionFor(clientId) : this.focused;
         try {
+          // Inside the try, and tolerant: the tab that STARTED this sign-in may
+          // not be the tab that is here now. `retargetNeedsProviderSessions`
+          // adopts every stranded view regardless, so the worst a departed
+          // client costs is which session the specific branches target.
+          const clientId = currentClientId();
+          const target = clientId && this.remoteClients.isCurrent(clientId)
+            ? this.remoteSessionFor(clientId)
+            : this.focused;
           await this.adoptSessionsForConnectedProvider(provider, target);
         } catch (error) {
           // The sign-in itself SUCCEEDED and has already been announced. A
