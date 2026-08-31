@@ -543,7 +543,11 @@ describe("a device-code sign-in finishes the job", () => {
     host.reprobeProviderCredentials = vi.fn(async () => true);
     host.setProviderConnected = vi.fn(async () => {});
     host.remoteSessionFor = vi.fn(() => bound);
-    host.remoteClients = { isCurrent: () => true };
+    host.remoteClients = {
+      clientForTabToken: () => "client-42",
+      cwdIfPresent: () => "/repo",
+      tabToken: () => "tab-42",
+    };
     host.focused = { id: "desk" };
     host.adoptSessionsForConnectedProvider = vi.fn(async (provider: string, session: unknown) => {
       adopted.push({ provider, session });
@@ -553,7 +557,7 @@ describe("a device-code sign-in finishes the job", () => {
       "grok",
       (device: Record<string, unknown>) => sent.push(device),
       "Grok Build",
-      () => "client-42",
+      () => ({ clientId: "client-42", tabToken: "tab-42" }),
     );
 
     expect(sent).toEqual([{ status: "done" }]);
@@ -564,27 +568,68 @@ describe("a device-code sign-in finishes the job", () => {
     expect(adopted).toEqual([{ provider: "grok", session: bound }]);
   });
 
-  it("survives the tab that started the sign-in going away", async () => {
-    // The reconnect is ordinary: open the vendor's page to approve, come back,
-    // and the socket may have been replaced under a new client id. Resolving
-    // the target THREW there (`remoteClients.cwd` refuses an unknown client),
-    // and it sat outside the try — so a sign-in that had already said "done"
-    // adopted nothing and left the tab with no agent (review, 2026-08-31).
+  it("follows the TAB when the phone reconnects mid-verification", async () => {
+    // Every trip to the vendor's code page reconnects the phone, so the client
+    // id a sign-in began with is usually gone by the time the credential is
+    // verified. The relay sends client-left(old) before client-ready(new), and
+    // `identify` re-points the tab token at the new client — so the token is
+    // what this must resolve through. My first attempt used `isCurrent`, which
+    // answers TRUE for an id it has never heard of, so the guard was inert and
+    // the tab was left with no agent and the card already dismissed (review,
+    // 2026-08-31).
+    const host = Object.create(GrokSidebar.prototype) as any;
+    const adopted: unknown[] = [];
+    const reconnected = { id: "session-on-the-new-socket" };
+    host.host = { appendLine: vi.fn() };
+    host.reprobeProviderCredentials = vi.fn(async () => true);
+    host.setProviderConnected = vi.fn(async () => {});
+    host.focused = { id: "desk" };
+    host.remoteClients = {
+      // The old socket is gone; the tab is here under a new one.
+      clientForTabToken: (token: string) => (token === "tab-1" ? "client-new" : undefined),
+      cwdIfPresent: (id: string) => (id === "client-new" ? "/repo" : undefined),
+      tabToken: () => "tab-1",
+    };
+    host.remoteSessionFor = vi.fn((id: string) => {
+      if (id !== "client-new") throw new Error(`Remote client ${id} is not ready`);
+      return reconnected;
+    });
+    host.adoptSessionsForConnectedProvider = vi.fn(async (_p: string, s: unknown) => { adopted.push(s); });
+    const sent: Array<Record<string, unknown>> = [];
+
+    await host.confirmDeviceLoginInner(
+      "grok",
+      (d: Record<string, unknown>) => sent.push(d),
+      "Grok Build",
+      () => ({ clientId: "client-old", tabToken: "tab-1" }),
+    );
+
+    expect(sent).toEqual([{ status: "done" }]);
+    // The reconnected tab gets the agent — not the desk session, and not an
+    // exception.
+    expect(adopted).toEqual([reconnected]);
+  });
+
+  it("uses the desk session when the tab is gone for good", async () => {
     const host = Object.create(GrokSidebar.prototype) as any;
     const adopted: unknown[] = [];
     host.host = { appendLine: vi.fn() };
     host.reprobeProviderCredentials = vi.fn(async () => true);
     host.setProviderConnected = vi.fn(async () => {});
     host.focused = { id: "desk" };
-    host.remoteClients = { isCurrent: () => false };
-    host.remoteSessionFor = vi.fn(() => { throw new Error("Remote client gone is not ready"); });
+    host.remoteClients = {
+      clientForTabToken: () => undefined,
+      cwdIfPresent: () => undefined,
+      tabToken: () => undefined,
+    };
+    host.remoteSessionFor = vi.fn(() => { throw new Error("not ready"); });
     host.adoptSessionsForConnectedProvider = vi.fn(async (_p: string, s: unknown) => { adopted.push(s); });
-    const sent: Array<Record<string, unknown>> = [];
 
-    await host.confirmDeviceLoginInner("grok", (d: Record<string, unknown>) => sent.push(d), "Grok Build", () => "gone");
+    await host.confirmDeviceLoginInner("grok", () => {}, "Grok Build",
+      () => ({ clientId: "client-old", tabToken: "tab-gone" }));
 
-    expect(sent).toEqual([{ status: "done" }]);
-    // It still adopts — against the focused session, since the asking tab left.
+    // Still adopts — the retarget picks up every stranded view — and never
+    // throws out of a sign-in that already said "done".
     expect(adopted).toEqual([{ id: "desk" }]);
     expect(host.remoteSessionFor).not.toHaveBeenCalled();
   });
@@ -596,13 +641,13 @@ describe("a device-code sign-in finishes the job", () => {
     host.reprobeProviderCredentials = vi.fn(async () => true);
     host.setProviderConnected = vi.fn(async () => {});
     host.remoteSessionFor = vi.fn(() => ({ id: "remote" }));
-    host.remoteClients = { isCurrent: () => true };
+    host.remoteClients = { clientForTabToken: () => undefined, cwdIfPresent: () => undefined, tabToken: () => undefined };
     host.focused = { id: "desk" };
     host.adoptSessionsForConnectedProvider = vi.fn(async (_p: string, session: unknown) => {
       adopted.push(session);
     });
 
-    await host.confirmDeviceLoginInner("codex", () => {}, "Codex", () => undefined);
+    await host.confirmDeviceLoginInner("codex", () => {}, "Codex", () => ({}));
 
     expect(host.remoteSessionFor).not.toHaveBeenCalled();
     expect(adopted).toEqual([{ id: "desk" }]);

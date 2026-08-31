@@ -957,6 +957,10 @@ export class GrokSidebar {
     {
       handle: DeviceLoginHandle;
       clientId?: string;
+      /** The TAB that started this, which outlives the socket that did: a phone
+       *  reconnects on every trip to the vendor's code page, and `identify`
+       *  re-points this token at the new client. */
+      tabToken?: string;
       /** What the flow last told its client, so a re-tap — usually a client
        *  that RECONNECTED while visiting the vendor's code page — can be
        *  shown the same code instead of silence. */
@@ -1748,6 +1752,7 @@ export class GrokSidebar {
     const entry: {
       handle?: DeviceLoginHandle;
       clientId?: string;
+      tabToken?: string;
       last?: Extract<HostMsg, { type: "onboarding" }>["device"];
       preflight?: Extract<HostMsg, { type: "onboarding" }>["device"] extends infer D
         ? D extends { preflight?: infer P } ? P : never
@@ -1756,6 +1761,7 @@ export class GrokSidebar {
       send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void;
     } = {
       clientId,
+      tabToken: clientId ? this.remoteClients.tabToken(clientId) : undefined,
       send: (device) => {
         // The setting-to-check travels with every card of this flow, so it is
         // still on screen when the code is.
@@ -1845,6 +1851,7 @@ export class GrokSidebar {
     const running = this.deviceLogins.get(provider);
     if (running) {
       running.clientId = clientId;
+      if (clientId) running.tabToken = this.remoteClients.tabToken(clientId) ?? running.tabToken;
       if (running.last) running.send(running.last);
       this.host.appendLine(`[${provider}] device login already in flight; repeated its state to the new tap`);
       return;
@@ -1892,7 +1899,8 @@ export class GrokSidebar {
           // The page must change when the vendor approves — "nothing happened"
           // during a silent 30s probe was the owner's very first retest note.
           send({ status: "verifying" });
-          void this.confirmDeviceLogin(provider, send, displayName, workId, () => entry.clientId);
+          void this.confirmDeviceLogin(provider, send, displayName, workId,
+            () => ({ clientId: entry.clientId, tabToken: entry.tabToken }));
           return;
         }
         this.host.appendLine(`[${provider}] device login failed (${result.failure}) after ${elapsed}s: ${result.output.slice(-2000)}`);
@@ -1917,15 +1925,31 @@ export class GrokSidebar {
    * Runs detached from the flow entry — by the time this fails, offering the
    * user a fresh attempt must not be blocked by the old one.
    */
+  /**
+   * The tab that started a device login, wherever its socket is now.
+   *
+   * Resolved through the tab token, because a phone reconnects on every trip to
+   * the vendor's code page and the starting client id is usually gone by the
+   * time this is asked. Falls back to the focused session rather than throwing:
+   * `remoteClients.cwd()` refuses an unknown client, and a sign-in that has
+   * already succeeded must not end in an exception.
+   */
+  private deviceLoginSession(clientId?: string, tabToken?: string): Session {
+    const live = tabToken ? this.remoteClients.clientForTabToken(tabToken) : undefined;
+    const id = live ?? clientId;
+    if (!id || this.remoteClients.cwdIfPresent(id) === undefined) return this.focused;
+    return this.remoteSessionFor(id);
+  }
+
   private async confirmDeviceLogin(
     provider: AcpProvider,
     send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void,
     displayName: string,
     workId: number,
-    currentClientId: () => string | undefined,
+    currentClient: () => { clientId?: string; tabToken?: string },
   ): Promise<void> {
     try {
-      await this.confirmDeviceLoginInner(provider, send, displayName, currentClientId);
+      await this.confirmDeviceLoginInner(provider, send, displayName, currentClient);
     } finally {
       // One door out, whatever happened above — and only this operation's.
       this.endDeviceLoginWork(workId);
@@ -1936,7 +1960,7 @@ export class GrokSidebar {
     provider: AcpProvider,
     send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void,
     displayName: string,
-    currentClientId: () => string | undefined = () => undefined,
+    currentClient: () => { clientId?: string; tabToken?: string } = () => ({}),
   ): Promise<void> {
     const delays = [0, 2_000, 5_000, 10_000, 20_000];
     for (const delay of delays) {
@@ -1955,15 +1979,11 @@ export class GrokSidebar {
         // and a card still offering to connect until it was reloaded (owner, on
         // a fresh cloud machine, 2026-08-31).
         try {
-          // Inside the try, and tolerant: the tab that STARTED this sign-in may
-          // not be the tab that is here now. `retargetNeedsProviderSessions`
-          // adopts every stranded view regardless, so the worst a departed
-          // client costs is which session the specific branches target.
-          const clientId = currentClientId();
-          const target = clientId && this.remoteClients.isCurrent(clientId)
-            ? this.remoteSessionFor(clientId)
-            : this.focused;
-          await this.adoptSessionsForConnectedProvider(provider, target);
+          const flow = currentClient();
+          await this.adoptSessionsForConnectedProvider(
+            provider,
+            this.deviceLoginSession(flow.clientId, flow.tabToken),
+          );
         } catch (error) {
           // The sign-in itself SUCCEEDED and has already been announced. A
           // failure to start the session afterwards is a worse screen, not a
