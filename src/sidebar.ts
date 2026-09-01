@@ -1049,8 +1049,17 @@ export class GrokSidebar {
   private diffSeq = 0;
   private readonly openDiffsByRequest =
     new SessionRequestState<Session, { left: Uri; right: Uri }>();
-  /** In-flight in-chat confirms, keyed by request id — see confirmInChat. */
-  private readonly pendingConfirms = new Map<string, (ok: boolean) => void>();
+  /**
+   * In-flight in-chat confirms, keyed by request id — see confirmInChat.
+   *
+   * The SESSION is stored with the resolver because the id alone is not an
+   * authorization: it is a sequential `confirm-N`, the map is host-global, and
+   * `uiConfirmAnswer` stopped being host-local when Rewind was opened to
+   * remotes. Without this, an answer sent while bound to conversation B
+   * resolves conversation A's confirm — and the thing on the other side of
+   * that confirm reverts files on disk.
+   */
+  private readonly pendingConfirms = new Map<string, { session: Session; resolve: (ok: boolean) => void }>();
   private confirmSeq = 0;
 
   /** Session names, pins, archives and the install id — held in `~/.grok` so a
@@ -6528,6 +6537,20 @@ Only continue if you trust this code.`,
       term.sendText(githubSignInCommand(process.platform));
       return;
     }
+    // INSTALL IS DESK-ONLY, and the check belongs here rather than in the
+    // client that already declines to send it. `setupGithubCli` is `full` in
+    // remote-policy.ts so that `auth` can run headlessly — but the policy gates
+    // a message TYPE, not the action inside it, so widening the type handed a
+    // remote the installer as well. A package manager asks for elevation, so
+    // there is no headless path to offer: the honest answer is the same one the
+    // clone form shows, and the relay-is-policy-free invariant means the HOST
+    // has to be the one refusing.
+    if (origin === "remote") {
+      this.postProjectSetup({
+        error: `Install the GitHub CLI from ${GITHUB_CLI_DOWNLOAD} on that computer, then try again.`,
+      });
+      return;
+    }
     const install = githubCliInstallCommand(process.platform);
     if (!install) {
       this.postProjectSetup({
@@ -10076,10 +10099,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         );
         break;
       case "uiConfirmAnswer": {
-        const resolve = this.pendingConfirms.get(msg.id);
-        if (resolve) {
+        const pending = this.pendingConfirms.get(msg.id);
+        // Only from the conversation the confirm was ASKED in. `emit` showed it
+        // to every surface holding that session, so any of them may answer —
+        // what a mismatch means is an answer for somebody else's conversation,
+        // and dropping it is right. Ignoring it cannot hang the caller either:
+        // the real answer still resolves, and an abandoned confirm already
+        // fails closed when the webview goes away.
+        if (pending && pending.session === session) {
           this.pendingConfirms.delete(msg.id);
-          resolve(msg.ok === true);
+          pending.resolve(msg.ok === true);
         }
         break;
       }
@@ -14024,7 +14053,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   ): Promise<boolean> {
     const id = `confirm-${++this.confirmSeq}`;
     return new Promise<boolean>((resolve) => {
-      this.pendingConfirms.set(id, resolve);
+      this.pendingConfirms.set(id, { session, resolve });
       this.emit(session, { type: "uiConfirmRequest", id, ...opts });
     });
   }

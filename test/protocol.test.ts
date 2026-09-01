@@ -50,6 +50,12 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
       remoteAgentSignIn: true,
       // Same for GitHub in the clone form: older hosts DROP `setupGithubCli`.
       remoteGithubSignIn: true,
+      // Same again for Rewind and Edit, which 4.1.0 opened to remotes. Every
+      // host before it classifies `rewindSession` / `editLastMessage` as
+      // host-local and drops them, and the relay always deploys ahead of the
+      // extension — so without this the browser shows two dead buttons to
+      // everyone who has not updated yet.
+      remoteRewind: true,
     });
   });
 

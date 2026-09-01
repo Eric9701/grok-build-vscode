@@ -98,6 +98,13 @@ export const HOST_CAPABILITIES = {
   // `setupGithubCli` as `host-local` and drop it silently, so the Sign in
   // button must not be offered as a working control until this is present.
   remoteGithubSignIn: true,
+  // Same shape again, for Rewind and Edit on user bubbles. Every host built
+  // before 4.1.0 classifies `rewindSession` / `editLastMessage` /
+  // `uiConfirmAnswer` as host-local and drops them, so a browser client — which
+  // is always as new as the relay deploy — would show two controls that do
+  // nothing at all for every user who has not updated yet. That window is not
+  // hypothetical: the relay ships first, by release-order rule.
+  remoteRewind: true,
 } as const;
 
 /** Device-code GitHub sign-in carried on `projectSetup`. Additive. */
@@ -155,6 +162,12 @@ export type HostUiCapabilities = {
    * `setupGithubCli` at a host that would drop it.
    */
   remoteGithubSignIn?: boolean;
+  /**
+   * Whether this host accepts Rewind and Edit from a remote. OPT-IN:
+   * absent/false = the browser hides both controls rather than offering
+   * buttons an older host drops in silence. See HOST_CAPABILITIES.
+   */
+  remoteRewind?: boolean;
   /**
    * Whether a remote may sign an agent OUT on this host.
    *
