@@ -56,6 +56,9 @@ export interface DeviceLoginHandle {
 export interface DeviceLoginRunOptions {
   /** Open stdin and accept {@link DeviceLoginHandle.submitCode}. */
   needsCode?: boolean;
+  /** Use `env` as-is instead of wrapping it with {@link deviceLoginEnv}.
+   *  GitHub login prepares the env itself so it can omit `CI`. */
+  rawEnv?: boolean;
 }
 
 /** Enough to hold any banner a CLI prints before the URL. */
@@ -116,7 +119,7 @@ export function runDeviceLogin(
       // person brings a code back and we write it to stdin. Only that plan
       // opens the pipe.
       stdio: [needsCode ? "pipe" : "ignore", "pipe", "pipe"],
-      env: deviceLoginEnv(runEnv, { needsCode }),
+      env: opts.rawEnv ? runEnv : deviceLoginEnv(runEnv, { needsCode }),
       windowsHide: true,
     });
   } catch (error) {

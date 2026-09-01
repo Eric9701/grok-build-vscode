@@ -48,6 +48,8 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
       // so the client must gate the Connect control on this rather than offer a
       // button that does nothing.
       remoteAgentSignIn: true,
+      // Same for GitHub in the clone form: older hosts DROP `setupGithubCli`.
+      remoteGithubSignIn: true,
     });
   });
 

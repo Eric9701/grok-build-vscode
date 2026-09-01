@@ -230,9 +230,12 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // remote can say what, never where.
   createProject: "full",
   cloneProject: "full",
-  // The follow-up when a clone failed on credentials: opens an INTERACTIVE
-  // terminal on the desk, which a remote can neither see nor answer.
-  setupGithubCli: "host-local",
+  // The follow-up when a clone failed on credentials. A remote `auth` runs
+  // the same headless device-code flow as `runGrokLogin` and reports the
+  // URL and code in the clone form — the person asking is the only one who
+  // can see it. Install still opens a terminal (package managers ask for
+  // elevation). Signing in is not bound to a conversation.
+  setupGithubCli: "full",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)

@@ -111,6 +111,12 @@ import {
 } from "./device-login";
 import { probeClaudeAuthStatus, runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
 import {
+  GITHUB_CLI_BIN,
+  githubDeviceLoginFailureText,
+  isGithubCliMissing,
+  runGithubDeviceLogin,
+} from "./github-device-login";
+import {
   GITHUB_CLI_DOWNLOAD,
   classifyCloneFailure,
   cloneDestination,
@@ -247,7 +253,7 @@ import {
 } from "./plan-review";
 import { isPrimerText } from "./grok-primer";
 import { AsyncSerialQueue } from "./async-serial";
-import { HOST_CAPABILITIES, HostMsg, INTERRUPTED_SEND_CODE, SESSION_SUPERSEDED_CODE, WebviewMsg } from "./protocol";
+import { HOST_CAPABILITIES, HostMsg, INTERRUPTED_SEND_CODE, SESSION_SUPERSEDED_CODE, WebviewMsg, type ProjectSetupGithub } from "./protocol";
 import { withoutArchiveFields } from "./project-discovery";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
@@ -969,6 +975,20 @@ export class GrokSidebar {
       send: (device: Extract<HostMsg, { type: "onboarding" }>["device"]) => void;
     }
   >();
+  /**
+   * Headless GitHub sign-in for the clone form. One at a time: a second tap
+   * while the first is polling would spawn a second child racing the first
+   * to write the same credential, and would replace a code the user may
+   * already be typing. Separate from `deviceLogins` because that map is
+   * keyed by agent provider.
+   */
+  private githubDeviceLogin?: {
+    handle?: DeviceLoginHandle;
+    clientId?: string;
+    tabToken?: string;
+    last?: ProjectSetupGithub;
+    send: (github: ProjectSetupGithub) => void;
+  };
   /** A Settings → Providers refresh in flight. Reported on `providerState` so
    *  the button can say it is working, and guards re-entry: a second click (or
    *  the page's own open-refresh landing on top of a click) must not start a
@@ -2063,6 +2083,8 @@ export class GrokSidebar {
   private cancelAllDeviceLogins(): void {
     for (const { handle } of this.deviceLogins.values()) handle.cancel();
     this.deviceLogins.clear();
+    this.githubDeviceLogin?.handle?.cancel();
+    this.githubDeviceLogin = undefined;
   }
 
   /** Observe an interactive terminal login without requiring a reload. Terminal
@@ -6355,6 +6377,15 @@ Only continue if you trust this code.`,
     };
   }
 
+  /** Last GitHub device-login card, only for the tab that started it. */
+  private githubProjectSetupExtra(clientId: string): { github?: ProjectSetupGithub } {
+    const entry = this.githubDeviceLogin;
+    if (!entry?.last) return {};
+    const live = entry.tabToken ? this.remoteClients.clientForTabToken(entry.tabToken) : undefined;
+    if (live === clientId || entry.clientId === clientId) return { github: entry.last };
+    return {};
+  }
+
   private postProjectSetup(
     extra: Omit<Extract<HostMsg, { type: "projectSetup" }>, "type" | "root"> = {},
   ): void {
@@ -6469,14 +6500,18 @@ Only continue if you trust this code.`,
   }
 
   /**
-   * Run the GitHub CLI step the failed clone needs, in a terminal on the desk.
+   * Run the GitHub CLI step the failed clone needs.
    *
-   * Both commands are interactive — `gh auth login` asks questions and opens a
-   * browser; a package manager asks for elevation — so this shows a terminal
-   * rather than pretending to do it silently. Host-local by policy: a remote
-   * could neither see the questions nor answer them.
+   * A LOCAL webview still opens a terminal: `gh auth login` asks questions
+   * and opens a browser, and a package manager asks for elevation. A REMOTE
+   * `auth` has no terminal to look at, so it runs the headless device-code
+   * flow and reports the URL and code on `projectSetup.github`.
    */
-  async setupGithubCli(action: "install" | "auth"): Promise<void> {
+  async setupGithubCli(
+    action: "install" | "auth",
+    origin: MsgOrigin = "local",
+    clientId?: string,
+  ): Promise<void> {
     // `sendText`, not `shellPath`/`shellArgs`: both of these are command LINES
     // rather than one binary with arguments. Signing in has to run two commands
     // in order — see githubSignInCommand for why the second is not optional —
@@ -6484,10 +6519,10 @@ Only continue if you trust this code.`,
     // host routes it through planRunCommandInTerminal, which keeps the window
     // open so the outcome stays readable).
     if (action === "auth") {
-      // Reached only from the LOCAL webview. `setupGithubCli` is host-local in
-      // remote-policy.ts, so a remote's click is dropped before it arrives —
-      // which is why the honest message for a remote lives in the client, not
-      // here. A branch here would be unreachable code pretending to be a fix.
+      if (origin === "remote") {
+        this.startGithubDeviceLogin(clientId);
+        return;
+      }
       const term = this.host.createTerminal({ name: "GitHub sign-in" });
       term.show();
       term.sendText(githubSignInCommand(process.platform));
@@ -6503,6 +6538,123 @@ Only continue if you trust this code.`,
     const term = this.host.createTerminal({ name: "Install GitHub CLI" });
     term.show();
     term.sendText(install.display);
+  }
+
+  /**
+   * Headless `gh auth login --web` plus `gh auth setup-git`, reported only to
+   * the client that asked. A code is for the person holding that device.
+   */
+  private startGithubDeviceLogin(clientId?: string): void {
+    const running = this.githubDeviceLogin;
+    if (running?.handle) {
+      running.clientId = clientId;
+      if (clientId) running.tabToken = this.remoteClients.tabToken(clientId) ?? running.tabToken;
+      if (running.last) running.send(running.last);
+      this.host.appendLine("[github] device login already in flight; repeated its state to the new tap");
+      return;
+    }
+
+    const send = (github: ProjectSetupGithub) => {
+      if (this.githubDeviceLogin) this.githubDeviceLogin.last = github;
+      const message = this.projectSetupMessage({ github });
+      const id = this.githubAskerId(clientId);
+      if (id) this.sendRemoteClient(id, message);
+      else this.post(message);
+    };
+
+    this.githubDeviceLogin = {
+      clientId,
+      tabToken: clientId ? this.remoteClients.tabToken(clientId) : undefined,
+      send,
+    };
+
+    if (!commandOnPath(GITHUB_CLI_BIN)) {
+      this.finishGithubDeviceLoginMissing();
+      return;
+    }
+
+    send({ status: "starting" });
+    this.host.appendLine("[github] device login started");
+    const workId = this.beginDeviceLoginWork();
+    const startedAt = Date.now();
+    let settled = false;
+    const handle = runGithubDeviceLogin(GITHUB_CLI_BIN, {
+      onPrompt: (prompt) => {
+        send({
+          status: "waiting",
+          url: prompt.url,
+          ...(prompt.code ? { code: prompt.code } : {}),
+        });
+      },
+      onDone: (result) => {
+        settled = true;
+        if (this.githubDeviceLogin) this.githubDeviceLogin.handle = undefined;
+        this.endDeviceLoginWork(workId);
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
+        if (result.ok) {
+          this.host.appendLine(`[github] device login completed after ${elapsed}s`);
+          send({
+            status: "done",
+            message: "Signed in to GitHub. Clone again.",
+          });
+          return;
+        }
+        if ("failure" in result) {
+          const failure = isGithubCliMissing(result.output) ? "missing" as const : result.failure;
+          this.host.appendLine(`[github] device login failed (${failure}) after ${elapsed}s`);
+          this.finishGithubDeviceLoginFailure(failure, { setupGit: !!result.setupGit });
+          return;
+        }
+        this.host.appendLine(`[github] device login cancelled after ${elapsed}s`);
+      },
+    });
+    if (!settled && this.githubDeviceLogin) {
+      this.githubDeviceLogin.handle = handle;
+    }
+  }
+
+  /** The tab that started GitHub sign-in, wherever its socket is now. */
+  private githubAskerId(fallback?: string): string | undefined {
+    const entry = this.githubDeviceLogin;
+    const live = entry?.tabToken ? this.remoteClients.clientForTabToken(entry.tabToken) : undefined;
+    return live ?? entry?.clientId ?? fallback;
+  }
+
+  private postGithubProjectSetup(
+    extra: Omit<Extract<HostMsg, { type: "projectSetup" }>, "type" | "root">,
+  ): void {
+    const message = this.projectSetupMessage(extra);
+    const id = this.githubAskerId();
+    if (id) this.sendRemoteClient(id, message);
+    else this.post(message);
+  }
+
+  private finishGithubDeviceLoginMissing(): void {
+    const offer = githubFixFor(process.platform, commandOnPath);
+    const extra: Omit<Extract<HostMsg, { type: "projectSetup" }>, "type" | "root"> =
+      offer.kind === "install"
+        ? { error: githubDeviceLoginFailureText("missing"), fix: "install-gh", fixCommand: offer.command }
+        : offer.kind === "download"
+          ? { error: `${githubDeviceLoginFailureText("missing")} Install it from ${offer.where} first.` }
+          : { error: githubDeviceLoginFailureText("missing"), fix: "install-gh" };
+    this.postGithubProjectSetup(extra);
+    this.githubDeviceLogin = undefined;
+  }
+
+  private finishGithubDeviceLoginFailure(
+    failure: Parameters<typeof githubDeviceLoginFailureText>[0],
+    opts: { setupGit?: boolean } = {},
+  ): void {
+    if (failure === "missing") {
+      this.finishGithubDeviceLoginMissing();
+      return;
+    }
+    const error = githubDeviceLoginFailureText(failure, opts);
+    this.postGithubProjectSetup({
+      error,
+      ...(failure === "unsupported" ? {} : { fix: "auth-gh" as const }),
+    });
+    this.githubDeviceLogin = undefined;
   }
 
   /**
@@ -10305,8 +10457,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.cloneProject(msg.url);
         break;
       case "setupGithubCli":
-        // host-local by policy, so `origin` is always local here.
-        await this.setupGithubCli(msg.action === "install" ? "install" : "auth");
+        await this.setupGithubCli(
+          msg.action === "install" ? "install" : "auth",
+          origin,
+          clientId,
+        );
         break;
       case "welcomeTipShown": {
         // Idempotent per day: `withShownTip` answers null when this tip is
@@ -18395,7 +18550,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // once-a-day rule never applied — the host was recording faithfully and
     // nobody was listening.
     snap.push(this.welcomeTipsMessage());
-    snap.push(this.projectSetupMessage());
+    snap.push(this.projectSetupMessage(this.githubProjectSetupExtra(clientId)));
     // A demoted tab already has a frozen transcript. clearMessages here would
     // wipe it on a same-page reconnect (mobile thaw). A rebuilt page starts
     // empty, so skipping the clear is a no-op there.

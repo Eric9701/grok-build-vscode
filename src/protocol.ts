@@ -94,7 +94,19 @@ export const HOST_CAPABILITIES = {
   // the dead end it replaced, because a dead end at least tells you where to
   // go. Field presence, never a version check.
   remoteAgentSignIn: true,
+  // Same shape, for GitHub in the clone form. Older hosts classify
+  // `setupGithubCli` as `host-local` and drop it silently, so the Sign in
+  // button must not be offered as a working control until this is present.
+  remoteGithubSignIn: true,
 } as const;
+
+/** Device-code GitHub sign-in carried on `projectSetup`. Additive. */
+export type ProjectSetupGithub = {
+  status: "starting" | "waiting" | "done" | "failed";
+  url?: string;
+  code?: string;
+  message?: string;
+};
 
 /** Machine-readable `error.code` for a send abandoned after its userMessage echo. */
 export const INTERRUPTED_SEND_CODE = "interrupted-send" as const;
@@ -136,6 +148,13 @@ export type HostUiCapabilities = {
    * drop. See HOST_CAPABILITIES for why silence is the failure mode.
    */
   remoteAgentSignIn?: boolean;
+  /**
+   * Whether this host can run `gh auth login` headlessly for a remote and
+   * report the URL and code in the clone form. OPT-IN: absent/false = the
+   * remote clone form keeps the honest dead-end rather than posting
+   * `setupGithubCli` at a host that would drop it.
+   */
+  remoteGithubSignIn?: boolean;
   /**
    * Whether a remote may sign an agent OUT on this host.
    *
@@ -333,6 +352,11 @@ export type HostMsg =
       fixCommand?: string;
       /** A project was actually made — the form closes on this, not on silence. */
       done?: boolean;
+      /**
+       * Headless GitHub CLI sign-in, shown only inside the clone form.
+       * Additive: an older client ignores it and renders the form as before.
+       */
+      github?: ProjectSetupGithub;
     }
   /** Connected agents plus host-observed, view-only version facts. Version
    * fields are additive so an older host/client keeps the connection UI.
@@ -870,10 +894,11 @@ export type WebviewMsg =
    */
   | { type: "cloneProject"; url: string }
   /**
-   * Install or sign in to the GitHub CLI, in a terminal on the desk.
+   * Install or sign in to the GitHub CLI.
    *
-   * Offered only after a clone failed in a way `gh` would fix. Host-local: it
-   * opens an interactive terminal, which a remote can neither see nor answer.
+   * Offered only after a clone failed in a way `gh` would fix. A local webview
+   * still opens a terminal. A remote `auth` runs the headless device-code flow
+   * and reports the URL and code on `projectSetup.github`.
    */
   | { type: "setupGithubCli"; action: "install" | "auth" }
   // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;

@@ -84,12 +84,17 @@ waiting for a username at a terminal that is not on screen, and the form would
 hang instead of telling you anything. So a private repository you are not signed
 in for fails quickly, and the form offers the next step:
 
-- **Sign in to GitHub** runs `gh auth login` **and then `gh auth setup-git`** in
-  a terminal. Answer the questions, finish in the browser it opens, then try the
-  clone again. The second command is the one that matters and is easy to miss:
-  `gh auth login` asks whether to configure Git and lets you say no, which would
-  leave the clone failing exactly as before. `gh auth setup-git` wires the CLI
-  into Git either way, and running it twice is harmless.
+- **Sign in to GitHub** runs `gh auth login` **and then `gh auth setup-git`**.
+  At the computer that is a terminal: answer the questions, finish in the
+  browser it opens, then try the clone again. From a phone or browser it is
+  the same device-code flow the agent connect card uses — a short code, a
+  copy button, a link that opens GitHub in a new tab, and the form stays
+  open so you can Clone again when it finishes. The second command is the
+  one that matters and is easy to miss: `gh auth login` asks whether to
+  configure Git and lets you say no, which would leave the clone failing
+  exactly as before. `gh auth setup-git` wires the CLI into Git either way,
+  and running it twice is harmless. Nothing here writes a token; `gh` owns
+  the credential.
 - If the GitHub CLI is not installed, the button instead offers to install it
   and names the exact command first — `winget install --id GitHub.cli -e` on
   Windows, `brew install gh` on macOS, `sudo apt install gh` on Debian/Ubuntu.
@@ -97,10 +102,6 @@ in for fails quickly, and the form offers the next step:
   machine — a Mac without Homebrew, or Windows without winget — no button is
   offered, because it would run a command that is not there either. The message
   points at [cli.github.com](https://cli.github.com) instead.
-
-Both of the first two open a terminal on the computer running the extension, so
-both are desk actions even though the clone that needed them can be started from
-a phone.
 
 ### Why signing out of `gh` may not seem to change anything
 

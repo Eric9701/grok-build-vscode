@@ -744,6 +744,9 @@
     // the Add project form shows the destination as you type, so it needs this
     // before anyone has typed anything.
     projectRoot: "",
+    // Last `projectSetup.github` from the host, so a reconnect can reopen the
+    // clone form onto the code the CLI is still polling.
+    projectGithub: null,
     // Empty-state tip facts from the host (`welcomeTips`): the two counts the
     // chat client never receives on its own plus the retired ids. null until
     // the frame lands, which suppresses the count-dependent tips rather than
@@ -6097,25 +6100,21 @@
         );
       },
       onCancel: closeAddProjectForm,
-      // Host-local, and the form stays open behind it: signing in happens in a
-      // terminal on the desk, and the user comes back here to try again.
+      // Local: signing in happens in a terminal, and the form stays open so
+      // they can clone again afterwards.
       //
-      // `setupGithubCli` is host-local in remote-policy.ts, so from a browser
-      // the click is DROPPED at the gate and the host never sees it — the
-      // button did nothing and said nothing, on a cloud machine and on a phone
-      // driving a laptop alike (owner, 2026-09-01). The honest answer has to be
-      // given here, because nothing downstream will ever be asked.
+      // Remote: older hosts classify `setupGithubCli` as host-local and DROP
+      // it silently. A new host advertises `remoteGithubSignIn` and runs the
+      // headless device-code flow into this form. Capability, never a version
+      // check — the same reason Connect is gated on `remoteAgentSignIn`.
       onFix: (fix) => {
-        if (IS_REMOTE) {
+        if (IS_REMOTE && !(state.hostCaps && state.hostCaps.remoteGithubSignIn)) {
           const cloud = IS_CLOUD_HOST;
           if (addProjectFormApi) {
             addProjectFormApi.update({
               error: cloud
-                // No computer to walk to, so no advice that ends at one.
                 ? "Signing in to GitHub needs a terminal, and a cloud machine has none. "
                   + "Public repositories clone as they are; private ones need this, and it is coming."
-                // A desk host HAS a terminal, and the person owns the machine
-                // it is on — so this one is advice, not a dead end.
                 : "Sign in to GitHub on the computer running this workspace — a terminal opens there — then try again here.",
             });
           }
@@ -6142,7 +6141,7 @@
       closeAddProjectForm();
     };
     document.addEventListener("keydown", addProjectFormKeydown, true);
-    api.update({ root: state.projectRoot });
+    api.update({ root: state.projectRoot, github: state.projectGithub || undefined });
     api.focus();
   }
 
@@ -15519,8 +15518,20 @@
         // `done` is the only close signal. Silence is not one: a failed attempt
         // also stops being busy, and closing on that would throw away the error
         // the user needs to read.
-        if (msg.done) { closeAddProjectForm(); break; }
-        if (addProjectFormApi) addProjectFormApi.update(msg);
+        if (msg.done) {
+          state.projectGithub = null;
+          closeAddProjectForm();
+          break;
+        }
+        if (msg.busy) state.projectGithub = null;
+        else if (msg.github && typeof msg.github === "object") state.projectGithub = msg.github;
+        else if (msg.error) state.projectGithub = null;
+        // Reconnect: the form is gone, the CLI is still polling, and the
+        // snapshot carried the code. Reopen the clone form so they can finish.
+        if (!addProjectFormApi && msg.github && (msg.github.status === "starting" || msg.github.status === "waiting")) {
+          openAddProjectForm("clone");
+        }
+        if (addProjectFormApi) addProjectFormApi.update({ ...msg, github: state.projectGithub || msg.github });
         break;
       case "welcomeTips":
         // Deliberately NOT an advance: this frame arrives on startup and after

@@ -37,6 +37,9 @@ sign-in shipped, and what changed was the implementation rather than the policy:
 a remote request no longer opens a terminal on your desk. It can only *add* a credential
 that you obtain yourself, in your own browser, from the vendor.
 
+GitHub in the **clone / Add project form** is the same shape (`setupGithubCli`
+is `"full"` too) and the same runner. It is not a Settings row.
+
 **Signing out stays `host-local`.** The asymmetry is intentional — connecting
 adds an option, disconnecting takes one away from every other surface at once.
 

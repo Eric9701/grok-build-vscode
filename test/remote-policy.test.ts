@@ -770,10 +770,13 @@ describe("allowFromRemote tier gating", () => {
     expect(allowFromRemote("cancelDeviceLogin", "full")).toBe(true);
     expect(allowFromRemote("submitDeviceLoginCode", "full")).toBe(true);
     expect(INBOUND_DISPOSITION.submitDeviceLoginCode).toBe("full");
+    expect(allowFromRemote("setupGithubCli", "full")).toBe(true);
+    expect(INBOUND_DISPOSITION.setupGithubCli).toBe("full");
     for (const tier of ["read-only", "propose"] as const) {
       expect(allowFromRemote("runGrokLogin", tier)).toBe(false);
       expect(allowFromRemote("cancelDeviceLogin", tier)).toBe(false);
       expect(allowFromRemote("submitDeviceLoginCode", tier)).toBe(false);
+      expect(allowFromRemote("setupGithubCli", tier)).toBe(false);
     }
   });
 

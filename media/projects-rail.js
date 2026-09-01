@@ -107,6 +107,7 @@
     /** Display form of the one directory new projects land in (`~/Grok Build`),
      *  from `projectSetup`. The form shows the destination as you type. */
     projectRoot: "",
+    projectGithub: null,
   };
 
   let menuEl = null;
@@ -998,7 +999,7 @@
       closeAddProjectForm();
     };
     document.addEventListener("keydown", addProjectFormKeydown, true);
-    api.update({ root: state.projectRoot });
+    api.update({ root: state.projectRoot, github: state.projectGithub || undefined });
     api.focus();
   }
 
@@ -1553,8 +1554,15 @@
         if (typeof msg.root === "string" && msg.root) state.projectRoot = msg.root;
         // `done` is the only close signal: a failed attempt also stops being
         // busy, and closing on that would throw away the error to be read.
-        if (msg.done) { closeAddProjectForm(); break; }
-        if (addProjectFormApi) addProjectFormApi.update(msg);
+        if (msg.done) {
+          state.projectGithub = null;
+          closeAddProjectForm();
+          break;
+        }
+        if (msg.busy) state.projectGithub = null;
+        else if (msg.github && typeof msg.github === "object") state.projectGithub = msg.github;
+        else if (msg.error) state.projectGithub = null;
+        if (addProjectFormApi) addProjectFormApi.update({ ...msg, github: state.projectGithub || msg.github });
         break;
       case "repos": {
         const leaving = state.currentCwd;

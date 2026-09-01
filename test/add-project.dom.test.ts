@@ -205,6 +205,121 @@ describe("add project", () => {
     expect(form(h)).toBeTruthy();
   });
 
+  it("posts setupGithubCli from a remote when the host can run headless GitHub sign-in", () => {
+    const h = boot({
+      remote: true,
+      coding: true,
+      caps: { ...CAPS, remoteGithubSignIn: true },
+    });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      error: "Git couldn't authenticate.",
+      fix: "auth-gh",
+    });
+    click(h.window, fix(h)!);
+    expect(h.posted).toContainEqual({ type: "setupGithubCli", action: "auth" });
+  });
+
+  it("does not post setupGithubCli from a remote at a host that would drop it", () => {
+    const h = boot({ remote: true, coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      error: "Git couldn't authenticate.",
+      fix: "auth-gh",
+    });
+    click(h.window, fix(h)!);
+    expect(h.posted.some((m) => m.type === "setupGithubCli")).toBe(false);
+    expect(problem(h)?.textContent).toMatch(/Sign in to GitHub on the computer/);
+  });
+
+  it("renders the device code in the clone form, with a copy button and a link", () => {
+    const h = boot({ coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    input(h).value = "https://github.com/you/private.git";
+    input(h).dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      github: {
+        status: "waiting",
+        url: "https://github.com/login/device",
+        code: "0D15-6BD9",
+      },
+    });
+    expect(form(h)).toBeTruthy();
+    const box = h.doc.querySelector(".add-project-github") as HTMLElement | null;
+    expect(box?.hidden).toBe(false);
+    expect(box?.textContent).toContain("0D15-6BD9");
+    expect(box?.textContent).toContain("Open the link, then confirm this code");
+    expect(box?.textContent).toContain("Keep this page open");
+    const link = h.doc.querySelector(".add-project-github-open") as HTMLAnchorElement | null;
+    expect(link?.hidden).toBe(false);
+    expect(link?.getAttribute("href")).toBe("https://github.com/login/device");
+    expect(link?.textContent).toBe("Open the sign-in page");
+    expect(link?.target).toBe("_blank");
+    expect(h.doc.querySelector(".add-project-github-copy")).toBeTruthy();
+    expect(fix(h)?.hidden).toBe(true);
+    expect(submit(h).disabled).toBe(false);
+  });
+
+  it("stays open on success and tells them to clone again", () => {
+    const h = boot({ coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    input(h).value = "https://github.com/you/private.git";
+    input(h).dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      github: { status: "done", message: "Signed in to GitHub. Clone again." },
+    });
+    expect(form(h)).toBeTruthy();
+    expect(h.doc.querySelector(".add-project-github")?.textContent).toContain("Clone again");
+    expect(submit(h).textContent).toBe("Clone");
+    expect(submit(h).disabled).toBe(false);
+  });
+
+  it("reopens the clone form on a waiting github frame so a reconnect can finish", () => {
+    const h = boot({ remote: true, coding: true, caps: { ...CAPS, remoteGithubSignIn: true } });
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      github: {
+        status: "waiting",
+        url: "https://github.com/login/device",
+        code: "0D15-6BD9",
+      },
+    });
+    expect(form(h)).toBeTruthy();
+    expect(h.doc.querySelector(".add-project-github")?.textContent).toContain("0D15-6BD9");
+  });
+
+  it("ignores github on an older frame that does not carry it", () => {
+    const h = boot({ coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      error: "Git couldn't authenticate.",
+      fix: "auth-gh",
+    });
+    expect(h.doc.querySelector(".add-project-github")?.hidden).toBe(true);
+    expect(fix(h)?.hidden).toBe(false);
+  });
+
   it("names the install command when the CLI is missing", () => {
     const h = boot({ coding: true });
     installOpener(h);

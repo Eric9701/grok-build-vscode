@@ -158,7 +158,7 @@ describe("the registries a device-global frame has to be named in", () => {
     // Same miss, same frame set: without it the Add project form on a phone had
     // no destination to preview until an attempt had already been made.
     const snapshot = block("private buildRemoteSnapshot(", "\n  }");
-    expect(snapshot).toContain("this.projectSetupMessage()");
+    expect(snapshot).toContain("this.projectSetupMessage(this.githubProjectSetupExtra(clientId))");
   });
 });
 
