@@ -382,8 +382,15 @@ try {
       }),
     };
   });
-  // Knowledge work is the desktop default, so cloning is not on this menu.
-  assert.deepEqual(menu.labels, ["New project", "Import a folder"], `desk: add-project menu — ${JSON.stringify(menu)}`);
+  // Knowledge work is the desktop default, so the clone ACTION is not on this
+  // menu — but since 4.1.0 a hint is, because an absent affordance explains
+  // nothing to the person who opened this menu looking for it. Order matters:
+  // the hint is last, after the two things that do work here.
+  assert.deepEqual(
+    menu.labels,
+    ["New project", "Import a folder", "Clone from GitHub?"],
+    `desk: add-project menu — ${JSON.stringify(menu)}`,
+  );
   assert.ok(menu.descriptions.every(Boolean), `desk: every entry needs its second line — ${JSON.stringify(menu)}`);
   assert.ok(!menu.clipped, `desk: menu rows are clipped — ${JSON.stringify(menu)}`);
   assert.ok(menu.onScreen, `desk: menu runs off the window — ${JSON.stringify(menu)}`);
@@ -391,8 +398,20 @@ try {
   // the number here would fail the next time that scale is tuned. Zero is the
   // failure worth catching — three empty boxes once shipped through a green
   // suite and three review rounds.
+  // The knowledge-work hint is DELIBERATELY iconless — the owner looked at the
+  // rendered row on 2026-09-01 and kept it that way. Exempted by label rather
+  // than by index or by relaxing the rule: an iconless row is normally the bug
+  // this assertion exists to catch, and "some row may have no icon" would hand
+  // that back. Everything that is meant to be painted still must be.
+  const iconExempt = new Set(["Clone from GitHub?"]);
+  const mustPaint = menu.iconSizes.filter((_, i) => !iconExempt.has(menu.labels[i]));
+  assert.equal(
+    mustPaint.length,
+    menu.labels.length - menu.labels.filter((l) => iconExempt.has(l)).length,
+    `desk: icon exemption did not match a row — ${JSON.stringify(menu)}`,
+  );
   assert.ok(
-    menu.iconSizes.every(([w, h]) => w >= 10 && h >= 10),
+    mustPaint.every(([w, h]) => w >= 10 && h >= 10),
     `desk: menu icons rendered with no size — ${JSON.stringify(menu)}`,
   );
   await shot("desk-1d-add-project-menu");
