@@ -64,7 +64,19 @@ describe("who receives a rewound message", () => {
    */
   it("parks the text on its conversation rather than dropping it", () => {
     const body = methodBody("private restoreComposerFor(");
-    expect(body).toContain("this.rememberQueuedDraft(id, text)");
+    expect(body).toContain("this.rememberQueuedDraft(id");
+  });
+
+  /**
+   * The slot holds one string. Two rewinds parked before either is collected
+   * would overwrite — and the first message is already gone from the transcript,
+   * so replacing loses it outright. The webview appends for the same reason;
+   * the store must not be the one place that silently drops a message.
+   */
+  it("appends to an already-parked draft instead of replacing it", () => {
+    const body = methodBody("private restoreComposerFor(");
+    expect(body).toContain("?.queuedDraft");
+    expect(body).toContain("parked ? `${parked}\\n\\n${text}` : text");
   });
 
   /**

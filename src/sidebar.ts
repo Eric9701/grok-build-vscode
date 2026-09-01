@@ -4329,7 +4329,15 @@ Only continue if you trust this code.`,
     // exists for exactly this and says so: a conversation is the only place a
     // draft can be handed back without guessing who is watching what.
     const id = session.activeSessionId;
-    if (id) void this.rememberQueuedDraft(id, text);
+    if (!id) return;
+    // APPEND, never replace. The slot holds one string, so a second rewind
+    // parked before the first was collected would overwrite it — and the first
+    // message is already gone from the transcript, so that loses it outright.
+    // The webview's own `restoreComposer` appends for exactly this reason
+    // ("anything already typed is the user's"); the store follows the same rule
+    // rather than being the one place that silently drops a message.
+    const parked = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]?.queuedDraft;
+    void this.rememberQueuedDraft(id, parked ? `${parked}\n\n${text}` : text);
   }
 
   /** See {@link editLastMessage} for why `session` and `requester` are explicit. */
