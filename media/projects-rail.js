@@ -930,7 +930,12 @@
     }
     const spec = helpers.addProjectMenuItems(addProjectCaps());
     const run = (id) => {
-      if (id === "import") vscode.postMessage({ type: "addProjectFolder" });
+      // Same hint as the chat rail, and the same rule: it acts rather than
+      // instructs. This view has no settings overlay of its own, so it asks the
+      // host for the editor tab.
+      if (id === "clone-needs-coding") {
+        vscode.postMessage({ type: "openSettingsSurface", category: "general" });
+      } else if (id === "import") vscode.postMessage({ type: "addProjectFolder" });
       else openAddProjectForm(id);
     };
     // One way in is a click, not a menu that asks permission to be a click.

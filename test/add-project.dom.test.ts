@@ -68,11 +68,21 @@ function installOpener(h: Harness) {
 }
 
 describe("add project", () => {
-  it("offers naming and importing in Knowledge work", () => {
+  it("offers naming and importing in Knowledge work, and says where cloning went", () => {
     const h = boot();
     installOpener(h);
     openMenu(h);
-    expect(menuItems(h)).toEqual(["New project", "Import a folder"]);
+    // Cloning is a coding affordance, so it is absent here — and an absent
+    // thing explains nothing. Someone who came to clone a repository would
+    // otherwise find two options that are not it and no way to learn that the
+    // third is one setting away (owner, 2026-09-01).
+    expect(menuItems(h)).toEqual(["New project", "Import a folder", "Clone from GitHub?"]);
+    const hint = [...h.doc.querySelectorAll(".rail-menu-item")].at(-1);
+    expect(hint?.textContent).toContain("Coding mode");
+    // It ACTS: selecting it opens the setting rather than describing where it
+    // is. In this host that is the in-page overlay, not a host message.
+    click(h.window, hint!);
+    expect(h.doc.querySelector("#settings-overlay, .settings-overlay")).toBeTruthy();
   });
 
   it("adds cloning in Coding, at the top, and takes nothing away", () => {
@@ -87,7 +97,13 @@ describe("add project", () => {
     installOpener(h);
     openMenu(h);
     const descriptions = [...h.doc.querySelectorAll(".rail-menu-desc")].map((el) => el.textContent);
-    expect(descriptions).toEqual(["Name it. We make the folder.", "Choose one you already have."]);
+    expect(descriptions).toEqual([
+      "Name it. We make the folder.",
+      "Choose one you already have.",
+      // The hint earns a description for the same reason the others do: the
+      // label alone says what it is, not what happens when you pick it.
+      "Cloning comes with Coding mode. Open settings to switch.",
+    ]);
   });
 
   it("stays a plain picker on a host that offers nothing else", () => {
@@ -336,6 +352,37 @@ describe("add project", () => {
     expect(fix(h)?.textContent).toContain("winget install --id GitHub.cli -e");
     click(h.window, fix(h)!);
     expect(h.posted).toContainEqual({ type: "setupGithubCli", action: "install" });
+  });
+
+  /**
+   * Installing has no headless path and is not getting one — a package manager
+   * asks for elevation, so the host opens a terminal. On a cloud machine that
+   * terminal is an Xvfb screen nobody is at, and pressing again just opens
+   * another. The sign-in capability says the host can SIGN IN headlessly; it
+   * says nothing about installing, and admitting every fix behind it put the
+   * inaccessible-terminal dead end straight back on this branch.
+   *
+   * Found by review before release.
+   */
+  it("never posts an install from a remote, however capable the host says it is", () => {
+    // Merge, don't replace: the form needs the project capabilities to render
+    // at all, and a bare override silently produces a page with no menu.
+    const h = boot({ coding: true, remote: true, caps: { ...CAPS, remoteGithubSignIn: true } });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "projectSetup",
+      root: "~/Grok Build",
+      error: "Git couldn't authenticate.",
+      fix: "install-gh",
+      fixCommand: "sudo apt install gh",
+    });
+    click(h.window, fix(h)!);
+    expect(h.posted.some((m: { type?: string }) => m.type === "setupGithubCli")).toBe(false);
+    // And it says something a person can act on instead of going quiet.
+    expect(h.doc.querySelector(".add-project-error")?.textContent || "")
+      .toMatch(/GitHub CLI/i);
   });
 
   it("clears a stale fix when the next failure does not earn one", () => {
