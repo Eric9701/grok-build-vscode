@@ -37,14 +37,30 @@ function methodBody(signature: string): string {
 describe("who receives a rewound message", () => {
   it("delivers to the requester, or to the desk when there is none", () => {
     const body = methodBody("private restoreComposerFor(");
-    expect(body).toContain("if (requester) this.sendRemoteRequester(requester, message)");
-    expect(body).toContain("else this.postLocal(message)");
+    expect(body).toContain("this.resolveRemoteRequester(requester)");
+    expect(body).toContain("this.sendRemoteClient(clientId, message)");
+    expect(body).toContain("this.postLocal(message)");
+  });
+
+  /**
+   * The half a first attempt dropped, caught by review. `emit` delivered
+   * locally only while the session was focused and remotely only to clients
+   * still holding it; "send to whoever asked" without that check pastes
+   * conversation A's message into conversation B — a different repository's —
+   * when the user switches conversation while the rewind RPC is still running.
+   */
+  it("refuses to deliver to a surface that has moved to another conversation", () => {
+    const body = methodBody("private restoreComposerFor(");
+    expect(body).toContain("this.remoteClients.active(clientId) !== session");
+    expect(body).toContain("this.focused !== session");
   });
 
   it("is how both rewind and edit hand the text back", () => {
     for (const signature of ["private async editLastMessage(", "async rewindFocusedSession("]) {
       const body = methodBody(signature);
-      expect(body, signature).toContain("this.restoreComposerFor(requester,");
+      // The session travels with it: the helper refuses a surface that has
+      // since moved to another conversation, and cannot check that without it.
+      expect(body, signature).toContain("this.restoreComposerFor(session, requester,");
       // The session-wide emit is what pasted into a bystander's composer.
       expect(body, signature).not.toContain('emit(session, { type: "restoreComposer"');
     }

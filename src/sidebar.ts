@@ -4214,7 +4214,7 @@ Only continue if you trust this code.`,
         // Was a modal offering "Copy text to composer" and awaiting the click.
         // Nobody can click it on a cloud machine, so the handler hung there —
         // and the button was the only sensible answer anyway. Do it, and say so.
-        this.restoreComposerFor(requester, text);
+        this.restoreComposerFor(session, requester, text);
         return void this.reportRequester(
           requester,
           "info",
@@ -4260,7 +4260,7 @@ Only continue if you trust this code.`,
       const surviving = survivingUserMessagesAfterRewind(points, target);
       await this.truncateSessionCardsAfterRewind(resumeId, surviving);
       this.applyRewindToView(session, surviving);
-      this.restoreComposerFor(requester, text);
+      this.restoreComposerFor(session, requester, text);
       if (reportedFiles > 0) {
         this.reportRequester(
           requester,
@@ -4287,11 +4287,36 @@ Only continue if you trust this code.`,
    * Reachable from a remote only since rewind/edit were widened, which is what
    * makes it a defect this change introduced; the desk-to-phone mirror of it was
    * always possible and is fixed by the same narrowing.
+   *
+   * The SESSION check is the half a first attempt at this dropped, and the
+   * review caught it: `emit` delivered locally only while that session was
+   * focused and remotely only to clients still holding it, so replacing it with
+   * a plain "send to whoever asked" opened a worse hole than the one being
+   * closed. Rewind is an RPC to the CLI and takes seconds; switching
+   * conversation while it runs is ordinary impatience, not an exotic race, and
+   * the text would have landed in a different conversation's composer — a
+   * different REPOSITORY's, at that.
    */
-  private restoreComposerFor(requester: RemoteRequester | undefined, text: string): void {
+  private restoreComposerFor(
+    session: Session,
+    requester: RemoteRequester | undefined,
+    text: string,
+  ): void {
     const message: HostMsg = { type: "restoreComposer", text };
-    if (requester) this.sendRemoteRequester(requester, message);
-    else this.postLocal(message);
+    if (requester) {
+      // Resolve through the tab, so a phone that reconnected while the rewind
+      // was in flight still receives its own text — then check the tab is still
+      // ON this conversation. `sendRemoteRequester` alone would deliver to
+      // whatever that tab is showing NOW.
+      const clientId = this.resolveRemoteRequester(requester);
+      if (!clientId || this.remoteClients.active(clientId) !== session) return;
+      this.sendRemoteClient(clientId, message);
+      return;
+    }
+    // Same check for the desk: postLocal posts to the focused webview whatever
+    // it is displaying.
+    if (this.focused !== session) return;
+    this.postLocal(message);
   }
 
   /** See {@link editLastMessage} for why `session` and `requester` are explicit. */
@@ -4447,7 +4472,7 @@ Only continue if you trust this code.`,
       // off. So the QuickPick path (no bubble) restores nothing rather than
       // pasting plumbing into the composer.
       const restored = (bubbleText ?? "").trim();
-      if (restored) this.restoreComposerFor(requester, restored);
+      if (restored) this.restoreComposerFor(session, requester, restored);
       // Only speak up when something happened the chat itself doesn't show.
       // The messages vanishing and the text landing in the composer are their
       // own feedback; a toast restating them is noise. Reverted files are NOT
