@@ -1047,8 +1047,11 @@ export type WebviewMsg =
   /** Edit-and-resend (#56): rewind past this (latest) user message and hand its
    *  text back to the composer. `text` is the bubble's own cleaned copy text. */
   | { type: "editLastMessage"; userBubbleIndex: number; text: string; totalUserBubbles?: number }
-  /** Reply to `uiConfirmRequest`. Host-local only: this is the last gate before
-   *  a rewind reverts files, so a remote must never be able to answer one. */
+  /** Reply to `uiConfirmRequest`. Answerable by whichever client was shown the
+   *  dialog, remote included, since 2026-09-01: the confirm moved in-chat in
+   *  2.0.0, so `host-local` here did not buy a more careful check — it meant a
+   *  remote could be shown a dialog it could never answer, leaving the rewind
+   *  pending forever. See remote-policy.ts on rewindSession. */
   | { type: "uiConfirmAnswer"; id: string; ok: boolean }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
   | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }

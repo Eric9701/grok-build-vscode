@@ -3968,6 +3968,17 @@
     return state.activeProvider !== "claude" && state.activeProvider !== "codex";
   }
 
+  /**
+   * Rewind and edit-and-resend ride grok's `_x.ai/rewind/*` extension. Codex
+   * and Claude answer `unsupported`, and until 2026-09-01 the buttons rendered
+   * for them anyway — clicking one produced a host-side warning, which is a
+   * poor answer at a desk and NO answer at all on a cloud machine, where
+   * nobody is at the screen to read it. Same shape as steerableProvider().
+   */
+  function rewindCapableProvider() {
+    return state.activeProvider !== "claude" && state.activeProvider !== "codex";
+  }
+
   function providerDisplayName(provider) {
     if (provider === "codex") return "Codex";
     if (provider === "claude") return "Claude";
@@ -9194,8 +9205,13 @@
       actions.appendChild(copyBtn);
       // Rewind sits next to Copy on user bubbles only (P2-9). Latest message
       // has nothing after it to discard — hidden via refreshUserRewindButtons.
-      // Desktop-only: the host rewind flow runs native VS Code UI.
-      if (role === "user" && !IS_REMOTE) {
+      //
+      // Built for every client since 2026-09-01: remote clients used to be
+      // excluded here because the host's rewind flow ran native VS Code UI, and
+      // that stopped being true when the confirmation moved in-chat. Visibility
+      // is decided in refreshUserRewindButtons, which also owns the provider
+      // gate — so a session that switches provider does not need re-rendering.
+      if (role === "user") {
         const rewindBtn = document.createElement("button");
         rewindBtn.className = "msg-action-btn msg-rewind-btn";
         rewindBtn.type = "button";
@@ -9292,6 +9308,10 @@
       if (ed) ed.hidden = true;
     }
     const prefixCount = state.historyPrefixUserCount || 0;
+    // One provider gate for both buttons: the RPC underneath either exists on
+    // this session's CLI or it does not, and a control that always fails is
+    // worse than an absent one.
+    const capable = rewindCapableProvider();
     users.forEach((el, i) => {
       el.dataset.userBubbleIndex = String(prefixCount + i);
       const isLast = i === users.length - 1;
@@ -9299,12 +9319,12 @@
       if (btn) {
         // Hide on the tip: that message is Edit's, which does the same rewind
         // and returns the text. Not a wire limitation — execute accepts the tip.
-        btn.hidden = users.length <= 1 || isLast;
+        btn.hidden = !capable || users.length <= 1 || isLast;
       }
       // Edit is the exact complement: only the tip, which is the message a
       // rewind can't remove and the one you most often want to retype (#56).
       const edit = el.querySelector(".msg-edit-btn");
-      if (edit) edit.hidden = !isLast;
+      if (edit) edit.hidden = !capable || !isLast;
     });
   }
 

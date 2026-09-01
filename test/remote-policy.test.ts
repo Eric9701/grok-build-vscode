@@ -100,7 +100,13 @@ describe("remote-policy classification tables", () => {
     expect(INBOUND_DISPOSITION.newWorktreeSession).toBe("host-local");
     expect(INBOUND_DISPOSITION.applyWorktree).toBe("host-local");
     expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");
-    expect(INBOUND_DISPOSITION.rewindSession).toBe("host-local");
+    // Rewind, edit-and-resend and the confirm that gates them are reachable
+    // from a remote since 2026-09-01. The three move together on purpose: an
+    // admitted rewind whose confirm is refused would hang forever, since
+    // confirmInChat resolves only on an answer.
+    expect(INBOUND_DISPOSITION.rewindSession).toBe("propose");
+    expect(INBOUND_DISPOSITION.editLastMessage).toBe("propose");
+    expect(INBOUND_DISPOSITION.uiConfirmAnswer).toBe("propose");
     // relay account actions manage THIS machine's device token
     expect(INBOUND_DISPOSITION.remoteSignIn).toBe("host-local");
     expect(INBOUND_DISPOSITION.remoteSignOut).toBe("host-local");

@@ -4089,10 +4089,26 @@ Only continue if you trust this code.`,
    * fenced selection blocks and `[Image #N]` tags. Only the bubble has those
    * peeled off.
    */
-  private async editLastMessage(userBubbleIndex: number, text: string, totalUserBubbles?: number): Promise<void> {
-    const session = this.focused;
+  /**
+   * `session` and `requester` are explicit since rewind/edit became reachable
+   * from a remote (2026-09-01). Both are load-bearing:
+   *
+   * - the session, because a phone driving a different repo must not rewind
+   *   whatever happens to be focused at the desk — that is exactly the bug that
+   *   forced the worktree rollback on 2026-08-07;
+   * - the requester, because every message below used to be a native modal on
+   *   the host. On a cloud machine there is nobody at that screen, and one of
+   *   them was awaited, so the handler simply hung.
+   */
+  private async editLastMessage(
+    userBubbleIndex: number,
+    text: string,
+    totalUserBubbles?: number,
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
     if (!session.client || !session.activeSessionId) {
-      return void this.host.showWarningMessage("Start a session before editing a message.");
+      return void this.reportRequester(requester, "warning", "Start a session before editing a message.");
     }
     if (session.status === "working" || session.status === "needs-you") {
       // Name the state. "Wait for the current turn" is useless when the turn
@@ -4101,7 +4117,9 @@ Only continue if you trust this code.`,
       this.host.appendLine(
         `[edit] refused: session.status=${session.status} bubble=${userBubbleIndex}`,
       );
-      return void this.host.showWarningMessage(
+      return void this.reportRequester(
+        requester,
+        "warning",
         session.status === "needs-you"
           ? "Answer the pending permission or plan card first, then edit your last message."
           : "Wait for the current turn to finish (or Stop it) before editing your last message.",
@@ -4110,7 +4128,9 @@ Only continue if you trust this code.`,
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
-        return void this.host.showWarningMessage(
+        return void this.reportRequester(
+          requester,
+          "warning",
           "Editing a sent message needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
@@ -4121,19 +4141,23 @@ Only continue if you trust this code.`,
         this.host.appendLine(
           `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
         );
-        return void this.host.showWarningMessage(
+        return void this.reportRequester(
+          requester,
+          "warning",
           "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
         );
       }
       const target = resolveEditRewindTarget(points, userBubbleIndex);
       if (!target) {
-        const copy = "Copy text to composer";
-        const pick = await this.host.showInformationMessage(
-          "Grok has no restore point for this message, so it can't be rolled back. You can still copy the text and send it again.",
-          copy,
+        // Was a modal offering "Copy text to composer" and awaiting the click.
+        // Nobody can click it on a cloud machine, so the handler hung there —
+        // and the button was the only sensible answer anyway. Do it, and say so.
+        this.emit(session, { type: "restoreComposer", text });
+        return void this.reportRequester(
+          requester,
+          "info",
+          "Grok has no restore point for that message, so it can't be rolled back. Its text is back in the composer.",
         );
-        if (pick === copy) this.emit(session, { type: "restoreComposer", text });
-        return;
       }
 
       // Confirm ONLY when the turn actually changed files on disk. Editing a
@@ -4155,13 +4179,15 @@ Only continue if you trust this code.`,
         mode: "all",
       });
       if (result === "unsupported") {
-        return void this.host.showWarningMessage(
+        return void this.reportRequester(
+          requester,
+          "warning",
           "Editing a sent message needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       if (!result.success) {
         // Surface the CLI's own words — e.g. rewinding past a compaction point.
-        return void this.host.showErrorMessage(result.error || "Couldn't roll back that message.");
+        return void this.reportRequester(requester, "error", result.error || "Couldn't roll back that message.");
       }
 
       const reportedFiles = result.revertedFiles.length;
@@ -4174,32 +4200,44 @@ Only continue if you trust this code.`,
       this.applyRewindToView(session, surviving);
       this.emit(session, { type: "restoreComposer", text });
       if (reportedFiles > 0) {
-        void this.host.showInformationMessage(
+        this.reportRequester(
+          requester,
+          "info",
           "Message moved back to the composer. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
-      this.host.showErrorMessage(`Couldn't edit that message: ${e?.message ?? e}`);
+      this.reportRequester(requester, "error", `Couldn't edit that message: ${e?.message ?? e}`);
     }
   }
 
-  async rewindFocusedSession(userBubbleIndex?: number, bubbleText?: string, totalUserBubbles?: number): Promise<void> {
-    const session = this.focused;
+  /** See {@link editLastMessage} for why `session` and `requester` are explicit. */
+  async rewindFocusedSession(
+    userBubbleIndex?: number,
+    bubbleText?: string,
+    totalUserBubbles?: number,
+    session: Session = this.focused,
+    requester?: RemoteRequester,
+  ): Promise<void> {
     if (!session.client || !session.activeSessionId) {
-      return void this.host.showWarningMessage("Start a session before rewinding it.");
+      return void this.reportRequester(requester, "warning", "Start a session before rewinding it.");
     }
     if (session.status === "working" || session.status === "needs-you") {
-      return void this.host.showWarningMessage(
+      return void this.reportRequester(
+        requester,
+        "warning",
         "Wait for the current turn to finish (or Stop it) before rewinding.",
       );
     }
     if (!session.hasHistory) {
-      return void this.host.showInformationMessage("Nothing to rewind yet — this session has no conversation.");
+      return void this.reportRequester(requester, "info", "Nothing to rewind yet — this session has no conversation.");
     }
     try {
       const points = await session.client.listRewindPoints();
       if (points === "unsupported") {
-        return void this.host.showWarningMessage(
+        return void this.reportRequester(
+          requester,
+          "warning",
           "Rewind needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
@@ -4211,7 +4249,9 @@ Only continue if you trust this code.`,
         this.host.appendLine(
           `[rewind] map mismatch: ${userFacingRewindPoints(points).length} wire points vs ${totalUserBubbles} visible messages`,
         );
-        return void this.host.showWarningMessage(
+        return void this.reportRequester(
+          requester,
+          "warning",
           "Grok's restore points no longer line up with this conversation, so rewinding could remove the wrong turn. Reload the window and try again.",
         );
       }
@@ -4220,10 +4260,23 @@ Only continue if you trust this code.`,
         // Bubble button: map visible user bubble → wire prompt_index (skips legacy hidden turns).
         target = resolveUserBubbleRewind(points, userBubbleIndex);
         if (!target) {
-          return void this.host.showInformationMessage(
+          return void this.reportRequester(
+            requester,
+            "info",
             "Can't rewind to this message — it's the latest turn, or the checkpoint is unavailable.",
           );
         }
+      } else if (requester) {
+        // The picker below is a host QuickPick, which a remote cannot see or
+        // answer — and on a cloud machine nobody can. Every remote rewind comes
+        // from a bubble button and carries its index, so this is unreachable in
+        // practice; it exists so that a future caller without one fails loudly
+        // instead of opening a dialog on an empty screen.
+        return void this.reportRequester(
+          requester,
+          "info",
+          "Pick the message to rewind to using the Rewind button on that message.",
+        );
       } else {
         // Gear / command palette: pick among user-facing points that aren't the tip.
         const facing = userFacingRewindPoints(points);
@@ -4278,13 +4331,15 @@ Only continue if you trust this code.`,
         mode: "all",
       });
       if (result === "unsupported") {
-        return void this.host.showWarningMessage(
+        return void this.reportRequester(
+          requester,
+          "warning",
           "Rewind needs a newer Grok Build CLI. Update via Settings → About.",
         );
       }
       if (!result.success) {
         const err = result.error || "Rewind did not apply (no changes).";
-        return void this.host.showErrorMessage(err);
+        return void this.reportRequester(requester, "error", err);
       }
 
       const reportedFiles = result.revertedFiles.length;
@@ -4315,12 +4370,14 @@ Only continue if you trust this code.`,
       // own feedback; a toast restating them is noise. Reverted files are NOT
       // visible in the chat, so those still get reported.
       if (reportedFiles > 0) {
-        void this.host.showInformationMessage(
+        this.reportRequester(
+          requester,
+          "info",
           "Rewound. Files were rolled back — anything created after that point may still be on disk.",
         );
       }
     } catch (e: any) {
-      void this.host.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
+      this.reportRequester(requester, "error", `Rewind failed: ${e?.message ?? e}`);
     }
   }
 
@@ -9705,6 +9762,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.rewindFocusedSession(
           typeof msg.userBubbleIndex === "number" ? msg.userBubbleIndex : undefined,
           msg.text,
+          // Was dropped here while editLastMessage forwarded it, so the
+          // bubble<->restore-point consistency check never ran for the Rewind
+          // button — the one path that reverts files without the user naming a
+          // target from a list. It matters more now that a remote can ask.
+          msg.totalUserBubbles,
+          session,
+          requester,
         );
         break;
       case "uiConfirmAnswer": {
@@ -9716,7 +9780,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       }
       case "editLastMessage":
-        await this.editLastMessage(msg.userBubbleIndex, msg.text, msg.totalUserBubbles);
+        await this.editLastMessage(msg.userBubbleIndex, msg.text, msg.totalUserBubbles, session, requester);
         break;
       case "workflowControl":
         await this.controlWorkflow(msg.action, msg.displayName, session);

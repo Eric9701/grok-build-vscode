@@ -282,13 +282,31 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   newWorktreeSession: "host-local",
   applyWorktree: "host-local",
   removeWorktree: "host-local",
-  // Rewind discards work already on disk — stays host-local. Desktop (local
-  // host) supports it via confirmInChat; remote must not.
-  rewindSession: "host-local",
-  // Edit-and-resend is a rewind underneath, so the same host-local gate.
-  editLastMessage: "host-local",
-  // The last gate before a rewind reverts files — only the local webview answers.
-  uiConfirmAnswer: "host-local",
+  // Rewind and edit-and-resend were `host-local` until 2026-09-01, on the
+  // grounds that rewind discards work already on disk and only the careful
+  // local surface should be able to ask for it. Two things retired that
+  // argument, and the owner made the call:
+  //
+  //   1. A remote can already tell the agent to rewrite or delete any file in
+  //      the repo — that is the product. Refusing the rewind of edits it was
+  //      allowed to request is a locked door beside an open one, not a
+  //      safeguard.
+  //   2. There is no longer a more careful surface to prefer. The confirmation
+  //      moved in-chat in 2.0.0 (`confirmInChat` -> `uiConfirmRequest`), so the
+  //      desk webview and the browser render the SAME dialog from the same
+  //      frame. `host-local` bought a different asker, not a different check.
+  //
+  // The actor here is the account holder acting on their own machine, so this
+  // is a scoping rule, not a security boundary (CLAUDE-ops § Name who is harmed
+  // before you harden anything). `propose`, matching forkSession and send.
+  rewindSession: "propose",
+  // Edit-and-resend is a rewind underneath, so it moves with it.
+  editLastMessage: "propose",
+  // MUST move in the same commit as rewindSession. `confirmInChat` resolves
+  // only when an answer comes back; a client that can be shown the dialog and
+  // cannot answer it leaves the promise pending forever, the rewind silently
+  // never happens, and the entry leaks in `pendingConfirms`.
+  uiConfirmAnswer: "propose",
   // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
   workflowControl: "propose",
   // Donut popover re-fetch — read-only meter, no turn / no mutation.

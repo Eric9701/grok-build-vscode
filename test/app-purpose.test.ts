@@ -161,10 +161,16 @@ describe("remote-policy app purpose + worktree", () => {
     expect(INBOUND_DISPOSITION.removeWorktree).toBe("host-local");
   });
 
-  it("keeps rewind host-local for remote", () => {
-    expect(INBOUND_DISPOSITION.rewindSession).toBe("host-local");
-    expect(INBOUND_DISPOSITION.editLastMessage).toBe("host-local");
-    expect(INBOUND_DISPOSITION.uiConfirmAnswer).toBe("host-local");
+  it("admits rewind, edit and the confirm that gates them from a remote", () => {
+    // Widened 2026-09-01. A remote can already ask the agent to rewrite or
+    // delete files, so refusing to roll those edits back guarded nothing; and
+    // the confirmation has been in-chat since 2.0.0, so `host-local` bought a
+    // different asker rather than a different check.
+    expect(INBOUND_DISPOSITION.rewindSession).toBe("propose");
+    expect(INBOUND_DISPOSITION.editLastMessage).toBe("propose");
+    // Must match the two above: confirmInChat resolves only on an answer, so a
+    // client that can be shown the dialog and cannot answer hangs the rewind.
+    expect(INBOUND_DISPOSITION.uiConfirmAnswer).toBe("propose");
   });
 
   it("mirrors appPurpose and accepts setAppPurpose from remote", () => {
