@@ -4302,6 +4302,7 @@ Only continue if you trust this code.`,
     requester: RemoteRequester | undefined,
     text: string,
   ): void {
+    if (!text) return;
     const message: HostMsg = { type: "restoreComposer", text };
     if (requester) {
       // Resolve through the tab, so a phone that reconnected while the rewind
@@ -4309,14 +4310,26 @@ Only continue if you trust this code.`,
       // ON this conversation. `sendRemoteRequester` alone would deliver to
       // whatever that tab is showing NOW.
       const clientId = this.resolveRemoteRequester(requester);
-      if (!clientId || this.remoteClients.active(clientId) !== session) return;
-      this.sendRemoteClient(clientId, message);
+      if (clientId && this.remoteClients.active(clientId) === session) {
+        this.sendRemoteClient(clientId, message);
+        return;
+      }
+    } else if (this.focused === session) {
+      // Same check for the desk: postLocal posts to the focused webview
+      // whatever it is displaying.
+      this.postLocal(message);
       return;
     }
-    // Same check for the desk: postLocal posts to the focused webview whatever
-    // it is displaying.
-    if (this.focused !== session) return;
-    this.postLocal(message);
+    // The asking surface has moved to another conversation. Refusing to deliver
+    // is only half an answer: the rewind has ALREADY removed the message from
+    // the transcript, so dropping it here loses the user's text outright — the
+    // failure the previous attempt traded the cross-session paste for.
+    //
+    // Park it on the conversation it belongs to instead. `rememberQueuedDraft`
+    // exists for exactly this and says so: a conversation is the only place a
+    // draft can be handed back without guessing who is watching what.
+    const id = session.activeSessionId;
+    if (id) void this.rememberQueuedDraft(id, text);
   }
 
   /** See {@link editLastMessage} for why `session` and `requester` are explicit. */
@@ -15899,6 +15912,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // the small frame the client actually needs, instead of rebuilding a list
     // that has not changed.
     this.postSessionName(session);
+    // Same as the remote path: a draft parked on this conversation returns with
+    // it rather than waiting for a reload.
+    this.restorePersistedDraft(session);
   }
 
   /**
@@ -16885,6 +16901,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // name has to be re-announced here or the header loses its rename affordance
     // until something unrelated refreshes it.
     this.postSessionName(session);
+    // A draft parked on this conversation — by a rewind whose asker had already
+    // moved on, or by a provider sign-out — comes back with it. Without this the
+    // parked text only reappeared on a reconnect, which is not what "switch back
+    // to that conversation" should require.
+    this.restorePersistedDraft(session);
   }
 
   private async newRemoteSession(clientId: string, notifyCatalog = true): Promise<void> {

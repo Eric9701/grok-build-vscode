@@ -51,8 +51,26 @@ describe("who receives a rewound message", () => {
    */
   it("refuses to deliver to a surface that has moved to another conversation", () => {
     const body = methodBody("private restoreComposerFor(");
-    expect(body).toContain("this.remoteClients.active(clientId) !== session");
-    expect(body).toContain("this.focused !== session");
+    expect(body).toContain("this.remoteClients.active(clientId) === session");
+    expect(body).toContain("this.focused === session");
+  });
+
+  /**
+   * And refusing is only half an answer. The rewind has already removed the
+   * message from the transcript, so a surface that moved on must not simply
+   * drop the text — that loses it from both places at once. It is parked on the
+   * conversation it belongs to and handed back when that conversation is next
+   * on screen.
+   */
+  it("parks the text on its conversation rather than dropping it", () => {
+    const body = methodBody("private restoreComposerFor(");
+    expect(body).toContain("this.rememberQueuedDraft(id, text)");
+  });
+
+  it("hands a parked draft back when that conversation is re-focused", () => {
+    for (const signature of ["private focusRemoteSession(", "private focusSession("]) {
+      expect(methodBody(signature), signature).toContain("this.restorePersistedDraft(session)");
+    }
   });
 
   it("is how both rewind and edit hand the text back", () => {
