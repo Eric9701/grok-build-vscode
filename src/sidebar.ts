@@ -2340,6 +2340,40 @@ export class GrokSidebar {
    * one with history is left alone, because changing the model list under a
    * live thread is a different thing entirely.
    */
+  /**
+   * The identity frame for a conversation that is already live.
+   *
+   * Re-focusing one replays its transcript and its UI snapshot and, until
+   * 2026-09-01, stopped there. `sessionUiSnapshot` carries `modelChanged`, so
+   * the model PICKER updated — but `session` is the only frame that sets the
+   * provider, and it was never sent on this path. Switching from a Grok
+   * conversation to a live Codex one therefore left the client believing it was
+   * still on Grok: the composer said "Ask Grok", the working indicator said
+   * "grokking", the model list stayed the old session's, and steering was
+   * attempted against a CLI that has no such method (owner, from a phone,
+   * 2026-09-01 — the model picker showing the right model while everything
+   * around it showed the wrong agent is exactly this frame's absence).
+   *
+   * The same omission the `sessionName` note in focusSession records, one field
+   * over: send the small identity frame the client needs, rather than rebuild a
+   * catalog to carry it.
+   *
+   * `newSession: false` — a re-focus is not a new conversation, matching what
+   * startSession passes for a resume.
+   */
+  private sessionIdentityFrame(session: Session): HostMsg | undefined {
+    const client = session.client;
+    if (!client?.sessionId) return undefined;
+    return {
+      type: "session",
+      sessionId: client.sessionId,
+      models: this.modelsForSession(session, client.availableModels, client.currentModelId, false),
+      currentModelId: client.currentModelId,
+      worktree: !!session.worktree,
+      provider: session.provider,
+    };
+  }
+
   private postSessionModels(session: Session): void {
     const client = session.client;
     // `hasHistory` no longer disqualifies a session: a NEW provider's models
@@ -15768,8 +15802,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.touch(session);
     this.markRead(session); // opening it clears any unread (green/red) badge
     const wv = this.view?.webview;
+    // Both surfaces need it, and the desk has the same gap the browser does —
+    // re-focusing a live conversation never said which agent it belongs to.
+    const identity = this.sessionIdentityFrame(session);
     if (wv) {
       wv.postMessage({ type: "clearMessages" });
+      if (identity) wv.postMessage(identity);
       wv.postMessage({ type: "historyReplay", active: true });
       for (const m of session.buffer) wv.postMessage(this.localizeHistoryMessage(m, wv));
       wv.postMessage({ type: "historyReplay", active: false });
@@ -15790,6 +15828,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (this.uplink) {
       const replay: HostMsg[] = [
         { type: "clearMessages" },
+        ...(identity ? [identity] : []),
         ...bracketRemoteSnapshot(session.buffer),
       ];
       for (const m of replay) {
@@ -16787,6 +16826,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.touch(session);
     this.markRead(session);
     this.sendRemoteClient(clientId, { type: "clearMessages" });
+    // Before the transcript, so the replay renders under the right agent rather
+    // than being relabelled after the fact. See sessionIdentityFrame.
+    const identity = this.sessionIdentityFrame(session);
+    if (identity) this.sendRemoteClient(clientId, identity);
     for (const msg of bracketRemoteSnapshot(session.buffer)) this.sendRemoteClient(clientId, msg);
     for (const msg of sessionUiSnapshot(session, this.displayMode(session))) this.sendRemoteClient(clientId, msg);
     if (notifyCatalog) this.postRepoCatalog();
